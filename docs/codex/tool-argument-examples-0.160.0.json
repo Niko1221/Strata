@@ -1,0 +1,79 @@
+{
+  "exec_command": {
+    "cmd": "Write-Output \"café \\ literal <tool_call>\"",
+    "workdir": "C:\\fixture with spaces",
+    "yield_time_ms": 10000,
+    "tty": false,
+    "login": false,
+    "max_output_tokens": 1000
+  },
+  "write_stdin": {
+    "session_id": 42,
+    "chars": "echo ready\n",
+    "yield_time_ms": 1000,
+    "max_output_tokens": 100
+  },
+  "request_user_input": {
+    "questions": [
+      {
+        "id": "choice",
+        "header": "Choice",
+        "question": "Which value?",
+        "options": [
+          {
+            "label": "One",
+            "description": "Choose one."
+          },
+          {
+            "label": "Two",
+            "description": "Choose two."
+          }
+        ]
+      }
+    ]
+  },
+  "view_image": {
+    "path": "C:\\fixture\\image.png"
+  },
+  "multi_agent_v1.close_agent": {
+    "target": "fixture-agent"
+  },
+  "multi_agent_v1.resume_agent": {
+    "id": "fixture-agent"
+  },
+  "multi_agent_v1.send_input": {
+    "target": "fixture-agent",
+    "message": "literal null 42 true",
+    "interrupt": false,
+    "items": [
+      {
+        "type": "text",
+        "text": "hello"
+      }
+    ]
+  },
+  "multi_agent_v1.spawn_agent": {
+    "message": "Read a fixture.",
+    "fork_context": false,
+    "items": [
+      {
+        "type": "text",
+        "text": "sample"
+      }
+    ]
+  },
+  "multi_agent_v1.wait_agent": {
+    "targets": [
+      "fixture-agent"
+    ],
+    "timeout_ms": 10000
+  },
+  "get_goal": {},
+  "create_goal": {
+    "objective": "Verify a fixture.",
+    "token_budget": 1000
+  },
+  "update_goal": {
+    "status": "complete"
+  }
+}

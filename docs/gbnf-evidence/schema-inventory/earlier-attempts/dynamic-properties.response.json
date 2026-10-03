@@ -1,0 +1,69 @@
+{
+  "id": "resp_65d5fbe7105d4acc8ae15abeeb24e59e",
+  "object": "response",
+  "created_at": 1791057333,
+  "status": "failed",
+  "completed_at": null,
+  "error": {
+    "code": "server_error",
+    "message": "invalid JSON: duplicate JSON key: count"
+  },
+  "incomplete_details": null,
+  "instructions": null,
+  "model": "qwen3.8-flash-next",
+  "output": [
+    {
+      "id": "msg_cb96b7c12ffc4a758e2bd6c0bce44219",
+      "type": "message",
+      "status": "incomplete",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "{\"count\": 3, \"count\": 3, \"count\": 3}",
+          "annotations": [],
+          "logprobs": []
+        }
+      ]
+    }
+  ],
+  "usage": null,
+  "store": false,
+  "background": false,
+  "previous_response_id": null,
+  "max_output_tokens": 512,
+  "temperature": 0,
+  "top_p": 0.95,
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "17_property_names_and_pattern_properties",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "propertyNames": {
+          "pattern": "^[a-z]+$"
+        },
+        "patternProperties": {
+          "^count": {
+            "type": "integer"
+          }
+        },
+        "additionalProperties": {
+          "type": "string"
+        },
+        "minProperties": 1,
+        "maxProperties": 3
+      }
+    }
+  },
+  "tools": [],
+  "tool_choice": "auto",
+  "parallel_tool_calls": true,
+  "reasoning": {
+    "effort": "none",
+    "summary": null
+  },
+  "truncation": "disabled",
+  "metadata": {}
+}

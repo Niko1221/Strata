@@ -1,0 +1,966 @@
+strata generate: PCIe probe: 26.8 GB/s host->device (best of 26.8 26.8 26.8 26.8) -> pcie_frac 0.55 (default 0.55)
+strata generate: native pack: /boot/Strata-data/packs/coder-iq1_m experts (largest blob 2.66 MB), token embedding IQ4_XS in mapped host memory (322 MiB)
+strata generate: 1406 MiB of weights loaded from /boot/Strata-data/packs/coder-iq1_m (302 canonical tensors skipped: served natively)
+strata generate: 300 native projection matrices, 2018.88 MiB of weights
+strata generate: the SSD is kept awake while rows are read: one page of the table after 100 ms without a read, until 60 s after the last request (STRATA_SSD_KEEPALIVE=0 turns it off)
+strata generate: profile /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/data/expert-profile-coder.bin: 12288 ranked pairs, built for 12288 slots
+strata generate: PLE on, table 320001536 rows of /boot/Strata-data/models/coder-IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00002-of-00002.gguf
+strata mtp: draft layer loaded, 794 MiB of VRAM (experts 675, dense 111), files read in 0.52 s (1498 MiB/s)
+strata generate: GPU 0: NVIDIA GeForce RTX 4090, compute capability 8.9
+strata generate: experts via mmap (--mmap-experts; the GGUF shards in place, no experts.bin)
+strata trace: 18992 MiB free after the weights, the session and the drafter
+strata generate: experimental native Q5_K head, 521472000 bytes
+strata generate: expert cache 7815 slots, 14.88 GiB of VRAM; policy is
+strata trace: 3260 MiB free after opening the expert cache
+strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,
+                 so a reply can differ slightly from a run without the cache (same quality:
+                 bench/results/2026-09-27-cache-parity).
+                 PROFILE, ranked by routing frequency, no eviction.
+strata trace: 3260 MiB free after the profile fill
+strata generate: pre-filled 7815 of 7815 slots from the profile; slot 0 verified
+strata generate: routing-aware prefetch of the file tier on (the next layer's router)
+strata trace: 3260 MiB free after the R4 hit path
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: 5 expert-pool workers + the host thread
+strata trace: 3260 MiB free after the expert cache and the graphs
+strata generate: session is up (engine 0.1.38)
+strata generate: token graph hit path: 7815 resident experts, decided on the device
+strata serve: the prompt path borrows 147 CUDA0 cache slots (0.28 GiB)
+strata trace: 3068 MiB free after the head and the prompt path
+strata hc: CUDA0: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (STRATA_HC_SPLIT=1 or 0 for the earlier ones)
+strata verify: window up to 4 tokens, 62.9 MiB of device buffers
+strata mtp: draft head over 40525 tokens (81.2 MiB)
+strata trace: 2918 MiB free after the verifier and the drafter's binding
+strata serve: 2918 MiB of VRAM free with everything loaded
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata verify: captured the 4-token window (upload no error, sync no error)
+strata trace: read 20 tokens (windows) in 2861.4 ms
+strata verify: captured the 2-token window (upload no error, sync no error)
+strata trace: read 6 tokens (windows) in 446.0 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata verify: captured the 1-token window (upload no error, sync no error)
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=15 window=1 selection_position=26
+strata trace: window 27 4
+strata trace: CURSOR prompt=27 consumed=31 produced=5 pending=17 window=4 selection_position=30
+strata trace: window 31 4
+strata trace: CURSOR prompt=27 consumed=35 produced=9 pending=19 window=4 selection_position=34
+strata trace: window 35 4
+strata trace: CURSOR prompt=27 consumed=39 produced=13 pending=21 window=4 selection_position=38
+strata trace: window 39 4
+strata trace: CURSOR prompt=27 consumed=43 produced=17 pending=23 window=4 selection_position=42
+strata trace: window 43 4
+strata trace: CURSOR prompt=27 consumed=46 produced=20 pending=248046 window=4 selection_position=45
+strata decode timing: 6 windows, avg T 3.50, 3.33 tokens/window, 402.25 ms/window = verify 400.15 (GPU-reach wait 10.20 + per-layer host 381.18 [plan 0.11 actq 0.42 jobs 345.71 CPU 34.76] + stage 4.23) + commit/emit 0.03 + draft 2.06; per layer-window: CPU experts 8.84 (15.63 entries), VRAM hits 19.37, PCIe 0.00
+strata serve: prompt 27 tokens = 0 reused + 27 read in 3368 ms (8.0 tok/s), 20 generated in 2414 ms (8.3 tok/s), drafts accepted 14 of 15, 1 checkpoints
+strata serve: decode expert cache hit rate: 55.3% (5579 hits / 10080 lookups)
+strata serve: expert tiers: GPU 5579 hits this request; since the start RAM 0 blobs, files 0 blobs 24086.7 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 6 tokens (windows) in 192.4 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=15 window=1 selection_position=26
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=5 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 27 4
+strata trace: CURSOR prompt=27 consumed=31 produced=5 pending=17 window=4 selection_position=30
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=5 accepting=0 terminal=0 work=29 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 31 4
+strata trace: CURSOR prompt=27 consumed=35 produced=9 pending=19 window=4 selection_position=34
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=9 accepting=0 terminal=0 work=53 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 35 4
+strata trace: CURSOR prompt=27 consumed=39 produced=13 pending=21 window=4 selection_position=38
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=13 accepting=0 terminal=0 work=77 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 39 4
+strata trace: CURSOR prompt=27 consumed=43 produced=17 pending=23 window=4 selection_position=42
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=17 accepting=0 terminal=0 work=101 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 43 3
+strata verify: captured the 3-token window (upload no error, sync no error)
+strata trace: CURSOR prompt=27 consumed=46 produced=20 pending=248046 window=3 selection_position=45
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=3 kept=3 blocked_draft=-1 end_draft=1 fallback=0
+strata trace: GRAMMAR tokens=20 accepting=1 terminal=1 work=118 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata decode timing: 6 windows, avg T 3.33, 3.33 tokens/window, 152.00 ms/window = verify 150.67 (GPU-reach wait 9.98 + per-layer host 137.39 [plan 0.09 actq 0.36 jobs 103.80 CPU 32.97] + stage 0.01) + commit/emit 0.02 + draft 1.21; per layer-window: CPU experts 8.46 (15.05 entries), VRAM hits 18.28, PCIe 0.00
+strata serve: prompt 27 tokens = 20 reused + 7 read in 207 ms (33.8 tok/s), 20 generated in 912 ms (21.9 tok/s), drafts accepted 14 of 14, 1 checkpoints
+strata serve: decode expert cache hit rate: 54.9% (5266 hits / 9600 lookups)
+strata serve: expert tiers: GPU 5266 hits this request; since the start RAM 0 blobs, files 0 blobs 29888.5 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 6 tokens (windows) in 184.7 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=15 window=1 selection_position=26
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=5 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 27 4
+strata trace: CURSOR prompt=27 consumed=31 produced=5 pending=17 window=4 selection_position=30
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=5 accepting=0 terminal=0 work=29 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 31 4
+strata trace: CURSOR prompt=27 consumed=35 produced=9 pending=19 window=4 selection_position=34
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=9 accepting=0 terminal=0 work=53 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 35 4
+strata trace: CURSOR prompt=27 consumed=39 produced=13 pending=21 window=4 selection_position=38
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=13 accepting=0 terminal=0 work=77 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 39 4
+strata trace: CURSOR prompt=27 consumed=43 produced=17 pending=23 window=4 selection_position=42
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=17 accepting=0 terminal=0 work=101 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 43 3
+strata trace: CURSOR prompt=27 consumed=46 produced=20 pending=248046 window=3 selection_position=45
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=3 kept=3 blocked_draft=-1 end_draft=1 fallback=0
+strata trace: GRAMMAR tokens=20 accepting=1 terminal=1 work=118 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata decode timing: 6 windows, avg T 3.33, 3.33 tokens/window, 150.61 ms/window = verify 149.30 (GPU-reach wait 9.99 + per-layer host 138.22 [plan 0.10 actq 0.39 jobs 103.77 CPU 33.79] + stage 0.01) + commit/emit 0.02 + draft 1.21; per layer-window: CPU experts 8.46 (15.05 entries), VRAM hits 18.28, PCIe 0.00
+strata serve: prompt 27 tokens = 20 reused + 7 read in 198 ms (35.3 tok/s), 20 generated in 904 ms (22.1 tok/s), drafts accepted 14 of 14, 1 checkpoints
+strata serve: decode expert cache hit rate: 54.9% (5266 hits / 9600 lookups)
+strata serve: expert tiers: GPU 5266 hits this request; since the start RAM 0 blobs, files 0 blobs 35690.2 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 6 tokens (windows) in 184.4 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=15 window=1 selection_position=26
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=5 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata decode timing: 1 windows, avg T 1.00, 1.00 tokens/window, 26.53 ms/window = verify 26.47 (GPU-reach wait 7.28 + per-layer host 18.20 [plan 0.03 actq 0.11 jobs 9.05 CPU 8.92] + stage 0.01) + commit/emit 0.02 + draft 0.00; per layer-window: CPU experts 2.19 (2.19 entries), VRAM hits 7.81, PCIe 0.00
+strata serve: prompt 27 tokens = 20 reused + 7 read in 198 ms (35.3 tok/s), 1 generated in 27 ms (37.7 tok/s), drafts accepted 0 of 0, 1 checkpoints
+strata serve: decode expert cache hit rate: 78.1% (375 hits / 480 lookups)
+strata serve: expert tiers: GPU 375 hits this request; since the start RAM 0 blobs, files 0 blobs 36743.8 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 6 tokens (windows) in 167.1 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=15 window=1 selection_position=26
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=5 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 27 1
+strata trace: CURSOR prompt=27 consumed=28 produced=2 pending=220 window=1 selection_position=27
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=2 accepting=0 terminal=0 work=8 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata decode timing: 2 windows, avg T 1.00, 1.00 tokens/window, 35.99 ms/window = verify 35.23 (GPU-reach wait 7.15 + per-layer host 27.09 [plan 0.03 actq 0.11 jobs 16.83 CPU 10.01] + stage 0.01) + commit/emit 0.02 + draft 0.70; per layer-window: CPU experts 2.55 (2.55 entries), VRAM hits 7.45, PCIe 0.00
+strata serve: prompt 27 tokens = 20 reused + 7 read in 180 ms (38.8 tok/s), 2 generated in 72 ms (27.8 tok/s), drafts accepted 0 of 0, 1 checkpoints
+strata serve: decode expert cache hit rate: 74.5% (715 hits / 960 lookups)
+strata serve: expert tiers: GPU 715 hits this request; since the start RAM 0 blobs, files 0 blobs 37874.7 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 6 tokens (windows) in 178.4 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=15 window=1 selection_position=26
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=5 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 27 2
+strata trace: CURSOR prompt=27 consumed=29 produced=3 pending=16 window=2 selection_position=28
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=2 kept=2 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=3 accepting=0 terminal=0 work=15 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata decode timing: 2 windows, avg T 1.50, 1.50 tokens/window, 53.90 ms/window = verify 53.13 (GPU-reach wait 7.72 + per-layer host 44.40 [plan 0.05 actq 0.17 jobs 30.79 CPU 13.28] + stage 0.01) + commit/emit 0.02 + draft 0.70; per layer-window: CPU experts 3.59 (4.27 entries), VRAM hits 10.73, PCIe 0.00
+strata serve: prompt 27 tokens = 20 reused + 7 read in 192 ms (36.5 tok/s), 3 generated in 108 ms (27.8 tok/s), drafts accepted 1 of 1, 1 checkpoints
+strata serve: decode expert cache hit rate: 71.5% (1030 hits / 1440 lookups)
+strata serve: expert tiers: GPU 1030 hits this request; since the start RAM 0 blobs, files 0 blobs 39243.0 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 6 tokens (windows) in 183.0 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=15 window=1 selection_position=26
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=5 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 27 3
+strata trace: CURSOR prompt=27 consumed=30 produced=4 pending=220 window=3 selection_position=29
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=3 kept=3 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=4 accepting=0 terminal=0 work=22 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata decode timing: 2 windows, avg T 2.00, 2.00 tokens/window, 75.98 ms/window = verify 75.20 (GPU-reach wait 8.33 + per-layer host 65.85 [plan 0.07 actq 0.22 jobs 48.11 CPU 17.33] + stage 0.01) + commit/emit 0.02 + draft 0.70; per layer-window: CPU experts 4.67 (6.38 entries), VRAM hits 13.62, PCIe 0.00
+strata serve: prompt 27 tokens = 20 reused + 7 read in 197 ms (35.6 tok/s), 4 generated in 152 ms (26.3 tok/s), drafts accepted 2 of 2, 1 checkpoints
+strata serve: decode expert cache hit rate: 68.1% (1308 hits / 1920 lookups)
+strata serve: expert tiers: GPU 1308 hits this request; since the start RAM 0 blobs, files 0 blobs 40946.7 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 6 tokens (windows) in 186.6 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=15 window=1 selection_position=26
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=5 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 27 4
+strata trace: CURSOR prompt=27 consumed=31 produced=5 pending=17 window=4 selection_position=30
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=5 accepting=0 terminal=0 work=29 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata decode timing: 2 windows, avg T 2.50, 2.50 tokens/window, 87.40 ms/window = verify 86.62 (GPU-reach wait 8.97 + per-layer host 76.61 [plan 0.08 actq 0.31 jobs 55.10 CPU 20.98] + stage 0.01) + commit/emit 0.02 + draft 0.70; per layer-window: CPU experts 5.28 (7.80 entries), VRAM hits 17.20, PCIe 0.00
+strata serve: prompt 27 tokens = 20 reused + 7 read in 200 ms (34.9 tok/s), 5 generated in 175 ms (28.6 tok/s), drafts accepted 3 of 3, 1 checkpoints
+strata serve: decode expert cache hit rate: 68.8% (1651 hits / 2400 lookups)
+strata serve: expert tiers: GPU 1651 hits this request; since the start RAM 0 blobs, files 0 blobs 42783.9 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 6 tokens (windows) in 187.1 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=15 window=1 selection_position=26
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=5 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 27 4
+strata trace: CURSOR prompt=27 consumed=31 produced=5 pending=17 window=4 selection_position=30
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=5 accepting=0 terminal=0 work=29 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 31 1
+strata trace: CURSOR prompt=27 consumed=32 produced=6 pending=220 window=1 selection_position=31
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=6 accepting=0 terminal=0 work=32 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata decode timing: 3 windows, avg T 2.00, 2.00 tokens/window, 83.62 ms/window = verify 82.59 (GPU-reach wait 8.33 + per-layer host 73.24 [plan 0.06 actq 0.22 jobs 54.20 CPU 18.63] + stage 0.01) + commit/emit 0.02 + draft 0.95; per layer-window: CPU experts 5.11 (6.79 entries), VRAM hits 13.21, PCIe 0.00
+strata serve: prompt 27 tokens = 20 reused + 7 read in 201 ms (34.8 tok/s), 6 generated in 251 ms (23.9 tok/s), drafts accepted 3 of 3, 1 checkpoints
+strata serve: decode expert cache hit rate: 66.0% (1902 hits / 2880 lookups)
+strata serve: expert tiers: GPU 1902 hits this request; since the start RAM 0 blobs, files 0 blobs 45047.6 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 6 tokens (windows) in 194.3 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=15 window=1 selection_position=26
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=5 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 27 4
+strata trace: CURSOR prompt=27 consumed=31 produced=5 pending=17 window=4 selection_position=30
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=5 accepting=0 terminal=0 work=29 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 31 2
+strata trace: CURSOR prompt=27 consumed=33 produced=7 pending=18 window=2 selection_position=32
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=2 kept=2 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=7 accepting=0 terminal=0 work=39 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata decode timing: 3 windows, avg T 2.33, 2.33 tokens/window, 98.80 ms/window = verify 97.77 (GPU-reach wait 8.71 + per-layer host 88.02 [plan 0.07 actq 0.25 jobs 66.03 CPU 21.54] + stage 0.01) + commit/emit 0.02 + draft 0.95; per layer-window: CPU experts 5.88 (8.15 entries), VRAM hits 15.18, PCIe 0.00
+strata serve: prompt 27 tokens = 20 reused + 7 read in 208 ms (33.7 tok/s), 7 generated in 296 ms (23.6 tok/s), drafts accepted 4 of 4, 1 checkpoints
+strata serve: decode expert cache hit rate: 65.1% (2186 hits / 3360 lookups)
+strata serve: expert tiers: GPU 2186 hits this request; since the start RAM 0 blobs, files 0 blobs 47569.5 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 6 tokens (windows) in 185.7 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=15 window=1 selection_position=26
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=5 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 27 4
+strata trace: CURSOR prompt=27 consumed=31 produced=5 pending=17 window=4 selection_position=30
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=5 accepting=0 terminal=0 work=29 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 31 3
+strata trace: CURSOR prompt=27 consumed=34 produced=8 pending=220 window=3 selection_position=33
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=3 kept=3 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=8 accepting=0 terminal=0 work=46 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata decode timing: 3 windows, avg T 2.67, 2.67 tokens/window, 108.77 ms/window = verify 107.73 (GPU-reach wait 9.13 + per-layer host 97.56 [plan 0.08 actq 0.28 jobs 72.75 CPU 24.30] + stage 0.01) + commit/emit 0.02 + draft 0.95; per layer-window: CPU experts 6.38 (9.91 entries), VRAM hits 16.76, PCIe 0.00
+strata serve: prompt 27 tokens = 20 reused + 7 read in 199 ms (35.1 tok/s), 8 generated in 326 ms (24.5 tok/s), drafts accepted 5 of 5, 1 checkpoints
+strata serve: decode expert cache hit rate: 62.8% (2413 hits / 3840 lookups)
+strata serve: expert tiers: GPU 2413 hits this request; since the start RAM 0 blobs, files 0 blobs 50255.0 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 6 tokens (windows) in 184.0 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=15 window=1 selection_position=26
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=5 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 27 4
+strata trace: CURSOR prompt=27 consumed=31 produced=5 pending=17 window=4 selection_position=30
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=5 accepting=0 terminal=0 work=29 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 31 4
+strata trace: CURSOR prompt=27 consumed=35 produced=9 pending=19 window=4 selection_position=34
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=9 accepting=0 terminal=0 work=53 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata decode timing: 3 windows, avg T 3.00, 3.00 tokens/window, 121.37 ms/window = verify 120.34 (GPU-reach wait 9.58 + per-layer host 109.71 [plan 0.10 actq 0.35 jobs 80.89 CPU 28.22] + stage 0.01) + commit/emit 0.02 + draft 0.95; per layer-window: CPU experts 6.92 (11.51 entries), VRAM hits 18.49, PCIe 0.00
+strata serve: prompt 27 tokens = 20 reused + 7 read in 198 ms (35.4 tok/s), 9 generated in 364 ms (24.7 tok/s), drafts accepted 6 of 6, 1 checkpoints
+strata serve: decode expert cache hit rate: 61.6% (2662 hits / 4320 lookups)
+strata serve: expert tiers: GPU 2662 hits this request; since the start RAM 0 blobs, files 0 blobs 53106.5 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 6 tokens (windows) in 183.9 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=15 window=1 selection_position=26
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=5 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 27 4
+strata trace: CURSOR prompt=27 consumed=31 produced=5 pending=17 window=4 selection_position=30
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=5 accepting=0 terminal=0 work=29 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 31 4
+strata trace: CURSOR prompt=27 consumed=35 produced=9 pending=19 window=4 selection_position=34
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=9 accepting=0 terminal=0 work=53 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 35 1
+strata trace: CURSOR prompt=27 consumed=36 produced=10 pending=220 window=1 selection_position=35
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=10 accepting=0 terminal=0 work=56 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata decode timing: 4 windows, avg T 2.50, 2.50 tokens/window, 112.38 ms/window = verify 111.23 (GPU-reach wait 8.93 + per-layer host 101.27 [plan 0.08 actq 0.27 jobs 76.42 CPU 24.37] + stage 0.01) + commit/emit 0.02 + draft 1.07; per layer-window: CPU experts 6.58 (10.02 entries), VRAM hits 14.98, PCIe 0.00
+strata serve: prompt 27 tokens = 20 reused + 7 read in 198 ms (35.4 tok/s), 10 generated in 450 ms (22.2 tok/s), drafts accepted 6 of 6, 1 checkpoints
+strata serve: decode expert cache hit rate: 59.9% (2876 hits / 4800 lookups)
+strata serve: expert tiers: GPU 2876 hits this request; since the start RAM 0 blobs, files 0 blobs 56503.3 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 6 tokens (windows) in 189.5 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=15 window=1 selection_position=26
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=5 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 27 4
+strata trace: CURSOR prompt=27 consumed=31 produced=5 pending=17 window=4 selection_position=30
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=5 accepting=0 terminal=0 work=29 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 31 4
+strata trace: CURSOR prompt=27 consumed=35 produced=9 pending=19 window=4 selection_position=34
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=9 accepting=0 terminal=0 work=53 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 35 2
+strata trace: CURSOR prompt=27 consumed=37 produced=11 pending=20 window=2 selection_position=36
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=2 kept=2 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=11 accepting=0 terminal=0 work=63 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata decode timing: 4 windows, avg T 2.75, 2.75 tokens/window, 125.15 ms/window = verify 123.99 (GPU-reach wait 9.23 + per-layer host 113.71 [plan 0.09 actq 0.31 jobs 85.86 CPU 27.31] + stage 0.01) + commit/emit 0.02 + draft 1.08; per layer-window: CPU experts 7.20 (11.25 entries), VRAM hits 16.25, PCIe 0.00
+strata serve: prompt 27 tokens = 20 reused + 7 read in 203 ms (34.4 tok/s), 11 generated in 501 ms (22.0 tok/s), drafts accepted 7 of 7, 1 checkpoints
+strata serve: decode expert cache hit rate: 59.1% (3120 hits / 5280 lookups)
+strata serve: expert tiers: GPU 3120 hits this request; since the start RAM 0 blobs, files 0 blobs 60141.6 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 6 tokens (windows) in 186.8 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=15 window=1 selection_position=26
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=5 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 27 4
+strata trace: CURSOR prompt=27 consumed=31 produced=5 pending=17 window=4 selection_position=30
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=5 accepting=0 terminal=0 work=29 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 31 4
+strata trace: CURSOR prompt=27 consumed=35 produced=9 pending=19 window=4 selection_position=34
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=9 accepting=0 terminal=0 work=53 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 35 3
+strata trace: CURSOR prompt=27 consumed=38 produced=12 pending=220 window=3 selection_position=37
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=3 kept=3 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=12 accepting=0 terminal=0 work=70 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata decode timing: 4 windows, avg T 3.00, 3.00 tokens/window, 134.52 ms/window = verify 133.35 (GPU-reach wait 9.54 + per-layer host 122.76 [plan 0.09 actq 0.34 jobs 92.19 CPU 29.96] + stage 0.01) + commit/emit 0.02 + draft 1.08; per layer-window: CPU experts 7.50 (12.71 entries), VRAM hits 17.29, PCIe 0.00
+strata serve: prompt 27 tokens = 20 reused + 7 read in 201 ms (34.9 tok/s), 12 generated in 538 ms (22.3 tok/s), drafts accepted 8 of 8, 1 checkpoints
+strata serve: decode expert cache hit rate: 57.6% (3319 hits / 5760 lookups)
+strata serve: expert tiers: GPU 3319 hits this request; since the start RAM 0 blobs, files 0 blobs 63902.5 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 6 tokens (windows) in 186.2 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=65 window=1 selection_position=26
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=5 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 27 1
+strata trace: CURSOR prompt=27 consumed=28 produced=2 pending=2917 window=1 selection_position=27
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=2 accepting=0 terminal=0 work=15 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 28 1
+strata trace: CURSOR prompt=27 consumed=29 produced=3 pending=25 window=1 selection_position=28
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=3 accepting=0 terminal=0 work=19 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 29 2
+strata trace: CURSOR prompt=27 consumed=31 produced=5 pending=66 window=2 selection_position=30
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=2 kept=2 blocked_draft=1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=5 accepting=0 terminal=0 work=30 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 31 1
+strata trace: CURSOR prompt=27 consumed=32 produced=6 pending=2492 window=1 selection_position=31
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=6 accepting=0 terminal=0 work=36 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 32 1
+strata trace: CURSOR prompt=27 consumed=33 produced=7 pending=933 window=1 selection_position=32
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=7 accepting=0 terminal=0 work=42 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 33 1
+strata trace: CURSOR prompt=27 consumed=34 produced=8 pending=220 window=1 selection_position=33
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=8 accepting=0 terminal=0 work=46 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 34 1
+strata trace: CURSOR prompt=27 consumed=35 produced=9 pending=172 window=1 selection_position=34
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=9 accepting=0 terminal=0 work=50 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 35 1
+strata trace: CURSOR prompt=27 consumed=36 produced=10 pending=253 window=1 selection_position=35
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=10 accepting=0 terminal=0 work=54 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 36 1
+strata trace: CURSOR prompt=27 consumed=37 produced=11 pending=238 window=1 selection_position=36
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=11 accepting=0 terminal=0 work=58 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 37 1
+strata trace: CURSOR prompt=27 consumed=38 produced=12 pending=230 window=1 selection_position=37
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=12 accepting=0 terminal=0 work=62 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 38 1
+strata trace: CURSOR prompt=27 consumed=39 produced=13 pending=26 window=1 selection_position=38
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=13 accepting=0 terminal=0 work=66 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 39 1
+strata trace: CURSOR prompt=27 consumed=40 produced=14 pending=220 window=1 selection_position=39
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=14 accepting=0 terminal=0 work=70 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 40 1
+strata trace: CURSOR prompt=27 consumed=41 produced=15 pending=400 window=1 selection_position=40
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=15 accepting=1 terminal=0 work=79 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 41 1
+strata trace: CURSOR prompt=27 consumed=42 produced=16 pending=248046 window=1 selection_position=41
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=16 accepting=1 terminal=1 work=80 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata decode timing: 15 windows, avg T 1.07, 1.07 tokens/window, 82.09 ms/window = verify 80.69 (GPU-reach wait 7.39 + per-layer host 70.38 [plan 0.04 actq 0.13 jobs 61.24 CPU 8.87] + stage 1.93) + commit/emit 0.02 + draft 1.33; per layer-window: CPU experts 2.27 (2.32 entries), VRAM hits 8.35, PCIe 0.00
+strata serve: prompt 27 tokens = 20 reused + 7 read in 200 ms (35.0 tok/s), 16 generated in 1231 ms (13.0 tok/s), drafts accepted 1 of 1, 1 checkpoints
+strata serve: decode expert cache hit rate: 78.3% (6011 hits / 7680 lookups)
+strata serve: expert tiers: GPU 6011 hits this request; since the start RAM 0 blobs, files 0 blobs 66386.4 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 6 tokens (windows) in 208.4 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=7038 window=1 selection_position=26
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=13 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 27 1
+strata trace: CURSOR prompt=27 consumed=28 produced=2 pending=25 window=1 selection_position=27
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=2 accepting=0 terminal=0 work=17 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 28 2
+strata trace: CURSOR prompt=27 consumed=30 produced=4 pending=66 window=2 selection_position=29
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=2 kept=2 blocked_draft=1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=4 accepting=0 terminal=0 work=28 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 30 1
+strata trace: CURSOR prompt=27 consumed=31 produced=5 pending=2492 window=1 selection_position=30
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=5 accepting=0 terminal=0 work=34 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 31 1
+strata trace: CURSOR prompt=27 consumed=32 produced=6 pending=933 window=1 selection_position=31
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=6 accepting=0 terminal=0 work=40 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 32 1
+strata trace: CURSOR prompt=27 consumed=33 produced=7 pending=220 window=1 selection_position=32
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=7 accepting=0 terminal=0 work=44 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 33 1
+strata trace: CURSOR prompt=27 consumed=34 produced=8 pending=172 window=1 selection_position=33
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=8 accepting=0 terminal=0 work=48 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 34 1
+strata trace: CURSOR prompt=27 consumed=35 produced=9 pending=253 window=1 selection_position=34
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=9 accepting=0 terminal=0 work=52 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 35 1
+strata trace: CURSOR prompt=27 consumed=36 produced=10 pending=238 window=1 selection_position=35
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=10 accepting=0 terminal=0 work=56 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 36 1
+strata trace: CURSOR prompt=27 consumed=37 produced=11 pending=230 window=1 selection_position=36
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=11 accepting=0 terminal=0 work=60 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 37 1
+strata trace: CURSOR prompt=27 consumed=38 produced=12 pending=26 window=1 selection_position=37
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=12 accepting=0 terminal=0 work=64 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 38 1
+strata trace: CURSOR prompt=27 consumed=39 produced=13 pending=809 window=1 selection_position=38
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=13 accepting=1 terminal=0 work=75 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 39 1
+strata trace: CURSOR prompt=27 consumed=40 produced=14 pending=248046 window=1 selection_position=39
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=14 accepting=1 terminal=1 work=76 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata decode timing: 13 windows, avg T 1.08, 1.08 tokens/window, 41.41 ms/window = verify 40.04 (GPU-reach wait 7.42 + per-layer host 31.08 [plan 0.04 actq 0.12 jobs 21.90 CPU 8.92] + stage 0.44) + commit/emit 0.02 + draft 1.29; per layer-window: CPU experts 2.30 (2.37 entries), VRAM hits 8.40, PCIe 0.00
+strata serve: prompt 27 tokens = 20 reused + 7 read in 222 ms (31.6 tok/s), 14 generated in 538 ms (26.0 tok/s), drafts accepted 1 of 1, 1 checkpoints
+strata serve: decode expert cache hit rate: 78.0% (5239 hits / 6720 lookups)
+strata serve: expert tiers: GPU 5239 hits this request; since the start RAM 0 blobs, files 0 blobs 68706.2 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 6 tokens (windows) in 178.9 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=65 window=1 selection_position=26
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=5 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata decode timing: 1 windows, avg T 1.00, 1.00 tokens/window, 26.79 ms/window = verify 26.73 (GPU-reach wait 7.27 + per-layer host 18.47 [plan 0.03 actq 0.11 jobs 9.03 CPU 9.19] + stage 0.01) + commit/emit 0.02 + draft 0.00; per layer-window: CPU experts 2.19 (2.19 entries), VRAM hits 7.81, PCIe 0.00
+strata serve: prompt 27 tokens = 20 reused + 7 read in 192 ms (36.4 tok/s), 1 generated in 27 ms (37.3 tok/s), drafts accepted 0 of 0, 1 checkpoints
+strata serve: decode expert cache hit rate: 78.1% (375 hits / 480 lookups)
+strata serve: expert tiers: GPU 375 hits this request; since the start RAM 0 blobs, files 0 blobs 69710.0 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 6 tokens (windows) in 165.4 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=65 window=1 selection_position=26
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=5 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 27 1
+strata trace: CURSOR prompt=27 consumed=28 produced=2 pending=2917 window=1 selection_position=27
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=2 accepting=0 terminal=0 work=14 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata decode timing: 2 windows, avg T 1.00, 1.00 tokens/window, 29.79 ms/window = verify 29.02 (GPU-reach wait 7.23 + per-layer host 20.80 [plan 0.03 actq 0.11 jobs 11.99 CPU 8.57] + stage 0.01) + commit/emit 0.02 + draft 0.70; per layer-window: CPU experts 2.16 (2.16 entries), VRAM hits 7.84, PCIe 0.00
+strata serve: prompt 27 tokens = 20 reused + 7 read in 179 ms (39.2 tok/s), 2 generated in 60 ms (33.6 tok/s), drafts accepted 0 of 0, 1 checkpoints
+strata serve: decode expert cache hit rate: 78.4% (753 hits / 960 lookups)
+strata serve: expert tiers: GPU 753 hits this request; since the start RAM 0 blobs, files 0 blobs 70754.7 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 6 tokens (windows) in 170.2 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=65 window=1 selection_position=26
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=5 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 27 1
+strata trace: CURSOR prompt=27 consumed=28 produced=2 pending=2917 window=1 selection_position=27
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=2 accepting=0 terminal=0 work=15 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 28 1
+strata trace: CURSOR prompt=27 consumed=29 produced=3 pending=25 window=1 selection_position=28
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=3 accepting=0 terminal=0 work=18 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata decode timing: 3 windows, avg T 1.00, 1.00 tokens/window, 28.00 ms/window = verify 27.00 (GPU-reach wait 7.24 + per-layer host 18.77 [plan 0.04 actq 0.14 jobs 10.65 CPU 7.83] + stage 0.01) + commit/emit 0.02 + draft 0.93; per layer-window: CPU experts 1.97 (1.97 entries), VRAM hits 8.03, PCIe 0.00
+strata serve: prompt 27 tokens = 20 reused + 7 read in 183 ms (38.2 tok/s), 3 generated in 84 ms (35.7 tok/s), drafts accepted 0 of 0, 1 checkpoints
+strata serve: decode expert cache hit rate: 80.3% (1157 hits / 1440 lookups)
+strata serve: expert tiers: GPU 1157 hits this request; since the start RAM 0 blobs, files 0 blobs 71898.3 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 6 tokens (windows) in 176.2 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=65 window=1 selection_position=26
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=5 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 27 1
+strata trace: CURSOR prompt=27 consumed=28 produced=2 pending=2917 window=1 selection_position=27
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=2 accepting=0 terminal=0 work=15 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 28 1
+strata trace: CURSOR prompt=27 consumed=29 produced=3 pending=25 window=1 selection_position=28
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=3 accepting=0 terminal=0 work=19 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 29 1
+strata trace: CURSOR prompt=27 consumed=30 produced=4 pending=220 window=1 selection_position=29
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=4 accepting=0 terminal=0 work=22 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata decode timing: 4 windows, avg T 1.00, 1.00 tokens/window, 27.86 ms/window = verify 26.74 (GPU-reach wait 7.28 + per-layer host 18.47 [plan 0.04 actq 0.15 jobs 10.65 CPU 7.52] + stage 0.01) + commit/emit 0.02 + draft 1.05; per layer-window: CPU experts 1.89 (1.89 entries), VRAM hits 8.11, PCIe 0.00
+strata serve: prompt 27 tokens = 20 reused + 7 read in 189 ms (37.0 tok/s), 4 generated in 111 ms (35.9 tok/s), drafts accepted 0 of 0, 1 checkpoints
+strata serve: decode expert cache hit rate: 81.1% (1557 hits / 1920 lookups)
+strata serve: expert tiers: GPU 1557 hits this request; since the start RAM 0 blobs, files 0 blobs 73134.6 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 6 tokens (windows) in 179.3 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=65 window=1 selection_position=26
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=5 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 27 1
+strata trace: CURSOR prompt=27 consumed=28 produced=2 pending=2917 window=1 selection_position=27
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=2 accepting=0 terminal=0 work=15 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 28 1
+strata trace: CURSOR prompt=27 consumed=29 produced=3 pending=25 window=1 selection_position=28
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=3 accepting=0 terminal=0 work=19 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 29 2
+strata trace: CURSOR prompt=27 consumed=31 produced=5 pending=66 window=2 selection_position=30
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=2 kept=2 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=5 accepting=0 terminal=0 work=29 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata decode timing: 4 windows, avg T 1.25, 1.25 tokens/window, 31.58 ms/window = verify 30.46 (GPU-reach wait 7.50 + per-layer host 21.96 [plan 0.05 actq 0.21 jobs 12.72 CPU 8.87] + stage 0.01) + commit/emit 0.02 + draft 1.04; per layer-window: CPU experts 2.25 (2.43 entries), VRAM hits 10.07, PCIe 0.00
+strata serve: prompt 27 tokens = 20 reused + 7 read in 192 ms (36.4 tok/s), 5 generated in 126 ms (39.6 tok/s), drafts accepted 1 of 1, 1 checkpoints
+strata serve: decode expert cache hit rate: 80.5% (1933 hits / 2400 lookups)
+strata serve: expert tiers: GPU 1933 hits this request; since the start RAM 0 blobs, files 0 blobs 74467.1 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 6 tokens (windows) in 176.7 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=65 window=1 selection_position=26
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=5 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 27 1
+strata trace: CURSOR prompt=27 consumed=28 produced=2 pending=2917 window=1 selection_position=27
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=2 accepting=0 terminal=0 work=15 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 28 1
+strata trace: CURSOR prompt=27 consumed=29 produced=3 pending=25 window=1 selection_position=28
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=3 accepting=0 terminal=0 work=19 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 29 2
+strata trace: CURSOR prompt=27 consumed=31 produced=5 pending=66 window=2 selection_position=30
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=2 kept=2 blocked_draft=1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=5 accepting=0 terminal=0 work=30 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 31 1
+strata trace: CURSOR prompt=27 consumed=32 produced=6 pending=2492 window=1 selection_position=31
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=6 accepting=0 terminal=0 work=35 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata decode timing: 5 windows, avg T 1.20, 1.20 tokens/window, 29.32 ms/window = verify 28.14 (GPU-reach wait 7.53 + per-layer host 19.61 [plan 0.05 actq 0.20 jobs 10.82 CPU 8.44] + stage 0.01) + commit/emit 0.02 + draft 1.12; per layer-window: CPU experts 2.08 (2.23 entries), VRAM hits 9.77, PCIe 0.00
+strata serve: prompt 27 tokens = 20 reused + 7 read in 190 ms (36.8 tok/s), 6 generated in 147 ms (40.9 tok/s), drafts accepted 1 of 1, 1 checkpoints
+strata serve: decode expert cache hit rate: 81.4% (2345 hits / 2880 lookups)
+strata serve: expert tiers: GPU 2345 hits this request; since the start RAM 0 blobs, files 0 blobs 75826.0 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 6 tokens (windows) in 179.7 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=65 window=1 selection_position=26
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=5 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 27 1
+strata trace: CURSOR prompt=27 consumed=28 produced=2 pending=2917 window=1 selection_position=27
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=2 accepting=0 terminal=0 work=15 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 28 1
+strata trace: CURSOR prompt=27 consumed=29 produced=3 pending=25 window=1 selection_position=28
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=3 accepting=0 terminal=0 work=19 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 29 2
+strata trace: CURSOR prompt=27 consumed=31 produced=5 pending=66 window=2 selection_position=30
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=2 kept=2 blocked_draft=1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=5 accepting=0 terminal=0 work=30 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 31 1
+strata trace: CURSOR prompt=27 consumed=32 produced=6 pending=2492 window=1 selection_position=31
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=6 accepting=0 terminal=0 work=36 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 32 1
+strata trace: CURSOR prompt=27 consumed=33 produced=7 pending=933 window=1 selection_position=32
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=7 accepting=0 terminal=0 work=41 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata decode timing: 6 windows, avg T 1.17, 1.17 tokens/window, 29.18 ms/window = verify 27.95 (GPU-reach wait 7.52 + per-layer host 19.43 [plan 0.05 actq 0.19 jobs 10.96 CPU 8.12] + stage 0.01) + commit/emit 0.02 + draft 1.17; per layer-window: CPU experts 2.05 (2.17 entries), VRAM hits 9.49, PCIe 0.00
+strata serve: prompt 27 tokens = 20 reused + 7 read in 192 ms (36.4 tok/s), 7 generated in 175 ms (40.0 tok/s), drafts accepted 1 of 1, 1 checkpoints
+strata serve: decode expert cache hit rate: 81.4% (2734 hits / 3360 lookups)
+strata serve: expert tiers: GPU 2734 hits this request; since the start RAM 0 blobs, files 0 blobs 77315.8 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 6 tokens (windows) in 181.2 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=65 window=1 selection_position=26
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=5 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 27 1
+strata trace: CURSOR prompt=27 consumed=28 produced=2 pending=2917 window=1 selection_position=27
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=2 accepting=0 terminal=0 work=15 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 28 1
+strata trace: CURSOR prompt=27 consumed=29 produced=3 pending=25 window=1 selection_position=28
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=3 accepting=0 terminal=0 work=19 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 29 2
+strata trace: CURSOR prompt=27 consumed=31 produced=5 pending=66 window=2 selection_position=30
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=2 kept=2 blocked_draft=1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=5 accepting=0 terminal=0 work=30 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 31 1
+strata trace: CURSOR prompt=27 consumed=32 produced=6 pending=2492 window=1 selection_position=31
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=6 accepting=0 terminal=0 work=36 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 32 1
+strata trace: CURSOR prompt=27 consumed=33 produced=7 pending=933 window=1 selection_position=32
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=7 accepting=0 terminal=0 work=42 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 33 1
+strata trace: CURSOR prompt=27 consumed=34 produced=8 pending=220 window=1 selection_position=33
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=8 accepting=0 terminal=0 work=45 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata decode timing: 7 windows, avg T 1.14, 1.14 tokens/window, 30.34 ms/window = verify 29.06 (GPU-reach wait 7.48 + per-layer host 20.59 [plan 0.05 actq 0.18 jobs 11.77 CPU 8.48] + stage 0.01) + commit/emit 0.02 + draft 1.20; per layer-window: CPU experts 2.15 (2.25 entries), VRAM hits 9.18, PCIe 0.00
+strata serve: prompt 27 tokens = 20 reused + 7 read in 194 ms (36.0 tok/s), 8 generated in 212 ms (37.7 tok/s), drafts accepted 1 of 1, 1 checkpoints
+strata serve: decode expert cache hit rate: 80.3% (3083 hits / 3840 lookups)
+strata serve: expert tiers: GPU 3083 hits this request; since the start RAM 0 blobs, files 0 blobs 78963.3 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 6 tokens (windows) in 182.2 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=65 window=1 selection_position=26
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=5 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 27 1
+strata trace: CURSOR prompt=27 consumed=28 produced=2 pending=2917 window=1 selection_position=27
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=2 accepting=0 terminal=0 work=15 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 28 1
+strata trace: CURSOR prompt=27 consumed=29 produced=3 pending=25 window=1 selection_position=28
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=3 accepting=0 terminal=0 work=19 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 29 2
+strata trace: CURSOR prompt=27 consumed=31 produced=5 pending=66 window=2 selection_position=30
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=2 kept=2 blocked_draft=1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=5 accepting=0 terminal=0 work=30 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 31 1
+strata trace: CURSOR prompt=27 consumed=32 produced=6 pending=2492 window=1 selection_position=31
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=6 accepting=0 terminal=0 work=36 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 32 1
+strata trace: CURSOR prompt=27 consumed=33 produced=7 pending=933 window=1 selection_position=32
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=7 accepting=0 terminal=0 work=42 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 33 1
+strata trace: CURSOR prompt=27 consumed=34 produced=8 pending=220 window=1 selection_position=33
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=8 accepting=0 terminal=0 work=46 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata trace: window 34 1
+strata trace: CURSOR prompt=27 consumed=35 produced=9 pending=172 window=1 selection_position=34
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=9 accepting=0 terminal=0 work=49 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3391bcf2b5ceb4ea
+strata decode timing: 8 windows, avg T 1.12, 1.12 tokens/window, 30.19 ms/window = verify 28.89 (GPU-reach wait 7.45 + per-layer host 20.45 [plan 0.05 actq 0.18 jobs 11.71 CPU 8.40] + stage 0.01) + commit/emit 0.02 + draft 1.22; per layer-window: CPU experts 2.13 (2.22 entries), VRAM hits 9.03, PCIe 0.00
+strata serve: prompt 27 tokens = 20 reused + 7 read in 196 ms (35.8 tok/s), 9 generated in 242 ms (37.3 tok/s), drafts accepted 1 of 1, 1 checkpoints
+strata serve: decode expert cache hit rate: 80.3% (3468 hits / 4320 lookups)
+strata serve: expert tiers: GPU 3468 hits this request; since the start RAM 0 blobs, files 0 blobs 80716.2 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 6 tokens (windows) in 179.5 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=248046 window=1 selection_position=26
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=1 terminal=1 work=2 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:432483514f7cc236
+strata decode timing: 1 windows, avg T 1.00, 1.00 tokens/window, 26.88 ms/window = verify 26.82 (GPU-reach wait 7.27 + per-layer host 18.55 [plan 0.04 actq 0.15 jobs 8.98 CPU 9.26] + stage 0.01) + commit/emit 0.02 + draft 0.00; per layer-window: CPU experts 2.19 (2.19 entries), VRAM hits 7.81, PCIe 0.00
+strata serve: prompt 27 tokens = 20 reused + 7 read in 192 ms (36.4 tok/s), 1 generated in 27 ms (37.2 tok/s), drafts accepted 0 of 0, 1 checkpoints
+strata serve: decode expert cache hit rate: 78.1% (375 hits / 480 lookups)
+strata serve: expert tiers: GPU 375 hits this request; since the start RAM 0 blobs, files 0 blobs 81703.0 MB read (the GGUF in place)
+strata trace: request 16 0
+strata trace: prompt start 15 -1
+strata trace: read 9 tokens (windows) in 640.6 ms
+strata trace: read 6 tokens (windows) in 238.3 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 15 1
+strata trace: CURSOR prompt=16 consumed=16 produced=1 pending=1148 window=1 selection_position=15
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=13 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:8b8f9da14c8a3837
+strata trace: window 16 2
+strata trace: CURSOR prompt=16 consumed=18 produced=3 pending=8 window=2 selection_position=17
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=2 kept=2 blocked_draft=1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=3 accepting=0 terminal=0 work=33 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:8b8f9da14c8a3837
+strata trace: window 18 1
+strata trace: CURSOR prompt=16 consumed=19 produced=4 pending=8 window=1 selection_position=18
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=4 accepting=1 terminal=0 work=38 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:8b8f9da14c8a3837
+strata trace: window 19 1
+strata trace: CURSOR prompt=16 consumed=20 produced=5 pending=248046 window=1 selection_position=19
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=-1 end_draft=1 fallback=0
+strata trace: GRAMMAR tokens=5 accepting=1 terminal=1 work=39 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:8b8f9da14c8a3837
+strata decode timing: 4 windows, avg T 1.25, 1.25 tokens/window, 88.78 ms/window = verify 87.66 (GPU-reach wait 7.42 + per-layer host 76.88 [plan 0.04 actq 0.14 jobs 64.73 CPU 11.85] + stage 2.34) + commit/emit 0.02 + draft 1.04; per layer-window: CPU experts 3.18 (3.42 entries), VRAM hits 9.08, PCIe 0.00
+strata serve: prompt 16 tokens = 0 reused + 16 read in 935 ms (17.1 tok/s), 5 generated in 355 ms (14.1 tok/s), drafts accepted 1 of 1, 1 checkpoints
+strata serve: decode expert cache hit rate: 72.6% (1743 hits / 2400 lookups)
+strata serve: expert tiers: GPU 1743 hits this request; since the start RAM 0 blobs, files 0 blobs 84724.1 MB read (the GGUF in place)
+strata trace: request 29 0
+strata trace: prompt start 28 -1
+strata trace: read 22 tokens (windows) in 619.5 ms
+strata trace: read 6 tokens (windows) in 183.9 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 28 1
+strata trace: CURSOR prompt=29 consumed=29 produced=1 pending=6918 window=1 selection_position=28
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=13 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:06984bb2ef85493e
+strata trace: window 29 4
+strata trace: CURSOR prompt=29 consumed=33 produced=5 pending=8029 window=4 selection_position=32
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=5 accepting=0 terminal=0 work=103 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:06984bb2ef85493e
+strata trace: window 33 4
+strata trace: CURSOR prompt=29 consumed=37 produced=9 pending=8029 window=4 selection_position=36
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=9 accepting=0 terminal=0 work=193 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:06984bb2ef85493e
+strata trace: window 37 4
+strata trace: CURSOR prompt=29 consumed=41 produced=13 pending=8029 window=4 selection_position=40
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=13 accepting=0 terminal=0 work=283 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:06984bb2ef85493e
+strata trace: window 41 4
+strata trace: CURSOR prompt=29 consumed=45 produced=17 pending=8029 window=4 selection_position=44
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=17 accepting=0 terminal=0 work=373 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:06984bb2ef85493e
+strata trace: window 45 4
+strata trace: CURSOR prompt=29 consumed=49 produced=21 pending=8029 window=4 selection_position=48
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=21 accepting=0 terminal=0 work=463 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:06984bb2ef85493e
+strata trace: window 49 4
+strata trace: CURSOR prompt=29 consumed=53 produced=25 pending=8029 window=4 selection_position=52
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=25 accepting=0 terminal=0 work=553 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:06984bb2ef85493e
+strata trace: window 53 4
+strata trace: CURSOR prompt=29 consumed=57 produced=29 pending=8029 window=4 selection_position=56
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=29 accepting=0 terminal=0 work=643 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:06984bb2ef85493e
+strata trace: window 57 4
+strata trace: CURSOR prompt=29 consumed=61 produced=33 pending=220 window=4 selection_position=60
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=33 accepting=1 terminal=0 work=724 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:06984bb2ef85493e
+strata trace: window 61 1
+strata trace: CURSOR prompt=29 consumed=62 produced=34 pending=248046 window=1 selection_position=61
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=34 accepting=1 terminal=1 work=725 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:06984bb2ef85493e
+strata decode timing: 10 windows, avg T 3.40, 3.40 tokens/window, 187.24 ms/window = verify 185.83 (GPU-reach wait 10.13 + per-layer host 174.16 [plan 0.12 actq 0.84 jobs 140.37 CPU 32.64] + stage 0.49) + commit/emit 0.02 + draft 1.32; per layer-window: CPU experts 8.38 (15.53 entries), VRAM hits 18.47, PCIe 0.00
+strata serve: prompt 29 tokens = 0 reused + 29 read in 860 ms (33.7 tok/s), 34 generated in 1872 ms (18.2 tok/s), drafts accepted 24 of 24, 1 checkpoints
+strata serve: decode expert cache hit rate: 54.3% (8866 hits / 16320 lookups)
+strata serve: expert tiers: GPU 8866 hits this request; since the start RAM 0 blobs, files 0 blobs 95278.6 MB read (the GGUF in place)
+strata trace: request 29 0
+strata trace: prompt start 28 -1
+strata trace: read 6 tokens (windows) in 204.1 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 28 1
+strata trace: CURSOR prompt=29 consumed=29 produced=1 pending=6918 window=1 selection_position=28
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=13 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:06984bb2ef85493e
+strata trace: window 29 4
+strata trace: CURSOR prompt=29 consumed=33 produced=5 pending=8029 window=4 selection_position=32
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=5 accepting=0 terminal=0 work=103 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:06984bb2ef85493e
+strata trace: window 33 4
+strata trace: CURSOR prompt=29 consumed=37 produced=9 pending=8029 window=4 selection_position=36
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=9 accepting=0 terminal=0 work=193 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:06984bb2ef85493e
+strata trace: window 37 4
+strata trace: CURSOR prompt=29 consumed=41 produced=13 pending=8029 window=4 selection_position=40
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=13 accepting=0 terminal=0 work=283 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:06984bb2ef85493e
+strata trace: window 41 4
+strata trace: CURSOR prompt=29 consumed=45 produced=17 pending=8029 window=4 selection_position=44
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=17 accepting=0 terminal=0 work=373 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:06984bb2ef85493e
+strata trace: window 45 4
+strata trace: CURSOR prompt=29 consumed=49 produced=21 pending=8029 window=4 selection_position=48
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=21 accepting=0 terminal=0 work=463 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:06984bb2ef85493e
+strata trace: window 49 4
+strata trace: CURSOR prompt=29 consumed=53 produced=25 pending=8029 window=4 selection_position=52
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=25 accepting=0 terminal=0 work=553 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:06984bb2ef85493e
+strata trace: window 53 4
+strata trace: CURSOR prompt=29 consumed=57 produced=29 pending=8029 window=4 selection_position=56
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=29 accepting=0 terminal=0 work=643 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:06984bb2ef85493e
+strata trace: window 57 4
+strata trace: CURSOR prompt=29 consumed=61 produced=33 pending=220 window=4 selection_position=60
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=33 accepting=1 terminal=0 work=724 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:06984bb2ef85493e
+strata trace: window 61 1
+strata trace: CURSOR prompt=29 consumed=62 produced=34 pending=248046 window=1 selection_position=61
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=34 accepting=1 terminal=1 work=725 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:06984bb2ef85493e
+strata decode timing: 10 windows, avg T 3.40, 3.40 tokens/window, 157.71 ms/window = verify 156.30 (GPU-reach wait 10.12 + per-layer host 145.12 [plan 0.12 actq 0.83 jobs 109.77 CPU 34.22] + stage 0.01) + commit/emit 0.02 + draft 1.32; per layer-window: CPU experts 8.38 (15.53 entries), VRAM hits 18.47, PCIe 0.00
+strata serve: prompt 29 tokens = 22 reused + 7 read in 218 ms (32.2 tok/s), 34 generated in 1577 ms (21.6 tok/s), drafts accepted 24 of 24, 1 checkpoints
+strata serve: decode expert cache hit rate: 54.3% (8866 hits / 16320 lookups)
+strata serve: expert tiers: GPU 8866 hits this request; since the start RAM 0 blobs, files 0 blobs 103985.4 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 20 tokens (windows) in 548.0 ms
+strata trace: read 6 tokens (windows) in 195.1 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=64 window=1 selection_position=26
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=5 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:b5c5a3b6cf24ad74
+strata decode timing: 1 windows, avg T 1.00, 1.00 tokens/window, 28.60 ms/window = verify 27.14 (GPU-reach wait 7.26 + per-layer host 18.88 [plan 0.04 actq 0.15 jobs 9.38 CPU 9.20] + stage 0.01) + commit/emit 0.02 + draft 1.39; per layer-window: CPU experts 2.19 (2.19 entries), VRAM hits 7.81, PCIe 0.00
+strata serve: prompt 27 tokens = 0 reused + 27 read in 800 ms (33.7 tok/s), 1 generated in 29 ms (35.0 tok/s), drafts accepted 0 of 0, 1 checkpoints
+strata serve: decode expert cache hit rate: 78.1% (375 hits / 480 lookups)
+strata serve: expert tiers: GPU 375 hits this request; since the start RAM 0 blobs, files 0 blobs 107110.5 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 6 tokens (windows) in 170.0 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=3793 window=1 selection_position=26
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=1 terminal=0 work=8 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:55bf3779490a3250
+strata trace: window 27 1
+strata trace: CURSOR prompt=27 consumed=28 produced=2 pending=248046 window=1 selection_position=27
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=2 accepting=1 terminal=1 work=9 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:55bf3779490a3250
+strata decode timing: 2 windows, avg T 1.00, 1.00 tokens/window, 35.58 ms/window = verify 34.80 (GPU-reach wait 7.36 + per-layer host 25.62 [plan 0.04 actq 0.15 jobs 17.50 CPU 7.83] + stage 0.83) + commit/emit 0.02 + draft 0.70; per layer-window: CPU experts 1.96 (1.96 entries), VRAM hits 8.04, PCIe 0.00
+strata serve: prompt 27 tokens = 20 reused + 7 read in 183 ms (38.2 tok/s), 2 generated in 71 ms (28.1 tok/s), drafts accepted 0 of 0, 1 checkpoints
+strata serve: decode expert cache hit rate: 80.4% (772 hits / 960 lookups)
+strata serve: expert tiers: GPU 772 hits this request; since the start RAM 0 blobs, files 0 blobs 108121.8 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 6 tokens (windows) in 175.5 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=64 window=1 selection_position=26
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=5 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:b5c5a3b6cf24ad74
+strata trace: window 27 1
+strata trace: CURSOR prompt=27 consumed=28 produced=2 pending=13153 window=1 selection_position=27
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=2 accepting=0 terminal=0 work=11 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:b5c5a3b6cf24ad74
+strata trace: window 28 1
+strata trace: CURSOR prompt=27 consumed=29 produced=3 pending=4084 window=1 selection_position=28
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=3 accepting=0 terminal=0 work=17 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:b5c5a3b6cf24ad74
+strata trace: window 29 2
+strata trace: CURSOR prompt=27 consumed=30 produced=4 pending=13053 window=2 selection_position=29
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=2 kept=1 blocked_draft=1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=4 accepting=0 terminal=0 work=33 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:b5c5a3b6cf24ad74
+strata decode timing: 4 windows, avg T 1.25, 1.00 tokens/window, 43.75 ms/window = verify 42.28 (GPU-reach wait 7.52 + per-layer host 33.00 [plan 0.05 actq 0.21 jobs 23.43 CPU 9.19] + stage 0.77) + commit/emit 0.02 + draft 1.39; per layer-window: CPU experts 2.42 (2.62 entries), VRAM hits 9.88, PCIe 0.00
+strata serve: prompt 27 tokens = 20 reused + 7 read in 189 ms (37.1 tok/s), 4 generated in 175 ms (22.9 tok/s), drafts accepted 0 of 1, 1 checkpoints
+strata serve: decode expert cache hit rate: 79.0% (1897 hits / 2400 lookups)
+strata serve: expert tiers: GPU 1897 hits this request; since the start RAM 0 blobs, files 0 blobs 109497.8 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 6 tokens (windows) in 179.3 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=3793 window=1 selection_position=26
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=1 terminal=0 work=8 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:55bf3779490a3250
+strata trace: window 27 1
+strata trace: CURSOR prompt=27 consumed=28 produced=2 pending=248046 window=1 selection_position=27
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=2 accepting=1 terminal=1 work=9 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:55bf3779490a3250
+strata decode timing: 2 windows, avg T 1.00, 1.00 tokens/window, 26.72 ms/window = verify 25.95 (GPU-reach wait 7.34 + per-layer host 17.61 [plan 0.04 actq 0.15 jobs 9.64 CPU 7.68] + stage 0.01) + commit/emit 0.02 + draft 0.70; per layer-window: CPU experts 1.96 (1.96 entries), VRAM hits 8.04, PCIe 0.00
+strata serve: prompt 27 tokens = 20 reused + 7 read in 193 ms (36.3 tok/s), 2 generated in 53 ms (37.4 tok/s), drafts accepted 0 of 0, 1 checkpoints
+strata serve: decode expert cache hit rate: 80.4% (772 hits / 960 lookups)
+strata serve: expert tiers: GPU 772 hits this request; since the start RAM 0 blobs, files 0 blobs 110574.8 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 6 tokens (windows) in 175.1 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=15 window=1 selection_position=26
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=5 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata trace: window 27 4
+strata trace: CURSOR prompt=27 consumed=31 produced=5 pending=17 window=4 selection_position=30
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=5 accepting=0 terminal=0 work=29 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:968d21ea0c4e6693
+strata decode timing: 2 windows, avg T 2.50, 2.50 tokens/window, 91.42 ms/window = verify 90.64 (GPU-reach wait 8.98 + per-layer host 80.62 [plan 0.10 actq 0.60 jobs 59.53 CPU 20.24] + stage 0.01) + commit/emit 0.02 + draft 0.70; per layer-window: CPU experts 5.28 (7.80 entries), VRAM hits 17.20, PCIe 0.00
+strata serve: prompt 27 tokens = 20 reused + 7 read in 188 ms (37.1 tok/s), 5 generated in 183 ms (27.3 tok/s), drafts accepted 3 of 3, 1 checkpoints
+strata serve: decode expert cache hit rate: 68.8% (1651 hits / 2400 lookups)
+strata serve: expert tiers: GPU 1651 hits this request; since the start RAM 0 blobs, files 0 blobs 112316.0 MB read (the GGUF in place)
+strata trace: request 37 0
+strata trace: prompt start 36 -1
+strata trace: read 5 tokens (windows) in 211.8 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 36 1
+strata trace: CURSOR prompt=37 consumed=37 produced=1 pending=3793 window=1 selection_position=36
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0
+strata trace: GRAMMAR tokens=1 accepting=1 terminal=0 work=8 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:55bf3779490a3250
+strata trace: window 37 1
+strata trace: CURSOR prompt=37 consumed=38 produced=2 pending=248046 window=1 selection_position=37
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=-1 end_draft=1 fallback=0
+strata trace: GRAMMAR tokens=2 accepting=1 terminal=1 work=9 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:55bf3779490a3250
+strata decode timing: 2 windows, avg T 1.00, 1.00 tokens/window, 31.80 ms/window = verify 31.03 (GPU-reach wait 7.45 + per-layer host 22.00 [plan 0.04 actq 0.15 jobs 14.92 CPU 6.78] + stage 0.53) + commit/emit 0.02 + draft 0.70; per layer-window: CPU experts 1.65 (1.65 entries), VRAM hits 8.35, PCIe 0.00
+strata serve: prompt 37 tokens = 31 reused + 6 read in 212 ms (28.3 tok/s), 2 generated in 64 ms (31.4 tok/s), drafts accepted 0 of 0, 1 checkpoints
+strata serve: decode expert cache hit rate: 83.5% (802 hits / 960 lookups)
+strata serve: expert tiers: GPU 802 hits this request; since the start RAM 0 blobs, files 0 blobs 113336.1 MB read (the GGUF in place)
+strata trace: request 27 0
+strata trace: prompt start 26 -1
+strata trace: read 6 tokens (windows) in 181.2 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 26 1
+strata trace: CURSOR prompt=27 consumed=27 produced=1 pending=15 window=1 selection_position=26
+strata trace: window 27 4
+strata trace: CURSOR prompt=27 consumed=31 produced=5 pending=17 window=4 selection_position=30
+strata trace: window 31 4
+strata trace: CURSOR prompt=27 consumed=35 produced=9 pending=19 window=4 selection_position=34
+strata trace: window 35 4
+strata trace: CURSOR prompt=27 consumed=39 produced=13 pending=21 window=4 selection_position=38
+strata trace: window 39 4
+strata trace: CURSOR prompt=27 consumed=43 produced=17 pending=23 window=4 selection_position=42
+strata trace: window 43 4
+strata trace: CURSOR prompt=27 consumed=46 produced=20 pending=248046 window=4 selection_position=45
+strata decode timing: 6 windows, avg T 3.50, 3.33 tokens/window, 161.98 ms/window = verify 160.73 (GPU-reach wait 10.18 + per-layer host 149.81 [plan 0.13 actq 0.90 jobs 112.83 CPU 35.77] + stage 0.01) + commit/emit 0.03 + draft 1.20; per layer-window: CPU experts 8.84 (15.63 entries), VRAM hits 19.37, PCIe 0.00
+strata serve: prompt 27 tokens = 20 reused + 7 read in 194 ms (36.1 tok/s), 20 generated in 972 ms (20.6 tok/s), drafts accepted 14 of 15, 1 checkpoints
+strata serve: decode expert cache hit rate: 55.3% (5579 hits / 10080 lookups)
+strata serve: expert tiers: GPU 5579 hits this request; since the start RAM 0 blobs, files 0 blobs 119304.3 MB read (the GGUF in place)

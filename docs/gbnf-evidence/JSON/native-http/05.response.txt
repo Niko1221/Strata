@@ -1,0 +1,60 @@
+event: response.created
+data: {"type": "response.created", "sequence_number": 0, "response": {"id": "resp_57129852ee11499e980ec85e24a614e1", "object": "response", "created_at": 1791055516, "status": "queued", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "json_schema", "name": "lookup_result", "strict": true, "schema": {"type": "object", "properties": {"value": {"type": "integer"}}, "required": ["value"], "additionalProperties": false}}}, "tools": [{"type": "function", "name": "lookup", "description": "Read the hidden integer. Call before answering.", "parameters": {"type": "object", "properties": {}, "additionalProperties": false}, "strict": false}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+event: response.in_progress
+data: {"type": "response.in_progress", "sequence_number": 1, "response": {"id": "resp_57129852ee11499e980ec85e24a614e1", "object": "response", "created_at": 1791055516, "status": "in_progress", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "json_schema", "name": "lookup_result", "strict": true, "schema": {"type": "object", "properties": {"value": {"type": "integer"}}, "required": ["value"], "additionalProperties": false}}}, "tools": [{"type": "function", "name": "lookup", "description": "Read the hidden integer. Call before answering.", "parameters": {"type": "object", "properties": {}, "additionalProperties": false}, "strict": false}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"id": "rs_d36d9cbf84c94606ae37a64d6ae05929", "type": "reasoning", "status": "in_progress", "summary": [], "content": [{"type": "reasoning_text", "text": ""}]}}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 3, "item_id": "rs_d36d9cbf84c94606ae37a64d6ae05929", "output_index": 0, "content_index": 0, "delta": "We"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 4, "item_id": "rs_d36d9cbf84c94606ae37a64d6ae05929", "output_index": 0, "content_index": 0, "delta": " need"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 5, "item_id": "rs_d36d9cbf84c94606ae37a64d6ae05929", "output_index": 0, "content_index": 0, "delta": " to"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 6, "item_id": "rs_d36d9cbf84c94606ae37a64d6ae05929", "output_index": 0, "content_index": 0, "delta": " call"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 7, "item_id": "rs_d36d9cbf84c94606ae37a64d6ae05929", "output_index": 0, "content_index": 0, "delta": " lookup"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 8, "item_id": "rs_d36d9cbf84c94606ae37a64d6ae05929", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 9, "item_id": "rs_d36d9cbf84c94606ae37a64d6ae05929", "output_index": 0, "content_index": 0, "delta": "\n"}
+
+event: response.reasoning_text.done
+data: {"type": "response.reasoning_text.done", "sequence_number": 10, "item_id": "rs_d36d9cbf84c94606ae37a64d6ae05929", "output_index": 0, "content_index": 0, "text": "We need to call lookup.\n"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 11, "output_index": 0, "item": {"id": "rs_d36d9cbf84c94606ae37a64d6ae05929", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "We need to call lookup.\n"}], "encrypted_content": "strata-r1.gAAAAABqwVae1H3bI9s6mKnfH8Tv0x4FjMvcBZpEPlYctZzpVXAuV1E2S04e9lZsnq-BakFYZIk9My54xisYTnzXTK_gO3hGUTY0moxBYIQDbxVOcrK0AS2pslIKBGjuClQE4n0r8v0yCuyqULIolT3T4WoFmAT6gEfkb0i1_v_k7aOB_gUR1Qfz-7cl9XWqRKcJpc_WwUXaP8vDdavrHG-etV69CIQ7XPtwwbx_2icCjL9QoPyUtmdUb7BdLrfvDksKgdprzqxbRGAm44k0GMGogx8S4s33veVfh1IU2gktVWTp4x8Iz8nHsP2HjkeHfnqbLmLMuADjx4yea6WI_FWok-b69v_RkQ=="}}
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 12, "output_index": 1, "item": {"id": "fc_2bc6f4c27cd14438a3f5eb7ba739fbe9", "type": "function_call", "status": "in_progress", "call_id": "call_5417bd0d1a014fafafc64f07", "name": "lookup", "arguments": ""}}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 13, "item_id": "fc_2bc6f4c27cd14438a3f5eb7ba739fbe9", "output_index": 1, "delta": "{"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 14, "item_id": "fc_2bc6f4c27cd14438a3f5eb7ba739fbe9", "output_index": 1, "delta": "}"}
+
+event: response.function_call_arguments.done
+data: {"type": "response.function_call_arguments.done", "sequence_number": 15, "item_id": "fc_2bc6f4c27cd14438a3f5eb7ba739fbe9", "output_index": 1, "arguments": "{}"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 16, "output_index": 1, "item": {"id": "fc_2bc6f4c27cd14438a3f5eb7ba739fbe9", "type": "function_call", "status": "completed", "call_id": "call_5417bd0d1a014fafafc64f07", "name": "lookup", "arguments": "{}"}}
+
+event: response.completed
+data: {"type": "response.completed", "sequence_number": 17, "response": {"id": "resp_57129852ee11499e980ec85e24a614e1", "object": "response", "created_at": 1791055516, "status": "completed", "completed_at": 1791055518, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [{"id": "rs_d36d9cbf84c94606ae37a64d6ae05929", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "We need to call lookup.\n"}], "encrypted_content": "strata-r1.gAAAAABqwVae1H3bI9s6mKnfH8Tv0x4FjMvcBZpEPlYctZzpVXAuV1E2S04e9lZsnq-BakFYZIk9My54xisYTnzXTK_gO3hGUTY0moxBYIQDbxVOcrK0AS2pslIKBGjuClQE4n0r8v0yCuyqULIolT3T4WoFmAT6gEfkb0i1_v_k7aOB_gUR1Qfz-7cl9XWqRKcJpc_WwUXaP8vDdavrHG-etV69CIQ7XPtwwbx_2icCjL9QoPyUtmdUb7BdLrfvDksKgdprzqxbRGAm44k0GMGogx8S4s33veVfh1IU2gktVWTp4x8Iz8nHsP2HjkeHfnqbLmLMuADjx4yea6WI_FWok-b69v_RkQ=="}, {"id": "fc_2bc6f4c27cd14438a3f5eb7ba739fbe9", "type": "function_call", "status": "completed", "call_id": "call_5417bd0d1a014fafafc64f07", "name": "lookup", "arguments": "{}"}], "usage": {"input_tokens": 338, "output_tokens": 23, "total_tokens": 361, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 338}, "output_tokens_details": {"reasoning_tokens": 7}}, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "json_schema", "name": "lookup_result", "strict": true, "schema": {"type": "object", "properties": {"value": {"type": "integer"}}, "required": ["value"], "additionalProperties": false}}}, "tools": [{"type": "function", "name": "lookup", "description": "Read the hidden integer. Call before answering.", "parameters": {"type": "object", "properties": {}, "additionalProperties": false}, "strict": false}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+

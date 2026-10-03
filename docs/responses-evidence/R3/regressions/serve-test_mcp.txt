@@ -1,0 +1,89 @@
+[strata] MCP server 'missing' did not start: could not start 'strata-no-such-program': [WinError 2] The system cannot find the file specified. Its tools are left out; the chat works without them.
+[strata] MCP server 'paged': 6 tools (echo, fail, sleep, big, die, add)
+[strata] MCP server 'fake': 6 tools (echo, fail, sleep, big, die, add)
+[strata] MCP server 'broken' did not start: the server stopped: cannot start: missing configuration. Its tools are left out; the chat works without them.
+test_a_server_that_fails_is_left_out (serve.test_mcp.Client.test_a_server_that_fails_is_left_out) ... ok
+test_call (serve.test_mcp.Client.test_call) ... ok
+test_cancel (serve.test_mcp.Client.test_cancel) ... ok
+test_crash_mid_call_then_restart (serve.test_mcp.Client.test_crash_mid_call_then_restart) ... [strata] MCP server 'solo': 6 tools (echo, fail, sleep, big, die, add)
+[strata] MCP server 'solo' had stopped; starting it again
+[strata] MCP server 'solo': 6 tools (echo, fail, sleep, big, die, add)
+ok
+test_errors_become_text (serve.test_mcp.Client.test_errors_become_text) ... ok
+test_initialize_and_list_every_page (serve.test_mcp.Client.test_initialize_and_list_every_page) ... ok
+test_namespaced_openai_tools (serve.test_mcp.Client.test_namespaced_openai_tools) ... ok
+test_timeout (serve.test_mcp.Client.test_timeout) ... ok
+test_truncation (serve.test_mcp.Client.test_truncation) ... ok
+test_bad_entries_stop_the_start (serve.test_mcp.Config.test_bad_entries_stop_the_start) ... ok
+test_both_spellings_and_the_file (serve.test_mcp.Config.test_both_spellings_and_the_file) ... ok
+[strata] MCP server 'web': 6 tools (echo, fail, sleep, big, die, add)
+[strata] MCP server 'down' did not start: could not reach http://127.0.0.1:9/mcp: <urlopen error [WinError 10061] No connection could be made because the target machine actively refused it>. Its tools are left out; the chat works without them.
+test_list_and_call (serve.test_mcp.HttpClient.test_list_and_call) ... ok
+test_timeout_and_unreachable (serve.test_mcp.HttpClient.test_timeout_and_unreachable) ... ok
+test_opt_in_without_servers_is_a_plain_chat (serve.test_mcp.NoServers.test_opt_in_without_servers_is_a_plain_chat) ... [strata] done: 13 tokens in 0 s (21366.0 tok/s) (stop, cancel=False)
+ok
+test_a_call_the_output_ends_inside_is_not_run (serve.test_mcp.ToolLoop.test_a_call_the_output_ends_inside_is_not_run)
+#211: the model's turn ends inside an MCP call: nothing runs (it used to run with no arguments). ... [strata] MCP server 'fake': 6 tools (echo, fail, sleep, big, die, add)
+[strata] MCP server 'broken' did not start: the server stopped: cannot start: missing configuration. Its tools are left out; the chat works without them.
+[strata] done: 83 tokens in 0 s (24841.4 tok/s) (stop, cancel=False)
+ok
+test_get_mcp (serve.test_mcp.ToolLoop.test_get_mcp) ... [strata] MCP server 'fake': 6 tools (echo, fail, sleep, big, die, add)
+[strata] MCP server 'broken' did not start: the server stopped: cannot start: missing configuration. Its tools are left out; the chat works without them.
+ok
+test_max_rounds (serve.test_mcp.ToolLoop.test_max_rounds) ... [strata] MCP server 'fake': 6 tools (echo, fail, sleep, big, die, add)
+[strata] MCP server 'broken' did not start: the server stopped: cannot start: missing configuration. Its tools are left out; the chat works without them.
+[strata] done: 120 tokens in 0 s (8322.6 tok/s) (stop, cancel=False)
+[strata] tool fake__echo: ok, 5 characters in 0.0 s
+[strata] done: 120 tokens in 0 s (12355.6 tok/s) (stop, cancel=False)
+[strata] tool fake__echo: ok, 5 characters in 0.0 s
+[strata] done: 120 tokens in 0 s (13411.8 tok/s) (stop, cancel=False)
+ok
+test_non_stream (serve.test_mcp.ToolLoop.test_non_stream) ... [strata] MCP server 'fake': 6 tools (echo, fail, sleep, big, die, add)
+[strata] MCP server 'broken' did not start: the server stopped: cannot start: missing configuration. Its tools are left out; the chat works without them.
+[strata] done: 141 tokens in 0 s (14557.8 tok/s) (stop, cancel=False)
+[strata] tool fake__add: ok, 1 characters in 0.0 s
+[strata] done: 13 tokens in 0 s (61541.7 tok/s) (stop, cancel=False)
+ok
+test_only_from_the_app_s_own_page (serve.test_mcp.ToolLoop.test_only_from_the_app_s_own_page) ... [strata] MCP server 'fake': 6 tools (echo, fail, sleep, big, die, add)
+[strata] MCP server 'broken' did not start: the server stopped: cannot start: missing configuration. Its tools are left out; the chat works without them.
+[strata] refused an API request from the web page 'http://evil.example' (no API key; add its host to "allowed_hosts" or its origin to "cors_origins" in the config)
+[strata] done: 13 tokens in 0 s (14118.6 tok/s) (stop, cancel=False)
+ok
+test_own_tools_still_go_to_the_client (serve.test_mcp.ToolLoop.test_own_tools_still_go_to_the_client) ... [strata] MCP server 'fake': 6 tools (echo, fail, sleep, big, die, add)
+[strata] MCP server 'broken' did not start: the server stopped: cannot start: missing configuration. Its tools are left out; the chat works without them.
+[strata] done: 109 tokens in 0 s (10648.9 tok/s) (stop, cancel=False)
+ok
+test_plain_requests_get_no_mcp_tools (serve.test_mcp.ToolLoop.test_plain_requests_get_no_mcp_tools) ... [strata] MCP server 'fake': 6 tools (echo, fail, sleep, big, die, add)
+[strata] MCP server 'broken' did not start: the server stopped: cannot start: missing configuration. Its tools are left out; the chat works without them.
+[strata] done: 116 tokens in 0 s (9424.7 tok/s) (stop, cancel=False)
+[strata] done: 16 tokens in 0 s (9509.5 tok/s) (stop, cancel=False)
+[strata] done: 16 tokens in 0 s (9795.5 tok/s) (stop, cancel=False)
+ok
+test_stop_during_a_tool (serve.test_mcp.ToolLoop.test_stop_during_a_tool)
+Closing the connection while a slow tool runs stops the tool (notifications/cancelled) and the loop. ... [strata] MCP server 'fake': 6 tools (echo, fail, sleep, big, die, add)
+[strata] MCP server 'broken' did not start: the server stopped: cannot start: missing configuration. Its tools are left out; the chat works without them.
+[strata] done: 120 tokens in 0 s (7788.9 tok/s) (stop, cancel=False)
+ok
+test_tool_call_then_answer (serve.test_mcp.ToolLoop.test_tool_call_then_answer) ... [strata] MCP server 'fake': 6 tools (echo, fail, sleep, big, die, add)
+[strata] MCP server 'broken' did not start: the server stopped: cannot start: missing configuration. Its tools are left out; the chat works without them.
+[strata] done: 134 tokens in 0 s (9176.4 tok/s) (stop, cancel=False)
+[strata] tool fake__echo: ok, 19 characters in 0.0 s
+[strata] done: 31 tokens in 0 s (5252.8 tok/s) (stop, cancel=False)
+ok
+test_tool_error_is_a_result (serve.test_mcp.ToolLoop.test_tool_error_is_a_result) ... [strata] MCP server 'fake': 6 tools (echo, fail, sleep, big, die, add)
+[strata] MCP server 'broken' did not start: the server stopped: cannot start: missing configuration. Its tools are left out; the chat works without them.
+[strata] done: 84 tokens in 0 s (7299.3 tok/s) (stop, cancel=False)
+[strata] tool fake__fail: error, 27 characters in 0.0 s
+[strata] done: 21 tokens in 0 s (5696.9 tok/s) (stop, cancel=False)
+ok
+test_truncated_for_the_model (serve.test_mcp.ToolLoop.test_truncated_for_the_model) ... [strata] MCP server 'fake': 6 tools (echo, fail, sleep, big, die, add)
+[strata] MCP server 'broken' did not start: the server stopped: cannot start: missing configuration. Its tools are left out; the chat works without them.
+[strata] done: 115 tokens in 0 s (9307.4 tok/s) (stop, cancel=False)
+[strata] tool fake__big: ok, 3,000 characters in 0.0 s (truncated for the model)
+[strata] done: 16 tokens in 0 s (7601.8 tok/s) (stop, cancel=False)
+ok
+
+----------------------------------------------------------------------
+Ran 25 tests in 20.995s
+
+OK

@@ -1,0 +1,38 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "none"
+  },
+  "max_output_tokens": 512,
+  "temperature": 0,
+  "input": "Return exactly this JSON value, without explanation: {\"values\": [2, 7, 9]}",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "13_unique_and_contains",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "uniqueItems": true,
+            "contains": {
+              "const": 7
+            },
+            "minContains": 1,
+            "maxContains": 1
+          }
+        },
+        "required": [
+          "values"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

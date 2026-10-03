@@ -1,0 +1,17 @@
+{
+  "phase": "G0",
+  "result": "pass",
+  "branch": "work/gbnf",
+  "worktree": "C:/Users/dflanag3/Documents/fleet/strata-native-gbnf",
+  "parent_r4_commit": "96092670da0dc3c1cfcce99bb90a3e6ca25ae1d9",
+  "r4_receipt": "../../responses-evidence/R4/R4-receipt.json",
+  "prior_work_read_only": {
+    "ref": "contrib/non-mtp-serving",
+    "head": "03ab00c632ce8b5640239583b3ff75236e36c163",
+    "base": "1678de333d0e0711bc414ad992b640e1a37dd814",
+    "warning": "Older independent contribution; not current G0 evidence and not automatically cherry-picked"
+  },
+  "worktree_creation": "Handoff helper dry-run reviewed, then --apply executed once",
+  "native_code_changed": true,
+  "gpu_tested": true
+}

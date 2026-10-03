@@ -1,0 +1,1 @@
+Default STRATA_ENABLE_GBNF=OFF: configured without dependencies; no strata_xgrammar build target.

@@ -1,0 +1,11 @@
+[
+  {
+    "type": "task_complete",
+    "turn_id": "01a1037a-555b-70d3-a6bd-df4d17353a6e",
+    "last_agent_message": "Ran it clean \u2014 all 3 pass.\n\n**Files**\n- `calc.py` \u2014 just `def add(a, b): return a + b`\n- `test_calc.py` \u2014 `AdditionTests` with `test_positive`, `test_negative`, `test_zero`\n\n**Test run**\n- Command: `python -m unittest -v test_calc.py` \u2192 exit code 0\n- `Ran 3 tests in 0.000s ... OK`\n\n**Result: 3 tests passed, 0 failed** (`test_positive`, `test_negative`, `test_zero` all `ok`). No files were edited and no goals created.",
+    "started_at": 1791059711,
+    "completed_at": 1791059952,
+    "duration_ms": 241412,
+    "time_to_first_token_ms": 48834
+  }
+]

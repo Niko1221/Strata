@@ -1,0 +1,82 @@
+[
+  {
+    "type": "function_call",
+    "id": "fc_237eaa9f4e3348e8a1b8b6feda9ef91b",
+    "name": "exec_command",
+    "arguments": "{\"cmd\":\"Get-Childials\"}",
+    "call_id": "call_eaa38d8387f74bdc9aa868a1",
+    "internal_chat_message_metadata_passthrough": {
+      "turn_id": "01a1037a-555b-70d3-a6bd-df4d17353a6e"
+    }
+  },
+  {
+    "type": "function_call_output",
+    "id": "fco_01a1037b-3383-7063-b639-1193dc60125a",
+    "call_id": "call_eaa38d8387f74bdc9aa868a1",
+    "output": "Chunk ID: 5fd977\nWall time: 0.5421 seconds\nProcess exited with code 1\nOriginal token count: 112\nOutput:\nGet-Childials : The term 'Get-Childials' is not recognized as the name of a cmdlet, function, script file, or operable \r\nprogram. Check the spelling of the name, or if a path was included, verify that the path is correct and try again.\r\nAt line:2 char:1\r\n+ Get-Childials\r\n+ ~~~~~~~~~~~~~\r\n    + CategoryInfo          : ObjectNotFound: (Get-Childials:String) [], CommandNotFoundException\r\n    + FullyQualifiedErrorId : CommandNotFoundException\r\n \r\n",
+    "internal_chat_message_metadata_passthrough": {
+      "turn_id": "01a1037a-555b-70d3-a6bd-df4d17353a6e",
+      "create_time": 1791059768.195073
+    }
+  },
+  {
+    "type": "function_call",
+    "id": "fc_bbd20302174643b084e289375ab88cda",
+    "name": "exec_command",
+    "arguments": "{\"cmd\":\"Get-ChildItem | Select-Object Name, Length\"}",
+    "call_id": "call_7daedc39fee940ffa97dc033",
+    "internal_chat_message_metadata_passthrough": {
+      "turn_id": "01a1037a-555b-70d3-a6bd-df4d17353a6e"
+    }
+  },
+  {
+    "type": "function_call_output",
+    "id": "fco_01a1037b-f223-7d43-888d-0b60238338fc",
+    "call_id": "call_7daedc39fee940ffa97dc033",
+    "output": "Chunk ID: 26ce17\nWall time: 0.3929 seconds\nProcess exited with code 0\nOriginal token count: 28\nOutput:\n\r\nName         Length\r\n----         ------\r\n__pycache__        \r\ncalc.py      36    \r\ntest_calc.py 342   \r\n\r\n\r\n",
+    "internal_chat_message_metadata_passthrough": {
+      "turn_id": "01a1037a-555b-70d3-a6bd-df4d17353a6e",
+      "create_time": 1791059816.9954498
+    }
+  },
+  {
+    "type": "function_call",
+    "id": "fc_42fd00a2dfae4cb0b9de436ac9ac640f",
+    "name": "exec_command",
+    "arguments": "{\"cmd\":\"Get-Get = 0; Get-Content calc.py; Write-Output '=== test_calc.py ==='; Get-Content test_calc.py\"}",
+    "call_id": "call_b10ccae0fa484bca993b393b",
+    "internal_chat_message_metadata_passthrough": {
+      "turn_id": "01a1037a-555b-70d3-a6bd-df4d17353a6e"
+    }
+  },
+  {
+    "type": "function_call_output",
+    "id": "fco_01a1037c-acb6-7e50-81b5-0b4e1939f64c",
+    "call_id": "call_b10ccae0fa484bca993b393b",
+    "output": "Chunk ID: bbbb7a\nWall time: 0.7001 seconds\nProcess exited with code 0\nOriginal token count: 221\nOutput:\nGet-Get : The term 'Get-Get' is not recognized as the name of a cmdlet, function, script file, or operable program. \r\nCheck the spelling of the name, or if a path was included, verify that the path is correct and try again.\r\nAt line:2 char:1\r\n+ Get-Get = 0; Get-Content calc.py; Write-Output '=== test_calc.py ===' ...\r\n+ ~~~~~~~\r\n    + CategoryInfo          : ObjectNotFound: (Get-Get:String) [], CommandNotFoundException\r\n    + FullyQualifiedErrorId : CommandNotFoundException\r\n \r\ndef add(a, b):\r\n    return a + b\r\n=== test_calc.py ===\r\nimport unittest\r\nfrom calc import add\r\n\r\nclass AdditionTests(unittest.TestCase):\r\n    def test_positive(self):\r\n        self.assertEqual(add(2, 3), 5)\r\n    def test_negative(self):\r\n        self.assertEqual(add(-4, -2), -6)\r\n    def test_zero(self):\r\n        self.assertEqual(add(0, 0), 0)\r\n\r\nif __name__ == '__main__':\r\n    unittest.main()\r\n",
+    "internal_chat_message_metadata_passthrough": {
+      "turn_id": "01a1037a-555b-70d3-a6bd-df4d17353a6e",
+      "create_time": 1791059864.7587826
+    }
+  },
+  {
+    "type": "function_call",
+    "id": "fc_57229e0c34e9454fb3bb8b4a96dd1361",
+    "name": "exec_command",
+    "arguments": "{\"cmd\":\"python -m unittest -v test_calc.py\"}",
+    "call_id": "call_ca6842917ebd40efb89a375f",
+    "internal_chat_message_metadata_passthrough": {
+      "turn_id": "01a1037a-555b-70d3-a6bd-df4d17353a6e"
+    }
+  },
+  {
+    "type": "function_call_output",
+    "id": "fco_01a1037d-4d35-7fd2-8bef-2bf99003eb8b",
+    "call_id": "call_ca6842917ebd40efb89a375f",
+    "output": "Chunk ID: 5aaccd\nWall time: 0.3584 seconds\nProcess exited with code 0\nOriginal token count: 71\nOutput:\ntest_negative (test_calc.AdditionTests.test_negative) ... ok\r\ntest_positive (test_calc.AdditionTests.test_positive) ... ok\r\ntest_zero (test_calc.AdditionTests.test_zero) ... ok\r\n\r\n----------------------------------------------------------------------\r\nRan 3 tests in 0.000s\r\n\r\nOK\r\n",
+    "internal_chat_message_metadata_passthrough": {
+      "turn_id": "01a1037a-555b-70d3-a6bd-df4d17353a6e",
+      "create_time": 1791059905.8453996
+    }
+  }
+]

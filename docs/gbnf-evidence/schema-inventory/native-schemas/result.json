@@ -1,0 +1,247 @@
+{
+  "scripted_engine": false,
+  "prompt_requests_known_valid_sample": true,
+  "cases": [
+    {
+      "name": "01-codex-title",
+      "http_status": 200,
+      "status": "completed",
+      "seconds": 2.558897943003103,
+      "schema_valid": true,
+      "sample_matches": true
+    },
+    {
+      "name": "02-closed-object",
+      "http_status": 200,
+      "status": "completed",
+      "seconds": 1.8344005480030319,
+      "schema_valid": true,
+      "sample_matches": true
+    },
+    {
+      "name": "03-nested-object",
+      "http_status": 200,
+      "status": "completed",
+      "seconds": 2.001934195010108,
+      "schema_valid": true,
+      "sample_matches": true
+    },
+    {
+      "name": "04-array-of-objects",
+      "http_status": 200,
+      "status": "completed",
+      "seconds": 1.8066298040066613,
+      "schema_valid": true,
+      "sample_matches": true
+    },
+    {
+      "name": "05-tuple-prefix-items",
+      "http_status": 200,
+      "status": "completed",
+      "seconds": 1.3234830139990663,
+      "schema_valid": true,
+      "sample_matches": true
+    },
+    {
+      "name": "06-enum-and-const",
+      "http_status": 200,
+      "status": "completed",
+      "seconds": 1.4103119499923196,
+      "schema_valid": true,
+      "sample_matches": true
+    },
+    {
+      "name": "07-nullable",
+      "http_status": 200,
+      "status": "completed",
+      "seconds": 1.024260753998533,
+      "schema_valid": true,
+      "sample_matches": true
+    },
+    {
+      "name": "08-anyof",
+      "http_status": 200,
+      "status": "completed",
+      "seconds": 1.113963170995703,
+      "schema_valid": true,
+      "sample_matches": true
+    },
+    {
+      "name": "09-oneof-tagged-result",
+      "http_status": 200,
+      "status": "completed",
+      "seconds": 1.5493953010009136,
+      "schema_valid": true,
+      "sample_matches": true
+    },
+    {
+      "name": "10-allof",
+      "http_status": 200,
+      "status": "completed",
+      "seconds": 1.1598010870075086,
+      "schema_valid": true,
+      "sample_matches": true
+    },
+    {
+      "name": "11-number-bounds",
+      "http_status": 200,
+      "status": "completed",
+      "seconds": 1.7271381309983553,
+      "schema_valid": true,
+      "sample_matches": true
+    },
+    {
+      "name": "12-string-length-and-pattern",
+      "http_status": 200,
+      "status": "completed",
+      "seconds": 1.3732331950013759,
+      "schema_valid": true,
+      "sample_matches": true
+    },
+    {
+      "name": "13-unique-and-contains",
+      "http_status": 200,
+      "status": "completed",
+      "seconds": 1.5169543720112415,
+      "schema_valid": true,
+      "sample_matches": true
+    },
+    {
+      "name": "14-dependent-required",
+      "http_status": 200,
+      "status": "completed",
+      "seconds": 1.7267539360036608,
+      "schema_valid": true,
+      "sample_matches": true
+    },
+    {
+      "name": "15-dependent-schemas",
+      "http_status": 200,
+      "status": "completed",
+      "seconds": 1.4371061639976688,
+      "schema_valid": true,
+      "sample_matches": true
+    },
+    {
+      "name": "16-if-then-else",
+      "http_status": 200,
+      "status": "completed",
+      "seconds": 1.5132103400101187,
+      "schema_valid": true,
+      "sample_matches": true
+    },
+    {
+      "name": "17-property-names-and-pattern-properties",
+      "http_status": 200,
+      "status": "completed",
+      "seconds": 1.4228885089978576,
+      "schema_valid": true,
+      "sample_matches": true
+    },
+    {
+      "name": "18-local-defs-ref",
+      "http_status": 200,
+      "status": "completed",
+      "seconds": 1.6474656399950618,
+      "schema_valid": true,
+      "sample_matches": true
+    },
+    {
+      "name": "19-recursive-tree",
+      "http_status": 200,
+      "status": "completed",
+      "seconds": 2.192487059990526,
+      "schema_valid": true,
+      "sample_matches": true
+    },
+    {
+      "name": "20-local-anchor",
+      "http_status": 200,
+      "status": "completed",
+      "seconds": 1.1294637459941441,
+      "schema_valid": true,
+      "sample_matches": true
+    },
+    {
+      "name": "21-dynamic-anchor-ref",
+      "http_status": 200,
+      "status": "completed",
+      "seconds": 1.618698691992904,
+      "schema_valid": true,
+      "sample_matches": true
+    },
+    {
+      "name": "22-not",
+      "http_status": 200,
+      "status": "completed",
+      "seconds": 1.1200582909950754,
+      "schema_valid": true,
+      "sample_matches": true
+    },
+    {
+      "name": "23-unevaluated-items",
+      "http_status": 200,
+      "status": "completed",
+      "seconds": 0.8376069410005584,
+      "schema_valid": true,
+      "sample_matches": true
+    },
+    {
+      "name": "24-formats",
+      "http_status": 200,
+      "status": "completed",
+      "seconds": 2.756658868995146,
+      "schema_valid": true,
+      "sample_matches": true
+    },
+    {
+      "name": "25-annotations",
+      "http_status": 200,
+      "status": "completed",
+      "seconds": 1.1670108719990822,
+      "schema_valid": true,
+      "sample_matches": true
+    },
+    {
+      "name": "26-content-annotations",
+      "http_status": 200,
+      "status": "completed",
+      "seconds": 1.6016244779893896,
+      "schema_valid": true,
+      "sample_matches": true
+    },
+    {
+      "name": "27-boolean-child-schemas",
+      "http_status": 200,
+      "status": "completed",
+      "seconds": 1.3209494059992721,
+      "schema_valid": true,
+      "sample_matches": true
+    },
+    {
+      "name": "28-literal-ref-property",
+      "http_status": 200,
+      "status": "completed",
+      "seconds": 1.4747908080025809,
+      "schema_valid": true,
+      "sample_matches": true
+    },
+    {
+      "name": "29-tool-result-answer",
+      "http_status": 200,
+      "status": "completed",
+      "seconds": 1.0982618929992896,
+      "schema_valid": true,
+      "sample_matches": true
+    },
+    {
+      "name": "30-json-schema-dialect",
+      "http_status": 200,
+      "status": "completed",
+      "seconds": 1.132587831991259,
+      "schema_valid": true,
+      "sample_matches": true
+    }
+  ],
+  "result": "pass"
+}

@@ -1,0 +1,37 @@
+[
+  [
+    "cmake",
+    "--build",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu",
+    "--target",
+    "strata",
+    "grammar_sampler_test",
+    "sampler_parity",
+    "-j",
+    "4"
+  ],
+  [
+    "ctest",
+    "--test-dir",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu",
+    "-R",
+    "^(grammar_sampler.*|sampler_parity.*|serve_input_test|grammar_native_test)$",
+    "--output-on-failure"
+  ],
+  [
+    "/usr/local/cuda-13.3/bin/compute-sanitizer",
+    "--tool",
+    "memcheck",
+    "--error-exitcode",
+    "1",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu/grammar_sampler_test"
+  ],
+  [
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/venv/bin/python",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/tools/grammar_native_probe.py",
+    "--config",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/g2-target.json",
+    "--out",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/evidence/g2/native-final"
+  ]
+]

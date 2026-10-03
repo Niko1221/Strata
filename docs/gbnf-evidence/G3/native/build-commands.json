@@ -1,0 +1,30 @@
+[
+  [
+    "nvidia-smi",
+    "--query-gpu=name,uuid,memory.used,memory.total",
+    "--format=csv"
+  ],
+  [
+    "nvidia-smi",
+    "--query-compute-apps=pid,process_name,used_memory",
+    "--format=csv"
+  ],
+  [
+    "cmake",
+    "--build",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu",
+    "--target",
+    "strata",
+    "serve_input_test",
+    "-j",
+    "4"
+  ],
+  [
+    "ctest",
+    "--test-dir",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu",
+    "-R",
+    "^serve_input_test$",
+    "--output-on-failure"
+  ]
+]

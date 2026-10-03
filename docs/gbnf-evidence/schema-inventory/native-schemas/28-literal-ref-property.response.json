@@ -1,0 +1,83 @@
+{
+  "id": "resp_5914253372044d2185f8b2d5f3ba8683",
+  "object": "response",
+  "created_at": 1791060656,
+  "status": "completed",
+  "completed_at": 1791060658,
+  "error": null,
+  "incomplete_details": null,
+  "instructions": null,
+  "model": "qwen3.8-flash-next",
+  "output": [
+    {
+      "id": "msg_7067d7e88ec34315bd701b4a44579ab7",
+      "type": "message",
+      "status": "completed",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "{\"$ref\": \"literal field\", \"count\": 2}",
+          "annotations": [],
+          "logprobs": []
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 143,
+    "output_tokens": 15,
+    "total_tokens": 158,
+    "input_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 143
+    },
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    }
+  },
+  "store": false,
+  "background": false,
+  "previous_response_id": null,
+  "max_output_tokens": 512,
+  "temperature": 0,
+  "top_p": 0.95,
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "28_literal_ref_property",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "$ref": {
+            "type": "string"
+          },
+          "count": {
+            "$ref": "#/$defs/count"
+          }
+        },
+        "required": [
+          "$ref",
+          "count"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "count": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    }
+  },
+  "tools": [],
+  "tool_choice": "auto",
+  "parallel_tool_calls": true,
+  "reasoning": {
+    "effort": "none",
+    "summary": null
+  },
+  "truncation": "disabled",
+  "metadata": {}
+}

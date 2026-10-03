@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "C:\\Program Files\\Python313\\python.exe",
+    "C:\\Users\\dflanag3\\Documents\\fleet\\strata-native-gbnf\\tools\\responses_native_codex_probe.py",
+    "--codex",
+    "C:\\Users\\dflanag3\\Documents\\fleet\\strata-responses-stateless\\.responses-runtime\\codex-0.160.0.exe",
+    "--base-url",
+    "http://127.0.0.1:54495/v1",
+    "--out",
+    "C:\\Users\\dflanag3\\Documents\\fleet\\strata-native-gbnf\\docs\\responses-evidence\\native-codex\\hello-4abca3e0f5",
+    "--timeout",
+    "600"
+  ],
+  "return_code": 0,
+  "source_commit": "26ed30afbd3718e658a3c8d42df900c277f6bcda",
+  "network": "Windows loopback -> authenticated SSH directly to llm-49 -> Linux loopback; no proxy/jump"
+}

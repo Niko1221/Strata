@@ -1,0 +1,30 @@
+{
+  "argv": [
+    "ssh",
+    "-T",
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "StrictHostKeyChecking=yes",
+    "-o",
+    "ProxyJump=none",
+    "-o",
+    "ProxyCommand=none",
+    "-o",
+    "ConnectTimeout=6",
+    "llm-49",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/venv/bin/python",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/tools/grammar_tool_probe.py",
+    "--source",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source",
+    "--manifest",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/evidence/tool-scope/loop-20261003T150345Z-8a5790/manifest.json",
+    "--config",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/g5-target.json",
+    "--config",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/g5-mtp.json",
+    "--out",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/evidence/tool-scope/loop-20261003T150345Z-8a5790/run"
+  ],
+  "remote_directory": "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/evidence/tool-scope/loop-20261003T150345Z-8a5790"
+}

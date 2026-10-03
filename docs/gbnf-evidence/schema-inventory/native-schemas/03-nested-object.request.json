@@ -1,0 +1,51 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "none"
+  },
+  "max_output_tokens": 512,
+  "temperature": 0,
+  "input": "Return exactly this JSON value, without explanation: {\"project\": {\"name\": \"Strata\", \"result\": {\"passed\": true}}}",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "03_nested_object",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "result": {
+                "type": "object",
+                "properties": {
+                  "passed": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "passed"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "name",
+              "result"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

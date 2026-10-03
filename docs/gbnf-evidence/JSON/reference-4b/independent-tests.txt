@@ -1,0 +1,10 @@
+test_negative (test_calc.Addition.test_negative) ... ok
+test_positive (test_calc.Addition.test_positive) ... ok
+test_zero (test_calc.Addition.test_zero) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.000s
+
+OK
+
+Test file unchanged: True

@@ -1,0 +1,964 @@
+[
+  {
+    "name": "responses_title_full_budget",
+    "path": "/v1/responses",
+    "selected_request": {
+      "model": "qwen3.5-4b-bf16",
+      "store": false,
+      "input": "Generate a short chat title about fixing an add function and verifying its unit tests.",
+      "text": {
+        "format": {
+          "type": "json_schema",
+          "name": "chat_title",
+          "strict": true,
+          "schema": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 36
+              }
+            },
+            "required": [
+              "title"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "max_output_tokens": 4096,
+      "reasoning": {
+        "effort": "none"
+      }
+    },
+    "status": 200,
+    "elapsed_seconds": 9.814,
+    "selected_response": {
+      "completed_at": 1791055126,
+      "created_at": 1791055126,
+      "id": "resp_X0u4sHDrDhzmuNcIWoOdMY8l5lwUqWbW",
+      "model": "qwen3.5-4b-bf16",
+      "object": "response",
+      "output": [
+        {
+          "content": [
+            {
+              "type": "output_text",
+              "annotations": [],
+              "logprobs": [],
+              "text": "Fixing `add` function & verifying unit tests"
+            }
+          ],
+          "id": "msg_1AksjGTet0sDYn9lD5Gh5bMfsKffgydC",
+          "role": "assistant",
+          "status": "completed",
+          "type": "message"
+        }
+      ],
+      "status": "completed",
+      "usage": {
+        "input_tokens": 26,
+        "output_tokens": 887,
+        "total_tokens": 913,
+        "input_tokens_details": {
+          "cached_tokens": 22
+        }
+      }
+    },
+    "selection_note": "Visible reasoning fields omitted for brevity; full private receipt retained. No encrypted data decoded."
+  },
+  {
+    "name": "chat_title_supported_schema",
+    "path": "/v1/chat/completions",
+    "selected_request": {
+      "model": "qwen3.5-4b-bf16",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Generate a short JSON chat title about fixing an add function and verifying its unit tests."
+        }
+      ],
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "chat_title",
+          "strict": true,
+          "schema": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 36
+              }
+            },
+            "required": [
+              "title"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "max_tokens": 4096,
+      "reasoning_effort": "medium"
+    },
+    "status": 200,
+    "elapsed_seconds": 4.803,
+    "selected_response": {
+      "choices": [
+        {
+          "finish_reason": "stop",
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "{\n  \"title\": \"Fix add function & verify unit tests\"\n}"
+          }
+        }
+      ],
+      "created": 1791055131,
+      "model": "qwen3.5-4b-bf16",
+      "system_fingerprint": "b11028-972d2313b",
+      "object": "chat.completion",
+      "usage": {
+        "completion_tokens": 419,
+        "prompt_tokens": 27,
+        "total_tokens": 446,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "id": "chatcmpl-nOm1RWP4BHx14De1draYLBuFo1du5l13",
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 27,
+        "prompt_ms": 40.734,
+        "prompt_per_token_ms": 1.5086666666666668,
+        "prompt_per_second": 662.8369421122404,
+        "predicted_n": 419,
+        "predicted_ms": 4361.571,
+        "predicted_per_token_ms": 10.43438038277512,
+        "predicted_per_second": 95.83702752975935
+      }
+    },
+    "selection_note": "Visible reasoning fields omitted for brevity; full private receipt retained. No encrypted data decoded."
+  },
+  {
+    "name": "tool_loop_0",
+    "path": "/v1/chat/completions",
+    "selected_request": {
+      "model": "qwen3.5-4b-bf16",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are a coding assistant. Use the supplied tools to inspect files, fix the requested bug, and run the tests. Read tool outputs and do not repeat an ineffective command. Report only actual results."
+        },
+        {
+          "role": "user",
+          "content": "Read calc.py and test_calc.py. Fix add so the three tests pass, run the tests, and report the result. Do not change test_calc.py."
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "type": "function",
+              "function": {
+                "name": "read_file",
+                "arguments": "{\"path\":\"calc.py\"}"
+              },
+              "id": "0w2fKTcEXdP2le6sUSCu3hgRItaFZxWZ"
+            },
+            {
+              "type": "function",
+              "function": {
+                "name": "read_file",
+                "arguments": "{\"path\":\"test_calc.py\"}"
+              },
+              "id": "4BUw1id6Y0ZgcYwoe2A7TJd9YTtGMztU"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "0w2fKTcEXdP2le6sUSCu3hgRItaFZxWZ",
+          "content": "{\"content\": \"def add(a, b):\\n    return a - b\\n\"}"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "4BUw1id6Y0ZgcYwoe2A7TJd9YTtGMztU",
+          "content": "{\"content\": \"import unittest\\nfrom calc import add\\n\\nclass Addition(unittest.TestCase):\\n    def test_positive(self): self.assertEqual(add(2, 3), 5)\\n    def test_negative(self): self.assertEqual(add(-2, -3), -5)\\n    def test_zero(self): self.assertEqual(add(0, 4), 4)\\n\\nif __name__ == \\\"__main__\\\": unittest.main()\\n\"}"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "type": "function",
+              "function": {
+                "name": "edit_calc",
+                "arguments": "{\"source\":\"def add(a, b):\\n    return a + b\"}"
+              },
+              "id": "nwOtBhOQwKKNbeaO3mjGRXNdW14hunJL"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "nwOtBhOQwKKNbeaO3mjGRXNdW14hunJL",
+          "content": "{\"saved\": \"calc.py\"}"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "type": "function",
+              "function": {
+                "name": "run_tests",
+                "arguments": "{}"
+              },
+              "id": "xZ41nWT1S9ZBZGlHMp3jWAEUgTo4lpEP"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "xZ41nWT1S9ZBZGlHMp3jWAEUgTo4lpEP",
+          "content": "{\"exit_code\": 0, \"stdout\": \"\", \"stderr\": \"test_negative (test_calc.Addition.test_negative) ... ok\\ntest_positive (test_calc.Addition.test_positive) ... ok\\ntest_zero (test_calc.Addition.test_zero) ... ok\\n\\n----------------------------------------------------------------------\\nRan 3 tests in 0.000s\\n\\nOK\\n\"}"
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "description": "Read calc.py or test_calc.py from the local workspace.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "enum": [
+                    "calc.py",
+                    "test_calc.py"
+                  ]
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "edit_calc",
+            "description": "Replace calc.py with the specified complete UTF-8 Python source. Test files cannot be changed.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "source": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "source"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "run_tests",
+            "description": "Run python -m unittest -v test_calc.py in this workspace and return actual output.",
+            "parameters": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            }
+          }
+        }
+      ],
+      "tool_choice": "auto",
+      "max_tokens": 4096,
+      "reasoning_effort": "medium"
+    },
+    "status": 200,
+    "elapsed_seconds": 1.42,
+    "selected_response": {
+      "choices": [
+        {
+          "finish_reason": "tool_calls",
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "read_file",
+                  "arguments": "{\"path\":\"calc.py\"}"
+                },
+                "id": "0w2fKTcEXdP2le6sUSCu3hgRItaFZxWZ"
+              },
+              {
+                "type": "function",
+                "function": {
+                  "name": "read_file",
+                  "arguments": "{\"path\":\"test_calc.py\"}"
+                },
+                "id": "4BUw1id6Y0ZgcYwoe2A7TJd9YTtGMztU"
+              }
+            ]
+          }
+        }
+      ],
+      "created": 1791055132,
+      "model": "qwen3.5-4b-bf16",
+      "system_fingerprint": "b11028-972d2313b",
+      "object": "chat.completion",
+      "usage": {
+        "completion_tokens": 96,
+        "prompt_tokens": 495,
+        "total_tokens": 591,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "id": "chatcmpl-yyYzqgqQatcj6Xeh4JNC79KYZAGHIGAP",
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 495,
+        "prompt_ms": 89.594,
+        "prompt_per_token_ms": 0.1809979797979798,
+        "prompt_per_second": 5524.923543987321,
+        "predicted_n": 96,
+        "predicted_ms": 994.394,
+        "predicted_per_token_ms": 10.467305263157895,
+        "predicted_per_second": 95.53557241898082
+      }
+    },
+    "selection_note": "Visible reasoning fields omitted for brevity; full private receipt retained. No encrypted data decoded."
+  },
+  {
+    "name": "tool_result",
+    "tool": "read_file",
+    "args": {
+      "path": "calc.py"
+    },
+    "result": {
+      "content": "def add(a, b):\n    return a - b\n"
+    }
+  },
+  {
+    "name": "tool_result",
+    "tool": "read_file",
+    "args": {
+      "path": "test_calc.py"
+    },
+    "result": {
+      "content": "import unittest\nfrom calc import add\n\nclass Addition(unittest.TestCase):\n    def test_positive(self): self.assertEqual(add(2, 3), 5)\n    def test_negative(self): self.assertEqual(add(-2, -3), -5)\n    def test_zero(self): self.assertEqual(add(0, 4), 4)\n\nif __name__ == \"__main__\": unittest.main()\n"
+    }
+  },
+  {
+    "name": "tool_loop_1",
+    "path": "/v1/chat/completions",
+    "selected_request": {
+      "model": "qwen3.5-4b-bf16",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are a coding assistant. Use the supplied tools to inspect files, fix the requested bug, and run the tests. Read tool outputs and do not repeat an ineffective command. Report only actual results."
+        },
+        {
+          "role": "user",
+          "content": "Read calc.py and test_calc.py. Fix add so the three tests pass, run the tests, and report the result. Do not change test_calc.py."
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "type": "function",
+              "function": {
+                "name": "read_file",
+                "arguments": "{\"path\":\"calc.py\"}"
+              },
+              "id": "0w2fKTcEXdP2le6sUSCu3hgRItaFZxWZ"
+            },
+            {
+              "type": "function",
+              "function": {
+                "name": "read_file",
+                "arguments": "{\"path\":\"test_calc.py\"}"
+              },
+              "id": "4BUw1id6Y0ZgcYwoe2A7TJd9YTtGMztU"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "0w2fKTcEXdP2le6sUSCu3hgRItaFZxWZ",
+          "content": "{\"content\": \"def add(a, b):\\n    return a - b\\n\"}"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "4BUw1id6Y0ZgcYwoe2A7TJd9YTtGMztU",
+          "content": "{\"content\": \"import unittest\\nfrom calc import add\\n\\nclass Addition(unittest.TestCase):\\n    def test_positive(self): self.assertEqual(add(2, 3), 5)\\n    def test_negative(self): self.assertEqual(add(-2, -3), -5)\\n    def test_zero(self): self.assertEqual(add(0, 4), 4)\\n\\nif __name__ == \\\"__main__\\\": unittest.main()\\n\"}"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "type": "function",
+              "function": {
+                "name": "edit_calc",
+                "arguments": "{\"source\":\"def add(a, b):\\n    return a + b\"}"
+              },
+              "id": "nwOtBhOQwKKNbeaO3mjGRXNdW14hunJL"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "nwOtBhOQwKKNbeaO3mjGRXNdW14hunJL",
+          "content": "{\"saved\": \"calc.py\"}"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "type": "function",
+              "function": {
+                "name": "run_tests",
+                "arguments": "{}"
+              },
+              "id": "xZ41nWT1S9ZBZGlHMp3jWAEUgTo4lpEP"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "xZ41nWT1S9ZBZGlHMp3jWAEUgTo4lpEP",
+          "content": "{\"exit_code\": 0, \"stdout\": \"\", \"stderr\": \"test_negative (test_calc.Addition.test_negative) ... ok\\ntest_positive (test_calc.Addition.test_positive) ... ok\\ntest_zero (test_calc.Addition.test_zero) ... ok\\n\\n----------------------------------------------------------------------\\nRan 3 tests in 0.000s\\n\\nOK\\n\"}"
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "description": "Read calc.py or test_calc.py from the local workspace.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "enum": [
+                    "calc.py",
+                    "test_calc.py"
+                  ]
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "edit_calc",
+            "description": "Replace calc.py with the specified complete UTF-8 Python source. Test files cannot be changed.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "source": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "source"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "run_tests",
+            "description": "Run python -m unittest -v test_calc.py in this workspace and return actual output.",
+            "parameters": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            }
+          }
+        }
+      ],
+      "tool_choice": "auto",
+      "max_tokens": 4096,
+      "reasoning_effort": "medium"
+    },
+    "status": 200,
+    "elapsed_seconds": 3.153,
+    "selected_response": {
+      "choices": [
+        {
+          "finish_reason": "tool_calls",
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "edit_calc",
+                  "arguments": "{\"source\":\"def add(a, b):\\n    return a + b\"}"
+                },
+                "id": "nwOtBhOQwKKNbeaO3mjGRXNdW14hunJL"
+              }
+            ]
+          }
+        }
+      ],
+      "created": 1791055135,
+      "model": "qwen3.5-4b-bf16",
+      "system_fingerprint": "b11028-972d2313b",
+      "object": "chat.completion",
+      "usage": {
+        "completion_tokens": 267,
+        "prompt_tokens": 722,
+        "total_tokens": 989,
+        "prompt_tokens_details": {
+          "cached_tokens": 590
+        }
+      },
+      "id": "chatcmpl-jbEuAUi1pHWfDgWxeXqB1LXOJP6egOaP",
+      "timings": {
+        "cache_n": 590,
+        "prompt_n": 132,
+        "prompt_ms": 60.9,
+        "prompt_per_token_ms": 0.46136363636363636,
+        "prompt_per_second": 2167.487684729064,
+        "predicted_n": 267,
+        "predicted_ms": 2777.16,
+        "predicted_per_token_ms": 10.440451127819548,
+        "predicted_per_second": 95.78130176151177
+      }
+    },
+    "selection_note": "Visible reasoning fields omitted for brevity; full private receipt retained. No encrypted data decoded."
+  },
+  {
+    "name": "tool_result",
+    "tool": "edit_calc",
+    "args": {
+      "source": "def add(a, b):\n    return a + b"
+    },
+    "result": {
+      "saved": "calc.py"
+    }
+  },
+  {
+    "name": "tool_loop_2",
+    "path": "/v1/chat/completions",
+    "selected_request": {
+      "model": "qwen3.5-4b-bf16",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are a coding assistant. Use the supplied tools to inspect files, fix the requested bug, and run the tests. Read tool outputs and do not repeat an ineffective command. Report only actual results."
+        },
+        {
+          "role": "user",
+          "content": "Read calc.py and test_calc.py. Fix add so the three tests pass, run the tests, and report the result. Do not change test_calc.py."
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "type": "function",
+              "function": {
+                "name": "read_file",
+                "arguments": "{\"path\":\"calc.py\"}"
+              },
+              "id": "0w2fKTcEXdP2le6sUSCu3hgRItaFZxWZ"
+            },
+            {
+              "type": "function",
+              "function": {
+                "name": "read_file",
+                "arguments": "{\"path\":\"test_calc.py\"}"
+              },
+              "id": "4BUw1id6Y0ZgcYwoe2A7TJd9YTtGMztU"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "0w2fKTcEXdP2le6sUSCu3hgRItaFZxWZ",
+          "content": "{\"content\": \"def add(a, b):\\n    return a - b\\n\"}"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "4BUw1id6Y0ZgcYwoe2A7TJd9YTtGMztU",
+          "content": "{\"content\": \"import unittest\\nfrom calc import add\\n\\nclass Addition(unittest.TestCase):\\n    def test_positive(self): self.assertEqual(add(2, 3), 5)\\n    def test_negative(self): self.assertEqual(add(-2, -3), -5)\\n    def test_zero(self): self.assertEqual(add(0, 4), 4)\\n\\nif __name__ == \\\"__main__\\\": unittest.main()\\n\"}"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "type": "function",
+              "function": {
+                "name": "edit_calc",
+                "arguments": "{\"source\":\"def add(a, b):\\n    return a + b\"}"
+              },
+              "id": "nwOtBhOQwKKNbeaO3mjGRXNdW14hunJL"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "nwOtBhOQwKKNbeaO3mjGRXNdW14hunJL",
+          "content": "{\"saved\": \"calc.py\"}"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "type": "function",
+              "function": {
+                "name": "run_tests",
+                "arguments": "{}"
+              },
+              "id": "xZ41nWT1S9ZBZGlHMp3jWAEUgTo4lpEP"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "xZ41nWT1S9ZBZGlHMp3jWAEUgTo4lpEP",
+          "content": "{\"exit_code\": 0, \"stdout\": \"\", \"stderr\": \"test_negative (test_calc.Addition.test_negative) ... ok\\ntest_positive (test_calc.Addition.test_positive) ... ok\\ntest_zero (test_calc.Addition.test_zero) ... ok\\n\\n----------------------------------------------------------------------\\nRan 3 tests in 0.000s\\n\\nOK\\n\"}"
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "description": "Read calc.py or test_calc.py from the local workspace.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "enum": [
+                    "calc.py",
+                    "test_calc.py"
+                  ]
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "edit_calc",
+            "description": "Replace calc.py with the specified complete UTF-8 Python source. Test files cannot be changed.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "source": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "source"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "run_tests",
+            "description": "Run python -m unittest -v test_calc.py in this workspace and return actual output.",
+            "parameters": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            }
+          }
+        }
+      ],
+      "tool_choice": "auto",
+      "max_tokens": 4096,
+      "reasoning_effort": "medium"
+    },
+    "status": 200,
+    "elapsed_seconds": 0.797,
+    "selected_response": {
+      "choices": [
+        {
+          "finish_reason": "tool_calls",
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "run_tests",
+                  "arguments": "{}"
+                },
+                "id": "xZ41nWT1S9ZBZGlHMp3jWAEUgTo4lpEP"
+              }
+            ]
+          }
+        }
+      ],
+      "created": 1791055136,
+      "model": "qwen3.5-4b-bf16",
+      "system_fingerprint": "b11028-972d2313b",
+      "object": "chat.completion",
+      "usage": {
+        "completion_tokens": 42,
+        "prompt_tokens": 1011,
+        "total_tokens": 1053,
+        "prompt_tokens_details": {
+          "cached_tokens": 988
+        }
+      },
+      "id": "chatcmpl-wewAbTXfwsvrh2sqvDGecKdfUDfmPasQ",
+      "timings": {
+        "cache_n": 988,
+        "prompt_n": 23,
+        "prompt_ms": 60.08,
+        "prompt_per_token_ms": 2.612173913043478,
+        "prompt_per_second": 382.8229027962717,
+        "predicted_n": 42,
+        "predicted_ms": 431.794,
+        "predicted_per_token_ms": 10.531560975609755,
+        "predicted_per_second": 94.95268577145583
+      }
+    },
+    "selection_note": "Visible reasoning fields omitted for brevity; full private receipt retained. No encrypted data decoded."
+  },
+  {
+    "name": "tool_result",
+    "tool": "run_tests",
+    "args": {},
+    "result": {
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "test_negative (test_calc.Addition.test_negative) ... ok\ntest_positive (test_calc.Addition.test_positive) ... ok\ntest_zero (test_calc.Addition.test_zero) ... ok\n\n----------------------------------------------------------------------\nRan 3 tests in 0.000s\n\nOK\n"
+    }
+  },
+  {
+    "name": "tool_loop_3",
+    "path": "/v1/chat/completions",
+    "selected_request": {
+      "model": "qwen3.5-4b-bf16",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are a coding assistant. Use the supplied tools to inspect files, fix the requested bug, and run the tests. Read tool outputs and do not repeat an ineffective command. Report only actual results."
+        },
+        {
+          "role": "user",
+          "content": "Read calc.py and test_calc.py. Fix add so the three tests pass, run the tests, and report the result. Do not change test_calc.py."
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "type": "function",
+              "function": {
+                "name": "read_file",
+                "arguments": "{\"path\":\"calc.py\"}"
+              },
+              "id": "0w2fKTcEXdP2le6sUSCu3hgRItaFZxWZ"
+            },
+            {
+              "type": "function",
+              "function": {
+                "name": "read_file",
+                "arguments": "{\"path\":\"test_calc.py\"}"
+              },
+              "id": "4BUw1id6Y0ZgcYwoe2A7TJd9YTtGMztU"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "0w2fKTcEXdP2le6sUSCu3hgRItaFZxWZ",
+          "content": "{\"content\": \"def add(a, b):\\n    return a - b\\n\"}"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "4BUw1id6Y0ZgcYwoe2A7TJd9YTtGMztU",
+          "content": "{\"content\": \"import unittest\\nfrom calc import add\\n\\nclass Addition(unittest.TestCase):\\n    def test_positive(self): self.assertEqual(add(2, 3), 5)\\n    def test_negative(self): self.assertEqual(add(-2, -3), -5)\\n    def test_zero(self): self.assertEqual(add(0, 4), 4)\\n\\nif __name__ == \\\"__main__\\\": unittest.main()\\n\"}"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "type": "function",
+              "function": {
+                "name": "edit_calc",
+                "arguments": "{\"source\":\"def add(a, b):\\n    return a + b\"}"
+              },
+              "id": "nwOtBhOQwKKNbeaO3mjGRXNdW14hunJL"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "nwOtBhOQwKKNbeaO3mjGRXNdW14hunJL",
+          "content": "{\"saved\": \"calc.py\"}"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "type": "function",
+              "function": {
+                "name": "run_tests",
+                "arguments": "{}"
+              },
+              "id": "xZ41nWT1S9ZBZGlHMp3jWAEUgTo4lpEP"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "xZ41nWT1S9ZBZGlHMp3jWAEUgTo4lpEP",
+          "content": "{\"exit_code\": 0, \"stdout\": \"\", \"stderr\": \"test_negative (test_calc.Addition.test_negative) ... ok\\ntest_positive (test_calc.Addition.test_positive) ... ok\\ntest_zero (test_calc.Addition.test_zero) ... ok\\n\\n----------------------------------------------------------------------\\nRan 3 tests in 0.000s\\n\\nOK\\n\"}"
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "read_file",
+            "description": "Read calc.py or test_calc.py from the local workspace.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "enum": [
+                    "calc.py",
+                    "test_calc.py"
+                  ]
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "edit_calc",
+            "description": "Replace calc.py with the specified complete UTF-8 Python source. Test files cannot be changed.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "source": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "source"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "run_tests",
+            "description": "Run python -m unittest -v test_calc.py in this workspace and return actual output.",
+            "parameters": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            }
+          }
+        }
+      ],
+      "tool_choice": "auto",
+      "max_tokens": 4096,
+      "reasoning_effort": "medium"
+    },
+    "status": 200,
+    "elapsed_seconds": 2.185,
+    "selected_response": {
+      "choices": [
+        {
+          "finish_reason": "stop",
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "All three tests pass. The issue was that the `add` function was incorrectly returning `a - b` instead of `a + b`. I fixed it by changing the return statement to `return a + b`.\n\nTest results:\n- test_positive: ok\n- test_negative: ok\n- test_zero: ok\n\nAll 3 tests passed in 0.000s."
+          }
+        }
+      ],
+      "created": 1791055138,
+      "model": "qwen3.5-4b-bf16",
+      "system_fingerprint": "b11028-972d2313b",
+      "object": "chat.completion",
+      "usage": {
+        "completion_tokens": 174,
+        "prompt_tokens": 1146,
+        "total_tokens": 1320,
+        "prompt_tokens_details": {
+          "cached_tokens": 1052
+        }
+      },
+      "id": "chatcmpl-1iU9HZn53ipczTbTYmJCP5ySrx9Dh0uc",
+      "timings": {
+        "cache_n": 1052,
+        "prompt_n": 94,
+        "prompt_ms": 60.433,
+        "prompt_per_token_ms": 0.642904255319149,
+        "prompt_per_second": 1555.4415633842436,
+        "predicted_n": 174,
+        "predicted_ms": 1809.068,
+        "predicted_per_token_ms": 10.457040462427745,
+        "predicted_per_second": 95.62935168827264
+      }
+    },
+    "selection_note": "Visible reasoning fields omitted for brevity; full private receipt retained. No encrypted data decoded."
+  }
+]

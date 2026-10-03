@@ -1,0 +1,448 @@
+{
+  "result": "pass",
+  "model_output": "real native model, unscripted",
+  "effects": "in-memory toy application only; no jobs executed",
+  "sdk": "3.23.0",
+  "engine_sha256": "1659d42772f2577cfa3c27a700d94cdd1bcea7f8d6824ba388a4dc47f354fa83",
+  "inspector_sha256": "809c621bb915f734ee8e9db2fef01bc2e4a6c7ec3295e52b6045bc1f38e9409e",
+  "matcher_test_sha256": "13477fc998df3031784eba7ad8bee2b2b41ece3e045f6b917a004b22bf6e1073",
+  "trace": [
+    {
+      "operation": "state.snapshot",
+      "occurrence": "frozen",
+      "state": {
+        "revision": 0,
+        "principal": "alice",
+        "available": [
+          "task-a",
+          "task-b"
+        ]
+      },
+      "definition": "task-snapshot-v1-sha256:08d15317689b636615377cd3a38e4676bd47b08b90eb27ba6f2aded53676c534"
+    },
+    {
+      "operation": "state.derive_language",
+      "occurrence": "frozen",
+      "grammar": "root ::= \"WAIT\" | \"START task-a\" | \"START task-b\"\n"
+    },
+    {
+      "operation": "state.request",
+      "occurrence": "stale",
+      "response": {
+        "id": "resp_50d702b1e6024f07944671c0baa9e9d3",
+        "access_programs": null,
+        "created_at": 1791012004.0,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "metadata": {},
+        "model": "qwen3.8-flash-next",
+        "object": "response",
+        "output": [
+          {
+            "id": "msg_f47916fca6f1473bb29399681e68cbc4",
+            "content": [
+              {
+                "annotations": [],
+                "text": "START task-a",
+                "type": "output_text",
+                "logprobs": []
+              }
+            ],
+            "role": "assistant",
+            "status": "completed",
+            "type": "message",
+            "phase": null
+          }
+        ],
+        "parallel_tool_calls": true,
+        "temperature": 0.0,
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": 1.0,
+        "background": false,
+        "completed_at": 1791012006.0,
+        "conversation": null,
+        "max_output_tokens": 48,
+        "max_tool_calls": null,
+        "moderation": null,
+        "previous_response_id": null,
+        "prompt": null,
+        "prompt_cache_diagnostics": null,
+        "prompt_cache_key": null,
+        "prompt_cache_options": null,
+        "prompt_cache_retention": null,
+        "reasoning": {
+          "context": null,
+          "effort": "none",
+          "generate_summary": null,
+          "mode": null,
+          "summary": null
+        },
+        "safety_identifier": null,
+        "service_tier": null,
+        "status": "completed",
+        "text": {
+          "format": {
+            "type": "text"
+          },
+          "verbosity": null
+        },
+        "top_logprobs": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 25,
+          "input_tokens_details": {
+            "cache_write_tokens": 25,
+            "cached_tokens": 0
+          },
+          "output_tokens": 4,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 29
+        },
+        "user": null,
+        "store": false
+      },
+      "native": {
+        "generated": 4,
+        "prompt_tokens": 25,
+        "prompt_ms": 1512.4,
+        "decode_ms": 142.4,
+        "finish": "stop",
+        "drafts_accepted": 0,
+        "drafts_offered": 0,
+        "reused": 0,
+        "hits": 1801,
+        "lookups": 1920,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 58.9,
+        "prompt_read": 25
+      }
+    },
+    {
+      "operation": "state.validate",
+      "occurrence": "stale",
+      "result": "accepted",
+      "text": "START task-a"
+    },
+    {
+      "operation": "state.check_revision",
+      "occurrence": "stale",
+      "result": "rejected before effects",
+      "reason": "state or authorization changed; derive a new contract"
+    },
+    {
+      "operation": "state.snapshot",
+      "occurrence": "fresh",
+      "state": {
+        "revision": 1,
+        "principal": "alice",
+        "available": [
+          "task-a"
+        ]
+      },
+      "definition": "task-snapshot-v1-sha256:67f37ff76aefd9699f98d62232b333c9442591a3f1f9c4794aeb6766da277830"
+    },
+    {
+      "operation": "state.derive_language",
+      "occurrence": "fresh",
+      "grammar": "root ::= \"WAIT\" | \"START task-a\"\n"
+    },
+    {
+      "operation": "state.request",
+      "occurrence": "fresh",
+      "response": {
+        "id": "resp_249f4757a9d5482594626938cc6bdd23",
+        "access_programs": null,
+        "created_at": 1791012006.0,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "metadata": {},
+        "model": "qwen3.8-flash-next",
+        "object": "response",
+        "output": [
+          {
+            "id": "msg_d7cd230de0944fc2b1682ca0396385b1",
+            "content": [
+              {
+                "annotations": [],
+                "text": "START task-a",
+                "type": "output_text",
+                "logprobs": []
+              }
+            ],
+            "role": "assistant",
+            "status": "completed",
+            "type": "message",
+            "phase": null
+          }
+        ],
+        "parallel_tool_calls": true,
+        "temperature": 0.0,
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": 1.0,
+        "background": false,
+        "completed_at": 1791012006.0,
+        "conversation": null,
+        "max_output_tokens": 48,
+        "max_tool_calls": null,
+        "moderation": null,
+        "previous_response_id": null,
+        "prompt": null,
+        "prompt_cache_diagnostics": null,
+        "prompt_cache_key": null,
+        "prompt_cache_options": null,
+        "prompt_cache_retention": null,
+        "reasoning": {
+          "context": null,
+          "effort": "none",
+          "generate_summary": null,
+          "mode": null,
+          "summary": null
+        },
+        "safety_identifier": null,
+        "service_tier": null,
+        "status": "completed",
+        "text": {
+          "format": {
+            "type": "text"
+          },
+          "verbosity": null
+        },
+        "top_logprobs": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 25,
+          "input_tokens_details": {
+            "cache_write_tokens": 7,
+            "cached_tokens": 18
+          },
+          "output_tokens": 4,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 29
+        },
+        "user": null,
+        "store": false
+      },
+      "native": {
+        "generated": 4,
+        "prompt_tokens": 25,
+        "prompt_ms": 90.4,
+        "decode_ms": 49.8,
+        "finish": "stop",
+        "drafts_accepted": 0,
+        "drafts_offered": 0,
+        "reused": 18,
+        "hits": 1801,
+        "lookups": 1920,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 0.0,
+        "prompt_read": 7
+      }
+    },
+    {
+      "operation": "state.validate",
+      "occurrence": "fresh",
+      "result": "accepted",
+      "text": "START task-a"
+    },
+    {
+      "operation": "state.apply",
+      "occurrence": "fresh",
+      "command": "START task-a",
+      "before": {
+        "revision": 1,
+        "principal": "alice",
+        "available": [
+          "task-a"
+        ]
+      },
+      "after": {
+        "revision": 2,
+        "principal": "alice",
+        "available": []
+      }
+    },
+    {
+      "operation": "state.snapshot",
+      "occurrence": "after",
+      "state": {
+        "revision": 2,
+        "principal": "alice",
+        "available": []
+      },
+      "definition": "task-snapshot-v1-sha256:cb066f65e164020af46ba6085dfad3c575467b2514548a20a0583a94e1790cea"
+    },
+    {
+      "operation": "state.derive_language",
+      "occurrence": "after",
+      "grammar": "root ::= \"WAIT\"\n"
+    },
+    {
+      "operation": "state.request",
+      "occurrence": "limited",
+      "response": {
+        "id": "resp_703c42d30fc24989bd7fcbb032a72087",
+        "access_programs": null,
+        "created_at": 1791012006.0,
+        "error": null,
+        "incomplete_details": {
+          "reason": "max_output_tokens"
+        },
+        "instructions": null,
+        "metadata": {},
+        "model": "qwen3.8-flash-next",
+        "object": "response",
+        "output": [
+          {
+            "id": "msg_c0d15f978e524167a07bd4377b33f0e4",
+            "content": [
+              {
+                "annotations": [],
+                "text": "WAIT",
+                "type": "output_text",
+                "logprobs": []
+              }
+            ],
+            "role": "assistant",
+            "status": "incomplete",
+            "type": "message",
+            "phase": null
+          }
+        ],
+        "parallel_tool_calls": true,
+        "temperature": 0.0,
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": 1.0,
+        "background": false,
+        "completed_at": null,
+        "conversation": null,
+        "max_output_tokens": 1,
+        "max_tool_calls": null,
+        "moderation": null,
+        "previous_response_id": null,
+        "prompt": null,
+        "prompt_cache_diagnostics": null,
+        "prompt_cache_key": null,
+        "prompt_cache_options": null,
+        "prompt_cache_retention": null,
+        "reasoning": {
+          "context": null,
+          "effort": "none",
+          "generate_summary": null,
+          "mode": null,
+          "summary": null
+        },
+        "safety_identifier": null,
+        "service_tier": null,
+        "status": "incomplete",
+        "text": {
+          "format": {
+            "type": "text"
+          },
+          "verbosity": null
+        },
+        "top_logprobs": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 25,
+          "input_tokens_details": {
+            "cache_write_tokens": 7,
+            "cached_tokens": 18
+          },
+          "output_tokens": 1,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 26
+        },
+        "user": null,
+        "store": false
+      },
+      "native": {
+        "generated": 1,
+        "prompt_tokens": 25,
+        "prompt_ms": 88.1,
+        "decode_ms": 12.1,
+        "finish": "length",
+        "drafts_accepted": 0,
+        "drafts_offered": 0,
+        "reused": 18,
+        "hits": 450,
+        "lookups": 480,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 0.0,
+        "prompt_read": 7
+      }
+    },
+    {
+      "operation": "state.validate",
+      "occurrence": "limited",
+      "result": "rejected",
+      "reason": "generation did not complete",
+      "text": "WAIT"
+    },
+    {
+      "operation": "constraint.native_test",
+      "occurrence": "inspection",
+      "result": "passed"
+    },
+    {
+      "operation": "constraint.native_test",
+      "occurrence": "derived-languages",
+      "result": "passed"
+    }
+  ],
+  "commands": [
+    [
+      "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-cpu/grammar_inspection_test",
+      "/boot/Strata-data/packs/coder-iq1_m/tokenizer"
+    ],
+    [
+      "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-cpu/grammar_native_test",
+      "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/evidence/g4/state-checkpoint/cases.json",
+      "/boot/Strata-data/packs/coder-iq1_m/tokenizer",
+      "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/evidence/g4/state-checkpoint/vocab-audit.bin"
+    ]
+  ],
+  "engine_info": {
+    "version": "0.1.38",
+    "context": 4096,
+    "kv": "int8",
+    "kv_resident": 0,
+    "expert_slots": 9535,
+    "expert_cache_mib": 18589,
+    "expert_slots_primary": 9535,
+    "expert_cache_primary_mib": 18589,
+    "spec": 1,
+    "mtp_max": 0,
+    "lookup": 0,
+    "vram_free_mib": 462,
+    "cvec": 0,
+    "arena_mib": 0,
+    "pool_workers": 5,
+    "pcie_frac": "0.55",
+    "spec_min_p": "0.00",
+    "conversation_cache_mib": 0,
+    "conversation_cache_slots": 4,
+    "conversation_cache_min_free_mib": 2560,
+    "decode_mode": "target",
+    "requested_spec": 1,
+    "requested_lookup": 3,
+    "mtp_loaded": 0,
+    "mtp_vram_mib": "0.0",
+    "grammar": "gbnf-v2",
+    "engine": "0.1.38"
+  },
+  "vocab_audit_sha256": "6fd80168d9b84473f2ca03963388698cd1f56e85acd6f525b15912e1ac4d7bca"
+}

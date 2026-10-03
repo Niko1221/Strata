@@ -1,0 +1,89 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "medium"
+  },
+  "max_output_tokens": 3072,
+  "temperature": 0,
+  "stream": true,
+  "input": [
+    {
+      "role": "user",
+      "content": "Protocol fixture: call update_goal exactly once using these argument values: {\"status\": \"complete\"}. Emit the tool call and stop. The test client will supply a mocked result."
+    },
+    {
+      "id": "rs_9067fd3d3ce84f7db990ae7303eb58bb",
+      "type": "reasoning",
+      "status": "completed",
+      "summary": [],
+      "content": [
+        {
+          "type": "reasoning_text",
+          "text": "The user wants me to call update_goal exactly once with {\"status\": \"complete\"} and then stop.\n"
+        }
+      ],
+      "encrypted_content": "strata-r1.gAAAAABqwXD1S4Wea5M3rwCt5Rb19pnSlnzV0JrkFDXj8o5KQ4YY9GiGLAhPQ6lt44rVimkakjDyryhjADvnMlcVKaMWLfng3l9THXX64UqD9xrbrIL-XBa872FdCeG4LGnawL4DJXIOcsIecYh-65xgvaoQ39qvBBK4e9jJh6QxZMCaKSspZo5N1Hr4abG-S3lU_FNJmRepqXtSztYiG-NLzg4-UOXTKAwRQx1Tc-1Jbjwma2R4s_4W6r0slSfY0KkqV1uC9ealS9elbiaEl917rD-GBoMdR0eDt8PfflvTWlWcGzM5hZK3-vpSxWDiq3_NERqvXggDmGE-fKp1fIfoQjD4AycfKLasIfkH68eGFbMfkHFMxKOmxbQK0ZzMfTf2nGnpYKFH4W2YL_e2TbOBRBLuIpSqM7BmlZxxBKIvl45oHVNsow0="
+    },
+    {
+      "id": "fc_c07ce5e3cfe14223b26686339f146258",
+      "type": "function_call",
+      "status": "completed",
+      "call_id": "call_a90c4a9117bb4d1cab5096bc",
+      "name": "update_goal",
+      "arguments": "{\"status\":\"complete\"}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_a90c4a9117bb4d1cab5096bc",
+      "output": "MOCK RESULT: arbitrary non-JSON text, including <tool_call>. No action was executed."
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "update_goal",
+      "description": "Update the existing goal.\nSet status to `paused` only at the user's explicit request to pause this goal, never on your own initiative. Ask if unclear; a later resume revokes that request. Report the returned status and stop goal work. Budget limits take precedence over pausing.\nSet status to `complete` only when the objective has actually been achieved and no required work remains.\nSet status to `blocked` only when the same blocking condition has repeated for at least three consecutive goal turns, counting the original/user-triggered turn and any automatic continuations, and the agent cannot make meaningful progress without user input or an external-state change.\nIf the user resumes a goal that was previously marked `blocked`, treat the resumed run as a fresh blocked audit. If the same blocking condition then repeats for at least three consecutive resumed goal turns, set status to `blocked` again.\nOnce the blocked threshold is satisfied, do not keep reporting that you are still blocked while leaving the goal active; set status to `blocked`.\nDo not use `blocked` merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.\nDo not mark a goal complete merely because its budget is nearly exhausted or because you are stopping work.\nYou cannot use this tool to resume, budget-limit, or usage-limit a goal; those status changes are controlled by the user or system.\nWhen marking a budgeted goal achieved with status `complete`, report the final token usage from the tool result to the user.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Required. `paused` requires an explicit user request. Set to `complete` only when the objective is achieved and no required work remains. Set to `blocked` only after the same blocking condition has recurred for at least three consecutive goal turns and the agent is at an impasse. After a previously blocked goal is resumed, the resumed run starts a fresh blocked audit.",
+            "enum": [
+              "complete",
+              "blocked",
+              "paused"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "tool_choice": "none",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "ack",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "ack": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "ack"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

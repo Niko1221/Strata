@@ -1,0 +1,120 @@
+event: response.created
+data: {"type": "response.created", "sequence_number": 0, "response": {"id": "resp_834c7cf849624f268c5886b02118c235", "object": "response", "created_at": 1791058757, "status": "queued", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "namespace", "name": "multi_agent_v1", "description": "Tools for spawning and managing sub-agents.", "tools": [{"type": "function", "name": "resume_agent", "description": "Resume a previously closed agent by id so it can receive send_input and wait_agent calls.", "strict": false, "parameters": {"type": "object", "properties": {"id": {"type": "string", "description": "Agent id to resume."}}, "required": ["id"], "additionalProperties": false}}]}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+event: response.in_progress
+data: {"type": "response.in_progress", "sequence_number": 1, "response": {"id": "resp_834c7cf849624f268c5886b02118c235", "object": "response", "created_at": 1791058757, "status": "in_progress", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "namespace", "name": "multi_agent_v1", "description": "Tools for spawning and managing sub-agents.", "tools": [{"type": "function", "name": "resume_agent", "description": "Resume a previously closed agent by id so it can receive send_input and wait_agent calls.", "strict": false, "parameters": {"type": "object", "properties": {"id": {"type": "string", "description": "Agent id to resume."}}, "required": ["id"], "additionalProperties": false}}]}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"id": "rs_beb744420ef641dc89eb1a7c29ac0ec8", "type": "reasoning", "status": "in_progress", "summary": [], "content": [{"type": "reasoning_text", "text": ""}]}}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 3, "item_id": "rs_beb744420ef641dc89eb1a7c29ac0ec8", "output_index": 0, "content_index": 0, "delta": "The"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 4, "item_id": "rs_beb744420ef641dc89eb1a7c29ac0ec8", "output_index": 0, "content_index": 0, "delta": " user"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 5, "item_id": "rs_beb744420ef641dc89eb1a7c29ac0ec8", "output_index": 0, "content_index": 0, "delta": " wants"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 6, "item_id": "rs_beb744420ef641dc89eb1a7c29ac0ec8", "output_index": 0, "content_index": 0, "delta": " a"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 7, "item_id": "rs_beb744420ef641dc89eb1a7c29ac0ec8", "output_index": 0, "content_index": 0, "delta": " single"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 8, "item_id": "rs_beb744420ef641dc89eb1a7c29ac0ec8", "output_index": 0, "content_index": 0, "delta": " tool"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 9, "item_id": "rs_beb744420ef641dc89eb1a7c29ac0ec8", "output_index": 0, "content_index": 0, "delta": " call"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 10, "item_id": "rs_beb744420ef641dc89eb1a7c29ac0ec8", "output_index": 0, "content_index": 0, "delta": " with"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 11, "item_id": "rs_beb744420ef641dc89eb1a7c29ac0ec8", "output_index": 0, "content_index": 0, "delta": " the"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 12, "item_id": "rs_beb744420ef641dc89eb1a7c29ac0ec8", "output_index": 0, "content_index": 0, "delta": " specified"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 13, "item_id": "rs_beb744420ef641dc89eb1a7c29ac0ec8", "output_index": 0, "content_index": 0, "delta": " arguments"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 14, "item_id": "rs_beb744420ef641dc89eb1a7c29ac0ec8", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 15, "item_id": "rs_beb744420ef641dc89eb1a7c29ac0ec8", "output_index": 0, "content_index": 0, "delta": " I"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 16, "item_id": "rs_beb744420ef641dc89eb1a7c29ac0ec8", "output_index": 0, "content_index": 0, "delta": " should"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 17, "item_id": "rs_beb744420ef641dc89eb1a7c29ac0ec8", "output_index": 0, "content_index": 0, "delta": " emit"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 18, "item_id": "rs_beb744420ef641dc89eb1a7c29ac0ec8", "output_index": 0, "content_index": 0, "delta": " exactly"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 19, "item_id": "rs_beb744420ef641dc89eb1a7c29ac0ec8", "output_index": 0, "content_index": 0, "delta": " that"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 20, "item_id": "rs_beb744420ef641dc89eb1a7c29ac0ec8", "output_index": 0, "content_index": 0, "delta": " call"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 21, "item_id": "rs_beb744420ef641dc89eb1a7c29ac0ec8", "output_index": 0, "content_index": 0, "delta": " and"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 22, "item_id": "rs_beb744420ef641dc89eb1a7c29ac0ec8", "output_index": 0, "content_index": 0, "delta": " stop"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 23, "item_id": "rs_beb744420ef641dc89eb1a7c29ac0ec8", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 24, "item_id": "rs_beb744420ef641dc89eb1a7c29ac0ec8", "output_index": 0, "content_index": 0, "delta": "\n"}
+
+event: response.reasoning_text.done
+data: {"type": "response.reasoning_text.done", "sequence_number": 25, "item_id": "rs_beb744420ef641dc89eb1a7c29ac0ec8", "output_index": 0, "content_index": 0, "text": "The user wants a single tool call with the specified arguments. I should emit exactly that call and stop.\n"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 26, "output_index": 0, "item": {"id": "rs_beb744420ef641dc89eb1a7c29ac0ec8", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants a single tool call with the specified arguments. I should emit exactly that call and stop.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWNH0RY6OCZW6VQHEhHBrmbPEUKdb5vftQRVn-5W3PatfBxe51lRzW403L8akdajho_OFqlS5wFIh62OTu56c6TSg71eMKwSVhYpbs8jQbkNTBNIHse_0pxkXaGKPnd8J3xqkFbsE-kEE2DpkddrOQawTpW2ZXSMfVhcugJd7modK0xo9F3T9XfzbEtKgAE36yDWA04vAUS6pK13-oQMFOCxu3m-89Z34atWjXGcxNXI1q-pzJkQ_Kh2XVfl8fLoIM46mJjRfDv96jIHXEU5Xk9x1NZ2K1Pqmivu8diuZ4vp_TkPbE8zpYfUgolLgv204Vqvfmm3GKJLQzFvbemo81ykgL3pZz8YAOHRzvWE5ylxaZJCUdICZvcqpbMZWxfOwQ81OZulF_PIxaSqQNu7XpPiAwv3kIheMW-b8DGbkCuowwHTOb4uD5Wc4-YcMud-LTbS"}}
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 27, "output_index": 1, "item": {"id": "fc_34c872105bb3416a8d5c599a07f93668", "type": "function_call", "status": "in_progress", "call_id": "call_bb581689a19543e3b6b171b4", "name": "resume_agent", "arguments": "", "namespace": "multi_agent_v1"}}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 28, "item_id": "fc_34c872105bb3416a8d5c599a07f93668", "output_index": 1, "delta": "{"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 29, "item_id": "fc_34c872105bb3416a8d5c599a07f93668", "output_index": 1, "delta": "\"id\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 30, "item_id": "fc_34c872105bb3416a8d5c599a07f93668", "output_index": 1, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 31, "item_id": "fc_34c872105bb3416a8d5c599a07f93668", "output_index": 1, "delta": "fixture"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 32, "item_id": "fc_34c872105bb3416a8d5c599a07f93668", "output_index": 1, "delta": "-agent"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 33, "item_id": "fc_34c872105bb3416a8d5c599a07f93668", "output_index": 1, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 34, "item_id": "fc_34c872105bb3416a8d5c599a07f93668", "output_index": 1, "delta": "}"}
+
+event: response.function_call_arguments.done
+data: {"type": "response.function_call_arguments.done", "sequence_number": 35, "item_id": "fc_34c872105bb3416a8d5c599a07f93668", "output_index": 1, "arguments": "{\"id\":\"fixture-agent\"}"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 36, "output_index": 1, "item": {"id": "fc_34c872105bb3416a8d5c599a07f93668", "type": "function_call", "status": "completed", "call_id": "call_bb581689a19543e3b6b171b4", "name": "resume_agent", "arguments": "{\"id\":\"fixture-agent\"}", "namespace": "multi_agent_v1"}}
+
+event: response.completed
+data: {"type": "response.completed", "sequence_number": 37, "response": {"id": "resp_834c7cf849624f268c5886b02118c235", "object": "response", "created_at": 1791058757, "status": "completed", "completed_at": 1791058760, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [{"id": "rs_beb744420ef641dc89eb1a7c29ac0ec8", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants a single tool call with the specified arguments. I should emit exactly that call and stop.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWNH0RY6OCZW6VQHEhHBrmbPEUKdb5vftQRVn-5W3PatfBxe51lRzW403L8akdajho_OFqlS5wFIh62OTu56c6TSg71eMKwSVhYpbs8jQbkNTBNIHse_0pxkXaGKPnd8J3xqkFbsE-kEE2DpkddrOQawTpW2ZXSMfVhcugJd7modK0xo9F3T9XfzbEtKgAE36yDWA04vAUS6pK13-oQMFOCxu3m-89Z34atWjXGcxNXI1q-pzJkQ_Kh2XVfl8fLoIM46mJjRfDv96jIHXEU5Xk9x1NZ2K1Pqmivu8diuZ4vp_TkPbE8zpYfUgolLgv204Vqvfmm3GKJLQzFvbemo81ykgL3pZz8YAOHRzvWE5ylxaZJCUdICZvcqpbMZWxfOwQ81OZulF_PIxaSqQNu7XpPiAwv3kIheMW-b8DGbkCuowwHTOb4uD5Wc4-YcMud-LTbS"}, {"id": "fc_34c872105bb3416a8d5c599a07f93668", "type": "function_call", "status": "completed", "call_id": "call_bb581689a19543e3b6b171b4", "name": "resume_agent", "arguments": "{\"id\":\"fixture-agent\"}", "namespace": "multi_agent_v1"}], "usage": {"input_tokens": 339, "output_tokens": 55, "total_tokens": 394, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 339}, "output_tokens_details": {"reasoning_tokens": 23}}, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "namespace", "name": "multi_agent_v1", "description": "Tools for spawning and managing sub-agents.", "tools": [{"type": "function", "name": "resume_agent", "description": "Resume a previously closed agent by id so it can receive send_input and wait_agent calls.", "strict": false, "parameters": {"type": "object", "properties": {"id": {"type": "string", "description": "Agent id to resume."}}, "required": ["id"], "additionalProperties": false}}]}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+

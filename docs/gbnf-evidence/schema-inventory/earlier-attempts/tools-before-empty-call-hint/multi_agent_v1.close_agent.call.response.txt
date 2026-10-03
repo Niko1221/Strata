@@ -1,0 +1,282 @@
+event: response.created
+data: {"type": "response.created", "sequence_number": 0, "response": {"id": "resp_aca205b0156a4e2e959aab9a49577d8e", "object": "response", "created_at": 1791059228, "status": "queued", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "namespace", "name": "multi_agent_v1", "description": "Tools for spawning and managing sub-agents.", "tools": [{"type": "function", "name": "close_agent", "description": "Close an agent and any open descendants when they are no longer needed, and return the target agent's previous status before shutdown was requested. Completed agents remain open and count toward the concurrency limit until closed. Don't keep agents open for too long if they are not needed anymore.", "strict": false, "parameters": {"type": "object", "properties": {"target": {"type": "string", "description": "Agent id to close (from spawn_agent)."}}, "required": ["target"], "additionalProperties": false}}]}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+event: response.in_progress
+data: {"type": "response.in_progress", "sequence_number": 1, "response": {"id": "resp_aca205b0156a4e2e959aab9a49577d8e", "object": "response", "created_at": 1791059228, "status": "in_progress", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "namespace", "name": "multi_agent_v1", "description": "Tools for spawning and managing sub-agents.", "tools": [{"type": "function", "name": "close_agent", "description": "Close an agent and any open descendants when they are no longer needed, and return the target agent's previous status before shutdown was requested. Completed agents remain open and count toward the concurrency limit until closed. Don't keep agents open for too long if they are not needed anymore.", "strict": false, "parameters": {"type": "object", "properties": {"target": {"type": "string", "description": "Agent id to close (from spawn_agent)."}}, "required": ["target"], "additionalProperties": false}}]}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"id": "rs_3ecfbea1bde44952af28188e5aebb222", "type": "reasoning", "status": "in_progress", "summary": [], "content": [{"type": "reasoning_text", "text": ""}]}}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 3, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": "We"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 4, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " need"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 5, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " answer"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 6, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " user"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 7, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": "'s"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 8, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " request"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 9, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": ":"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 10, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " call"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 11, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " multi"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 12, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": "_agent"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 13, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": "_v"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 14, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": "1"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 15, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": ".close"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 16, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": "_agent"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 17, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " exactly"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 18, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " once"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 19, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " using"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 20, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " argument"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 21, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " values"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 22, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " {\""}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 23, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": "target"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 24, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": "\":"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 25, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " \""}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 26, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": "fixture"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 27, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": "-agent"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 28, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": "\""}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 29, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": "}."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 30, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " Direct"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 31, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " parameter"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 32, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " names"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 33, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": ":"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 34, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " do"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 35, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " not"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 36, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " wrap"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 37, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " them"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 38, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " in"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 39, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " an"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 40, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " arguments"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 41, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " parameter"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 42, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 43, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " Need"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 44, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " emit"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 45, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " tool"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 46, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " call"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 47, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " and"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 48, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " stop"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 49, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 50, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " Need"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 51, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " final"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 52, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " only"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 53, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " tool"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 54, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " call"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 55, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": "?"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 56, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " They"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 57, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " say"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 58, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " emit"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 59, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " tool"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 60, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " call"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 61, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " and"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 62, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " stop"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 63, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 64, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " We"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 65, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " should"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 66, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " call"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 67, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " function"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 68, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " with"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 69, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " target"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 70, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " fixture"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 71, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": "-agent"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 72, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 73, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " Ensure"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 74, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " no"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 75, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " extra"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 76, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": " text"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 77, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 78, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "delta": "\n"}
+
+event: response.reasoning_text.done
+data: {"type": "response.reasoning_text.done", "sequence_number": 79, "item_id": "rs_3ecfbea1bde44952af28188e5aebb222", "output_index": 0, "content_index": 0, "text": "We need answer user's request: call multi_agent_v1.close_agent exactly once using argument values {\"target\": \"fixture-agent\"}. Direct parameter names: do not wrap them in an arguments parameter. Need emit tool call and stop. Need final only tool call? They say emit tool call and stop. We should call function with target fixture-agent. Ensure no extra text.\n"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 80, "output_index": 0, "item": {"id": "rs_3ecfbea1bde44952af28188e5aebb222", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "We need answer user's request: call multi_agent_v1.close_agent exactly once using argument values {\"target\": \"fixture-agent\"}. Direct parameter names: do not wrap them in an arguments parameter. Need emit tool call and stop. Need final only tool call? They say emit tool call and stop. We should call function with target fixture-agent. Ensure no extra text.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWUg4hDvPkUbtgp4QMC3DU3Ji10Ga5q2nm8bQEvj2-RWhT-yeKdb0tg2dD2Kb5OasqabGn094JCzn-OUSYpJrKr_9rB5K4dERDYnrYu7m1ofH_uxhsyPKu3vmmXIpW-O5vM0QNAhzcCSJoUFSx1mkJikLgyn2tPVszGCK3Px1GJ1b9D_WrI9SjTUdN7lg3EZ28TXj_4EOr1_byFRIyV1B2O4uQiTsCYWGxlgHEULubZmMAQlwEtMyPmch_sTqfMMt-rcp8_c8XGpzGW_oLeoXraCkBUTUwTwzfVKAbNnOt9Y0qpTPriLe8w-kJnbASJS2_uYcuCJFq4wikFImcZ4GbUdsbRBXyltOws37CZLsFFQiORj9-9Sl9QBvvaVF8g-y_a8nMf1tS_37hkBpl8ABUMEUt6ijREjIXerTqxAHKs8a3ac-qlv2lpgjoiVUOoNqiRbvEpaLmNFWDKP0m6tG90F0Vije4ekYmGC5XrVT7P-bWIYDt0kxGatSuHeGWmJu9sj7G7bvpU3X4ZAOoB0Xdc_-hJnk-TM_GwsgBxewx7pbPxSeRaoiAdTgeqmhLlSZaJ10OrpwHDlfUzdalEj2XEAaa0xvEDr-MEHI6YIyY-Z65i_AYvuXwTCFbyQriAzHOpHlztmqsRr7RVNuGulXrgj_ifLT5VKSfEda9rIWFyKILMzTy1zOaP3JhIox_5Ex9o0hIlByz3WmVpks1jig0uFONsy6rbAFMgJPhGqqxu3FO560981v3h3hGA5NP1z-Ew5ryyzeXDOF5I09d6zpAhC8Q=="}}
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 81, "output_index": 1, "item": {"id": "fc_51a73b2bff84425ca2061302677da01e", "type": "function_call", "status": "in_progress", "call_id": "call_f51f226a5502483d8aa40425", "name": "close_agent", "arguments": "", "namespace": "multi_agent_v1"}}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 82, "item_id": "fc_51a73b2bff84425ca2061302677da01e", "output_index": 1, "delta": "{"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 83, "item_id": "fc_51a73b2bff84425ca2061302677da01e", "output_index": 1, "delta": "\"target\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 84, "item_id": "fc_51a73b2bff84425ca2061302677da01e", "output_index": 1, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 85, "item_id": "fc_51a73b2bff84425ca2061302677da01e", "output_index": 1, "delta": "fixture"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 86, "item_id": "fc_51a73b2bff84425ca2061302677da01e", "output_index": 1, "delta": "-agent"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 87, "item_id": "fc_51a73b2bff84425ca2061302677da01e", "output_index": 1, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 88, "item_id": "fc_51a73b2bff84425ca2061302677da01e", "output_index": 1, "delta": "}"}
+
+event: response.function_call_arguments.done
+data: {"type": "response.function_call_arguments.done", "sequence_number": 89, "item_id": "fc_51a73b2bff84425ca2061302677da01e", "output_index": 1, "arguments": "{\"target\":\"fixture-agent\"}"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 90, "output_index": 1, "item": {"id": "fc_51a73b2bff84425ca2061302677da01e", "type": "function_call", "status": "completed", "call_id": "call_f51f226a5502483d8aa40425", "name": "close_agent", "arguments": "{\"target\":\"fixture-agent\"}", "namespace": "multi_agent_v1"}}
+
+event: response.completed
+data: {"type": "response.completed", "sequence_number": 91, "response": {"id": "resp_aca205b0156a4e2e959aab9a49577d8e", "object": "response", "created_at": 1791059228, "status": "completed", "completed_at": 1791059233, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [{"id": "rs_3ecfbea1bde44952af28188e5aebb222", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "We need answer user's request: call multi_agent_v1.close_agent exactly once using argument values {\"target\": \"fixture-agent\"}. Direct parameter names: do not wrap them in an arguments parameter. Need emit tool call and stop. Need final only tool call? They say emit tool call and stop. We should call function with target fixture-agent. Ensure no extra text.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWUg4hDvPkUbtgp4QMC3DU3Ji10Ga5q2nm8bQEvj2-RWhT-yeKdb0tg2dD2Kb5OasqabGn094JCzn-OUSYpJrKr_9rB5K4dERDYnrYu7m1ofH_uxhsyPKu3vmmXIpW-O5vM0QNAhzcCSJoUFSx1mkJikLgyn2tPVszGCK3Px1GJ1b9D_WrI9SjTUdN7lg3EZ28TXj_4EOr1_byFRIyV1B2O4uQiTsCYWGxlgHEULubZmMAQlwEtMyPmch_sTqfMMt-rcp8_c8XGpzGW_oLeoXraCkBUTUwTwzfVKAbNnOt9Y0qpTPriLe8w-kJnbASJS2_uYcuCJFq4wikFImcZ4GbUdsbRBXyltOws37CZLsFFQiORj9-9Sl9QBvvaVF8g-y_a8nMf1tS_37hkBpl8ABUMEUt6ijREjIXerTqxAHKs8a3ac-qlv2lpgjoiVUOoNqiRbvEpaLmNFWDKP0m6tG90F0Vije4ekYmGC5XrVT7P-bWIYDt0kxGatSuHeGWmJu9sj7G7bvpU3X4ZAOoB0Xdc_-hJnk-TM_GwsgBxewx7pbPxSeRaoiAdTgeqmhLlSZaJ10OrpwHDlfUzdalEj2XEAaa0xvEDr-MEHI6YIyY-Z65i_AYvuXwTCFbyQriAzHOpHlztmqsRr7RVNuGulXrgj_ifLT5VKSfEda9rIWFyKILMzTy1zOaP3JhIox_5Ex9o0hIlByz3WmVpks1jig0uFONsy6rbAFMgJPhGqqxu3FO560981v3h3hGA5NP1z-Ew5ryyzeXDOF5I09d6zpAhC8Q=="}, {"id": "fc_51a73b2bff84425ca2061302677da01e", "type": "function_call", "status": "completed", "call_id": "call_f51f226a5502483d8aa40425", "name": "close_agent", "arguments": "{\"target\":\"fixture-agent\"}", "namespace": "multi_agent_v1"}], "usage": {"input_tokens": 406, "output_tokens": 109, "total_tokens": 515, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 406}, "output_tokens_details": {"reasoning_tokens": 77}}, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "namespace", "name": "multi_agent_v1", "description": "Tools for spawning and managing sub-agents.", "tools": [{"type": "function", "name": "close_agent", "description": "Close an agent and any open descendants when they are no longer needed, and return the target agent's previous status before shutdown was requested. Completed agents remain open and count toward the concurrency limit until closed. Don't keep agents open for too long if they are not needed anymore.", "strict": false, "parameters": {"type": "object", "properties": {"target": {"type": "string", "description": "Agent id to close (from spawn_agent)."}}, "required": ["target"], "additionalProperties": false}}]}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+

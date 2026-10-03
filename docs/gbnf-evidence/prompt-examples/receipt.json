@@ -1,0 +1,56 @@
+{
+  "branch": "work/gbnf",
+  "worktree": "C:\\Users\\dflanag3\\Documents\\fleet\\strata-native-gbnf",
+  "first_server_source": "4db981317a41d973bb4fec3c29fce395b90fc6a6",
+  "ubuntu_recheck_server_source": "0965ddb56bfd41329f4ead65e9d789c8fbfe0657",
+  "native_sha256": "908cb11a334772494b092df15d35267fb8b7a290ad1d431edb90f6a849a7d94c",
+  "windows_client_sha256": "fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d",
+  "ubuntu_client_sha256": "12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad",
+  "model": "Qwen3.8-Flash-Next Coder IQ1_M",
+  "host": "llm-49",
+  "gpu": "RTX 4090",
+  "installed_native_template_sha256": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce",
+  "example_count_means": "added task demonstrations; fixed native XML syntax skeleton retained",
+  "coding_settings": {
+    "sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 20,
+      "min_p": 0.0,
+      "presence_penalty": 0.0,
+      "frequency_penalty": 0.0,
+      "repetition_penalty": 1.0
+    },
+    "reasoning_budget_tokens": 2048
+  },
+  "tool_probe_reasoning": "medium",
+  "probe_temperature": 0,
+  "tool_baseline_passes": 11,
+  "tool_passes_after_one_example": 1,
+  "schema_baseline_passes": 30,
+  "windows": {
+    "result": "pass",
+    "examples": 0,
+    "calls": 5,
+    "seconds": 284.163,
+    "independent_checks": 45
+  },
+  "ubuntu": {
+    "result": "pass",
+    "examples": 0,
+    "calls": 6,
+    "seconds": 312.033,
+    "independent_checks": 45
+  },
+  "old_observer_false_negatives_retained": true,
+  "interrupted_redundant_attempt_is_not_a_model_failure": true,
+  "servers_stopped": [
+    {
+      "server_stopped": true
+    },
+    {
+      "server_stopped": true
+    }
+  ],
+  "server_and_native_sources_identical_between_runs": true
+}

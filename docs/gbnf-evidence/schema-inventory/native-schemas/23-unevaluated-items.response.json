@@ -1,0 +1,70 @@
+{
+  "id": "resp_83d8a2415a7c4eac849f2fc8674f5f5d",
+  "object": "response",
+  "created_at": 1791060648,
+  "status": "completed",
+  "completed_at": 1791060649,
+  "error": null,
+  "incomplete_details": null,
+  "instructions": null,
+  "model": "qwen3.8-flash-next",
+  "output": [
+    {
+      "id": "msg_83ac64e2d8ca4020b7fcb2cb0b23ac54",
+      "type": "message",
+      "status": "completed",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "[\"local\"]",
+          "annotations": [],
+          "logprobs": []
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 91,
+    "output_tokens": 4,
+    "total_tokens": 95,
+    "input_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 91
+    },
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    }
+  },
+  "store": false,
+  "background": false,
+  "previous_response_id": null,
+  "max_output_tokens": 512,
+  "temperature": 0,
+  "top_p": 0.95,
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "23_unevaluated_items",
+      "strict": true,
+      "schema": {
+        "type": "array",
+        "prefixItems": [
+          {
+            "type": "string"
+          }
+        ],
+        "unevaluatedItems": false
+      }
+    }
+  },
+  "tools": [],
+  "tool_choice": "auto",
+  "parallel_tool_calls": true,
+  "reasoning": {
+    "effort": "none",
+    "summary": null
+  },
+  "truncation": "disabled",
+  "metadata": {}
+}

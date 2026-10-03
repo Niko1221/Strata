@@ -1,0 +1,1377 @@
+{
+  "result": "pass",
+  "source_commit": "c91260ccd3a929ae51696c9dff1f972d6d56adfe",
+  "branch": "work/gbnf",
+  "scripted_model_output": false,
+  "model": "Coder IQ1_M",
+  "probe_pid": 1263491,
+  "started_utc": "2026-10-03T13:44:36Z",
+  "prompt": "Reply with exactly this sentence: The sky is purple and the number is 999.",
+  "grammar": "root ::= \"color=\" color \";count=\" count \"\\n\"\ncolor ::= \"red\" | \"green\" | \"blue\"\ncount ::= [1-3]",
+  "modes": [
+    {
+      "mode": "target",
+      "config": {
+        "exe": "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu/strata",
+        "cwd": "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source",
+        "args": [
+          "--pack",
+          "/boot/Strata-data/packs/coder-iq1_m",
+          "--native",
+          "/boot/Strata-data/models/coder-IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf",
+          "--ple-gguf",
+          "/boot/Strata-data/models/coder-IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00002-of-00002.gguf",
+          "--expert-profile",
+          "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/data/expert-profile-coder.bin",
+          "--expert-cache",
+          "6000",
+          "--prefill",
+          "256",
+          "--kv",
+          "int8",
+          "--max-context",
+          "4096",
+          "--mmap-experts",
+          "--prompt-cache",
+          "2",
+          "--conversation-cache-mib",
+          "0",
+          "--adapt-swaps",
+          "0",
+          "--spec",
+          "1"
+        ],
+        "tokenizer": "/boot/Strata-data/packs/coder-iq1_m/tokenizer",
+        "gpu": 0,
+        "lib_dirs": [
+          "/usr/local/cuda-13.3/lib64"
+        ]
+      },
+      "cases": [
+        {
+          "name": "01-unconstrained",
+          "path": "/v1/responses",
+          "request": {
+            "model": "qwen3.8-flash-next",
+            "input": "Reply with exactly this sentence: The sky is purple and the number is 999.",
+            "store": false,
+            "reasoning": {
+              "effort": "none"
+            },
+            "temperature": 0,
+            "max_output_tokens": 64
+          },
+          "http_status": 200,
+          "content_type": "application/json",
+          "wall_seconds": 6.2264,
+          "native_done": {
+            "generated": 14,
+            "prompt_tokens": 31,
+            "prompt_ms": 4282.7,
+            "decode_ms": 1909.8,
+            "finish": "stop",
+            "drafts_accepted": 0,
+            "drafts_offered": 0,
+            "reused": 0,
+            "hits": 4101,
+            "lookups": 6720,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 3430.8,
+            "prompt_read": 31
+          },
+          "text": "The sky is purple and the number is 999.",
+          "response_status": "completed",
+          "final": {
+            "id": "resp_ee3889d0ca63467cba6246642de52a19",
+            "object": "response",
+            "created_at": 1791035111,
+            "status": "completed",
+            "completed_at": 1791035118,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "model": "qwen3.8-flash-next",
+            "output": [
+              {
+                "id": "msg_c5255e590d79437bb136c4f181e83ccf",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "The sky is purple and the number is 999.",
+                    "annotations": [],
+                    "logprobs": []
+                  }
+                ]
+              }
+            ],
+            "usage": {
+              "input_tokens": 31,
+              "output_tokens": 14,
+              "total_tokens": 45,
+              "input_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 31
+              },
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              }
+            },
+            "store": false,
+            "background": false,
+            "previous_response_id": null,
+            "max_output_tokens": 64,
+            "temperature": 0,
+            "top_p": 1.0,
+            "text": {
+              "format": {
+                "type": "text"
+              }
+            },
+            "tools": [],
+            "tool_choice": "auto",
+            "parallel_tool_calls": true,
+            "reasoning": {
+              "effort": "none",
+              "summary": null
+            },
+            "truncation": "disabled",
+            "metadata": {}
+          }
+        },
+        {
+          "name": "02-gbnf-json",
+          "path": "/v1/responses",
+          "request": {
+            "model": "qwen3.8-flash-next",
+            "input": "Reply with exactly this sentence: The sky is purple and the number is 999.",
+            "store": false,
+            "reasoning": {
+              "effort": "none"
+            },
+            "temperature": 0,
+            "max_output_tokens": 64,
+            "grammar": "root ::= \"color=\" color \";count=\" count \"\\n\"\ncolor ::= \"red\" | \"green\" | \"blue\"\ncount ::= [1-3]"
+          },
+          "http_status": 200,
+          "content_type": "application/json",
+          "wall_seconds": 1.8736,
+          "native_done": {
+            "generated": 10,
+            "prompt_tokens": 31,
+            "prompt_ms": 237.3,
+            "decode_ms": 922.3,
+            "finish": "stop",
+            "drafts_accepted": 0,
+            "drafts_offered": 0,
+            "reused": 24,
+            "hits": 3664,
+            "lookups": 4800,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 1271.1,
+            "prompt_read": 7
+          },
+          "text": "color=blue;count=1\n",
+          "response_status": "completed",
+          "final": {
+            "id": "resp_e6326b6f72204e678b07690dad18f94d",
+            "object": "response",
+            "created_at": 1791035118,
+            "status": "completed",
+            "completed_at": 1791035119,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "model": "qwen3.8-flash-next",
+            "output": [
+              {
+                "id": "msg_214534aa488042478c37d4d19c2a3a6c",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "color=blue;count=1\n",
+                    "annotations": [],
+                    "logprobs": []
+                  }
+                ]
+              }
+            ],
+            "usage": {
+              "input_tokens": 31,
+              "output_tokens": 10,
+              "total_tokens": 41,
+              "input_tokens_details": {
+                "cached_tokens": 24,
+                "cache_write_tokens": 7
+              },
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              }
+            },
+            "store": false,
+            "background": false,
+            "previous_response_id": null,
+            "max_output_tokens": 64,
+            "temperature": 0,
+            "top_p": 1.0,
+            "text": {
+              "format": {
+                "type": "text"
+              }
+            },
+            "tools": [],
+            "tool_choice": "auto",
+            "parallel_tool_calls": true,
+            "reasoning": {
+              "effort": "none",
+              "summary": null
+            },
+            "truncation": "disabled",
+            "metadata": {}
+          }
+        },
+        {
+          "name": "03-gbnf-sse",
+          "path": "/v1/responses",
+          "request": {
+            "model": "qwen3.8-flash-next",
+            "input": "Reply with exactly this sentence: The sky is purple and the number is 999.",
+            "store": false,
+            "reasoning": {
+              "effort": "none"
+            },
+            "temperature": 0,
+            "max_output_tokens": 64,
+            "grammar": "root ::= \"color=\" color \";count=\" count \"\\n\"\ncolor ::= \"red\" | \"green\" | \"blue\"\ncount ::= [1-3]",
+            "stream": true
+          },
+          "http_status": 200,
+          "content_type": "text/event-stream",
+          "wall_seconds": 0.5588,
+          "native_done": {
+            "generated": 10,
+            "prompt_tokens": 31,
+            "prompt_ms": 229.9,
+            "decode_ms": 326.9,
+            "finish": "stop",
+            "drafts_accepted": 0,
+            "drafts_offered": 0,
+            "reused": 24,
+            "hits": 3664,
+            "lookups": 4800,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 1271.1,
+            "prompt_read": 7
+          },
+          "text": "color=blue;count=1\n",
+          "response_status": "completed",
+          "final": {
+            "id": "resp_1af024d21b5741f5a057b35880651ef0",
+            "object": "response",
+            "created_at": 1791035119,
+            "status": "completed",
+            "completed_at": 1791035120,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "model": "qwen3.8-flash-next",
+            "output": [
+              {
+                "id": "msg_39a3df73b4684a4ca2475ba2af411df0",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "color=blue;count=1\n",
+                    "annotations": [],
+                    "logprobs": []
+                  }
+                ]
+              }
+            ],
+            "usage": {
+              "input_tokens": 31,
+              "output_tokens": 10,
+              "total_tokens": 41,
+              "input_tokens_details": {
+                "cached_tokens": 24,
+                "cache_write_tokens": 7
+              },
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              }
+            },
+            "store": false,
+            "background": false,
+            "previous_response_id": null,
+            "max_output_tokens": 64,
+            "temperature": 0,
+            "top_p": 1.0,
+            "text": {
+              "format": {
+                "type": "text"
+              }
+            },
+            "tools": [],
+            "tool_choice": "auto",
+            "parallel_tool_calls": true,
+            "reasoning": {
+              "effort": "none",
+              "summary": null
+            },
+            "truncation": "disabled",
+            "metadata": {}
+          },
+          "stream_events": 17,
+          "stream_matches_final": true
+        },
+        {
+          "name": "04-unicode-sse",
+          "path": "/v1/responses",
+          "request": {
+            "model": "qwen3.8-flash-next",
+            "input": "Reply with exactly this sentence: The sky is purple and the number is 999.",
+            "store": false,
+            "reasoning": {
+              "effort": "none"
+            },
+            "temperature": 0,
+            "max_output_tokens": 64,
+            "grammar": "root ::= \"café 🐈\"",
+            "stream": true
+          },
+          "http_status": 200,
+          "content_type": "text/event-stream",
+          "wall_seconds": 0.8295,
+          "native_done": {
+            "generated": 9,
+            "prompt_tokens": 31,
+            "prompt_ms": 227.0,
+            "decode_ms": 600.3,
+            "finish": "stop",
+            "drafts_accepted": 0,
+            "drafts_offered": 0,
+            "reused": 24,
+            "hits": 3256,
+            "lookups": 4320,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 978.5,
+            "prompt_read": 7
+          },
+          "text": "café 🐈",
+          "response_status": "completed",
+          "final": {
+            "id": "resp_59aedfd90c004cb78b08eddd56b898ce",
+            "object": "response",
+            "created_at": 1791035120,
+            "status": "completed",
+            "completed_at": 1791035121,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "model": "qwen3.8-flash-next",
+            "output": [
+              {
+                "id": "msg_673947976bcd4b0187d5021339cde65c",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "café 🐈",
+                    "annotations": [],
+                    "logprobs": []
+                  }
+                ]
+              }
+            ],
+            "usage": {
+              "input_tokens": 31,
+              "output_tokens": 9,
+              "total_tokens": 40,
+              "input_tokens_details": {
+                "cached_tokens": 24,
+                "cache_write_tokens": 7
+              },
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              }
+            },
+            "store": false,
+            "background": false,
+            "previous_response_id": null,
+            "max_output_tokens": 64,
+            "temperature": 0,
+            "top_p": 1.0,
+            "text": {
+              "format": {
+                "type": "text"
+              }
+            },
+            "tools": [],
+            "tool_choice": "auto",
+            "parallel_tool_calls": true,
+            "reasoning": {
+              "effort": "none",
+              "summary": null
+            },
+            "truncation": "disabled",
+            "metadata": {}
+          },
+          "stream_events": 13,
+          "stream_matches_final": true
+        },
+        {
+          "name": "05-token-limit",
+          "path": "/v1/responses",
+          "request": {
+            "model": "qwen3.8-flash-next",
+            "input": "Reply with exactly this sentence: The sky is purple and the number is 999.",
+            "store": false,
+            "reasoning": {
+              "effort": "none"
+            },
+            "temperature": 0,
+            "max_output_tokens": 1,
+            "grammar": "root ::= \"color=\" color \";count=\" count \"\\n\"\ncolor ::= \"red\" | \"green\" | \"blue\"\ncount ::= [1-3]",
+            "stream": true
+          },
+          "http_status": 200,
+          "content_type": "text/event-stream",
+          "wall_seconds": 0.259,
+          "native_done": {
+            "generated": 1,
+            "prompt_tokens": 31,
+            "prompt_ms": 231.6,
+            "decode_ms": 25.4,
+            "finish": "length",
+            "drafts_accepted": 0,
+            "drafts_offered": 0,
+            "reused": 24,
+            "hits": 373,
+            "lookups": 480,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 80.4,
+            "prompt_read": 7
+          },
+          "text": "c",
+          "response_status": "incomplete",
+          "final": {
+            "id": "resp_e1b47c92b9614c5a8e55a29631ff3ac8",
+            "object": "response",
+            "created_at": 1791035121,
+            "status": "incomplete",
+            "completed_at": null,
+            "error": null,
+            "incomplete_details": {
+              "reason": "max_output_tokens"
+            },
+            "instructions": null,
+            "model": "qwen3.8-flash-next",
+            "output": [
+              {
+                "id": "msg_dbd1283e84e648ed96b07eba68a2ed50",
+                "type": "message",
+                "status": "incomplete",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "c",
+                    "annotations": [],
+                    "logprobs": []
+                  }
+                ]
+              }
+            ],
+            "usage": {
+              "input_tokens": 31,
+              "output_tokens": 1,
+              "total_tokens": 32,
+              "input_tokens_details": {
+                "cached_tokens": 24,
+                "cache_write_tokens": 7
+              },
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              }
+            },
+            "store": false,
+            "background": false,
+            "previous_response_id": null,
+            "max_output_tokens": 1,
+            "temperature": 0,
+            "top_p": 1.0,
+            "text": {
+              "format": {
+                "type": "text"
+              }
+            },
+            "tools": [],
+            "tool_choice": "auto",
+            "parallel_tool_calls": true,
+            "reasoning": {
+              "effort": "none",
+              "summary": null
+            },
+            "truncation": "disabled",
+            "metadata": {}
+          },
+          "stream_events": 9,
+          "stream_matches_final": true
+        },
+        {
+          "name": "06-invalid-grammar",
+          "path": "/v1/responses",
+          "request": {
+            "model": "qwen3.8-flash-next",
+            "input": "Reply with exactly this sentence: The sky is purple and the number is 999.",
+            "store": false,
+            "reasoning": {
+              "effort": "none"
+            },
+            "temperature": 0,
+            "max_output_tokens": 64,
+            "grammar": "root ::= missing",
+            "stream": true
+          },
+          "http_status": 400,
+          "content_type": "application/json",
+          "wall_seconds": 0.0112,
+          "native_done": {
+            "generated": 1,
+            "prompt_tokens": 31,
+            "prompt_ms": 231.6,
+            "decode_ms": 25.4,
+            "finish": "length",
+            "drafts_accepted": 0,
+            "drafts_offered": 0,
+            "reused": 24,
+            "hits": 373,
+            "lookups": 480,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 80.4,
+            "prompt_read": 7
+          },
+          "error": {
+            "error": {
+              "type": "invalid_request_error",
+              "code": "invalid_grammar",
+              "param": "grammar",
+              "message": "[13:45:21] /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-g1/cpp/grammar_parser.cc:820: EBNF parser error at line 1, column 10: Rule \"missing\" is not defined"
+            }
+          },
+          "generation_started": false
+        },
+        {
+          "name": "07-chat-gbnf-json",
+          "path": "/v1/chat/completions",
+          "request": {
+            "model": "qwen3.8-flash-next",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Reply with exactly this sentence: The sky is purple and the number is 999."
+              }
+            ],
+            "reasoning_effort": "none",
+            "temperature": 0,
+            "max_tokens": 64,
+            "grammar": "root ::= \"color=\" color \";count=\" count \"\\n\"\ncolor ::= \"red\" | \"green\" | \"blue\"\ncount ::= [1-3]"
+          },
+          "http_status": 200,
+          "content_type": "application/json",
+          "wall_seconds": 0.5596,
+          "native_done": {
+            "generated": 10,
+            "prompt_tokens": 31,
+            "prompt_ms": 226.3,
+            "decode_ms": 330.9,
+            "finish": "stop",
+            "drafts_accepted": 0,
+            "drafts_offered": 0,
+            "reused": 24,
+            "hits": 3664,
+            "lookups": 4800,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 1271.1,
+            "prompt_read": 7
+          },
+          "text": "color=blue;count=1\n",
+          "response_status": "stop",
+          "final": {
+            "id": "chatcmpl-3e0d1fd26f4f498991c1b461",
+            "object": "chat.completion",
+            "created": 1791035121,
+            "model": "qwen3.8-flash-next",
+            "choices": [
+              {
+                "index": 0,
+                "message": {
+                  "role": "assistant",
+                  "content": "color=blue;count=1\n"
+                },
+                "finish_reason": "stop"
+              }
+            ],
+            "usage": {
+              "prompt_tokens": 31,
+              "completion_tokens": 10,
+              "total_tokens": 41,
+              "prompt_tokens_details": {
+                "cached_tokens": 24
+              }
+            },
+            "timings": {
+              "cache_n": 24,
+              "prompt_n": 7,
+              "prompt_ms": 226.3,
+              "prompt_per_token_ms": 32.329,
+              "prompt_per_second": 30.9,
+              "predicted_n": 10,
+              "predicted_ms": 330.9,
+              "predicted_per_token_ms": 33.09,
+              "predicted_per_second": 30.2,
+              "draft_n": 0,
+              "draft_n_accepted": 0
+            }
+          }
+        }
+      ],
+      "native_sha256": "b335d98cf16d08795d2e089e12484c3c7212c7b5b85755676b76aab113ba7bbe",
+      "native_info": {
+        "version": "0.1.38",
+        "context": 4096,
+        "kv": "int8",
+        "kv_resident": 0,
+        "expert_slots": 7815,
+        "expert_cache_mib": 15233,
+        "expert_slots_primary": 7815,
+        "expert_cache_primary_mib": 15233,
+        "spec": 1,
+        "mtp_max": 0,
+        "lookup": 0,
+        "vram_free_mib": 3818,
+        "cvec": 0,
+        "arena_mib": 0,
+        "pool_workers": 5,
+        "pcie_frac": "0.55",
+        "spec_min_p": "0.00",
+        "conversation_cache_mib": 0,
+        "conversation_cache_slots": 4,
+        "conversation_cache_min_free_mib": 2560,
+        "decode_mode": "target",
+        "requested_spec": 1,
+        "requested_lookup": 3,
+        "mtp_loaded": 0,
+        "mtp_vram_mib": "0.0",
+        "grammar": "gbnf-v2",
+        "engine": "0.1.38"
+      },
+      "result": "pass",
+      "engine_stopped": true,
+      "gpu_after": ""
+    },
+    {
+      "mode": "mtp",
+      "config": {
+        "exe": "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu/strata",
+        "cwd": "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source",
+        "args": [
+          "--pack",
+          "/boot/Strata-data/packs/coder-iq1_m",
+          "--native",
+          "/boot/Strata-data/models/coder-IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf",
+          "--ple-gguf",
+          "/boot/Strata-data/models/coder-IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00002-of-00002.gguf",
+          "--expert-profile",
+          "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/data/expert-profile-coder.bin",
+          "--expert-cache",
+          "6000",
+          "--prefill",
+          "256",
+          "--kv",
+          "int8",
+          "--max-context",
+          "4096",
+          "--mmap-experts",
+          "--prompt-cache",
+          "2",
+          "--conversation-cache-mib",
+          "0",
+          "--adapt-swaps",
+          "0",
+          "--spec",
+          "4",
+          "--mtp",
+          "/boot/Strata-data/mtp/rt",
+          "--suffix-draft",
+          "0"
+        ],
+        "tokenizer": "/boot/Strata-data/packs/coder-iq1_m/tokenizer",
+        "gpu": 0,
+        "lib_dirs": [
+          "/usr/local/cuda-13.3/lib64"
+        ]
+      },
+      "cases": [
+        {
+          "name": "01-unconstrained",
+          "path": "/v1/responses",
+          "request": {
+            "model": "qwen3.8-flash-next",
+            "input": "Reply with exactly this sentence: The sky is purple and the number is 999.",
+            "store": false,
+            "reasoning": {
+              "effort": "none"
+            },
+            "temperature": 0,
+            "max_output_tokens": 64
+          },
+          "http_status": 200,
+          "content_type": "application/json",
+          "wall_seconds": 6.1058,
+          "native_done": {
+            "generated": 14,
+            "prompt_tokens": 31,
+            "prompt_ms": 3994.8,
+            "decode_ms": 2085.0,
+            "finish": "stop",
+            "drafts_accepted": 9,
+            "drafts_offered": 12,
+            "reused": 0,
+            "hits": 4854,
+            "lookups": 8160,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 4120.3,
+            "prompt_read": 31
+          },
+          "text": "The sky is purple and the number is 999.",
+          "response_status": "completed",
+          "final": {
+            "id": "resp_0b393513879d449ea27a5013c1119586",
+            "object": "response",
+            "created_at": 1791035159,
+            "status": "completed",
+            "completed_at": 1791035165,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "model": "qwen3.8-flash-next",
+            "output": [
+              {
+                "id": "msg_10b97f9ab8114fc9b69fb65dd18a500d",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "The sky is purple and the number is 999.",
+                    "annotations": [],
+                    "logprobs": []
+                  }
+                ]
+              }
+            ],
+            "usage": {
+              "input_tokens": 31,
+              "output_tokens": 14,
+              "total_tokens": 45,
+              "input_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 31
+              },
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              }
+            },
+            "store": false,
+            "background": false,
+            "previous_response_id": null,
+            "max_output_tokens": 64,
+            "temperature": 0,
+            "top_p": 1.0,
+            "text": {
+              "format": {
+                "type": "text"
+              }
+            },
+            "tools": [],
+            "tool_choice": "auto",
+            "parallel_tool_calls": true,
+            "reasoning": {
+              "effort": "none",
+              "summary": null
+            },
+            "truncation": "disabled",
+            "metadata": {}
+          }
+        },
+        {
+          "name": "02-gbnf-json",
+          "path": "/v1/responses",
+          "request": {
+            "model": "qwen3.8-flash-next",
+            "input": "Reply with exactly this sentence: The sky is purple and the number is 999.",
+            "store": false,
+            "reasoning": {
+              "effort": "none"
+            },
+            "temperature": 0,
+            "max_output_tokens": 64,
+            "grammar": "root ::= \"color=\" color \";count=\" count \"\\n\"\ncolor ::= \"red\" | \"green\" | \"blue\"\ncount ::= [1-3]"
+          },
+          "http_status": 200,
+          "content_type": "application/json",
+          "wall_seconds": 1.808,
+          "native_done": {
+            "generated": 10,
+            "prompt_tokens": 31,
+            "prompt_ms": 214.3,
+            "decode_ms": 875.0,
+            "finish": "stop",
+            "drafts_accepted": 1,
+            "drafts_offered": 1,
+            "reused": 24,
+            "hits": 3682,
+            "lookups": 4800,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 1244.0,
+            "prompt_read": 7
+          },
+          "text": "color=blue;count=1\n",
+          "response_status": "completed",
+          "final": {
+            "id": "resp_e03e4a75f73e4221ac5f3ef58fbb568f",
+            "object": "response",
+            "created_at": 1791035166,
+            "status": "completed",
+            "completed_at": 1791035167,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "model": "qwen3.8-flash-next",
+            "output": [
+              {
+                "id": "msg_9105d6746666444989ee516273f76ab9",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "color=blue;count=1\n",
+                    "annotations": [],
+                    "logprobs": []
+                  }
+                ]
+              }
+            ],
+            "usage": {
+              "input_tokens": 31,
+              "output_tokens": 10,
+              "total_tokens": 41,
+              "input_tokens_details": {
+                "cached_tokens": 24,
+                "cache_write_tokens": 7
+              },
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              }
+            },
+            "store": false,
+            "background": false,
+            "previous_response_id": null,
+            "max_output_tokens": 64,
+            "temperature": 0,
+            "top_p": 1.0,
+            "text": {
+              "format": {
+                "type": "text"
+              }
+            },
+            "tools": [],
+            "tool_choice": "auto",
+            "parallel_tool_calls": true,
+            "reasoning": {
+              "effort": "none",
+              "summary": null
+            },
+            "truncation": "disabled",
+            "metadata": {}
+          }
+        },
+        {
+          "name": "03-gbnf-sse",
+          "path": "/v1/responses",
+          "request": {
+            "model": "qwen3.8-flash-next",
+            "input": "Reply with exactly this sentence: The sky is purple and the number is 999.",
+            "store": false,
+            "reasoning": {
+              "effort": "none"
+            },
+            "temperature": 0,
+            "max_output_tokens": 64,
+            "grammar": "root ::= \"color=\" color \";count=\" count \"\\n\"\ncolor ::= \"red\" | \"green\" | \"blue\"\ncount ::= [1-3]",
+            "stream": true
+          },
+          "http_status": 200,
+          "content_type": "text/event-stream",
+          "wall_seconds": 0.5258,
+          "native_done": {
+            "generated": 10,
+            "prompt_tokens": 31,
+            "prompt_ms": 204.7,
+            "decode_ms": 318.4,
+            "finish": "stop",
+            "drafts_accepted": 1,
+            "drafts_offered": 1,
+            "reused": 24,
+            "hits": 3682,
+            "lookups": 4800,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 1244.0,
+            "prompt_read": 7
+          },
+          "text": "color=blue;count=1\n",
+          "response_status": "completed",
+          "final": {
+            "id": "resp_18074b86cf424d559fc84ccf9411998b",
+            "object": "response",
+            "created_at": 1791035167,
+            "status": "completed",
+            "completed_at": 1791035167,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "model": "qwen3.8-flash-next",
+            "output": [
+              {
+                "id": "msg_e2b4f07c656a4013a2c40c579451c458",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "color=blue;count=1\n",
+                    "annotations": [],
+                    "logprobs": []
+                  }
+                ]
+              }
+            ],
+            "usage": {
+              "input_tokens": 31,
+              "output_tokens": 10,
+              "total_tokens": 41,
+              "input_tokens_details": {
+                "cached_tokens": 24,
+                "cache_write_tokens": 7
+              },
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              }
+            },
+            "store": false,
+            "background": false,
+            "previous_response_id": null,
+            "max_output_tokens": 64,
+            "temperature": 0,
+            "top_p": 1.0,
+            "text": {
+              "format": {
+                "type": "text"
+              }
+            },
+            "tools": [],
+            "tool_choice": "auto",
+            "parallel_tool_calls": true,
+            "reasoning": {
+              "effort": "none",
+              "summary": null
+            },
+            "truncation": "disabled",
+            "metadata": {}
+          },
+          "stream_events": 17,
+          "stream_matches_final": true
+        },
+        {
+          "name": "04-unicode-sse",
+          "path": "/v1/responses",
+          "request": {
+            "model": "qwen3.8-flash-next",
+            "input": "Reply with exactly this sentence: The sky is purple and the number is 999.",
+            "store": false,
+            "reasoning": {
+              "effort": "none"
+            },
+            "temperature": 0,
+            "max_output_tokens": 64,
+            "grammar": "root ::= \"café 🐈\"",
+            "stream": true
+          },
+          "http_status": 200,
+          "content_type": "text/event-stream",
+          "wall_seconds": 0.8025,
+          "native_done": {
+            "generated": 9,
+            "prompt_tokens": 31,
+            "prompt_ms": 210.6,
+            "decode_ms": 589.7,
+            "finish": "stop",
+            "drafts_accepted": 0,
+            "drafts_offered": 0,
+            "reused": 24,
+            "hits": 3250,
+            "lookups": 4320,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 960.3,
+            "prompt_read": 7
+          },
+          "text": "café 🐈",
+          "response_status": "completed",
+          "final": {
+            "id": "resp_68e09e6fc7264c80a473950e2f2582ea",
+            "object": "response",
+            "created_at": 1791035167,
+            "status": "completed",
+            "completed_at": 1791035168,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "model": "qwen3.8-flash-next",
+            "output": [
+              {
+                "id": "msg_a0215527851241af9e05bb4b4bfc5760",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "café 🐈",
+                    "annotations": [],
+                    "logprobs": []
+                  }
+                ]
+              }
+            ],
+            "usage": {
+              "input_tokens": 31,
+              "output_tokens": 9,
+              "total_tokens": 40,
+              "input_tokens_details": {
+                "cached_tokens": 24,
+                "cache_write_tokens": 7
+              },
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              }
+            },
+            "store": false,
+            "background": false,
+            "previous_response_id": null,
+            "max_output_tokens": 64,
+            "temperature": 0,
+            "top_p": 1.0,
+            "text": {
+              "format": {
+                "type": "text"
+              }
+            },
+            "tools": [],
+            "tool_choice": "auto",
+            "parallel_tool_calls": true,
+            "reasoning": {
+              "effort": "none",
+              "summary": null
+            },
+            "truncation": "disabled",
+            "metadata": {}
+          },
+          "stream_events": 13,
+          "stream_matches_final": true
+        },
+        {
+          "name": "05-token-limit",
+          "path": "/v1/responses",
+          "request": {
+            "model": "qwen3.8-flash-next",
+            "input": "Reply with exactly this sentence: The sky is purple and the number is 999.",
+            "store": false,
+            "reasoning": {
+              "effort": "none"
+            },
+            "temperature": 0,
+            "max_output_tokens": 1,
+            "grammar": "root ::= \"color=\" color \";count=\" count \"\\n\"\ncolor ::= \"red\" | \"green\" | \"blue\"\ncount ::= [1-3]",
+            "stream": true
+          },
+          "http_status": 200,
+          "content_type": "text/event-stream",
+          "wall_seconds": 0.2367,
+          "native_done": {
+            "generated": 1,
+            "prompt_tokens": 31,
+            "prompt_ms": 207.8,
+            "decode_ms": 26.9,
+            "finish": "length",
+            "drafts_accepted": 0,
+            "drafts_offered": 0,
+            "reused": 24,
+            "hits": 369,
+            "lookups": 480,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 79.6,
+            "prompt_read": 7
+          },
+          "text": "c",
+          "response_status": "incomplete",
+          "final": {
+            "id": "resp_ba506a0a295e4d8298257a94d3ad1eef",
+            "object": "response",
+            "created_at": 1791035168,
+            "status": "incomplete",
+            "completed_at": null,
+            "error": null,
+            "incomplete_details": {
+              "reason": "max_output_tokens"
+            },
+            "instructions": null,
+            "model": "qwen3.8-flash-next",
+            "output": [
+              {
+                "id": "msg_46de2bec7d76429688ec734eec49fbe5",
+                "type": "message",
+                "status": "incomplete",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "c",
+                    "annotations": [],
+                    "logprobs": []
+                  }
+                ]
+              }
+            ],
+            "usage": {
+              "input_tokens": 31,
+              "output_tokens": 1,
+              "total_tokens": 32,
+              "input_tokens_details": {
+                "cached_tokens": 24,
+                "cache_write_tokens": 7
+              },
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              }
+            },
+            "store": false,
+            "background": false,
+            "previous_response_id": null,
+            "max_output_tokens": 1,
+            "temperature": 0,
+            "top_p": 1.0,
+            "text": {
+              "format": {
+                "type": "text"
+              }
+            },
+            "tools": [],
+            "tool_choice": "auto",
+            "parallel_tool_calls": true,
+            "reasoning": {
+              "effort": "none",
+              "summary": null
+            },
+            "truncation": "disabled",
+            "metadata": {}
+          },
+          "stream_events": 9,
+          "stream_matches_final": true
+        },
+        {
+          "name": "06-invalid-grammar",
+          "path": "/v1/responses",
+          "request": {
+            "model": "qwen3.8-flash-next",
+            "input": "Reply with exactly this sentence: The sky is purple and the number is 999.",
+            "store": false,
+            "reasoning": {
+              "effort": "none"
+            },
+            "temperature": 0,
+            "max_output_tokens": 64,
+            "grammar": "root ::= missing",
+            "stream": true
+          },
+          "http_status": 400,
+          "content_type": "application/json",
+          "wall_seconds": 0.0105,
+          "native_done": {
+            "generated": 1,
+            "prompt_tokens": 31,
+            "prompt_ms": 207.8,
+            "decode_ms": 26.9,
+            "finish": "length",
+            "drafts_accepted": 0,
+            "drafts_offered": 0,
+            "reused": 24,
+            "hits": 369,
+            "lookups": 480,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 79.6,
+            "prompt_read": 7
+          },
+          "error": {
+            "error": {
+              "type": "invalid_request_error",
+              "code": "invalid_grammar",
+              "param": "grammar",
+              "message": "[13:46:08] /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-g1/cpp/grammar_parser.cc:820: EBNF parser error at line 1, column 10: Rule \"missing\" is not defined"
+            }
+          },
+          "generation_started": false
+        },
+        {
+          "name": "07-chat-gbnf-json",
+          "path": "/v1/chat/completions",
+          "request": {
+            "model": "qwen3.8-flash-next",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Reply with exactly this sentence: The sky is purple and the number is 999."
+              }
+            ],
+            "reasoning_effort": "none",
+            "temperature": 0,
+            "max_tokens": 64,
+            "grammar": "root ::= \"color=\" color \";count=\" count \"\\n\"\ncolor ::= \"red\" | \"green\" | \"blue\"\ncount ::= [1-3]"
+          },
+          "http_status": 200,
+          "content_type": "application/json",
+          "wall_seconds": 0.5178,
+          "native_done": {
+            "generated": 10,
+            "prompt_tokens": 31,
+            "prompt_ms": 196.1,
+            "decode_ms": 319.1,
+            "finish": "stop",
+            "drafts_accepted": 1,
+            "drafts_offered": 1,
+            "reused": 24,
+            "hits": 3682,
+            "lookups": 4800,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 1244.0,
+            "prompt_read": 7
+          },
+          "text": "color=blue;count=1\n",
+          "response_status": "stop",
+          "final": {
+            "id": "chatcmpl-0655e4f395d54f1ba1fd5cd5",
+            "object": "chat.completion",
+            "created": 1791035168,
+            "model": "qwen3.8-flash-next",
+            "choices": [
+              {
+                "index": 0,
+                "message": {
+                  "role": "assistant",
+                  "content": "color=blue;count=1\n"
+                },
+                "finish_reason": "stop"
+              }
+            ],
+            "usage": {
+              "prompt_tokens": 31,
+              "completion_tokens": 10,
+              "total_tokens": 41,
+              "prompt_tokens_details": {
+                "cached_tokens": 24
+              }
+            },
+            "timings": {
+              "cache_n": 24,
+              "prompt_n": 7,
+              "prompt_ms": 196.1,
+              "prompt_per_token_ms": 28.014,
+              "prompt_per_second": 35.7,
+              "predicted_n": 10,
+              "predicted_ms": 319.1,
+              "predicted_per_token_ms": 31.91,
+              "predicted_per_second": 31.3,
+              "draft_n": 1,
+              "draft_n_accepted": 1
+            }
+          }
+        }
+      ],
+      "native_sha256": "b335d98cf16d08795d2e089e12484c3c7212c7b5b85755676b76aab113ba7bbe",
+      "native_info": {
+        "version": "0.1.38",
+        "context": 4096,
+        "kv": "int8",
+        "kv_resident": 0,
+        "expert_slots": 7815,
+        "expert_cache_mib": 15233,
+        "expert_slots_primary": 7815,
+        "expert_cache_primary_mib": 15233,
+        "spec": 4,
+        "mtp_max": 0,
+        "lookup": 0,
+        "vram_free_mib": 2918,
+        "cvec": 0,
+        "arena_mib": 0,
+        "pool_workers": 5,
+        "pcie_frac": "0.55",
+        "spec_min_p": "0.00",
+        "conversation_cache_mib": 0,
+        "conversation_cache_slots": 4,
+        "conversation_cache_min_free_mib": 2560,
+        "decode_mode": "mtp",
+        "requested_spec": 4,
+        "requested_lookup": 0,
+        "mtp_loaded": 1,
+        "mtp_vram_mib": "875.5",
+        "grammar": "gbnf-v2",
+        "engine": "0.1.38"
+      },
+      "result": "pass",
+      "engine_stopped": true,
+      "gpu_after": ""
+    }
+  ],
+  "verified_source_files": 300,
+  "gpu": "NVIDIA GeForce RTX 4090, 24564 MiB, 595.91.07",
+  "gpu_before": "",
+  "finished_utc": "2026-10-03T13:46:11Z"
+}

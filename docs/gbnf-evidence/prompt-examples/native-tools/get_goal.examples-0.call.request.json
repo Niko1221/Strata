@@ -1,0 +1,30 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "medium"
+  },
+  "max_output_tokens": 3072,
+  "temperature": 0,
+  "stream": true,
+  "input": [
+    {
+      "role": "user",
+      "content": "Protocol fixture: call get_goal exactly once using these argument values: {}. Emit the tool call and stop. The test client will supply a mocked result."
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "get_goal",
+      "description": "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "source_commit": "0fc79c445d6a48d41004dbf85ac9490a63337be7",
+  "host": "llm-49",
+  "workspace": "<disposable-local-workspace>",
+  "client_sha256": "fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d",
+  "native_sha256": "cd6d96bb19d3059f197dcc816f3d54a2f41611dd5678d1290b2f01c600d98e88",
+  "mode": "interactive",
+  "coding_settings": {
+    "sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 20,
+      "min_p": 0.0,
+      "presence_penalty": 0.0,
+      "frequency_penalty": 0.0,
+      "repetition_penalty": 1.0
+    },
+    "reasoning_budget_tokens": 2048
+  },
+  "catalog_sha256": "3e581a91dc603e66e3d663846f279d0fb1c876ba5c0a60fcb535fbcb5035d8e5",
+  "health": {
+    "status": "ok",
+    "max_context": 32768,
+    "model": "qwen3.8-flash-next",
+    "images": false,
+    "api_key": true,
+    "loaded": true,
+    "service": "strata"
+  },
+  "argv": [
+    "<pinned-codex-0.160.0>",
+    "--no-daemon",
+    "--strict-config",
+    "--profile",
+    "strata",
+    "--sandbox",
+    "workspace-write",
+    "--ask-for-approval",
+    "on-request",
+    "--cd",
+    "<disposable-local-workspace>"
+  ],
+  "client_exit_code": 0,
+  "cleanup": {
+    "server_stopped": true
+  },
+  "client_version": "0.160.0",
+  "native_model": "Qwen3.8-Flash-Next-GSQ-RCO-Coder IQ1_M",
+  "gpu": "RTX 4090",
+  "kv": "int8",
+  "context": 32768
+}

@@ -1,0 +1,42 @@
+{
+  "numerical-suffix/head-rows.bin": {
+    "bytes": 32786927,
+    "sha256": "8da1ca89f7dd2c0dad665c49444d9c65ad704741356229bc2d277d7c842954d3"
+  },
+  "numerical-coupled/head-rows.bin": {
+    "bytes": 32786927,
+    "sha256": "a2ab841ec80ccc8589fd116df4e32654795e305c388a9acba25ba64329644999"
+  },
+  "numerical-mtp/head-rows.bin": {
+    "bytes": 32786927,
+    "sha256": "a2ab841ec80ccc8589fd116df4e32654795e305c388a9acba25ba64329644999"
+  },
+  "numerical-suffix-coupled/head-rows.bin": {
+    "bytes": 32786927,
+    "sha256": "8da1ca89f7dd2c0dad665c49444d9c65ad704741356229bc2d277d7c842954d3"
+  },
+  "numerical-target/head-rows.bin": {
+    "bytes": 32786615,
+    "sha256": "aaa1dc5ef3c7a766e98658b70aa4b2a796ebf9eb5baaf68313ada165dd19e7e1"
+  },
+  "checkpoint/numerical-suffix/head-rows.bin": {
+    "bytes": 32786927,
+    "sha256": "8da1ca89f7dd2c0dad665c49444d9c65ad704741356229bc2d277d7c842954d3"
+  },
+  "checkpoint/numerical-coupled/head-rows.bin": {
+    "bytes": 32786927,
+    "sha256": "a2ab841ec80ccc8589fd116df4e32654795e305c388a9acba25ba64329644999"
+  },
+  "checkpoint/numerical-mtp/head-rows.bin": {
+    "bytes": 32786927,
+    "sha256": "a2ab841ec80ccc8589fd116df4e32654795e305c388a9acba25ba64329644999"
+  },
+  "checkpoint/numerical-suffix-coupled/head-rows.bin": {
+    "bytes": 32786927,
+    "sha256": "8da1ca89f7dd2c0dad665c49444d9c65ad704741356229bc2d277d7c842954d3"
+  },
+  "checkpoint/numerical-target/head-rows.bin": {
+    "bytes": 32786615,
+    "sha256": "aaa1dc5ef3c7a766e98658b70aa4b2a796ebf9eb5baaf68313ada165dd19e7e1"
+  }
+}

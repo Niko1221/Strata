@@ -1,0 +1,17 @@
+{
+  "result": "running",
+  "maximum_examples": 3,
+  "attempts": [
+    {
+      "example_count": 0,
+      "result": "fail",
+      "receipt": "examples-0/result.json"
+    },
+    {
+      "example_count": 1,
+      "result": "fail",
+      "receipt": "examples-1/result.json"
+    }
+  ],
+  "baseline_passed": false
+}

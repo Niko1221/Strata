@@ -1,0 +1,24 @@
+[
+  [
+    "cmake",
+    "--build",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-cpu",
+    "--target",
+    "grammar_inspection_test",
+    "grammar_native_test",
+    "-j",
+    "4"
+  ],
+  [
+    "ctest",
+    "--test-dir",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-cpu",
+    "-R",
+    "^grammar_(inspection|native)_test$",
+    "--output-on-failure"
+  ],
+  [
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-cpu/grammar_inspection_test",
+    "/boot/Strata-data/packs/coder-iq1_m/tokenizer"
+  ]
+]

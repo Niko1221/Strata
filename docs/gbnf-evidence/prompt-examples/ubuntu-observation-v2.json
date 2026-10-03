@@ -1,0 +1,10 @@
+{
+  "client_observed_failing_tests": true,
+  "client_verified_after_failure": true,
+  "expected_missing_file_failure": true,
+  "errors_with_zero_shell_status": [
+    2,
+    3
+  ],
+  "command_observation_version": 2
+}

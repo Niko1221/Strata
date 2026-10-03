@@ -1,0 +1,10 @@
+{
+  "host": "r4090",
+  "gpu": "NVIDIA GeForce RTX 4090, GPU-118fc99e-3bb2-7644-f0e6-30211b561a65, 595.91.07, 24564 MiB",
+  "nvcc": "nvcc: NVIDIA (R) Cuda compiler driver\nCopyright (c) 2005-2026 NVIDIA Corporation\nBuilt on Tue_Jun_09_02:43:40_PM_PDT_2026\nCuda compilation tools, release 13.3, V13.3.73\nBuild cuda_13.3.r13.3/compiler.38244171_0\n",
+  "files": {
+    "build-gbnf-gpu/strata": "b335d98cf16d08795d2e089e12484c3c7212c7b5b85755676b76aab113ba7bbe",
+    "build-gbnf-gpu/grammar_speculation_gpu_test": "264993f59f92f8108f4f5a0a01b227b0cd0d01d05b4d7fc24d70ddfdc3157fcd",
+    "build-gbnf-cpu/grammar_speculation_test": "5ba1efc529aef9144cc267c4426bd4842d8984793ab15a72b25eabf8490d9946"
+  }
+}

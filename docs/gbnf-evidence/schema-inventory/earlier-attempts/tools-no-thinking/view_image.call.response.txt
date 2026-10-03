@@ -1,0 +1,57 @@
+event: response.created
+data: {"type": "response.created", "sequence_number": 0, "response": {"id": "resp_433a50ac11b24a4aa562e660d092619a", "object": "response", "created_at": 1791058595, "status": "queued", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 1024, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "view_image", "description": "View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.", "strict": false, "parameters": {"type": "object", "properties": {"path": {"type": "string", "description": "Local filesystem path to an image file."}}, "required": ["path"], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "none", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+event: response.in_progress
+data: {"type": "response.in_progress", "sequence_number": 1, "response": {"id": "resp_433a50ac11b24a4aa562e660d092619a", "object": "response", "created_at": 1791058595, "status": "in_progress", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 1024, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "view_image", "description": "View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.", "strict": false, "parameters": {"type": "object", "properties": {"path": {"type": "string", "description": "Local filesystem path to an image file."}}, "required": ["path"], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "none", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"id": "fc_e4a562bb15b547a0a9e01be90ba74c57", "type": "function_call", "status": "in_progress", "call_id": "call_58a3b425ad7e4f4abdfcc96a", "name": "view_image", "arguments": ""}}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 3, "item_id": "fc_e4a562bb15b547a0a9e01be90ba74c57", "output_index": 0, "delta": "{"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 4, "item_id": "fc_e4a562bb15b547a0a9e01be90ba74c57", "output_index": 0, "delta": "\"path\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 5, "item_id": "fc_e4a562bb15b547a0a9e01be90ba74c57", "output_index": 0, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 6, "item_id": "fc_e4a562bb15b547a0a9e01be90ba74c57", "output_index": 0, "delta": "C"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 7, "item_id": "fc_e4a562bb15b547a0a9e01be90ba74c57", "output_index": 0, "delta": ":\\\\"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 8, "item_id": "fc_e4a562bb15b547a0a9e01be90ba74c57", "output_index": 0, "delta": "fixture"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 9, "item_id": "fc_e4a562bb15b547a0a9e01be90ba74c57", "output_index": 0, "delta": "\\\\"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 10, "item_id": "fc_e4a562bb15b547a0a9e01be90ba74c57", "output_index": 0, "delta": "image"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 11, "item_id": "fc_e4a562bb15b547a0a9e01be90ba74c57", "output_index": 0, "delta": ".png"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 12, "item_id": "fc_e4a562bb15b547a0a9e01be90ba74c57", "output_index": 0, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 13, "item_id": "fc_e4a562bb15b547a0a9e01be90ba74c57", "output_index": 0, "delta": "}"}
+
+event: response.function_call_arguments.done
+data: {"type": "response.function_call_arguments.done", "sequence_number": 14, "item_id": "fc_e4a562bb15b547a0a9e01be90ba74c57", "output_index": 0, "arguments": "{\"path\":\"C:\\\\fixture\\\\image.png\"}"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 15, "output_index": 0, "item": {"id": "fc_e4a562bb15b547a0a9e01be90ba74c57", "type": "function_call", "status": "completed", "call_id": "call_58a3b425ad7e4f4abdfcc96a", "name": "view_image", "arguments": "{\"path\":\"C:\\\\fixture\\\\image.png\"}"}}
+
+event: response.completed
+data: {"type": "response.completed", "sequence_number": 16, "response": {"id": "resp_433a50ac11b24a4aa562e660d092619a", "object": "response", "created_at": 1791058595, "status": "completed", "completed_at": 1791058598, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [{"id": "fc_e4a562bb15b547a0a9e01be90ba74c57", "type": "function_call", "status": "completed", "call_id": "call_58a3b425ad7e4f4abdfcc96a", "name": "view_image", "arguments": "{\"path\":\"C:\\\\fixture\\\\image.png\"}"}], "usage": {"input_tokens": 335, "output_tokens": 30, "total_tokens": 365, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 335}, "output_tokens_details": {"reasoning_tokens": 0}}, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 1024, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "view_image", "description": "View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.", "strict": false, "parameters": {"type": "object", "properties": {"path": {"type": "string", "description": "Local filesystem path to an image file."}}, "required": ["path"], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "none", "summary": null}, "truncation": "disabled", "metadata": {}}}
+

@@ -1,0 +1,11 @@
+Test project /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-cpu
+    Start 1: grammar_native_test
+1/3 Test #1: grammar_native_test ..............   Passed    0.00 sec
+    Start 2: grammar_inspection_test
+2/3 Test #2: grammar_inspection_test ..........   Passed    0.00 sec
+    Start 3: grammar_speculation_test
+3/3 Test #3: grammar_speculation_test .........   Passed    0.00 sec
+
+100% tests passed, 0 tests failed out of 3
+
+Total Test time (real) =   0.01 sec

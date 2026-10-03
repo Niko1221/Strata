@@ -1,0 +1,32 @@
+SYNTHETIC DOCUMENTATION EXAMPLE
+Status: Supported in Responses; complete generated arguments are validated before call completion.
+Requires requirements-json.txt. Tool results remain arbitrary text.
+
+POST /v1/responses
+Content-Type: application/json
+
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "input": "Call read_file with path calc.py.",
+  "tools": [
+    {
+      "type": "function",
+      "name": "read_file",
+      "description": "Read a client-owned file.",
+      "strict": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

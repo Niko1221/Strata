@@ -1,0 +1,27 @@
+COMMAND ["ctest", "--test-dir", "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-json-gpu", "--output-on-failure", "-R", "grammar|serve_input"]
+Test project /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-json-gpu
+      Start 21: grammar_sampler_test
+ 1/10 Test #21: grammar_sampler_test .............   Passed    0.50 sec
+      Start 22: grammar_sampler_one_block
+ 2/10 Test #22: grammar_sampler_one_block ........   Passed    0.24 sec
+      Start 23: grammar_sampler_old
+ 3/10 Test #23: grammar_sampler_old ..............   Passed    0.25 sec
+      Start 47: grammar_native_test
+ 4/10 Test #47: grammar_native_test ..............   Passed    0.01 sec
+      Start 48: grammar_inspection_test
+ 5/10 Test #48: grammar_inspection_test ..........   Passed    0.01 sec
+      Start 49: grammar_speculation_test
+ 6/10 Test #49: grammar_speculation_test .........   Passed    0.01 sec
+      Start 50: grammar_speculation_split
+ 7/10 Test #50: grammar_speculation_split ........   Passed    0.60 sec
+      Start 51: grammar_speculation_one_block
+ 8/10 Test #51: grammar_speculation_one_block ....   Passed    0.61 sec
+      Start 52: grammar_speculation_old
+ 9/10 Test #52: grammar_speculation_old ..........   Passed    0.96 sec
+      Start 53: serve_input_test
+10/10 Test #53: serve_input_test .................   Passed    0.00 sec
+
+100% tests passed, 0 tests failed out of 10
+
+Total Test time (real) =   3.20 sec
+GPU_AFTER 

@@ -1,0 +1,99 @@
+event: response.created
+data: {"type": "response.created", "sequence_number": 0, "response": {"id": "resp_7d45a88463574257b0dd65e9a6190d23", "object": "response", "created_at": 1791059271, "status": "queued", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "get_goal", "description": "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.", "strict": false, "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+event: response.in_progress
+data: {"type": "response.in_progress", "sequence_number": 1, "response": {"id": "resp_7d45a88463574257b0dd65e9a6190d23", "object": "response", "created_at": 1791059271, "status": "in_progress", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "get_goal", "description": "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.", "strict": false, "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"id": "rs_4b036b4bcb4943b48d79af06da5add68", "type": "reasoning", "status": "in_progress", "summary": [], "content": [{"type": "reasoning_text", "text": ""}]}}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 3, "item_id": "rs_4b036b4bcb4943b48d79af06da5add68", "output_index": 0, "content_index": 0, "delta": "The"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 4, "item_id": "rs_4b036b4bcb4943b48d79af06da5add68", "output_index": 0, "content_index": 0, "delta": " user"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 5, "item_id": "rs_4b036b4bcb4943b48d79af06da5add68", "output_index": 0, "content_index": 0, "delta": " wants"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 6, "item_id": "rs_4b036b4bcb4943b48d79af06da5add68", "output_index": 0, "content_index": 0, "delta": " me"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 7, "item_id": "rs_4b036b4bcb4943b48d79af06da5add68", "output_index": 0, "content_index": 0, "delta": " to"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 8, "item_id": "rs_4b036b4bcb4943b48d79af06da5add68", "output_index": 0, "content_index": 0, "delta": " call"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 9, "item_id": "rs_4b036b4bcb4943b48d79af06da5add68", "output_index": 0, "content_index": 0, "delta": " get"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 10, "item_id": "rs_4b036b4bcb4943b48d79af06da5add68", "output_index": 0, "content_index": 0, "delta": "_goal"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 11, "item_id": "rs_4b036b4bcb4943b48d79af06da5add68", "output_index": 0, "content_index": 0, "delta": " exactly"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 12, "item_id": "rs_4b036b4bcb4943b48d79af06da5add68", "output_index": 0, "content_index": 0, "delta": " once"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 13, "item_id": "rs_4b036b4bcb4943b48d79af06da5add68", "output_index": 0, "content_index": 0, "delta": " with"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 14, "item_id": "rs_4b036b4bcb4943b48d79af06da5add68", "output_index": 0, "content_index": 0, "delta": " an"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 15, "item_id": "rs_4b036b4bcb4943b48d79af06da5add68", "output_index": 0, "content_index": 0, "delta": " empty"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 16, "item_id": "rs_4b036b4bcb4943b48d79af06da5add68", "output_index": 0, "content_index": 0, "delta": " object"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 17, "item_id": "rs_4b036b4bcb4943b48d79af06da5add68", "output_index": 0, "content_index": 0, "delta": " as"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 18, "item_id": "rs_4b036b4bcb4943b48d79af06da5add68", "output_index": 0, "content_index": 0, "delta": " arguments"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 19, "item_id": "rs_4b036b4bcb4943b48d79af06da5add68", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 20, "item_id": "rs_4b036b4bcb4943b48d79af06da5add68", "output_index": 0, "content_index": 0, "delta": "\n"}
+
+event: response.reasoning_text.done
+data: {"type": "response.reasoning_text.done", "sequence_number": 21, "item_id": "rs_4b036b4bcb4943b48d79af06da5add68", "output_index": 0, "content_index": 0, "text": "The user wants me to call get_goal exactly once with an empty object as arguments.\n"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 22, "output_index": 0, "item": {"id": "rs_4b036b4bcb4943b48d79af06da5add68", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants me to call get_goal exactly once with an empty object as arguments.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWVJ8a74OOiB-tzQxCs3oV5xzNiow-si1nG_Okz18Zyq3qvCbGuO3CJrikDw_Si2cKVafk9Jt56BWH0BggrkdtSHrrTnj0F9S5n-Bm4M0ju8G2NnUoEf5MMTiwpg7ZD1WT9LbWJL8bVxNpUdeT-EeeN2CpDH3KWgVMeH0IZp0Vg5gi1A3LodYkimu2DTPdKzO0CPmKY1Sp7v5e6VvEDHlQ83YdPqnahB3Aa8z0_l6zORA8MjQ6EBekRdf0O5FArt22YOc1ArhYMVP2t4zKqCu4SV4KrATBQR2q0gZQtJOsI_ZzxbDB1QYZ5_MCvyCtye7zGf_067gpoS_nZPr_aFwacQ6jGJ5pwfTA3Al85dUb5yAAxedBv2NpoYvW4R1yXRdNSUybG0aDiaJKvx9DZyDvAHDg=="}}
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 23, "output_index": 1, "item": {"id": "fc_fde4bf4147d24eaeaee72a69d02b45e8", "type": "function_call", "status": "in_progress", "call_id": "call_f3934429a563481e9399f490", "name": "get_goal", "arguments": ""}}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 24, "item_id": "fc_fde4bf4147d24eaeaee72a69d02b45e8", "output_index": 1, "delta": "{"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 25, "item_id": "fc_fde4bf4147d24eaeaee72a69d02b45e8", "output_index": 1, "delta": "\"arguments\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 26, "item_id": "fc_fde4bf4147d24eaeaee72a69d02b45e8", "output_index": 1, "delta": "{}"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 27, "item_id": "fc_fde4bf4147d24eaeaee72a69d02b45e8", "output_index": 1, "delta": "}"}
+
+event: response.function_call_arguments.done
+data: {"type": "response.function_call_arguments.done", "sequence_number": 28, "item_id": "fc_fde4bf4147d24eaeaee72a69d02b45e8", "output_index": 1, "arguments": "{\"arguments\":{}}"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 29, "output_index": 1, "item": {"id": "fc_fde4bf4147d24eaeaee72a69d02b45e8", "type": "function_call", "status": "completed", "call_id": "call_f3934429a563481e9399f490", "name": "get_goal", "arguments": "{\"arguments\":{}}"}}
+
+event: response.completed
+data: {"type": "response.completed", "sequence_number": 30, "response": {"id": "resp_7d45a88463574257b0dd65e9a6190d23", "object": "response", "created_at": 1791059271, "status": "completed", "completed_at": 1791059274, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [{"id": "rs_4b036b4bcb4943b48d79af06da5add68", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants me to call get_goal exactly once with an empty object as arguments.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWVJ8a74OOiB-tzQxCs3oV5xzNiow-si1nG_Okz18Zyq3qvCbGuO3CJrikDw_Si2cKVafk9Jt56BWH0BggrkdtSHrrTnj0F9S5n-Bm4M0ju8G2NnUoEf5MMTiwpg7ZD1WT9LbWJL8bVxNpUdeT-EeeN2CpDH3KWgVMeH0IZp0Vg5gi1A3LodYkimu2DTPdKzO0CPmKY1Sp7v5e6VvEDHlQ83YdPqnahB3Aa8z0_l6zORA8MjQ6EBekRdf0O5FArt22YOc1ArhYMVP2t4zKqCu4SV4KrATBQR2q0gZQtJOsI_ZzxbDB1QYZ5_MCvyCtye7zGf_067gpoS_nZPr_aFwacQ6jGJ5pwfTA3Al85dUb5yAAxedBv2NpoYvW4R1yXRdNSUybG0aDiaJKvx9DZyDvAHDg=="}, {"id": "fc_fde4bf4147d24eaeaee72a69d02b45e8", "type": "function_call", "status": "completed", "call_id": "call_f3934429a563481e9399f490", "name": "get_goal", "arguments": "{\"arguments\":{}}"}], "usage": {"input_tokens": 325, "output_tokens": 46, "total_tokens": 371, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 325}, "output_tokens_details": {"reasoning_tokens": 19}}, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "get_goal", "description": "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.", "strict": false, "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+

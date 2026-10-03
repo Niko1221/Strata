@@ -1,0 +1,6 @@
+* -text whitespace=cr-at-eol,-blank-at-eof
+*.zip binary
+# Preserve literal spacing in captured shell output, the client prompt and its diff.
+TOOL_LOOP.txt whitespace=cr-at-eol,-blank-at-eof,-blank-at-eol
+local-model-instructions.txt whitespace=cr-at-eol,-blank-at-eof,-blank-at-eol
+instructions.diff.txt whitespace=cr-at-eol,-blank-at-eof,-blank-at-eol

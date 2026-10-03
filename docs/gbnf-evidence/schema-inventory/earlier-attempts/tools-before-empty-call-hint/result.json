@@ -1,0 +1,92 @@
+{
+  "scripted_model_output": false,
+  "mocked_tool_results": true,
+  "tools_executed": false,
+  "prompt_supplies_sample_arguments": true,
+  "reasoning": "medium",
+  "cases": [
+    {
+      "name": "exec_command",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 24.45340889900399
+    },
+    {
+      "name": "write_stdin",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 8.106581335989176
+    },
+    {
+      "name": "request_user_input",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 8.540876846003812
+    },
+    {
+      "name": "view_image",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 11.16025004000403
+    },
+    {
+      "name": "multi_agent_v1.close_agent",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 11.377805483993143
+    },
+    {
+      "name": "multi_agent_v1.resume_agent",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 5.013997215006384
+    },
+    {
+      "name": "multi_agent_v1.send_input",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 9.36104943700775
+    },
+    {
+      "name": "multi_agent_v1.spawn_agent",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 10.417980352998711
+    },
+    {
+      "name": "multi_agent_v1.wait_agent",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 7.543954036998912
+    },
+    {
+      "name": "get_goal",
+      "failure": "Additional properties are not allowed ('arguments' was unexpected)\n\nFailed validating 'additionalProperties' in schema:\n    {'type': 'object',\n     'properties': {},\n     'required': [],\n     'additionalProperties': False}\n\nOn instance:\n    {'arguments': {}}",
+      "seconds": 2.8119935680006165
+    },
+    {
+      "name": "create_goal",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 5.640942066995194
+    },
+    {
+      "name": "update_goal",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 6.070639073004713
+    }
+  ],
+  "result": "fail"
+}

@@ -1,0 +1,141 @@
+event: response.created
+data: {"type": "response.created", "sequence_number": 0, "response": {"id": "resp_69722b759dfc4864bc6533d4c37dee04", "object": "response", "created_at": 1791058747, "status": "queued", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "view_image", "description": "View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.", "strict": false, "parameters": {"type": "object", "properties": {"path": {"type": "string", "description": "Local filesystem path to an image file."}}, "required": ["path"], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+event: response.in_progress
+data: {"type": "response.in_progress", "sequence_number": 1, "response": {"id": "resp_69722b759dfc4864bc6533d4c37dee04", "object": "response", "created_at": 1791058747, "status": "in_progress", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "view_image", "description": "View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.", "strict": false, "parameters": {"type": "object", "properties": {"path": {"type": "string", "description": "Local filesystem path to an image file."}}, "required": ["path"], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"id": "rs_7fb3a7b6fbdd487ebd5706bd6da559e9", "type": "reasoning", "status": "in_progress", "summary": [], "content": [{"type": "reasoning_text", "text": ""}]}}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 3, "item_id": "rs_7fb3a7b6fbdd487ebd5706bd6da559e9", "output_index": 0, "content_index": 0, "delta": "The"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 4, "item_id": "rs_7fb3a7b6fbdd487ebd5706bd6da559e9", "output_index": 0, "content_index": 0, "delta": " user"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 5, "item_id": "rs_7fb3a7b6fbdd487ebd5706bd6da559e9", "output_index": 0, "content_index": 0, "delta": " wants"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 6, "item_id": "rs_7fb3a7b6fbdd487ebd5706bd6da559e9", "output_index": 0, "content_index": 0, "delta": " me"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 7, "item_id": "rs_7fb3a7b6fbdd487ebd5706bd6da559e9", "output_index": 0, "content_index": 0, "delta": " to"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 8, "item_id": "rs_7fb3a7b6fbdd487ebd5706bd6da559e9", "output_index": 0, "content_index": 0, "delta": " call"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 9, "item_id": "rs_7fb3a7b6fbdd487ebd5706bd6da559e9", "output_index": 0, "content_index": 0, "delta": " view"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 10, "item_id": "rs_7fb3a7b6fbdd487ebd5706bd6da559e9", "output_index": 0, "content_index": 0, "delta": "_image"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 11, "item_id": "rs_7fb3a7b6fbdd487ebd5706bd6da559e9", "output_index": 0, "content_index": 0, "delta": " exactly"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 12, "item_id": "rs_7fb3a7b6fbdd487ebd5706bd6da559e9", "output_index": 0, "content_index": 0, "delta": " once"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 13, "item_id": "rs_7fb3a7b6fbdd487ebd5706bd6da559e9", "output_index": 0, "content_index": 0, "delta": " with"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 14, "item_id": "rs_7fb3a7b6fbdd487ebd5706bd6da559e9", "output_index": 0, "content_index": 0, "delta": " the"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 15, "item_id": "rs_7fb3a7b6fbdd487ebd5706bd6da559e9", "output_index": 0, "content_index": 0, "delta": " specified"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 16, "item_id": "rs_7fb3a7b6fbdd487ebd5706bd6da559e9", "output_index": 0, "content_index": 0, "delta": " path"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 17, "item_id": "rs_7fb3a7b6fbdd487ebd5706bd6da559e9", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 18, "item_id": "rs_7fb3a7b6fbdd487ebd5706bd6da559e9", "output_index": 0, "content_index": 0, "delta": " I"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 19, "item_id": "rs_7fb3a7b6fbdd487ebd5706bd6da559e9", "output_index": 0, "content_index": 0, "delta": " should"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 20, "item_id": "rs_7fb3a7b6fbdd487ebd5706bd6da559e9", "output_index": 0, "content_index": 0, "delta": " emit"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 21, "item_id": "rs_7fb3a7b6fbdd487ebd5706bd6da559e9", "output_index": 0, "content_index": 0, "delta": " the"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 22, "item_id": "rs_7fb3a7b6fbdd487ebd5706bd6da559e9", "output_index": 0, "content_index": 0, "delta": " tool"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 23, "item_id": "rs_7fb3a7b6fbdd487ebd5706bd6da559e9", "output_index": 0, "content_index": 0, "delta": " call"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 24, "item_id": "rs_7fb3a7b6fbdd487ebd5706bd6da559e9", "output_index": 0, "content_index": 0, "delta": " and"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 25, "item_id": "rs_7fb3a7b6fbdd487ebd5706bd6da559e9", "output_index": 0, "content_index": 0, "delta": " stop"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 26, "item_id": "rs_7fb3a7b6fbdd487ebd5706bd6da559e9", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 27, "item_id": "rs_7fb3a7b6fbdd487ebd5706bd6da559e9", "output_index": 0, "content_index": 0, "delta": "\n"}
+
+event: response.reasoning_text.done
+data: {"type": "response.reasoning_text.done", "sequence_number": 28, "item_id": "rs_7fb3a7b6fbdd487ebd5706bd6da559e9", "output_index": 0, "content_index": 0, "text": "The user wants me to call view_image exactly once with the specified path. I should emit the tool call and stop.\n"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 29, "output_index": 0, "item": {"id": "rs_7fb3a7b6fbdd487ebd5706bd6da559e9", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants me to call view_image exactly once with the specified path. I should emit the tool call and stop.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWM90e4EFRVyOL5WpfoNTrkVtNiZumIMSznPDQUEpP4IIu-ok9U57V46G8oEUPY5CpvNQx7Ap1tspSsBlOHcAT3kepGjHpc63SV5lOL7lkI7IYq3Ii53u7EFg50-lnjjwfPbXVuiopsIq0T9AVA0SB4DKAZ0oAJcI_HQ4QkI4yGiKMmQrddm6E7zIOvglgZ0copdS1aAyNh_th9F4ftTwsfATRbm8Gub66B9vbDhq9chi-6Ja7f-BkdP5DPUpVAVzvMEx5c_AuJ2P7IcMsJkJ_tRJkP3ba5fXe83NR_CUwEWx6SAS48veJLn3gBmVhx5MkquZG361vBavIJF0FnNkKcbm4a2gIM82ErpGDDLzwhLg8uOuBdjTDjbIuyjsNZmabow0k9c4AuYxrSF_rwr77aj5rnN4VZxPXb6I53YAgUhLlAWqQlru7rW5UsbTCYqQfOL"}}
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 30, "output_index": 1, "item": {"id": "fc_e78e5b2325d24820a65f6107d37f5c3f", "type": "function_call", "status": "in_progress", "call_id": "call_dd9204ce8bee4d29802a29ed", "name": "view_image", "arguments": ""}}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 31, "item_id": "fc_e78e5b2325d24820a65f6107d37f5c3f", "output_index": 1, "delta": "{"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 32, "item_id": "fc_e78e5b2325d24820a65f6107d37f5c3f", "output_index": 1, "delta": "\"path\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 33, "item_id": "fc_e78e5b2325d24820a65f6107d37f5c3f", "output_index": 1, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 34, "item_id": "fc_e78e5b2325d24820a65f6107d37f5c3f", "output_index": 1, "delta": "C"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 35, "item_id": "fc_e78e5b2325d24820a65f6107d37f5c3f", "output_index": 1, "delta": ":\\\\"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 36, "item_id": "fc_e78e5b2325d24820a65f6107d37f5c3f", "output_index": 1, "delta": "fixture"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 37, "item_id": "fc_e78e5b2325d24820a65f6107d37f5c3f", "output_index": 1, "delta": "\\\\"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 38, "item_id": "fc_e78e5b2325d24820a65f6107d37f5c3f", "output_index": 1, "delta": "image"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 39, "item_id": "fc_e78e5b2325d24820a65f6107d37f5c3f", "output_index": 1, "delta": ".png"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 40, "item_id": "fc_e78e5b2325d24820a65f6107d37f5c3f", "output_index": 1, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 41, "item_id": "fc_e78e5b2325d24820a65f6107d37f5c3f", "output_index": 1, "delta": "}"}
+
+event: response.function_call_arguments.done
+data: {"type": "response.function_call_arguments.done", "sequence_number": 42, "item_id": "fc_e78e5b2325d24820a65f6107d37f5c3f", "output_index": 1, "arguments": "{\"path\":\"C:\\\\fixture\\\\image.png\"}"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 43, "output_index": 1, "item": {"id": "fc_e78e5b2325d24820a65f6107d37f5c3f", "type": "function_call", "status": "completed", "call_id": "call_dd9204ce8bee4d29802a29ed", "name": "view_image", "arguments": "{\"path\":\"C:\\\\fixture\\\\image.png\"}"}}
+
+event: response.completed
+data: {"type": "response.completed", "sequence_number": 44, "response": {"id": "resp_69722b759dfc4864bc6533d4c37dee04", "object": "response", "created_at": 1791058747, "status": "completed", "completed_at": 1791058750, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [{"id": "rs_7fb3a7b6fbdd487ebd5706bd6da559e9", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants me to call view_image exactly once with the specified path. I should emit the tool call and stop.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWM90e4EFRVyOL5WpfoNTrkVtNiZumIMSznPDQUEpP4IIu-ok9U57V46G8oEUPY5CpvNQx7Ap1tspSsBlOHcAT3kepGjHpc63SV5lOL7lkI7IYq3Ii53u7EFg50-lnjjwfPbXVuiopsIq0T9AVA0SB4DKAZ0oAJcI_HQ4QkI4yGiKMmQrddm6E7zIOvglgZ0copdS1aAyNh_th9F4ftTwsfATRbm8Gub66B9vbDhq9chi-6Ja7f-BkdP5DPUpVAVzvMEx5c_AuJ2P7IcMsJkJ_tRJkP3ba5fXe83NR_CUwEWx6SAS48veJLn3gBmVhx5MkquZG361vBavIJF0FnNkKcbm4a2gIM82ErpGDDLzwhLg8uOuBdjTDjbIuyjsNZmabow0k9c4AuYxrSF_rwr77aj5rnN4VZxPXb6I53YAgUhLlAWqQlru7rW5UsbTCYqQfOL"}, {"id": "fc_e78e5b2325d24820a65f6107d37f5c3f", "type": "function_call", "status": "completed", "call_id": "call_dd9204ce8bee4d29802a29ed", "name": "view_image", "arguments": "{\"path\":\"C:\\\\fixture\\\\image.png\"}"}], "usage": {"input_tokens": 333, "output_tokens": 57, "total_tokens": 390, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 333}, "output_tokens_details": {"reasoning_tokens": 26}}, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "view_image", "description": "View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.", "strict": false, "parameters": {"type": "object", "properties": {"path": {"type": "string", "description": "Local filesystem path to an image file."}}, "required": ["path"], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+

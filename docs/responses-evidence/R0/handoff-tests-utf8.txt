@@ -1,0 +1,58 @@
+test_bool_sequence_is_not_integer (test_tools.EventAuditTests.test_bool_sequence_is_not_integer) ... ok
+test_call_id_changes (test_tools.EventAuditTests.test_call_id_changes) ... ok
+test_done_rewrites_text (test_tools.EventAuditTests.test_done_rewrites_text) ... ok
+test_duplicate_item_id (test_tools.EventAuditTests.test_duplicate_item_id) ... ok
+test_empty_stream (test_tools.EventAuditTests.test_empty_stream) ... ok
+test_final_changes_response_id (test_tools.EventAuditTests.test_final_changes_response_id) ... ok
+test_final_rewrites_content (test_tools.EventAuditTests.test_final_rewrites_content) ... ok
+test_function (test_tools.EventAuditTests.test_function) ... ok
+test_function_argument_rewrite (test_tools.EventAuditTests.test_function_argument_rewrite) ... ok
+test_missing_created (test_tools.EventAuditTests.test_missing_created) ... ok
+test_no_terminal (test_tools.EventAuditTests.test_no_terminal) ... ok
+test_non_string_delta (test_tools.EventAuditTests.test_non_string_delta) ... ok
+test_nonconsecutive_sequence (test_tools.EventAuditTests.test_nonconsecutive_sequence) ... ok
+test_terminal_followed_by_event (test_tools.EventAuditTests.test_terminal_followed_by_event) ... ok
+test_terminal_status_mismatch (test_tools.EventAuditTests.test_terminal_status_mismatch) ... ok
+test_text (test_tools.EventAuditTests.test_text) ... ok
+test_unknown_family_not_silently_ignored (test_tools.EventAuditTests.test_unknown_family_not_silently_ignored) ... ok
+test_wrong_content_index (test_tools.EventAuditTests.test_wrong_content_index) ... ok
+test_wrong_item_id (test_tools.EventAuditTests.test_wrong_item_id) ... ok
+test_baseline_detects_match_drift_missing (test_tools.PlanTests.test_baseline_detects_match_drift_missing) ... ok
+test_generated_roadmap (test_tools.PlanTests.test_generated_roadmap) ... ok
+test_initial_implementation_statuses_not_passed (test_tools.PlanTests.test_initial_implementation_statuses_not_passed) ... ok
+test_json_frontends_explicitly_excluded (test_tools.PlanTests.test_json_frontends_explicitly_excluded) ... ok
+test_mtp_and_recovery_not_target_release_prerequisite (test_tools.PlanTests.test_mtp_and_recovery_not_target_release_prerequisite) ... ok
+test_pack_structure_without_hashes (test_tools.PlanTests.test_pack_structure_without_hashes) ... ok
+test_responses_independent_of_gbnf (test_tools.PlanTests.test_responses_independent_of_gbnf) ... ok
+test_apply_advances_revision (test_tools.StateContractTests.test_apply_advances_revision) ... ok
+test_duplicate_ids_rejected (test_tools.StateContractTests.test_duplicate_ids_rejected) ... ok
+test_forbidden_action_has_no_effect (test_tools.StateContractTests.test_forbidden_action_has_no_effect) ... ok
+test_grammar_generation (test_tools.StateContractTests.test_grammar_generation) ... ok
+test_grammar_injection_rejected (test_tools.StateContractTests.test_grammar_injection_rejected) ... ok
+test_sorted_choices (test_tools.StateContractTests.test_sorted_choices) ... ok
+test_stale_result_has_no_effect (test_tools.StateContractTests.test_stale_result_has_no_effect) ... ok
+test_unknown_equal_revision_snapshot_rejected (test_tools.StateContractTests.test_unknown_equal_revision_snapshot_rejected) ... ok
+test_wait_does_not_consume_task (test_tools.StateContractTests.test_wait_does_not_consume_task) ... ok
+test_abbreviated_receipt_refused (test_worktrees.WorktreeTests.test_abbreviated_receipt_refused) ... ok
+test_cli_defaults_to_dry_run (test_worktrees.WorktreeTests.test_cli_defaults_to_dry_run) ... ok
+test_dirty_source_refused (test_worktrees.WorktreeTests.test_dirty_source_refused) ... ok
+test_dry_run_does_not_create (test_worktrees.WorktreeTests.test_dry_run_does_not_create) ... ok
+test_existing_branch_refused (test_worktrees.WorktreeTests.test_existing_branch_refused) ... ok
+test_existing_path_refused (test_worktrees.WorktreeTests.test_existing_path_refused) ... ok
+test_explicit_apply_creates_only_selected_worktree (test_worktrees.WorktreeTests.test_explicit_apply_creates_only_selected_worktree) ... Preparing worktree (new branch 'work/responses-api')
+HEAD is now at eb7efc3 baseline
+ok
+test_gbnf_exact_passing_parent (test_worktrees.WorktreeTests.test_gbnf_exact_passing_parent) ... ok
+test_gbnf_requires_receipt (test_worktrees.WorktreeTests.test_gbnf_requires_receipt) ... ok
+test_invalid_revision_option_refused (test_worktrees.WorktreeTests.test_invalid_revision_option_refused) ... ok
+test_missing_destination_parent_refused (test_worktrees.WorktreeTests.test_missing_destination_parent_refused) ... ok
+test_missing_evidence_refused (test_worktrees.WorktreeTests.test_missing_evidence_refused) ... ok
+test_nested_path_refused (test_worktrees.WorktreeTests.test_nested_path_refused) ... ok
+test_nonpassing_receipt_refused (test_worktrees.WorktreeTests.test_nonpassing_receipt_refused) ... ok
+test_other_commit_refused (test_worktrees.WorktreeTests.test_other_commit_refused) ... ok
+test_responses_rejects_unrelated_receipt (test_worktrees.WorktreeTests.test_responses_rejects_unrelated_receipt) ... ok
+
+----------------------------------------------------------------------
+Ran 51 tests in 24.936s
+
+OK

@@ -1,0 +1,25 @@
+test_an_engine_that_died_on_load_is_reported_as_such (serve.test_lifecycle.Lifecycle.test_an_engine_that_died_on_load_is_reported_as_such) ... [strata] loading the model again (it was unloaded) ...
+ok
+test_busy_auth_and_foreign_origin_cannot_unload (serve.test_lifecycle.Lifecycle.test_busy_auth_and_foreign_origin_cannot_unload) ... [strata] model unloaded; the next request loads it again
+ok
+test_close_does_not_forget_a_process_still_exiting (serve.test_lifecycle.Lifecycle.test_close_does_not_forget_a_process_still_exiting) ... ok
+test_close_sends_eof_before_waiting_for_windows_reader (serve.test_lifecycle.Lifecycle.test_close_sends_eof_before_waiting_for_windows_reader) ... ok
+test_close_terminates_before_it_kills (serve.test_lifecycle.Lifecycle.test_close_terminates_before_it_kills) ... ok
+test_discover_chat_unload_and_stream_reload (serve.test_lifecycle.Lifecycle.test_discover_chat_unload_and_stream_reload) ... [strata] loading the model again (it was unloaded) ...
+[strata] the engine is running again
+[strata] done: 7 tokens in 0 s (10426.2 tok/s) (stop, cancel=False)
+[strata] done: 7 tokens in 0 s (13771.2 tok/s) (stop, cancel=False)
+[strata] model unloaded; the next request loads it again
+[strata] loading the model again (it was unloaded) ...
+[strata] the engine is running again
+[strata] done: 7 tokens in 0 s (2907.2 tok/s) (stop, cancel=False)
+ok
+test_explicit_load_and_model_matching (serve.test_lifecycle.Lifecycle.test_explicit_load_and_model_matching) ... [strata] loading the model again (it was unloaded) ...
+[strata] the engine is running again
+ok
+test_native_lazy_constructor_does_not_start_a_process (serve.test_lifecycle.Lifecycle.test_native_lazy_constructor_does_not_start_a_process) ... ok
+
+----------------------------------------------------------------------
+Ran 8 tests in 6.393s
+
+OK

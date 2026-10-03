@@ -1,0 +1,5825 @@
+{
+  "result": "pass",
+  "scripted_model_output": false,
+  "sdk_version": "3.23.0",
+  "executable_sha256": "b335d98cf16d08795d2e089e12484c3c7212c7b5b85755676b76aab113ba7bbe",
+  "args": [
+    "--pack",
+    "/boot/Strata-data/packs/coder-iq1_m",
+    "--native",
+    "/boot/Strata-data/models/coder-IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf",
+    "--ple-gguf",
+    "/boot/Strata-data/models/coder-IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00002-of-00002.gguf",
+    "--expert-profile",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/data/expert-profile-coder.bin",
+    "--expert-cache",
+    "6000",
+    "--prefill",
+    "256",
+    "--kv",
+    "int8",
+    "--max-context",
+    "4096",
+    "--mmap-experts",
+    "--prompt-cache",
+    "2",
+    "--conversation-cache-mib",
+    "0",
+    "--adapt-swaps",
+    "0",
+    "--spec",
+    "4",
+    "--mtp",
+    "/boot/Strata-data/mtp/rt",
+    "--suffix-draft",
+    "0"
+  ],
+  "mode": "mtp",
+  "cases": [
+    {
+      "name": "mtp capability",
+      "info": {
+        "version": "0.1.38",
+        "context": 4096,
+        "kv": "int8",
+        "kv_resident": 0,
+        "expert_slots": 7815,
+        "expert_cache_mib": 15233,
+        "expert_slots_primary": 7815,
+        "expert_cache_primary_mib": 15233,
+        "spec": 4,
+        "mtp_max": 0,
+        "lookup": 0,
+        "vram_free_mib": 2918,
+        "cvec": 0,
+        "arena_mib": 0,
+        "pool_workers": 5,
+        "pcie_frac": "0.55",
+        "spec_min_p": "0.00",
+        "conversation_cache_mib": 0,
+        "conversation_cache_slots": 4,
+        "conversation_cache_min_free_mib": 2560,
+        "decode_mode": "mtp",
+        "requested_spec": 4,
+        "requested_lookup": 0,
+        "mtp_loaded": 1,
+        "mtp_vram_mib": "875.5",
+        "grammar": "gbnf-v2",
+        "engine": "0.1.38"
+      }
+    },
+    {
+      "name": "responses JSON literal markers and Unicode",
+      "text": "<think>literal</think>\n猫 café",
+      "status": "completed",
+      "wire": {
+        "id": "resp_2d352c7f915145c58f75428648eacc03",
+        "access_programs": null,
+        "created_at": 1791014228.0,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "metadata": {},
+        "model": "qwen3.8-flash-next",
+        "object": "response",
+        "output": [
+          {
+            "id": "msg_6ab424615f2b40ebad9152b1968104c4",
+            "content": [
+              {
+                "annotations": [],
+                "text": "<think>literal</think>\n猫 café",
+                "type": "output_text",
+                "logprobs": []
+              }
+            ],
+            "role": "assistant",
+            "status": "completed",
+            "type": "message",
+            "phase": null
+          }
+        ],
+        "parallel_tool_calls": true,
+        "temperature": 0.0,
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": 1.0,
+        "background": false,
+        "completed_at": 1791014233.0,
+        "conversation": null,
+        "max_output_tokens": 128,
+        "max_tool_calls": null,
+        "moderation": null,
+        "previous_response_id": null,
+        "prompt": null,
+        "prompt_cache_diagnostics": null,
+        "prompt_cache_key": null,
+        "prompt_cache_options": null,
+        "prompt_cache_retention": null,
+        "reasoning": {
+          "context": null,
+          "effort": "none",
+          "generate_summary": null,
+          "mode": null,
+          "summary": null
+        },
+        "safety_identifier": null,
+        "service_tier": null,
+        "status": "completed",
+        "text": {
+          "format": {
+            "type": "text"
+          },
+          "verbosity": null
+        },
+        "top_logprobs": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 27,
+          "input_tokens_details": {
+            "cache_write_tokens": 27,
+            "cached_tokens": 0
+          },
+          "output_tokens": 16,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 43
+        },
+        "user": null,
+        "store": false
+      },
+      "wall_s": 5.633027190997382,
+      "first_text_delta_s": null,
+      "native": {
+        "generated": 16,
+        "prompt_tokens": 27,
+        "prompt_ms": 3466.1,
+        "decode_ms": 1260.2,
+        "finish": "stop",
+        "drafts_accepted": 4,
+        "drafts_offered": 4,
+        "reused": 0,
+        "hits": 6202,
+        "lookups": 7680,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 1185.3,
+        "prompt_read": 27
+      }
+    },
+    {
+      "name": "responses SSE literal markers and Unicode",
+      "text": "<think>literal</think>\n猫 café",
+      "status": "completed",
+      "wire": [
+        {
+          "response": {
+            "id": "resp_cf983ab8d4674baea4ee65535d3f1536",
+            "access_programs": null,
+            "created_at": 1791014233.0,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [],
+            "parallel_tool_calls": true,
+            "temperature": 0.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "background": false,
+            "completed_at": null,
+            "conversation": null,
+            "max_output_tokens": 128,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "queued",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": null,
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 0,
+          "type": "response.created"
+        },
+        {
+          "response": {
+            "id": "resp_cf983ab8d4674baea4ee65535d3f1536",
+            "access_programs": null,
+            "created_at": 1791014233.0,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [],
+            "parallel_tool_calls": true,
+            "temperature": 0.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "background": false,
+            "completed_at": null,
+            "conversation": null,
+            "max_output_tokens": 128,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "in_progress",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": null,
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 1,
+          "type": "response.in_progress"
+        },
+        {
+          "item": {
+            "id": "msg_b5ade462672848a3adc2626cf6980456",
+            "content": [],
+            "role": "assistant",
+            "status": "in_progress",
+            "type": "message",
+            "phase": null
+          },
+          "output_index": 0,
+          "sequence_number": 2,
+          "type": "response.output_item.added"
+        },
+        {
+          "content_index": 0,
+          "item_id": "msg_b5ade462672848a3adc2626cf6980456",
+          "output_index": 0,
+          "part": {
+            "annotations": [],
+            "text": "",
+            "type": "output_text",
+            "logprobs": []
+          },
+          "sequence_number": 3,
+          "type": "response.content_part.added"
+        },
+        {
+          "content_index": 0,
+          "delta": "<",
+          "item_id": "msg_b5ade462672848a3adc2626cf6980456",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 4,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "think",
+          "item_id": "msg_b5ade462672848a3adc2626cf6980456",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 5,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": ">",
+          "item_id": "msg_b5ade462672848a3adc2626cf6980456",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 6,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "l",
+          "item_id": "msg_b5ade462672848a3adc2626cf6980456",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 7,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "iteral",
+          "item_id": "msg_b5ade462672848a3adc2626cf6980456",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 8,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "</",
+          "item_id": "msg_b5ade462672848a3adc2626cf6980456",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 9,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "think",
+          "item_id": "msg_b5ade462672848a3adc2626cf6980456",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 10,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": ">",
+          "item_id": "msg_b5ade462672848a3adc2626cf6980456",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 11,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "\n",
+          "item_id": "msg_b5ade462672848a3adc2626cf6980456",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 12,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "猫",
+          "item_id": "msg_b5ade462672848a3adc2626cf6980456",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 13,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": " ",
+          "item_id": "msg_b5ade462672848a3adc2626cf6980456",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 14,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "caf",
+          "item_id": "msg_b5ade462672848a3adc2626cf6980456",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 15,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "é",
+          "item_id": "msg_b5ade462672848a3adc2626cf6980456",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 16,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "item_id": "msg_b5ade462672848a3adc2626cf6980456",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 17,
+          "text": "<think>literal</think>\n猫 café",
+          "type": "response.output_text.done"
+        },
+        {
+          "content_index": 0,
+          "item_id": "msg_b5ade462672848a3adc2626cf6980456",
+          "output_index": 0,
+          "part": {
+            "annotations": [],
+            "text": "<think>literal</think>\n猫 café",
+            "type": "output_text",
+            "logprobs": []
+          },
+          "sequence_number": 18,
+          "type": "response.content_part.done"
+        },
+        {
+          "item": {
+            "id": "msg_b5ade462672848a3adc2626cf6980456",
+            "content": [
+              {
+                "annotations": [],
+                "text": "<think>literal</think>\n猫 café",
+                "type": "output_text",
+                "logprobs": []
+              }
+            ],
+            "role": "assistant",
+            "status": "completed",
+            "type": "message",
+            "phase": null
+          },
+          "output_index": 0,
+          "sequence_number": 19,
+          "type": "response.output_item.done"
+        },
+        {
+          "response": {
+            "id": "resp_cf983ab8d4674baea4ee65535d3f1536",
+            "access_programs": null,
+            "created_at": 1791014233.0,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [
+              {
+                "id": "msg_b5ade462672848a3adc2626cf6980456",
+                "content": [
+                  {
+                    "annotations": [],
+                    "text": "<think>literal</think>\n猫 café",
+                    "type": "output_text",
+                    "logprobs": []
+                  }
+                ],
+                "role": "assistant",
+                "status": "completed",
+                "type": "message",
+                "phase": null
+              }
+            ],
+            "parallel_tool_calls": true,
+            "temperature": 0.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "background": false,
+            "completed_at": 1791014234.0,
+            "conversation": null,
+            "max_output_tokens": 128,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "completed",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": {
+              "input_tokens": 27,
+              "input_tokens_details": {
+                "cache_write_tokens": 7,
+                "cached_tokens": 20
+              },
+              "output_tokens": 16,
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              },
+              "total_tokens": 43
+            },
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 20,
+          "type": "response.completed"
+        }
+      ],
+      "wall_s": 0.6597671179988538,
+      "first_text_delta_s": 0.30046955600118963,
+      "native": {
+        "generated": 16,
+        "prompt_tokens": 27,
+        "prompt_ms": 235.5,
+        "decode_ms": 392.0,
+        "finish": "stop",
+        "drafts_accepted": 4,
+        "drafts_offered": 4,
+        "reused": 20,
+        "hits": 6202,
+        "lookups": 7680,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 1185.3,
+        "prompt_read": 7
+      }
+    },
+    {
+      "name": "responses sampled SSE",
+      "text": "<think>literal</think>\n猫 café",
+      "status": "completed",
+      "wire": [
+        {
+          "response": {
+            "id": "resp_6a8bf81e8b7c4cf8abfc157ce45a0659",
+            "access_programs": null,
+            "created_at": 1791014234.0,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [],
+            "parallel_tool_calls": true,
+            "temperature": 0.8,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 0.85,
+            "background": false,
+            "completed_at": null,
+            "conversation": null,
+            "max_output_tokens": 128,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "queued",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": null,
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 0,
+          "type": "response.created"
+        },
+        {
+          "response": {
+            "id": "resp_6a8bf81e8b7c4cf8abfc157ce45a0659",
+            "access_programs": null,
+            "created_at": 1791014234.0,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [],
+            "parallel_tool_calls": true,
+            "temperature": 0.8,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 0.85,
+            "background": false,
+            "completed_at": null,
+            "conversation": null,
+            "max_output_tokens": 128,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "in_progress",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": null,
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 1,
+          "type": "response.in_progress"
+        },
+        {
+          "item": {
+            "id": "msg_cbacd905e1384fa18809e0b1eb9279eb",
+            "content": [],
+            "role": "assistant",
+            "status": "in_progress",
+            "type": "message",
+            "phase": null
+          },
+          "output_index": 0,
+          "sequence_number": 2,
+          "type": "response.output_item.added"
+        },
+        {
+          "content_index": 0,
+          "item_id": "msg_cbacd905e1384fa18809e0b1eb9279eb",
+          "output_index": 0,
+          "part": {
+            "annotations": [],
+            "text": "",
+            "type": "output_text",
+            "logprobs": []
+          },
+          "sequence_number": 3,
+          "type": "response.content_part.added"
+        },
+        {
+          "content_index": 0,
+          "delta": "<",
+          "item_id": "msg_cbacd905e1384fa18809e0b1eb9279eb",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 4,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "think",
+          "item_id": "msg_cbacd905e1384fa18809e0b1eb9279eb",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 5,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": ">",
+          "item_id": "msg_cbacd905e1384fa18809e0b1eb9279eb",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 6,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "l",
+          "item_id": "msg_cbacd905e1384fa18809e0b1eb9279eb",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 7,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "iter",
+          "item_id": "msg_cbacd905e1384fa18809e0b1eb9279eb",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 8,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "a",
+          "item_id": "msg_cbacd905e1384fa18809e0b1eb9279eb",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 9,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "l",
+          "item_id": "msg_cbacd905e1384fa18809e0b1eb9279eb",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 10,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "</",
+          "item_id": "msg_cbacd905e1384fa18809e0b1eb9279eb",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 11,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "think",
+          "item_id": "msg_cbacd905e1384fa18809e0b1eb9279eb",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 12,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": ">",
+          "item_id": "msg_cbacd905e1384fa18809e0b1eb9279eb",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 13,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "\n",
+          "item_id": "msg_cbacd905e1384fa18809e0b1eb9279eb",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 14,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "猫",
+          "item_id": "msg_cbacd905e1384fa18809e0b1eb9279eb",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 15,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": " ",
+          "item_id": "msg_cbacd905e1384fa18809e0b1eb9279eb",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 16,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "c",
+          "item_id": "msg_cbacd905e1384fa18809e0b1eb9279eb",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 17,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "af",
+          "item_id": "msg_cbacd905e1384fa18809e0b1eb9279eb",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 18,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "é",
+          "item_id": "msg_cbacd905e1384fa18809e0b1eb9279eb",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 19,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "item_id": "msg_cbacd905e1384fa18809e0b1eb9279eb",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 20,
+          "text": "<think>literal</think>\n猫 café",
+          "type": "response.output_text.done"
+        },
+        {
+          "content_index": 0,
+          "item_id": "msg_cbacd905e1384fa18809e0b1eb9279eb",
+          "output_index": 0,
+          "part": {
+            "annotations": [],
+            "text": "<think>literal</think>\n猫 café",
+            "type": "output_text",
+            "logprobs": []
+          },
+          "sequence_number": 21,
+          "type": "response.content_part.done"
+        },
+        {
+          "item": {
+            "id": "msg_cbacd905e1384fa18809e0b1eb9279eb",
+            "content": [
+              {
+                "annotations": [],
+                "text": "<think>literal</think>\n猫 café",
+                "type": "output_text",
+                "logprobs": []
+              }
+            ],
+            "role": "assistant",
+            "status": "completed",
+            "type": "message",
+            "phase": null
+          },
+          "output_index": 0,
+          "sequence_number": 22,
+          "type": "response.output_item.done"
+        },
+        {
+          "response": {
+            "id": "resp_6a8bf81e8b7c4cf8abfc157ce45a0659",
+            "access_programs": null,
+            "created_at": 1791014234.0,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [
+              {
+                "id": "msg_cbacd905e1384fa18809e0b1eb9279eb",
+                "content": [
+                  {
+                    "annotations": [],
+                    "text": "<think>literal</think>\n猫 café",
+                    "type": "output_text",
+                    "logprobs": []
+                  }
+                ],
+                "role": "assistant",
+                "status": "completed",
+                "type": "message",
+                "phase": null
+              }
+            ],
+            "parallel_tool_calls": true,
+            "temperature": 0.8,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 0.85,
+            "background": false,
+            "completed_at": 1791014234.0,
+            "conversation": null,
+            "max_output_tokens": 128,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "completed",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": {
+              "input_tokens": 27,
+              "input_tokens_details": {
+                "cache_write_tokens": 7,
+                "cached_tokens": 20
+              },
+              "output_tokens": 19,
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              },
+              "total_tokens": 46
+            },
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 23,
+          "type": "response.completed"
+        }
+      ],
+      "wall_s": 0.8339827699965099,
+      "first_text_delta_s": 0.24737092999566812,
+      "native": {
+        "generated": 19,
+        "prompt_tokens": 27,
+        "prompt_ms": 207.6,
+        "decode_ms": 622.2,
+        "finish": "stop",
+        "drafts_accepted": 4,
+        "drafts_offered": 4,
+        "reused": 20,
+        "hits": 7338,
+        "lookups": 9120,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 1479.9,
+        "prompt_read": 7
+      }
+    },
+    {
+      "name": "responses epsilon completion",
+      "text": "",
+      "status": "completed",
+      "wire": [
+        {
+          "response": {
+            "id": "resp_823d8a07f59e48a8a1c1a6b6eb4ad265",
+            "access_programs": null,
+            "created_at": 1791014234.0,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [],
+            "parallel_tool_calls": true,
+            "temperature": 0.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "background": false,
+            "completed_at": null,
+            "conversation": null,
+            "max_output_tokens": 128,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "queued",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": null,
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 0,
+          "type": "response.created"
+        },
+        {
+          "response": {
+            "id": "resp_823d8a07f59e48a8a1c1a6b6eb4ad265",
+            "access_programs": null,
+            "created_at": 1791014234.0,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [],
+            "parallel_tool_calls": true,
+            "temperature": 0.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "background": false,
+            "completed_at": null,
+            "conversation": null,
+            "max_output_tokens": 128,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "in_progress",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": null,
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 1,
+          "type": "response.in_progress"
+        },
+        {
+          "response": {
+            "id": "resp_823d8a07f59e48a8a1c1a6b6eb4ad265",
+            "access_programs": null,
+            "created_at": 1791014234.0,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [],
+            "parallel_tool_calls": true,
+            "temperature": 0.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "background": false,
+            "completed_at": 1791014235.0,
+            "conversation": null,
+            "max_output_tokens": 128,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "completed",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": {
+              "input_tokens": 27,
+              "input_tokens_details": {
+                "cache_write_tokens": 7,
+                "cached_tokens": 20
+              },
+              "output_tokens": 1,
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              },
+              "total_tokens": 28
+            },
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 2,
+          "type": "response.completed"
+        }
+      ],
+      "wall_s": 0.24382129999867175,
+      "first_text_delta_s": null,
+      "native": {
+        "generated": 1,
+        "prompt_tokens": 27,
+        "prompt_ms": 210.3,
+        "decode_ms": 30.1,
+        "finish": "stop",
+        "drafts_accepted": 0,
+        "drafts_offered": 0,
+        "reused": 20,
+        "hits": 357,
+        "lookups": 480,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 110.8,
+        "prompt_read": 7
+      }
+    },
+    {
+      "name": "responses recursive language",
+      "text": "((x))",
+      "status": "completed",
+      "wire": {
+        "id": "resp_1a16089c09c341b08799ee5c1196f6d0",
+        "access_programs": null,
+        "created_at": 1791014235.0,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "metadata": {},
+        "model": "qwen3.8-flash-next",
+        "object": "response",
+        "output": [
+          {
+            "id": "msg_6e1d3bfb8cad4547bae3d65c72b42834",
+            "content": [
+              {
+                "annotations": [],
+                "text": "((x))",
+                "type": "output_text",
+                "logprobs": []
+              }
+            ],
+            "role": "assistant",
+            "status": "completed",
+            "type": "message",
+            "phase": null
+          }
+        ],
+        "parallel_tool_calls": true,
+        "temperature": 0.0,
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": 1.0,
+        "background": false,
+        "completed_at": 1791014236.0,
+        "conversation": null,
+        "max_output_tokens": 128,
+        "max_tool_calls": null,
+        "moderation": null,
+        "previous_response_id": null,
+        "prompt": null,
+        "prompt_cache_diagnostics": null,
+        "prompt_cache_key": null,
+        "prompt_cache_options": null,
+        "prompt_cache_retention": null,
+        "reasoning": {
+          "context": null,
+          "effort": "none",
+          "generate_summary": null,
+          "mode": null,
+          "summary": null
+        },
+        "safety_identifier": null,
+        "service_tier": null,
+        "status": "completed",
+        "text": {
+          "format": {
+            "type": "text"
+          },
+          "verbosity": null
+        },
+        "top_logprobs": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 19,
+          "input_tokens_details": {
+            "cache_write_tokens": 19,
+            "cached_tokens": 0
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 24
+        },
+        "user": null,
+        "store": false
+      },
+      "wall_s": 1.403809970994189,
+      "first_text_delta_s": null,
+      "native": {
+        "generated": 5,
+        "prompt_tokens": 19,
+        "prompt_ms": 994.3,
+        "decode_ms": 397.6,
+        "finish": "stop",
+        "drafts_accepted": 1,
+        "drafts_offered": 1,
+        "reused": 0,
+        "hits": 1666,
+        "lookups": 2400,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 747.9,
+        "prompt_read": 19
+      }
+    },
+    {
+      "name": "responses rejection before SSE headers",
+      "request_extra": {
+        "grammar": "root ::= missing"
+      },
+      "status": 400,
+      "content_type": "application/json",
+      "error": {
+        "error": {
+          "type": "invalid_request_error",
+          "code": "invalid_grammar",
+          "param": "grammar",
+          "message": "[07:57:16] /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-g1/cpp/grammar_parser.cc:820: EBNF parser error at line 1, column 10: Rule \"missing\" is not defined"
+        }
+      }
+    },
+    {
+      "name": "responses rejection before SSE headers",
+      "request_extra": {
+        "grammar": "root ::= root"
+      },
+      "status": 400,
+      "content_type": "application/json",
+      "error": {
+        "error": {
+          "type": "invalid_request_error",
+          "code": "invalid_grammar",
+          "param": "grammar",
+          "message": "grammar has no tokenizer-realizable continuation"
+        }
+      }
+    },
+    {
+      "name": "responses rejection before SSE headers",
+      "request_extra": {
+        "grammar": "root ::= \"x\"\u0000"
+      },
+      "status": 400,
+      "content_type": "application/json",
+      "error": {
+        "error": {
+          "type": "invalid_request_error",
+          "code": "unsupported_parameter",
+          "param": "grammar",
+          "message": "grammar must contain 1..8192 UTF-8 bytes, without NUL"
+        }
+      }
+    },
+    {
+      "name": "responses rejection before SSE headers",
+      "request_extra": {
+        "grammar": "root ::= \"猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫\" invalid_reference"
+      },
+      "status": 400,
+      "content_type": "application/json",
+      "error": {
+        "error": {
+          "type": "invalid_request_error",
+          "code": "invalid_grammar",
+          "param": "grammar",
+          "message": "[07:57:16] /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-g1/cpp/grammar_parser.cc:820: EBNF parser error at line 1, column 1513: Rule \"invalid_reference\" is not defined"
+        }
+      }
+    },
+    {
+      "name": "responses rejection before SSE headers",
+      "request_extra": {
+        "tools": [
+          {
+            "type": "function",
+            "name": "bad",
+            "strict": false
+          }
+        ]
+      },
+      "status": 400,
+      "content_type": "application/json",
+      "error": {
+        "error": {
+          "type": "invalid_request_error",
+          "code": "unsupported_parameter",
+          "param": "grammar",
+          "message": "grammar cannot be combined with tools or MCP"
+        }
+      }
+    },
+    {
+      "name": "responses rejection before SSE headers",
+      "request_extra": {
+        "stop": "END"
+      },
+      "status": 400,
+      "content_type": "application/json",
+      "error": {
+        "error": {
+          "type": "invalid_request_error",
+          "code": "unsupported_parameter",
+          "param": "stop",
+          "message": "unsupported parameter"
+        }
+      }
+    },
+    {
+      "name": "responses rejection before SSE headers",
+      "request_extra": {
+        "stream_options": {
+          "include_usage": true
+        }
+      },
+      "status": 400,
+      "content_type": "application/json",
+      "error": {
+        "error": {
+          "type": "invalid_request_error",
+          "code": "unsupported_parameter",
+          "param": "stream_options",
+          "message": "unsupported parameter"
+        }
+      }
+    },
+    {
+      "name": "responses rejection before SSE headers",
+      "request_extra": {
+        "reasoning": {
+          "effort": "low"
+        }
+      },
+      "status": 400,
+      "content_type": "application/json",
+      "error": {
+        "error": {
+          "type": "invalid_request_error",
+          "code": "unsupported_parameter",
+          "param": "grammar",
+          "message": "grammar requires reasoning to be explicitly disabled"
+        }
+      }
+    },
+    {
+      "name": "responses rejection before SSE headers",
+      "request_extra": {
+        "text": {
+          "format": {
+            "type": "json_object"
+          }
+        }
+      },
+      "status": 400,
+      "content_type": "application/json",
+      "error": {
+        "error": {
+          "type": "invalid_request_error",
+          "code": "unsupported_parameter",
+          "param": "grammar",
+          "message": "grammar requires plain text.format"
+        }
+      }
+    },
+    {
+      "name": "chat JSON literal markers and Unicode",
+      "text": "<think>literal</think>\n猫 café",
+      "status": "stop",
+      "wire": {
+        "id": "chatcmpl-12411fa8abc54071a7419f49",
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "<think>literal</think>\n猫 café",
+              "refusal": null,
+              "role": "assistant",
+              "annotations": null,
+              "audio": null,
+              "function_call": null,
+              "tool_calls": null
+            }
+          }
+        ],
+        "created": 1791014236,
+        "model": "qwen3.8-flash-next",
+        "object": "chat.completion",
+        "metadata": null,
+        "moderation": null,
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 16,
+          "prompt_tokens": 27,
+          "total_tokens": 43,
+          "completion_tokens_details": null,
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cache_write_tokens": null,
+            "cached_tokens": 0,
+            "image_tokens": null,
+            "text_tokens": null
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 27,
+          "prompt_ms": 691.1,
+          "prompt_per_token_ms": 25.596,
+          "prompt_per_second": 39.1,
+          "predicted_n": 16,
+          "predicted_ms": 383.4,
+          "predicted_per_token_ms": 23.962,
+          "predicted_per_second": 41.7,
+          "draft_n": 4,
+          "draft_n_accepted": 4
+        }
+      },
+      "wall_s": 1.1081818320017192,
+      "first_text_delta_s": null,
+      "native": {
+        "generated": 16,
+        "prompt_tokens": 27,
+        "prompt_ms": 691.1,
+        "decode_ms": 383.4,
+        "finish": "stop",
+        "drafts_accepted": 4,
+        "drafts_offered": 4,
+        "reused": 0,
+        "hits": 6202,
+        "lookups": 7680,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 1185.3,
+        "prompt_read": 27
+      }
+    },
+    {
+      "name": "chat SSE literal markers and Unicode",
+      "text": "<think>literal</think>\n猫 café",
+      "status": "stop",
+      "wire": [
+        {
+          "id": "chatcmpl-a6b879df4abd48bca35f4c57",
+          "choices": [
+            {
+              "delta": {
+                "content": "",
+                "function_call": null,
+                "refusal": null,
+                "role": "assistant",
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014237,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-a6b879df4abd48bca35f4c57",
+          "choices": [
+            {
+              "delta": {
+                "content": "<",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014237,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-a6b879df4abd48bca35f4c57",
+          "choices": [
+            {
+              "delta": {
+                "content": "think",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014237,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-a6b879df4abd48bca35f4c57",
+          "choices": [
+            {
+              "delta": {
+                "content": ">",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014237,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-a6b879df4abd48bca35f4c57",
+          "choices": [
+            {
+              "delta": {
+                "content": "l",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014237,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-a6b879df4abd48bca35f4c57",
+          "choices": [
+            {
+              "delta": {
+                "content": "iteral",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014237,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-a6b879df4abd48bca35f4c57",
+          "choices": [
+            {
+              "delta": {
+                "content": "</",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014237,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-a6b879df4abd48bca35f4c57",
+          "choices": [
+            {
+              "delta": {
+                "content": "think",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014237,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-a6b879df4abd48bca35f4c57",
+          "choices": [
+            {
+              "delta": {
+                "content": ">",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014237,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-a6b879df4abd48bca35f4c57",
+          "choices": [
+            {
+              "delta": {
+                "content": "\n",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014237,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-a6b879df4abd48bca35f4c57",
+          "choices": [
+            {
+              "delta": {
+                "content": "猫",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014237,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-a6b879df4abd48bca35f4c57",
+          "choices": [
+            {
+              "delta": {
+                "content": " ",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014237,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-a6b879df4abd48bca35f4c57",
+          "choices": [
+            {
+              "delta": {
+                "content": "caf",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014237,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-a6b879df4abd48bca35f4c57",
+          "choices": [
+            {
+              "delta": {
+                "content": "é",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014237,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-a6b879df4abd48bca35f4c57",
+          "choices": [
+            {
+              "delta": {
+                "content": null,
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": "stop",
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014237,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": {
+            "completion_tokens": 16,
+            "prompt_tokens": 27,
+            "total_tokens": 43,
+            "completion_tokens_details": null,
+            "prompt_tokens_details": {
+              "audio_tokens": null,
+              "cache_write_tokens": null,
+              "cached_tokens": 20,
+              "image_tokens": null,
+              "text_tokens": null
+            }
+          },
+          "timings": {
+            "cache_n": 20,
+            "prompt_n": 7,
+            "prompt_ms": 210.3,
+            "prompt_per_token_ms": 30.043,
+            "prompt_per_second": 33.3,
+            "predicted_n": 16,
+            "predicted_ms": 371.6,
+            "predicted_per_token_ms": 23.225,
+            "predicted_per_second": 43.1,
+            "draft_n": 4,
+            "draft_n_accepted": 4
+          }
+        }
+      ],
+      "wall_s": 0.585431912993954,
+      "first_text_delta_s": 0.24378057399735553,
+      "native": {
+        "generated": 16,
+        "prompt_tokens": 27,
+        "prompt_ms": 210.3,
+        "decode_ms": 371.6,
+        "finish": "stop",
+        "drafts_accepted": 4,
+        "drafts_offered": 4,
+        "reused": 20,
+        "hits": 6202,
+        "lookups": 7680,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 1185.3,
+        "prompt_read": 7
+      }
+    },
+    {
+      "name": "chat sampled SSE",
+      "text": "<think>literal</think>\n猫 café",
+      "status": "stop",
+      "wire": [
+        {
+          "id": "chatcmpl-292db8531fac46b38ca5925b",
+          "choices": [
+            {
+              "delta": {
+                "content": "",
+                "function_call": null,
+                "refusal": null,
+                "role": "assistant",
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014238,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-292db8531fac46b38ca5925b",
+          "choices": [
+            {
+              "delta": {
+                "content": "<",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014238,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-292db8531fac46b38ca5925b",
+          "choices": [
+            {
+              "delta": {
+                "content": "think",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014238,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-292db8531fac46b38ca5925b",
+          "choices": [
+            {
+              "delta": {
+                "content": ">",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014238,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-292db8531fac46b38ca5925b",
+          "choices": [
+            {
+              "delta": {
+                "content": "l",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014238,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-292db8531fac46b38ca5925b",
+          "choices": [
+            {
+              "delta": {
+                "content": "iteral",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014238,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-292db8531fac46b38ca5925b",
+          "choices": [
+            {
+              "delta": {
+                "content": "</",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014238,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-292db8531fac46b38ca5925b",
+          "choices": [
+            {
+              "delta": {
+                "content": "think",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014238,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-292db8531fac46b38ca5925b",
+          "choices": [
+            {
+              "delta": {
+                "content": ">",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014238,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-292db8531fac46b38ca5925b",
+          "choices": [
+            {
+              "delta": {
+                "content": "\n",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014238,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-292db8531fac46b38ca5925b",
+          "choices": [
+            {
+              "delta": {
+                "content": "猫",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014238,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-292db8531fac46b38ca5925b",
+          "choices": [
+            {
+              "delta": {
+                "content": " ",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014238,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-292db8531fac46b38ca5925b",
+          "choices": [
+            {
+              "delta": {
+                "content": "caf",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014238,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-292db8531fac46b38ca5925b",
+          "choices": [
+            {
+              "delta": {
+                "content": "é",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014238,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-292db8531fac46b38ca5925b",
+          "choices": [
+            {
+              "delta": {
+                "content": null,
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": "stop",
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014238,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": {
+            "completion_tokens": 16,
+            "prompt_tokens": 27,
+            "total_tokens": 43,
+            "completion_tokens_details": null,
+            "prompt_tokens_details": {
+              "audio_tokens": null,
+              "cache_write_tokens": null,
+              "cached_tokens": 20,
+              "image_tokens": null,
+              "text_tokens": null
+            }
+          },
+          "timings": {
+            "cache_n": 20,
+            "prompt_n": 7,
+            "prompt_ms": 205.6,
+            "prompt_per_token_ms": 29.371,
+            "prompt_per_second": 34.0,
+            "predicted_n": 16,
+            "predicted_ms": 381.4,
+            "predicted_per_token_ms": 23.837,
+            "predicted_per_second": 42.0,
+            "draft_n": 4,
+            "draft_n_accepted": 4
+          }
+        }
+      ],
+      "wall_s": 0.5904308219978702,
+      "first_text_delta_s": 0.23842316700029187,
+      "native": {
+        "generated": 16,
+        "prompt_tokens": 27,
+        "prompt_ms": 205.6,
+        "decode_ms": 381.4,
+        "finish": "stop",
+        "drafts_accepted": 4,
+        "drafts_offered": 4,
+        "reused": 20,
+        "hits": 6202,
+        "lookups": 7680,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 1185.3,
+        "prompt_read": 7
+      }
+    },
+    {
+      "name": "chat epsilon completion",
+      "text": "",
+      "status": "stop",
+      "wire": [
+        {
+          "id": "chatcmpl-644c3ad1e6f44bda8ec2cf5e",
+          "choices": [
+            {
+              "delta": {
+                "content": "",
+                "function_call": null,
+                "refusal": null,
+                "role": "assistant",
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014238,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-644c3ad1e6f44bda8ec2cf5e",
+          "choices": [
+            {
+              "delta": {
+                "content": null,
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": "stop",
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014238,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": {
+            "completion_tokens": 1,
+            "prompt_tokens": 27,
+            "total_tokens": 28,
+            "completion_tokens_details": null,
+            "prompt_tokens_details": {
+              "audio_tokens": null,
+              "cache_write_tokens": null,
+              "cached_tokens": 20,
+              "image_tokens": null,
+              "text_tokens": null
+            }
+          },
+          "timings": {
+            "cache_n": 20,
+            "prompt_n": 7,
+            "prompt_ms": 209.8,
+            "prompt_per_token_ms": 29.971,
+            "prompt_per_second": 33.4,
+            "predicted_n": 1,
+            "predicted_ms": 30.6,
+            "predicted_per_token_ms": 30.6,
+            "predicted_per_second": 32.7,
+            "draft_n": 0,
+            "draft_n_accepted": 0
+          }
+        }
+      ],
+      "wall_s": 0.2433344729943201,
+      "first_text_delta_s": null,
+      "native": {
+        "generated": 1,
+        "prompt_tokens": 27,
+        "prompt_ms": 209.8,
+        "decode_ms": 30.6,
+        "finish": "stop",
+        "drafts_accepted": 0,
+        "drafts_offered": 0,
+        "reused": 20,
+        "hits": 357,
+        "lookups": 480,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 110.8,
+        "prompt_read": 7
+      }
+    },
+    {
+      "name": "chat recursive language",
+      "text": "((x))",
+      "status": "stop",
+      "wire": {
+        "id": "chatcmpl-5007858af9f44e709a269fe4",
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "((x))",
+              "refusal": null,
+              "role": "assistant",
+              "annotations": null,
+              "audio": null,
+              "function_call": null,
+              "tool_calls": null
+            }
+          }
+        ],
+        "created": 1791014239,
+        "model": "qwen3.8-flash-next",
+        "object": "chat.completion",
+        "metadata": null,
+        "moderation": null,
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 5,
+          "prompt_tokens": 19,
+          "total_tokens": 24,
+          "completion_tokens_details": null,
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cache_write_tokens": null,
+            "cached_tokens": 0,
+            "image_tokens": null,
+            "text_tokens": null
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 19,
+          "prompt_ms": 559.4,
+          "prompt_per_token_ms": 29.442,
+          "prompt_per_second": 34.0,
+          "predicted_n": 5,
+          "predicted_ms": 180.3,
+          "predicted_per_token_ms": 36.06,
+          "predicted_per_second": 27.7,
+          "draft_n": 1,
+          "draft_n_accepted": 1
+        }
+      },
+      "wall_s": 0.742683512995427,
+      "first_text_delta_s": null,
+      "native": {
+        "generated": 5,
+        "prompt_tokens": 19,
+        "prompt_ms": 559.4,
+        "decode_ms": 180.3,
+        "finish": "stop",
+        "drafts_accepted": 1,
+        "drafts_offered": 1,
+        "reused": 0,
+        "hits": 1666,
+        "lookups": 2400,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 747.9,
+        "prompt_read": 19
+      }
+    },
+    {
+      "name": "chat rejection before SSE headers",
+      "request_extra": {
+        "grammar": "root ::= missing"
+      },
+      "status": 400,
+      "content_type": "application/json",
+      "error": {
+        "error": {
+          "type": "invalid_request_error",
+          "message": "[07:57:19] /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-g1/cpp/grammar_parser.cc:820: EBNF parser error at line 1, column 10: Rule \"missing\" is not defined"
+        }
+      }
+    },
+    {
+      "name": "chat rejection before SSE headers",
+      "request_extra": {
+        "grammar": "root ::= root"
+      },
+      "status": 400,
+      "content_type": "application/json",
+      "error": {
+        "error": {
+          "type": "invalid_request_error",
+          "message": "grammar has no tokenizer-realizable continuation"
+        }
+      }
+    },
+    {
+      "name": "chat rejection before SSE headers",
+      "request_extra": {
+        "grammar": "root ::= \"x\"\u0000"
+      },
+      "status": 400,
+      "content_type": "application/json",
+      "error": {
+        "error": {
+          "type": "invalid_request_error",
+          "message": "grammar must contain 1..8192 UTF-8 bytes, without NUL"
+        }
+      }
+    },
+    {
+      "name": "chat rejection before SSE headers",
+      "request_extra": {
+        "grammar": "root ::= \"猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫\" invalid_reference"
+      },
+      "status": 400,
+      "content_type": "application/json",
+      "error": {
+        "error": {
+          "type": "invalid_request_error",
+          "message": "[07:57:19] /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-g1/cpp/grammar_parser.cc:820: EBNF parser error at line 1, column 1513: Rule \"invalid_reference\" is not defined"
+        }
+      }
+    },
+    {
+      "name": "chat rejection before SSE headers",
+      "request_extra": {
+        "tools": [
+          {
+            "type": "function",
+            "name": "bad",
+            "strict": false
+          }
+        ]
+      },
+      "status": 400,
+      "content_type": "application/json",
+      "error": {
+        "error": {
+          "type": "invalid_request_error",
+          "message": "grammar cannot be combined with tools or MCP"
+        }
+      }
+    },
+    {
+      "name": "chat rejection before SSE headers",
+      "request_extra": {
+        "stop": "END"
+      },
+      "status": 400,
+      "content_type": "application/json",
+      "error": {
+        "error": {
+          "type": "invalid_request_error",
+          "message": "grammar cannot be combined with custom stop strings"
+        }
+      }
+    },
+    {
+      "name": "chat rejection before SSE headers",
+      "request_extra": {
+        "stream_options": {
+          "include_usage": true
+        }
+      },
+      "status": 400,
+      "content_type": "application/json",
+      "error": {
+        "error": {
+          "type": "invalid_request_error",
+          "message": "grammar does not support stream_options; the existing Chat stream includes usage in its final choice chunk"
+        }
+      }
+    },
+    {
+      "name": "chat rejection before SSE headers",
+      "request_extra": {
+        "reasoning": {
+          "effort": "low"
+        }
+      },
+      "status": 400,
+      "content_type": "application/json",
+      "error": {
+        "error": {
+          "type": "invalid_request_error",
+          "message": "grammar requires reasoning to be explicitly disabled"
+        }
+      }
+    },
+    {
+      "name": "chat rejection before SSE headers",
+      "request_extra": {
+        "response_format": {
+          "type": "json_object"
+        }
+      },
+      "status": 400,
+      "content_type": "application/json",
+      "error": {
+        "error": {
+          "type": "invalid_request_error",
+          "message": "grammar cannot be combined with response_format JSON requirements"
+        }
+      }
+    },
+    {
+      "name": "Chat sampled penalties",
+      "parameters": {
+        "grammar": "root ::= \"<think>literal</think>\\n猫 café\"\n# STOP\n# GEN 4 99\n",
+        "repetition_penalty": 1.2,
+        "penalty_last_n": 64,
+        "top_k": 3,
+        "min_p": 0.05,
+        "seed": 434,
+        "temperature": 0.8,
+        "top_p": 0.85,
+        "presence_penalty": 0.1,
+        "frequency_penalty": 0.2
+      },
+      "text": "<think>literal</think>\n猫 café",
+      "status": "stop",
+      "wire": [
+        {
+          "id": "chatcmpl-934fbba5ea15445294d30662",
+          "choices": [
+            {
+              "delta": {
+                "content": "",
+                "function_call": null,
+                "refusal": null,
+                "role": "assistant",
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014239,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-934fbba5ea15445294d30662",
+          "choices": [
+            {
+              "delta": {
+                "content": "<",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014239,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-934fbba5ea15445294d30662",
+          "choices": [
+            {
+              "delta": {
+                "content": "think",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014239,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-934fbba5ea15445294d30662",
+          "choices": [
+            {
+              "delta": {
+                "content": ">",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014239,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-934fbba5ea15445294d30662",
+          "choices": [
+            {
+              "delta": {
+                "content": "l",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014239,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-934fbba5ea15445294d30662",
+          "choices": [
+            {
+              "delta": {
+                "content": "it",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014239,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-934fbba5ea15445294d30662",
+          "choices": [
+            {
+              "delta": {
+                "content": "era",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014239,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-934fbba5ea15445294d30662",
+          "choices": [
+            {
+              "delta": {
+                "content": "l",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014239,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-934fbba5ea15445294d30662",
+          "choices": [
+            {
+              "delta": {
+                "content": "</",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014239,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-934fbba5ea15445294d30662",
+          "choices": [
+            {
+              "delta": {
+                "content": "thin",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014239,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-934fbba5ea15445294d30662",
+          "choices": [
+            {
+              "delta": {
+                "content": "k",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014239,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-934fbba5ea15445294d30662",
+          "choices": [
+            {
+              "delta": {
+                "content": ">",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014239,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-934fbba5ea15445294d30662",
+          "choices": [
+            {
+              "delta": {
+                "content": "\n",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014239,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-934fbba5ea15445294d30662",
+          "choices": [
+            {
+              "delta": {
+                "content": "猫",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014239,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-934fbba5ea15445294d30662",
+          "choices": [
+            {
+              "delta": {
+                "content": " ",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014239,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-934fbba5ea15445294d30662",
+          "choices": [
+            {
+              "delta": {
+                "content": "ca",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014239,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-934fbba5ea15445294d30662",
+          "choices": [
+            {
+              "delta": {
+                "content": "fé",
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014239,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": null
+        },
+        {
+          "id": "chatcmpl-934fbba5ea15445294d30662",
+          "choices": [
+            {
+              "delta": {
+                "content": null,
+                "function_call": null,
+                "refusal": null,
+                "role": null,
+                "tool_calls": null
+              },
+              "finish_reason": "stop",
+              "index": 0,
+              "logprobs": null
+            }
+          ],
+          "created": 1791014239,
+          "model": "qwen3.8-flash-next",
+          "object": "chat.completion.chunk",
+          "moderation": null,
+          "obfuscation": null,
+          "service_tier": null,
+          "system_fingerprint": null,
+          "usage": {
+            "completion_tokens": 17,
+            "prompt_tokens": 27,
+            "total_tokens": 44,
+            "completion_tokens_details": null,
+            "prompt_tokens_details": {
+              "audio_tokens": null,
+              "cache_write_tokens": null,
+              "cached_tokens": 0,
+              "image_tokens": null,
+              "text_tokens": null
+            }
+          },
+          "timings": {
+            "cache_n": 0,
+            "prompt_n": 27,
+            "prompt_ms": 654.9,
+            "prompt_per_token_ms": 24.256,
+            "prompt_per_second": 41.2,
+            "predicted_n": 17,
+            "predicted_ms": 759.5,
+            "predicted_per_token_ms": 44.676,
+            "predicted_per_second": 22.4,
+            "draft_n": 6,
+            "draft_n_accepted": 4
+          }
+        }
+      ],
+      "wall_s": 1.4171449060013401,
+      "first_text_delta_s": 0.6877788540004985,
+      "native": {
+        "generated": 17,
+        "prompt_tokens": 27,
+        "prompt_ms": 654.9,
+        "decode_ms": 759.5,
+        "finish": "stop",
+        "drafts_accepted": 4,
+        "drafts_offered": 6,
+        "reused": 0,
+        "hits": 7271,
+        "lookups": 9120,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 1770.6,
+        "prompt_read": 27
+      }
+    },
+    {
+      "name": "SSE UTF-8 budget 1",
+      "text": "c",
+      "status": "incomplete",
+      "wire": [
+        {
+          "response": {
+            "id": "resp_0e15a2b8e294499498870e4e20c0b6f6",
+            "access_programs": null,
+            "created_at": 1791014241.0,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [],
+            "parallel_tool_calls": true,
+            "temperature": 0.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "background": false,
+            "completed_at": null,
+            "conversation": null,
+            "max_output_tokens": 1,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "queued",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": null,
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 0,
+          "type": "response.created"
+        },
+        {
+          "response": {
+            "id": "resp_0e15a2b8e294499498870e4e20c0b6f6",
+            "access_programs": null,
+            "created_at": 1791014241.0,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [],
+            "parallel_tool_calls": true,
+            "temperature": 0.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "background": false,
+            "completed_at": null,
+            "conversation": null,
+            "max_output_tokens": 1,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "in_progress",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": null,
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 1,
+          "type": "response.in_progress"
+        },
+        {
+          "item": {
+            "id": "msg_5d73ace212ab4632a44bc12c494e5a48",
+            "content": [],
+            "role": "assistant",
+            "status": "in_progress",
+            "type": "message",
+            "phase": null
+          },
+          "output_index": 0,
+          "sequence_number": 2,
+          "type": "response.output_item.added"
+        },
+        {
+          "content_index": 0,
+          "item_id": "msg_5d73ace212ab4632a44bc12c494e5a48",
+          "output_index": 0,
+          "part": {
+            "annotations": [],
+            "text": "",
+            "type": "output_text",
+            "logprobs": []
+          },
+          "sequence_number": 3,
+          "type": "response.content_part.added"
+        },
+        {
+          "content_index": 0,
+          "delta": "c",
+          "item_id": "msg_5d73ace212ab4632a44bc12c494e5a48",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 4,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "item_id": "msg_5d73ace212ab4632a44bc12c494e5a48",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 5,
+          "text": "c",
+          "type": "response.output_text.done"
+        },
+        {
+          "content_index": 0,
+          "item_id": "msg_5d73ace212ab4632a44bc12c494e5a48",
+          "output_index": 0,
+          "part": {
+            "annotations": [],
+            "text": "c",
+            "type": "output_text",
+            "logprobs": []
+          },
+          "sequence_number": 6,
+          "type": "response.content_part.done"
+        },
+        {
+          "item": {
+            "id": "msg_5d73ace212ab4632a44bc12c494e5a48",
+            "content": [
+              {
+                "annotations": [],
+                "text": "c",
+                "type": "output_text",
+                "logprobs": []
+              }
+            ],
+            "role": "assistant",
+            "status": "incomplete",
+            "type": "message",
+            "phase": null
+          },
+          "output_index": 0,
+          "sequence_number": 7,
+          "type": "response.output_item.done"
+        },
+        {
+          "response": {
+            "id": "resp_0e15a2b8e294499498870e4e20c0b6f6",
+            "access_programs": null,
+            "created_at": 1791014241.0,
+            "error": null,
+            "incomplete_details": {
+              "reason": "max_output_tokens"
+            },
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [
+              {
+                "id": "msg_5d73ace212ab4632a44bc12c494e5a48",
+                "content": [
+                  {
+                    "annotations": [],
+                    "text": "c",
+                    "type": "output_text",
+                    "logprobs": []
+                  }
+                ],
+                "role": "assistant",
+                "status": "incomplete",
+                "type": "message",
+                "phase": null
+              }
+            ],
+            "parallel_tool_calls": true,
+            "temperature": 0.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "background": false,
+            "completed_at": null,
+            "conversation": null,
+            "max_output_tokens": 1,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "incomplete",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": {
+              "input_tokens": 27,
+              "input_tokens_details": {
+                "cache_write_tokens": 7,
+                "cached_tokens": 20
+              },
+              "output_tokens": 1,
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              },
+              "total_tokens": 28
+            },
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 8,
+          "type": "response.incomplete"
+        }
+      ],
+      "wall_s": 0.24329994899744634,
+      "first_text_delta_s": 0.2389836909933365,
+      "native": {
+        "generated": 1,
+        "prompt_tokens": 27,
+        "prompt_ms": 205.1,
+        "decode_ms": 30.8,
+        "finish": "length",
+        "drafts_accepted": 0,
+        "drafts_offered": 0,
+        "reused": 20,
+        "hits": 357,
+        "lookups": 480,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 110.8,
+        "prompt_read": 7
+      }
+    },
+    {
+      "name": "SSE UTF-8 budget 2",
+      "text": "caf",
+      "status": "incomplete",
+      "wire": [
+        {
+          "response": {
+            "id": "resp_a6ac53a6939e4b94933746ca88632336",
+            "access_programs": null,
+            "created_at": 1791014242.0,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [],
+            "parallel_tool_calls": true,
+            "temperature": 0.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "background": false,
+            "completed_at": null,
+            "conversation": null,
+            "max_output_tokens": 2,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "queued",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": null,
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 0,
+          "type": "response.created"
+        },
+        {
+          "response": {
+            "id": "resp_a6ac53a6939e4b94933746ca88632336",
+            "access_programs": null,
+            "created_at": 1791014242.0,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [],
+            "parallel_tool_calls": true,
+            "temperature": 0.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "background": false,
+            "completed_at": null,
+            "conversation": null,
+            "max_output_tokens": 2,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "in_progress",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": null,
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 1,
+          "type": "response.in_progress"
+        },
+        {
+          "item": {
+            "id": "msg_02d0ced94dab43fba23d85121c38d1fa",
+            "content": [],
+            "role": "assistant",
+            "status": "in_progress",
+            "type": "message",
+            "phase": null
+          },
+          "output_index": 0,
+          "sequence_number": 2,
+          "type": "response.output_item.added"
+        },
+        {
+          "content_index": 0,
+          "item_id": "msg_02d0ced94dab43fba23d85121c38d1fa",
+          "output_index": 0,
+          "part": {
+            "annotations": [],
+            "text": "",
+            "type": "output_text",
+            "logprobs": []
+          },
+          "sequence_number": 3,
+          "type": "response.content_part.added"
+        },
+        {
+          "content_index": 0,
+          "delta": "c",
+          "item_id": "msg_02d0ced94dab43fba23d85121c38d1fa",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 4,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "af",
+          "item_id": "msg_02d0ced94dab43fba23d85121c38d1fa",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 5,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "item_id": "msg_02d0ced94dab43fba23d85121c38d1fa",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 6,
+          "text": "caf",
+          "type": "response.output_text.done"
+        },
+        {
+          "content_index": 0,
+          "item_id": "msg_02d0ced94dab43fba23d85121c38d1fa",
+          "output_index": 0,
+          "part": {
+            "annotations": [],
+            "text": "caf",
+            "type": "output_text",
+            "logprobs": []
+          },
+          "sequence_number": 7,
+          "type": "response.content_part.done"
+        },
+        {
+          "item": {
+            "id": "msg_02d0ced94dab43fba23d85121c38d1fa",
+            "content": [
+              {
+                "annotations": [],
+                "text": "caf",
+                "type": "output_text",
+                "logprobs": []
+              }
+            ],
+            "role": "assistant",
+            "status": "incomplete",
+            "type": "message",
+            "phase": null
+          },
+          "output_index": 0,
+          "sequence_number": 8,
+          "type": "response.output_item.done"
+        },
+        {
+          "response": {
+            "id": "resp_a6ac53a6939e4b94933746ca88632336",
+            "access_programs": null,
+            "created_at": 1791014242.0,
+            "error": null,
+            "incomplete_details": {
+              "reason": "max_output_tokens"
+            },
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [
+              {
+                "id": "msg_02d0ced94dab43fba23d85121c38d1fa",
+                "content": [
+                  {
+                    "annotations": [],
+                    "text": "caf",
+                    "type": "output_text",
+                    "logprobs": []
+                  }
+                ],
+                "role": "assistant",
+                "status": "incomplete",
+                "type": "message",
+                "phase": null
+              }
+            ],
+            "parallel_tool_calls": true,
+            "temperature": 0.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "background": false,
+            "completed_at": null,
+            "conversation": null,
+            "max_output_tokens": 2,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "incomplete",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": {
+              "input_tokens": 27,
+              "input_tokens_details": {
+                "cache_write_tokens": 7,
+                "cached_tokens": 20
+              },
+              "output_tokens": 2,
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              },
+              "total_tokens": 29
+            },
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 9,
+          "type": "response.incomplete"
+        }
+      ],
+      "wall_s": 0.2601365440059453,
+      "first_text_delta_s": 0.23249419500643853,
+      "native": {
+        "generated": 2,
+        "prompt_tokens": 27,
+        "prompt_ms": 198.5,
+        "decode_ms": 57.6,
+        "finish": "length",
+        "drafts_accepted": 0,
+        "drafts_offered": 0,
+        "reused": 20,
+        "hits": 759,
+        "lookups": 960,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 195.3,
+        "prompt_read": 7
+      }
+    },
+    {
+      "name": "SSE UTF-8 budget 3",
+      "text": "café",
+      "status": "incomplete",
+      "wire": [
+        {
+          "response": {
+            "id": "resp_78cda37f3e3d4e0c88f21ba58e4299c5",
+            "access_programs": null,
+            "created_at": 1791014242.0,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [],
+            "parallel_tool_calls": true,
+            "temperature": 0.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "background": false,
+            "completed_at": null,
+            "conversation": null,
+            "max_output_tokens": 3,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "queued",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": null,
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 0,
+          "type": "response.created"
+        },
+        {
+          "response": {
+            "id": "resp_78cda37f3e3d4e0c88f21ba58e4299c5",
+            "access_programs": null,
+            "created_at": 1791014242.0,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [],
+            "parallel_tool_calls": true,
+            "temperature": 0.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "background": false,
+            "completed_at": null,
+            "conversation": null,
+            "max_output_tokens": 3,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "in_progress",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": null,
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 1,
+          "type": "response.in_progress"
+        },
+        {
+          "item": {
+            "id": "msg_6637fe135cd9427491a4c62663b76a0c",
+            "content": [],
+            "role": "assistant",
+            "status": "in_progress",
+            "type": "message",
+            "phase": null
+          },
+          "output_index": 0,
+          "sequence_number": 2,
+          "type": "response.output_item.added"
+        },
+        {
+          "content_index": 0,
+          "item_id": "msg_6637fe135cd9427491a4c62663b76a0c",
+          "output_index": 0,
+          "part": {
+            "annotations": [],
+            "text": "",
+            "type": "output_text",
+            "logprobs": []
+          },
+          "sequence_number": 3,
+          "type": "response.content_part.added"
+        },
+        {
+          "content_index": 0,
+          "delta": "c",
+          "item_id": "msg_6637fe135cd9427491a4c62663b76a0c",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 4,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "af",
+          "item_id": "msg_6637fe135cd9427491a4c62663b76a0c",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 5,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "é",
+          "item_id": "msg_6637fe135cd9427491a4c62663b76a0c",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 6,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "item_id": "msg_6637fe135cd9427491a4c62663b76a0c",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 7,
+          "text": "café",
+          "type": "response.output_text.done"
+        },
+        {
+          "content_index": 0,
+          "item_id": "msg_6637fe135cd9427491a4c62663b76a0c",
+          "output_index": 0,
+          "part": {
+            "annotations": [],
+            "text": "café",
+            "type": "output_text",
+            "logprobs": []
+          },
+          "sequence_number": 8,
+          "type": "response.content_part.done"
+        },
+        {
+          "item": {
+            "id": "msg_6637fe135cd9427491a4c62663b76a0c",
+            "content": [
+              {
+                "annotations": [],
+                "text": "café",
+                "type": "output_text",
+                "logprobs": []
+              }
+            ],
+            "role": "assistant",
+            "status": "incomplete",
+            "type": "message",
+            "phase": null
+          },
+          "output_index": 0,
+          "sequence_number": 9,
+          "type": "response.output_item.done"
+        },
+        {
+          "response": {
+            "id": "resp_78cda37f3e3d4e0c88f21ba58e4299c5",
+            "access_programs": null,
+            "created_at": 1791014242.0,
+            "error": null,
+            "incomplete_details": {
+              "reason": "max_output_tokens"
+            },
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [
+              {
+                "id": "msg_6637fe135cd9427491a4c62663b76a0c",
+                "content": [
+                  {
+                    "annotations": [],
+                    "text": "café",
+                    "type": "output_text",
+                    "logprobs": []
+                  }
+                ],
+                "role": "assistant",
+                "status": "incomplete",
+                "type": "message",
+                "phase": null
+              }
+            ],
+            "parallel_tool_calls": true,
+            "temperature": 0.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "background": false,
+            "completed_at": null,
+            "conversation": null,
+            "max_output_tokens": 3,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "incomplete",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": {
+              "input_tokens": 27,
+              "input_tokens_details": {
+                "cache_write_tokens": 7,
+                "cached_tokens": 20
+              },
+              "output_tokens": 3,
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              },
+              "total_tokens": 30
+            },
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 10,
+          "type": "response.incomplete"
+        }
+      ],
+      "wall_s": 0.2883615769969765,
+      "first_text_delta_s": 0.22938032599631697,
+      "native": {
+        "generated": 3,
+        "prompt_tokens": 27,
+        "prompt_ms": 196.0,
+        "decode_ms": 88.3,
+        "finish": "length",
+        "drafts_accepted": 0,
+        "drafts_offered": 0,
+        "reused": 20,
+        "hits": 1142,
+        "lookups": 1440,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 316.8,
+        "prompt_read": 7
+      }
+    },
+    {
+      "name": "SSE UTF-8 budget 4",
+      "text": "café ",
+      "status": "incomplete",
+      "wire": [
+        {
+          "response": {
+            "id": "resp_67d9e102411041fea485ff46448e3b20",
+            "access_programs": null,
+            "created_at": 1791014242.0,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [],
+            "parallel_tool_calls": true,
+            "temperature": 0.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "background": false,
+            "completed_at": null,
+            "conversation": null,
+            "max_output_tokens": 4,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "queued",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": null,
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 0,
+          "type": "response.created"
+        },
+        {
+          "response": {
+            "id": "resp_67d9e102411041fea485ff46448e3b20",
+            "access_programs": null,
+            "created_at": 1791014242.0,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [],
+            "parallel_tool_calls": true,
+            "temperature": 0.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "background": false,
+            "completed_at": null,
+            "conversation": null,
+            "max_output_tokens": 4,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "in_progress",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": null,
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 1,
+          "type": "response.in_progress"
+        },
+        {
+          "item": {
+            "id": "msg_7af3f28d9b4242e4a1a6ccc0c056fb6f",
+            "content": [],
+            "role": "assistant",
+            "status": "in_progress",
+            "type": "message",
+            "phase": null
+          },
+          "output_index": 0,
+          "sequence_number": 2,
+          "type": "response.output_item.added"
+        },
+        {
+          "content_index": 0,
+          "item_id": "msg_7af3f28d9b4242e4a1a6ccc0c056fb6f",
+          "output_index": 0,
+          "part": {
+            "annotations": [],
+            "text": "",
+            "type": "output_text",
+            "logprobs": []
+          },
+          "sequence_number": 3,
+          "type": "response.content_part.added"
+        },
+        {
+          "content_index": 0,
+          "delta": "c",
+          "item_id": "msg_7af3f28d9b4242e4a1a6ccc0c056fb6f",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 4,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "af",
+          "item_id": "msg_7af3f28d9b4242e4a1a6ccc0c056fb6f",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 5,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "é",
+          "item_id": "msg_7af3f28d9b4242e4a1a6ccc0c056fb6f",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 6,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": " ",
+          "item_id": "msg_7af3f28d9b4242e4a1a6ccc0c056fb6f",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 7,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "item_id": "msg_7af3f28d9b4242e4a1a6ccc0c056fb6f",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 8,
+          "text": "café ",
+          "type": "response.output_text.done"
+        },
+        {
+          "content_index": 0,
+          "item_id": "msg_7af3f28d9b4242e4a1a6ccc0c056fb6f",
+          "output_index": 0,
+          "part": {
+            "annotations": [],
+            "text": "café ",
+            "type": "output_text",
+            "logprobs": []
+          },
+          "sequence_number": 9,
+          "type": "response.content_part.done"
+        },
+        {
+          "item": {
+            "id": "msg_7af3f28d9b4242e4a1a6ccc0c056fb6f",
+            "content": [
+              {
+                "annotations": [],
+                "text": "café ",
+                "type": "output_text",
+                "logprobs": []
+              }
+            ],
+            "role": "assistant",
+            "status": "incomplete",
+            "type": "message",
+            "phase": null
+          },
+          "output_index": 0,
+          "sequence_number": 10,
+          "type": "response.output_item.done"
+        },
+        {
+          "response": {
+            "id": "resp_67d9e102411041fea485ff46448e3b20",
+            "access_programs": null,
+            "created_at": 1791014242.0,
+            "error": null,
+            "incomplete_details": {
+              "reason": "max_output_tokens"
+            },
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [
+              {
+                "id": "msg_7af3f28d9b4242e4a1a6ccc0c056fb6f",
+                "content": [
+                  {
+                    "annotations": [],
+                    "text": "café ",
+                    "type": "output_text",
+                    "logprobs": []
+                  }
+                ],
+                "role": "assistant",
+                "status": "incomplete",
+                "type": "message",
+                "phase": null
+              }
+            ],
+            "parallel_tool_calls": true,
+            "temperature": 0.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "background": false,
+            "completed_at": null,
+            "conversation": null,
+            "max_output_tokens": 4,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "incomplete",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": {
+              "input_tokens": 27,
+              "input_tokens_details": {
+                "cache_write_tokens": 7,
+                "cached_tokens": 20
+              },
+              "output_tokens": 4,
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              },
+              "total_tokens": 31
+            },
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 11,
+          "type": "response.incomplete"
+        }
+      ],
+      "wall_s": 0.3337551840013475,
+      "first_text_delta_s": 0.23509886599640595,
+      "native": {
+        "generated": 4,
+        "prompt_tokens": 27,
+        "prompt_ms": 201.4,
+        "decode_ms": 128.6,
+        "finish": "length",
+        "drafts_accepted": 0,
+        "drafts_offered": 0,
+        "reused": 20,
+        "hits": 1479,
+        "lookups": 1920,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 487.2,
+        "prompt_read": 7
+      }
+    },
+    {
+      "name": "SSE UTF-8 budget 5",
+      "text": "café ",
+      "status": "incomplete",
+      "wire": [
+        {
+          "response": {
+            "id": "resp_6d35efd41031495087db5d36fd48b5b3",
+            "access_programs": null,
+            "created_at": 1791014243.0,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [],
+            "parallel_tool_calls": true,
+            "temperature": 0.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "background": false,
+            "completed_at": null,
+            "conversation": null,
+            "max_output_tokens": 5,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "queued",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": null,
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 0,
+          "type": "response.created"
+        },
+        {
+          "response": {
+            "id": "resp_6d35efd41031495087db5d36fd48b5b3",
+            "access_programs": null,
+            "created_at": 1791014243.0,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [],
+            "parallel_tool_calls": true,
+            "temperature": 0.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "background": false,
+            "completed_at": null,
+            "conversation": null,
+            "max_output_tokens": 5,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "in_progress",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": null,
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 1,
+          "type": "response.in_progress"
+        },
+        {
+          "item": {
+            "id": "msg_e46fa83ea60b4b1a9422bddae7d3f6c3",
+            "content": [],
+            "role": "assistant",
+            "status": "in_progress",
+            "type": "message",
+            "phase": null
+          },
+          "output_index": 0,
+          "sequence_number": 2,
+          "type": "response.output_item.added"
+        },
+        {
+          "content_index": 0,
+          "item_id": "msg_e46fa83ea60b4b1a9422bddae7d3f6c3",
+          "output_index": 0,
+          "part": {
+            "annotations": [],
+            "text": "",
+            "type": "output_text",
+            "logprobs": []
+          },
+          "sequence_number": 3,
+          "type": "response.content_part.added"
+        },
+        {
+          "content_index": 0,
+          "delta": "c",
+          "item_id": "msg_e46fa83ea60b4b1a9422bddae7d3f6c3",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 4,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "af",
+          "item_id": "msg_e46fa83ea60b4b1a9422bddae7d3f6c3",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 5,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "é",
+          "item_id": "msg_e46fa83ea60b4b1a9422bddae7d3f6c3",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 6,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": " ",
+          "item_id": "msg_e46fa83ea60b4b1a9422bddae7d3f6c3",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 7,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "item_id": "msg_e46fa83ea60b4b1a9422bddae7d3f6c3",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 8,
+          "text": "café ",
+          "type": "response.output_text.done"
+        },
+        {
+          "content_index": 0,
+          "item_id": "msg_e46fa83ea60b4b1a9422bddae7d3f6c3",
+          "output_index": 0,
+          "part": {
+            "annotations": [],
+            "text": "café ",
+            "type": "output_text",
+            "logprobs": []
+          },
+          "sequence_number": 9,
+          "type": "response.content_part.done"
+        },
+        {
+          "item": {
+            "id": "msg_e46fa83ea60b4b1a9422bddae7d3f6c3",
+            "content": [
+              {
+                "annotations": [],
+                "text": "café ",
+                "type": "output_text",
+                "logprobs": []
+              }
+            ],
+            "role": "assistant",
+            "status": "incomplete",
+            "type": "message",
+            "phase": null
+          },
+          "output_index": 0,
+          "sequence_number": 10,
+          "type": "response.output_item.done"
+        },
+        {
+          "response": {
+            "id": "resp_6d35efd41031495087db5d36fd48b5b3",
+            "access_programs": null,
+            "created_at": 1791014243.0,
+            "error": null,
+            "incomplete_details": {
+              "reason": "max_output_tokens"
+            },
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [
+              {
+                "id": "msg_e46fa83ea60b4b1a9422bddae7d3f6c3",
+                "content": [
+                  {
+                    "annotations": [],
+                    "text": "café ",
+                    "type": "output_text",
+                    "logprobs": []
+                  }
+                ],
+                "role": "assistant",
+                "status": "incomplete",
+                "type": "message",
+                "phase": null
+              }
+            ],
+            "parallel_tool_calls": true,
+            "temperature": 0.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "background": false,
+            "completed_at": null,
+            "conversation": null,
+            "max_output_tokens": 5,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "incomplete",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": {
+              "input_tokens": 27,
+              "input_tokens_details": {
+                "cache_write_tokens": 7,
+                "cached_tokens": 20
+              },
+              "output_tokens": 5,
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              },
+              "total_tokens": 32
+            },
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 11,
+          "type": "response.incomplete"
+        }
+      ],
+      "wall_s": 0.3683085629963898,
+      "first_text_delta_s": 0.24004614899604348,
+      "native": {
+        "generated": 5,
+        "prompt_tokens": 27,
+        "prompt_ms": 206.2,
+        "decode_ms": 158.0,
+        "finish": "length",
+        "drafts_accepted": 0,
+        "drafts_offered": 0,
+        "reused": 20,
+        "hits": 1865,
+        "lookups": 2400,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 566.5,
+        "prompt_read": 7
+      }
+    },
+    {
+      "name": "SSE UTF-8 budget 6",
+      "text": "café ",
+      "status": "incomplete",
+      "wire": [
+        {
+          "response": {
+            "id": "resp_1620f9fc37e34f7f9f4b13178a810a05",
+            "access_programs": null,
+            "created_at": 1791014243.0,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [],
+            "parallel_tool_calls": true,
+            "temperature": 0.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "background": false,
+            "completed_at": null,
+            "conversation": null,
+            "max_output_tokens": 6,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "queued",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": null,
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 0,
+          "type": "response.created"
+        },
+        {
+          "response": {
+            "id": "resp_1620f9fc37e34f7f9f4b13178a810a05",
+            "access_programs": null,
+            "created_at": 1791014243.0,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [],
+            "parallel_tool_calls": true,
+            "temperature": 0.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "background": false,
+            "completed_at": null,
+            "conversation": null,
+            "max_output_tokens": 6,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "in_progress",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": null,
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 1,
+          "type": "response.in_progress"
+        },
+        {
+          "item": {
+            "id": "msg_6ceeafac5fc848699938bf92ebd4ed27",
+            "content": [],
+            "role": "assistant",
+            "status": "in_progress",
+            "type": "message",
+            "phase": null
+          },
+          "output_index": 0,
+          "sequence_number": 2,
+          "type": "response.output_item.added"
+        },
+        {
+          "content_index": 0,
+          "item_id": "msg_6ceeafac5fc848699938bf92ebd4ed27",
+          "output_index": 0,
+          "part": {
+            "annotations": [],
+            "text": "",
+            "type": "output_text",
+            "logprobs": []
+          },
+          "sequence_number": 3,
+          "type": "response.content_part.added"
+        },
+        {
+          "content_index": 0,
+          "delta": "c",
+          "item_id": "msg_6ceeafac5fc848699938bf92ebd4ed27",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 4,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "af",
+          "item_id": "msg_6ceeafac5fc848699938bf92ebd4ed27",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 5,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "é",
+          "item_id": "msg_6ceeafac5fc848699938bf92ebd4ed27",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 6,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": " ",
+          "item_id": "msg_6ceeafac5fc848699938bf92ebd4ed27",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 7,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "item_id": "msg_6ceeafac5fc848699938bf92ebd4ed27",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 8,
+          "text": "café ",
+          "type": "response.output_text.done"
+        },
+        {
+          "content_index": 0,
+          "item_id": "msg_6ceeafac5fc848699938bf92ebd4ed27",
+          "output_index": 0,
+          "part": {
+            "annotations": [],
+            "text": "café ",
+            "type": "output_text",
+            "logprobs": []
+          },
+          "sequence_number": 9,
+          "type": "response.content_part.done"
+        },
+        {
+          "item": {
+            "id": "msg_6ceeafac5fc848699938bf92ebd4ed27",
+            "content": [
+              {
+                "annotations": [],
+                "text": "café ",
+                "type": "output_text",
+                "logprobs": []
+              }
+            ],
+            "role": "assistant",
+            "status": "incomplete",
+            "type": "message",
+            "phase": null
+          },
+          "output_index": 0,
+          "sequence_number": 10,
+          "type": "response.output_item.done"
+        },
+        {
+          "response": {
+            "id": "resp_1620f9fc37e34f7f9f4b13178a810a05",
+            "access_programs": null,
+            "created_at": 1791014243.0,
+            "error": null,
+            "incomplete_details": {
+              "reason": "max_output_tokens"
+            },
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [
+              {
+                "id": "msg_6ceeafac5fc848699938bf92ebd4ed27",
+                "content": [
+                  {
+                    "annotations": [],
+                    "text": "café ",
+                    "type": "output_text",
+                    "logprobs": []
+                  }
+                ],
+                "role": "assistant",
+                "status": "incomplete",
+                "type": "message",
+                "phase": null
+              }
+            ],
+            "parallel_tool_calls": true,
+            "temperature": 0.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "background": false,
+            "completed_at": null,
+            "conversation": null,
+            "max_output_tokens": 6,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "incomplete",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": {
+              "input_tokens": 27,
+              "input_tokens_details": {
+                "cache_write_tokens": 7,
+                "cached_tokens": 20
+              },
+              "output_tokens": 6,
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              },
+              "total_tokens": 33
+            },
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 11,
+          "type": "response.incomplete"
+        }
+      ],
+      "wall_s": 0.3937916899958509,
+      "first_text_delta_s": 0.23561413499555783,
+      "native": {
+        "generated": 6,
+        "prompt_tokens": 27,
+        "prompt_ms": 202.3,
+        "decode_ms": 187.3,
+        "finish": "length",
+        "drafts_accepted": 0,
+        "drafts_offered": 0,
+        "reused": 20,
+        "hits": 2226,
+        "lookups": 2880,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 683.7,
+        "prompt_read": 7
+      }
+    },
+    {
+      "name": "SSE UTF-8 budget 7",
+      "text": "café ",
+      "status": "incomplete",
+      "wire": [
+        {
+          "response": {
+            "id": "resp_13fdd66ce53e44da9b73418cf97f269a",
+            "access_programs": null,
+            "created_at": 1791014243.0,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [],
+            "parallel_tool_calls": true,
+            "temperature": 0.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "background": false,
+            "completed_at": null,
+            "conversation": null,
+            "max_output_tokens": 7,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "queued",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": null,
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 0,
+          "type": "response.created"
+        },
+        {
+          "response": {
+            "id": "resp_13fdd66ce53e44da9b73418cf97f269a",
+            "access_programs": null,
+            "created_at": 1791014243.0,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [],
+            "parallel_tool_calls": true,
+            "temperature": 0.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "background": false,
+            "completed_at": null,
+            "conversation": null,
+            "max_output_tokens": 7,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "in_progress",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": null,
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 1,
+          "type": "response.in_progress"
+        },
+        {
+          "item": {
+            "id": "msg_b17bbd4f1f4c4a25bdad0396843ebb80",
+            "content": [],
+            "role": "assistant",
+            "status": "in_progress",
+            "type": "message",
+            "phase": null
+          },
+          "output_index": 0,
+          "sequence_number": 2,
+          "type": "response.output_item.added"
+        },
+        {
+          "content_index": 0,
+          "item_id": "msg_b17bbd4f1f4c4a25bdad0396843ebb80",
+          "output_index": 0,
+          "part": {
+            "annotations": [],
+            "text": "",
+            "type": "output_text",
+            "logprobs": []
+          },
+          "sequence_number": 3,
+          "type": "response.content_part.added"
+        },
+        {
+          "content_index": 0,
+          "delta": "c",
+          "item_id": "msg_b17bbd4f1f4c4a25bdad0396843ebb80",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 4,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "af",
+          "item_id": "msg_b17bbd4f1f4c4a25bdad0396843ebb80",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 5,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "é",
+          "item_id": "msg_b17bbd4f1f4c4a25bdad0396843ebb80",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 6,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": " ",
+          "item_id": "msg_b17bbd4f1f4c4a25bdad0396843ebb80",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 7,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "item_id": "msg_b17bbd4f1f4c4a25bdad0396843ebb80",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 8,
+          "text": "café ",
+          "type": "response.output_text.done"
+        },
+        {
+          "content_index": 0,
+          "item_id": "msg_b17bbd4f1f4c4a25bdad0396843ebb80",
+          "output_index": 0,
+          "part": {
+            "annotations": [],
+            "text": "café ",
+            "type": "output_text",
+            "logprobs": []
+          },
+          "sequence_number": 9,
+          "type": "response.content_part.done"
+        },
+        {
+          "item": {
+            "id": "msg_b17bbd4f1f4c4a25bdad0396843ebb80",
+            "content": [
+              {
+                "annotations": [],
+                "text": "café ",
+                "type": "output_text",
+                "logprobs": []
+              }
+            ],
+            "role": "assistant",
+            "status": "incomplete",
+            "type": "message",
+            "phase": null
+          },
+          "output_index": 0,
+          "sequence_number": 10,
+          "type": "response.output_item.done"
+        },
+        {
+          "response": {
+            "id": "resp_13fdd66ce53e44da9b73418cf97f269a",
+            "access_programs": null,
+            "created_at": 1791014243.0,
+            "error": null,
+            "incomplete_details": {
+              "reason": "max_output_tokens"
+            },
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [
+              {
+                "id": "msg_b17bbd4f1f4c4a25bdad0396843ebb80",
+                "content": [
+                  {
+                    "annotations": [],
+                    "text": "café ",
+                    "type": "output_text",
+                    "logprobs": []
+                  }
+                ],
+                "role": "assistant",
+                "status": "incomplete",
+                "type": "message",
+                "phase": null
+              }
+            ],
+            "parallel_tool_calls": true,
+            "temperature": 0.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "background": false,
+            "completed_at": null,
+            "conversation": null,
+            "max_output_tokens": 7,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "incomplete",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": {
+              "input_tokens": 27,
+              "input_tokens_details": {
+                "cache_write_tokens": 7,
+                "cached_tokens": 20
+              },
+              "output_tokens": 7,
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              },
+              "total_tokens": 34
+            },
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 11,
+          "type": "response.incomplete"
+        }
+      ],
+      "wall_s": 0.43873783299932256,
+      "first_text_delta_s": 0.24110336800367804,
+      "native": {
+        "generated": 7,
+        "prompt_tokens": 27,
+        "prompt_ms": 207.5,
+        "decode_ms": 226.3,
+        "finish": "length",
+        "drafts_accepted": 0,
+        "drafts_offered": 0,
+        "reused": 20,
+        "hits": 2559,
+        "lookups": 3360,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 829.1,
+        "prompt_read": 7
+      }
+    },
+    {
+      "name": "SSE UTF-8 budget 8",
+      "text": "café 🐈",
+      "status": "incomplete",
+      "wire": [
+        {
+          "response": {
+            "id": "resp_dfcaa10b527940bea0935e92df44749a",
+            "access_programs": null,
+            "created_at": 1791014244.0,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [],
+            "parallel_tool_calls": true,
+            "temperature": 0.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "background": false,
+            "completed_at": null,
+            "conversation": null,
+            "max_output_tokens": 8,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "queued",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": null,
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 0,
+          "type": "response.created"
+        },
+        {
+          "response": {
+            "id": "resp_dfcaa10b527940bea0935e92df44749a",
+            "access_programs": null,
+            "created_at": 1791014244.0,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [],
+            "parallel_tool_calls": true,
+            "temperature": 0.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "background": false,
+            "completed_at": null,
+            "conversation": null,
+            "max_output_tokens": 8,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "in_progress",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": null,
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 1,
+          "type": "response.in_progress"
+        },
+        {
+          "item": {
+            "id": "msg_af77445eba2e4897b318623e8d47344c",
+            "content": [],
+            "role": "assistant",
+            "status": "in_progress",
+            "type": "message",
+            "phase": null
+          },
+          "output_index": 0,
+          "sequence_number": 2,
+          "type": "response.output_item.added"
+        },
+        {
+          "content_index": 0,
+          "item_id": "msg_af77445eba2e4897b318623e8d47344c",
+          "output_index": 0,
+          "part": {
+            "annotations": [],
+            "text": "",
+            "type": "output_text",
+            "logprobs": []
+          },
+          "sequence_number": 3,
+          "type": "response.content_part.added"
+        },
+        {
+          "content_index": 0,
+          "delta": "c",
+          "item_id": "msg_af77445eba2e4897b318623e8d47344c",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 4,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "af",
+          "item_id": "msg_af77445eba2e4897b318623e8d47344c",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 5,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "é",
+          "item_id": "msg_af77445eba2e4897b318623e8d47344c",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 6,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": " ",
+          "item_id": "msg_af77445eba2e4897b318623e8d47344c",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 7,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "delta": "🐈",
+          "item_id": "msg_af77445eba2e4897b318623e8d47344c",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 8,
+          "type": "response.output_text.delta"
+        },
+        {
+          "content_index": 0,
+          "item_id": "msg_af77445eba2e4897b318623e8d47344c",
+          "logprobs": [],
+          "output_index": 0,
+          "sequence_number": 9,
+          "text": "café 🐈",
+          "type": "response.output_text.done"
+        },
+        {
+          "content_index": 0,
+          "item_id": "msg_af77445eba2e4897b318623e8d47344c",
+          "output_index": 0,
+          "part": {
+            "annotations": [],
+            "text": "café 🐈",
+            "type": "output_text",
+            "logprobs": []
+          },
+          "sequence_number": 10,
+          "type": "response.content_part.done"
+        },
+        {
+          "item": {
+            "id": "msg_af77445eba2e4897b318623e8d47344c",
+            "content": [
+              {
+                "annotations": [],
+                "text": "café 🐈",
+                "type": "output_text",
+                "logprobs": []
+              }
+            ],
+            "role": "assistant",
+            "status": "incomplete",
+            "type": "message",
+            "phase": null
+          },
+          "output_index": 0,
+          "sequence_number": 11,
+          "type": "response.output_item.done"
+        },
+        {
+          "response": {
+            "id": "resp_dfcaa10b527940bea0935e92df44749a",
+            "access_programs": null,
+            "created_at": 1791014244.0,
+            "error": null,
+            "incomplete_details": {
+              "reason": "max_output_tokens"
+            },
+            "instructions": null,
+            "metadata": {},
+            "model": "qwen3.8-flash-next",
+            "object": "response",
+            "output": [
+              {
+                "id": "msg_af77445eba2e4897b318623e8d47344c",
+                "content": [
+                  {
+                    "annotations": [],
+                    "text": "café 🐈",
+                    "type": "output_text",
+                    "logprobs": []
+                  }
+                ],
+                "role": "assistant",
+                "status": "incomplete",
+                "type": "message",
+                "phase": null
+              }
+            ],
+            "parallel_tool_calls": true,
+            "temperature": 0.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "background": false,
+            "completed_at": null,
+            "conversation": null,
+            "max_output_tokens": 8,
+            "max_tool_calls": null,
+            "moderation": null,
+            "previous_response_id": null,
+            "prompt": null,
+            "prompt_cache_diagnostics": null,
+            "prompt_cache_key": null,
+            "prompt_cache_options": null,
+            "prompt_cache_retention": null,
+            "reasoning": {
+              "context": null,
+              "effort": "none",
+              "generate_summary": null,
+              "mode": null,
+              "summary": null
+            },
+            "safety_identifier": null,
+            "service_tier": null,
+            "status": "incomplete",
+            "text": {
+              "format": {
+                "type": "text"
+              },
+              "verbosity": null
+            },
+            "top_logprobs": null,
+            "truncation": "disabled",
+            "usage": {
+              "input_tokens": 27,
+              "input_tokens_details": {
+                "cache_write_tokens": 7,
+                "cached_tokens": 20
+              },
+              "output_tokens": 8,
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              },
+              "total_tokens": 35
+            },
+            "user": null,
+            "store": false
+          },
+          "sequence_number": 12,
+          "type": "response.incomplete"
+        }
+      ],
+      "wall_s": 0.46534345100371866,
+      "first_text_delta_s": 0.23728177099837922,
+      "native": {
+        "generated": 8,
+        "prompt_tokens": 27,
+        "prompt_ms": 203.6,
+        "decode_ms": 257.9,
+        "finish": "length",
+        "drafts_accepted": 0,
+        "drafts_offered": 0,
+        "reused": 20,
+        "hits": 2903,
+        "lookups": 3840,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 919.3,
+        "prompt_read": 7
+      }
+    },
+    {
+      "name": "concurrent adapters independent",
+      "outputs": [
+        "alpha",
+        "beta"
+      ]
+    },
+    {
+      "name": "HTTP disconnect drained and next request clean",
+      "text": "true",
+      "history": [
+        {
+          "finish": "disconnect",
+          "output_tokens": 3,
+          "engine_generated": 4
+        },
+        {
+          "finish": "stop",
+          "output_tokens": 4,
+          "engine_generated": 4
+        }
+      ]
+    },
+    {
+      "name": "benchmark warmup",
+      "output": "4",
+      "plain_native": {
+        "generated": 2,
+        "prompt_tokens": 27,
+        "prompt_ms": 202.6,
+        "decode_ms": 403.3,
+        "finish": "stop",
+        "drafts_accepted": 0,
+        "drafts_offered": 3,
+        "reused": 20,
+        "hits": 1527,
+        "lookups": 2400,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 986.8,
+        "prompt_read": 7
+      },
+      "grammar_native": {
+        "generated": 2,
+        "prompt_tokens": 27,
+        "prompt_ms": 212.6,
+        "decode_ms": 73.1,
+        "finish": "stop",
+        "drafts_accepted": 0,
+        "drafts_offered": 0,
+        "reused": 20,
+        "hits": 705,
+        "lookups": 960,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 308.1,
+        "prompt_read": 7
+      }
+    },
+    {
+      "name": "alternating benchmark passed",
+      "rows": 12,
+      "output": "4"
+    },
+    {
+      "name": "concurrent benchmark digits",
+      "results": [
+        {
+          "wall_s": 1.0779631360055646,
+          "first_text_delta_s": null
+        },
+        {
+          "wall_s": 2.1526718410023022,
+          "first_text_delta_s": 1.3016684230024111
+        }
+      ]
+    },
+    {
+      "name": "concurrent benchmark repeats",
+      "results": [
+        {
+          "wall_s": 1.6269527109980118,
+          "first_text_delta_s": null
+        },
+        {
+          "wall_s": 3.291549686997314,
+          "first_text_delta_s": 1.8118517589973635
+        }
+      ]
+    },
+    {
+      "name": "concurrent benchmark sampled-repeats",
+      "results": [
+        {
+          "wall_s": 1.6755282240046654,
+          "first_text_delta_s": null
+        },
+        {
+          "wall_s": 3.3761038730008295,
+          "first_text_delta_s": 1.8618237930058967
+        }
+      ]
+    },
+    {
+      "name": "constrained speculation benchmark",
+      "rows": 36
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "none"
+  },
+  "max_output_tokens": 512,
+  "temperature": 0,
+  "input": "Hello",
+  "stream": true,
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "codex_output_schema",
+      "strict": true,
+      "schema": {
+        "$ref": "https://example.invalid/schema"
+      }
+    }
+  }
+}

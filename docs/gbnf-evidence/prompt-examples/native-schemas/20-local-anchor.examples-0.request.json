@@ -1,0 +1,36 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "none"
+  },
+  "max_output_tokens": 512,
+  "temperature": 0,
+  "input": "Return exactly this JSON value, without explanation: {\"value\": 1}",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "20_local_anchor",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "$ref": "#positive"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "positive": {
+            "$anchor": "positive",
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    }
+  }
+}

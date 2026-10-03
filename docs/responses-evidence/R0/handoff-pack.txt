@@ -1,0 +1,1 @@
+Handoff integrity/plan checks passed; no Strata feature or GPU correctness is certified.

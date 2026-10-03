@@ -166,6 +166,7 @@ void Verifier::diag(std::FILE* f) const {
 }
 
 Verifier::~Verifier() {
+    const OnDevice on(device_);
     const Verifier* self = this;
     g_diag_verifier.compare_exchange_strong(self, nullptr);
     for (auto& slot : g_live) {
@@ -180,10 +181,34 @@ Verifier::~Verifier() {
     if (copy_) { cudaStreamSynchronize(copy_); cudaStreamDestroy(copy_); }
     if (commit_done_) cudaEventDestroy(commit_done_);
     if (arena_) cudaFree(arena_);
+    if (token_mask_.rows) cudaFree((void*) token_mask_.rows);
+    if (token_mask_.scratch) cudaFree(token_mask_.scratch);
+    if (token_mask_.status) cudaFree(token_mask_.status);
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_commit_, h_ple_, h_out_, h_x_, h_ids_, h_w_, h_seq_, h_flag_, h_ymiss_,
                      h_flagA_, h_plan_, h_flagB_};
     for (void* h : hosts)
         if (h) cudaFreeHost(h);
+}
+
+bool Verifier::set_token_masks(const int32_t* masks, int rows, std::string& err) {
+    if (next_) return next_->set_token_masks(masks, rows, err);
+    token_mask_rows_ = 0;
+    if (!masks && rows == 0) return true;
+    if (!masks || rows < 1 || rows > max_t_ || n_vocab_ <= 0) {
+        err = "verify: invalid constraint mask dimensions";
+        return false;
+    }
+    const OnDevice on(device_);
+    const size_t words = ((size_t) n_vocab_ + 31) / 32;
+    if ((!token_mask_.rows && cudaMalloc((void**) &token_mask_.rows, words * max_t_ * sizeof(int32_t)) != cudaSuccess) ||
+        (!token_mask_.scratch && cudaMalloc(&token_mask_.scratch, (size_t) n_vocab_ * max_t_ * sizeof(float)) != cudaSuccess) ||
+        (!token_mask_.status && cudaMalloc(&token_mask_.status, (size_t) max_t_ * sizeof(int32_t)) != cudaSuccess) ||
+        cudaMemcpy((void*) token_mask_.rows, masks, words * rows * sizeof(int32_t), cudaMemcpyHostToDevice) != cudaSuccess) {
+        err = "verify: constraint mask allocation/upload failed";
+        return false;
+    }
+    token_mask_rows_ = rows;
+    return true;
 }
 
 bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState& ss, const VerifyHits& hits,
@@ -205,8 +230,8 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     max_t_ = max_t;
     sampling_.greedy = true;      // a fresh verifier samples greedily until set_sampling says otherwise
     sampling_.temperature = 0.0f;
-    if (max_t < 2 || max_t > strata::kernels::kVerifyMaxT || max_t > strata::kernels::cpu::MAXT) {
-        err = "verify: the window must hold 2.." + std::to_string(strata::kernels::kVerifyMaxT) + " tokens";
+    if (max_t < 1 || max_t > strata::kernels::kVerifyMaxT || max_t > strata::kernels::cpu::MAXT) {
+        err = "verify: the window must hold 1.." + std::to_string(strata::kernels::kVerifyMaxT) + " tokens";
         return false;
     }
     if (hits.d_res == nullptr || hits.cache_base == nullptr || hits.blob <= 0) {
@@ -1176,16 +1201,27 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         return next_ == nullptr || next_->run(T, tokens, pos0, pool, next_user_, out, err);
     }
     const bool sampled = !sampling_.greedy && sampling_.temperature > 0.0f;
-    if (head_sampling_ && (sampled || hist_d_ != nullptr)) {
+    if (head_sampling_ && (sampled || hist_d_ != nullptr || token_mask_rows_ > 0)) {
+        if (token_mask_rows_ != 0 && token_mask_rows_ != T) {
+            err = "verify: constraint row count differs from window";
+            return false;
+        }
         SamplerParams sp = sampling_;
         sp.counter = (uint64_t) pos0;
-        sample_tokens(head_logits_, T, (int) n_vocab_, hist_d_, hist_len_, sp, m_out_, cs_);
+        sample_tokens(head_logits_, T, (int) n_vocab_, hist_d_, hist_len_, sp, m_out_, cs_,
+                      token_mask_rows_ ? &token_mask_ : nullptr);
         if (cudaStreamSynchronize(cs_) != cudaSuccess) {   // m_out_ is the mapped h_out_: synced, it is readable
             err = "verify: the head sampling failed";
             return false;
         }
     }
     for (int t = 0; t < T; ++t) out[t] = ((volatile int32_t*) h_out_)[t];
+    if (token_mask_rows_ && head_sampling_)
+        for (int t = 0; t < T; ++t)
+            if (out[t] < 0) {
+                err = "verify: constrained selector has no eligible finite candidate";
+                return false;
+            }
     if (static const bool dbg = std::getenv("STRATA_DBG_NAN") != nullptr; dbg) {   // debug: the first non-finite head
         static bool reported = false;
         if (!reported) {

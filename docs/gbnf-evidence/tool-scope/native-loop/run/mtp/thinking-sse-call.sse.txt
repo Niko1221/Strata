@@ -1,0 +1,144 @@
+event: response.created
+data: {"type": "response.created", "sequence_number": 0, "response": {"id": "resp_82a7d730ae264bc0b7a854352f79270e", "object": "response", "created_at": 1791039960, "status": "queued", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 768, "temperature": 0, "top_p": 1.0, "text": {"format": {"type": "text"}}, "tools": [{"type": "namespace", "name": "facts", "description": "Client-owned test helpers.", "tools": [{"type": "function", "name": "lookup", "description": "Look up the text. Call this before answering.", "strict": false, "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}]}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "low", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+event: response.in_progress
+data: {"type": "response.in_progress", "sequence_number": 1, "response": {"id": "resp_82a7d730ae264bc0b7a854352f79270e", "object": "response", "created_at": 1791039960, "status": "in_progress", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 768, "temperature": 0, "top_p": 1.0, "text": {"format": {"type": "text"}}, "tools": [{"type": "namespace", "name": "facts", "description": "Client-owned test helpers.", "tools": [{"type": "function", "name": "lookup", "description": "Look up the text. Call this before answering.", "strict": false, "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}]}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "low", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"id": "rs_96b81670d8d440069ab6b844e473f0e0", "type": "reasoning", "status": "in_progress", "summary": [], "content": [{"type": "reasoning_text", "text": ""}]}}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 3, "item_id": "rs_96b81670d8d440069ab6b844e473f0e0", "output_index": 0, "content_index": 0, "delta": "The"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 4, "item_id": "rs_96b81670d8d440069ab6b844e473f0e0", "output_index": 0, "content_index": 0, "delta": " user"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 5, "item_id": "rs_96b81670d8d440069ab6b844e473f0e0", "output_index": 0, "content_index": 0, "delta": " wants"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 6, "item_id": "rs_96b81670d8d440069ab6b844e473f0e0", "output_index": 0, "content_index": 0, "delta": " me"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 7, "item_id": "rs_96b81670d8d440069ab6b844e473f0e0", "output_index": 0, "content_index": 0, "delta": " to"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 8, "item_id": "rs_96b81670d8d440069ab6b844e473f0e0", "output_index": 0, "content_index": 0, "delta": " call"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 9, "item_id": "rs_96b81670d8d440069ab6b844e473f0e0", "output_index": 0, "content_index": 0, "delta": " facts"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 10, "item_id": "rs_96b81670d8d440069ab6b844e473f0e0", "output_index": 0, "content_index": 0, "delta": ".lookup"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 11, "item_id": "rs_96b81670d8d440069ab6b844e473f0e0", "output_index": 0, "content_index": 0, "delta": " with"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 12, "item_id": "rs_96b81670d8d440069ab6b844e473f0e0", "output_index": 0, "content_index": 0, "delta": " the"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 13, "item_id": "rs_96b81670d8d440069ab6b844e473f0e0", "output_index": 0, "content_index": 0, "delta": " text"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 14, "item_id": "rs_96b81670d8d440069ab6b844e473f0e0", "output_index": 0, "content_index": 0, "delta": " \""}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 15, "item_id": "rs_96b81670d8d440069ab6b844e473f0e0", "output_index": 0, "content_index": 0, "delta": "purple"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 16, "item_id": "rs_96b81670d8d440069ab6b844e473f0e0", "output_index": 0, "content_index": 0, "delta": " "}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 17, "item_id": "rs_96b81670d8d440069ab6b844e473f0e0", "output_index": 0, "content_index": 0, "delta": "9"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 18, "item_id": "rs_96b81670d8d440069ab6b844e473f0e0", "output_index": 0, "content_index": 0, "delta": "9"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 19, "item_id": "rs_96b81670d8d440069ab6b844e473f0e0", "output_index": 0, "content_index": 0, "delta": "9"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 20, "item_id": "rs_96b81670d8d440069ab6b844e473f0e0", "output_index": 0, "content_index": 0, "delta": "\""}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 21, "item_id": "rs_96b81670d8d440069ab6b844e473f0e0", "output_index": 0, "content_index": 0, "delta": " and"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 22, "item_id": "rs_96b81670d8d440069ab6b844e473f0e0", "output_index": 0, "content_index": 0, "delta": " then"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 23, "item_id": "rs_96b81670d8d440069ab6b844e473f0e0", "output_index": 0, "content_index": 0, "delta": " answer"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 24, "item_id": "rs_96b81670d8d440069ab6b844e473f0e0", "output_index": 0, "content_index": 0, "delta": " based"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 25, "item_id": "rs_96b81670d8d440069ab6b844e473f0e0", "output_index": 0, "content_index": 0, "delta": " on"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 26, "item_id": "rs_96b81670d8d440069ab6b844e473f0e0", "output_index": 0, "content_index": 0, "delta": " the"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 27, "item_id": "rs_96b81670d8d440069ab6b844e473f0e0", "output_index": 0, "content_index": 0, "delta": " result"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 28, "item_id": "rs_96b81670d8d440069ab6b844e473f0e0", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 29, "item_id": "rs_96b81670d8d440069ab6b844e473f0e0", "output_index": 0, "content_index": 0, "delta": "\n"}
+
+event: response.reasoning_text.done
+data: {"type": "response.reasoning_text.done", "sequence_number": 30, "item_id": "rs_96b81670d8d440069ab6b844e473f0e0", "output_index": 0, "content_index": 0, "text": "The user wants me to call facts.lookup with the text \"purple 999\" and then answer based on the result.\n"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 31, "output_index": 0, "item": {"id": "rs_96b81670d8d440069ab6b844e473f0e0", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants me to call facts.lookup with the text \"purple 999\" and then answer based on the result.\n"}], "encrypted_content": "strata-r1.gAAAAABqwRnb0cIwPmhJ-T8chA5vJGWPMvQK62wJfxdAo8UZMLThpxy-lLbvC6WUD4uyWEgThWOdG-BNM352SAuS5h85GckWzBOIDsRuks6bb_gNV6itVQRjcpn21KrgaFGhsCaHq4PoOAXt6DMfQGhU23llaPk6eZcIlZ7BpBnG8joy5BTDyglHPs8QQOEcRsIs_ejDyDzsgD6Isgv_TMhmLHis9KOq-S9Z--2ozLBNPrjc7zlHIAX-oAOr0AJMQJ8J3A8Dha5savvokia01_O5vDlel_YPExBHES2P514jdgQz8wQ8S7dxhpHOZzbiCbEEAq-yEgIDpkoLJLAEEitL63y7tyihecuf8gNCxG-D3k8Uuw19ZWCPonEg1gAmzSlMFWzijyyXA7Y2eI2V3IVsMvAnQ4vyZWhHrQGO-Wpi2hmB1OM6xbTAyyNM1ffjdszt0ESIn4jG"}}
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 32, "output_index": 1, "item": {"id": "fc_c9c1c81975974eef890216888ddeec01", "type": "function_call", "status": "in_progress", "call_id": "call_52d7dffd57c449aba7f0565a", "name": "lookup", "arguments": "", "namespace": "facts"}}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 33, "item_id": "fc_c9c1c81975974eef890216888ddeec01", "output_index": 1, "delta": "{"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 34, "item_id": "fc_c9c1c81975974eef890216888ddeec01", "output_index": 1, "delta": "\"text\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 35, "item_id": "fc_c9c1c81975974eef890216888ddeec01", "output_index": 1, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 36, "item_id": "fc_c9c1c81975974eef890216888ddeec01", "output_index": 1, "delta": "purple"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 37, "item_id": "fc_c9c1c81975974eef890216888ddeec01", "output_index": 1, "delta": " "}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 38, "item_id": "fc_c9c1c81975974eef890216888ddeec01", "output_index": 1, "delta": "9"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 39, "item_id": "fc_c9c1c81975974eef890216888ddeec01", "output_index": 1, "delta": "9"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 40, "item_id": "fc_c9c1c81975974eef890216888ddeec01", "output_index": 1, "delta": "9"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 41, "item_id": "fc_c9c1c81975974eef890216888ddeec01", "output_index": 1, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 42, "item_id": "fc_c9c1c81975974eef890216888ddeec01", "output_index": 1, "delta": "}"}
+
+event: response.function_call_arguments.done
+data: {"type": "response.function_call_arguments.done", "sequence_number": 43, "item_id": "fc_c9c1c81975974eef890216888ddeec01", "output_index": 1, "arguments": "{\"text\":\"purple 999\"}"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 44, "output_index": 1, "item": {"id": "fc_c9c1c81975974eef890216888ddeec01", "type": "function_call", "status": "completed", "call_id": "call_52d7dffd57c449aba7f0565a", "name": "lookup", "arguments": "{\"text\":\"purple 999\"}", "namespace": "facts"}}
+
+event: response.completed
+data: {"type": "response.completed", "sequence_number": 45, "response": {"id": "resp_82a7d730ae264bc0b7a854352f79270e", "object": "response", "created_at": 1791039960, "status": "completed", "completed_at": 1791039964, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [{"id": "rs_96b81670d8d440069ab6b844e473f0e0", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants me to call facts.lookup with the text \"purple 999\" and then answer based on the result.\n"}], "encrypted_content": "strata-r1.gAAAAABqwRnb0cIwPmhJ-T8chA5vJGWPMvQK62wJfxdAo8UZMLThpxy-lLbvC6WUD4uyWEgThWOdG-BNM352SAuS5h85GckWzBOIDsRuks6bb_gNV6itVQRjcpn21KrgaFGhsCaHq4PoOAXt6DMfQGhU23llaPk6eZcIlZ7BpBnG8joy5BTDyglHPs8QQOEcRsIs_ejDyDzsgD6Isgv_TMhmLHis9KOq-S9Z--2ozLBNPrjc7zlHIAX-oAOr0AJMQJ8J3A8Dha5savvokia01_O5vDlel_YPExBHES2P514jdgQz8wQ8S7dxhpHOZzbiCbEEAq-yEgIDpkoLJLAEEitL63y7tyihecuf8gNCxG-D3k8Uuw19ZWCPonEg1gAmzSlMFWzijyyXA7Y2eI2V3IVsMvAnQ4vyZWhHrQGO-Wpi2hmB1OM6xbTAyyNM1ffjdszt0ESIn4jG"}, {"id": "fc_c9c1c81975974eef890216888ddeec01", "type": "function_call", "status": "completed", "call_id": "call_52d7dffd57c449aba7f0565a", "name": "lookup", "arguments": "{\"text\":\"purple 999\"}", "namespace": "facts"}], "usage": {"input_tokens": 323, "output_tokens": 59, "total_tokens": 382, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 323}, "output_tokens_details": {"reasoning_tokens": 27}}, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 768, "temperature": 0, "top_p": 1.0, "text": {"format": {"type": "text"}}, "tools": [{"type": "namespace", "name": "facts", "description": "Client-owned test helpers.", "tools": [{"type": "function", "name": "lookup", "description": "Look up the text. Call this before answering.", "strict": false, "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}]}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "low", "summary": null}, "truncation": "disabled", "metadata": {}}}
+

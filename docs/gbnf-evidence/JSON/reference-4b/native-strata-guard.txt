@@ -1,0 +1,8 @@
+Qwen3.5-4B-BF16.gguf
+  version 3   tensors 426   metadata 42   data_start 10967968   size 8424393632
+  blk.* tensors 424   globals 2
+  Q2_0 0   BF16 249   F32 177
+  geometry bracket: 0 out of range, 0 types unknown
+  architecture guard: FAIL - architecture is 'qwen35', this engine requires 'qwen4exp'
+
+Note: strata-gguf CLI exits 0 despite the guard failure diagnostic. This is not a passed native load test.

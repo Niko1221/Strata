@@ -1,0 +1,42 @@
+event: response.created
+data: {"type": "response.created", "sequence_number": 0, "response": {"id": "resp_382f3c32d8db4245ba55d0541ed6c337", "object": "response", "created_at": 1791058623, "status": "queued", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 1024, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "namespace", "name": "multi_agent_v1", "description": "Tools for spawning and managing sub-agents.", "tools": [{"type": "function", "name": "wait_agent", "description": "Wait for agents to reach a final status. Completed statuses may include the agent's final message. Returns empty status when timed out. Once the agent reaches a final status, a notification message will be received containing the same completed status.", "strict": false, "parameters": {"type": "object", "properties": {"targets": {"type": "array", "description": "Agent ids to wait on. Pass multiple ids to wait for whichever finishes first.", "items": {"type": "string"}}, "timeout_ms": {"type": "number", "description": "Timeout in milliseconds. Defaults to 30000, min 10000, max 3600000. Prefer longer waits (minutes) to avoid busy polling."}}, "required": ["targets"], "additionalProperties": false}}]}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "none", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+event: response.in_progress
+data: {"type": "response.in_progress", "sequence_number": 1, "response": {"id": "resp_382f3c32d8db4245ba55d0541ed6c337", "object": "response", "created_at": 1791058623, "status": "in_progress", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 1024, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "namespace", "name": "multi_agent_v1", "description": "Tools for spawning and managing sub-agents.", "tools": [{"type": "function", "name": "wait_agent", "description": "Wait for agents to reach a final status. Completed statuses may include the agent's final message. Returns empty status when timed out. Once the agent reaches a final status, a notification message will be received containing the same completed status.", "strict": false, "parameters": {"type": "object", "properties": {"targets": {"type": "array", "description": "Agent ids to wait on. Pass multiple ids to wait for whichever finishes first.", "items": {"type": "string"}}, "timeout_ms": {"type": "number", "description": "Timeout in milliseconds. Defaults to 30000, min 10000, max 3600000. Prefer longer waits (minutes) to avoid busy polling."}}, "required": ["targets"], "additionalProperties": false}}]}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "none", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"id": "fc_49f8f3c7231c4336a93f659fc9a2fe02", "type": "function_call", "status": "in_progress", "call_id": "call_72037651708e486a9d3378b0", "name": "wait_agent", "arguments": "", "namespace": "multi_agent_v1"}}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 3, "item_id": "fc_49f8f3c7231c4336a93f659fc9a2fe02", "output_index": 0, "delta": "{"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 4, "item_id": "fc_49f8f3c7231c4336a93f659fc9a2fe02", "output_index": 0, "delta": "\"targets\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 5, "item_id": "fc_49f8f3c7231c4336a93f659fc9a2fe02", "output_index": 0, "delta": "[\"fixture-agent\"]"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 6, "item_id": "fc_49f8f3c7231c4336a93f659fc9a2fe02", "output_index": 0, "delta": ",\"timeout_ms\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 7, "item_id": "fc_49f8f3c7231c4336a93f659fc9a2fe02", "output_index": 0, "delta": "10000"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 8, "item_id": "fc_49f8f3c7231c4336a93f659fc9a2fe02", "output_index": 0, "delta": "}"}
+
+event: response.function_call_arguments.done
+data: {"type": "response.function_call_arguments.done", "sequence_number": 9, "item_id": "fc_49f8f3c7231c4336a93f659fc9a2fe02", "output_index": 0, "arguments": "{\"targets\":[\"fixture-agent\"],\"timeout_ms\":10000}"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 10, "output_index": 0, "item": {"id": "fc_49f8f3c7231c4336a93f659fc9a2fe02", "type": "function_call", "status": "completed", "call_id": "call_72037651708e486a9d3378b0", "name": "wait_agent", "arguments": "{\"targets\":[\"fixture-agent\"],\"timeout_ms\":10000}", "namespace": "multi_agent_v1"}}
+
+event: response.completed
+data: {"type": "response.completed", "sequence_number": 11, "response": {"id": "resp_382f3c32d8db4245ba55d0541ed6c337", "object": "response", "created_at": 1791058623, "status": "completed", "completed_at": 1791058627, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [{"id": "fc_49f8f3c7231c4336a93f659fc9a2fe02", "type": "function_call", "status": "completed", "call_id": "call_72037651708e486a9d3378b0", "name": "wait_agent", "arguments": "{\"targets\":[\"fixture-agent\"],\"timeout_ms\":10000}", "namespace": "multi_agent_v1"}], "usage": {"input_tokens": 456, "output_tokens": 51, "total_tokens": 507, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 456}, "output_tokens_details": {"reasoning_tokens": 0}}, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 1024, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "namespace", "name": "multi_agent_v1", "description": "Tools for spawning and managing sub-agents.", "tools": [{"type": "function", "name": "wait_agent", "description": "Wait for agents to reach a final status. Completed statuses may include the agent's final message. Returns empty status when timed out. Once the agent reaches a final status, a notification message will be received containing the same completed status.", "strict": false, "parameters": {"type": "object", "properties": {"targets": {"type": "array", "description": "Agent ids to wait on. Pass multiple ids to wait for whichever finishes first.", "items": {"type": "string"}}, "timeout_ms": {"type": "number", "description": "Timeout in milliseconds. Defaults to 30000, min 10000, max 3600000. Prefer longer waits (minutes) to avoid busy polling."}}, "required": ["targets"], "additionalProperties": false}}]}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "none", "summary": null}, "truncation": "disabled", "metadata": {}}}
+

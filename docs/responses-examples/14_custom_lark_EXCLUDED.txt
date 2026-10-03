@@ -1,0 +1,22 @@
+SYNTHETIC DOCUMENTATION EXAMPLE
+Status: Excluded; raw GBNF does not implement Lark custom tools
+
+POST /v1/responses
+Content-Type: application/json
+
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "input": "Hello.",
+  "tools": [
+    {
+      "type": "custom",
+      "name": "operation",
+      "format": {
+        "type": "grammar",
+        "syntax": "lark",
+        "definition": "start: \"wait\""
+      }
+    }
+  ]
+}

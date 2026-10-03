@@ -1,0 +1,32 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "none"
+  },
+  "max_output_tokens": 512,
+  "temperature": 0,
+  "input": "Return exactly this JSON value, without explanation: {\"ticket\": \"AB-123\"}",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "12_string_length_and_pattern",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "ticket": {
+            "type": "string",
+            "pattern": "^[A-Z]{2}-[0-9]{3}$",
+            "minLength": 6,
+            "maxLength": 6
+          }
+        },
+        "required": [
+          "ticket"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

@@ -1,0 +1,12 @@
+test_changed_authorization_and_wrong_principal_fail_before_effects (tools.test_grammar_state_contract.StateContract.test_changed_authorization_and_wrong_principal_fail_before_effects) ... ok
+test_frozen_contract_has_stable_identity_and_small_source (tools.test_grammar_state_contract.StateContract.test_frozen_contract_has_stable_identity_and_small_source) ... ok
+test_injection_and_unbounded_names_rejected (tools.test_grammar_state_contract.StateContract.test_injection_and_unbounded_names_rejected) ... ok
+test_racing_candidates_can_apply_at_most_once (tools.test_grammar_state_contract.StateContract.test_racing_candidates_can_apply_at_most_once) ... ok
+test_revision_exhaustion_precedes_every_effect (tools.test_grammar_state_contract.StateContract.test_revision_exhaustion_precedes_every_effect) ... ok
+test_stale_output_does_not_apply (tools.test_grammar_state_contract.StateContract.test_stale_output_does_not_apply) ... ok
+test_whole_candidate_is_verified_without_repair (tools.test_grammar_state_contract.StateContract.test_whole_candidate_is_verified_without_repair) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 0.033s
+
+OK

@@ -1,0 +1,133 @@
+event: response.created
+data: {"type": "response.created", "sequence_number": 0, "response": {"id": "resp_3003fdc6e013484d8131330424ea9c4f", "object": "response", "created_at": 1791058750, "status": "queued", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "json_schema", "name": "ack", "strict": true, "schema": {"type": "object", "properties": {"ack": {"type": "boolean", "const": true}}, "required": ["ack"], "additionalProperties": false}}}, "tools": [{"type": "function", "name": "view_image", "description": "View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.", "strict": false, "parameters": {"type": "object", "properties": {"path": {"type": "string", "description": "Local filesystem path to an image file."}}, "required": ["path"], "additionalProperties": false}}], "tool_choice": "none", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+event: response.in_progress
+data: {"type": "response.in_progress", "sequence_number": 1, "response": {"id": "resp_3003fdc6e013484d8131330424ea9c4f", "object": "response", "created_at": 1791058750, "status": "in_progress", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "json_schema", "name": "ack", "strict": true, "schema": {"type": "object", "properties": {"ack": {"type": "boolean", "const": true}}, "required": ["ack"], "additionalProperties": false}}}, "tools": [{"type": "function", "name": "view_image", "description": "View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.", "strict": false, "parameters": {"type": "object", "properties": {"path": {"type": "string", "description": "Local filesystem path to an image file."}}, "required": ["path"], "additionalProperties": false}}], "tool_choice": "none", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+: keep-alive
+
+: keep-alive
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"id": "rs_3783855b604a4257ba2e2deb48850c44", "type": "reasoning", "status": "in_progress", "summary": [], "content": [{"type": "reasoning_text", "text": ""}]}}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 3, "item_id": "rs_3783855b604a4257ba2e2deb48850c44", "output_index": 0, "content_index": 0, "delta": "The"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 4, "item_id": "rs_3783855b604a4257ba2e2deb48850c44", "output_index": 0, "content_index": 0, "delta": " user"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 5, "item_id": "rs_3783855b604a4257ba2e2deb48850c44", "output_index": 0, "content_index": 0, "delta": " wants"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 6, "item_id": "rs_3783855b604a4257ba2e2deb48850c44", "output_index": 0, "content_index": 0, "delta": " me"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 7, "item_id": "rs_3783855b604a4257ba2e2deb48850c44", "output_index": 0, "content_index": 0, "delta": " to"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 8, "item_id": "rs_3783855b604a4257ba2e2deb48850c44", "output_index": 0, "content_index": 0, "delta": " return"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 9, "item_id": "rs_3783855b604a4257ba2e2deb48850c44", "output_index": 0, "content_index": 0, "delta": " exactly"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 10, "item_id": "rs_3783855b604a4257ba2e2deb48850c44", "output_index": 0, "content_index": 0, "delta": " one"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 11, "item_id": "rs_3783855b604a4257ba2e2deb48850c44", "output_index": 0, "content_index": 0, "delta": " JSON"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 12, "item_id": "rs_3783855b604a4257ba2e2deb48850c44", "output_index": 0, "content_index": 0, "delta": " value"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 13, "item_id": "rs_3783855b604a4257ba2e2deb48850c44", "output_index": 0, "content_index": 0, "delta": " matching"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 14, "item_id": "rs_3783855b604a4257ba2e2deb48850c44", "output_index": 0, "content_index": 0, "delta": " the"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 15, "item_id": "rs_3783855b604a4257ba2e2deb48850c44", "output_index": 0, "content_index": 0, "delta": " schema"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 16, "item_id": "rs_3783855b604a4257ba2e2deb48850c44", "output_index": 0, "content_index": 0, "delta": " {\""}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 17, "item_id": "rs_3783855b604a4257ba2e2deb48850c44", "output_index": 0, "content_index": 0, "delta": "ack"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 18, "item_id": "rs_3783855b604a4257ba2e2deb48850c44", "output_index": 0, "content_index": 0, "delta": "\":"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 19, "item_id": "rs_3783855b604a4257ba2e2deb48850c44", "output_index": 0, "content_index": 0, "delta": " true"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 20, "item_id": "rs_3783855b604a4257ba2e2deb48850c44", "output_index": 0, "content_index": 0, "delta": "}."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 21, "item_id": "rs_3783855b604a4257ba2e2deb48850c44", "output_index": 0, "content_index": 0, "delta": " No"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 22, "item_id": "rs_3783855b604a4257ba2e2deb48850c44", "output_index": 0, "content_index": 0, "delta": " markdown"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 23, "item_id": "rs_3783855b604a4257ba2e2deb48850c44", "output_index": 0, "content_index": 0, "delta": " fences"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 24, "item_id": "rs_3783855b604a4257ba2e2deb48850c44", "output_index": 0, "content_index": 0, "delta": ","}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 25, "item_id": "rs_3783855b604a4257ba2e2deb48850c44", "output_index": 0, "content_index": 0, "delta": " no"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 26, "item_id": "rs_3783855b604a4257ba2e2deb48850c44", "output_index": 0, "content_index": 0, "delta": " extra"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 27, "item_id": "rs_3783855b604a4257ba2e2deb48850c44", "output_index": 0, "content_index": 0, "delta": " text"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 28, "item_id": "rs_3783855b604a4257ba2e2deb48850c44", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 29, "item_id": "rs_3783855b604a4257ba2e2deb48850c44", "output_index": 0, "content_index": 0, "delta": "\n"}
+
+event: response.reasoning_text.done
+data: {"type": "response.reasoning_text.done", "sequence_number": 30, "item_id": "rs_3783855b604a4257ba2e2deb48850c44", "output_index": 0, "content_index": 0, "text": "The user wants me to return exactly one JSON value matching the schema {\"ack\": true}. No markdown fences, no extra text.\n"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 31, "output_index": 0, "item": {"id": "rs_3783855b604a4257ba2e2deb48850c44", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants me to return exactly one JSON value matching the schema {\"ack\": true}. No markdown fences, no extra text.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWNA61hnqIQisWocywN55YSf43c8q7rlrhBtug7aa5rYMDdH2uB3GLp31pfLgOf9JcuvqezKtNwtWriOuty7FEYB5HhZvYHdJI2jloTYtCOSLKzqawSq8w0PhhoFCA1jp_GUGG90PGK-6O5Eei4wz4YJlEb7on7FCGNWJUv0wB17EGDDwpC0sisC0NwICQY936iLJIkjHV_gJAMHot-e7lcG5nX97i9I2ojKRGtUGFxo6qHVi7oBS_149KbNUZKKOe28W_lLFecxwDNT_Zh8dhS6pTVHuES-tuDNN90xbmQB_Sg3qv2qpOrxEHxLum7qO74fmrohc8zC1QM0Al_DNAfzvD03MfZSWGYIIOAxoB2iMkYEhRaJ6j3zgV_M1TwXuhzW2-Pq68ewqbU9SqQfaHOBWoG05EwklQKIJVL77JoTs7XJ7iFz1sDDYcvy_RTd9X3xFmOu_AjXpXhf6_kAAjPlZQ=="}}
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 32, "output_index": 1, "item": {"id": "msg_9ee27a74dc6c4ab28b54eef0b07efab4", "type": "message", "status": "in_progress", "role": "assistant", "content": []}}
+
+event: response.content_part.added
+data: {"type": "response.content_part.added", "sequence_number": 33, "item_id": "msg_9ee27a74dc6c4ab28b54eef0b07efab4", "output_index": 1, "content_index": 0, "part": {"type": "output_text", "text": "", "annotations": [], "logprobs": []}}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 34, "item_id": "msg_9ee27a74dc6c4ab28b54eef0b07efab4", "output_index": 1, "content_index": 0, "delta": "{\"", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 35, "item_id": "msg_9ee27a74dc6c4ab28b54eef0b07efab4", "output_index": 1, "content_index": 0, "delta": "ack", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 36, "item_id": "msg_9ee27a74dc6c4ab28b54eef0b07efab4", "output_index": 1, "content_index": 0, "delta": "\":", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 37, "item_id": "msg_9ee27a74dc6c4ab28b54eef0b07efab4", "output_index": 1, "content_index": 0, "delta": " true", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 38, "item_id": "msg_9ee27a74dc6c4ab28b54eef0b07efab4", "output_index": 1, "content_index": 0, "delta": "}", "logprobs": []}
+
+event: response.output_text.done
+data: {"type": "response.output_text.done", "sequence_number": 39, "item_id": "msg_9ee27a74dc6c4ab28b54eef0b07efab4", "output_index": 1, "content_index": 0, "text": "{\"ack\": true}", "logprobs": []}
+
+event: response.content_part.done
+data: {"type": "response.content_part.done", "sequence_number": 40, "item_id": "msg_9ee27a74dc6c4ab28b54eef0b07efab4", "output_index": 1, "content_index": 0, "part": {"type": "output_text", "text": "{\"ack\": true}", "annotations": [], "logprobs": []}}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 41, "output_index": 1, "item": {"id": "msg_9ee27a74dc6c4ab28b54eef0b07efab4", "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "{\"ack\": true}", "annotations": [], "logprobs": []}]}}
+
+event: response.completed
+data: {"type": "response.completed", "sequence_number": 42, "response": {"id": "resp_3003fdc6e013484d8131330424ea9c4f", "object": "response", "created_at": 1791058750, "status": "completed", "completed_at": 1791058752, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [{"id": "rs_3783855b604a4257ba2e2deb48850c44", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants me to return exactly one JSON value matching the schema {\"ack\": true}. No markdown fences, no extra text.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWNA61hnqIQisWocywN55YSf43c8q7rlrhBtug7aa5rYMDdH2uB3GLp31pfLgOf9JcuvqezKtNwtWriOuty7FEYB5HhZvYHdJI2jloTYtCOSLKzqawSq8w0PhhoFCA1jp_GUGG90PGK-6O5Eei4wz4YJlEb7on7FCGNWJUv0wB17EGDDwpC0sisC0NwICQY936iLJIkjHV_gJAMHot-e7lcG5nX97i9I2ojKRGtUGFxo6qHVi7oBS_149KbNUZKKOe28W_lLFecxwDNT_Zh8dhS6pTVHuES-tuDNN90xbmQB_Sg3qv2qpOrxEHxLum7qO74fmrohc8zC1QM0Al_DNAfzvD03MfZSWGYIIOAxoB2iMkYEhRaJ6j3zgV_M1TwXuhzW2-Pq68ewqbU9SqQfaHOBWoG05EwklQKIJVL77JoTs7XJ7iFz1sDDYcvy_RTd9X3xFmOu_AjXpXhf6_kAAjPlZQ=="}, {"id": "msg_9ee27a74dc6c4ab28b54eef0b07efab4", "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "{\"ack\": true}", "annotations": [], "logprobs": []}]}], "usage": {"input_tokens": 219, "output_tokens": 35, "total_tokens": 254, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 219}, "output_tokens_details": {"reasoning_tokens": 27}}, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "json_schema", "name": "ack", "strict": true, "schema": {"type": "object", "properties": {"ack": {"type": "boolean", "const": true}}, "required": ["ack"], "additionalProperties": false}}}, "tools": [{"type": "function", "name": "view_image", "description": "View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.", "strict": false, "parameters": {"type": "object", "properties": {"path": {"type": "string", "description": "Local filesystem path to an image file."}}, "required": ["path"], "additionalProperties": false}}], "tool_choice": "none", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+

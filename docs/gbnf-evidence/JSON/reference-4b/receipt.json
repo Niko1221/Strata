@@ -1,0 +1,97 @@
+{
+  "date": "2026-10-03",
+  "kind": "independent llama.cpp reference, not native Strata qualification",
+  "host": "llm-49",
+  "gpu": "NVIDIA RTX 4090 24GiB",
+  "driver": "595.91.07",
+  "model": {
+    "filename": "Qwen3.5-4B-BF16.gguf",
+    "bytes": 8424393632,
+    "sha256": "9e6e2841a75f503ccb330831832fd7861266e187e0dbf149a954219ccb8c197a",
+    "architecture": "qwen35",
+    "tensor_type_counts": {
+      "BF16": 249,
+      "F32": 177
+    },
+    "quantized_tensor_count": 0
+  },
+  "kv": {
+    "k": "f16",
+    "v": "f16",
+    "flags": [
+      "--cache-type-k",
+      "f16",
+      "--cache-type-v",
+      "f16"
+    ]
+  },
+  "runtime": {
+    "name": "llama.cpp",
+    "source_commit": "972d2313bc0bf0a45f634f77d95c9fb03aeab12c",
+    "clean_source": true,
+    "binary_sha256": "438951e09f7521a28fda7e5f5a7b6ff7eb84abf23bcf143e2b14fe97317fd266"
+  },
+  "client": {
+    "name": "Windows Codex CLI",
+    "version": "0.160.0",
+    "sha256": "fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d",
+    "changes_from_strata_profile": [
+      "model identity",
+      "provider URL/display description"
+    ],
+    "same_tools_and_instructions": true
+  },
+  "context": 32768,
+  "sampling": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "min_p": 0,
+    "repeat_penalty": 1,
+    "reasoning_budget": 2048
+  },
+  "speculative_decoding": false,
+  "actual_codex_result": {
+    "passed": false,
+    "before_model_execution": true,
+    "errors": [
+      "unsupported Responses tool type namespace skipped",
+      "HTTP 500 Jinja Exception: System message must be at the beginning."
+    ]
+  },
+  "json_results": {
+    "responses_text_format": "not enforced; prose returned with max_output_tokens=4096",
+    "chat_response_format": "valid object with only title, length 1..36"
+  },
+  "tool_loop": {
+    "endpoint": "/v1/chat/completions",
+    "client_owned_tools": true,
+    "http_turns": 4,
+    "tool_calls": 4,
+    "actions": [
+      "read calc.py",
+      "read test_calc.py",
+      "change return a-b to a+b",
+      "python -m unittest -v test_calc.py"
+    ],
+    "repeated_ineffective_calls": 0
+  },
+  "independent_verifier": {
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": "test_negative (test_calc.Addition.test_negative) ... ok\ntest_positive (test_calc.Addition.test_positive) ... ok\ntest_zero (test_calc.Addition.test_zero) ... ok\n\n----------------------------------------------------------------------\nRan 3 tests in 0.000s\n\nOK\n",
+    "test_file_unchanged": true,
+    "calc_py": "def add(a, b):\n    return a + b"
+  },
+  "test_file_original_sha256": "0c3c3a910670129ffdc4d751ba124f655a3e4b52440315d749a41794696784b4",
+  "cleanup": {
+    "stopped": true,
+    "gpu_after": ""
+  },
+  "limitations": [
+    "Cross-model, cross-architecture and cross-engine comparison cannot isolate quantization quality.",
+    "Small fixture does not establish general coding quality.",
+    "Native Strata does not run this qwen35 model; native Flash/Codex qualification is separate.",
+    "Steering cannot be qualified when the initial Codex request is rejected."
+  ]
+}

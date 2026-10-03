@@ -1,0 +1,20 @@
+# Codex CLI 0.160.0. Replace these absolute paths and the server URL.
+model = "qwen3.8-flash-next"
+model_provider = "strata-local"
+model_catalog_json = "/ABSOLUTE/PATH/TO/model-catalog-0.160.0.json"
+model_instructions_file = "/ABSOLUTE/PATH/TO/local-model-instructions.txt"
+model_reasoning_effort = "medium"
+web_search = "disabled"
+
+[windows]
+sandbox = "unelevated"
+
+[model_providers.strata-local]
+name = "Strata local native coding"
+base_url = "http://127.0.0.1:8095/v1"
+env_key = "STRATA_API_KEY"
+wire_api = "responses"
+requires_openai_auth = false
+supports_websockets = false
+request_max_retries = 0
+stream_max_retries = 0

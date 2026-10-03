@@ -1,0 +1,1406 @@
+Test project /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build
+      Start  1: conversation_cache_test
+ 1/43 Test  #1: conversation_cache_test ..........   Passed    0.02 sec
+      Start  2: conversation_memory_test
+ 2/43 Test  #2: conversation_memory_test .........   Passed    0.00 sec
+      Start  3: file_expert_source_test
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/file_expert_source_test
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/file_expert_source_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/file_expert_source_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/file_expert_source_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/file_expert_source_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/file_expert_source_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/file_expert_source_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/file_expert_source_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/file_expert_source_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/file_expert_source_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/file_expert_source_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/file_expert_source_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/file_expert_source_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/file_expert_source_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/file_expert_source_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/file_expert_source_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/file_expert_source_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/file_expert_source_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/file_expert_source_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/file_expert_source_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/file_expert_source_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/file_expert_source_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/file_expert_source_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/file_expert_source_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/file_expert_source_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/file_expert_source_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/file_expert_source_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/file_expert_source_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/file_expert_source_test
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/file_expert_source_test
+ 3/43 Test  #3: file_expert_source_test ..........***Not Run   0.00 sec
+      Start  4: expert_profile_save_test
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/expert_profile_save_test
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/expert_profile_save_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/expert_profile_save_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/expert_profile_save_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/expert_profile_save_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/expert_profile_save_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/expert_profile_save_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/expert_profile_save_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/expert_profile_save_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/expert_profile_save_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/expert_profile_save_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/expert_profile_save_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/expert_profile_save_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/expert_profile_save_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/expert_profile_save_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/expert_profile_save_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/expert_profile_save_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/expert_profile_save_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/expert_profile_save_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/expert_profile_save_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/expert_profile_save_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/expert_profile_save_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/expert_profile_save_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/expert_profile_save_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/expert_profile_save_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/expert_profile_save_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/expert_profile_save_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/expert_profile_save_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/expert_profile_save_test
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/expert_profile_save_test
+ 4/43 Test  #4: expert_profile_save_test .........***Not Run   0.00 sec
+      Start  5: conversation_snapshot_test
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/conversation_snapshot_test
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/conversation_snapshot_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/conversation_snapshot_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/conversation_snapshot_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/conversation_snapshot_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/conversation_snapshot_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/conversation_snapshot_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/conversation_snapshot_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/conversation_snapshot_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/conversation_snapshot_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/conversation_snapshot_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/conversation_snapshot_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/conversation_snapshot_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/conversation_snapshot_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/conversation_snapshot_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/conversation_snapshot_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/conversation_snapshot_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/conversation_snapshot_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/conversation_snapshot_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/conversation_snapshot_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/conversation_snapshot_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/conversation_snapshot_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/conversation_snapshot_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/conversation_snapshot_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/conversation_snapshot_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/conversation_snapshot_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/conversation_snapshot_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/conversation_snapshot_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/conversation_snapshot_test
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/conversation_snapshot_test
+ 5/43 Test  #5: conversation_snapshot_test .......***Not Run   0.00 sec
+      Start  6: conversation_validation_test
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/conversation_validation_test
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/conversation_validation_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/conversation_validation_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/conversation_validation_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/conversation_validation_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/conversation_validation_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/conversation_validation_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/conversation_validation_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/conversation_validation_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/conversation_validation_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/conversation_validation_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/conversation_validation_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/conversation_validation_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/conversation_validation_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/conversation_validation_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/conversation_validation_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/conversation_validation_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/conversation_validation_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/conversation_validation_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/conversation_validation_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/conversation_validation_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/conversation_validation_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/conversation_validation_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/conversation_validation_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/conversation_validation_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/conversation_validation_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/conversation_validation_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/conversation_validation_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/conversation_validation_test
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/conversation_validation_test
+ 6/43 Test  #6: conversation_validation_test .....***Not Run   0.00 sec
+      Start  7: conversation_transfer_test
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/conversation_transfer_test
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/conversation_transfer_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/conversation_transfer_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/conversation_transfer_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/conversation_transfer_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/conversation_transfer_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/conversation_transfer_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/conversation_transfer_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/conversation_transfer_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/conversation_transfer_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/conversation_transfer_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/conversation_transfer_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/conversation_transfer_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/conversation_transfer_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/conversation_transfer_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/conversation_transfer_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/conversation_transfer_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/conversation_transfer_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/conversation_transfer_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/conversation_transfer_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/conversation_transfer_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/conversation_transfer_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/conversation_transfer_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/conversation_transfer_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/conversation_transfer_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/conversation_transfer_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/conversation_transfer_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/conversation_transfer_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/conversation_transfer_test
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/conversation_transfer_test
+ 7/43 Test  #7: conversation_transfer_test .......***Not Run   0.00 sec
+      Start  8: dequant_s2_parity
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/dequant_s2_parity
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/dequant_s2_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/dequant_s2_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/dequant_s2_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/dequant_s2_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/dequant_s2_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/dequant_s2_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/dequant_s2_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/dequant_s2_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/dequant_s2_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/dequant_s2_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/dequant_s2_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/dequant_s2_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/dequant_s2_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/dequant_s2_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/dequant_s2_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/dequant_s2_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/dequant_s2_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/dequant_s2_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/dequant_s2_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/dequant_s2_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/dequant_s2_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/dequant_s2_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/dequant_s2_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/dequant_s2_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/dequant_s2_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/dequant_s2_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/dequant_s2_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/dequant_s2_parity
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/dequant_s2_parity
+ 8/43 Test  #8: dequant_s2_parity ................***Not Run   0.00 sec
+      Start  9: s2_gemv_parity
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/s2_gemv_parity
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/s2_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/s2_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/s2_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/s2_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/s2_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/s2_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/s2_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/s2_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/s2_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/s2_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/s2_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/s2_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/s2_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/s2_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/s2_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/s2_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/s2_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/s2_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/s2_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/s2_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/s2_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/s2_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/s2_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/s2_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/s2_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/s2_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/s2_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/s2_gemv_parity
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/s2_gemv_parity
+ 9/43 Test  #9: s2_gemv_parity ...................***Not Run   0.00 sec
+      Start 10: mmvq_multi_parity
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/mmvq_multi_parity
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/mmvq_multi_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/mmvq_multi_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/mmvq_multi_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/mmvq_multi_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/mmvq_multi_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/mmvq_multi_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/mmvq_multi_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/mmvq_multi_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/mmvq_multi_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/mmvq_multi_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/mmvq_multi_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/mmvq_multi_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/mmvq_multi_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/mmvq_multi_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/mmvq_multi_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/mmvq_multi_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/mmvq_multi_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/mmvq_multi_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/mmvq_multi_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/mmvq_multi_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/mmvq_multi_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/mmvq_multi_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/mmvq_multi_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/mmvq_multi_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/mmvq_multi_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/mmvq_multi_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/mmvq_multi_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/mmvq_multi_parity
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/mmvq_multi_parity
+10/43 Test #10: mmvq_multi_parity ................***Not Run   0.00 sec
+      Start 11: iq_multi_parity
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/iq_multi_parity
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/iq_multi_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/iq_multi_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/iq_multi_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/iq_multi_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/iq_multi_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/iq_multi_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/iq_multi_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/iq_multi_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/iq_multi_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/iq_multi_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/iq_multi_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/iq_multi_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/iq_multi_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/iq_multi_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/iq_multi_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/iq_multi_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/iq_multi_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/iq_multi_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/iq_multi_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/iq_multi_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/iq_multi_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/iq_multi_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/iq_multi_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/iq_multi_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/iq_multi_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/iq_multi_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/iq_multi_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/iq_multi_parity
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/iq_multi_parity
+11/43 Test #11: iq_multi_parity ..................***Not Run   0.00 sec
+      Start 12: gdn_rec_parity
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/gdn_rec_parity
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/gdn_rec_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/gdn_rec_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/gdn_rec_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/gdn_rec_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/gdn_rec_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/gdn_rec_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/gdn_rec_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/gdn_rec_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/gdn_rec_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/gdn_rec_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/gdn_rec_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/gdn_rec_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/gdn_rec_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/gdn_rec_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/gdn_rec_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/gdn_rec_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/gdn_rec_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/gdn_rec_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/gdn_rec_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/gdn_rec_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/gdn_rec_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/gdn_rec_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/gdn_rec_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/gdn_rec_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/gdn_rec_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/gdn_rec_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/gdn_rec_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/gdn_rec_parity
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/gdn_rec_parity
+12/43 Test #12: gdn_rec_parity ...................***Not Run   0.00 sec
+      Start 13: native_grouped_parity
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/native_grouped_parity
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/native_grouped_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/native_grouped_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/native_grouped_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/native_grouped_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/native_grouped_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/native_grouped_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/native_grouped_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/native_grouped_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/native_grouped_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/native_grouped_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/native_grouped_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/native_grouped_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/native_grouped_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/native_grouped_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/native_grouped_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/native_grouped_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/native_grouped_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/native_grouped_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/native_grouped_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/native_grouped_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/native_grouped_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/native_grouped_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/native_grouped_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/native_grouped_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/native_grouped_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/native_grouped_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/native_grouped_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/native_grouped_parity
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/native_grouped_parity
+13/43 Test #13: native_grouped_parity ............***Not Run   0.00 sec
+      Start 14: shared_expert_parity
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/shared_expert_parity
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/shared_expert_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/shared_expert_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/shared_expert_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/shared_expert_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/shared_expert_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/shared_expert_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/shared_expert_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/shared_expert_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/shared_expert_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/shared_expert_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/shared_expert_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/shared_expert_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/shared_expert_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/shared_expert_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/shared_expert_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/shared_expert_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/shared_expert_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/shared_expert_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/shared_expert_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/shared_expert_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/shared_expert_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/shared_expert_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/shared_expert_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/shared_expert_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/shared_expert_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/shared_expert_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/shared_expert_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/shared_expert_parity
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/shared_expert_parity
+14/43 Test #14: shared_expert_parity .............***Not Run   0.00 sec
+      Start 15: gr_parity
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/gr_parity
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/gr_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/gr_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/gr_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/gr_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/gr_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/gr_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/gr_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/gr_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/gr_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/gr_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/gr_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/gr_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/gr_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/gr_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/gr_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/gr_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/gr_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/gr_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/gr_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/gr_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/gr_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/gr_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/gr_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/gr_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/gr_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/gr_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/gr_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/gr_parity
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/gr_parity
+15/43 Test #15: gr_parity ........................***Not Run   0.00 sec
+      Start 16: gdn_parity
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/gdn_parity
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/gdn_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/gdn_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/gdn_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/gdn_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/gdn_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/gdn_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/gdn_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/gdn_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/gdn_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/gdn_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/gdn_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/gdn_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/gdn_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/gdn_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/gdn_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/gdn_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/gdn_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/gdn_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/gdn_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/gdn_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/gdn_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/gdn_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/gdn_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/gdn_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/gdn_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/gdn_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/gdn_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/gdn_parity
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/gdn_parity
+16/43 Test #16: gdn_parity .......................***Not Run   0.00 sec
+      Start 17: s2_gemv_q8_parity
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/s2_gemv_q8_parity
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/s2_gemv_q8_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/s2_gemv_q8_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/s2_gemv_q8_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/s2_gemv_q8_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/s2_gemv_q8_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/s2_gemv_q8_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/s2_gemv_q8_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/s2_gemv_q8_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/s2_gemv_q8_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/s2_gemv_q8_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/s2_gemv_q8_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/s2_gemv_q8_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/s2_gemv_q8_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/s2_gemv_q8_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/s2_gemv_q8_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/s2_gemv_q8_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/s2_gemv_q8_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/s2_gemv_q8_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/s2_gemv_q8_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/s2_gemv_q8_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/s2_gemv_q8_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/s2_gemv_q8_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/s2_gemv_q8_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/s2_gemv_q8_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/s2_gemv_q8_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/s2_gemv_q8_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/s2_gemv_q8_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/s2_gemv_q8_parity
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/s2_gemv_q8_parity
+17/43 Test #17: s2_gemv_q8_parity ................***Not Run   0.00 sec
+      Start 18: sampler_parity
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/sampler_parity
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/sampler_parity
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/sampler_parity
+18/43 Test #18: sampler_parity ...................***Not Run   0.00 sec
+      Start 19: sampler_parity_one_block
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/sampler_parity
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/sampler_parity
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/sampler_parity
+19/43 Test #19: sampler_parity_one_block .........***Not Run   0.00 sec
+      Start 20: sampler_parity_old
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/sampler_parity
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/sampler_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/sampler_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/sampler_parity
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/sampler_parity
+20/43 Test #20: sampler_parity_old ...............***Not Run   0.00 sec
+      Start 21: decode_cluster_parity
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/decode_cluster_parity
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/decode_cluster_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/decode_cluster_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/decode_cluster_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/decode_cluster_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/decode_cluster_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/decode_cluster_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/decode_cluster_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/decode_cluster_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/decode_cluster_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/decode_cluster_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/decode_cluster_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/decode_cluster_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/decode_cluster_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/decode_cluster_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/decode_cluster_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/decode_cluster_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/decode_cluster_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/decode_cluster_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/decode_cluster_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/decode_cluster_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/decode_cluster_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/decode_cluster_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/decode_cluster_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/decode_cluster_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/decode_cluster_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/decode_cluster_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/decode_cluster_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/decode_cluster_parity
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/decode_cluster_parity
+21/43 Test #21: decode_cluster_parity ............***Not Run   0.00 sec
+      Start 22: rope_parity
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/rope_parity
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/rope_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/rope_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/rope_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/rope_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/rope_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/rope_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/rope_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/rope_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/rope_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/rope_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/rope_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/rope_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/rope_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/rope_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/rope_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/rope_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/rope_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/rope_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/rope_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/rope_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/rope_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/rope_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/rope_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/rope_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/rope_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/rope_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/rope_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/rope_parity
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/rope_parity
+22/43 Test #22: rope_parity ......................***Not Run   0.00 sec
+      Start 23: quantize_act_parity
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/quantize_act_parity
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/quantize_act_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/quantize_act_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/quantize_act_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/quantize_act_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/quantize_act_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/quantize_act_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/quantize_act_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/quantize_act_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/quantize_act_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/quantize_act_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/quantize_act_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/quantize_act_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/quantize_act_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/quantize_act_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/quantize_act_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/quantize_act_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/quantize_act_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/quantize_act_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/quantize_act_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/quantize_act_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/quantize_act_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/quantize_act_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/quantize_act_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/quantize_act_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/quantize_act_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/quantize_act_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/quantize_act_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/quantize_act_parity
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/quantize_act_parity
+23/43 Test #23: quantize_act_parity ..............***Not Run   0.00 sec
+      Start 24: router_top10_parity
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/router_top10_parity
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/router_top10_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/router_top10_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/router_top10_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/router_top10_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/router_top10_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/router_top10_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/router_top10_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/router_top10_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/router_top10_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/router_top10_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/router_top10_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/router_top10_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/router_top10_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/router_top10_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/router_top10_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/router_top10_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/router_top10_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/router_top10_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/router_top10_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/router_top10_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/router_top10_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/router_top10_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/router_top10_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/router_top10_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/router_top10_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/router_top10_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/router_top10_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/router_top10_parity
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/router_top10_parity
+24/43 Test #24: router_top10_parity ..............***Not Run   0.00 sec
+      Start 25: s_gemv_parity
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/s_gemv_parity
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/s_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/s_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/s_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/s_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/s_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/s_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/s_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/s_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/s_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/s_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/s_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/s_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/s_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/s_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/s_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/s_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/s_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/s_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/s_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/s_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/s_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/s_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/s_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/s_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/s_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/s_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/s_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/s_gemv_parity
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/s_gemv_parity
+25/43 Test #25: s_gemv_parity ....................***Not Run   0.00 sec
+      Start 26: elementwise_parity
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/elementwise_parity
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/elementwise_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/elementwise_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/elementwise_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/elementwise_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/elementwise_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/elementwise_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/elementwise_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/elementwise_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/elementwise_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/elementwise_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/elementwise_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/elementwise_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/elementwise_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/elementwise_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/elementwise_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/elementwise_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/elementwise_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/elementwise_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/elementwise_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/elementwise_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/elementwise_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/elementwise_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/elementwise_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/elementwise_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/elementwise_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/elementwise_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/elementwise_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/elementwise_parity
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/elementwise_parity
+26/43 Test #26: elementwise_parity ...............***Not Run   0.00 sec
+      Start 27: bf16_gemv_parity
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/bf16_gemv_parity
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/bf16_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/bf16_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/bf16_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/bf16_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/bf16_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/bf16_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/bf16_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/bf16_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/bf16_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/bf16_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/bf16_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/bf16_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/bf16_gemv_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/bf16_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/bf16_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/bf16_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/bf16_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/bf16_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/bf16_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/bf16_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/bf16_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/bf16_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/bf16_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/bf16_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/bf16_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/bf16_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/bf16_gemv_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/bf16_gemv_parity
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/bf16_gemv_parity
+27/43 Test #27: bf16_gemv_parity .................***Not Run   0.00 sec
+      Start 28: s_gemv_q8k_parity
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/s_gemv_q8k_parity
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/s_gemv_q8k_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/s_gemv_q8k_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/s_gemv_q8k_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/s_gemv_q8k_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/s_gemv_q8k_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/s_gemv_q8k_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/s_gemv_q8k_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/s_gemv_q8k_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/s_gemv_q8k_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/s_gemv_q8k_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/s_gemv_q8k_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/s_gemv_q8k_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/s_gemv_q8k_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/s_gemv_q8k_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/s_gemv_q8k_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/s_gemv_q8k_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/s_gemv_q8k_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/s_gemv_q8k_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/s_gemv_q8k_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/s_gemv_q8k_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/s_gemv_q8k_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/s_gemv_q8k_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/s_gemv_q8k_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/s_gemv_q8k_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/s_gemv_q8k_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/s_gemv_q8k_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/s_gemv_q8k_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/s_gemv_q8k_parity
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/s_gemv_q8k_parity
+28/43 Test #28: s_gemv_q8k_parity ................***Not Run   0.00 sec
+      Start 29: qsa_parity
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/qsa_parity
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/qsa_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/qsa_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/qsa_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/qsa_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/qsa_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/qsa_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/qsa_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/qsa_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/qsa_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/qsa_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/qsa_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/qsa_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/qsa_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/qsa_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/qsa_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/qsa_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/qsa_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/qsa_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/qsa_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/qsa_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/qsa_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/qsa_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/qsa_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/qsa_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/qsa_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/qsa_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/qsa_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/qsa_parity
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/qsa_parity
+29/43 Test #29: qsa_parity .......................***Not Run   0.00 sec
+      Start 30: ple_parity
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/ple_parity
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/ple_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/ple_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/ple_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/ple_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/ple_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/ple_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/ple_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/ple_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/ple_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/ple_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/ple_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/ple_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/ple_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/ple_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/ple_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/ple_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/ple_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/ple_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/ple_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/ple_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/ple_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/ple_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/ple_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/ple_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/ple_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/ple_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/ple_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/ple_parity
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/ple_parity
+30/43 Test #30: ple_parity .......................***Not Run   0.00 sec
+      Start 31: kv_q8_parity
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/kv_q8_parity
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/kv_q8_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/kv_q8_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/kv_q8_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/kv_q8_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/kv_q8_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/kv_q8_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/kv_q8_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/kv_q8_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/kv_q8_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/kv_q8_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/kv_q8_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/kv_q8_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/kv_q8_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/kv_q8_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/kv_q8_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/kv_q8_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/kv_q8_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/kv_q8_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/kv_q8_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/kv_q8_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/kv_q8_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/kv_q8_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/kv_q8_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/kv_q8_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/kv_q8_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/kv_q8_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/kv_q8_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/kv_q8_parity
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/kv_q8_parity
+31/43 Test #31: kv_q8_parity .....................***Not Run   0.00 sec
+      Start 32: kv_stream_parity
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/kv_stream_parity
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/kv_stream_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/kv_stream_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/kv_stream_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/kv_stream_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/kv_stream_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/kv_stream_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/kv_stream_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/kv_stream_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/kv_stream_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/kv_stream_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/kv_stream_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/kv_stream_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/kv_stream_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/kv_stream_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/kv_stream_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/kv_stream_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/kv_stream_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/kv_stream_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/kv_stream_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/kv_stream_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/kv_stream_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/kv_stream_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/kv_stream_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/kv_stream_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/kv_stream_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/kv_stream_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/kv_stream_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/kv_stream_parity
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/kv_stream_parity
+32/43 Test #32: kv_stream_parity .................***Not Run   0.00 sec
+      Start 33: kv_hybrid_parity
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/kv_hybrid_parity
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/kv_hybrid_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/kv_hybrid_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/kv_hybrid_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/kv_hybrid_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/kv_hybrid_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/kv_hybrid_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/kv_hybrid_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/kv_hybrid_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/kv_hybrid_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/kv_hybrid_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/kv_hybrid_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/kv_hybrid_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/kv_hybrid_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/kv_hybrid_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/kv_hybrid_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/kv_hybrid_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/kv_hybrid_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/kv_hybrid_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/kv_hybrid_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/kv_hybrid_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/kv_hybrid_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/kv_hybrid_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/kv_hybrid_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/kv_hybrid_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/kv_hybrid_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/kv_hybrid_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/kv_hybrid_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/kv_hybrid_parity
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/kv_hybrid_parity
+33/43 Test #33: kv_hybrid_parity .................***Not Run   0.00 sec
+      Start 34: kv_q4_parity
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/kv_q4_parity
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/kv_q4_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/kv_q4_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/kv_q4_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/kv_q4_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/kv_q4_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/kv_q4_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/kv_q4_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/kv_q4_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/kv_q4_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/kv_q4_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/kv_q4_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/kv_q4_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/kv_q4_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/kv_q4_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/kv_q4_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/kv_q4_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/kv_q4_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/kv_q4_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/kv_q4_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/kv_q4_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/kv_q4_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/kv_q4_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/kv_q4_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/kv_q4_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/kv_q4_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/kv_q4_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/kv_q4_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/kv_q4_parity
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/kv_q4_parity
+34/43 Test #34: kv_q4_parity .....................***Not Run   0.00 sec
+      Start 35: cvec_parity
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/cvec_parity
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/cvec_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/cvec_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/cvec_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/cvec_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/cvec_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/cvec_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/cvec_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/cvec_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/cvec_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/cvec_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/cvec_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/cvec_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/cvec_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/cvec_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/cvec_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/cvec_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/cvec_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/cvec_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/cvec_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/cvec_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/cvec_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/cvec_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/cvec_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/cvec_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/cvec_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/cvec_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/cvec_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/cvec_parity
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/cvec_parity
+35/43 Test #35: cvec_parity ......................***Not Run   0.00 sec
+      Start 36: s2_expert_grouped_parity
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/s2_expert_grouped_parity
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/s2_expert_grouped_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/s2_expert_grouped_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/s2_expert_grouped_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/s2_expert_grouped_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/s2_expert_grouped_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/s2_expert_grouped_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/s2_expert_grouped_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/s2_expert_grouped_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/s2_expert_grouped_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/s2_expert_grouped_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/s2_expert_grouped_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/s2_expert_grouped_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/s2_expert_grouped_parity
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/s2_expert_grouped_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/s2_expert_grouped_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/s2_expert_grouped_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/s2_expert_grouped_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/s2_expert_grouped_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/s2_expert_grouped_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/s2_expert_grouped_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/s2_expert_grouped_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/s2_expert_grouped_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/s2_expert_grouped_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/s2_expert_grouped_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/s2_expert_grouped_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/s2_expert_grouped_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/s2_expert_grouped_parity
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/s2_expert_grouped_parity
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/s2_expert_grouped_parity
+36/43 Test #36: s2_expert_grouped_parity .........***Not Run   0.00 sec
+      Start 37: platform_memory_test
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/platform_memory_test
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/platform_memory_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/platform_memory_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/platform_memory_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/platform_memory_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/platform_memory_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/platform_memory_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/platform_memory_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/platform_memory_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/platform_memory_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/platform_memory_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/platform_memory_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/platform_memory_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/platform_memory_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/platform_memory_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/platform_memory_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/platform_memory_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/platform_memory_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/platform_memory_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/platform_memory_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/platform_memory_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/platform_memory_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/platform_memory_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/platform_memory_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/platform_memory_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/platform_memory_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/platform_memory_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/platform_memory_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/platform_memory_test
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/platform_memory_test
+37/43 Test #37: platform_memory_test .............***Not Run   0.00 sec
+      Start 38: pinned_shared_test
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/pinned_shared_test
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/pinned_shared_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/pinned_shared_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/pinned_shared_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/pinned_shared_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/pinned_shared_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/pinned_shared_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/pinned_shared_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/pinned_shared_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/pinned_shared_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/pinned_shared_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/pinned_shared_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/pinned_shared_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/pinned_shared_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/pinned_shared_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/pinned_shared_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/pinned_shared_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/pinned_shared_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/pinned_shared_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/pinned_shared_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/pinned_shared_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/pinned_shared_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/pinned_shared_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/pinned_shared_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/pinned_shared_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/pinned_shared_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/pinned_shared_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/pinned_shared_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/pinned_shared_test
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/pinned_shared_test
+38/43 Test #38: pinned_shared_test ...............***Not Run   0.00 sec
+      Start 39: ple_reader_selftest
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/ple_reader_test
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/ple_reader_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/ple_reader_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/ple_reader_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/ple_reader_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/ple_reader_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/ple_reader_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/ple_reader_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/ple_reader_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/ple_reader_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/ple_reader_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/ple_reader_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/ple_reader_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/ple_reader_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/ple_reader_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/ple_reader_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/ple_reader_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/ple_reader_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/ple_reader_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/ple_reader_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/ple_reader_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/ple_reader_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/ple_reader_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/ple_reader_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/ple_reader_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/ple_reader_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/ple_reader_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/ple_reader_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/ple_reader_test
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/ple_reader_test
+39/43 Test #39: ple_reader_selftest ..............***Not Run   0.00 sec
+      Start 40: cuda_device_selftest
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/strata-device
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/strata-device
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/strata-device
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/strata-device
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/strata-device
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/strata-device
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/strata-device
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/strata-device
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/strata-device
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/strata-device
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/strata-device
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/strata-device
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/strata-device
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/strata-device
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/strata-device
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/strata-device
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/strata-device
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/strata-device
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/strata-device
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/strata-device
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/strata-device
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/strata-device
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/strata-device
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/strata-device
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/strata-device
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/strata-device
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/strata-device
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/strata-device
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/strata-device
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/strata-device
+40/43 Test #40: cuda_device_selftest .............***Not Run   0.00 sec
+      Start 41: conv_cache_test
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/conv_cache_test
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/conv_cache_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/conv_cache_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/conv_cache_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/conv_cache_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/conv_cache_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/conv_cache_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/conv_cache_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/conv_cache_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/conv_cache_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/conv_cache_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/conv_cache_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/conv_cache_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/conv_cache_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/conv_cache_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/conv_cache_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/conv_cache_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/conv_cache_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/conv_cache_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/conv_cache_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/conv_cache_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/conv_cache_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/conv_cache_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/conv_cache_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/conv_cache_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/conv_cache_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/conv_cache_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/conv_cache_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/conv_cache_test
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/conv_cache_test
+41/43 Test #41: conv_cache_test ..................***Not Run   0.00 sec
+      Start 42: coupled_draft_test
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/coupled_draft_test
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/coupled_draft_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/coupled_draft_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/coupled_draft_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/coupled_draft_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/coupled_draft_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/coupled_draft_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/coupled_draft_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/coupled_draft_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/coupled_draft_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/coupled_draft_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/coupled_draft_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/coupled_draft_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/coupled_draft_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/coupled_draft_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/coupled_draft_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/coupled_draft_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/coupled_draft_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/coupled_draft_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/coupled_draft_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/coupled_draft_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/coupled_draft_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/coupled_draft_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/coupled_draft_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/coupled_draft_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/coupled_draft_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/coupled_draft_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/coupled_draft_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/coupled_draft_test
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/coupled_draft_test
+42/43 Test #42: coupled_draft_test ...............***Not Run   0.00 sec
+      Start 43: bf16_bits_test
+Could not find executable /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/bf16_bits_test
+Looked in the following places:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/bf16_bits_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/bf16_bits_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/bf16_bits_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/bf16_bits_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/bf16_bits_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/bf16_bits_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/bf16_bits_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/bf16_bits_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/bf16_bits_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/bf16_bits_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/bf16_bits_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/bf16_bits_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/bf16_bits_test
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/bf16_bits_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/bf16_bits_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/bf16_bits_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/bf16_bits_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Release/bf16_bits_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/bf16_bits_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Debug/bf16_bits_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/bf16_bits_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/MinSizeRel/bf16_bits_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/bf16_bits_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/RelWithDebInfo/bf16_bits_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/bf16_bits_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Deployment/bf16_bits_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/bf16_bits_test
+home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/Development/bf16_bits_test
+Unable to find executable: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build/bf16_bits_test
+43/43 Test #43: bf16_bits_test ...................***Not Run   0.00 sec
+
+5% tests passed, 41 tests failed out of 43
+
+Total Test time (real) =   0.03 sec
+
+The following tests FAILED:
+	  3 - file_expert_source_test (Not Run)
+	  4 - expert_profile_save_test (Not Run)
+	  5 - conversation_snapshot_test (Not Run)
+	  6 - conversation_validation_test (Not Run)
+	  7 - conversation_transfer_test (Not Run)
+	  8 - dequant_s2_parity (Not Run)
+	  9 - s2_gemv_parity (Not Run)
+	 10 - mmvq_multi_parity (Not Run)
+	 11 - iq_multi_parity (Not Run)
+	 12 - gdn_rec_parity (Not Run)
+	 13 - native_grouped_parity (Not Run)
+	 14 - shared_expert_parity (Not Run)
+	 15 - gr_parity (Not Run)
+	 16 - gdn_parity (Not Run)
+	 17 - s2_gemv_q8_parity (Not Run)
+	 18 - sampler_parity (Not Run)
+	 19 - sampler_parity_one_block (Not Run)
+	 20 - sampler_parity_old (Not Run)
+	 21 - decode_cluster_parity (Not Run)
+	 22 - rope_parity (Not Run)
+	 23 - quantize_act_parity (Not Run)
+	 24 - router_top10_parity (Not Run)
+	 25 - s_gemv_parity (Not Run)
+	 26 - elementwise_parity (Not Run)
+	 27 - bf16_gemv_parity (Not Run)
+	 28 - s_gemv_q8k_parity (Not Run)
+	 29 - qsa_parity (Not Run)
+	 30 - ple_parity (Not Run)
+	 31 - kv_q8_parity (Not Run)
+	 32 - kv_stream_parity (Not Run)
+	 33 - kv_hybrid_parity (Not Run)
+	 34 - kv_q4_parity (Not Run)
+	 35 - cvec_parity (Not Run)
+	 36 - s2_expert_grouped_parity (Not Run)
+	 37 - platform_memory_test (Not Run)
+	 38 - pinned_shared_test (Not Run)
+	 39 - ple_reader_selftest (Not Run)
+	 40 - cuda_device_selftest (Not Run)
+	 41 - conv_cache_test (Not Run)
+	 42 - coupled_draft_test (Not Run)
+	 43 - bf16_bits_test (Not Run)
+Errors while running CTest

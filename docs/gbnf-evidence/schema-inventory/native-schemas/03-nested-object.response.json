@@ -1,0 +1,95 @@
+{
+  "id": "resp_5e65c7b14c834c5eb179d56549c6937e",
+  "object": "response",
+  "created_at": 1791060619,
+  "status": "completed",
+  "completed_at": 1791060621,
+  "error": null,
+  "incomplete_details": null,
+  "instructions": null,
+  "model": "qwen3.8-flash-next",
+  "output": [
+    {
+      "id": "msg_c428a1fdca644c24bb01937002e0220e",
+      "type": "message",
+      "status": "completed",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "{\"project\": {\"name\": \"Strata\", \"result\": {\"passed\": true}}}",
+          "annotations": [],
+          "logprobs": []
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 172,
+    "output_tokens": 19,
+    "total_tokens": 191,
+    "input_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 172
+    },
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    }
+  },
+  "store": false,
+  "background": false,
+  "previous_response_id": null,
+  "max_output_tokens": 512,
+  "temperature": 0,
+  "top_p": 0.95,
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "03_nested_object",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "result": {
+                "type": "object",
+                "properties": {
+                  "passed": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "passed"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "name",
+              "result"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "tools": [],
+  "tool_choice": "auto",
+  "parallel_tool_calls": true,
+  "reasoning": {
+    "effort": "none",
+    "summary": null
+  },
+  "truncation": "disabled",
+  "metadata": {}
+}

@@ -1,0 +1,35 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "none"
+  },
+  "max_output_tokens": 512,
+  "temperature": 0,
+  "input": "Return exactly this JSON value, without explanation: {\"credit_card\": \"example\", \"billing_address\": \"example street\"}",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "14_dependent_required",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "credit_card": {
+            "type": "string"
+          },
+          "billing_address": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "additionalProperties": false,
+        "dependentRequired": {
+          "credit_card": [
+            "billing_address"
+          ]
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,14 @@
+SYNTHETIC DOCUMENTATION EXAMPLE
+Status: Supported native effort mapping and visible reasoning_text
+
+POST /v1/responses
+Content-Type: application/json
+
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "input": "Hello.",
+  "reasoning": {
+    "effort": "low"
+  }
+}

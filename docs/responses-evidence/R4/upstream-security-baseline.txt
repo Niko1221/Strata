@@ -1,0 +1,12 @@
+Server loaded directly from Git object 99f3dbd0b21d1401b3769e0c0d963913607f380b:serve/server.py
+Tests and unchanged dependencies from the checkout. No source files modified.
+test_unload_and_load_need_json_from_the_own_page (serve.test_security.OverHttp.test_unload_and_load_need_json_from_the_own_page) ... ok
+test_unload_and_load_need_json_from_the_own_page (serve.test_security.OverHttp.test_unload_and_load_need_json_from_the_own_page) ... ok
+test_unload_and_load_need_json_from_the_own_page (serve.test_security.OverHttp.test_unload_and_load_need_json_from_the_own_page) ... ok
+test_unload_and_load_need_json_from_the_own_page (serve.test_security.OverHttp.test_unload_and_load_need_json_from_the_own_page) ... ok
+test_unload_and_load_need_json_from_the_own_page (serve.test_security.OverHttp.test_unload_and_load_need_json_from_the_own_page) ... ok
+
+----------------------------------------------------------------------
+Ran 5 tests in 3.950s
+
+OK

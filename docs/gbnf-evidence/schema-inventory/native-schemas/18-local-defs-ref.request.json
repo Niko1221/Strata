@@ -1,0 +1,47 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "none"
+  },
+  "max_output_tokens": 512,
+  "temperature": 0,
+  "input": "Return exactly this JSON value, without explanation: {\"rows\": [\"café\"], \"ok\": true}",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "18_local_defs_ref",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/label"
+            },
+            "minItems": 1,
+            "maxItems": 1
+          },
+          "ok": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "rows",
+          "ok"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "label": {
+            "type": "string",
+            "enum": [
+              "café"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

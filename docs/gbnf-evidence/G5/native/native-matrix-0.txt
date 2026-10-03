@@ -1,0 +1,42 @@
+[strata] starting the engine: reading the model's weights ...
+[strata] mapping the experts from the model files (about 30 GB, --mmap-experts): they are not loaded into RAM - the OS file cache reads them as the GPU's expert cache fills and as requests need them.
+         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.
+         Please wait and don't close this window; the browser opens when it is ready.
+[strata] filling the GPU's expert cache (7815 experts, 14.88 GiB of VRAM) ...
+[strata] still starting (25 s) - please wait ...
+[strata] almost ready ...
+ordinary before constraint stop 20 drafts 0 / 0
+greedy sequence stop 20 drafts 0 / 0
+sampled penalized sequence stop 20 drafts 0 / 0
+budget 1 length 1 drafts 0 / 0
+budget 2 length 2 drafts 0 / 0
+budget 3 length 3 drafts 0 / 0
+budget 4 length 4 drafts 0 / 0
+budget 5 length 5 drafts 0 / 0
+budget 6 length 6 drafts 0 / 0
+budget 7 length 7 drafts 0 / 0
+budget 8 length 8 drafts 0 / 0
+budget 9 length 9 drafts 0 / 0
+budget 10 length 10 drafts 0 / 0
+budget 11 length 11 drafts 0 / 0
+budget 12 length 12 drafts 0 / 0
+Unicode full stop 16 drafts 0 / 0
+Unicode full stop 14 drafts 0 / 0
+Unicode budget 1 length 1 drafts 0 / 0
+Unicode budget 2 length 2 drafts 0 / 0
+Unicode budget 3 length 3 drafts 0 / 0
+Unicode budget 4 length 4 drafts 0 / 0
+Unicode budget 5 length 5 drafts 0 / 0
+Unicode budget 6 length 6 drafts 0 / 0
+Unicode budget 7 length 7 drafts 0 / 0
+Unicode budget 8 length 8 drafts 0 / 0
+Unicode budget 9 length 9 drafts 0 / 0
+epsilon stop 1 drafts 0 / 0
+recursive stop 5 drafts 0 / 0
+suffix opportunity 0 stop 34 drafts 0 / 0
+suffix opportunity 1 stop 34 drafts 0 / 0
+clean after STOP 1 stop 2 drafts 0 / 0
+clean after STOP 3 stop 2 drafts 0 / 0
+live context source length 5 drafts 0 / 0
+live context continuation stop 2 drafts 0 / 0
+ordinary after constraints stop 20 drafts 0 / 0

@@ -1,0 +1,26 @@
+SYNTHETIC DOCUMENTATION EXAMPLE
+Status: Excluded input modality
+
+POST /v1/responses
+Content-Type: application/json
+
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "Describe this."
+        },
+        {
+          "type": "input_image",
+          "image_url": "<CLIENT_IMAGE_URL>",
+          "detail": "auto"
+        }
+      ]
+    }
+  ]
+}

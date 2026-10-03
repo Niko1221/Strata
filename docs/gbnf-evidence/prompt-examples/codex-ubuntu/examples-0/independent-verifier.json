@@ -1,0 +1,202 @@
+{
+  "passed": true,
+  "checks": [
+    {
+      "name": "roundtrip ('\\n', '')",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\n', 'a=b=c')",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\n', '\"quoted\"')",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\n', 'C:\\\\a b\\\\file')",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\n', '猫🚀')",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\n', 'café')",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\n', '# literal')",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\n', '<tool_call>{\"x\":\"z\"}</tool_call>')",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\n', '$(literal)')",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\n', \"'single'\")",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\n', '\\\\n\\\\t')",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\r\\n', '')",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\r\\n', 'a=b=c')",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\r\\n', '\"quoted\"')",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\r\\n', 'C:\\\\a b\\\\file')",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\r\\n', '猫🚀')",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\r\\n', 'café')",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\r\\n', '# literal')",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\r\\n', '<tool_call>{\"x\":\"z\"}</tool_call>')",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\r\\n', '$(literal)')",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\r\\n', \"'single'\")",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\r\\n', '\\\\n\\\\t')",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\r', '')",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\r', 'a=b=c')",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\r', '\"quoted\"')",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\r', 'C:\\\\a b\\\\file')",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\r', '猫🚀')",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\r', 'café')",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\r', '# literal')",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\r', '<tool_call>{\"x\":\"z\"}</tool_call>')",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\r', '$(literal)')",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\r', \"'single'\")",
+      "passed": true
+    },
+    {
+      "name": "roundtrip ('\\r', '\\\\n\\\\t')",
+      "passed": true
+    },
+    {
+      "name": "type None",
+      "passed": true
+    },
+    {
+      "name": "type 0",
+      "passed": true
+    },
+    {
+      "name": "type True",
+      "passed": true
+    },
+    {
+      "name": "type []",
+      "passed": true
+    },
+    {
+      "name": "type {}",
+      "passed": true
+    },
+    {
+      "name": "type b'x=y'",
+      "passed": true
+    },
+    {
+      "name": "invalid 'x=1\\n\\n# comment\\nx=2'",
+      "passed": true
+    },
+    {
+      "name": "invalid '\\r\\n# c\\r\\n='",
+      "passed": true
+    },
+    {
+      "name": "invalid '# c\\rbad'",
+      "passed": true
+    },
+    {
+      "name": "empty",
+      "passed": true
+    },
+    {
+      "name": "case and order",
+      "passed": true
+    },
+    {
+      "name": "only allowed source changed",
+      "passed": true
+    }
+  ],
+  "changed_files": [
+    "settings_parser.py"
+  ],
+  "before_sha256": {
+    "SPEC.txt": "d0603a544e834531b1848a3587dde1481c4a030ff7766fd6dd2287f22b0b8f79",
+    "settings_parser.py": "4bf08767d539b001fa36a48ab7d96720a5eb837f65f4aa6c499037d215a4dec2",
+    "test_settings.py": "9bf59400411d4d25ae71524465772a259457ed1020d46542142fc0067fdf8598",
+    "input files/literal [values].txt": "8ca2990cd7abfb224759102e898e3a6365f8f24f8e9a48fa28ea0c5c5bd9cd0b",
+    "input files/untouched [sentinel].txt": "27ace7228802348d15a6bf7bf7b349eaa87aade98d040e42668ed483797e38ca"
+  },
+  "after_sha256": {
+    "settings_parser.py": "43fcceb9b09bb8408e1f83d816626880825eb1401b612cfcf4b837a91460bb21",
+    "SPEC.txt": "d0603a544e834531b1848a3587dde1481c4a030ff7766fd6dd2287f22b0b8f79",
+    "test_settings.py": "9bf59400411d4d25ae71524465772a259457ed1020d46542142fc0067fdf8598",
+    "input files/untouched [sentinel].txt": "27ace7228802348d15a6bf7bf7b349eaa87aade98d040e42668ed483797e38ca",
+    "input files/literal [values].txt": "8ca2990cd7abfb224759102e898e3a6365f8f24f8e9a48fa28ea0c5c5bd9cd0b"
+  }
+}

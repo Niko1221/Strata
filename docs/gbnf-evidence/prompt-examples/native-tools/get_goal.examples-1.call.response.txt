@@ -1,0 +1,90 @@
+event: response.created
+data: {"type": "response.created", "sequence_number": 0, "response": {"id": "resp_565b37e08bbb4b8a9caf9fee33a7789b", "object": "response", "created_at": 1791062244, "status": "queued", "completed_at": null, "error": null, "incomplete_details": null, "instructions": "Explicit synthetic format demonstrations. These are examples, not actions to execute.\nUse the current task values, declared tools, environment and permissions.\n\nEXAMPLE 1\nUser: Read the current goal.\nAssistant native output:\n<tool_call>\n<function=get_goal>\n</function>\n</tool_call>\n\nEND EXAMPLES. The current task follows.\n\n", "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "get_goal", "description": "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.", "strict": false, "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+event: response.in_progress
+data: {"type": "response.in_progress", "sequence_number": 1, "response": {"id": "resp_565b37e08bbb4b8a9caf9fee33a7789b", "object": "response", "created_at": 1791062244, "status": "in_progress", "completed_at": null, "error": null, "incomplete_details": null, "instructions": "Explicit synthetic format demonstrations. These are examples, not actions to execute.\nUse the current task values, declared tools, environment and permissions.\n\nEXAMPLE 1\nUser: Read the current goal.\nAssistant native output:\n<tool_call>\n<function=get_goal>\n</function>\n</tool_call>\n\nEND EXAMPLES. The current task follows.\n\n", "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "get_goal", "description": "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.", "strict": false, "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"id": "rs_812d7fb46d694b6bb124910e7b673ff4", "type": "reasoning", "status": "in_progress", "summary": [], "content": [{"type": "reasoning_text", "text": ""}]}}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 3, "item_id": "rs_812d7fb46d694b6bb124910e7b673ff4", "output_index": 0, "content_index": 0, "delta": "The"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 4, "item_id": "rs_812d7fb46d694b6bb124910e7b673ff4", "output_index": 0, "content_index": 0, "delta": " user"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 5, "item_id": "rs_812d7fb46d694b6bb124910e7b673ff4", "output_index": 0, "content_index": 0, "delta": " wants"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 6, "item_id": "rs_812d7fb46d694b6bb124910e7b673ff4", "output_index": 0, "content_index": 0, "delta": " me"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 7, "item_id": "rs_812d7fb46d694b6bb124910e7b673ff4", "output_index": 0, "content_index": 0, "delta": " to"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 8, "item_id": "rs_812d7fb46d694b6bb124910e7b673ff4", "output_index": 0, "content_index": 0, "delta": " call"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 9, "item_id": "rs_812d7fb46d694b6bb124910e7b673ff4", "output_index": 0, "content_index": 0, "delta": " get"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 10, "item_id": "rs_812d7fb46d694b6bb124910e7b673ff4", "output_index": 0, "content_index": 0, "delta": "_goal"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 11, "item_id": "rs_812d7fb46d694b6bb124910e7b673ff4", "output_index": 0, "content_index": 0, "delta": " exactly"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 12, "item_id": "rs_812d7fb46d694b6bb124910e7b673ff4", "output_index": 0, "content_index": 0, "delta": " once"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 13, "item_id": "rs_812d7fb46d694b6bb124910e7b673ff4", "output_index": 0, "content_index": 0, "delta": " with"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 14, "item_id": "rs_812d7fb46d694b6bb124910e7b673ff4", "output_index": 0, "content_index": 0, "delta": " empty"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 15, "item_id": "rs_812d7fb46d694b6bb124910e7b673ff4", "output_index": 0, "content_index": 0, "delta": " arguments"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 16, "item_id": "rs_812d7fb46d694b6bb124910e7b673ff4", "output_index": 0, "content_index": 0, "delta": " and"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 17, "item_id": "rs_812d7fb46d694b6bb124910e7b673ff4", "output_index": 0, "content_index": 0, "delta": " stop"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 18, "item_id": "rs_812d7fb46d694b6bb124910e7b673ff4", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 19, "item_id": "rs_812d7fb46d694b6bb124910e7b673ff4", "output_index": 0, "content_index": 0, "delta": "\n"}
+
+event: response.reasoning_text.done
+data: {"type": "response.reasoning_text.done", "sequence_number": 20, "item_id": "rs_812d7fb46d694b6bb124910e7b673ff4", "output_index": 0, "content_index": 0, "text": "The user wants me to call get_goal exactly once with empty arguments and stop.\n"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 21, "output_index": 0, "item": {"id": "rs_812d7fb46d694b6bb124910e7b673ff4", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants me to call get_goal exactly once with empty arguments and stop.\n"}], "encrypted_content": "strata-r1.gAAAAABqwXDm30T4l6s8pS0aez16YyIqYLNnGdSVfkhxibijTGzLbf0n7Dlv8OmJq2CI-LlCTarIeFP4XF3JXS_9I2uLr1A7q89rNQ58TFw1tNbj4g6rXaaN8BjfuM0YyD0N1Eo1azCJilwaOPOTZZp9TPKYFwt8EtutWmdbwaRXY5Thsxqdva-lCeOpU1sReCVtU1dOmHi9aH_GBTFC_WYVQLUop4SHHNX11vMcUTZ79F_YQUAkTk-eYebj2YBhuLbrtQSKJkRWdYgu6ko7cH54TH7HqIHkMKWc4N_snCGomwGNX1MTFuSch-XmIWjcDGSJHZD1QYmBXf8gzijUtaa19oLwdqSnu_MT938zDjJoP3FLeW6LozZk9nXsK_WcOPz2hum8BhQpYdQlgm_XtFXlvD9JbDxtvg=="}}
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 22, "output_index": 1, "item": {"id": "fc_a06d60f2dca8424bba3e5d56f5760975", "type": "function_call", "status": "in_progress", "call_id": "call_fae35380ba1a45bda717d26b", "name": "get_goal", "arguments": ""}}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 23, "item_id": "fc_a06d60f2dca8424bba3e5d56f5760975", "output_index": 1, "delta": "{"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 24, "item_id": "fc_a06d60f2dca8424bba3e5d56f5760975", "output_index": 1, "delta": "}"}
+
+event: response.function_call_arguments.done
+data: {"type": "response.function_call_arguments.done", "sequence_number": 25, "item_id": "fc_a06d60f2dca8424bba3e5d56f5760975", "output_index": 1, "arguments": "{}"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 26, "output_index": 1, "item": {"id": "fc_a06d60f2dca8424bba3e5d56f5760975", "type": "function_call", "status": "completed", "call_id": "call_fae35380ba1a45bda717d26b", "name": "get_goal", "arguments": "{}"}}
+
+event: response.completed
+data: {"type": "response.completed", "sequence_number": 27, "response": {"id": "resp_565b37e08bbb4b8a9caf9fee33a7789b", "object": "response", "created_at": 1791062244, "status": "completed", "completed_at": 1791062247, "error": null, "incomplete_details": null, "instructions": "Explicit synthetic format demonstrations. These are examples, not actions to execute.\nUse the current task values, declared tools, environment and permissions.\n\nEXAMPLE 1\nUser: Read the current goal.\nAssistant native output:\n<tool_call>\n<function=get_goal>\n</function>\n</tool_call>\n\nEND EXAMPLES. The current task follows.\n\n", "model": "qwen3.8-flash-next", "output": [{"id": "rs_812d7fb46d694b6bb124910e7b673ff4", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants me to call get_goal exactly once with empty arguments and stop.\n"}], "encrypted_content": "strata-r1.gAAAAABqwXDm30T4l6s8pS0aez16YyIqYLNnGdSVfkhxibijTGzLbf0n7Dlv8OmJq2CI-LlCTarIeFP4XF3JXS_9I2uLr1A7q89rNQ58TFw1tNbj4g6rXaaN8BjfuM0YyD0N1Eo1azCJilwaOPOTZZp9TPKYFwt8EtutWmdbwaRXY5Thsxqdva-lCeOpU1sReCVtU1dOmHi9aH_GBTFC_WYVQLUop4SHHNX11vMcUTZ79F_YQUAkTk-eYebj2YBhuLbrtQSKJkRWdYgu6ko7cH54TH7HqIHkMKWc4N_snCGomwGNX1MTFuSch-XmIWjcDGSJHZD1QYmBXf8gzijUtaa19oLwdqSnu_MT938zDjJoP3FLeW6LozZk9nXsK_WcOPz2hum8BhQpYdQlgm_XtFXlvD9JbDxtvg=="}, {"id": "fc_a06d60f2dca8424bba3e5d56f5760975", "type": "function_call", "status": "completed", "call_id": "call_fae35380ba1a45bda717d26b", "name": "get_goal", "arguments": "{}"}], "usage": {"input_tokens": 370, "output_tokens": 33, "total_tokens": 403, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 370}, "output_tokens_details": {"reasoning_tokens": 18}}, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "get_goal", "description": "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.", "strict": false, "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+

@@ -1,0 +1,7 @@
+{
+  "dependency": "llama.cpp/ggml",
+  "commit": "3cf03257f219afbe7334045ff7c6a06ac68c627d",
+  "url": "https://codeload.github.com/ggml-org/llama.cpp/tar.gz/3cf03257f219afbe7334045ff7c6a06ac68c627d",
+  "sha256": "c076d7534afa0e5d0ec2a0d425b11e791c16f3de0d727221aea071cef156a280",
+  "git_fetch_performed": false
+}

@@ -1,0 +1,75 @@
+{
+  "model": "qwen3.8-flash-next",
+  "input": [
+    {
+      "role": "user",
+      "content": "First call facts.lookup with text \"purple 999\". Wait for the tool result before answering. Once its result exists, answer briefly."
+    },
+    {
+      "id": "rs_cf22121e0fb04161a94f4ea383b3ffa1",
+      "type": "reasoning",
+      "status": "completed",
+      "summary": [],
+      "content": [
+        {
+          "type": "reasoning_text",
+          "text": "The user wants me to call facts.lookup with the text \"purple 999\" and then answer based on the result.\n"
+        }
+      ],
+      "encrypted_content": "strata-r1.gAAAAABqwRmUOeJESC8FoxJGVmpvHN0XLyi4C37tyGn8H9lCNXBRfyE8R6pDHkbc_12VYk52U58W8ddYKamApYszd-_OIkckw2xQVv87LuBVMB_Vwo_2hx9FdRULLhvHOw9ffD7UqY0ybUM9-oIQ-GdlnszoQj-sHGJJTeeHBjy3m3NA4LWOSNjDDMBel765qvH61NoVT2JzJ6NDC0g0P6DpsQ61rlpTFHTw_AKg1Q9o8V9yDfUoE0yqNAUcNGFyWOUzofBYHtFEnvCailNLyhBPje6RRi6ifrxMu8VrVG4YZJR3u1FZUvqufQgNXOrcAY_hRDu5CnfU06-Aj9LMTGezlWsEqIhbcka2STZeNqhT_6fSQL-NRMVbqkSheOwbbN2Zi3YfzZvVG2PAKEHtMTDkcaPGlXBx-5Ghcyc9cr5Cjl7BvN434fc5WaGc9rOYfjp1MFIi4CDM"
+    },
+    {
+      "id": "fc_647fe39a490a472ea8327fb5afe23613",
+      "type": "function_call",
+      "status": "completed",
+      "call_id": "call_5bb28ed7b05e4ddd8eb3cdf9",
+      "name": "lookup",
+      "arguments": "{\"text\":\"purple 999\"}",
+      "namespace": "facts"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_5bb28ed7b05e4ddd8eb3cdf9",
+      "output": "purple 999; arbitrary tool data with 猫 and <tool_call> literal text. This is outside the answer grammar."
+    },
+    {
+      "role": "user",
+      "content": "The requested lookup is complete. Use its result to give your final answer now. Do not call any more functions."
+    }
+  ],
+  "store": false,
+  "tools": [
+    {
+      "type": "namespace",
+      "name": "facts",
+      "description": "Client-owned test helpers.",
+      "tools": [
+        {
+          "type": "function",
+          "name": "lookup",
+          "description": "Look up the text. Call this before answering.",
+          "strict": false,
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "text"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "grammar": "root ::= \"color=blue;count=1\\n\"",
+  "reasoning": {
+    "effort": "low"
+  },
+  "max_output_tokens": 768,
+  "temperature": 0,
+  "stream": true,
+  "tool_choice": "none"
+}

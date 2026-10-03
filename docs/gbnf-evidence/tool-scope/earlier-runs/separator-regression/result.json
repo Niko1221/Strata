@@ -1,0 +1,1693 @@
+{
+  "result": "failed",
+  "source_commit": "5b63b9422fd7e13e4d7d6cc4e6b648dce9d7f995",
+  "probe_pid": 1282323,
+  "started_utc": "2026-10-03T14:58:32Z",
+  "scripted_model_output": false,
+  "external_tool": "mocked client-owned facts.lookup",
+  "mock_tool_result": "purple 999; arbitrary tool data with 猫 and <tool_call> literal text. This is outside the answer grammar.",
+  "grammar": "root ::= \"color=blue;count=1\\n\"",
+  "modes": [
+    {
+      "mode": "target",
+      "config": {
+        "exe": "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu/strata",
+        "cwd": "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source",
+        "args": [
+          "--pack",
+          "/boot/Strata-data/packs/coder-iq1_m",
+          "--native",
+          "/boot/Strata-data/models/coder-IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf",
+          "--ple-gguf",
+          "/boot/Strata-data/models/coder-IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00002-of-00002.gguf",
+          "--expert-profile",
+          "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/data/expert-profile-coder.bin",
+          "--expert-cache",
+          "6000",
+          "--prefill",
+          "256",
+          "--kv",
+          "int8",
+          "--max-context",
+          "4096",
+          "--mmap-experts",
+          "--prompt-cache",
+          "2",
+          "--conversation-cache-mib",
+          "0",
+          "--adapt-swaps",
+          "0",
+          "--spec",
+          "1"
+        ],
+        "tokenizer": "/boot/Strata-data/packs/coder-iq1_m/tokenizer",
+        "gpu": 0,
+        "lib_dirs": [
+          "/usr/local/cuda-13.3/lib64"
+        ]
+      },
+      "cases": [
+        {
+          "label": "no-thinking-json-call",
+          "http_status": 200,
+          "content_type": "application/json",
+          "seconds": 12.815,
+          "native_done": {
+            "generated": 30,
+            "prompt_tokens": 299,
+            "prompt_ms": 10680.4,
+            "decode_ms": 1418.3,
+            "finish": "stop",
+            "drafts_accepted": 0,
+            "drafts_offered": 0,
+            "reused": 0,
+            "hits": 10619,
+            "lookups": 14400,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 5042.0,
+            "prompt_read": 299
+          },
+          "final": {
+            "id": "resp_68a46bcb361a459db1ceaaa784c1ba3c",
+            "object": "response",
+            "created_at": 1791039546,
+            "status": "completed",
+            "completed_at": 1791039558,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "model": "qwen3.8-flash-next",
+            "output": [
+              {
+                "id": "fc_5e526c7970244bb5969304a6b4437420",
+                "type": "function_call",
+                "status": "completed",
+                "call_id": "call_17154fd356cd46adb333688f",
+                "name": "lookup",
+                "arguments": "{\"text\":\"purple 999\"}",
+                "namespace": "facts"
+              }
+            ],
+            "usage": {
+              "input_tokens": 299,
+              "output_tokens": 30,
+              "total_tokens": 329,
+              "input_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 299
+              },
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              }
+            },
+            "store": false,
+            "background": false,
+            "previous_response_id": null,
+            "max_output_tokens": 768,
+            "temperature": 0,
+            "top_p": 1.0,
+            "text": {
+              "format": {
+                "type": "text"
+              }
+            },
+            "tools": [
+              {
+                "type": "namespace",
+                "name": "facts",
+                "description": "Client-owned test helpers.",
+                "tools": [
+                  {
+                    "type": "function",
+                    "name": "lookup",
+                    "description": "Look up the text. Call this before answering.",
+                    "strict": false,
+                    "parameters": {
+                      "type": "object",
+                      "properties": {
+                        "text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "text"
+                      ]
+                    }
+                  }
+                ]
+              }
+            ],
+            "tool_choice": "auto",
+            "parallel_tool_calls": true,
+            "reasoning": {
+              "effort": "none",
+              "summary": null
+            },
+            "truncation": "disabled",
+            "metadata": {}
+          }
+        },
+        {
+          "label": "no-thinking-json-answer",
+          "http_status": 200,
+          "content_type": "application/json",
+          "seconds": 1.964,
+          "native_done": {
+            "generated": 9,
+            "prompt_tokens": 141,
+            "prompt_ms": 1289.6,
+            "decode_ms": 377.1,
+            "finish": "stop",
+            "drafts_accepted": 0,
+            "drafts_offered": 0,
+            "reused": 0,
+            "hits": 3425,
+            "lookups": 4320,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 969.5,
+            "prompt_read": 141
+          },
+          "final": {
+            "id": "resp_8f671093c0fa417589977e637281f581",
+            "object": "response",
+            "created_at": 1791039559,
+            "status": "completed",
+            "completed_at": 1791039560,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "model": "qwen3.8-flash-next",
+            "output": [
+              {
+                "id": "msg_3e626008b82b4c7c96a625a9185f7f6d",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "color=blue;count=1\n",
+                    "annotations": [],
+                    "logprobs": []
+                  }
+                ]
+              }
+            ],
+            "usage": {
+              "input_tokens": 141,
+              "output_tokens": 9,
+              "total_tokens": 150,
+              "input_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 141
+              },
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              }
+            },
+            "store": false,
+            "background": false,
+            "previous_response_id": null,
+            "max_output_tokens": 768,
+            "temperature": 0,
+            "top_p": 1.0,
+            "text": {
+              "format": {
+                "type": "text"
+              }
+            },
+            "tools": [
+              {
+                "type": "namespace",
+                "name": "facts",
+                "description": "Client-owned test helpers.",
+                "tools": [
+                  {
+                    "type": "function",
+                    "name": "lookup",
+                    "description": "Look up the text. Call this before answering.",
+                    "strict": false,
+                    "parameters": {
+                      "type": "object",
+                      "properties": {
+                        "text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "text"
+                      ]
+                    }
+                  }
+                ]
+              }
+            ],
+            "tool_choice": "none",
+            "parallel_tool_calls": true,
+            "reasoning": {
+              "effort": "none",
+              "summary": null
+            },
+            "truncation": "disabled",
+            "metadata": {}
+          }
+        },
+        {
+          "label": "no-thinking-sse-call",
+          "http_status": 200,
+          "content_type": "text/event-stream",
+          "seconds": 2.767,
+          "native_done": {
+            "generated": 30,
+            "prompt_tokens": 299,
+            "prompt_ms": 1569.8,
+            "decode_ms": 1194.6,
+            "finish": "stop",
+            "drafts_accepted": 0,
+            "drafts_offered": 0,
+            "reused": 0,
+            "hits": 10619,
+            "lookups": 14400,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 5042.0,
+            "prompt_read": 299
+          },
+          "sse_reassembles_final": true,
+          "events": 16,
+          "final": {
+            "id": "resp_47275f9e784f4fb49c4e3be7a954e964",
+            "object": "response",
+            "created_at": 1791039560,
+            "status": "completed",
+            "completed_at": 1791039563,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "model": "qwen3.8-flash-next",
+            "output": [
+              {
+                "id": "fc_dadc1d792cea45808d761d157f2ef223",
+                "type": "function_call",
+                "status": "completed",
+                "call_id": "call_22ac4d0dbfc4456c832cf946",
+                "name": "lookup",
+                "arguments": "{\"text\":\"purple 999\"}",
+                "namespace": "facts"
+              }
+            ],
+            "usage": {
+              "input_tokens": 299,
+              "output_tokens": 30,
+              "total_tokens": 329,
+              "input_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 299
+              },
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              }
+            },
+            "store": false,
+            "background": false,
+            "previous_response_id": null,
+            "max_output_tokens": 768,
+            "temperature": 0,
+            "top_p": 1.0,
+            "text": {
+              "format": {
+                "type": "text"
+              }
+            },
+            "tools": [
+              {
+                "type": "namespace",
+                "name": "facts",
+                "description": "Client-owned test helpers.",
+                "tools": [
+                  {
+                    "type": "function",
+                    "name": "lookup",
+                    "description": "Look up the text. Call this before answering.",
+                    "strict": false,
+                    "parameters": {
+                      "type": "object",
+                      "properties": {
+                        "text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "text"
+                      ]
+                    }
+                  }
+                ]
+              }
+            ],
+            "tool_choice": "auto",
+            "parallel_tool_calls": true,
+            "reasoning": {
+              "effort": "none",
+              "summary": null
+            },
+            "truncation": "disabled",
+            "metadata": {}
+          }
+        },
+        {
+          "label": "no-thinking-sse-answer",
+          "http_status": 200,
+          "content_type": "text/event-stream",
+          "seconds": 1.119,
+          "native_done": {
+            "generated": 9,
+            "prompt_tokens": 141,
+            "prompt_ms": 848.8,
+            "decode_ms": 265.1,
+            "finish": "stop",
+            "drafts_accepted": 0,
+            "drafts_offered": 0,
+            "reused": 0,
+            "hits": 3425,
+            "lookups": 4320,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 969.5,
+            "prompt_read": 141
+          },
+          "sse_reassembles_final": true,
+          "events": 16,
+          "final": {
+            "id": "resp_e51a6c78444d455ba0ec6afd30a64be0",
+            "object": "response",
+            "created_at": 1791039563,
+            "status": "completed",
+            "completed_at": 1791039564,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "model": "qwen3.8-flash-next",
+            "output": [
+              {
+                "id": "msg_42b43f488e3f421ab8d14daf467aff40",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "color=blue;count=1\n",
+                    "annotations": [],
+                    "logprobs": []
+                  }
+                ]
+              }
+            ],
+            "usage": {
+              "input_tokens": 141,
+              "output_tokens": 9,
+              "total_tokens": 150,
+              "input_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 141
+              },
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              }
+            },
+            "store": false,
+            "background": false,
+            "previous_response_id": null,
+            "max_output_tokens": 768,
+            "temperature": 0,
+            "top_p": 1.0,
+            "text": {
+              "format": {
+                "type": "text"
+              }
+            },
+            "tools": [
+              {
+                "type": "namespace",
+                "name": "facts",
+                "description": "Client-owned test helpers.",
+                "tools": [
+                  {
+                    "type": "function",
+                    "name": "lookup",
+                    "description": "Look up the text. Call this before answering.",
+                    "strict": false,
+                    "parameters": {
+                      "type": "object",
+                      "properties": {
+                        "text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "text"
+                      ]
+                    }
+                  }
+                ]
+              }
+            ],
+            "tool_choice": "none",
+            "parallel_tool_calls": true,
+            "reasoning": {
+              "effort": "none",
+              "summary": null
+            },
+            "truncation": "disabled",
+            "metadata": {}
+          }
+        },
+        {
+          "label": "thinking-json-call",
+          "http_status": 200,
+          "content_type": "application/json",
+          "seconds": 3.748,
+          "native_done": {
+            "generated": 59,
+            "prompt_tokens": 323,
+            "prompt_ms": 1846.5,
+            "decode_ms": 1898.9,
+            "finish": "stop",
+            "drafts_accepted": 0,
+            "drafts_offered": 0,
+            "reused": 0,
+            "hits": 22755,
+            "lookups": 28320,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 7123.8,
+            "prompt_read": 323
+          },
+          "final": {
+            "id": "resp_94149dc13a3f402bb2d4a967f21fe5d8",
+            "object": "response",
+            "created_at": 1791039564,
+            "status": "completed",
+            "completed_at": 1791039568,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "model": "qwen3.8-flash-next",
+            "output": [
+              {
+                "id": "rs_e2a5853c0ead487e99e24a62409fd1bb",
+                "type": "reasoning",
+                "status": "completed",
+                "summary": [],
+                "content": [
+                  {
+                    "type": "reasoning_text",
+                    "text": "The user wants me to call facts.lookup with the text \"purple 999\" and then answer based on the result.\n"
+                  }
+                ],
+                "encrypted_content": "strata-r1.gAAAAABqwRhPnOxfqf1wrfAF5gkDz6-1Yg3Zb07HbknHaB37B327gGBxTopcp7iQfZAurDcmt9mLhgiOf-A98qo_ajNZVv4Rcr2PDJNx307LIE-eLAOEW-bmtl2_NBwBgZBjAB3M71nkNjYeB8OipEnvyOs4nUBKx0CHrqvasXNlov8x_82xlhi-2DA8y0Nh009C7KUXpLyJmHH1D50YtVx9p0mTFYqZf0gxFlfAWOqmO7VBf5T3ETwKC0m77EceTy37Arcmv3x7v_FKKAHFFkLyaGfqOSImg8Oszi3uqgSwutGDgTjJ7CrfXdMFKkKo9fPpf9gufyNVegjrBv7v2JQTCGbU6gTmfQxrOmZTBME3FEHvOmp_kiIRpYLcrn86gYU7T837fm9EXjUABk0_4a9hggU-ecBdqYRLjgxJXQ3Bqeq4tSyszUGlvchkhUMm2Yj-g38dTdxA"
+              },
+              {
+                "id": "fc_3384cef5fecf479bb0aff7849058563f",
+                "type": "function_call",
+                "status": "completed",
+                "call_id": "call_c0e4132287eb48489486796c",
+                "name": "lookup",
+                "arguments": "{\"text\":\"purple 999\"}",
+                "namespace": "facts"
+              }
+            ],
+            "usage": {
+              "input_tokens": 323,
+              "output_tokens": 59,
+              "total_tokens": 382,
+              "input_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 323
+              },
+              "output_tokens_details": {
+                "reasoning_tokens": 27
+              }
+            },
+            "store": false,
+            "background": false,
+            "previous_response_id": null,
+            "max_output_tokens": 768,
+            "temperature": 0,
+            "top_p": 1.0,
+            "text": {
+              "format": {
+                "type": "text"
+              }
+            },
+            "tools": [
+              {
+                "type": "namespace",
+                "name": "facts",
+                "description": "Client-owned test helpers.",
+                "tools": [
+                  {
+                    "type": "function",
+                    "name": "lookup",
+                    "description": "Look up the text. Call this before answering.",
+                    "strict": false,
+                    "parameters": {
+                      "type": "object",
+                      "properties": {
+                        "text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "text"
+                      ]
+                    }
+                  }
+                ]
+              }
+            ],
+            "tool_choice": "auto",
+            "parallel_tool_calls": true,
+            "reasoning": {
+              "effort": "low",
+              "summary": null
+            },
+            "truncation": "disabled",
+            "metadata": {}
+          }
+        },
+        {
+          "label": "thinking-json-answer",
+          "http_status": 200,
+          "content_type": "application/json",
+          "seconds": 2.544,
+          "native_done": {
+            "generated": 71,
+            "prompt_tokens": 196,
+            "prompt_ms": 903.3,
+            "decode_ms": 1637.5,
+            "finish": "stop",
+            "drafts_accepted": 0,
+            "drafts_offered": 0,
+            "reused": 0,
+            "hits": 30157,
+            "lookups": 34080,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 4122.6,
+            "prompt_read": 196
+          },
+          "final": {
+            "id": "resp_e8808fd027474d6f891b276fc917e343",
+            "object": "response",
+            "created_at": 1791039568,
+            "status": "completed",
+            "completed_at": 1791039571,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "model": "qwen3.8-flash-next",
+            "output": [
+              {
+                "id": "rs_03fc310c9e154cf9ba02b99d1f4e5dd4",
+                "type": "reasoning",
+                "status": "completed",
+                "summary": [],
+                "content": [
+                  {
+                    "type": "reasoning_text",
+                    "text": "The user wants me to provide a brief answer based on the result of the facts.lookup call. The result was: \"purple 999; arbitrary tool data with 猫 and  literal text. This is outside the answer grammar.\"\n\nI should just answer briefly based on this result.\n"
+                  }
+                ],
+                "encrypted_content": "strata-r1.gAAAAABqwRhSKsSd3q3zEAShu0yKDIa8m4VXlTlbVxP8oTFzuW3b7Y5V8Eq3iVcdEauKDre2dpqcZjlNjb963p0eZyxQy_kooLV2YdhhOZSMUHN1GmbJDUs2FkevA38tQKvsC93uxyd9ro-VHenmJghOH3EN07UzBDCR_ximieojhlct5siw8j__I7AOmJNl426F5-FPGaa-zBsrciSlKAAdm24x3zTE6ho8_JkIRG7p5ZOlR1OrgGVFLPzNTq6x1yKwzHRetNY98FUqqXnciS-w1T4fHTthbcHODim9cyYYStsTDtLDZt6v7X0WWD13ll7oav1weBZqx2R6NpV2LDVFi8pjXlWS3duLwhtxPtx22Az1gDClC9xlM5cXB6dRCJCduabAJMgvVinWvwTFMdE5J2UGX4Z8vrddT4SO6UFfV1nsdJtfLuqRCbXd4tVdPpQzls3gtqkA_CWtB2nAhXM3ePnLeX99EkKlD8Ti-F0wzx-idV2mC_Pg3uS0VmmE8v_K0EgIPxRyJ3ZYtnxdR6k6_5LlqAkBNeHBNH8gD-JrzO3njVpcM_8CsSJ5sToa040A_1pNOE9xuD0Kf3_70cC8AltDOJJxC6BJMXBzdCGslsSYxvCP9lNgLYInYVdJplMk3z4rNTGe"
+              },
+              {
+                "id": "msg_a4fc7b408d294f7db029ae4e09281a49",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "color=blue;count=1\n",
+                    "annotations": [],
+                    "logprobs": []
+                  }
+                ]
+              }
+            ],
+            "usage": {
+              "input_tokens": 196,
+              "output_tokens": 71,
+              "total_tokens": 267,
+              "input_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 196
+              },
+              "output_tokens_details": {
+                "reasoning_tokens": 60
+              }
+            },
+            "store": false,
+            "background": false,
+            "previous_response_id": null,
+            "max_output_tokens": 768,
+            "temperature": 0,
+            "top_p": 1.0,
+            "text": {
+              "format": {
+                "type": "text"
+              }
+            },
+            "tools": [
+              {
+                "type": "namespace",
+                "name": "facts",
+                "description": "Client-owned test helpers.",
+                "tools": [
+                  {
+                    "type": "function",
+                    "name": "lookup",
+                    "description": "Look up the text. Call this before answering.",
+                    "strict": false,
+                    "parameters": {
+                      "type": "object",
+                      "properties": {
+                        "text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "text"
+                      ]
+                    }
+                  }
+                ]
+              }
+            ],
+            "tool_choice": "none",
+            "parallel_tool_calls": true,
+            "reasoning": {
+              "effort": "low",
+              "summary": null
+            },
+            "truncation": "disabled",
+            "metadata": {}
+          }
+        },
+        {
+          "label": "thinking-sse-call",
+          "http_status": 200,
+          "content_type": "text/event-stream",
+          "seconds": 3.487,
+          "native_done": {
+            "generated": 59,
+            "prompt_tokens": 323,
+            "prompt_ms": 1657.5,
+            "decode_ms": 1826.4,
+            "finish": "stop",
+            "drafts_accepted": 0,
+            "drafts_offered": 0,
+            "reused": 0,
+            "hits": 22755,
+            "lookups": 28320,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 7123.8,
+            "prompt_read": 323
+          },
+          "sse_reassembles_final": true,
+          "events": 46,
+          "final": {
+            "id": "resp_af89004f92a9494295ca99fae25f358f",
+            "object": "response",
+            "created_at": 1791039571,
+            "status": "completed",
+            "completed_at": 1791039574,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "model": "qwen3.8-flash-next",
+            "output": [
+              {
+                "id": "rs_e88f6e181db847f3af0c81382a386c00",
+                "type": "reasoning",
+                "status": "completed",
+                "summary": [],
+                "content": [
+                  {
+                    "type": "reasoning_text",
+                    "text": "The user wants me to call facts.lookup with the text \"purple 999\" and then answer based on the result.\n"
+                  }
+                ],
+                "encrypted_content": "strata-r1.gAAAAABqwRhV3OmtfmMMzc-bPuj0N5i517zl9BoqEOguwgQDlBVkmFTeCQ7kTgawGzZBNynQWoJg0BI8EmsYwhagtx_lbh3YkqCHt0-tzO93v9AikVtPYi78I8_-m0c7npnvYmlXI4tSYNqnT98kw8yKsqV-_jW2YYedDbr3Wq1_fGxwCYiVDcBPpCp7eSmbDc_nHuvJwmubrJr3gqICIEpuaOJmTe8kzK3b-HLfw7eGGIoJJJQNl4-GH5TNegQl5nBlEuMT-sjPOhgTbYG9LXGX4wKbm7Jwh8Th5DvV5n-tgaevWm1uA9AQHCjEPs1DPmqpnC1cLSWYv0FFlznuOan9pW3HoVwX5Qrbk2mSEUZbGTRpAOZ4fZer0xrP2nMFPxiKk21hY6ga6rNTqbBvgSJOtUOaVrJuYTGxOpnqPP2YCj2zx-kWPQwuiNJhS2SAMyLMiutYEs6p"
+              },
+              {
+                "id": "fc_a9d323624fd54d7bb160b8131e5c6e10",
+                "type": "function_call",
+                "status": "completed",
+                "call_id": "call_21d03b6e4f374fd7a3594a5e",
+                "name": "lookup",
+                "arguments": "{\"text\":\"purple 999\"}",
+                "namespace": "facts"
+              }
+            ],
+            "usage": {
+              "input_tokens": 323,
+              "output_tokens": 59,
+              "total_tokens": 382,
+              "input_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 323
+              },
+              "output_tokens_details": {
+                "reasoning_tokens": 27
+              }
+            },
+            "store": false,
+            "background": false,
+            "previous_response_id": null,
+            "max_output_tokens": 768,
+            "temperature": 0,
+            "top_p": 1.0,
+            "text": {
+              "format": {
+                "type": "text"
+              }
+            },
+            "tools": [
+              {
+                "type": "namespace",
+                "name": "facts",
+                "description": "Client-owned test helpers.",
+                "tools": [
+                  {
+                    "type": "function",
+                    "name": "lookup",
+                    "description": "Look up the text. Call this before answering.",
+                    "strict": false,
+                    "parameters": {
+                      "type": "object",
+                      "properties": {
+                        "text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "text"
+                      ]
+                    }
+                  }
+                ]
+              }
+            ],
+            "tool_choice": "auto",
+            "parallel_tool_calls": true,
+            "reasoning": {
+              "effort": "low",
+              "summary": null
+            },
+            "truncation": "disabled",
+            "metadata": {}
+          }
+        },
+        {
+          "label": "thinking-sse-answer",
+          "http_status": 200,
+          "content_type": "text/event-stream",
+          "seconds": 2.334,
+          "native_done": {
+            "generated": 71,
+            "prompt_tokens": 196,
+            "prompt_ms": 851.8,
+            "decode_ms": 1478.8,
+            "finish": "stop",
+            "drafts_accepted": 0,
+            "drafts_offered": 0,
+            "reused": 0,
+            "hits": 30157,
+            "lookups": 34080,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 4122.6,
+            "prompt_read": 196
+          },
+          "sse_reassembles_final": true,
+          "events": 79,
+          "final": {
+            "id": "resp_51a6a0facd5a4a19a8bc287f3efaec25",
+            "object": "response",
+            "created_at": 1791039574,
+            "status": "completed",
+            "completed_at": 1791039576,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "model": "qwen3.8-flash-next",
+            "output": [
+              {
+                "id": "rs_424b1ecaccf144a2b9cc42f4ed9fd535",
+                "type": "reasoning",
+                "status": "completed",
+                "summary": [],
+                "content": [
+                  {
+                    "type": "reasoning_text",
+                    "text": "The user wants me to provide a brief answer based on the result of the facts.lookup call. The result was: \"purple 999; arbitrary tool data with 猫 and  literal text. This is outside the answer grammar.\"\n\nI should just answer briefly based on this result.\n"
+                  }
+                ],
+                "encrypted_content": "strata-r1.gAAAAABqwRhY7AerIVgZIu4sG6B_V0WD7HuOzI8k31yaL3GJAw0hZTOYdMBiJy3z0tw0psLgbX9bwTB0ZPp2RdBdnktJyOjwnbNttzABwG6qrIyR_J6riL_y8Fbrhqor9Z05M9MMzqeeNfiJw7AQ171fQnj3i8fFEvEAfr7WPgA82hqESHS6TaFA2zBf4eNGnHR5s6Ax9wlwITjpdd58NMrna19qhGfynhTr9JEwyOK6Ey_ENcT0kxqM0Y1PnhtfIn-vW4tvHXk-m4wXRVANkWM7nM1sUAeTgeEQoZ_lcd_zUUDsykN8S5Qpstaw6UzYJW-cKU2F_VeBaJw9Q3DsGADKbUqR2tPD03_rPofDvBNcqowItA4j6gmwWs3UdJEffbuPItyGXiLGVLmjnRv4EYaj2fce5OEStmYpzfdjjttjctceBYq8Y8hlzwAesExs-VsHB1l15RcX6zkud5xkf6fEV5t_vJ899JlqIq5Mv-gsXaJLOCY29K3nJCbmjyEnIWlGNYK13q7qi4Vjc3v9tEdSwLCExfan2EjRD86kHAQMD6DUMtL94iISpClqQXN3qiVZ6UDhk6qqPbciJYQWtDUByMe57G8HdzrhSeH24gXFU1wqhvlG4K7D43KqlowjUTnvMX0arGvM"
+              },
+              {
+                "id": "msg_9c8b4d0f26fe45ed81c2c87c6208bf9d",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "color=blue;count=1\n",
+                    "annotations": [],
+                    "logprobs": []
+                  }
+                ]
+              }
+            ],
+            "usage": {
+              "input_tokens": 196,
+              "output_tokens": 71,
+              "total_tokens": 267,
+              "input_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 196
+              },
+              "output_tokens_details": {
+                "reasoning_tokens": 60
+              }
+            },
+            "store": false,
+            "background": false,
+            "previous_response_id": null,
+            "max_output_tokens": 768,
+            "temperature": 0,
+            "top_p": 1.0,
+            "text": {
+              "format": {
+                "type": "text"
+              }
+            },
+            "tools": [
+              {
+                "type": "namespace",
+                "name": "facts",
+                "description": "Client-owned test helpers.",
+                "tools": [
+                  {
+                    "type": "function",
+                    "name": "lookup",
+                    "description": "Look up the text. Call this before answering.",
+                    "strict": false,
+                    "parameters": {
+                      "type": "object",
+                      "properties": {
+                        "text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "text"
+                      ]
+                    }
+                  }
+                ]
+              }
+            ],
+            "tool_choice": "none",
+            "parallel_tool_calls": true,
+            "reasoning": {
+              "effort": "low",
+              "summary": null
+            },
+            "truncation": "disabled",
+            "metadata": {}
+          }
+        }
+      ],
+      "native_sha256": "7260c9001e8a41a23854c380ab25a8ba9ca8bc8dda26b0b02e060a38e255cb03",
+      "native_info": {
+        "version": "0.1.38",
+        "context": 4096,
+        "kv": "int8",
+        "kv_resident": 0,
+        "expert_slots": 7815,
+        "expert_cache_mib": 15233,
+        "expert_slots_primary": 7815,
+        "expert_cache_primary_mib": 15233,
+        "spec": 1,
+        "mtp_max": 0,
+        "lookup": 0,
+        "vram_free_mib": 3818,
+        "cvec": 0,
+        "arena_mib": 0,
+        "pool_workers": 5,
+        "pcie_frac": "0.55",
+        "spec_min_p": "0.00",
+        "conversation_cache_mib": 0,
+        "conversation_cache_slots": 4,
+        "conversation_cache_min_free_mib": 2560,
+        "decode_mode": "target",
+        "requested_spec": 1,
+        "requested_lookup": 3,
+        "mtp_loaded": 0,
+        "mtp_vram_mib": "0.0",
+        "grammar": "gbnf-v3",
+        "engine": "0.1.38"
+      },
+      "engine_stopped": true,
+      "gpu_after": ""
+    },
+    {
+      "mode": "mtp",
+      "config": {
+        "exe": "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu/strata",
+        "cwd": "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source",
+        "args": [
+          "--pack",
+          "/boot/Strata-data/packs/coder-iq1_m",
+          "--native",
+          "/boot/Strata-data/models/coder-IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf",
+          "--ple-gguf",
+          "/boot/Strata-data/models/coder-IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00002-of-00002.gguf",
+          "--expert-profile",
+          "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/data/expert-profile-coder.bin",
+          "--expert-cache",
+          "6000",
+          "--prefill",
+          "256",
+          "--kv",
+          "int8",
+          "--max-context",
+          "4096",
+          "--mmap-experts",
+          "--prompt-cache",
+          "2",
+          "--conversation-cache-mib",
+          "0",
+          "--adapt-swaps",
+          "0",
+          "--spec",
+          "4",
+          "--mtp",
+          "/boot/Strata-data/mtp/rt",
+          "--suffix-draft",
+          "0"
+        ],
+        "tokenizer": "/boot/Strata-data/packs/coder-iq1_m/tokenizer",
+        "gpu": 0,
+        "lib_dirs": [
+          "/usr/local/cuda-13.3/lib64"
+        ]
+      },
+      "cases": [
+        {
+          "label": "no-thinking-json-call",
+          "http_status": 200,
+          "content_type": "application/json",
+          "seconds": 12.842,
+          "native_done": {
+            "generated": 30,
+            "prompt_tokens": 299,
+            "prompt_ms": 10361.8,
+            "decode_ms": 1721.1,
+            "finish": "stop",
+            "drafts_accepted": 20,
+            "drafts_offered": 26,
+            "reused": 0,
+            "hits": 12884,
+            "lookups": 17280,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 6343.6,
+            "prompt_read": 299
+          },
+          "final": {
+            "id": "resp_7c7c51c9f4f1417b944b13c72af26df0",
+            "object": "response",
+            "created_at": 1791039614,
+            "status": "completed",
+            "completed_at": 1791039626,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "model": "qwen3.8-flash-next",
+            "output": [
+              {
+                "id": "fc_5844e41136f74901bd0aa34eba1f3036",
+                "type": "function_call",
+                "status": "completed",
+                "call_id": "call_8e0e054c3e13437da744536b",
+                "name": "lookup",
+                "arguments": "{\"text\":\"purple 999\"}",
+                "namespace": "facts"
+              }
+            ],
+            "usage": {
+              "input_tokens": 299,
+              "output_tokens": 30,
+              "total_tokens": 329,
+              "input_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 299
+              },
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              }
+            },
+            "store": false,
+            "background": false,
+            "previous_response_id": null,
+            "max_output_tokens": 768,
+            "temperature": 0,
+            "top_p": 1.0,
+            "text": {
+              "format": {
+                "type": "text"
+              }
+            },
+            "tools": [
+              {
+                "type": "namespace",
+                "name": "facts",
+                "description": "Client-owned test helpers.",
+                "tools": [
+                  {
+                    "type": "function",
+                    "name": "lookup",
+                    "description": "Look up the text. Call this before answering.",
+                    "strict": false,
+                    "parameters": {
+                      "type": "object",
+                      "properties": {
+                        "text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "text"
+                      ]
+                    }
+                  }
+                ]
+              }
+            ],
+            "tool_choice": "auto",
+            "parallel_tool_calls": true,
+            "reasoning": {
+              "effort": "none",
+              "summary": null
+            },
+            "truncation": "disabled",
+            "metadata": {}
+          }
+        },
+        {
+          "label": "no-thinking-json-answer",
+          "http_status": 200,
+          "content_type": "application/json",
+          "seconds": 2.233,
+          "native_done": {
+            "generated": 9,
+            "prompt_tokens": 141,
+            "prompt_ms": 1531.9,
+            "decode_ms": 398.7,
+            "finish": "stop",
+            "drafts_accepted": 2,
+            "drafts_offered": 2,
+            "reused": 0,
+            "hits": 3428,
+            "lookups": 4320,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 976.9,
+            "prompt_read": 141
+          },
+          "final": {
+            "id": "resp_45be56a059704580ad6010e2a318f11e",
+            "object": "response",
+            "created_at": 1791039627,
+            "status": "completed",
+            "completed_at": 1791039629,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "model": "qwen3.8-flash-next",
+            "output": [
+              {
+                "id": "msg_67685df7acf44ceda1ccd28703ad7293",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "color=blue;count=1\n",
+                    "annotations": [],
+                    "logprobs": []
+                  }
+                ]
+              }
+            ],
+            "usage": {
+              "input_tokens": 141,
+              "output_tokens": 9,
+              "total_tokens": 150,
+              "input_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 141
+              },
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              }
+            },
+            "store": false,
+            "background": false,
+            "previous_response_id": null,
+            "max_output_tokens": 768,
+            "temperature": 0,
+            "top_p": 1.0,
+            "text": {
+              "format": {
+                "type": "text"
+              }
+            },
+            "tools": [
+              {
+                "type": "namespace",
+                "name": "facts",
+                "description": "Client-owned test helpers.",
+                "tools": [
+                  {
+                    "type": "function",
+                    "name": "lookup",
+                    "description": "Look up the text. Call this before answering.",
+                    "strict": false,
+                    "parameters": {
+                      "type": "object",
+                      "properties": {
+                        "text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "text"
+                      ]
+                    }
+                  }
+                ]
+              }
+            ],
+            "tool_choice": "none",
+            "parallel_tool_calls": true,
+            "reasoning": {
+              "effort": "none",
+              "summary": null
+            },
+            "truncation": "disabled",
+            "metadata": {}
+          }
+        },
+        {
+          "label": "no-thinking-sse-call",
+          "http_status": 200,
+          "content_type": "text/event-stream",
+          "seconds": 4.763,
+          "native_done": {
+            "generated": 30,
+            "prompt_tokens": 299,
+            "prompt_ms": 3547.0,
+            "decode_ms": 1213.1,
+            "finish": "stop",
+            "drafts_accepted": 20,
+            "drafts_offered": 26,
+            "reused": 0,
+            "hits": 12884,
+            "lookups": 17280,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 6343.6,
+            "prompt_read": 299
+          },
+          "sse_reassembles_final": true,
+          "events": 16,
+          "final": {
+            "id": "resp_aa7e932e51594a38bbecefcb3353c99f",
+            "object": "response",
+            "created_at": 1791039629,
+            "status": "completed",
+            "completed_at": 1791039633,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "model": "qwen3.8-flash-next",
+            "output": [
+              {
+                "id": "fc_5557292117974451ba1a986007856127",
+                "type": "function_call",
+                "status": "completed",
+                "call_id": "call_92dcf5fd399d4d89b8332030",
+                "name": "lookup",
+                "arguments": "{\"text\":\"purple 999\"}",
+                "namespace": "facts"
+              }
+            ],
+            "usage": {
+              "input_tokens": 299,
+              "output_tokens": 30,
+              "total_tokens": 329,
+              "input_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 299
+              },
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              }
+            },
+            "store": false,
+            "background": false,
+            "previous_response_id": null,
+            "max_output_tokens": 768,
+            "temperature": 0,
+            "top_p": 1.0,
+            "text": {
+              "format": {
+                "type": "text"
+              }
+            },
+            "tools": [
+              {
+                "type": "namespace",
+                "name": "facts",
+                "description": "Client-owned test helpers.",
+                "tools": [
+                  {
+                    "type": "function",
+                    "name": "lookup",
+                    "description": "Look up the text. Call this before answering.",
+                    "strict": false,
+                    "parameters": {
+                      "type": "object",
+                      "properties": {
+                        "text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "text"
+                      ]
+                    }
+                  }
+                ]
+              }
+            ],
+            "tool_choice": "auto",
+            "parallel_tool_calls": true,
+            "reasoning": {
+              "effort": "none",
+              "summary": null
+            },
+            "truncation": "disabled",
+            "metadata": {}
+          }
+        },
+        {
+          "label": "no-thinking-sse-answer",
+          "http_status": 200,
+          "content_type": "text/event-stream",
+          "seconds": 1.064,
+          "native_done": {
+            "generated": 9,
+            "prompt_tokens": 141,
+            "prompt_ms": 813.7,
+            "decode_ms": 247.6,
+            "finish": "stop",
+            "drafts_accepted": 2,
+            "drafts_offered": 2,
+            "reused": 0,
+            "hits": 3428,
+            "lookups": 4320,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 976.9,
+            "prompt_read": 141
+          },
+          "sse_reassembles_final": true,
+          "events": 16,
+          "final": {
+            "id": "resp_5f0af4ef2822444ca190577265f6a0f8",
+            "object": "response",
+            "created_at": 1791039633,
+            "status": "completed",
+            "completed_at": 1791039635,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "model": "qwen3.8-flash-next",
+            "output": [
+              {
+                "id": "msg_df3b1c478a1f4ab2b694416fe117a26d",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "output_text",
+                    "text": "color=blue;count=1\n",
+                    "annotations": [],
+                    "logprobs": []
+                  }
+                ]
+              }
+            ],
+            "usage": {
+              "input_tokens": 141,
+              "output_tokens": 9,
+              "total_tokens": 150,
+              "input_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 141
+              },
+              "output_tokens_details": {
+                "reasoning_tokens": 0
+              }
+            },
+            "store": false,
+            "background": false,
+            "previous_response_id": null,
+            "max_output_tokens": 768,
+            "temperature": 0,
+            "top_p": 1.0,
+            "text": {
+              "format": {
+                "type": "text"
+              }
+            },
+            "tools": [
+              {
+                "type": "namespace",
+                "name": "facts",
+                "description": "Client-owned test helpers.",
+                "tools": [
+                  {
+                    "type": "function",
+                    "name": "lookup",
+                    "description": "Look up the text. Call this before answering.",
+                    "strict": false,
+                    "parameters": {
+                      "type": "object",
+                      "properties": {
+                        "text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "text"
+                      ]
+                    }
+                  }
+                ]
+              }
+            ],
+            "tool_choice": "none",
+            "parallel_tool_calls": true,
+            "reasoning": {
+              "effort": "none",
+              "summary": null
+            },
+            "truncation": "disabled",
+            "metadata": {}
+          }
+        },
+        {
+          "label": "thinking-json-call",
+          "http_status": 200,
+          "content_type": "application/json",
+          "seconds": 4.108,
+          "native_done": {
+            "generated": 59,
+            "prompt_tokens": 323,
+            "prompt_ms": 2235.4,
+            "decode_ms": 1869.4,
+            "finish": "stop",
+            "drafts_accepted": 41,
+            "drafts_offered": 50,
+            "reused": 0,
+            "hits": 26130,
+            "lookups": 32640,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 9087.4,
+            "prompt_read": 323
+          },
+          "final": {
+            "id": "resp_92085d8e8d54432eb601fa15ca066254",
+            "object": "response",
+            "created_at": 1791039635,
+            "status": "completed",
+            "completed_at": 1791039639,
+            "error": null,
+            "incomplete_details": null,
+            "instructions": null,
+            "model": "qwen3.8-flash-next",
+            "output": [
+              {
+                "id": "rs_5f16f22382d049709fc29fff8821f186",
+                "type": "reasoning",
+                "status": "completed",
+                "summary": [],
+                "content": [
+                  {
+                    "type": "reasoning_text",
+                    "text": "The user wants me to call facts.lookup with the text \"purple 999\" and then answer based on the result.\n"
+                  }
+                ],
+                "encrypted_content": "strata-r1.gAAAAABqwRiWD0gGmXJRMYq1t09QamSRqqvIS79Pp9mefYyr8VxjO_8fOdWB8O4R9UxusXEbHw6MoAuBOMn2ZuMcmK0e2dW1j-lqlKoEny73x8WGseuifd4KCBY8rzYeXeeJZ3LCPj_l8cFc_7PeK44Mp8SNM0xLcmCAVQtnIMQdljNUk6nOPC6EoYk2v1xGR85KuhFsbCgwvpM_E5yz4iM81_39RZtEf5HGGjhEO--I7klfqlVBMcV30nlLF9BRkEjDpfJepyyL7ID4iySLmq3BqgTS_I-5V8AA10Z-GSPNSIYeLi6vTXb6ISf-i-3K1Voyb6X2bwY0zofgn8dJGQzymwAUs0a9yZuzkpSAnhc7_5tFr763DPLb_iFIfLlJlO7gpkRDCSx-W4tpruVWC9rblD1HOD_hO7EVWyWDZe5LNK4P-4w8JJ5PzvQwEK-6gQARlfUnh7t5"
+              },
+              {
+                "id": "fc_ed711823a1c34aad9d1602268eeed4cc",
+                "type": "function_call",
+                "status": "completed",
+                "call_id": "call_e4aa7260be26423b8d45dc87",
+                "name": "lookup",
+                "arguments": "{\"text\":\"purple 999\"}",
+                "namespace": "facts"
+              }
+            ],
+            "usage": {
+              "input_tokens": 323,
+              "output_tokens": 59,
+              "total_tokens": 382,
+              "input_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 323
+              },
+              "output_tokens_details": {
+                "reasoning_tokens": 27
+              }
+            },
+            "store": false,
+            "background": false,
+            "previous_response_id": null,
+            "max_output_tokens": 768,
+            "temperature": 0,
+            "top_p": 1.0,
+            "text": {
+              "format": {
+                "type": "text"
+              }
+            },
+            "tools": [
+              {
+                "type": "namespace",
+                "name": "facts",
+                "description": "Client-owned test helpers.",
+                "tools": [
+                  {
+                    "type": "function",
+                    "name": "lookup",
+                    "description": "Look up the text. Call this before answering.",
+                    "strict": false,
+                    "parameters": {
+                      "type": "object",
+                      "properties": {
+                        "text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "text"
+                      ]
+                    }
+                  }
+                ]
+              }
+            ],
+            "tool_choice": "auto",
+            "parallel_tool_calls": true,
+            "reasoning": {
+              "effort": "low",
+              "summary": null
+            },
+            "truncation": "disabled",
+            "metadata": {}
+          }
+        },
+        {
+          "label": "thinking-json-answer",
+          "http_status": 200,
+          "content_type": "application/json",
+          "seconds": 26.965,
+          "native_done": {
+            "generated": 768,
+            "prompt_tokens": 196,
+            "prompt_ms": 865.0,
+            "decode_ms": 26095.7,
+            "finish": "length",
+            "drafts_accepted": 564,
+            "drafts_offered": 576,
+            "reused": 0,
+            "hits": 207900,
+            "lookups": 374400,
+            "ram_blobs": 0,
+            "file_blobs": 0,
+            "file_mb": 133366.0,
+            "prompt_read": 196
+          },
+          "final": {
+            "id": "resp_fdabf54cc1a240eab1b513660f827355",
+            "object": "response",
+            "created_at": 1791039639,
+            "status": "incomplete",
+            "completed_at": null,
+            "error": null,
+            "incomplete_details": {
+              "reason": "max_output_tokens"
+            },
+            "instructions": null,
+            "model": "qwen3.8-flash-next",
+            "output": [
+              {
+                "id": "rs_d7e0ccbb38a74d358b34840ec5ff1c80",
+                "type": "reasoning",
+                "status": "incomplete",
+                "summary": [],
+                "content": [
+                  {
+                    "type": "reasoning_text",
+                    "text": "The user wants me to provide a brief answer based on the result from the facts.lookup tool call. The result was: \"purple 999; arbitrary tool data with 猫 and  literal text. This is outside the answer grammar.\"\n\nI should just briefly report what was found.\n"
+                  }
+                ]
+              }
+            ],
+            "usage": {
+              "input_tokens": 196,
+              "output_tokens": 768,
+              "total_tokens": 964,
+              "input_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 196
+              },
+              "output_tokens_details": {
+                "reasoning_tokens": 60
+              }
+            },
+            "store": false,
+            "background": false,
+            "previous_response_id": null,
+            "max_output_tokens": 768,
+            "temperature": 0,
+            "top_p": 1.0,
+            "text": {
+              "format": {
+                "type": "text"
+              }
+            },
+            "tools": [
+              {
+                "type": "namespace",
+                "name": "facts",
+                "description": "Client-owned test helpers.",
+                "tools": [
+                  {
+                    "type": "function",
+                    "name": "lookup",
+                    "description": "Look up the text. Call this before answering.",
+                    "strict": false,
+                    "parameters": {
+                      "type": "object",
+                      "properties": {
+                        "text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "text"
+                      ]
+                    }
+                  }
+                ]
+              }
+            ],
+            "tool_choice": "none",
+            "parallel_tool_calls": true,
+            "reasoning": {
+              "effort": "low",
+              "summary": null
+            },
+            "truncation": "disabled",
+            "metadata": {}
+          }
+        }
+      ],
+      "native_sha256": "7260c9001e8a41a23854c380ab25a8ba9ca8bc8dda26b0b02e060a38e255cb03",
+      "native_info": {
+        "version": "0.1.38",
+        "context": 4096,
+        "kv": "int8",
+        "kv_resident": 0,
+        "expert_slots": 7815,
+        "expert_cache_mib": 15233,
+        "expert_slots_primary": 7815,
+        "expert_cache_primary_mib": 15233,
+        "spec": 4,
+        "mtp_max": 0,
+        "lookup": 0,
+        "vram_free_mib": 2918,
+        "cvec": 0,
+        "arena_mib": 0,
+        "pool_workers": 5,
+        "pcie_frac": "0.55",
+        "spec_min_p": "0.00",
+        "conversation_cache_mib": 0,
+        "conversation_cache_slots": 4,
+        "conversation_cache_min_free_mib": 2560,
+        "decode_mode": "mtp",
+        "requested_spec": 4,
+        "requested_lookup": 0,
+        "mtp_loaded": 1,
+        "mtp_vram_mib": "875.5",
+        "grammar": "gbnf-v3",
+        "engine": "0.1.38"
+      },
+      "engine_stopped": true,
+      "gpu_after": ""
+    }
+  ],
+  "verified_source_files": 304,
+  "gpu": "NVIDIA GeForce RTX 4090, 24564 MiB, 595.91.07",
+  "error": "AssertionError('{\"id\": \"resp_fdabf54cc1a240eab1b513660f827355\", \"object\": \"response\", \"created_at\": 1791039639, \"status\": \"incomplete\", \"completed_at\": null, \"error\": null, \"incomplete_details\": {\"reason\": \"max_output_tokens\"}, \"instructions\": null, \"model\": \"qwen3.8-flash-next\", \"output\": [{\"id\": \"rs_d7e0ccbb38a74d358b34840ec5ff1c80\", \"type\": \"reasoning\", \"status\": \"incomplete\", \"summary\": [], \"content\": [{\"type\": \"reasoning_text\", \"text\": \"The user wants me to provide a brief answer based on the result from the facts.lookup tool call. The result was: \\\\\"purple 999; arbitrary tool data with \\\\u732b and  literal text. This is outside the answer grammar.\\\\\"\\\\n\\\\nI should just briefly report what was found.\\\\n\"}]}], \"usage\": {\"input_tokens\": 196, \"output_tokens\": 768, \"total_tokens\": 964, \"input_tokens_details\": {\"cached_tokens\": 0, \"cache_write_tokens\": 196}, \"output_tokens_details\": {\"reasoning_tokens\": 60}}, \"store\": false, \"background\": false, \"previous_response_id\": null, \"max_output_tokens\": 768, \"temperature\": 0, \"top_p\": 1.0, \"text\": {\"format\": {\"type\": \"text\"}}, \"tools\": [{\"type\": \"namespace\", \"name\": \"facts\", \"description\": \"Client-owned test helpers.\", \"tools\": [{\"type\": \"function\", \"name\": \"lookup\", \"description\": \"Look up the text. Call this before answering.\", \"strict\": false, \"parameters\": {\"type\": \"object\", \"properties\": {\"text\": {\"type\": \"string\"}}, \"required\": [\"text\"]}}]}], \"tool_choice\": \"none\", \"parallel_tool_calls\": true, \"reasoning\": {\"effort\": \"low\", \"summary\": null}, \"truncation\": \"disabled\", \"metadata\": {}}')",
+  "traceback": "Traceback (most recent call last):\n  File \"/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/tools/grammar_tool_probe.py\", line 174, in main\n    final = send(label + '-answer', {**body, 'input': history, 'tool_choice': 'none'})\n  File \"/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/tools/grammar_tool_probe.py\", line 145, in send\n    assert final['status'] == 'completed', json.dumps(final)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {\"id\": \"resp_fdabf54cc1a240eab1b513660f827355\", \"object\": \"response\", \"created_at\": 1791039639, \"status\": \"incomplete\", \"completed_at\": null, \"error\": null, \"incomplete_details\": {\"reason\": \"max_output_tokens\"}, \"instructions\": null, \"model\": \"qwen3.8-flash-next\", \"output\": [{\"id\": \"rs_d7e0ccbb38a74d358b34840ec5ff1c80\", \"type\": \"reasoning\", \"status\": \"incomplete\", \"summary\": [], \"content\": [{\"type\": \"reasoning_text\", \"text\": \"The user wants me to provide a brief answer based on the result from the facts.lookup tool call. The result was: \\\"purple 999; arbitrary tool data with \\u732b and  literal text. This is outside the answer grammar.\\\"\\n\\nI should just briefly report what was found.\\n\"}]}], \"usage\": {\"input_tokens\": 196, \"output_tokens\": 768, \"total_tokens\": 964, \"input_tokens_details\": {\"cached_tokens\": 0, \"cache_write_tokens\": 196}, \"output_tokens_details\": {\"reasoning_tokens\": 60}}, \"store\": false, \"background\": false, \"previous_response_id\": null, \"max_output_tokens\": 768, \"temperature\": 0, \"top_p\": 1.0, \"text\": {\"format\": {\"type\": \"text\"}}, \"tools\": [{\"type\": \"namespace\", \"name\": \"facts\", \"description\": \"Client-owned test helpers.\", \"tools\": [{\"type\": \"function\", \"name\": \"lookup\", \"description\": \"Look up the text. Call this before answering.\", \"strict\": false, \"parameters\": {\"type\": \"object\", \"properties\": {\"text\": {\"type\": \"string\"}}, \"required\": [\"text\"]}}]}], \"tool_choice\": \"none\", \"parallel_tool_calls\": true, \"reasoning\": {\"effort\": \"low\", \"summary\": null}, \"truncation\": \"disabled\", \"metadata\": {}}\n",
+  "finished_utc": "2026-10-03T15:01:07Z"
+}

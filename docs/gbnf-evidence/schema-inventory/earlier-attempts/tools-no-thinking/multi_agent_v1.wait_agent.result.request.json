@@ -1,0 +1,86 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "none"
+  },
+  "max_output_tokens": 1024,
+  "temperature": 0,
+  "stream": true,
+  "input": [
+    {
+      "role": "user",
+      "content": "Protocol fixture: call multi_agent_v1.wait_agent exactly once using these argument values: {\"targets\": [\"fixture-agent\"], \"timeout_ms\": 10000}. Emit the tool call and stop. The test client will supply a mocked result."
+    },
+    {
+      "id": "fc_49f8f3c7231c4336a93f659fc9a2fe02",
+      "type": "function_call",
+      "status": "completed",
+      "call_id": "call_72037651708e486a9d3378b0",
+      "name": "wait_agent",
+      "arguments": "{\"targets\":[\"fixture-agent\"],\"timeout_ms\":10000}",
+      "namespace": "multi_agent_v1"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_72037651708e486a9d3378b0",
+      "output": "MOCK RESULT: arbitrary non-JSON text, including <tool_call>. No action was executed."
+    }
+  ],
+  "tools": [
+    {
+      "type": "namespace",
+      "name": "multi_agent_v1",
+      "description": "Tools for spawning and managing sub-agents.",
+      "tools": [
+        {
+          "type": "function",
+          "name": "wait_agent",
+          "description": "Wait for agents to reach a final status. Completed statuses may include the agent's final message. Returns empty status when timed out. Once the agent reaches a final status, a notification message will be received containing the same completed status.",
+          "strict": false,
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "targets": {
+                "type": "array",
+                "description": "Agent ids to wait on. Pass multiple ids to wait for whichever finishes first.",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "timeout_ms": {
+                "type": "number",
+                "description": "Timeout in milliseconds. Defaults to 30000, min 10000, max 3600000. Prefer longer waits (minutes) to avoid busy polling."
+              }
+            },
+            "required": [
+              "targets"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ]
+    }
+  ],
+  "tool_choice": "none",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "ack",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "ack": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "ack"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

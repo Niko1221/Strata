@@ -1,0 +1,48 @@
+{
+  "phase": "R4",
+  "result": "pass",
+  "commit": "96092670da0dc3c1cfcce99bb90a3e6ca25ae1d9",
+  "evidence": [
+    "REPORT.md",
+    "source-audit.json",
+    "acceptance.tsv",
+    "final-tests/test-results.json",
+    "replay-key-tests/test-results.json",
+    "codex/codex-task.json",
+    "codex/codex-task.txt",
+    "codex/codex-exchanges.json",
+    "sdk/sdk-probes.json",
+    "sdk/sdk-loop.json",
+    "sdk/sdk-events.jsonl",
+    "restart/restart-probe.json"
+  ],
+  "codex_version": "codex-cli 0.160.0",
+  "sdk_version": "openai-python 3.23.0",
+  "branch": "work/responses-api",
+  "worktree": "C:/Users/dflanag3/Documents/fleet/strata-responses-stateless",
+  "original_author_base": "99f3dbd0b21d1401b3769e0c0d963913607f380b",
+  "source_tree": "983850a803286fd59259f25eb17697f3f533fbe1",
+  "tests": {
+    "passed": 235,
+    "skipped": 5,
+    "failed_after_fixes": 0
+  },
+  "real_codex_edit_task": true,
+  "native_inference_tested": false,
+  "model_output_provenance": "explicitly synthetic MockEngine scripts; HTTP/SDK/Codex/tool-result exchanges are real",
+  "notes": "Bounded profile only. No JSON Schema/JSON-object/Lark/hosted tools/storage/compaction/WebSocket support. No native or MTP changes. GBNF starts from this exact commit; G6 deferred. This receipt is committed after the tested checkpoint without rewriting it.",
+  "evidence_sha256": {
+    "REPORT.md": "c16b720a83a0d737d213742a12003b9427433f4434d3d2f1dacb4993526a905a",
+    "source-audit.json": "dc19454d6d5cd165a0cb975b923227dc7d443c1a06952c9173a272ad9c8ef5cb",
+    "acceptance.tsv": "b72be51844e7401d388f3f5212a1d39148653daf29067ac01469b5bbc3d89d6e",
+    "final-tests/test-results.json": "dbde0ab63ee478e53f3703a6e8a6ed5a043a8103eff7d9f618f59c9771f83826",
+    "replay-key-tests/test-results.json": "d8de87c316402e16a707ec3920dcac94b3c7d2934001788a6e17c183311a22e2",
+    "codex/codex-task.json": "70c232e1cb9a210fd0c3756b74921127494725dfcd73c98eb2df88fb2bdd3bc9",
+    "codex/codex-task.txt": "d1c56d407dca160283ab8aa16dc6a913fdc82848e877cff12d45af5166d04319",
+    "codex/codex-exchanges.json": "02afe37c26e84450143cfeefdab969d57f09643fe8a034440e1948ccb9427250",
+    "sdk/sdk-probes.json": "507f9e9a0a450c4bd15b093a4dcafaecec16f842dc0344ee180174f98020af46",
+    "sdk/sdk-loop.json": "1d3c1bd1fcf8ca756cf14fb3bf2b08cbb889d27313362a0c5aa45ed286056fff",
+    "sdk/sdk-events.jsonl": "fecbb14560f7206c55c4e88ae880c2ecb3f4732780e41063ceaa48427dc6770a",
+    "restart/restart-probe.json": "a97054dfb52f22899bc50a69a448488395c54e28f1a8fb22e2aae60022c93dd7"
+  }
+}

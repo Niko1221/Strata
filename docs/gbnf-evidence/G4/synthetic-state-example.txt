@@ -1,0 +1,6 @@
+Synthetic candidate demonstration; no inference or external effects.
+state.snapshot Snapshot(revision=0, principal='alice', available=('task-a', 'task-b')) task-snapshot-v1-sha256:08d15317689b636615377cd3a38e4676bd47b08b90eb27ba6f2aded53676c534
+state.derive_language
+root ::= "WAIT" | "START task-a" | "START task-b"
+state.apply Snapshot(revision=1, principal='alice', available=('task-b',))
+state.check_revision rejected: state or authorization changed; derive a new contract

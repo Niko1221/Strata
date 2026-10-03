@@ -1,0 +1,32 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "none"
+  },
+  "max_output_tokens": 1,
+  "temperature": 0,
+  "input": "Give a title.",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "codex_output_schema",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 36
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "stream": true
+}

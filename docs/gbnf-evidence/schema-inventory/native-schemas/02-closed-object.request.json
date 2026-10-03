@@ -1,0 +1,37 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "none"
+  },
+  "max_output_tokens": 512,
+  "temperature": 0,
+  "input": "Return exactly this JSON value, without explanation: {\"name\": \"unit tests\", \"count\": 3, \"active\": true}",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "02_closed_object",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "active": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "count",
+          "active"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

@@ -1,0 +1,41 @@
+[
+  {
+    "file": "frozen.gbnf",
+    "accept": [
+      "WAIT",
+      "START task-a",
+      "START task-b"
+    ],
+    "reject": [
+      "",
+      "WAIT\n",
+      "START unknown",
+      "START task-a\n"
+    ]
+  },
+  {
+    "file": "fresh.gbnf",
+    "accept": [
+      "WAIT",
+      "START task-a"
+    ],
+    "reject": [
+      "",
+      "WAIT\n",
+      "START unknown",
+      "START task-a\n"
+    ]
+  },
+  {
+    "file": "after.gbnf",
+    "accept": [
+      "WAIT"
+    ],
+    "reject": [
+      "",
+      "WAIT\n",
+      "START unknown",
+      "START task-a\n"
+    ]
+  }
+]

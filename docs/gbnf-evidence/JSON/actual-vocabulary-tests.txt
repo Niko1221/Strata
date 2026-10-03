@@ -1,0 +1,41 @@
+COMMAND ["ctest", "--test-dir", "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-json-gpu", "--output-on-failure", "-R", "^(grammar_native_test|grammar_inspection_test|grammar_speculation_test|serve_input_test)$"]
+Test project /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-json-gpu
+    Start 47: grammar_native_test
+1/4 Test #47: grammar_native_test ..............   Passed    0.01 sec
+    Start 48: grammar_inspection_test
+2/4 Test #48: grammar_inspection_test ..........   Passed    0.00 sec
+    Start 49: grammar_speculation_test
+3/4 Test #49: grammar_speculation_test .........   Passed    0.00 sec
+    Start 53: serve_input_test
+4/4 Test #53: serve_input_test .................   Passed    0.00 sec
+
+100% tests passed, 0 tests failed out of 4
+
+Total Test time (real) =   0.01 sec
+COMMAND ["/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-json-gpu/grammar_native_test", "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-source-20261003/data/grammars/cases.json", "/boot/Strata-data/packs/coder-iq1_m/tokenizer", "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/evidence/g1/json-vocab-audit.bin"]
+corpus boolean.gbnf passed
+corpus balanced.gbnf passed
+corpus overlapping.gbnf passed
+corpus ambiguous.gbnf passed
+corpus unicode.gbnf passed
+corpus expression.gbnf passed
+corpus actions.gbnf passed
+corpus escaped.gbnf passed
+corpus route.gbnf passed
+corpus cases=41 vocabulary=261 identity=bytes-v1-fnv1a64:709f484f4e7d0c81
+native masks, UTF-8 fragments, recursion, accepting prefixes, stop/special IDs, forks, checkpoints, cache isolation, syntax and resource failures passed
+scoped grammar: reasoning, parallel tools, answer bytes, EOS, speculative phase crossings, checkpoints, budgets and isolation passed
+JSON schema: title bounds/types/keys, JSON object, native thinking budget, tools, speculation, checkpoints passed
+corpus boolean.gbnf passed
+corpus balanced.gbnf passed
+corpus overlapping.gbnf passed
+corpus ambiguous.gbnf passed
+corpus unicode.gbnf passed
+corpus expression.gbnf passed
+corpus actions.gbnf passed
+corpus escaped.gbnf passed
+corpus route.gbnf passed
+corpus cases=41 vocabulary=248320 identity=bytes-v1-fnv1a64:6ad948532e27ffed
+JSON title with actual vocabulary: 248320 tokens, 5405341 compiled bytes, 1.33613 seconds; required/nonempty/length constraints passed
+grammar native tests passed (xgrammar-0.2.8-strata-budget1)
+NATIVE_SHA256 ba4f275f6be8e63a09d767204fbfdfba8b3ca78ac1ec94b717d6d4ee95c0448c

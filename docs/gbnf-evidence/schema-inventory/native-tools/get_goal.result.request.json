@@ -1,0 +1,77 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "medium"
+  },
+  "max_output_tokens": 3072,
+  "temperature": 0,
+  "stream": true,
+  "input": [
+    {
+      "role": "user",
+      "content": "Protocol fixture: call get_goal exactly once using these argument values: {}. These are direct parameter names: do not wrap them in an arguments parameter. An empty object means the function has no parameters. Emit the tool call and stop. The test client will supply a mocked result."
+    },
+    {
+      "id": "rs_4cb7c4efe484465a9d1819f5fef9a606",
+      "type": "reasoning",
+      "status": "completed",
+      "summary": [],
+      "content": [
+        {
+          "type": "reasoning_text",
+          "text": "The instruction is clear: call get_goal once with empty arguments and stop.\n"
+        }
+      ],
+      "encrypted_content": "strata-r1.gAAAAABqwWp49x-eb-4OuImjP4TW_ROgDVa-_QQIv0RuXU4h8jysvdCe5UNv4b5J4l44vxbDt5bo30LvS5HVwD356Qis95_xlPemtMHA3-NmZ4z7dHcQnhU05i_JQQ7RCThfPfgKzo73MxtyStajdxblz0WPmP8DJVtwhsmTaSOgmSN2EtLEL8vDlQPVvMRh249dMByWQv6rrI298VuhO5jDyHel9nOAz7TyGBY7isPE8B-dV3UWQNLP_uIb_wcho-y2LM0JyyCZo_Jzze5xwEOTlloduaJBl9iGYUzUtatlZc1g6G2FcFmZYxGJliktVe9_rKIdB0ZnEhoMo8I29DXMvasCpHZvSPR4nAVwPoc9BL78aJJBczjF09VD_BGxkP7XMuXy3g-5oukGP3GyCsItFj3G-5mMQA=="
+    },
+    {
+      "id": "fc_61732003de304997a6fd7e97599287e6",
+      "type": "function_call",
+      "status": "completed",
+      "call_id": "call_047ad9f6e8e64765a5ed03b9",
+      "name": "get_goal",
+      "arguments": "{}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_047ad9f6e8e64765a5ed03b9",
+      "output": "MOCK RESULT: arbitrary non-JSON text, including <tool_call>. No action was executed."
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "get_goal",
+      "description": "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "tool_choice": "none",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "ack",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "ack": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "ack"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

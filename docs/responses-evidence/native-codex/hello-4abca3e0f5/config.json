@@ -1,0 +1,47 @@
+{
+  "exe": "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu/strata",
+  "cwd": "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source",
+  "args": [
+    "--pack",
+    "/boot/Strata-data/packs/coder-iq1_m",
+    "--native",
+    "/boot/Strata-data/models/coder-IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf",
+    "--ple-gguf",
+    "/boot/Strata-data/models/coder-IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00002-of-00002.gguf",
+    "--expert-profile",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/data/expert-profile-coder.bin",
+    "--expert-cache",
+    "6000",
+    "--prefill",
+    "256",
+    "--kv",
+    "int8",
+    "--max-context",
+    "32768",
+    "--mmap-experts",
+    "--prompt-cache",
+    "2",
+    "--conversation-cache-mib",
+    "0",
+    "--adapt-swaps",
+    "0",
+    "--spec",
+    "4",
+    "--mtp",
+    "/boot/Strata-data/mtp/rt",
+    "--suffix-draft",
+    "0"
+  ],
+  "tokenizer": "/boot/Strata-data/packs/coder-iq1_m/tokenizer",
+  "gpu": 0,
+  "lib_dirs": [
+    "/usr/local/cuda-13.3/lib64"
+  ],
+  "log": "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/evidence/native-codex/hello-4abca3e0f5/engine.txt",
+  "api_monitor": true,
+  "experimental_responses": true,
+  "reasoning_budget_tokens": 256,
+  "sampling": {
+    "temperature": 0
+  }
+}

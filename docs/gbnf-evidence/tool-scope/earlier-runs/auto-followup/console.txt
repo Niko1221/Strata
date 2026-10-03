@@ -1,0 +1,25 @@
+Starting native target
+[strata] starting the engine: reading the model's weights ...
+[strata] mapping the experts from the model files (about 30 GB, --mmap-experts): they are not loaded into RAM - the OS file cache reads them as the GPU's expert cache fills and as requests need them.
+         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.
+         Please wait and don't close this window; the browser opens when it is ready.
+[strata] filling the GPU's expert cache (7815 experts, 14.88 GiB of VRAM) ...
+[strata] still starting (25 s) - please wait ...
+[strata] almost ready ...
+[strata] reading the prompt: 256 of 299 tokens, 10 s so far
+[strata] reading the prompt: 298 of 299 tokens, 11 s so far
+[strata] writing a tool call: facts.lookup: 23 of max 768 tokens, 22.1 tok/s, 12 s
+[strata] done: 30 tokens in 13 s (21.3 tok/s) (stop, cancel=False), expert cache 73.7% hit
+target / no-thinking-json-call: completed function_call
+[strata] reading the prompt: 392 of 399 tokens, 2 s so far
+[strata] writing a tool call: facts.lookup: 21 of max 768 tokens, 27.7 tok/s, 3 s
+[strata] done: 30 tokens in 3 s (25.8 tok/s) (stop, cancel=False), expert cache 76.2% hit
+target / no-thinking-json-answer: completed function_call
+Traceback (most recent call last):
+  File "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/tools/grammar_tool_probe.py", line 198, in <module>
+    main()
+    ~~~~^^
+  File "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/tools/grammar_tool_probe.py", line 173, in main
+    assert answer == ANSWER and not any(x['type'] == 'function_call' for x in final['output'])
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError

@@ -1,0 +1,59 @@
+{
+  "models": [
+    {
+      "slug": "qwen3.8-flash-next",
+      "display_name": "Qwen3.8-Flash-Next (Strata, 32K)",
+      "description": "Strata stateless Responses profile: text, client-owned non-strict function tools, and native reasoning.",
+      "default_reasoning_level": "medium",
+      "supported_reasoning_levels": [
+        {
+          "effort": "none",
+          "description": "No native thinking; use the model card instruct-mode sampling settings."
+        },
+        {
+          "effort": "low",
+          "description": "Brief native reasoning."
+        },
+        {
+          "effort": "medium",
+          "description": "Native reasoning for coding tasks."
+        },
+        {
+          "effort": "high",
+          "description": "Maps to native xhigh; still subject to the configured reasoning budget."
+        }
+      ],
+      "shell_type": "unified_exec",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 0,
+      "availability_nux": null,
+      "upgrade": null,
+      "supports_reasoning_summary_parameter": true,
+      "default_reasoning_summary": "auto",
+      "support_verbosity": false,
+      "default_verbosity": null,
+      "apply_patch_tool_type": null,
+      "truncation_policy": {
+        "mode": "bytes",
+        "limit": 10000
+      },
+      "context_window": 32768,
+      "max_context_window": 32768,
+      "effective_context_window_percent": 90,
+      "experimental_supported_tools": [],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": false,
+      "supports_experimental_context": false,
+      "supports_reasoning_effort_updates": false,
+      "include_skills_usage_instructions": false,
+      "include_plugin_usage_instructions": false,
+      "include_apps_usage_instructions": false,
+      "model_messages": {
+        "instructions_template": "You are a local coding assistant. Use the declared exec_command and write_stdin tools to inspect, edit, and verify files in the local workspace. Obey the current permission and sandbox instructions. Read tool output before deciding what to do next. Do not repeat an unchanged command after the same failure or unhelpful output. Explain blockers honestly. Follow the latest steering request. Report actual changes and test results concisely."
+      }
+    }
+  ]
+}

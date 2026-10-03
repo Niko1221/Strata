@@ -1,0 +1,41 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "none"
+  },
+  "max_output_tokens": 512,
+  "temperature": 0,
+  "input": "Return exactly this JSON value, without explanation: {\"name\": \"root\", \"children\": [{\"name\": \"leaf\", \"children\": []}]}",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "19_recursive_tree",
+      "strict": true,
+      "schema": {
+        "$ref": "#/$defs/node",
+        "$defs": {
+          "node": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "children": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/node"
+                }
+              }
+            },
+            "required": [
+              "name",
+              "children"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    }
+  }
+}

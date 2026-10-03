@@ -1,0 +1,850 @@
+[
+  {
+    "name": "01-codex-title",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "additionalProperties": false
+    },
+    "sample": {
+      "title": "Fix addition"
+    }
+  },
+  {
+    "name": "02-closed-object",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "count": {
+          "type": "integer"
+        },
+        "active": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "count",
+        "active"
+      ],
+      "additionalProperties": false
+    },
+    "sample": {
+      "name": "unit tests",
+      "count": 3,
+      "active": true
+    }
+  },
+  {
+    "name": "03-nested-object",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "project": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "result": {
+              "type": "object",
+              "properties": {
+                "passed": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "passed"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "name",
+            "result"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "project"
+      ],
+      "additionalProperties": false
+    },
+    "sample": {
+      "project": {
+        "name": "Strata",
+        "result": {
+          "passed": true
+        }
+      }
+    }
+  },
+  {
+    "name": "04-array-of-objects",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "file": {
+                "type": "string"
+              },
+              "line": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [
+              "file",
+              "line"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 3
+        }
+      },
+      "required": [
+        "rows"
+      ],
+      "additionalProperties": false
+    },
+    "sample": {
+      "rows": [
+        {
+          "file": "calc.py",
+          "line": 2
+        }
+      ]
+    }
+  },
+  {
+    "name": "05-tuple-prefix-items",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "position": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "items": false,
+          "minItems": 2,
+          "maxItems": 2
+        }
+      },
+      "required": [
+        "position"
+      ],
+      "additionalProperties": false
+    },
+    "sample": {
+      "position": [
+        "calc.py",
+        2
+      ]
+    }
+  },
+  {
+    "name": "06-enum-and-const",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "pass",
+            "fail"
+          ]
+        },
+        "version": {
+          "type": "integer",
+          "const": 1
+        }
+      },
+      "required": [
+        "status",
+        "version"
+      ],
+      "additionalProperties": false
+    },
+    "sample": {
+      "status": "pass",
+      "version": 1
+    }
+  },
+  {
+    "name": "07-nullable",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "error"
+      ],
+      "additionalProperties": false
+    },
+    "sample": {
+      "error": null
+    }
+  },
+  {
+    "name": "08-anyof",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        }
+      },
+      "required": [
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    "sample": {
+      "value": 7
+    }
+  },
+  {
+    "name": "09-oneof-tagged-result",
+    "schema": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "ok"
+            },
+            "value": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "error"
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "message"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "sample": {
+      "kind": "ok",
+      "value": 7
+    }
+  },
+  {
+    "name": "10-allof",
+    "schema": {
+      "allOf": [
+        {
+          "type": "object",
+          "properties": {
+            "score": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "score"
+          ]
+        },
+        {
+          "properties": {
+            "score": {
+              "minimum": 0,
+              "maximum": 10
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "sample": {
+      "score": 8
+    }
+  },
+  {
+    "name": "11-number-bounds",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "ratio": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "multipleOf": 0.25
+        },
+        "positive": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 10
+        }
+      },
+      "required": [
+        "ratio",
+        "positive"
+      ],
+      "additionalProperties": false
+    },
+    "sample": {
+      "ratio": 0.5,
+      "positive": 2
+    }
+  },
+  {
+    "name": "12-string-length-and-pattern",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "ticket": {
+          "type": "string",
+          "pattern": "^[A-Z]{2}-[0-9]{3}$",
+          "minLength": 6,
+          "maxLength": 6
+        }
+      },
+      "required": [
+        "ticket"
+      ],
+      "additionalProperties": false
+    },
+    "sample": {
+      "ticket": "AB-123"
+    }
+  },
+  {
+    "name": "13-unique-and-contains",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "values": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "uniqueItems": true,
+          "contains": {
+            "const": 7
+          },
+          "minContains": 1,
+          "maxContains": 1
+        }
+      },
+      "required": [
+        "values"
+      ],
+      "additionalProperties": false
+    },
+    "sample": {
+      "values": [
+        2,
+        7,
+        9
+      ]
+    }
+  },
+  {
+    "name": "14-dependent-required",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "credit_card": {
+          "type": "string"
+        },
+        "billing_address": {
+          "type": "string"
+        }
+      },
+      "required": [],
+      "additionalProperties": false,
+      "dependentRequired": {
+        "credit_card": [
+          "billing_address"
+        ]
+      }
+    },
+    "sample": {
+      "credit_card": "example",
+      "billing_address": "example street"
+    }
+  },
+  {
+    "name": "15-dependent-schemas",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "mode": {
+          "type": "string"
+        }
+      },
+      "required": [],
+      "additionalProperties": false,
+      "dependentSchemas": {
+        "enabled": {
+          "required": [
+            "mode"
+          ]
+        }
+      }
+    },
+    "sample": {
+      "enabled": true,
+      "mode": "local"
+    }
+  },
+  {
+    "name": "16-if-then-else",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "count",
+            "text"
+          ]
+        },
+        "value": {}
+      },
+      "required": [
+        "kind",
+        "value"
+      ],
+      "additionalProperties": false,
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "count"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "value": {
+            "type": "integer"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "value": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "sample": {
+      "kind": "count",
+      "value": 3
+    }
+  },
+  {
+    "name": "17-property-names-and-pattern-properties",
+    "schema": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-z]+$"
+      },
+      "patternProperties": {
+        "^count": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": {
+        "type": "string"
+      },
+      "minProperties": 1,
+      "maxProperties": 3
+    },
+    "sample": {
+      "count": 3,
+      "name": "tests"
+    }
+  },
+  {
+    "name": "18-local-defs-ref",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/label"
+          },
+          "minItems": 1,
+          "maxItems": 1
+        },
+        "ok": {
+          "type": "boolean",
+          "const": true
+        }
+      },
+      "required": [
+        "rows",
+        "ok"
+      ],
+      "additionalProperties": false,
+      "$defs": {
+        "label": {
+          "type": "string",
+          "enum": [
+            "café"
+          ]
+        }
+      }
+    },
+    "sample": {
+      "rows": [
+        "café"
+      ],
+      "ok": true
+    }
+  },
+  {
+    "name": "19-recursive-tree",
+    "schema": {
+      "$ref": "#/$defs/node",
+      "$defs": {
+        "node": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "children": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/node"
+              }
+            }
+          },
+          "required": [
+            "name",
+            "children"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    "sample": {
+      "name": "root",
+      "children": [
+        {
+          "name": "leaf",
+          "children": []
+        }
+      ]
+    }
+  },
+  {
+    "name": "20-local-anchor",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "$ref": "#positive"
+        }
+      },
+      "required": [
+        "value"
+      ],
+      "additionalProperties": false,
+      "$defs": {
+        "positive": {
+          "$anchor": "positive",
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "sample": {
+      "value": 1
+    }
+  },
+  {
+    "name": "21-dynamic-anchor-ref",
+    "schema": {
+      "$dynamicAnchor": "node",
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "integer"
+        },
+        "child": {
+          "$dynamicRef": "#node"
+        }
+      },
+      "required": [
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    "sample": {
+      "value": 1,
+      "child": {
+        "value": 2
+      }
+    }
+  },
+  {
+    "name": "22-not",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "not": {
+            "enum": [
+              "reserved",
+              "admin"
+            ]
+          }
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false
+    },
+    "sample": {
+      "name": "local"
+    }
+  },
+  {
+    "name": "23-unevaluated-items",
+    "schema": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "type": "string"
+        }
+      ],
+      "unevaluatedItems": false
+    },
+    "sample": [
+      "local"
+    ]
+  },
+  {
+    "name": "24-formats",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email"
+        },
+        "date": {
+          "type": "string",
+          "format": "date"
+        },
+        "uri": {
+          "type": "string",
+          "format": "uri"
+        }
+      },
+      "required": [
+        "email",
+        "date",
+        "uri"
+      ],
+      "additionalProperties": false
+    },
+    "sample": {
+      "email": "local@example.test",
+      "date": "2026-10-03",
+      "uri": "https://example.test/"
+    }
+  },
+  {
+    "name": "25-annotations",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "string",
+          "title": "Answer",
+          "description": "A human-readable result.",
+          "default": "ready",
+          "examples": [
+            "ready"
+          ],
+          "readOnly": true,
+          "writeOnly": false,
+          "deprecated": false,
+          "$comment": "Annotations do not insert defaults or modify output."
+        }
+      },
+      "required": [
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    "sample": {
+      "value": "ready"
+    }
+  },
+  {
+    "name": "26-content-annotations",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "payload": {
+          "type": "string",
+          "contentEncoding": "base64",
+          "contentMediaType": "application/json",
+          "contentSchema": {
+            "type": "object"
+          }
+        }
+      },
+      "required": [
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    "sample": {
+      "payload": "eyJvayI6dHJ1ZX0="
+    }
+  },
+  {
+    "name": "27-boolean-child-schemas",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "anything": true,
+        "forbidden": false
+      },
+      "required": [
+        "anything"
+      ],
+      "additionalProperties": false
+    },
+    "sample": {
+      "anything": [
+        1,
+        "x",
+        null
+      ]
+    }
+  },
+  {
+    "name": "28-literal-ref-property",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "$ref": {
+          "type": "string"
+        },
+        "count": {
+          "$ref": "#/$defs/count"
+        }
+      },
+      "required": [
+        "$ref",
+        "count"
+      ],
+      "additionalProperties": false,
+      "$defs": {
+        "count": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "sample": {
+      "$ref": "literal field",
+      "count": 2
+    }
+  },
+  {
+    "name": "29-tool-result-answer",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    "sample": {
+      "value": 27
+    }
+  },
+  {
+    "name": "30-json-schema-dialect",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "urn:strata:example:answer",
+      "type": "object",
+      "properties": {
+        "answer": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "answer"
+      ],
+      "additionalProperties": false
+    },
+    "sample": {
+      "answer": "ready"
+    }
+  }
+]

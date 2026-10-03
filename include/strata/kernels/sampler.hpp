@@ -25,6 +25,17 @@ struct SamplerParams {
     uint64_t seed = 0;           // drives Philox, which is counter-based on (seed, token index)
     uint64_t counter = 0;        // absolute draw index of row 0; advance across decode calls
     bool greedy = false;
+    const int32_t* selection_status = nullptr; // internal device row guard; never a request parameter
+};
+
+// Optional device buffers for constrained selection. Rows are packed bits at
+// stride ceil(n_vocab/32). Scratch logits and one status integer per row belong
+// to the caller and remain alive through the stream. Status: 1 = no candidate,
+// 2 = a non-finite legal score. The selected ID is -1 on either error.
+struct TokenMask {
+    const int32_t* rows = nullptr;
+    float* scratch = nullptr;
+    int32_t* status = nullptr;
 };
 
 // logits (n_tokens, n_vocab) -> one sampled token id per row in `out`.
@@ -40,7 +51,7 @@ struct SamplerParams {
 // each row are counted, and ids outside [0, n_vocab) are ignored.  Pass nullptr and 0 when no penalties apply.
 // A verify window's rows need DIFFERENT histories: row t follows the window's drafts 1..t (`penalty_rows`).
 void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* history, int history_len,
-                   const SamplerParams& p, int* out, void* stream);
+                   const SamplerParams& p, int* out, void* stream, const TokenMask* mask = nullptr);
 
 // The greedy pick (no penalties) on a thread-block cluster of 8 CTAs per row (sm_90+, CUDA; S19): the same token as
 // sample_tokens' one-block argmax, which takes it unless STRATA_ARGMAX_MULTI=0.  False (nothing launched) where it

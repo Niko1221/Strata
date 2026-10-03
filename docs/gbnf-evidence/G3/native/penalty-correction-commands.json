@@ -1,0 +1,28 @@
+[
+  [
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/venv/bin/python",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/tools/grammar_api_probe.py",
+    "--config",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/g2-target.json",
+    "--out",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/evidence/g3/api-penalties"
+  ],
+  [
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/venv/bin/python",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/tools/grammar_native_probe.py",
+    "--config",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/g2-target.json",
+    "--out",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/evidence/g3/native-penalties"
+  ],
+  [
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/venv/bin/python",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/tools/target_only_probe.py",
+    "--config",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/g2-mtp.json",
+    "--mode",
+    "mtp",
+    "--out",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/evidence/g3/mtp-penalties"
+  ]
+]

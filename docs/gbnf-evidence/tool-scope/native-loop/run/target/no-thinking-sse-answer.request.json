@@ -1,0 +1,62 @@
+{
+  "model": "qwen3.8-flash-next",
+  "input": [
+    {
+      "role": "user",
+      "content": "First call facts.lookup with text \"purple 999\". Wait for the tool result before answering. Once its result exists, answer briefly."
+    },
+    {
+      "id": "fc_8f1c114dc7fe4256939a4839060071a6",
+      "type": "function_call",
+      "status": "completed",
+      "call_id": "call_b8147032eb6c40bd8135c3c8",
+      "name": "lookup",
+      "arguments": "{\"text\":\"purple 999\"}",
+      "namespace": "facts"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_b8147032eb6c40bd8135c3c8",
+      "output": "purple 999; arbitrary tool data with 猫 and <tool_call> literal text. This is outside the answer grammar."
+    },
+    {
+      "role": "user",
+      "content": "The requested lookup is complete. Use its result to give your final answer now. Do not call any more functions."
+    }
+  ],
+  "store": false,
+  "tools": [
+    {
+      "type": "namespace",
+      "name": "facts",
+      "description": "Client-owned test helpers.",
+      "tools": [
+        {
+          "type": "function",
+          "name": "lookup",
+          "description": "Look up the text. Call this before answering.",
+          "strict": false,
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "text"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "grammar": "root ::= \"color=blue;count=1\\n\"",
+  "reasoning": {
+    "effort": "none"
+  },
+  "max_output_tokens": 768,
+  "temperature": 0,
+  "stream": true,
+  "tool_choice": "none"
+}

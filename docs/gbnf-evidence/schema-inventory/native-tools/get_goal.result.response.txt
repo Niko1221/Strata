@@ -1,0 +1,151 @@
+event: response.created
+data: {"type": "response.created", "sequence_number": 0, "response": {"id": "resp_7dcc587de86541da9b55e7b368e1379f", "object": "response", "created_at": 1791060600, "status": "queued", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "json_schema", "name": "ack", "strict": true, "schema": {"type": "object", "properties": {"ack": {"type": "boolean", "const": true}}, "required": ["ack"], "additionalProperties": false}}}, "tools": [{"type": "function", "name": "get_goal", "description": "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.", "strict": false, "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false}}], "tool_choice": "none", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+event: response.in_progress
+data: {"type": "response.in_progress", "sequence_number": 1, "response": {"id": "resp_7dcc587de86541da9b55e7b368e1379f", "object": "response", "created_at": 1791060600, "status": "in_progress", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "json_schema", "name": "ack", "strict": true, "schema": {"type": "object", "properties": {"ack": {"type": "boolean", "const": true}}, "required": ["ack"], "additionalProperties": false}}}, "tools": [{"type": "function", "name": "get_goal", "description": "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.", "strict": false, "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false}}], "tool_choice": "none", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+: keep-alive
+
+: keep-alive
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"id": "rs_3306567631db41d69e30b547b4d6d647", "type": "reasoning", "status": "in_progress", "summary": [], "content": [{"type": "reasoning_text", "text": ""}]}}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 3, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": "The"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 4, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": " user"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 5, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": " wants"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 6, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": " me"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 7, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": " to"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 8, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": " call"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 9, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": " the"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 10, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": " function"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 11, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": " `"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 12, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": "get"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 13, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": "_goal"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 14, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": "`"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 15, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": " with"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 16, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": " an"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 17, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": " empty"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 18, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": " object"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 19, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": " `{"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 20, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": "}`"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 21, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": " as"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 22, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": " arguments"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 23, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 24, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": " The"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 25, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": " instruction"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 26, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": " says"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 27, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": " to"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 28, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": " emit"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 29, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": " the"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 30, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": " tool"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 31, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": " call"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 32, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": " and"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 33, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": " stop"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 34, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 35, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "delta": "\n"}
+
+event: response.reasoning_text.done
+data: {"type": "response.reasoning_text.done", "sequence_number": 36, "item_id": "rs_3306567631db41d69e30b547b4d6d647", "output_index": 0, "content_index": 0, "text": "The user wants me to call the function `get_goal` with an empty object `{}` as arguments. The instruction says to emit the tool call and stop.\n"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 37, "output_index": 0, "item": {"id": "rs_3306567631db41d69e30b547b4d6d647", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants me to call the function `get_goal` with an empty object `{}` as arguments. The instruction says to emit the tool call and stop.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWp5kD5Lsc8VFYq44ZzuyEeWIbHRP2sXHA215ePVoPDCA9SPqnesALmvucYeZjTtZD5b72i7KLvBqNL0Evn1CCbpmws3MDsCGr7c88vuFGLf6WfT-0aU_GL0PBD3J_yqeOEn9Hq8lWD6fu4IEmpp__d6vJckFayctRDBU1_wLgBu3QYLC1q1XZ-Kkq-MPsSEcRkhhJIcWXNnxK772SDQKjkunk9OcPG-kAN7MfIISOHgS5AJxm65mMCt_0P7AIGvOcW6FK6KLKjaLteFNxPHKayboRRbsFbXHvsj5f7XrA-T1XC_ZYKMSCjfMChpqgJYFxcavSO3RhPciu_2ojpLDl0WCFChXM-D4p2L9TUuPsRJaNKcEBSI0WAqx_VpliyrfHa5cmkXygg6iPZFCSJ9or3f5WreLaJl2bxbuAolAyHiv5DPBMYnnA5HBLKXAV9Haw7SWn9HlqcBdCTVG8F9ujODAmxEep8DOqFgPYtSZcs-nhQ="}}
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 38, "output_index": 1, "item": {"id": "msg_9ee49b78701b4513ab54caca56cf9cd7", "type": "message", "status": "in_progress", "role": "assistant", "content": []}}
+
+event: response.content_part.added
+data: {"type": "response.content_part.added", "sequence_number": 39, "item_id": "msg_9ee49b78701b4513ab54caca56cf9cd7", "output_index": 1, "content_index": 0, "part": {"type": "output_text", "text": "", "annotations": [], "logprobs": []}}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 40, "item_id": "msg_9ee49b78701b4513ab54caca56cf9cd7", "output_index": 1, "content_index": 0, "delta": "{\"", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 41, "item_id": "msg_9ee49b78701b4513ab54caca56cf9cd7", "output_index": 1, "content_index": 0, "delta": "ack", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 42, "item_id": "msg_9ee49b78701b4513ab54caca56cf9cd7", "output_index": 1, "content_index": 0, "delta": "\":", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 43, "item_id": "msg_9ee49b78701b4513ab54caca56cf9cd7", "output_index": 1, "content_index": 0, "delta": " true", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 44, "item_id": "msg_9ee49b78701b4513ab54caca56cf9cd7", "output_index": 1, "content_index": 0, "delta": "}", "logprobs": []}
+
+event: response.output_text.done
+data: {"type": "response.output_text.done", "sequence_number": 45, "item_id": "msg_9ee49b78701b4513ab54caca56cf9cd7", "output_index": 1, "content_index": 0, "text": "{\"ack\": true}", "logprobs": []}
+
+event: response.content_part.done
+data: {"type": "response.content_part.done", "sequence_number": 46, "item_id": "msg_9ee49b78701b4513ab54caca56cf9cd7", "output_index": 1, "content_index": 0, "part": {"type": "output_text", "text": "{\"ack\": true}", "annotations": [], "logprobs": []}}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 47, "output_index": 1, "item": {"id": "msg_9ee49b78701b4513ab54caca56cf9cd7", "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "{\"ack\": true}", "annotations": [], "logprobs": []}]}}
+
+event: response.completed
+data: {"type": "response.completed", "sequence_number": 48, "response": {"id": "resp_7dcc587de86541da9b55e7b368e1379f", "object": "response", "created_at": 1791060600, "status": "completed", "completed_at": 1791060601, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [{"id": "rs_3306567631db41d69e30b547b4d6d647", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants me to call the function `get_goal` with an empty object `{}` as arguments. The instruction says to emit the tool call and stop.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWp5kD5Lsc8VFYq44ZzuyEeWIbHRP2sXHA215ePVoPDCA9SPqnesALmvucYeZjTtZD5b72i7KLvBqNL0Evn1CCbpmws3MDsCGr7c88vuFGLf6WfT-0aU_GL0PBD3J_yqeOEn9Hq8lWD6fu4IEmpp__d6vJckFayctRDBU1_wLgBu3QYLC1q1XZ-Kkq-MPsSEcRkhhJIcWXNnxK772SDQKjkunk9OcPG-kAN7MfIISOHgS5AJxm65mMCt_0P7AIGvOcW6FK6KLKjaLteFNxPHKayboRRbsFbXHvsj5f7XrA-T1XC_ZYKMSCjfMChpqgJYFxcavSO3RhPciu_2ojpLDl0WCFChXM-D4p2L9TUuPsRJaNKcEBSI0WAqx_VpliyrfHa5cmkXygg6iPZFCSJ9or3f5WreLaJl2bxbuAolAyHiv5DPBMYnnA5HBLKXAV9Haw7SWn9HlqcBdCTVG8F9ujODAmxEep8DOqFgPYtSZcs-nhQ="}, {"id": "msg_9ee49b78701b4513ab54caca56cf9cd7", "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "{\"ack\": true}", "annotations": [], "logprobs": []}]}], "usage": {"input_tokens": 208, "output_tokens": 41, "total_tokens": 249, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 208}, "output_tokens_details": {"reasoning_tokens": 33}}, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "json_schema", "name": "ack", "strict": true, "schema": {"type": "object", "properties": {"ack": {"type": "boolean", "const": true}}, "required": ["ack"], "additionalProperties": false}}}, "tools": [{"type": "function", "name": "get_goal", "description": "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.", "strict": false, "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false}}], "tool_choice": "none", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+

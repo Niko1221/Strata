@@ -1,0 +1,374 @@
+[strata] done: 1 tokens in 0 s (10591.7 tok/s) (disconnect, cancel=True)
+[strata] done: 6 tokens in 0 s (47572.4 tok/s) (stop, cancel=False)
+[strata] the engine reported an error: 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte
+[strata] done: 1 tokens in 0 s (0.0 tok/s) (error, cancel=False)
+[strata] the engine reported an error: native grammar ended inside an incomplete UTF-8 character
+[strata] done: 2 tokens in 0 s (17772.5 tok/s) (error, cancel=False)
+[strata] done: 1 tokens in 0 s (30840.5 tok/s) (length, cancel=False)
+[strata] done: 2 tokens in 0 s (68759.1 tok/s) (length, cancel=False)
+[strata] done: 3 tokens in 0 s (33916.2 tok/s) (length, cancel=False)
+[strata] done: 4 tokens in 0 s (48349.3 tok/s) (length, cancel=False)
+[strata] done: 5 tokens in 0 s (33182.8 tok/s) (length, cancel=False)
+[strata] done: 27 tokens in 0 s (114505.8 tok/s) (stop, cancel=False)
+[strata] done: 27 tokens in 0 s (10723.1 tok/s) (stop, cancel=False)
+[strata] done: 27 tokens in 0 s (169784.4 tok/s) (stop, cancel=False)
+[strata] done: 27 tokens in 0 s (15180.5 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (661.0 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (679.3 tok/s) (stop, cancel=False)
+[strata] refused an API request from the web page 'https://evil.example' (no API key; add its host to "allowed_hosts" or its origin to "cors_origins" in the config)
+[strata] refused an API request from the web page 'https://evil.example' (no API key; add its host to "allowed_hosts" or its origin to "cors_origins" in the config)
+[strata] loading the model again (it was unloaded) ...
+[strata] model unloaded; the next request loads it again
+[strata] loading the model again (it was unloaded) ...
+[strata] the engine is running again
+[strata] done: 7 tokens in 0 s (20082.2 tok/s) (stop, cancel=False)
+[strata] done: 7 tokens in 0 s (40665.0 tok/s) (stop, cancel=False)
+[strata] model unloaded; the next request loads it again
+[strata] loading the model again (it was unloaded) ...
+[strata] the engine is running again
+[strata] done: 7 tokens in 0 s (4327.2 tok/s) (stop, cancel=False)
+[strata] loading the model again (it was unloaded) ...
+[strata] the engine is running again
+[strata] MCP server 'missing' did not start: could not start 'strata-no-such-program': [WinError 2] The system cannot find the file specified. Its tools are left out; the chat works without them.
+[strata] MCP server 'paged': 6 tools (echo, fail, sleep, big, die, add)
+[strata] MCP server 'fake': 6 tools (echo, fail, sleep, big, die, add)
+[strata] MCP server 'broken' did not start: the server stopped: cannot start: missing configuration. Its tools are left out; the chat works without them.
+[strata] MCP server 'solo': 6 tools (echo, fail, sleep, big, die, add)
+[strata] MCP server 'solo' had stopped; starting it again
+[strata] MCP server 'solo': 6 tools (echo, fail, sleep, big, die, add)
+[strata] MCP server 'web': 6 tools (echo, fail, sleep, big, die, add)
+[strata] MCP server 'down' did not start: could not reach http://127.0.0.1:9/mcp: <urlopen error [WinError 10061] No connection could be made because the target machine actively refused it>. Its tools are left out; the chat works without them.
+[strata] done: 13 tokens in 0 s (111505.0 tok/s) (stop, cancel=False)
+[strata] MCP server 'fake': 6 tools (echo, fail, sleep, big, die, add)
+[strata] MCP server 'broken' did not start: the server stopped: cannot start: missing configuration. Its tools are left out; the chat works without them.
+[strata] done: 83 tokens in 0 s (30712.6 tok/s) (stop, cancel=False)
+[strata] MCP server 'fake': 6 tools (echo, fail, sleep, big, die, add)
+[strata] MCP server 'broken' did not start: the server stopped: cannot start: missing configuration. Its tools are left out; the chat works without them.
+[strata] MCP server 'fake': 6 tools (echo, fail, sleep, big, die, add)
+[strata] MCP server 'broken' did not start: the server stopped: cannot start: missing configuration. Its tools are left out; the chat works without them.
+[strata] done: 120 tokens in 0 s (9559.3 tok/s) (stop, cancel=False)
+[strata] tool fake__echo: ok, 5 characters in 0.0 s
+[strata] done: 120 tokens in 0 s (7057.9 tok/s) (stop, cancel=False)
+[strata] tool fake__echo: ok, 5 characters in 0.0 s
+[strata] done: 120 tokens in 0 s (5332.5 tok/s) (stop, cancel=False)
+[strata] MCP server 'fake': 6 tools (echo, fail, sleep, big, die, add)
+[strata] MCP server 'broken' did not start: the server stopped: cannot start: missing configuration. Its tools are left out; the chat works without them.
+[strata] done: 141 tokens in 0 s (35279.9 tok/s) (stop, cancel=False)
+[strata] tool fake__add: ok, 1 characters in 0.0 s
+[strata] done: 13 tokens in 0 s (108186.4 tok/s) (stop, cancel=False)
+[strata] MCP server 'fake': 6 tools (echo, fail, sleep, big, die, add)
+[strata] MCP server 'broken' did not start: the server stopped: cannot start: missing configuration. Its tools are left out; the chat works without them.
+[strata] refused an API request from the web page 'http://evil.example' (no API key; add its host to "allowed_hosts" or its origin to "cors_origins" in the config)
+[strata] done: 13 tokens in 0 s (49614.2 tok/s) (stop, cancel=False)
+[strata] MCP server 'fake': 6 tools (echo, fail, sleep, big, die, add)
+[strata] MCP server 'broken' did not start: the server stopped: cannot start: missing configuration. Its tools are left out; the chat works without them.
+[strata] done: 109 tokens in 0 s (12397.7 tok/s) (stop, cancel=False)
+[strata] MCP server 'fake': 6 tools (echo, fail, sleep, big, die, add)
+[strata] MCP server 'broken' did not start: the server stopped: cannot start: missing configuration. Its tools are left out; the chat works without them.
+[strata] done: 116 tokens in 0 s (23532.7 tok/s) (stop, cancel=False)
+[strata] done: 16 tokens in 0 s (25333.7 tok/s) (stop, cancel=False)
+[strata] done: 16 tokens in 0 s (21966.9 tok/s) (stop, cancel=False)
+[strata] MCP server 'fake': 6 tools (echo, fail, sleep, big, die, add)
+[strata] MCP server 'broken' did not start: the server stopped: cannot start: missing configuration. Its tools are left out; the chat works without them.
+[strata] done: 120 tokens in 0 s (22497.6 tok/s) (stop, cancel=False)
+[strata] MCP server 'fake': 6 tools (echo, fail, sleep, big, die, add)
+[strata] MCP server 'broken' did not start: the server stopped: cannot start: missing configuration. Its tools are left out; the chat works without them.
+[strata] done: 134 tokens in 0 s (6693.5 tok/s) (stop, cancel=False)
+[strata] tool fake__echo: ok, 19 characters in 0.0 s
+[strata] done: 31 tokens in 0 s (2357.5 tok/s) (stop, cancel=False)
+[strata] MCP server 'fake': 6 tools (echo, fail, sleep, big, die, add)
+[strata] MCP server 'broken' did not start: the server stopped: cannot start: missing configuration. Its tools are left out; the chat works without them.
+[strata] done: 84 tokens in 0 s (36378.1 tok/s) (stop, cancel=False)
+[strata] tool fake__fail: error, 27 characters in 0.0 s
+[strata] done: 21 tokens in 0 s (28926.2 tok/s) (stop, cancel=False)
+[strata] MCP server 'fake': 6 tools (echo, fail, sleep, big, die, add)
+[strata] MCP server 'broken' did not start: the server stopped: cannot start: missing configuration. Its tools are left out; the chat works without them.
+[strata] done: 115 tokens in 0 s (27973.4 tok/s) (stop, cancel=False)
+[strata] tool fake__big: ok, 3,000 characters in 0.0 s (truncated for the model)
+[strata] done: 16 tokens in 0 s (17577.0 tok/s) (stop, cancel=False)
+[strata] done: 0 tokens in 0 s (0.0 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] done: 0 tokens in 0 s (0.0 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] done: 0 tokens in 0 s (0.0 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] done: 0 tokens in 0 s (0.0 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] done: 50 tokens in 0 s (26041.9 tok/s) (stop, cancel=False)
+[strata] done: 50 tokens in 0 s (42668.4 tok/s) (stop, cancel=False)
+[strata] done: 50 tokens in 0 s (12429.8 tok/s) (stop, cancel=False)
+[strata] done: 50 tokens in 0 s (55939.0 tok/s) (stop, cancel=False)
+[strata] done: 50 tokens in 0 s (11384.0 tok/s) (stop, cancel=False)
+[strata] loading the model again (it was unloaded) ...
+[strata] the engine is running again
+[strata] done: 50 tokens in 0 s (35726.6 tok/s) (stop, cancel=False)
+[strata] done: 50 tokens in 0 s (60751.8 tok/s) (stop, cancel=False)
+[strata] done: 7 tokens in 0 s (69739.0 tok/s) (stop, cancel=False)
+[strata] done: 195 tokens in 0 s (24796.5 tok/s) (stop, cancel=False)
+[strata] done: 195 tokens in 0 s (18414.7 tok/s) (stop, cancel=False)
+[strata] done: 86 tokens in 0 s (60910.2 tok/s) (stop, cancel=False)
+[strata] done: 20 tokens in 0 s (74104.3 tok/s) (stop, cancel=False)
+[strata] done: 26 tokens in 0 s (93446.4 tok/s) (disconnect, cancel=True)
+[strata] done: 26 tokens in 0 s (119052.3 tok/s) (disconnect, cancel=True)
+[strata] done: 26 tokens in 0 s (88588.1 tok/s) (disconnect, cancel=True)
+[strata] done: 260 tokens in 0 s (29432.9 tok/s) (stop, cancel=False)
+[strata] done: 260 tokens in 0 s (17377.7 tok/s) (stop, cancel=False)
+[strata] done: 89 tokens in 0 s (25098.7 tok/s) (stop, cancel=False)
+[strata] done: 53 tokens in 0 s (83602.1 tok/s) (stop, cancel=False)
+[strata] done: 45 tokens in 0 s (54143.3 tok/s) (length, cancel=False)
+[strata] done: 12 tokens in 0 s (71697.5 tok/s) (stop, cancel=False)
+[strata] refused a request for Host 'evil.example' from 127.0.0.1: not a name this server answers to (add it to "allowed_hosts" in the config or STRATA_ALLOWED_HOSTS, or set an API key)
+[strata] refused an API request from the web page 'https://evil.example' (no API key; add its host to "allowed_hosts" or its origin to "cors_origins" in the config)
+[strata] done: 12 tokens in 0 s (51781.5 tok/s) (stop, cancel=False)
+[strata] done: 12 tokens in 0 s (73692.0 tok/s) (stop, cancel=False)
+[strata] done: 12 tokens in 0 s (32202.0 tok/s) (stop, cancel=False)
+[strata] done: 12 tokens in 0 s (61908.5 tok/s) (stop, cancel=False)
+[strata] done: 2 tokens in 0 s (14413.4 tok/s) (length, cancel=False)
+[strata] done: 6 tokens in 0 s (56679.8 tok/s) (stop, cancel=False)
+[strata] done: 20 tokens in 0 s (91180.5 tok/s) (stop, cancel=False)
+[strata] done: 1 tokens in 0 s (9383.2 tok/s) (disconnect, cancel=True)
+[strata] done: 18 tokens in 0 s (71697.5 tok/s) (stop, cancel=False)
+[strata] done: 3 tokens in 0 s (38956.4 tok/s) (length, cancel=False)
+[strata] done: 3 tokens in 0 s (40986.7 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] done: 3 tokens in 0 s (38362.5 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] done: 3 tokens in 0 s (43539.5 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] done: 3 tokens in 0 s (36157.8 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] done: 3 tokens in 0 s (21006.5 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] done: 20 tokens in 0 s (75573.0 tok/s) (disconnect, cancel=True)
+[strata] done: 26 tokens in 0 s (86003.1 tok/s) (stop, cancel=False)
+[strata] done: 16 tokens in 0 s (80273.8 tok/s) (stop, cancel=False)
+[strata] done: 55 tokens in 0 s (77515.7 tok/s) (stop, cancel=False)
+[strata] done: 37 tokens in 0 s (82241.3 tok/s) (stop, cancel=False)
+[strata] done: 15 tokens in 0 s (82133.9 tok/s) (stop, cancel=False)
+[strata] done: 1 tokens in 0 s (17549.4 tok/s) (disconnect, cancel=True)
+[strata] done: 39 tokens in 0 s (59482.9 tok/s) (stop, cancel=False)
+[strata] done: 30 tokens in 0 s (51254.2 tok/s) (stop, cancel=False)
+[strata] done: 28 tokens in 0 s (85225.3 tok/s) (stop, cancel=False)
+[strata] done: 52 tokens in 0 s (65614.9 tok/s) (length, cancel=False)
+[strata] done: 28 tokens in 0 s (41868.3 tok/s) (stop, cancel=False)
+[strata] done: 26 tokens in 0 s (96420.8 tok/s) (disconnect, cancel=True)
+[strata] done: 134 tokens in 0 s (41802.7 tok/s) (stop, cancel=False)
+[strata] done: 134 tokens in 0 s (17316.9 tok/s) (stop, cancel=False)
+[strata] done: 11 tokens in 0 s (77541.8 tok/s) (stop, cancel=False)
+[strata] done: 11 tokens in 0 s (88555.4 tok/s) (stop, cancel=False)
+[strata] done: 13 tokens in 0 s (11096.0 tok/s) (stop, cancel=False)
+[strata] done: 0 tokens in 0 s (0.0 tok/s) (disconnect, cancel=True)
+[strata] done: 13 tokens in 0 s (8418.4 tok/s) (stop, cancel=False)
+[strata] done: 3 tokens in 0 s (7463.2 tok/s) (disconnect, cancel=True)
+[strata] done: 13 tokens in 0 s (18992.0 tok/s) (stop, cancel=False)
+[strata] done: 1 tokens in 0 s (0.0 tok/s) (stop, cancel=False)
+[strata] done: 2 tokens in 0 s (1560.1 tok/s) (length, cancel=False)
+[strata] scripted generation failure.  The next request starts the engine again.
+[strata] done: 0 tokens in 0 s (0.0 tok/s) (error, cancel=False)
+[strata] done: 7 tokens in 0 s (10657.0 tok/s) (stop, cancel=False)
+[strata] scripted generation failure.  The next request starts the engine again.
+[strata] done: 3 tokens in 0 s (3238.8 tok/s) (error, cancel=False)
+[strata] done: 7 tokens in 0 s (43368.0 tok/s) (stop, cancel=False)
+[strata] done: 30 tokens in 0 s (9077.3 tok/s) (stop, cancel=False)
+[strata] done: 30 tokens in 0 s (2015.9 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (40446.5 tok/s) (length, cancel=False)
+[strata] done: 10 tokens in 0 s (29228.6 tok/s) (length, cancel=False)
+[strata] done: 10 tokens in 0 s (28728.1 tok/s) (length, cancel=False)
+[strata] done: 0 tokens in 1 s (0.0 tok/s) (cancel, cancel=True)
+[strata] done: 0 tokens in 1 s (0.0 tok/s) (cancel, cancel=True)
+[strata] done: 12 tokens in 0 s (35395.0 tok/s) (stop, cancel=False)
+[strata] done: 12 tokens in 0 s (72733.6 tok/s) (stop, cancel=False)
+[strata] done: 12 tokens in 0 s (36765.3 tok/s) (stop, cancel=False)
+[strata] done: 12 tokens in 0 s (42981.8 tok/s) (stop, cancel=False)
+[strata] done: 12 tokens in 0 s (86629.3 tok/s) (stop, cancel=False)
+[strata] done: 12 tokens in 0 s (81973.4 tok/s) (stop, cancel=False)
+[strata] done: 12 tokens in 0 s (49490.3 tok/s) (stop, cancel=False)
+[strata] done: 12 tokens in 0 s (42871.9 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (26051.6 tok/s) (length, cancel=False)
+[strata] done: 10 tokens in 0 s (33341.0 tok/s) (length, cancel=False)
+[strata] done: 10 tokens in 0 s (32363.5 tok/s) (length, cancel=False), expert cache 90.0% hit
+[strata] the engine reported an error: verify: layer 31 never rang (an illegal memory access was encountered)
+[strata] done: 0 tokens in 0 s (0.0 tok/s) (error, cancel=False)
+[strata] the engine reported an error: verify: layer 31 never rang (an illegal memory access was encountered)
+[strata] done: 0 tokens in 0 s (0.0 tok/s) (error, cancel=False)
+[strata] the engine stopped unexpectedly (exit code -9).  The next request starts the engine again.
+[strata] done: 5 tokens in 0 s (21421.4 tok/s) (error, cancel=False)
+[strata] the engine had stopped (exit code None); starting it again (a minute or two) ...
+[strata] the engine is running again
+[strata] done: 50 tokens in 0 s (19148.6 tok/s) (length, cancel=False)
+[strata] done: 50 tokens in 0 s (50327.6 tok/s) (length, cancel=False)
+[strata] done: 1 tokens in 0 s (33554.4 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] answering: 1855 of max 3842 tokens, 1854.2 tok/s, 1 s
+[strata] done: 2011 tokens in 1 s (1651.6 tok/s) (stop, cancel=False)
+[strata] answering: 1791 of max 3842 tokens, 1791.0 tok/s, 1 s
+[strata] done: 2011 tokens in 1 s (1702.0 tok/s) (stop, cancel=False)
+[strata] the engine stopped unexpectedly (exit code -9).  The next request starts the engine again.
+[strata] done: 3 tokens in 0 s (3447.4 tok/s) (error, cancel=False)
+[strata] done: 30 tokens in 1 s (50.6 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] the engine said nothing for 1 s during the request; the server ended the engine. The engine and the server lost step (issue #481; a very slow PC can raise "engine_silence_s" in the config, 0 = wait forever). If it happens again, please add the end of the engine log to github.com/Niko1221/Strata/issues/481. The next request starts the engine again.
+[strata] done: 1 tokens in 1 s (2.0 tok/s) (error, cancel=False)
+[strata] the engine had stopped (exit code 1); starting it again (a minute or two) ...
+[strata] the engine is running again
+[strata] done: 2 tokens in 0 s (24745.2 tok/s) (length, cancel=False)
+[strata] the engine said nothing for 1 s during the request; the server ended the engine. The engine and the server lost step (issue #481; a very slow PC can raise "engine_silence_s" in the config, 0 = wait forever). If it happens again, please add the end of the engine log to github.com/Niko1221/Strata/issues/481. The next request starts the engine again.
+[strata] done: 1 tokens in 1 s (2.0 tok/s) (error, cancel=False)
+[strata] the engine had stopped (exit code 1); starting it again (a minute or two) ...
+[strata] the engine is running again
+[strata] done: 2 tokens in 0 s (7436.7 tok/s) (length, cancel=False)
+[strata] the engine did not finish the request after it was stopped (STOP) within 0 s; the server ended the engine. The engine and the server lost step (issue #481; a very slow PC can raise "engine_silence_s" in the config, 0 = wait forever). If it happens again, please add the end of the engine log to github.com/Niko1221/Strata/issues/481. The next request starts the engine again.
+[strata] done: 2 tokens in 1 s (3.8 tok/s) (error, cancel=False)
+[strata] the engine had stopped (exit code 1); starting it again (a minute or two) ...
+[strata] the engine is running again
+[strata] done: 2 tokens in 0 s (26462.5 tok/s) (length, cancel=False)
+[strata] done: 8 tokens in 0 s (37871.8 tok/s) (length, cancel=False)
+[strata] done: 50 tokens in 0 s (54148.0 tok/s) (length, cancel=False)
+[strata] done: 50 tokens in 0 s (53649.3 tok/s) (length, cancel=False)
+[strata] done: 50 tokens in 0 s (59459.9 tok/s) (length, cancel=False)
+[strata] done: 50 tokens in 0 s (54008.6 tok/s) (length, cancel=False)
+[strata] done: 1500 tokens in 0 s (3459.0 tok/s) (length, cancel=False)
+[strata] done: 1500 tokens in 1 s (2501.5 tok/s) (length, cancel=False)
+[strata] answering: 1727 of max 3842 tokens, 1724.6 tok/s, 1 s
+[strata] done: 2011 tokens in 1 s (1458.5 tok/s) (stop, cancel=False)
+[strata] answering: 1980 of max 3842 tokens, 1977.0 tok/s, 1 s
+[strata] done: 2011 tokens in 1 s (1890.4 tok/s) (stop, cancel=False)
+[strata] answering: 1908 of max 3842 tokens, 1905.6 tok/s, 1 s
+[strata] done: 2011 tokens in 1 s (1721.3 tok/s) (stop, cancel=False)
+[strata] done: 2011 tokens in 1 s (2461.9 tok/s) (stop, cancel=False)
+[strata] answering: 1654 of max 3842 tokens, 1654.1 tok/s, 1 s
+[strata] done: 2011 tokens in 1 s (1461.0 tok/s) (stop, cancel=False)
+[strata] done: 2011 tokens in 1 s (2203.9 tok/s) (stop, cancel=False)
+[strata] done: 2011 tokens in 1 s (3045.6 tok/s) (stop, cancel=False)
+[strata] done: 2011 tokens in 1 s (2764.0 tok/s) (stop, cancel=False)
+[strata] done: 2011 tokens in 1 s (3005.6 tok/s) (stop, cancel=False)
+[strata] done: 2011 tokens in 1 s (3041.4 tok/s) (stop, cancel=False)
+[strata] done: 1 tokens in 0 s (28149.7 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] done: 1 tokens in 0 s (21845.3 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] done: 5 tokens in 0 s (82241.3 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] done: 1 tokens in 0 s (40329.8 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] done: 5 tokens in 0 s (75983.8 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] done: 8 tokens in 0 s (55188.2 tok/s) (length, cancel=False)
+[strata] done: 8 tokens in 0 s (101372.9 tok/s) (length, cancel=False)
+[strata] done: 8 tokens in 0 s (100764.1 tok/s) (length, cancel=False)
+[strata] done: 8 tokens in 0 s (98689.5 tok/s) (length, cancel=False)
+[strata] done: 8 tokens in 0 s (129553.8 tok/s) (length, cancel=False)
+[strata] done: 8 tokens in 0 s (128561.0 tok/s) (length, cancel=False)
+[strata] done: 8 tokens in 0 s (153216.6 tok/s) (length, cancel=False)
+[strata] done: 8 tokens in 0 s (133152.5 tok/s) (length, cancel=False)
+[strata] done: 8 tokens in 0 s (76608.3 tok/s) (length, cancel=False)
+[strata] done: 8 tokens in 0 s (78951.6 tok/s) (length, cancel=False)
+[strata] done: 8 tokens in 0 s (42744.5 tok/s) (length, cancel=False)
+[strata] done: 8 tokens in 0 s (40672.0 tok/s) (length, cancel=False)
+[strata] other apps use their own settings again
+[strata] other apps now use the Chat settings: temperature=0.3
+[strata] other apps use their own settings again
+[strata] done: 16 tokens in 0 s (40329.8 tok/s) (stop, cancel=False)
+[strata] other apps now use the Chat settings: temperature=1.0
+[strata] other apps now use the Chat settings: temperature=0.3, top_p=0.9, top_k=10, seed=7, max_tokens=77, reasoning_effort=low, experimental_speed_projection=False
+[strata] done: 16 tokens in 0 s (74731.5 tok/s) (stop, cancel=False)
+[strata] done: 5 tokens in 0 s (51909.7 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] other apps now use the Chat settings: temperature=1.0
+[strata] model unloaded; the next request loads it again
+[strata] before loading: C:\Users\dflanag3\Documents\fleet\strata-native-gbnf\.venv\Scripts\python.exe -c open('C:\\Users\\dflanag3\\AppData\\Local\\Temp\\tmp5b5re4aj\\ran', 'w').close()
+[strata] loading the model again (it was unloaded) ...
+[strata] the engine is running again
+[strata] done: 13 tokens in 0 s (107972.2 tok/s) (stop, cancel=False)
+[strata] the model unloads after 1 s without requests
+[strata] model unloaded after 1 s idle; the next request loads it again
+[strata] loading the model again (it was unloaded) ...
+[strata] the engine is running again
+[strata] done: 13 tokens in 0 s (16453.2 tok/s) (stop, cancel=False)
+[strata] model unloaded; the next request loads it again
+[strata] loading the model again (it was unloaded) ...
+[strata] the engine is running again
+[strata] model unloaded; the next request loads it again
+[strata] model unloaded after 1 s idle; the next request loads it again
+[strata] loading the model again (it was unloaded) ...
+[strata] the engine is running again
+[strata] done: 13 tokens in 0 s (24841.0 tok/s) (stop, cancel=False)
+[strata] model unloaded; the next request loads it again
+[strata] loading the model again (it was unloaded) ...
+[strata] the engine is running again
+[strata] done: 13 tokens in 0 s (44914.3 tok/s) (stop, cancel=False)
+[strata] model unloaded; the next request loads it again
+[strata] loading the model again (it was unloaded) ...
+[strata] the engine is running again
+[strata] done: 13 tokens in 0 s (51439.6 tok/s) (stop, cancel=False)
+[strata] model unloaded; the next request loads it again
+[strata] starting the vision encoder again ...
+[strata] loading the model again (it was unloaded) ...
+[strata] the engine is running again
+[strata] done: 13 tokens in 0 s (46523.8 tok/s) (stop, cancel=False)
+[strata] done: 15 tokens in 0 s (4298.6 tok/s) (disconnect, cancel=False)
+[strata] done: 20 tokens in 0 s (30393.5 tok/s) (length, cancel=False)
+[strata] done: 211 tokens in 0 s (28616.6 tok/s) (stop, cancel=False)
+[strata] thinking budget reached (30 tokens): wrapping up the thinking
+[strata] done: 122 tokens in 0 s (7287.4 tok/s) (stop, cancel=False)
+[strata] done: 20 tokens in 0 s (29310.3 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] done: 211 tokens in 0 s (17000.6 tok/s) (stop, cancel=False)
+[strata] thinking budget reached (20 tokens): wrapping up the thinking
+[strata] done: 112 tokens in 0 s (14068.9 tok/s) (stop, cancel=False)
+[strata] thinking budget reached (20 tokens): wrapping up the thinking
+[strata] done: 112 tokens in 0 s (18731.3 tok/s) (stop, cancel=False)
+[strata] done: 211 tokens in 0 s (24299.8 tok/s) (stop, cancel=False)
+[strata] done: 17 tokens in 0 s (35228.8 tok/s) (stop, cancel=False)
+[strata] done: 119 tokens in 0 s (29191.8 tok/s) (length, cancel=False)
+[strata] done: 119 tokens in 0 s (17843.0 tok/s) (length, cancel=False)
+[strata] done: 119 tokens in 0 s (37095.7 tok/s) (length, cancel=False)
+[strata] done: 119 tokens in 0 s (20368.2 tok/s) (length, cancel=False)
+[strata] done: 120 tokens in 0 s (36886.5 tok/s) (stop, cancel=False)
+[strata] done: 120 tokens in 0 s (21116.7 tok/s) (stop, cancel=False)
+[strata] done: 120 tokens in 0 s (41313.0 tok/s) (stop, cancel=False)
+[strata] done: 120 tokens in 0 s (21599.7 tok/s) (stop, cancel=False)
+[strata] done: 147 tokens in 0 s (36687.1 tok/s) (stop, cancel=False)
+[strata] done: 147 tokens in 0 s (16181.9 tok/s) (stop, cancel=False)
+[strata] done: 147 tokens in 0 s (34636.4 tok/s) (stop, cancel=False)
+[strata] done: 147 tokens in 0 s (26893.6 tok/s) (stop, cancel=False)
+[strata] done: 13 tokens in 0 s (23271.9 tok/s) (stop, cancel=False), expert cache 90.0% hit
+[strata] done: 5 tokens in 0 s (45197.2 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] done: 13 tokens in 0 s (18939.2 tok/s) (stop, cancel=False), expert cache 90.0% hit
+[strata] done: 13 tokens in 0 s (15125.1 tok/s) (stop, cancel=False), expert cache 90.0% hit
+[strata] done: 13 tokens in 0 s (14979.7 tok/s) (stop, cancel=False), expert cache 90.0% hit
+[strata] done: 13 tokens in 0 s (38183.4 tok/s) (stop, cancel=False), expert cache 90.0% hit
+[strata] done: 5 tokens in 0 s (82241.3 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] done: 255 tokens in 0 s (25003.4 tok/s) (stop, cancel=False)
+[strata] done: 282 tokens in 0 s (12184.5 tok/s) (stop, cancel=False)
+[strata] done: 26 tokens in 0 s (45007.0 tok/s) (stop, cancel=False)
+[strata] done: 26 tokens in 0 s (88949.4 tok/s) (stop, cancel=False)
+[strata] done: 25 tokens in 0 s (50123.1 tok/s) (stop, cancel=False)
+[strata] done: 25 tokens in 0 s (68669.0 tok/s) (stop, cancel=False)
+[strata] done: 270 tokens in 0 s (6094.3 tok/s) (stop, cancel=False)
+[strata] done: 270 tokens in 0 s (23554.7 tok/s) (stop, cancel=False)
+[strata] done: 257 tokens in 0 s (31784.4 tok/s) (stop, cancel=False)
+[strata] done: 257 tokens in 0 s (10893.3 tok/s) (stop, cancel=False)
+[strata] done: 13 tokens in 0 s (48946.1 tok/s) (stop, cancel=False)
+[strata] done: 13 tokens in 0 s (62890.4 tok/s) (stop, cancel=False)
+[strata] done: 3 tokens in 0 s (28992.9 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (49056.2 tok/s) (stop, cancel=False)
+[strata] done: 14 tokens in 0 s (66425.6 tok/s) (stop, cancel=False)
+[strata] done: 12 tokens in 0 s (30671.3 tok/s) (stop, cancel=False)
+[strata] done: 15 tokens in 0 s (83774.4 tok/s) (stop, cancel=False)
+[strata] done: 5 tokens in 0 s (27594.1 tok/s) (length, cancel=False)
+[strata] done: 7 tokens in 0 s (34500.7 tok/s) (stop, cancel=False)
+[strata] done: 21 tokens in 0 s (36684.9 tok/s) (stop, cancel=False)
+[strata] done: 255 tokens in 0 s (17956.3 tok/s) (stop, cancel=False)
+[strata] done: 26 tokens in 0 s (32996.0 tok/s) (stop, cancel=False)
+[strata] done: 7 tokens in 0 s (70408.0 tok/s) (stop, cancel=False)
+[strata] done: 13 tokens in 0 s (66495.1 tok/s) (stop, cancel=False)
+C:\Program Files\Python313\Lib\unittest\case.py:606: ResourceWarning: unclosed file <_io.TextIOWrapper name=3 encoding='cp1252'>
+  if method() is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+----------------------------------------------------------------------
+Ran 257 tests in 145.943s
+
+OK (skipped=5)

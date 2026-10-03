@@ -1,0 +1,2 @@
+# JSON Schema validation for native Responses JSON output.
+jsonschema==4.26.0

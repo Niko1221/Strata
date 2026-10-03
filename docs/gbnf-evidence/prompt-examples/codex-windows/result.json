@@ -1,0 +1,13 @@
+{
+  "result": "pass",
+  "maximum_examples": 3,
+  "attempts": [
+    {
+      "example_count": 0,
+      "result": "pass",
+      "receipt": "examples-0/result.json"
+    }
+  ],
+  "baseline_passed": true,
+  "passed_with_examples": 0
+}

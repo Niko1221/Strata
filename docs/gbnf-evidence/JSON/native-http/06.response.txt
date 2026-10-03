@@ -1,0 +1,94 @@
+event: response.created
+data: {"type": "response.created", "sequence_number": 0, "response": {"id": "resp_a48b0e48a61c484e9e5380f5d855422a", "object": "response", "created_at": 1791055518, "status": "queued", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "json_schema", "name": "lookup_result", "strict": true, "schema": {"type": "object", "properties": {"value": {"type": "integer"}}, "required": ["value"], "additionalProperties": false}}}, "tools": [{"type": "function", "name": "lookup", "description": "Read the hidden integer. Call before answering.", "parameters": {"type": "object", "properties": {}, "additionalProperties": false}, "strict": false}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+event: response.in_progress
+data: {"type": "response.in_progress", "sequence_number": 1, "response": {"id": "resp_a48b0e48a61c484e9e5380f5d855422a", "object": "response", "created_at": 1791055518, "status": "in_progress", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "json_schema", "name": "lookup_result", "strict": true, "schema": {"type": "object", "properties": {"value": {"type": "integer"}}, "required": ["value"], "additionalProperties": false}}}, "tools": [{"type": "function", "name": "lookup", "description": "Read the hidden integer. Call before answering.", "parameters": {"type": "object", "properties": {}, "additionalProperties": false}, "strict": false}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+: keep-alive
+
+: keep-alive
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"id": "rs_779da569844d42ee918e8055a5c3bb52", "type": "reasoning", "status": "in_progress", "summary": [], "content": [{"type": "reasoning_text", "text": ""}]}}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 3, "item_id": "rs_779da569844d42ee918e8055a5c3bb52", "output_index": 0, "content_index": 0, "delta": "We"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 4, "item_id": "rs_779da569844d42ee918e8055a5c3bb52", "output_index": 0, "content_index": 0, "delta": " need"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 5, "item_id": "rs_779da569844d42ee918e8055a5c3bb52", "output_index": 0, "content_index": 0, "delta": " answer"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 6, "item_id": "rs_779da569844d42ee918e8055a5c3bb52", "output_index": 0, "content_index": 0, "delta": " JSON"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 7, "item_id": "rs_779da569844d42ee918e8055a5c3bb52", "output_index": 0, "content_index": 0, "delta": " {\""}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 8, "item_id": "rs_779da569844d42ee918e8055a5c3bb52", "output_index": 0, "content_index": 0, "delta": "value"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 9, "item_id": "rs_779da569844d42ee918e8055a5c3bb52", "output_index": 0, "content_index": 0, "delta": "\":"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 10, "item_id": "rs_779da569844d42ee918e8055a5c3bb52", "output_index": 0, "content_index": 0, "delta": " "}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 11, "item_id": "rs_779da569844d42ee918e8055a5c3bb52", "output_index": 0, "content_index": 0, "delta": "2"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 12, "item_id": "rs_779da569844d42ee918e8055a5c3bb52", "output_index": 0, "content_index": 0, "delta": "7"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 13, "item_id": "rs_779da569844d42ee918e8055a5c3bb52", "output_index": 0, "content_index": 0, "delta": "}."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 14, "item_id": "rs_779da569844d42ee918e8055a5c3bb52", "output_index": 0, "content_index": 0, "delta": "\n"}
+
+event: response.reasoning_text.done
+data: {"type": "response.reasoning_text.done", "sequence_number": 15, "item_id": "rs_779da569844d42ee918e8055a5c3bb52", "output_index": 0, "content_index": 0, "text": "We need answer JSON {\"value\": 27}.\n"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 16, "output_index": 0, "item": {"id": "rs_779da569844d42ee918e8055a5c3bb52", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "We need answer JSON {\"value\": 27}.\n"}], "encrypted_content": "strata-r1.gAAAAABqwVaf1MHJmTx5JVZGXP8xElXwi_-7IC0XRY4VDciUBjRQy2wMRWzeQ_8q2bNjFudH8nABhx_vu15nwlVs9UBnQ6AkumPZYLDBfgpkKILUuGKUsHBeIAmX6InCSOD7BLd1KewrddeiJfWBAopSUpZALxgGN1pLcVRdP2GrbLz6R06FscJhiR9Z4dtflZf8jXmtsXKgIzTZPyUThWlyLis5eIp1eDXcmFuud-4-TDiij7w6QzAyYgfQT0hKyWTM4ImgzQN_rauAgs_AuaDEq4lcSBEjuOy6UMwgZm846rSGqbUBaWJvym42d7iiOkCRjG0npOubGtZ1i5UZ5NlAMmfBYSDJeA=="}}
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 17, "output_index": 1, "item": {"id": "msg_2f4729ecedd940a6a7b2fcffeb9b01d5", "type": "message", "status": "in_progress", "role": "assistant", "content": []}}
+
+event: response.content_part.added
+data: {"type": "response.content_part.added", "sequence_number": 18, "item_id": "msg_2f4729ecedd940a6a7b2fcffeb9b01d5", "output_index": 1, "content_index": 0, "part": {"type": "output_text", "text": "", "annotations": [], "logprobs": []}}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 19, "item_id": "msg_2f4729ecedd940a6a7b2fcffeb9b01d5", "output_index": 1, "content_index": 0, "delta": "{\"", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 20, "item_id": "msg_2f4729ecedd940a6a7b2fcffeb9b01d5", "output_index": 1, "content_index": 0, "delta": "value", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 21, "item_id": "msg_2f4729ecedd940a6a7b2fcffeb9b01d5", "output_index": 1, "content_index": 0, "delta": "\":", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 22, "item_id": "msg_2f4729ecedd940a6a7b2fcffeb9b01d5", "output_index": 1, "content_index": 0, "delta": " ", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 23, "item_id": "msg_2f4729ecedd940a6a7b2fcffeb9b01d5", "output_index": 1, "content_index": 0, "delta": "2", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 24, "item_id": "msg_2f4729ecedd940a6a7b2fcffeb9b01d5", "output_index": 1, "content_index": 0, "delta": "7", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 25, "item_id": "msg_2f4729ecedd940a6a7b2fcffeb9b01d5", "output_index": 1, "content_index": 0, "delta": "}", "logprobs": []}
+
+event: response.output_text.done
+data: {"type": "response.output_text.done", "sequence_number": 26, "item_id": "msg_2f4729ecedd940a6a7b2fcffeb9b01d5", "output_index": 1, "content_index": 0, "text": "{\"value\": 27}", "logprobs": []}
+
+event: response.content_part.done
+data: {"type": "response.content_part.done", "sequence_number": 27, "item_id": "msg_2f4729ecedd940a6a7b2fcffeb9b01d5", "output_index": 1, "content_index": 0, "part": {"type": "output_text", "text": "{\"value\": 27}", "annotations": [], "logprobs": []}}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 28, "output_index": 1, "item": {"id": "msg_2f4729ecedd940a6a7b2fcffeb9b01d5", "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "{\"value\": 27}", "annotations": [], "logprobs": []}]}}
+
+event: response.completed
+data: {"type": "response.completed", "sequence_number": 29, "response": {"id": "resp_a48b0e48a61c484e9e5380f5d855422a", "object": "response", "created_at": 1791055518, "status": "completed", "completed_at": 1791055519, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [{"id": "rs_779da569844d42ee918e8055a5c3bb52", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "We need answer JSON {\"value\": 27}.\n"}], "encrypted_content": "strata-r1.gAAAAABqwVaf1MHJmTx5JVZGXP8xElXwi_-7IC0XRY4VDciUBjRQy2wMRWzeQ_8q2bNjFudH8nABhx_vu15nwlVs9UBnQ6AkumPZYLDBfgpkKILUuGKUsHBeIAmX6InCSOD7BLd1KewrddeiJfWBAopSUpZALxgGN1pLcVRdP2GrbLz6R06FscJhiR9Z4dtflZf8jXmtsXKgIzTZPyUThWlyLis5eIp1eDXcmFuud-4-TDiij7w6QzAyYgfQT0hKyWTM4ImgzQN_rauAgs_AuaDEq4lcSBEjuOy6UMwgZm846rSGqbUBaWJvym42d7iiOkCRjG0npOubGtZ1i5UZ5NlAMmfBYSDJeA=="}, {"id": "msg_2f4729ecedd940a6a7b2fcffeb9b01d5", "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "{\"value\": 27}", "annotations": [], "logprobs": []}]}], "usage": {"input_tokens": 400, "output_tokens": 22, "total_tokens": 422, "input_tokens_details": {"cached_tokens": 360, "cache_write_tokens": 40}, "output_tokens_details": {"reasoning_tokens": 12}}, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "json_schema", "name": "lookup_result", "strict": true, "schema": {"type": "object", "properties": {"value": {"type": "integer"}}, "required": ["value"], "additionalProperties": false}}}, "tools": [{"type": "function", "name": "lookup", "description": "Read the hidden integer. Call before answering.", "parameters": {"type": "object", "properties": {}, "additionalProperties": false}, "strict": false}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+

@@ -1,0 +1,41 @@
+[
+  {
+    "command": [
+      "python",
+      "tools/check_pack.py"
+    ],
+    "return_code": 0,
+    "scope": "handoff tooling only, not Strata implementation"
+  },
+  {
+    "command": [
+      "python",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests",
+      "-v"
+    ],
+    "return_code": 1,
+    "scope": "handoff tooling only, not Strata implementation"
+  },
+  {
+    "command": [
+      "python",
+      "-X",
+      "utf8",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests",
+      "-v"
+    ],
+    "environment": {
+      "PYTHONUTF8": "1"
+    },
+    "return_code": 0,
+    "scope": "handoff tooling only, not Strata implementation"
+  }
+]

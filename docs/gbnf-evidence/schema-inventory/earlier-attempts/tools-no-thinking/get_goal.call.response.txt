@@ -1,0 +1,30 @@
+event: response.created
+data: {"type": "response.created", "sequence_number": 0, "response": {"id": "resp_8c432520ef314dfaa37ec80633b200ad", "object": "response", "created_at": 1791058628, "status": "queued", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 1024, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "get_goal", "description": "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.", "strict": false, "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "none", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+event: response.in_progress
+data: {"type": "response.in_progress", "sequence_number": 1, "response": {"id": "resp_8c432520ef314dfaa37ec80633b200ad", "object": "response", "created_at": 1791058628, "status": "in_progress", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 1024, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "get_goal", "description": "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.", "strict": false, "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "none", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"id": "fc_bfee7bd07c4a46f89fe76cc3b9a0d381", "type": "function_call", "status": "in_progress", "call_id": "call_2ab79eb00f6c49fd84b06ed1", "name": "get_goal", "arguments": ""}}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 3, "item_id": "fc_bfee7bd07c4a46f89fe76cc3b9a0d381", "output_index": 0, "delta": "{"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 4, "item_id": "fc_bfee7bd07c4a46f89fe76cc3b9a0d381", "output_index": 0, "delta": "}"}
+
+event: response.function_call_arguments.done
+data: {"type": "response.function_call_arguments.done", "sequence_number": 5, "item_id": "fc_bfee7bd07c4a46f89fe76cc3b9a0d381", "output_index": 0, "arguments": "{}"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 6, "output_index": 0, "item": {"id": "fc_bfee7bd07c4a46f89fe76cc3b9a0d381", "type": "function_call", "status": "completed", "call_id": "call_2ab79eb00f6c49fd84b06ed1", "name": "get_goal", "arguments": "{}"}}
+
+event: response.completed
+data: {"type": "response.completed", "sequence_number": 7, "response": {"id": "resp_8c432520ef314dfaa37ec80633b200ad", "object": "response", "created_at": 1791058628, "status": "completed", "completed_at": 1791058630, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [{"id": "fc_bfee7bd07c4a46f89fe76cc3b9a0d381", "type": "function_call", "status": "completed", "call_id": "call_2ab79eb00f6c49fd84b06ed1", "name": "get_goal", "arguments": "{}"}], "usage": {"input_tokens": 302, "output_tokens": 14, "total_tokens": 316, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 302}, "output_tokens_details": {"reasoning_tokens": 0}}, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 1024, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "get_goal", "description": "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.", "strict": false, "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "none", "summary": null}, "truncation": "disabled", "metadata": {}}}
+

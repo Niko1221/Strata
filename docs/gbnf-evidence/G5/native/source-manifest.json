@@ -1,0 +1,18 @@
+{
+  "tools/grammar_speculation_probe.py": "358df1397f103c154af89c0fc7b1143e20ab411129127b73b5a4662f78e7ee62",
+  "tools/grammar_api_probe.py": "592251e6d6bbdc3dd5dd82ef5934cdb04a42fa0f9d42d9e63b87c21b6fc179ca",
+  "tools/grammar_numerical_audit.py": "74fa2a525e3695a3a36d0f5983bdf4cf049d5cdbfa93a452a02adedeb80f37c6",
+  "cmake/xgrammar.cmake": "a70dce72bd78809f15a74a770142e6faa9617a6f2bc52ef47fb3cc42290b2d46",
+  "include/strata/core/grammar.hpp": "bb3f035b46e2e3468f5449895c9c699b4bae0b2bd06af242ed45f888bdb551c9",
+  "include/strata/core/coupled_draft.hpp": "8e31a45570ad88275394665bdc081cb609f7f6e2c3f7d784a47231c2e328852b",
+  "include/strata/core/verify.hpp": "56d0d7b65f8c14d8470786c72c09c24f6a06211df2a3e3e971fea953dd903673",
+  "include/strata/program/speculative_window.hpp": "d79e69039813d09953b680f40e28959339dff5e46236f4b053742d035cc9f880",
+  "include/strata/program/grammar_diagnostics.hpp": "2090cdbfc1b19a124234a2a124a5b91308030f785b6d745bebea41fe2d89e105",
+  "src/core/grammar.cpp": "630b299b30edd3547ffa68b3003e52b2979738059cd72513940e09e151c66307",
+  "src/core/grammar_speculation_test.cpp": "da085af9e625e2fce93d5313f5e45d41c6394e7913d5d7e626d4fb01a3383869",
+  "src/kernels/grammar_speculation_gpu_test.cpp": "8dfbc87d4b21a41f460709a619467b547959b0aed7c78e072a30d92f45ed1574",
+  "src/program/generate.cpp": "e41eab6fb9d52fe46d47921067167b72bf413ac3b905d6e944eacb367e1ac2b0",
+  "serve/server.py": "55b43bb0d71371c0885f13d3b88f089bab2e7801aafbd216c745d3518c9aef7c",
+  "serve/test_grammar.py": "32232896c52a8eb0712f72e039d88b6b321146780717edc7691a76282fd0cdea",
+  "tools/target_only_probe.py": "7f55490816385614429573ca54685fc47325b126b4767e77db8cd2e26cd217a4"
+}

@@ -1,0 +1,25 @@
+Test project /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build
+      Start  1: conversation_cache_test
+ 1/10 Test  #1: conversation_cache_test ..........   Passed    0.01 sec
+      Start  2: conversation_memory_test
+ 2/10 Test  #2: conversation_memory_test .........   Passed    0.00 sec
+      Start 10: mmvq_multi_parity
+ 3/10 Test #10: mmvq_multi_parity ................   Passed    0.74 sec
+      Start 12: gdn_rec_parity
+ 4/10 Test #12: gdn_rec_parity ...................   Passed    0.23 sec
+      Start 16: gdn_parity
+ 5/10 Test #16: gdn_parity .......................   Passed    0.32 sec
+      Start 18: sampler_parity
+ 6/10 Test #18: sampler_parity ...................   Passed    1.05 sec
+      Start 19: sampler_parity_one_block
+ 7/10 Test #19: sampler_parity_one_block .........   Passed    1.32 sec
+      Start 20: sampler_parity_old
+ 8/10 Test #20: sampler_parity_old ...............   Passed    3.10 sec
+      Start 41: conv_cache_test
+ 9/10 Test #41: conv_cache_test ..................   Passed    0.00 sec
+      Start 42: coupled_draft_test
+10/10 Test #42: coupled_draft_test ...............   Passed    0.00 sec
+
+100% tests passed, 0 tests failed out of 10
+
+Total Test time (real) =   6.78 sec

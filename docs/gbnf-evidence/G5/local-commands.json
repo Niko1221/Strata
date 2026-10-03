@@ -1,0 +1,19 @@
+[
+  [
+    "C:\\Users\\dflanag3\\Documents\\fleet\\strata-native-gbnf\\.venv\\Scripts\\python.exe",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "serve",
+    "-p",
+    "test_*.py"
+  ],
+  [
+    "C:\\Users\\dflanag3\\Documents\\fleet\\strata-native-gbnf\\.venv\\Scripts\\python.exe",
+    "-m",
+    "unittest",
+    "tools.test_grammar_state_contract",
+    "-v"
+  ]
+]

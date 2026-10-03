@@ -1,0 +1,17 @@
+test_basic (test_settings.SettingsTests.test_basic) ... ok
+test_case_and_order (test_settings.SettingsTests.test_case_and_order) ... ok
+test_duplicate (test_settings.SettingsTests.test_duplicate) ... ok
+test_empty (test_settings.SettingsTests.test_empty) ... ok
+test_empty_key (test_settings.SettingsTests.test_empty_key) ... ok
+test_first_equal (test_settings.SettingsTests.test_first_equal) ... ok
+test_line_endings (test_settings.SettingsTests.test_line_endings) ... ok
+test_literal_fixture (test_settings.SettingsTests.test_literal_fixture) ... ok
+test_missing_equal (test_settings.SettingsTests.test_missing_equal) ... ok
+test_trim_and_empty_value (test_settings.SettingsTests.test_trim_and_empty_value) ... ok
+test_type (test_settings.SettingsTests.test_type) ... ok
+test_unicode (test_settings.SettingsTests.test_unicode) ... ok
+
+----------------------------------------------------------------------
+Ran 12 tests in 0.010s
+
+OK

@@ -1,0 +1,38 @@
+[
+  {
+    "module": "serve.test_security",
+    "command": [
+      "python",
+      "-m",
+      "unittest",
+      "serve.test_security",
+      "-v"
+    ],
+    "return_code": 0,
+    "evidence": "serve-test_security.txt"
+  },
+  {
+    "module": "serve.test_lifecycle",
+    "command": [
+      "python",
+      "-m",
+      "unittest",
+      "serve.test_lifecycle",
+      "-v"
+    ],
+    "return_code": 0,
+    "evidence": "serve-test_lifecycle.txt"
+  },
+  {
+    "module": "serve.test_server",
+    "command": [
+      "python",
+      "-m",
+      "unittest",
+      "serve.test_server",
+      "-v"
+    ],
+    "return_code": 0,
+    "evidence": "serve-test_server.txt"
+  }
+]

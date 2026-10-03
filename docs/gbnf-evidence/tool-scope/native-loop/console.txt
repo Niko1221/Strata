@@ -1,0 +1,80 @@
+Starting native target
+[strata] starting the engine: reading the model's weights ...
+[strata] mapping the experts from the model files (about 30 GB, --mmap-experts): they are not loaded into RAM - the OS file cache reads them as the GPU's expert cache fills and as requests need them.
+         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.
+         Please wait and don't close this window; the browser opens when it is ready.
+[strata] filling the GPU's expert cache (7815 experts, 14.88 GiB of VRAM) ...
+[strata] still starting (25 s) - please wait ...
+[strata] almost ready ...
+[strata] reading the prompt: 256 of 299 tokens, 10 s so far
+[strata] reading the prompt: 298 of 299 tokens, 11 s so far
+[strata] writing a tool call: facts.lookup: 21 of max 768 tokens, 21.2 tok/s, 12 s
+[strata] done: 30 tokens in 12 s (19.2 tok/s) (stop, cancel=False), expert cache 73.7% hit
+target / no-thinking-json-call: completed function_call
+[strata] reading the prompt: 140 of 141 tokens, 1 s so far
+[strata] done: 9 tokens in 2 s (23.5 tok/s) (stop, cancel=False), expert cache 79.3% hit
+target / no-thinking-json-answer: completed message
+[strata] reading the prompt: 256 of 299 tokens, 1 s so far
+[strata] writing a tool call: facts.lookup: 12 of max 768 tokens, 28.6 tok/s, 2 s
+[strata] done: 30 tokens in 3 s (26.0 tok/s) (stop, cancel=False), expert cache 73.7% hit
+target / no-thinking-sse-call: completed function_call
+[strata] answering: 6 of max 768 tokens, 36.7 tok/s, 1 s
+[strata] done: 9 tokens in 1 s (36.2 tok/s) (stop, cancel=False), expert cache 79.3% hit
+target / no-thinking-sse-answer: completed message
+[strata] reading the prompt: 256 of 323 tokens, 1 s so far
+[strata] thinking: 14 of max 768 tokens, 47.7 tok/s, 2 s
+[strata] writing a tool call: facts.lookup: 47 of max 768 tokens, 36.0 tok/s, 3 s
+[strata] done: 59 tokens in 4 s (32.1 tok/s) (stop, cancel=False), expert cache 80.3% hit
+target / thinking-json-call: completed reasoning,function_call
+[strata] thinking: 7 of max 768 tokens, 78.5 tok/s, 1 s
+[strata] thinking: 51 of max 768 tokens, 46.5 tok/s, 2 s
+[strata] done: 71 tokens in 2 s (45.1 tok/s) (stop, cancel=False), expert cache 88.5% hit
+target / thinking-json-answer: completed reasoning,message
+[strata] reading the prompt: 318 of 323 tokens, 1 s so far
+[strata] thinking: 34 of max 768 tokens, 45.7 tok/s, 2 s
+[strata] tool call complete: 58 of max 768 tokens, 32.9 tok/s, 3 s
+[strata] done: 59 tokens in 3 s (32.9 tok/s) (stop, cancel=False), expert cache 80.3% hit
+target / thinking-sse-call: completed reasoning,function_call
+[strata] thinking: 11 of max 768 tokens, 75.6 tok/s, 1 s
+[strata] thinking: 61 of max 768 tokens, 52.3 tok/s, 2 s
+[strata] done: 71 tokens in 2 s (48.7 tok/s) (stop, cancel=False), expert cache 88.5% hit
+target / thinking-sse-answer: completed reasoning,message
+Starting native mtp
+[strata] starting the engine: reading the model's weights ...
+[strata] mapping the experts from the model files (about 30 GB, --mmap-experts): they are not loaded into RAM - the OS file cache reads them as the GPU's expert cache fills and as requests need them.
+         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.
+         Please wait and don't close this window; the browser opens when it is ready.
+[strata] filling the GPU's expert cache (7815 experts, 14.88 GiB of VRAM) ...
+[strata] still starting (25 s) - please wait ...
+[strata] almost ready ...
+[strata] reading the prompt: 256 of 299 tokens, 10 s so far
+[strata] reading the prompt: 298 of 299 tokens, 11 s so far
+[strata] writing a tool call: facts.lookup: 16 of max 768 tokens, 14.5 tok/s, 12 s
+[strata] done: 30 tokens in 13 s (17.4 tok/s) (stop, cancel=False), expert cache 74.6% hit
+mtp / no-thinking-json-call: completed function_call
+[strata] reading the prompt: 140 of 141 tokens, 1 s so far
+[strata] done: 9 tokens in 2 s (24.1 tok/s) (stop, cancel=False), expert cache 79.4% hit
+mtp / no-thinking-json-answer: completed message
+[strata] reading the prompt: 256 of 299 tokens, 3 s so far
+[strata] writing a tool call: facts.lookup: 12 of max 768 tokens, 24.0 tok/s, 4 s
+[strata] done: 30 tokens in 5 s (25.1 tok/s) (stop, cancel=False), expert cache 74.6% hit
+mtp / no-thinking-sse-call: completed function_call
+[strata] answering: 6 of max 768 tokens, 29.9 tok/s, 1 s
+[strata] done: 9 tokens in 1 s (38.6 tok/s) (stop, cancel=False), expert cache 79.4% hit
+mtp / no-thinking-sse-answer: completed message
+[strata] reading the prompt: 256 of 323 tokens, 1 s so far
+[strata] thinking: 14 of max 768 tokens, 37.9 tok/s, 2 s
+[strata] writing a tool call: facts.lookup: 49 of max 768 tokens, 32.2 tok/s, 3 s
+[strata] done: 59 tokens in 4 s (32.6 tok/s) (stop, cancel=False), expert cache 80.1% hit
+mtp / thinking-json-call: completed reasoning,function_call
+[strata] thinking: 11 of max 768 tokens, 81.1 tok/s, 1 s
+[strata] answering: 67 of max 768 tokens, 58.4 tok/s, 2 s
+[strata] done: 71 tokens in 2 s (56.4 tok/s) (stop, cancel=False), expert cache 88.9% hit
+mtp / thinking-json-answer: completed reasoning,message
+[strata] reading the prompt: 318 of 323 tokens, 1 s so far
+[strata] writing a tool call: facts.lookup: 37 of max 768 tokens, 44.8 tok/s, 2 s
+[strata] done: 59 tokens in 3 s (34.1 tok/s) (stop, cancel=False), expert cache 80.1% hit
+mtp / thinking-sse-call: completed reasoning,function_call
+[strata] thinking: 15 of max 768 tokens, 92.8 tok/s, 1 s
+[strata] done: 71 tokens in 2 s (62.8 tok/s) (stop, cancel=False), expert cache 88.9% hit
+mtp / thinking-sse-answer: completed reasoning,message

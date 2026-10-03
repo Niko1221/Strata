@@ -1,0 +1,10 @@
+{
+  "model": "qwen3.8-flash-next",
+  "input": "Reply with exactly this sentence: The sky is purple and the number is 999.",
+  "store": false,
+  "reasoning": {
+    "effort": "none"
+  },
+  "temperature": 0,
+  "max_output_tokens": 64
+}

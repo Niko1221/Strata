@@ -1,6 +1,7 @@
 """JSON response formats at the HTTP boundary: prompt once, validate before delivery.
 
-The native engine has no grammar decoder. Failed generations are errors, never
+This legacy Chat Completions path does not use the native grammar decoder.
+Responses JSON output uses responses_json.py instead. Failed generations are errors, never
 silently retried or returned as successful structured output.
 
 `jsonschema` is optional (no new hard dependency of the server): json_object needs only the standard library, and

@@ -1,0 +1,36 @@
+SYNTHETIC DOCUMENTATION EXAMPLE
+Status: Supported visible content replay without encryption
+
+POST /v1/responses
+Content-Type: application/json
+
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "input": [
+    {
+      "role": "user",
+      "content": "Compare two and three."
+    },
+    {
+      "type": "reasoning",
+      "id": "rs_example",
+      "status": "completed",
+      "summary": [],
+      "content": [
+        {
+          "type": "reasoning_text",
+          "text": "Synthetic example: compare the two supplied numbers."
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": "Three is larger."
+    },
+    {
+      "role": "user",
+      "content": "Continue."
+    }
+  ]
+}

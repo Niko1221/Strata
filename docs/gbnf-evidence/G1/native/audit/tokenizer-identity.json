@@ -1,0 +1,39 @@
+{
+  "result": "pass",
+  "command": [
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-cpu/grammar_native_test",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/data/grammars/cases.json",
+    "/boot/Strata-data/packs/coder-iq1_m/tokenizer",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/evidence/g1/audit/vocab.bin"
+  ],
+  "native_seconds": 0.2641923620030866,
+  "binary_sha256": "b6b1db8d8ef9f5969ec32f260962cad714027bb8c3a6637d63a6ef324aaf4e3b",
+  "vocabulary_size": 248320,
+  "normal_tokens_compared": 248044,
+  "control_or_unused_excluded": 276,
+  "stop_ids": [
+    248044,
+    248046
+  ],
+  "tokenizer_metadata": {
+    "model": "gpt2",
+    "pre": "qwen35",
+    "vocab_size": 248320,
+    "n_merges": 247587,
+    "special_ids": {
+      "tokenizer.ggml.eos_token_id": 248046,
+      "tokenizer.ggml.padding_token_id": 248044,
+      "tokenizer.ggml.bos_token_id": 248044
+    },
+    "add_bos_token": false,
+    "pre_pattern": "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?[\\p{L}\\p{M}]+|\\p{N}| ?[^\\s\\p{L}\\p{M}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
+    "pre_pattern_source": ".ref/llama.cpp src/llama-vocab.cpp L396 (LLAMA_VOCAB_PRE_TYPE_QWEN35)"
+  },
+  "byte_table_sha256": "6fd80168d9b84473f2ca03963388698cd1f56e85acd6f525b15912e1ac4d7bca",
+  "artifact_sha256": {
+    "tokenizer.json": "c0bd435efbc6c3b28964b47999afe16c4ad268c7c7c4e8cb3af410796a6f30bf",
+    "vocab.json": "4ba64f0332abcfb0b600b7df1537d1e836e68009d5fb7cdb77339738dc6365c4",
+    "token_type.json": "5088c8c298fc06af8382ddb3b76c888703ac2634e82263b97eedcc2ad202738b",
+    "merges.txt": "4ba698529766c7a2f5052083ea10cdf2485577f5237a332ee291054eb11e3332"
+  }
+}

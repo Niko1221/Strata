@@ -1,0 +1,151 @@
+PASS: REAL NATIVE GBNF DEMONSTRATION
+
+Run: demo-20261003T134434Z-7d87ed
+Started UTC: 2026-10-03T13:44:36Z
+Finished UTC: 2026-10-03T13:46:11Z
+Branch: work/gbnf
+Commit: c91260ccd3a929ae51696c9dff1f972d6d56adfe
+Worktree: C:\Users\dflanag3\Documents\fleet\strata-native-gbnf
+Native binary SHA-256: b335d98cf16d08795d2e089e12484c3c7212c7b5b85755676b76aab113ba7bbe
+Production/source files hash-verified before running: 300
+GPU: NVIDIA GeForce RTX 4090, 24564 MiB, 595.91.07
+Host: llm-49 (r4090), authorized RTX 4090 only.
+Model: locally installed Coder IQ1_M. No model output was scripted.
+Transport: authenticated loopback HTTP to the existing Strata Service and native engine.
+No model downloads, dependency installs, external model API calls, or production edits.
+
+THE TEST
+The same user prompt was submitted with and without a raw GBNF grammar.
+The grammar permits three colors and counts 1-3, and requires exact punctuation and a newline.
+
+Prompt:
+Reply with exactly this sentence: The sky is purple and the number is 999.
+
+Grammar:
+root ::= "color=" color ";count=" count "\n"
+color ::= "red" | "green" | "blue"
+count ::= [1-3]
+
+MODE: target
+Native INFO: {"arena_mib": 0, "context": 4096, "conversation_cache_mib": 0, "conversation_cache_min_free_mib": 2560, "conversation_cache_slots": 4, "cvec": 0, "decode_mode": "target", "engine": "0.1.38", "expert_cache_mib": 15233, "expert_cache_primary_mib": 15233, "expert_slots": 7815, "expert_slots_primary": 7815, "grammar": "gbnf-v2", "kv": "int8", "kv_resident": 0, "lookup": 0, "mtp_loaded": 0, "mtp_max": 0, "mtp_vram_mib": "0.0", "pcie_frac": "0.55", "pool_workers": 5, "requested_lookup": 3, "requested_spec": 1, "spec": 1, "spec_min_p": "0.00", "version": "0.1.38", "vram_free_mib": 3818}
+Unconstrained output: 'The sky is purple and the number is 999.'
+GBNF JSON output: 'color=blue;count=1\n'
+GBNF SSE output: 'color=blue;count=1\n'
+SSE delta concatenation equals final response text: True
+Native completion counters for the constrained JSON request:
+{
+  "generated": 10,
+  "prompt_tokens": 31,
+  "prompt_ms": 237.3,
+  "decode_ms": 922.3,
+  "finish": "stop",
+  "drafts_accepted": 0,
+  "drafts_offered": 0,
+  "reused": 24,
+  "hits": 3664,
+  "lookups": 4800,
+  "ram_blobs": 0,
+  "file_blobs": 0,
+  "file_mb": 1271.1,
+  "prompt_read": 7
+}
+
+Cases (HTTP status / response status / visible text; times include this individual HTTP request):
+  01-unconstrained: HTTP 200 / completed / 'The sky is purple and the number is 999.' / 6.2264s
+  02-gbnf-json: HTTP 200 / completed / 'color=blue;count=1\n' / 1.8736s
+  03-gbnf-sse: HTTP 200 / completed / 'color=blue;count=1\n' / 0.5588s
+  04-unicode-sse: HTTP 200 / completed / 'café 🐈' / 0.8295s
+  05-token-limit: HTTP 200 / incomplete / 'c' / 0.2590s
+  06-invalid-grammar: HTTP 400 / validation error / '' / 0.0112s
+    Error: {"error": {"type": "invalid_request_error", "code": "invalid_grammar", "param": "grammar", "message": "[13:45:21] /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-g1/cpp/grammar_parser.cc:820: EBNF parser error at line 1, column 10: Rule \"missing\" is not defined"}}
+    Generation started: False
+  07-chat-gbnf-json: HTTP 200 / stop / 'color=blue;count=1\n' / 0.5596s
+Engine stopped after this mode: True
+GPU compute processes after this mode: none
+
+MODE: mtp
+Native INFO: {"arena_mib": 0, "context": 4096, "conversation_cache_mib": 0, "conversation_cache_min_free_mib": 2560, "conversation_cache_slots": 4, "cvec": 0, "decode_mode": "mtp", "engine": "0.1.38", "expert_cache_mib": 15233, "expert_cache_primary_mib": 15233, "expert_slots": 7815, "expert_slots_primary": 7815, "grammar": "gbnf-v2", "kv": "int8", "kv_resident": 0, "lookup": 0, "mtp_loaded": 1, "mtp_max": 0, "mtp_vram_mib": "875.5", "pcie_frac": "0.55", "pool_workers": 5, "requested_lookup": 0, "requested_spec": 4, "spec": 4, "spec_min_p": "0.00", "version": "0.1.38", "vram_free_mib": 2918}
+Unconstrained output: 'The sky is purple and the number is 999.'
+GBNF JSON output: 'color=blue;count=1\n'
+GBNF SSE output: 'color=blue;count=1\n'
+SSE delta concatenation equals final response text: True
+Native completion counters for the constrained JSON request:
+{
+  "generated": 10,
+  "prompt_tokens": 31,
+  "prompt_ms": 214.3,
+  "decode_ms": 875.0,
+  "finish": "stop",
+  "drafts_accepted": 1,
+  "drafts_offered": 1,
+  "reused": 24,
+  "hits": 3682,
+  "lookups": 4800,
+  "ram_blobs": 0,
+  "file_blobs": 0,
+  "file_mb": 1244.0,
+  "prompt_read": 7
+}
+
+Cases (HTTP status / response status / visible text; times include this individual HTTP request):
+  01-unconstrained: HTTP 200 / completed / 'The sky is purple and the number is 999.' / 6.1058s
+  02-gbnf-json: HTTP 200 / completed / 'color=blue;count=1\n' / 1.8080s
+  03-gbnf-sse: HTTP 200 / completed / 'color=blue;count=1\n' / 0.5258s
+  04-unicode-sse: HTTP 200 / completed / 'café 🐈' / 0.8025s
+  05-token-limit: HTTP 200 / incomplete / 'c' / 0.2367s
+  06-invalid-grammar: HTTP 400 / validation error / '' / 0.0105s
+    Error: {"error": {"type": "invalid_request_error", "code": "invalid_grammar", "param": "grammar", "message": "[13:46:08] /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-g1/cpp/grammar_parser.cc:820: EBNF parser error at line 1, column 10: Rule \"missing\" is not defined"}}
+    Generation started: False
+  07-chat-gbnf-json: HTTP 200 / stop / 'color=blue;count=1\n' / 0.5178s
+Engine stopped after this mode: True
+GPU compute processes after this mode: none
+
+EXACT EXAMPLE REQUEST (MTP MODE)
+POST /v1/responses
+Content-Type: application/json
+Authorization uses an ephemeral environment key omitted from this receipt.
+{
+  "model": "qwen3.8-flash-next",
+  "input": "Reply with exactly this sentence: The sky is purple and the number is 999.",
+  "store": false,
+  "reasoning": {
+    "effort": "none"
+  },
+  "temperature": 0,
+  "max_output_tokens": 64,
+  "grammar": "root ::= \"color=\" color \";count=\" count \"\\n\"\ncolor ::= \"red\" | \"green\" | \"blue\"\ncount ::= [1-3]"
+}
+
+RESULT: 14/14 HTTP cases passed across target-only and MTP modes.
+Completed SSE checks: monotonically increasing sequence numbers, stable item references, exactly one terminal event, and deltas equal final text.
+Malformed grammar returned HTTP 400 JSON before SSE headers without starting generation.
+A one-token output limit reported incomplete/max_output_tokens; it was not presented as a completed grammar result.
+Unicode was preserved as cafe-with-accent plus the cat emoji; the exact UTF-8 files are retained.
+Both APIs were exercised: Responses JSON/SSE and Chat Completions JSON.
+The unconstrained and constrained timings use different cache states and are not a speed comparison.
+
+LIMITS
+This fresh run covers target-only and ordinary MTP. It does not newly qualify coupled or suffix execution.
+JSON Schema, JSON-object guarantees, Lark tools, and grammar combined with tools/reasoning remain excluded.
+This is a grammar-enforcement demonstration, not a native Codex tool-loop test or a feature-off build qualification.
+
+PROVENANCE AND CLEANUP
+Exit code: 0. Native engines stopped. GPU has no remaining compute process from the test.
+An earlier attempt hit a Windows cp1252 console error while printing the cat emoji; its broken output pipe interrupted the MTP request.
+That failed capture report, console and stopped-engine cleanup are retained in capture-failure/. It is not counted in this passing run.
+The Windows capture was corrected to UTF-8, and unexpected HTTP errors were retained before assertions. Strata production code was unchanged.
+The test itself did not push or submit a PR. This evidence was subsequently packaged for the work/gbnf branch.
+
+EVIDENCE (relative to this file)
+demo-20261003T134434Z-7d87ed/run/result.json
+demo-20261003T134434Z-7d87ed/run/mtp/02-gbnf-json.request.json
+demo-20261003T134434Z-7d87ed/run/mtp/02-gbnf-json.response.json
+demo-20261003T134434Z-7d87ed/run/mtp/03-gbnf-sse.sse.txt
+demo-20261003T134434Z-7d87ed/run/target/engine.txt
+demo-20261003T134434Z-7d87ed/run/mtp/engine.txt
+demo-20261003T134434Z-7d87ed/manifest.json
+demo-20261003T134434Z-7d87ed/invocation.json
+demo-20261003T134434Z-7d87ed/cleanup.json
+demo-20261003T134434Z-7d87ed/console.txt
+../../../tools/grammar_live_demo.py
+REPORT.md (reproduction and publication notes)

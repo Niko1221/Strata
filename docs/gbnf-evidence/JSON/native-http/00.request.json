@@ -1,0 +1,31 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "medium",
+    "summary": "auto"
+  },
+  "temperature": 0,
+  "input": "Create a short title for fixing an addition function.",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "codex_output_schema",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 36
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

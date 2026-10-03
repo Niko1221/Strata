@@ -1,0 +1,77 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "medium"
+  },
+  "max_output_tokens": 3072,
+  "temperature": 0,
+  "stream": true,
+  "input": [
+    {
+      "role": "user",
+      "content": "Protocol fixture: call get_goal exactly once using these argument values: {}. Emit the tool call and stop. The test client will supply a mocked result."
+    },
+    {
+      "id": "rs_812d7fb46d694b6bb124910e7b673ff4",
+      "type": "reasoning",
+      "status": "completed",
+      "summary": [],
+      "content": [
+        {
+          "type": "reasoning_text",
+          "text": "The user wants me to call get_goal exactly once with empty arguments and stop.\n"
+        }
+      ],
+      "encrypted_content": "strata-r1.gAAAAABqwXDm30T4l6s8pS0aez16YyIqYLNnGdSVfkhxibijTGzLbf0n7Dlv8OmJq2CI-LlCTarIeFP4XF3JXS_9I2uLr1A7q89rNQ58TFw1tNbj4g6rXaaN8BjfuM0YyD0N1Eo1azCJilwaOPOTZZp9TPKYFwt8EtutWmdbwaRXY5Thsxqdva-lCeOpU1sReCVtU1dOmHi9aH_GBTFC_WYVQLUop4SHHNX11vMcUTZ79F_YQUAkTk-eYebj2YBhuLbrtQSKJkRWdYgu6ko7cH54TH7HqIHkMKWc4N_snCGomwGNX1MTFuSch-XmIWjcDGSJHZD1QYmBXf8gzijUtaa19oLwdqSnu_MT938zDjJoP3FLeW6LozZk9nXsK_WcOPz2hum8BhQpYdQlgm_XtFXlvD9JbDxtvg=="
+    },
+    {
+      "id": "fc_a06d60f2dca8424bba3e5d56f5760975",
+      "type": "function_call",
+      "status": "completed",
+      "call_id": "call_fae35380ba1a45bda717d26b",
+      "name": "get_goal",
+      "arguments": "{}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_fae35380ba1a45bda717d26b",
+      "output": "MOCK RESULT: arbitrary non-JSON text, including <tool_call>. No action was executed."
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "get_goal",
+      "description": "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "tool_choice": "none",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "ack",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "ack": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "ack"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

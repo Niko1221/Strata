@@ -1,0 +1,6 @@
+Actual pinned Codex request, before a model task was launched:
+unsupported Responses tool type namespace skipped
+HTTP 500 Jinja Exception: System message must be at the beginning.
+
+Source: owned reference server log, reference-20261003T191457Z/server.txt.
+API credentials were environment-only and are absent from this extract.

@@ -1,0 +1,144 @@
+event: response.created
+data: {"type": "response.created", "sequence_number": 0, "response": {"id": "resp_dcd9a713750b4e1c96004d147ebe33ec", "object": "response", "created_at": 1791058731, "status": "queued", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "write_stdin", "description": "Writes characters to an existing unified exec session and returns recent output.", "strict": false, "parameters": {"type": "object", "properties": {"chars": {"type": "string", "description": "Bytes to write to stdin. Defaults to empty, which polls without writing."}, "max_output_tokens": {"type": "number", "description": "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."}, "session_id": {"type": "number", "description": "Identifier of the running unified exec session."}, "yield_time_ms": {"type": "number", "description": "Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default."}}, "required": ["session_id"], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+event: response.in_progress
+data: {"type": "response.in_progress", "sequence_number": 1, "response": {"id": "resp_dcd9a713750b4e1c96004d147ebe33ec", "object": "response", "created_at": 1791058731, "status": "in_progress", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "write_stdin", "description": "Writes characters to an existing unified exec session and returns recent output.", "strict": false, "parameters": {"type": "object", "properties": {"chars": {"type": "string", "description": "Bytes to write to stdin. Defaults to empty, which polls without writing."}, "max_output_tokens": {"type": "number", "description": "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."}, "session_id": {"type": "number", "description": "Identifier of the running unified exec session."}, "yield_time_ms": {"type": "number", "description": "Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default."}}, "required": ["session_id"], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"id": "rs_e197340f328943549147f3526443d816", "type": "reasoning", "status": "in_progress", "summary": [], "content": [{"type": "reasoning_text", "text": ""}]}}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 3, "item_id": "rs_e197340f328943549147f3526443d816", "output_index": 0, "content_index": 0, "delta": "The"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 4, "item_id": "rs_e197340f328943549147f3526443d816", "output_index": 0, "content_index": 0, "delta": " user"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 5, "item_id": "rs_e197340f328943549147f3526443d816", "output_index": 0, "content_index": 0, "delta": " wants"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 6, "item_id": "rs_e197340f328943549147f3526443d816", "output_index": 0, "content_index": 0, "delta": " me"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 7, "item_id": "rs_e197340f328943549147f3526443d816", "output_index": 0, "content_index": 0, "delta": " to"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 8, "item_id": "rs_e197340f328943549147f3526443d816", "output_index": 0, "content_index": 0, "delta": " call"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 9, "item_id": "rs_e197340f328943549147f3526443d816", "output_index": 0, "content_index": 0, "delta": " write"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 10, "item_id": "rs_e197340f328943549147f3526443d816", "output_index": 0, "content_index": 0, "delta": "_std"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 11, "item_id": "rs_e197340f328943549147f3526443d816", "output_index": 0, "content_index": 0, "delta": "in"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 12, "item_id": "rs_e197340f328943549147f3526443d816", "output_index": 0, "content_index": 0, "delta": " exactly"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 13, "item_id": "rs_e197340f328943549147f3526443d816", "output_index": 0, "content_index": 0, "delta": " once"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 14, "item_id": "rs_e197340f328943549147f3526443d816", "output_index": 0, "content_index": 0, "delta": " with"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 15, "item_id": "rs_e197340f328943549147f3526443d816", "output_index": 0, "content_index": 0, "delta": " specific"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 16, "item_id": "rs_e197340f328943549147f3526443d816", "output_index": 0, "content_index": 0, "delta": " arguments"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 17, "item_id": "rs_e197340f328943549147f3526443d816", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 18, "item_id": "rs_e197340f328943549147f3526443d816", "output_index": 0, "content_index": 0, "delta": " I"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 19, "item_id": "rs_e197340f328943549147f3526443d816", "output_index": 0, "content_index": 0, "delta": " should"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 20, "item_id": "rs_e197340f328943549147f3526443d816", "output_index": 0, "content_index": 0, "delta": " do"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 21, "item_id": "rs_e197340f328943549147f3526443d816", "output_index": 0, "content_index": 0, "delta": " that"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 22, "item_id": "rs_e197340f328943549147f3526443d816", "output_index": 0, "content_index": 0, "delta": " and"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 23, "item_id": "rs_e197340f328943549147f3526443d816", "output_index": 0, "content_index": 0, "delta": " stop"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 24, "item_id": "rs_e197340f328943549147f3526443d816", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 25, "item_id": "rs_e197340f328943549147f3526443d816", "output_index": 0, "content_index": 0, "delta": "\n"}
+
+event: response.reasoning_text.done
+data: {"type": "response.reasoning_text.done", "sequence_number": 26, "item_id": "rs_e197340f328943549147f3526443d816", "output_index": 0, "content_index": 0, "text": "The user wants me to call write_stdin exactly once with specific arguments. I should do that and stop.\n"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 27, "output_index": 0, "item": {"id": "rs_e197340f328943549147f3526443d816", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants me to call write_stdin exactly once with specific arguments. I should do that and stop.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWMtnHB-nbf9ozxoj2QnYefSKMKZye3pyUnr00tQeFn9BevFL90-YRv3wL-9uXRGCtC60FULqA7W4xd81EIp2rxoa5LUhrwwsLJ0fyYstxPj9r1rgETnUXWismA0KEGPCoOfoFfF9odQtPre33mgLV4marC8_Ehpq6SDY6fXzv7GS6rueiu3dWhS4PsVUdCHsecYelwAf8eec7q2bIx4GUDMqOuIOEmf-Kt1AhQxIm516MJvFEt3G4KNaCV5UNL4FJQNqVKMXEM-foI9hu996uFNXCVuXZojnn4xVIxVleQbCuVlXwLIEKfpRmpA8c8vH1rKyrLpO4f0upWl3zLo1cPHif-TxWC3jKMI6RgngEVebG2npPK-ag1hRNr_YYulYP0uONVsSxJ38JSWxleD_Kjj2uLIV0sfe3Mmjd9PmfUWINc="}}
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 28, "output_index": 1, "item": {"id": "fc_d9a2dcefa0de42749bbfbb88e69a92be", "type": "function_call", "status": "in_progress", "call_id": "call_fcf8843398e0425a8d1abe6c", "name": "write_stdin", "arguments": ""}}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 29, "item_id": "fc_d9a2dcefa0de42749bbfbb88e69a92be", "output_index": 1, "delta": "{"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 30, "item_id": "fc_d9a2dcefa0de42749bbfbb88e69a92be", "output_index": 1, "delta": "\"session_id\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 31, "item_id": "fc_d9a2dcefa0de42749bbfbb88e69a92be", "output_index": 1, "delta": "42"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 32, "item_id": "fc_d9a2dcefa0de42749bbfbb88e69a92be", "output_index": 1, "delta": ",\"chars\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 33, "item_id": "fc_d9a2dcefa0de42749bbfbb88e69a92be", "output_index": 1, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 34, "item_id": "fc_d9a2dcefa0de42749bbfbb88e69a92be", "output_index": 1, "delta": "echo"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 35, "item_id": "fc_d9a2dcefa0de42749bbfbb88e69a92be", "output_index": 1, "delta": " ready"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 36, "item_id": "fc_d9a2dcefa0de42749bbfbb88e69a92be", "output_index": 1, "delta": "\\n"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 37, "item_id": "fc_d9a2dcefa0de42749bbfbb88e69a92be", "output_index": 1, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 38, "item_id": "fc_d9a2dcefa0de42749bbfbb88e69a92be", "output_index": 1, "delta": ",\"yield_time_ms\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 39, "item_id": "fc_d9a2dcefa0de42749bbfbb88e69a92be", "output_index": 1, "delta": "1000"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 40, "item_id": "fc_d9a2dcefa0de42749bbfbb88e69a92be", "output_index": 1, "delta": ",\"max_output_tokens\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 41, "item_id": "fc_d9a2dcefa0de42749bbfbb88e69a92be", "output_index": 1, "delta": "100"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 42, "item_id": "fc_d9a2dcefa0de42749bbfbb88e69a92be", "output_index": 1, "delta": "}"}
+
+event: response.function_call_arguments.done
+data: {"type": "response.function_call_arguments.done", "sequence_number": 43, "item_id": "fc_d9a2dcefa0de42749bbfbb88e69a92be", "output_index": 1, "arguments": "{\"session_id\":42,\"chars\":\"echo ready\\n\",\"yield_time_ms\":1000,\"max_output_tokens\":100}"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 44, "output_index": 1, "item": {"id": "fc_d9a2dcefa0de42749bbfbb88e69a92be", "type": "function_call", "status": "completed", "call_id": "call_fcf8843398e0425a8d1abe6c", "name": "write_stdin", "arguments": "{\"session_id\":42,\"chars\":\"echo ready\\n\",\"yield_time_ms\":1000,\"max_output_tokens\":100}"}}
+
+event: response.completed
+data: {"type": "response.completed", "sequence_number": 45, "response": {"id": "resp_dcd9a713750b4e1c96004d147ebe33ec", "object": "response", "created_at": 1791058731, "status": "completed", "completed_at": 1791058736, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [{"id": "rs_e197340f328943549147f3526443d816", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants me to call write_stdin exactly once with specific arguments. I should do that and stop.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWMtnHB-nbf9ozxoj2QnYefSKMKZye3pyUnr00tQeFn9BevFL90-YRv3wL-9uXRGCtC60FULqA7W4xd81EIp2rxoa5LUhrwwsLJ0fyYstxPj9r1rgETnUXWismA0KEGPCoOfoFfF9odQtPre33mgLV4marC8_Ehpq6SDY6fXzv7GS6rueiu3dWhS4PsVUdCHsecYelwAf8eec7q2bIx4GUDMqOuIOEmf-Kt1AhQxIm516MJvFEt3G4KNaCV5UNL4FJQNqVKMXEM-foI9hu996uFNXCVuXZojnn4xVIxVleQbCuVlXwLIEKfpRmpA8c8vH1rKyrLpO4f0upWl3zLo1cPHif-TxWC3jKMI6RgngEVebG2npPK-ag1hRNr_YYulYP0uONVsSxJ38JSWxleD_Kjj2uLIV0sfe3Mmjd9PmfUWINc="}, {"id": "fc_d9a2dcefa0de42749bbfbb88e69a92be", "type": "function_call", "status": "completed", "call_id": "call_fcf8843398e0425a8d1abe6c", "name": "write_stdin", "arguments": "{\"session_id\":42,\"chars\":\"echo ready\\n\",\"yield_time_ms\":1000,\"max_output_tokens\":100}"}], "usage": {"input_tokens": 480, "output_tokens": 99, "total_tokens": 579, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 480}, "output_tokens_details": {"reasoning_tokens": 24}}, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "write_stdin", "description": "Writes characters to an existing unified exec session and returns recent output.", "strict": false, "parameters": {"type": "object", "properties": {"chars": {"type": "string", "description": "Bytes to write to stdin. Defaults to empty, which polls without writing."}, "max_output_tokens": {"type": "number", "description": "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."}, "session_id": {"type": "number", "description": "Identifier of the running unified exec session."}, "yield_time_ms": {"type": "number", "description": "Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default."}}, "required": ["session_id"], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+

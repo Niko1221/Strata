@@ -1,0 +1,27 @@
+Raw GBNF source (root, references, alternatives, grouping and recursion):
+
+root ::= "(" root ")" | word
+word ::= "猫" | "café"
+
+Equivalent Responses request:
+{
+  "model": "qwen3.8-flash-next",
+  "input": "Write ((猫)).",
+  "store": false,
+  "reasoning": {"effort": "none"},
+  "max_output_tokens": 64,
+  "grammar": "root ::= \"(\" root \")\" | word\nword ::= \"猫\" | \"café\""
+}
+
+Pieces:
+- root recursively references itself between literal parentheses.
+- word references a separate rule with two UTF-8 literal alternatives.
+- The newline is a grammar rule boundary. JSON escapes are decoded once by
+  the HTTP adapter; the resulting UTF-8 source is an inert native payload.
+- Native token pieces can cross rule boundaries or split a Unicode character.
+- The matcher retains all valid parse hypotheses; a branch is not a probability.
+- This source allows any nesting depth within the native resource bounds. It
+  does not promise the model chooses exactly the prompt's requested depth.
+
+Examples in the language: 猫, café, (猫), ((café)). These are explanatory examples,
+not model traces. Actual G3 model evidence is in ../gbnf-evidence/G3/native/.

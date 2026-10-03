@@ -1,0 +1,86 @@
+{
+  "scripted_model_output": false,
+  "mocked_external_tool_result": true,
+  "cases": [
+    {
+      "name": "Codex title schema with reasoning and omitted output limit",
+      "http_status": 200,
+      "content_type": "application/json",
+      "seconds": 6.743721844992251,
+      "status": "completed",
+      "output_types": [
+        "reasoning",
+        "message"
+      ]
+    },
+    {
+      "name": "arbitrary nested JSON object",
+      "http_status": 200,
+      "content_type": "application/json",
+      "seconds": 1.8974181190133095,
+      "status": "completed",
+      "output_types": [
+        "message"
+      ]
+    },
+    {
+      "name": "nested schema, local ref, enum, Unicode, typed SSE",
+      "http_status": 200,
+      "content_type": "text/event-stream",
+      "seconds": 1.5277296120038955,
+      "stream_reassembled": true,
+      "status": "completed",
+      "output_types": [
+        "message"
+      ]
+    },
+    {
+      "name": "output exhaustion stays incomplete",
+      "http_status": 200,
+      "content_type": "text/event-stream",
+      "seconds": 0.7858064539905172,
+      "stream_reassembled": true,
+      "status": "incomplete",
+      "output_types": [
+        "message"
+      ]
+    },
+    {
+      "name": "remote schema reference rejected before SSE",
+      "http_status": 400,
+      "content_type": "application/json",
+      "seconds": 0.0008370680006919429,
+      "error": {
+        "type": "invalid_request_error",
+        "code": "invalid_parameter",
+        "param": "text.format.schema",
+        "message": "only local schema references are supported"
+      }
+    },
+    {
+      "name": "real model function call before JSON answer",
+      "http_status": 200,
+      "content_type": "text/event-stream",
+      "seconds": 2.17088735201105,
+      "stream_reassembled": true,
+      "status": "completed",
+      "output_types": [
+        "reasoning",
+        "function_call"
+      ]
+    },
+    {
+      "name": "reasoning, arbitrary mocked tool result, JSON final answer",
+      "http_status": 200,
+      "content_type": "text/event-stream",
+      "seconds": 1.5246421019983245,
+      "stream_reassembled": true,
+      "status": "completed",
+      "output_types": [
+        "reasoning",
+        "message"
+      ]
+    }
+  ],
+  "result": "pass"
+}

@@ -1,0 +1,580 @@
+event: response.created
+data: {"type": "response.created", "sequence_number": 0, "response": {"id": "resp_0accf03ef9f04601b5b3eee7af6e5218", "object": "response", "created_at": 1791062145, "status": "queued", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "exec_command", "description": "Runs a command in a PTY, returning output or a session ID for ongoing interaction.\n\nWindows safety rules:\n- Do not compose destructive filesystem commands across shells. Do not enumerate paths in PowerShell and then pass them to `cmd /c`, batch builtins, or another shell for deletion or moving. Use one shell end-to-end, prefer native PowerShell cmdlets such as `Remove-Item` / `Move-Item` with `-LiteralPath`, and avoid string-built shell commands for file operations.\n- Before any recursive delete or move on Windows, verify the resolved absolute target paths stay within the intended workspace or explicitly named target directory. Never issue a recursive delete or move against a computed path if the final target has not been checked.\n- When using `Start-Process` to launch a background helper or service, pass `-WindowStyle Hidden` unless the user explicitly asked for a visible interactive window. Use visible windows only for interactive tools the user needs to see or control.", "strict": false, "parameters": {"type": "object", "properties": {"cmd": {"type": "string", "description": "Shell command to execute."}, "justification": {"type": "string", "description": "User-facing approval question for `require_escalated`; omit otherwise."}, "login": {"type": "boolean", "description": "True runs the shell with -l/-i semantics; false disables them. Defaults to true."}, "max_output_tokens": {"type": "number", "description": "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."}, "prefix_rule": {"type": "array", "description": "Reusable approval prefix for `cmd`, only with `sandbox_permissions: \"require_escalated\"`; for example [\"git\", \"pull\"].", "items": {"type": "string"}}, "sandbox_permissions": {"type": "string", "description": "Per-command sandbox override. Defaults to `use_default`; use `require_escalated` for unsandboxed execution.", "enum": ["use_default", "require_escalated"]}, "shell": {"type": "string", "description": "Shell binary to launch. Defaults to the user's default shell."}, "tty": {"type": "boolean", "description": "True allocates a PTY for the command; false or omitted uses plain pipes."}, "workdir": {"type": "string", "description": "Working directory for the command. Defaults to the turn cwd."}, "yield_time_ms": {"type": "number", "description": "Maximum time to wait before returning a session ID for a still-running command. Commands that finish sooner return immediately. For ordinary commands, omit this parameter to use the 10000 ms default. Effective range on Windows is 10000-30000 ms."}}, "required": ["cmd"], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+event: response.in_progress
+data: {"type": "response.in_progress", "sequence_number": 1, "response": {"id": "resp_0accf03ef9f04601b5b3eee7af6e5218", "object": "response", "created_at": 1791062145, "status": "in_progress", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "exec_command", "description": "Runs a command in a PTY, returning output or a session ID for ongoing interaction.\n\nWindows safety rules:\n- Do not compose destructive filesystem commands across shells. Do not enumerate paths in PowerShell and then pass them to `cmd /c`, batch builtins, or another shell for deletion or moving. Use one shell end-to-end, prefer native PowerShell cmdlets such as `Remove-Item` / `Move-Item` with `-LiteralPath`, and avoid string-built shell commands for file operations.\n- Before any recursive delete or move on Windows, verify the resolved absolute target paths stay within the intended workspace or explicitly named target directory. Never issue a recursive delete or move against a computed path if the final target has not been checked.\n- When using `Start-Process` to launch a background helper or service, pass `-WindowStyle Hidden` unless the user explicitly asked for a visible interactive window. Use visible windows only for interactive tools the user needs to see or control.", "strict": false, "parameters": {"type": "object", "properties": {"cmd": {"type": "string", "description": "Shell command to execute."}, "justification": {"type": "string", "description": "User-facing approval question for `require_escalated`; omit otherwise."}, "login": {"type": "boolean", "description": "True runs the shell with -l/-i semantics; false disables them. Defaults to true."}, "max_output_tokens": {"type": "number", "description": "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."}, "prefix_rule": {"type": "array", "description": "Reusable approval prefix for `cmd`, only with `sandbox_permissions: \"require_escalated\"`; for example [\"git\", \"pull\"].", "items": {"type": "string"}}, "sandbox_permissions": {"type": "string", "description": "Per-command sandbox override. Defaults to `use_default`; use `require_escalated` for unsandboxed execution.", "enum": ["use_default", "require_escalated"]}, "shell": {"type": "string", "description": "Shell binary to launch. Defaults to the user's default shell."}, "tty": {"type": "boolean", "description": "True allocates a PTY for the command; false or omitted uses plain pipes."}, "workdir": {"type": "string", "description": "Working directory for the command. Defaults to the turn cwd."}, "yield_time_ms": {"type": "number", "description": "Maximum time to wait before returning a session ID for a still-running command. Commands that finish sooner return immediately. For ordinary commands, omit this parameter to use the 10000 ms default. Effective range on Windows is 10000-30000 ms."}}, "required": ["cmd"], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "type": "reasoning", "status": "in_progress", "summary": [], "content": [{"type": "reasoning_text", "text": ""}]}}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 3, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "The"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 4, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " user"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 5, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " wants"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 6, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " me"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 7, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " to"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 8, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " make"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 9, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " exactly"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 10, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " one"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 11, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " exec"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 12, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "_command"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 13, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " call"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 14, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " with"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 15, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " specific"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 16, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " arguments"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 17, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 18, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " Let"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 19, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " me"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 20, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " parse"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 21, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " the"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 22, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " JSON"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 23, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " arguments"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 24, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " carefully"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 25, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 26, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "\n\n"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 27, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "The"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 28, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " cmd"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 29, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " value"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 30, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " is"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 31, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": ":"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 32, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " `"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 33, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "Write"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 34, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "-"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 35, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "Output"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 36, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " \""}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 37, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "ca"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 38, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "fé"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 39, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " \\"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 40, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " literal"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 41, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " "}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 42, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "<tool_call>"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 43, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "\"`"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 44, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "\n\n"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 45, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "Wait"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 46, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": ","}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 47, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " let"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 48, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " me"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 49, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " look"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 50, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " at"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 51, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " the"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 52, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " raw"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 53, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " JSON"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 54, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": ":"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 55, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " `\""}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 56, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "cmd"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 57, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "\":"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 58, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " \""}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 59, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "Write"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 60, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "-"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 61, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "Output"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 62, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " \\\""}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 63, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "ca"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 64, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "fé"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 65, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " \\\\"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 66, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " literal"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 67, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " "}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 68, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "<tool_call>"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 69, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "\\\""}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 70, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "\"`"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 71, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "\n\n"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 72, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "So"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 73, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " the"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 74, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " actual"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 75, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " cmd"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 76, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " string"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 77, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " is"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 78, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": ":"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 79, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " `"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 80, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "Write"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 81, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "-"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 82, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "Output"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 83, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " \""}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 84, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "ca"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 85, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "fé"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 86, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " \\"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 87, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " literal"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 88, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " "}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 89, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "<tool_call>"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 90, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "\"`"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 91, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "\n\n"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 92, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "The"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 93, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " other"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 94, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " parameters"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 95, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": ":"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 96, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "\n"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 97, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "-"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 98, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " work"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 99, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "dir"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 100, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": ":"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 101, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " \""}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 102, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "C"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 103, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": ":\\"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 104, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "fixture"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 105, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " with"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 106, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " spaces"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 107, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "\""}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 108, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "\n"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 109, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "-"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 110, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " yield"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 111, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "_time"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 112, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "_ms"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 113, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": ":"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 114, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " "}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 115, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "1"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 116, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "0"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 117, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "0"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 118, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "0"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 119, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "0"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 120, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "\n"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 121, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "-"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 122, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " tty"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 123, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": ":"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 124, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " false"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 125, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "\n"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 126, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "-"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 127, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " login"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 128, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": ":"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 129, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " false"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 130, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "\n"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 131, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "-"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 132, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " max"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 133, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "_output"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 134, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "_tokens"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 135, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": ":"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 136, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " "}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 137, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "1"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 138, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "0"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 139, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "0"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 140, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "0"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 141, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "\n\n"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 142, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "I"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 143, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " should"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 144, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " emit"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 145, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " the"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 146, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " tool"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 147, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " call"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 148, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " and"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 149, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": " stop"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 150, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 151, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "delta": "\n"}
+
+event: response.reasoning_text.done
+data: {"type": "response.reasoning_text.done", "sequence_number": 152, "item_id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "output_index": 0, "content_index": 0, "text": "The user wants me to make exactly one exec_command call with specific arguments. Let me parse the JSON arguments carefully.\n\nThe cmd value is: `Write-Output \"café \\ literal <tool_call>\"`\n\nWait, let me look at the raw JSON: `\"cmd\": \"Write-Output \\\"café \\\\ literal <tool_call>\\\"\"`\n\nSo the actual cmd string is: `Write-Output \"café \\ literal <tool_call>\"`\n\nThe other parameters:\n- workdir: \"C:\\fixture with spaces\"\n- yield_time_ms: 10000\n- tty: false\n- login: false\n- max_output_tokens: 1000\n\nI should emit the tool call and stop.\n"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 153, "output_index": 0, "item": {"id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants me to make exactly one exec_command call with specific arguments. Let me parse the JSON arguments carefully.\n\nThe cmd value is: `Write-Output \"café \\ literal <tool_call>\"`\n\nWait, let me look at the raw JSON: `\"cmd\": \"Write-Output \\\"café \\\\ literal <tool_call>\\\"\"`\n\nSo the actual cmd string is: `Write-Output \"café \\ literal <tool_call>\"`\n\nThe other parameters:\n- workdir: \"C:\\fixture with spaces\"\n- yield_time_ms: 10000\n- tty: false\n- login: false\n- max_output_tokens: 1000\n\nI should emit the tool call and stop.\n"}], "encrypted_content": "strata-r1.gAAAAABqwXCYAJtmC0Rn_e6ZVPe8pTPTxRUeMMUjd2OUusUG1GgGlT7tetrXXK0vGxDU9Cu1q01ch8o5Ma5orZCT_Qs92H9a2FrMjdXHMybNJGFDACE_DczWqKFyLMt1w0HZ5wz5Icx_vwYt30VAzKnPeaIs6pnUnixiXbEDbscphNS_iEa6slqdxm1TCtyTN8s-vpeH1o6IcNXTOCLVu__jWHF25wzQa-9GkighejN8vznHSsWGF4ayqnyA7sTgCJwbxc4vUlV3SkO0HMI6nSaqdJpyPV-e49vrg0Ah560iPFQmParZMbCy9d8fveCiycuEs9xlf7x-0r5GtxkMxqYtWcOGFpI0mmGAGe-zodey9qYGKRxaTVq4LssXohd0BN883b3kS5pwewKESFsDhvfXLzG6a0UYuY6zvHP_7-_lIx5P8BycCFV_iIyzSh8A53S1gGpK8aK3yb6Ru2vp7rupRWSFrabO78g-aJ1LXbdH62vIkw_4WxvpE51V56EoHfF3whh26u3Lv3mUd1L0E2VlZuLQiApkhuAExjiP_IayIqgCmTc8xoRtfqzl0as2uiMKRDS2cYKH3iRorMRgYGC_xYZ7KYnl4G62N2DrCEam1Qynm_mYxnxF1_70UMLYDEsygEBkGqU2-PVERzTbqxIznny2sQwjZMcS5GaaZr6P1hhihsOQHo6lIaDrV2qEZaG_5oB_A9T2-qVvUayM6oL-DIf9H5qe8WFhUhpRKGBa7U9Nprca4_Iwa8BnZ9B0_7eyUf6uTLOVMvwGIQLF4P7ntIkCNJ5uqi0CdivHXikjL0ilcRBUjk1NYaG8dCg4uaKpb6y2u3GdguCgl6sbTO7y2_NAHc6NAwS6mieKMLPSfUepbod7FER4oZQB6ndsDiPKjLUgEDL61R9U-wLbc1FF509kS6tZ9QKEdDC7S3KAvKCB-Q-lGH45K0dmFMhKOVmrvscb-DvrWr0pUowF9-5nDUkRoJgD-xMaEY3e8avfDTShaW4l7Up95pWwmaFIdXxn32pV_5ZVre_I9F-CJE9XQyNRAUn5jQ=="}}
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 154, "output_index": 1, "item": {"id": "fc_13eb79ba221b4fec95a44539e3db0966", "type": "function_call", "status": "in_progress", "call_id": "call_42e42f3e21a6454f9c2c0235", "name": "exec_command", "arguments": ""}}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 155, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": "{"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 156, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": "\"cmd\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 157, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 158, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": "Write"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 159, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": "-"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 160, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": "Output"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 161, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": " \\\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 162, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": "ca"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 163, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": "f\\u00e9"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 164, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": " \\\\"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 165, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": " literal"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 166, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": " "}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 167, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": "<tool_call>"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 168, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": "\\\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 169, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 170, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": ",\"login\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 171, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": "false"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 172, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": ",\"max_output_tokens\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 173, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": "1000"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 174, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": ",\"tty\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 175, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": "false"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 176, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": ",\"workdir\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 177, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 178, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": "C"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 179, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": ":\\\\"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 180, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": "fixture"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 181, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": " with"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 182, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": " spaces"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 183, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 184, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": ",\"yield_time_ms\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 185, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": "10000"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 186, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "delta": "}"}
+
+event: response.function_call_arguments.done
+data: {"type": "response.function_call_arguments.done", "sequence_number": 187, "item_id": "fc_13eb79ba221b4fec95a44539e3db0966", "output_index": 1, "arguments": "{\"cmd\":\"Write-Output \\\"caf\\u00e9 \\\\ literal <tool_call>\\\"\",\"login\":false,\"max_output_tokens\":1000,\"tty\":false,\"workdir\":\"C:\\\\fixture with spaces\",\"yield_time_ms\":10000}"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 188, "output_index": 1, "item": {"id": "fc_13eb79ba221b4fec95a44539e3db0966", "type": "function_call", "status": "completed", "call_id": "call_42e42f3e21a6454f9c2c0235", "name": "exec_command", "arguments": "{\"cmd\":\"Write-Output \\\"caf\\u00e9 \\\\ literal <tool_call>\\\"\",\"login\":false,\"max_output_tokens\":1000,\"tty\":false,\"workdir\":\"C:\\\\fixture with spaces\",\"yield_time_ms\":10000}"}}
+
+event: response.completed
+data: {"type": "response.completed", "sequence_number": 189, "response": {"id": "resp_0accf03ef9f04601b5b3eee7af6e5218", "object": "response", "created_at": 1791062145, "status": "completed", "completed_at": 1791062173, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [{"id": "rs_bcf5b04d8fd14e73993e74d0f57b61d8", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants me to make exactly one exec_command call with specific arguments. Let me parse the JSON arguments carefully.\n\nThe cmd value is: `Write-Output \"café \\ literal <tool_call>\"`\n\nWait, let me look at the raw JSON: `\"cmd\": \"Write-Output \\\"café \\\\ literal <tool_call>\\\"\"`\n\nSo the actual cmd string is: `Write-Output \"café \\ literal <tool_call>\"`\n\nThe other parameters:\n- workdir: \"C:\\fixture with spaces\"\n- yield_time_ms: 10000\n- tty: false\n- login: false\n- max_output_tokens: 1000\n\nI should emit the tool call and stop.\n"}], "encrypted_content": "strata-r1.gAAAAABqwXCYAJtmC0Rn_e6ZVPe8pTPTxRUeMMUjd2OUusUG1GgGlT7tetrXXK0vGxDU9Cu1q01ch8o5Ma5orZCT_Qs92H9a2FrMjdXHMybNJGFDACE_DczWqKFyLMt1w0HZ5wz5Icx_vwYt30VAzKnPeaIs6pnUnixiXbEDbscphNS_iEa6slqdxm1TCtyTN8s-vpeH1o6IcNXTOCLVu__jWHF25wzQa-9GkighejN8vznHSsWGF4ayqnyA7sTgCJwbxc4vUlV3SkO0HMI6nSaqdJpyPV-e49vrg0Ah560iPFQmParZMbCy9d8fveCiycuEs9xlf7x-0r5GtxkMxqYtWcOGFpI0mmGAGe-zodey9qYGKRxaTVq4LssXohd0BN883b3kS5pwewKESFsDhvfXLzG6a0UYuY6zvHP_7-_lIx5P8BycCFV_iIyzSh8A53S1gGpK8aK3yb6Ru2vp7rupRWSFrabO78g-aJ1LXbdH62vIkw_4WxvpE51V56EoHfF3whh26u3Lv3mUd1L0E2VlZuLQiApkhuAExjiP_IayIqgCmTc8xoRtfqzl0as2uiMKRDS2cYKH3iRorMRgYGC_xYZ7KYnl4G62N2DrCEam1Qynm_mYxnxF1_70UMLYDEsygEBkGqU2-PVERzTbqxIznny2sQwjZMcS5GaaZr6P1hhihsOQHo6lIaDrV2qEZaG_5oB_A9T2-qVvUayM6oL-DIf9H5qe8WFhUhpRKGBa7U9Nprca4_Iwa8BnZ9B0_7eyUf6uTLOVMvwGIQLF4P7ntIkCNJ5uqi0CdivHXikjL0ilcRBUjk1NYaG8dCg4uaKpb6y2u3GdguCgl6sbTO7y2_NAHc6NAwS6mieKMLPSfUepbod7FER4oZQB6ndsDiPKjLUgEDL61R9U-wLbc1FF509kS6tZ9QKEdDC7S3KAvKCB-Q-lGH45K0dmFMhKOVmrvscb-DvrWr0pUowF9-5nDUkRoJgD-xMaEY3e8avfDTShaW4l7Up95pWwmaFIdXxn32pV_5ZVre_I9F-CJE9XQyNRAUn5jQ=="}, {"id": "fc_13eb79ba221b4fec95a44539e3db0966", "type": "function_call", "status": "completed", "call_id": "call_42e42f3e21a6454f9c2c0235", "name": "exec_command", "arguments": "{\"cmd\":\"Write-Output \\\"caf\\u00e9 \\\\ literal <tool_call>\\\"\",\"login\":false,\"max_output_tokens\":1000,\"tty\":false,\"workdir\":\"C:\\\\fixture with spaces\",\"yield_time_ms\":10000}"}], "usage": {"input_tokens": 922, "output_tokens": 263, "total_tokens": 1185, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 922}, "output_tokens_details": {"reasoning_tokens": 150}}, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "exec_command", "description": "Runs a command in a PTY, returning output or a session ID for ongoing interaction.\n\nWindows safety rules:\n- Do not compose destructive filesystem commands across shells. Do not enumerate paths in PowerShell and then pass them to `cmd /c`, batch builtins, or another shell for deletion or moving. Use one shell end-to-end, prefer native PowerShell cmdlets such as `Remove-Item` / `Move-Item` with `-LiteralPath`, and avoid string-built shell commands for file operations.\n- Before any recursive delete or move on Windows, verify the resolved absolute target paths stay within the intended workspace or explicitly named target directory. Never issue a recursive delete or move against a computed path if the final target has not been checked.\n- When using `Start-Process` to launch a background helper or service, pass `-WindowStyle Hidden` unless the user explicitly asked for a visible interactive window. Use visible windows only for interactive tools the user needs to see or control.", "strict": false, "parameters": {"type": "object", "properties": {"cmd": {"type": "string", "description": "Shell command to execute."}, "justification": {"type": "string", "description": "User-facing approval question for `require_escalated`; omit otherwise."}, "login": {"type": "boolean", "description": "True runs the shell with -l/-i semantics; false disables them. Defaults to true."}, "max_output_tokens": {"type": "number", "description": "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."}, "prefix_rule": {"type": "array", "description": "Reusable approval prefix for `cmd`, only with `sandbox_permissions: \"require_escalated\"`; for example [\"git\", \"pull\"].", "items": {"type": "string"}}, "sandbox_permissions": {"type": "string", "description": "Per-command sandbox override. Defaults to `use_default`; use `require_escalated` for unsandboxed execution.", "enum": ["use_default", "require_escalated"]}, "shell": {"type": "string", "description": "Shell binary to launch. Defaults to the user's default shell."}, "tty": {"type": "boolean", "description": "True allocates a PTY for the command; false or omitted uses plain pipes."}, "workdir": {"type": "string", "description": "Working directory for the command. Defaults to the turn cwd."}, "yield_time_ms": {"type": "number", "description": "Maximum time to wait before returning a session ID for a still-running command. Commands that finish sooner return immediately. For ordinary commands, omit this parameter to use the 10000 ms default. Effective range on Windows is 10000-30000 ms."}}, "required": ["cmd"], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+

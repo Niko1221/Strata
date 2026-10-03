@@ -1,0 +1,168 @@
+UpdateCTestConfiguration  from :/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu/DartConfiguration.tcl
+Test project /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu
+Constructing a list of tests
+Done constructing a list of tests
+Updating test list for fixtures
+Added 0 tests to meet fixture requirements
+Checking test dependency graph...
+Checking test dependency graph end
+test 21
+      Start 21: grammar_sampler_test
+
+21: Test command: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu/grammar_sampler_test
+21: Working Directory: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu
+21: Environment variables: 
+21:  STRATA_OLD_SAMPLER=0
+21:  STRATA_SAMPLER_ONE_BLOCK=0
+21: Test timeout computed to be: 10000000
+21: grammar sampler: 46 captured/uncaptured cases passed; 248320 logits, 3 rows each
+ 1/10 Test #21: grammar_sampler_test .............   Passed    0.48 sec
+test 22
+      Start 22: grammar_sampler_one_block
+
+22: Test command: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu/grammar_sampler_test
+22: Working Directory: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu
+22: Environment variables: 
+22:  STRATA_OLD_SAMPLER=0
+22:  STRATA_SAMPLER_ONE_BLOCK=1
+22: Test timeout computed to be: 10000000
+22: grammar sampler: 46 captured/uncaptured cases passed; 248320 logits, 3 rows each
+ 2/10 Test #22: grammar_sampler_one_block ........   Passed    0.24 sec
+test 23
+      Start 23: grammar_sampler_old
+
+23: Test command: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu/grammar_sampler_test
+23: Working Directory: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu
+23: Environment variables: 
+23:  STRATA_OLD_SAMPLER=1
+23:  STRATA_SAMPLER_ONE_BLOCK=0
+23: Test timeout computed to be: 10000000
+23: grammar sampler: 46 captured/uncaptured cases passed; 248320 logits, 3 rows each
+ 3/10 Test #23: grammar_sampler_old ..............   Passed    0.25 sec
+test 47
+      Start 47: grammar_native_test
+
+47: Test command: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu/grammar_native_test "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/data/grammars/cases.json"
+47: Working Directory: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu
+47: Test timeout computed to be: 10000000
+47: corpus boolean.gbnf passed
+47: corpus balanced.gbnf passed
+47: corpus overlapping.gbnf passed
+47: corpus ambiguous.gbnf passed
+47: corpus unicode.gbnf passed
+47: corpus expression.gbnf passed
+47: corpus actions.gbnf passed
+47: corpus escaped.gbnf passed
+47: corpus route.gbnf passed
+47: corpus cases=41 vocabulary=261 identity=bytes-v1-fnv1a64:709f484f4e7d0c81
+47: native masks, UTF-8 fragments, recursion, accepting prefixes, stop/special IDs, forks, checkpoints, cache isolation, syntax and resource failures passed
+47: scoped grammar: reasoning, parallel tools, answer bytes, EOS, speculative phase crossings, checkpoints, budgets and isolation passed
+47: grammar native tests passed (xgrammar-0.2.8-strata-budget1)
+ 4/10 Test #47: grammar_native_test ..............   Passed    0.01 sec
+test 48
+      Start 48: grammar_inspection_test
+
+48: Test command: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu/grammar_inspection_test
+48: Working Directory: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu
+48: Test timeout computed to be: 10000000
+48: operation=constraint.inspect occurrence=parent.initial definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:c22f3d02a802a877:root-gbnf-v1-fnv1a64:b9c969020cf192dd committed_tokens=0 committed_bytes=0 accepting=0 terminated=0 legal_tokens=3 preview_complete=1 mask=mask-v1-fnv1a64:21ac3ccdb6d4b7d1
+48:   token=97 bytes_hex=61 stop=0 bytes_truncated=0
+48:   token=257 bytes_hex=6162 stop=0 bytes_truncated=0
+48:   token=258 bytes_hex=6163 stop=0 bytes_truncated=0
+48:   hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+48: operation=constraint.inspect occurrence=left.shared-prefix-a definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:c22f3d02a802a877:root-gbnf-v1-fnv1a64:b9c969020cf192dd committed_tokens=1 committed_bytes=1 accepting=0 terminated=0 legal_tokens=2 preview_complete=1 mask=mask-v1-fnv1a64:2edb977736eaf7f9
+48:   token=98 bytes_hex=62 stop=0 bytes_truncated=0
+48:   token=99 bytes_hex=63 stop=0 bytes_truncated=0
+48:   hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+48: operation=constraint.inspect occurrence=left.ab definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:c22f3d02a802a877:root-gbnf-v1-fnv1a64:b9c969020cf192dd committed_tokens=2 committed_bytes=2 accepting=1 terminated=0 legal_tokens=1 preview_complete=1 mask=mask-v1-fnv1a64:f442467feb0d91e4
+48:   token=256 bytes_hex= stop=1 bytes_truncated=0
+48:   hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+48: operation=constraint.inspect occurrence=right.ac definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:c22f3d02a802a877:root-gbnf-v1-fnv1a64:b9c969020cf192dd committed_tokens=1 committed_bytes=2 accepting=1 terminated=0 legal_tokens=1 preview_complete=1 mask=mask-v1-fnv1a64:f442467feb0d91e4
+48:   token=256 bytes_hex= stop=1 bytes_truncated=0
+48:   hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+48: operation=constraint.inspect occurrence=left.ended definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:c22f3d02a802a877:root-gbnf-v1-fnv1a64:b9c969020cf192dd committed_tokens=3 committed_bytes=2 accepting=1 terminated=1 legal_tokens=0 preview_complete=1 mask=none:terminal
+48:   hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+48: operation=constraint.inspect occurrence=left.restored definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:c22f3d02a802a877:root-gbnf-v1-fnv1a64:b9c969020cf192dd committed_tokens=0 committed_bytes=0 accepting=0 terminated=0 legal_tokens=3 preview_complete=1 mask=mask-v1-fnv1a64:21ac3ccdb6d4b7d1
+48:   token=97 bytes_hex=61 stop=0 bytes_truncated=0
+48:   token=257 bytes_hex=6162 stop=0 bytes_truncated=0
+48:   token=258 bytes_hex=6163 stop=0 bytes_truncated=0
+48:   hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+48: operation=constraint.inspect occurrence=accepting.with-continuation definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:c22f3d02a802a877:root-gbnf-v1-fnv1a64:9c6bc8ffce49a3b0 committed_tokens=1 committed_bytes=1 accepting=1 terminated=0 legal_tokens=2 preview_complete=1 mask=mask-v1-fnv1a64:59a3a190f565e860
+48:   token=98 bytes_hex=62 stop=0 bytes_truncated=0
+48:   token=256 bytes_hex= stop=1 bytes_truncated=0
+48:   hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+48: operation=constraint.inspect occurrence=recursive.ambiguous definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:c22f3d02a802a877:root-gbnf-v1-fnv1a64:8c0e20531b9e2d77 committed_tokens=12 committed_bytes=12 accepting=1 terminated=0 legal_tokens=3 preview_complete=1 mask=mask-v1-fnv1a64:4166f93a178f4b2e
+48:   token=97 bytes_hex=61 stop=0 bytes_truncated=0
+48:   token=256 bytes_hex= stop=1 bytes_truncated=0
+48:   token=259 bytes_hex=6161616161616161616161616161616161616161616161616161616161616161 stop=0 bytes_truncated=1
+48:   hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+48: inspection passed vocabulary=260 identity=bytes-v1-fnv1a64:c22f3d02a802a877
+ 5/10 Test #48: grammar_inspection_test ..........   Passed    0.01 sec
+test 49
+      Start 49: grammar_speculation_test
+
+49: Test command: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu/grammar_speculation_test
+49: Working Directory: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu
+49: Test timeout computed to be: 10000000
+49: PASS: 2169 native prefix/commit cases; synthetic proposals, no model execution
+ 6/10 Test #49: grammar_speculation_test .........   Passed    0.01 sec
+test 50
+      Start 50: grammar_speculation_split
+
+50: Test command: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu/grammar_speculation_gpu_test
+50: Working Directory: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu
+50: Environment variables: 
+50:  STRATA_OLD_SAMPLER=0
+50:  STRATA_SAMPLER_ONE_BLOCK=0
+50: Test timeout computed to be: 10000000
+50: PASS: CUDA selection across reasoning/tool/answer phases in one 8-row speculative window. Synthetic logits; real masks and sampler.
+50: PASS: 1728 exact fixed-logit/counter speculative decodes; captured and uncaptured, greedy/sampled/penalized, 2/4/8 rows, every rejection position. Synthetic target logits/proposals.
+ 7/10 Test #50: grammar_speculation_split ........   Passed    0.61 sec
+test 51
+      Start 51: grammar_speculation_one_block
+
+51: Test command: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu/grammar_speculation_gpu_test
+51: Working Directory: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu
+51: Environment variables: 
+51:  STRATA_OLD_SAMPLER=0
+51:  STRATA_SAMPLER_ONE_BLOCK=1
+51: Test timeout computed to be: 10000000
+51: PASS: CUDA selection across reasoning/tool/answer phases in one 8-row speculative window. Synthetic logits; real masks and sampler.
+51: PASS: 1728 exact fixed-logit/counter speculative decodes; captured and uncaptured, greedy/sampled/penalized, 2/4/8 rows, every rejection position. Synthetic target logits/proposals.
+ 8/10 Test #51: grammar_speculation_one_block ....   Passed    0.60 sec
+test 52
+      Start 52: grammar_speculation_old
+
+52: Test command: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu/grammar_speculation_gpu_test
+52: Working Directory: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu
+52: Environment variables: 
+52:  STRATA_OLD_SAMPLER=1
+52:  STRATA_SAMPLER_ONE_BLOCK=0
+52: Test timeout computed to be: 10000000
+52: PASS: CUDA selection across reasoning/tool/answer phases in one 8-row speculative window. Synthetic logits; real masks and sampler.
+52: PASS: 1728 exact fixed-logit/counter speculative decodes; captured and uncaptured, greedy/sampled/penalized, 2/4/8 rows, every rejection position. Synthetic target logits/proposals.
+ 9/10 Test #52: grammar_speculation_old ..........   Passed    0.96 sec
+test 53
+      Start 53: serve_input_test
+
+53: Test command: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu/serve_input_test
+53: Working Directory: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu
+53: Test timeout computed to be: 10000000
+53: serve input: 4 chunk sizes, all frame truncations and inert payload cases passed
+10/10 Test #53: serve_input_test .................   Passed    0.00 sec
+
+The following tests passed:
+	grammar_sampler_test
+	grammar_sampler_one_block
+	grammar_sampler_old
+	grammar_native_test
+	grammar_inspection_test
+	grammar_speculation_test
+	grammar_speculation_split
+	grammar_speculation_one_block
+	grammar_speculation_old
+	serve_input_test
+
+100% tests passed, 0 tests failed out of 10
+
+Total Test time (real) =   3.19 sec

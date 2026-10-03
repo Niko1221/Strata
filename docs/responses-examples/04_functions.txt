@@ -1,0 +1,27 @@
+SYNTHETIC DOCUMENTATION EXAMPLE
+Status: Supported non-strict, client-owned function workflow
+
+POST /v1/responses
+Content-Type: application/json
+
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "input": "Hello.",
+  "tools": [
+    {
+      "type": "function",
+      "name": "read_file",
+      "description": "Read a client-owned file.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+{"result": "pass", "vocabulary_size": 248320, "normal_tokens_compared": 248044, "control_or_unused_excluded": 276, "native_seconds": 0.26409421699645463}

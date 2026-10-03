@@ -1,0 +1,172 @@
+event: response.created
+data: {"type": "response.created", "sequence_number": 0, "response": {"id": "resp_4815e5ddd9c548feb9a5aa6339967a09", "object": "response", "created_at": 1791060501, "status": "queued", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "exec_command", "description": "Runs a command in a PTY, returning output or a session ID for ongoing interaction.\n\nWindows safety rules:\n- Do not compose destructive filesystem commands across shells. Do not enumerate paths in PowerShell and then pass them to `cmd /c`, batch builtins, or another shell for deletion or moving. Use one shell end-to-end, prefer native PowerShell cmdlets such as `Remove-Item` / `Move-Item` with `-LiteralPath`, and avoid string-built shell commands for file operations.\n- Before any recursive delete or move on Windows, verify the resolved absolute target paths stay within the intended workspace or explicitly named target directory. Never issue a recursive delete or move against a computed path if the final target has not been checked.\n- When using `Start-Process` to launch a background helper or service, pass `-WindowStyle Hidden` unless the user explicitly asked for a visible interactive window. Use visible windows only for interactive tools the user needs to see or control.", "strict": false, "parameters": {"type": "object", "properties": {"cmd": {"type": "string", "description": "Shell command to execute."}, "justification": {"type": "string", "description": "User-facing approval question for `require_escalated`; omit otherwise."}, "login": {"type": "boolean", "description": "True runs the shell with -l/-i semantics; false disables them. Defaults to true."}, "max_output_tokens": {"type": "number", "description": "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."}, "prefix_rule": {"type": "array", "description": "Reusable approval prefix for `cmd`, only with `sandbox_permissions: \"require_escalated\"`; for example [\"git\", \"pull\"].", "items": {"type": "string"}}, "sandbox_permissions": {"type": "string", "description": "Per-command sandbox override. Defaults to `use_default`; use `require_escalated` for unsandboxed execution.", "enum": ["use_default", "require_escalated"]}, "shell": {"type": "string", "description": "Shell binary to launch. Defaults to the user's default shell."}, "tty": {"type": "boolean", "description": "True allocates a PTY for the command; false or omitted uses plain pipes."}, "workdir": {"type": "string", "description": "Working directory for the command. Defaults to the turn cwd."}, "yield_time_ms": {"type": "number", "description": "Maximum time to wait before returning a session ID for a still-running command. Commands that finish sooner return immediately. For ordinary commands, omit this parameter to use the 10000 ms default. Effective range on Windows is 10000-30000 ms."}}, "required": ["cmd"], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+event: response.in_progress
+data: {"type": "response.in_progress", "sequence_number": 1, "response": {"id": "resp_4815e5ddd9c548feb9a5aa6339967a09", "object": "response", "created_at": 1791060501, "status": "in_progress", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "exec_command", "description": "Runs a command in a PTY, returning output or a session ID for ongoing interaction.\n\nWindows safety rules:\n- Do not compose destructive filesystem commands across shells. Do not enumerate paths in PowerShell and then pass them to `cmd /c`, batch builtins, or another shell for deletion or moving. Use one shell end-to-end, prefer native PowerShell cmdlets such as `Remove-Item` / `Move-Item` with `-LiteralPath`, and avoid string-built shell commands for file operations.\n- Before any recursive delete or move on Windows, verify the resolved absolute target paths stay within the intended workspace or explicitly named target directory. Never issue a recursive delete or move against a computed path if the final target has not been checked.\n- When using `Start-Process` to launch a background helper or service, pass `-WindowStyle Hidden` unless the user explicitly asked for a visible interactive window. Use visible windows only for interactive tools the user needs to see or control.", "strict": false, "parameters": {"type": "object", "properties": {"cmd": {"type": "string", "description": "Shell command to execute."}, "justification": {"type": "string", "description": "User-facing approval question for `require_escalated`; omit otherwise."}, "login": {"type": "boolean", "description": "True runs the shell with -l/-i semantics; false disables them. Defaults to true."}, "max_output_tokens": {"type": "number", "description": "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."}, "prefix_rule": {"type": "array", "description": "Reusable approval prefix for `cmd`, only with `sandbox_permissions: \"require_escalated\"`; for example [\"git\", \"pull\"].", "items": {"type": "string"}}, "sandbox_permissions": {"type": "string", "description": "Per-command sandbox override. Defaults to `use_default`; use `require_escalated` for unsandboxed execution.", "enum": ["use_default", "require_escalated"]}, "shell": {"type": "string", "description": "Shell binary to launch. Defaults to the user's default shell."}, "tty": {"type": "boolean", "description": "True allocates a PTY for the command; false or omitted uses plain pipes."}, "workdir": {"type": "string", "description": "Working directory for the command. Defaults to the turn cwd."}, "yield_time_ms": {"type": "number", "description": "Maximum time to wait before returning a session ID for a still-running command. Commands that finish sooner return immediately. For ordinary commands, omit this parameter to use the 10000 ms default. Effective range on Windows is 10000-30000 ms."}}, "required": ["cmd"], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"id": "rs_d4ed84a7a8f142edb7f89a8096fe9111", "type": "reasoning", "status": "in_progress", "summary": [], "content": [{"type": "reasoning_text", "text": ""}]}}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 3, "item_id": "rs_d4ed84a7a8f142edb7f89a8096fe9111", "output_index": 0, "content_index": 0, "delta": "The"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 4, "item_id": "rs_d4ed84a7a8f142edb7f89a8096fe9111", "output_index": 0, "content_index": 0, "delta": " user"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 5, "item_id": "rs_d4ed84a7a8f142edb7f89a8096fe9111", "output_index": 0, "content_index": 0, "delta": " wants"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 6, "item_id": "rs_d4ed84a7a8f142edb7f89a8096fe9111", "output_index": 0, "content_index": 0, "delta": " a"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 7, "item_id": "rs_d4ed84a7a8f142edb7f89a8096fe9111", "output_index": 0, "content_index": 0, "delta": " single"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 8, "item_id": "rs_d4ed84a7a8f142edb7f89a8096fe9111", "output_index": 0, "content_index": 0, "delta": " exec"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 9, "item_id": "rs_d4ed84a7a8f142edb7f89a8096fe9111", "output_index": 0, "content_index": 0, "delta": "_command"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 10, "item_id": "rs_d4ed84a7a8f142edb7f89a8096fe9111", "output_index": 0, "content_index": 0, "delta": " call"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 11, "item_id": "rs_d4ed84a7a8f142edb7f89a8096fe9111", "output_index": 0, "content_index": 0, "delta": " with"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 12, "item_id": "rs_d4ed84a7a8f142edb7f89a8096fe9111", "output_index": 0, "content_index": 0, "delta": " exact"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 13, "item_id": "rs_d4ed84a7a8f142edb7f89a8096fe9111", "output_index": 0, "content_index": 0, "delta": " parameters"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 14, "item_id": "rs_d4ed84a7a8f142edb7f89a8096fe9111", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 15, "item_id": "rs_d4ed84a7a8f142edb7f89a8096fe9111", "output_index": 0, "content_index": 0, "delta": "\n"}
+
+event: response.reasoning_text.done
+data: {"type": "response.reasoning_text.done", "sequence_number": 16, "item_id": "rs_d4ed84a7a8f142edb7f89a8096fe9111", "output_index": 0, "content_index": 0, "text": "The user wants a single exec_command call with exact parameters.\n"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 17, "output_index": 0, "item": {"id": "rs_d4ed84a7a8f142edb7f89a8096fe9111", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants a single exec_command call with exact parameters.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWolc804gS2oFSGnRv59HH_DWrltQ42Nc7mS73hg-sIO4OWafF9Rx1jhIRxRE7WLLOw9Fl_6YuTjpykgQcUznanrmKnGKKXTp0qqCa_NPBWkfIPzAPghzZbDBZEpDJ-gAW9VGwOqGgR377vO46CkX4Yf3dMa3aLjpQi8rddC7Ik1fF12yfu2qtArPjJMSuijzKZiUooM_uZ5yDsFoeHYb7EtkSNztbbHvdJTQJmKd8DnTzRQ2xXqm8CzZg7YUGujIEczpKpxl6ifVCz7i0dL5Fw9DPOpyzsuDoHRfz1WId8TCdQGyZUXAH00PZoeFHc7k1JBaYUviSIYDjTqRLPFO-gB0GvLuEu-Xaiyra0SGZDhzUZ6jxar2_rTTwCIixkMfokz"}}
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 18, "output_index": 1, "item": {"id": "fc_bb773229594c4706a0c50a429d238118", "type": "function_call", "status": "in_progress", "call_id": "call_b5938ba9ccec4fffa2f8b932", "name": "exec_command", "arguments": ""}}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 19, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": "{"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 20, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": "\"cmd\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 21, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 22, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": "Write"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 23, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": "-"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 24, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": "Output"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 25, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": " \\\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 26, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": "ca"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 27, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": "f\\u00e9"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 28, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": " \\\\"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 29, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": " literal"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 30, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": " "}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 31, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": "<tool_call>"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 32, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": "\\\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 33, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 34, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": ",\"workdir\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 35, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 36, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": "C"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 37, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": ":\\\\"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 38, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": "fixture"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 39, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": " with"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 40, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": " spaces"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 41, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 42, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": ",\"yield_time_ms\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 43, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": "10000"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 44, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": ",\"tty\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 45, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": "false"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 46, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": ",\"login\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 47, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": "false"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 48, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": ",\"max_output_tokens\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 49, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": "1000"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 50, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "delta": "}"}
+
+event: response.function_call_arguments.done
+data: {"type": "response.function_call_arguments.done", "sequence_number": 51, "item_id": "fc_bb773229594c4706a0c50a429d238118", "output_index": 1, "arguments": "{\"cmd\":\"Write-Output \\\"caf\\u00e9 \\\\ literal <tool_call>\\\"\",\"workdir\":\"C:\\\\fixture with spaces\",\"yield_time_ms\":10000,\"tty\":false,\"login\":false,\"max_output_tokens\":1000}"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 52, "output_index": 1, "item": {"id": "fc_bb773229594c4706a0c50a429d238118", "type": "function_call", "status": "completed", "call_id": "call_b5938ba9ccec4fffa2f8b932", "name": "exec_command", "arguments": "{\"cmd\":\"Write-Output \\\"caf\\u00e9 \\\\ literal <tool_call>\\\"\",\"workdir\":\"C:\\\\fixture with spaces\",\"yield_time_ms\":10000,\"tty\":false,\"login\":false,\"max_output_tokens\":1000}"}}
+
+event: response.completed
+data: {"type": "response.completed", "sequence_number": 53, "response": {"id": "resp_4815e5ddd9c548feb9a5aa6339967a09", "object": "response", "created_at": 1791060501, "status": "completed", "completed_at": 1791060521, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [{"id": "rs_d4ed84a7a8f142edb7f89a8096fe9111", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants a single exec_command call with exact parameters.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWolc804gS2oFSGnRv59HH_DWrltQ42Nc7mS73hg-sIO4OWafF9Rx1jhIRxRE7WLLOw9Fl_6YuTjpykgQcUznanrmKnGKKXTp0qqCa_NPBWkfIPzAPghzZbDBZEpDJ-gAW9VGwOqGgR377vO46CkX4Yf3dMa3aLjpQi8rddC7Ik1fF12yfu2qtArPjJMSuijzKZiUooM_uZ5yDsFoeHYb7EtkSNztbbHvdJTQJmKd8DnTzRQ2xXqm8CzZg7YUGujIEczpKpxl6ifVCz7i0dL5Fw9DPOpyzsuDoHRfz1WId8TCdQGyZUXAH00PZoeFHc7k1JBaYUviSIYDjTqRLPFO-gB0GvLuEu-Xaiyra0SGZDhzUZ6jxar2_rTTwCIixkMfokz"}, {"id": "fc_bb773229594c4706a0c50a429d238118", "type": "function_call", "status": "completed", "call_id": "call_b5938ba9ccec4fffa2f8b932", "name": "exec_command", "arguments": "{\"cmd\":\"Write-Output \\\"caf\\u00e9 \\\\ literal <tool_call>\\\"\",\"workdir\":\"C:\\\\fixture with spaces\",\"yield_time_ms\":10000,\"tty\":false,\"login\":false,\"max_output_tokens\":1000}"}], "usage": {"input_tokens": 951, "output_tokens": 127, "total_tokens": 1078, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 951}, "output_tokens_details": {"reasoning_tokens": 14}}, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "exec_command", "description": "Runs a command in a PTY, returning output or a session ID for ongoing interaction.\n\nWindows safety rules:\n- Do not compose destructive filesystem commands across shells. Do not enumerate paths in PowerShell and then pass them to `cmd /c`, batch builtins, or another shell for deletion or moving. Use one shell end-to-end, prefer native PowerShell cmdlets such as `Remove-Item` / `Move-Item` with `-LiteralPath`, and avoid string-built shell commands for file operations.\n- Before any recursive delete or move on Windows, verify the resolved absolute target paths stay within the intended workspace or explicitly named target directory. Never issue a recursive delete or move against a computed path if the final target has not been checked.\n- When using `Start-Process` to launch a background helper or service, pass `-WindowStyle Hidden` unless the user explicitly asked for a visible interactive window. Use visible windows only for interactive tools the user needs to see or control.", "strict": false, "parameters": {"type": "object", "properties": {"cmd": {"type": "string", "description": "Shell command to execute."}, "justification": {"type": "string", "description": "User-facing approval question for `require_escalated`; omit otherwise."}, "login": {"type": "boolean", "description": "True runs the shell with -l/-i semantics; false disables them. Defaults to true."}, "max_output_tokens": {"type": "number", "description": "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."}, "prefix_rule": {"type": "array", "description": "Reusable approval prefix for `cmd`, only with `sandbox_permissions: \"require_escalated\"`; for example [\"git\", \"pull\"].", "items": {"type": "string"}}, "sandbox_permissions": {"type": "string", "description": "Per-command sandbox override. Defaults to `use_default`; use `require_escalated` for unsandboxed execution.", "enum": ["use_default", "require_escalated"]}, "shell": {"type": "string", "description": "Shell binary to launch. Defaults to the user's default shell."}, "tty": {"type": "boolean", "description": "True allocates a PTY for the command; false or omitted uses plain pipes."}, "workdir": {"type": "string", "description": "Working directory for the command. Defaults to the turn cwd."}, "yield_time_ms": {"type": "number", "description": "Maximum time to wait before returning a session ID for a still-running command. Commands that finish sooner return immediately. For ordinary commands, omit this parameter to use the 10000 ms default. Effective range on Windows is 10000-30000 ms."}}, "required": ["cmd"], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+

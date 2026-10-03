@@ -1,0 +1,8 @@
+[
+  "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/venv/bin/python",
+  "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/tools/grammar_native_probe.py",
+  "--config",
+  "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/g2-target.json",
+  "--out",
+  "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/evidence/g2/native-1"
+]

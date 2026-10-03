@@ -1,0 +1,117 @@
+Start testing: Oct 03 07:33 UTC
+----------------------------------------------------------
+21/53 Testing: grammar_sampler_test
+21/53 Test: grammar_sampler_test
+Command: "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu/grammar_sampler_test"
+Directory: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu
+"grammar_sampler_test" start time: Oct 03 07:33 UTC
+Output:
+----------------------------------------------------------
+grammar sampler: 46 captured/uncaptured cases passed; 248320 logits, 3 rows each
+<end of output>
+Test time =   0.47 sec
+----------------------------------------------------------
+Test Passed.
+"grammar_sampler_test" end time: Oct 03 07:33 UTC
+"grammar_sampler_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+22/53 Testing: grammar_sampler_one_block
+22/53 Test: grammar_sampler_one_block
+Command: "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu/grammar_sampler_test"
+Directory: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu
+"grammar_sampler_one_block" start time: Oct 03 07:33 UTC
+Output:
+----------------------------------------------------------
+grammar sampler: 46 captured/uncaptured cases passed; 248320 logits, 3 rows each
+<end of output>
+Test time =   0.24 sec
+----------------------------------------------------------
+Test Passed.
+"grammar_sampler_one_block" end time: Oct 03 07:33 UTC
+"grammar_sampler_one_block" time elapsed: 00:00:00
+----------------------------------------------------------
+
+23/53 Testing: grammar_sampler_old
+23/53 Test: grammar_sampler_old
+Command: "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu/grammar_sampler_test"
+Directory: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu
+"grammar_sampler_old" start time: Oct 03 07:33 UTC
+Output:
+----------------------------------------------------------
+grammar sampler: 46 captured/uncaptured cases passed; 248320 logits, 3 rows each
+<end of output>
+Test time =   0.24 sec
+----------------------------------------------------------
+Test Passed.
+"grammar_sampler_old" end time: Oct 03 07:33 UTC
+"grammar_sampler_old" time elapsed: 00:00:00
+----------------------------------------------------------
+
+45/53 Testing: coupled_draft_test
+45/53 Test: coupled_draft_test
+Command: "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu/coupled_draft_test"
+Directory: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu
+"coupled_draft_test" start time: Oct 03 07:33 UTC
+Output:
+----------------------------------------------------------
+coupled_draft_test
+  907257 checks, 0 failed
+PASS
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"coupled_draft_test" end time: Oct 03 07:33 UTC
+"coupled_draft_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+50/53 Testing: grammar_speculation_split
+50/53 Test: grammar_speculation_split
+Command: "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu/grammar_speculation_gpu_test"
+Directory: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu
+"grammar_speculation_split" start time: Oct 03 07:33 UTC
+Output:
+----------------------------------------------------------
+PASS: 1728 exact fixed-logit/counter speculative decodes; captured and uncaptured, greedy/sampled/penalized, 2/4/8 rows, every rejection position. Synthetic target logits/proposals.
+<end of output>
+Test time =   0.59 sec
+----------------------------------------------------------
+Test Passed.
+"grammar_speculation_split" end time: Oct 03 07:33 UTC
+"grammar_speculation_split" time elapsed: 00:00:00
+----------------------------------------------------------
+
+51/53 Testing: grammar_speculation_one_block
+51/53 Test: grammar_speculation_one_block
+Command: "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu/grammar_speculation_gpu_test"
+Directory: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu
+"grammar_speculation_one_block" start time: Oct 03 07:33 UTC
+Output:
+----------------------------------------------------------
+PASS: 1728 exact fixed-logit/counter speculative decodes; captured and uncaptured, greedy/sampled/penalized, 2/4/8 rows, every rejection position. Synthetic target logits/proposals.
+<end of output>
+Test time =   0.61 sec
+----------------------------------------------------------
+Test Passed.
+"grammar_speculation_one_block" end time: Oct 03 07:33 UTC
+"grammar_speculation_one_block" time elapsed: 00:00:00
+----------------------------------------------------------
+
+52/53 Testing: grammar_speculation_old
+52/53 Test: grammar_speculation_old
+Command: "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu/grammar_speculation_gpu_test"
+Directory: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu
+"grammar_speculation_old" start time: Oct 03 07:33 UTC
+Output:
+----------------------------------------------------------
+PASS: 1728 exact fixed-logit/counter speculative decodes; captured and uncaptured, greedy/sampled/penalized, 2/4/8 rows, every rejection position. Synthetic target logits/proposals.
+<end of output>
+Test time =   0.97 sec
+----------------------------------------------------------
+Test Passed.
+"grammar_speculation_old" end time: Oct 03 07:33 UTC
+"grammar_speculation_old" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Oct 03 07:33 UTC

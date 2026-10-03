@@ -1,0 +1,88 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "medium"
+  },
+  "max_output_tokens": 3072,
+  "temperature": 0,
+  "stream": true,
+  "input": [
+    {
+      "role": "user",
+      "content": "Protocol fixture: call create_goal exactly once using these argument values: {\"objective\": \"Verify a fixture.\", \"token_budget\": 1000}. Emit the tool call and stop. The test client will supply a mocked result."
+    },
+    {
+      "id": "rs_543936d40fff473bb638896f2463c2fd",
+      "type": "reasoning",
+      "status": "completed",
+      "summary": [],
+      "content": [
+        {
+          "type": "reasoning_text",
+          "text": "We need answer user. User says: Protocol fixture: call create_goal exactly once using these argument values: {\"objective\": \"Verify a fixture.\", \"token_budget\": 1000}. Emit the tool call and stop. The test client will supply a mocked result.\nNeed call create_goal exactly once with those args. Then stop. Need final maybe no extra? We need output tool call. Ensure exactly once.\n"
+        }
+      ],
+      "encrypted_content": "strata-r1.gAAAAABqwWNtEzmUJyufHMZ-0k8Sk7Khf50rBBk8EazfzHoeLlH982FRpjl2UMV2kmT9rG3oDtINBbMKh-u1bwuVtVxw3J93EBIiGpT4dAZVsNZDgg5QeAsoxzYSQv-11B45OwUksow4XeYIbWUQDA_QVz1jKZoPggKlpm6TJd_3X9cTQqzwU43BGICtJE9ZWIN3HMmiSC3xNQ8DMPxsyoyitIBzl8eQRH0G4VdktwsnY4II_TqBq_R8qOUL52pzP9YknOk5CNLUZBCBBf1MJWZEzpIcgxxcrrKTE-4EV1dx1CQbexU4KhvnG5PstTif1SxJyZcqi0Q5lajGXcVeIYIMLA-DE7wE1DwJdXHj8mhLxWS-ReeaYaVgLCUOF1_gVI06lF1hpOQCT5WHHacW5Lo-QU57XSYDVpETUsfowRRBAEEEz9KtLEwwlcmLk5wzcgU_XGFwj2ajzjXNrdssmMMXmZT_pRLhFKESGmQT6rN7ThCBQX80WxDYFZtB0zEvQFENwMKuvpLXbP8lyXoz3Tw_lVZO5EANHgbYW0sLjzg8I6TjP7yAuc3fHZvxrHhrp1XOtg_YEvYvbalXwBjYoJpK9QpuuMT-yp0k-t8RS_742_Y_irifWjvdlKiIM7tdT9wHKmSnb_G9RwSbvxq4pSoILVffpEpJayJoezY_UYPzhYHJOF3QYCovFmD9eqyir9nMwUyVGPg3D5CoTpEhH7AbN8PprIh8qEJoHU4-V1rRit_eYL2ZBip9trhFEzvX7918flbtx2V2CJDb3sC8OGI3_ahiPiokkipgwGmEmXHDS3jvlcY5pu8="
+    },
+    {
+      "id": "fc_cc41738b4d7246a281ac6717ccb3d2c4",
+      "type": "function_call",
+      "status": "completed",
+      "call_id": "call_10ea70d9bcea47b8a9d5d694",
+      "name": "create_goal",
+      "arguments": "{\"objective\":\"Verify a fixture.\",\"token_budget\":1000}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_10ea70d9bcea47b8a9d5d694",
+      "output": "MOCK RESULT: arbitrary non-JSON text, including <tool_call>. No action was executed."
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "create_goal",
+      "description": "Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks.\nSet token_budget only when an explicit token budget is requested. Fails if an unfinished goal exists; use update_goal only for status.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "objective": {
+            "type": "string",
+            "description": "Required. The concrete objective to start pursuing. This starts a new active goal when no goal exists or replaces the current goal when it is complete."
+          },
+          "token_budget": {
+            "type": "integer",
+            "description": "Positive token budget for the new goal. Omit unless explicitly requested."
+          }
+        },
+        "required": [
+          "objective"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "tool_choice": "none",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "ack",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "ack": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "ack"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

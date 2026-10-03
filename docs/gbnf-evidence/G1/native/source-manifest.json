@@ -1,0 +1,21 @@
+{
+  "CMakeLists.txt": "ebda8331d5a0d0aea2ea3c6c3240eefb3e4aefac59d59b8479a6dfcc60b084ca",
+  "cmake/xgrammar.cmake": "04110575b66a4d6de5866dd0290a99cc76936bd9c24907ade169d9b0be08146f",
+  "include/strata/core/grammar.hpp": "b6eaf474f0b30cbe0c0e58aad0ed16a64654ac2a0b7e341ca26bbb146d2779f3",
+  "include/strata/core/grammar_budget.hpp": "573be430a317175df3bcf79247e005bb5f33ddd6a937dcb3c1ba549c2fbaac1c",
+  "src/core/grammar.cpp": "f45cb3bba4ee4b3ff4aecb2e7c0f6fb80187c33b9dfddff47bba3500c1c3a6b4",
+  "src/core/grammar_vocabulary.cpp": "8355ba882f115c80096f039357eeba2faf88fa81b5d49a0aee2a5ef63115b384",
+  "src/core/grammar_native_test.cpp": "21f769c23bf4ba1e09378a8f28e1dee122f0b0a21860323ebc14535cc7405a3b",
+  "tools/prepare_xgrammar.py": "a2b8da5a83c3019924420bcb0ab5eefe76fa4b274c676bb071f953ce47513f68",
+  "tools/grammar_vocab_audit.py": "374c803e254786fdc1b874be46e8a5ade894de3245c81bff750667c0d0eba619",
+  "data/grammars/expression.gbnf": "0cca7fb03cd446f5196f3bb7deeab89dddb2376aed3ac6a5d421168078066935",
+  "data/grammars/unicode.gbnf": "9ccc3941a2561967bae717e8cc2e16adcf5698b942baf02de16683506a8d60bf",
+  "data/grammars/cases.json": "9c55f2bd2d53313de1417f32a585bb5e35746dd1d040cb2bb54d80ae5f37731c",
+  "data/grammars/actions.gbnf": "bef30703acbe0bbd27a81e04c76bfa2485f151ea956d62164308c05d6f08012f",
+  "data/grammars/ambiguous.gbnf": "a5c5cad079b4d67ad7cf70f02670ff74ee7e27a98bb6265ca7cdebbd2a3d5e28",
+  "data/grammars/route.gbnf": "5ecd7d075e6cf258a83c898b1c2c5e83b08fd52cffcdded73f971137591578d9",
+  "data/grammars/overlapping.gbnf": "5c4bb532d08318dfb769b86e80bf68e94fd444494405da715884097d660c2737",
+  "data/grammars/escaped.gbnf": "95bc26c625c9c00ff755a009659189db71f838422dbcc60ad20478dac7a128dd",
+  "data/grammars/boolean.gbnf": "e5ec67c522dc8157ba8111a5eb92967ed1d4c83b8b8dcabd063d2d4a0f2ce372",
+  "data/grammars/balanced.gbnf": "721492dbfec654726132e0e9113bf396b5ef4103faa968c6e5c8290901dc5cb9"
+}

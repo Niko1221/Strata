@@ -1,0 +1,105 @@
+Starting native target
+[strata] starting the engine: reading the model's weights ...
+[strata] mapping the experts from the model files (about 30 GB, --mmap-experts): they are not loaded into RAM - the OS file cache reads them as the GPU's expert cache fills and as requests need them.
+         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.
+         Please wait and don't close this window; the browser opens when it is ready.
+[strata] filling the GPU's expert cache (7815 experts, 14.88 GiB of VRAM) ...
+[strata] still starting (25 s) - please wait ...
+[strata] almost ready ...
+[strata] reading the prompt: 256 of 299 tokens, 10 s so far
+[strata] reading the prompt: 298 of 299 tokens, 11 s so far
+[strata] writing a tool call: facts.lookup: 23 of max 768 tokens, 22.1 tok/s, 12 s
+[strata] done: 30 tokens in 12 s (21.4 tok/s) (stop, cancel=False), expert cache 73.7% hit
+target / no-thinking-json-call: completed function_call
+[strata] reading the prompt: 140 of 141 tokens, 1 s so far
+[strata] done: 9 tokens in 2 s (25.1 tok/s) (stop, cancel=False), expert cache 79.3% hit
+target / no-thinking-json-answer: completed message
+[strata] reading the prompt: 256 of 299 tokens, 1 s so far
+[strata] writing a tool call: facts.lookup: 12 of max 768 tokens, 27.4 tok/s, 2 s
+[strata] done: 30 tokens in 3 s (25.5 tok/s) (stop, cancel=False), expert cache 73.7% hit
+target / no-thinking-sse-call: completed function_call
+[strata] answering: 6 of max 768 tokens, 36.4 tok/s, 1 s
+[strata] done: 9 tokens in 1 s (36.0 tok/s) (stop, cancel=False), expert cache 79.3% hit
+target / no-thinking-sse-answer: completed message
+[strata] reading the prompt: 256 of 323 tokens, 1 s so far
+[strata] thinking: 13 of max 768 tokens, 50.4 tok/s, 2 s
+[strata] writing a tool call: facts.lookup: 46 of max 768 tokens, 35.9 tok/s, 3 s
+[strata] done: 59 tokens in 4 s (31.4 tok/s) (stop, cancel=False), expert cache 80.3% hit
+target / thinking-json-call: completed reasoning,function_call
+[strata] thinking: 6 of max 768 tokens, 78.1 tok/s, 1 s
+[strata] thinking: 49 of max 768 tokens, 45.1 tok/s, 2 s
+[strata] done: 71 tokens in 3 s (43.9 tok/s) (stop, cancel=False), expert cache 88.5% hit
+target / thinking-json-answer: completed reasoning,message
+[strata] reading the prompt: 318 of 323 tokens, 1 s so far
+[strata] thinking: 34 of max 768 tokens, 45.4 tok/s, 2 s
+[strata] tool call complete: 58 of max 768 tokens, 32.7 tok/s, 3 s
+[strata] done: 59 tokens in 3 s (32.6 tok/s) (stop, cancel=False), expert cache 80.3% hit
+target / thinking-sse-call: completed reasoning,function_call
+[strata] thinking: 10 of max 768 tokens, 76.6 tok/s, 1 s
+[strata] thinking: 60 of max 768 tokens, 52.8 tok/s, 2 s
+[strata] done: 71 tokens in 2 s (48.6 tok/s) (stop, cancel=False), expert cache 88.5% hit
+target / thinking-sse-answer: completed reasoning,message
+Starting native mtp
+[strata] starting the engine: reading the model's weights ...
+[strata] mapping the experts from the model files (about 30 GB, --mmap-experts): they are not loaded into RAM - the OS file cache reads them as the GPU's expert cache fills and as requests need them.
+         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.
+         Please wait and don't close this window; the browser opens when it is ready.
+[strata] filling the GPU's expert cache (7815 experts, 14.88 GiB of VRAM) ...
+[strata] still starting (25 s) - please wait ...
+[strata] almost ready ...
+[strata] reading the prompt: 256 of 299 tokens, 9 s so far
+[strata] reading the prompt: 298 of 299 tokens, 10 s so far
+[strata] writing a tool call: facts.lookup: 16 of max 768 tokens, 14.4 tok/s, 12 s
+[strata] done: 30 tokens in 12 s (17.8 tok/s) (stop, cancel=False), expert cache 74.6% hit
+mtp / no-thinking-json-call: completed function_call
+[strata] reading the prompt: 134 of 141 tokens, 1 s so far
+[strata] done: 9 tokens in 2 s (23.8 tok/s) (stop, cancel=False), expert cache 79.4% hit
+mtp / no-thinking-json-answer: completed message
+[strata] reading the prompt: 256 of 299 tokens, 3 s so far
+[strata] writing a tool call: facts.lookup: 12 of max 768 tokens, 23.6 tok/s, 4 s
+[strata] done: 30 tokens in 5 s (25.1 tok/s) (stop, cancel=False), expert cache 74.6% hit
+mtp / no-thinking-sse-call: completed function_call
+[strata] answering: 6 of max 768 tokens, 30.2 tok/s, 1 s
+[strata] done: 9 tokens in 1 s (39.0 tok/s) (stop, cancel=False), expert cache 79.4% hit
+mtp / no-thinking-sse-answer: completed message
+[strata] reading the prompt: 256 of 323 tokens, 1 s so far
+[strata] reading the prompt: 322 of 323 tokens, 2 s so far
+[strata] writing a tool call: facts.lookup: 41 of max 768 tokens, 38.9 tok/s, 3 s
+[strata] done: 59 tokens in 4 s (32.1 tok/s) (stop, cancel=False), expert cache 80.1% hit
+mtp / thinking-json-call: completed reasoning,function_call
+[strata] thinking: 11 of max 768 tokens, 80.5 tok/s, 1 s
+[strata] thinking: 68 of max 768 tokens, 59.1 tok/s, 2 s
+[strata] thinking: 114 of max 768 tokens, 51.4 tok/s, 3 s
+[strata] thinking: 150 of max 768 tokens, 45.6 tok/s, 4 s
+[strata] thinking: 182 of max 768 tokens, 41.9 tok/s, 5 s
+[strata] thinking: 214 of max 768 tokens, 39.2 tok/s, 6 s
+[strata] thinking: 246 of max 768 tokens, 37.6 tok/s, 7 s
+[strata] thinking: 274 of max 768 tokens, 36.3 tok/s, 8 s
+[strata] thinking: 306 of max 768 tokens, 35.2 tok/s, 10 s
+[strata] thinking: 334 of max 768 tokens, 34.4 tok/s, 11 s
+[strata] thinking: 362 of max 768 tokens, 33.8 tok/s, 12 s
+[strata] thinking: 390 of max 768 tokens, 33.2 tok/s, 13 s
+[strata] thinking: 418 of max 768 tokens, 32.7 tok/s, 14 s
+[strata] thinking: 446 of max 768 tokens, 32.3 tok/s, 15 s
+[strata] thinking: 474 of max 768 tokens, 31.8 tok/s, 16 s
+[strata] thinking: 502 of max 768 tokens, 31.5 tok/s, 17 s
+[strata] thinking: 530 of max 768 tokens, 31.1 tok/s, 18 s
+[strata] thinking: 558 of max 768 tokens, 30.8 tok/s, 19 s
+[strata] thinking: 586 of max 768 tokens, 30.6 tok/s, 20 s
+[strata] thinking: 614 of max 768 tokens, 30.3 tok/s, 21 s
+[strata] thinking: 642 of max 768 tokens, 30.1 tok/s, 22 s
+[strata] thinking: 670 of max 768 tokens, 29.9 tok/s, 23 s
+[strata] thinking: 698 of max 768 tokens, 29.7 tok/s, 24 s
+[strata] thinking: 726 of max 768 tokens, 29.6 tok/s, 25 s
+[strata] thinking: 754 of max 768 tokens, 29.4 tok/s, 26 s
+[strata] done: 768 tokens in 27 s (29.5 tok/s) (length, cancel=False), expert cache 55.5% hit
+Traceback (most recent call last):
+  File "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/tools/grammar_tool_probe.py", line 202, in <module>
+    main()
+    ~~~~^^
+  File "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/tools/grammar_tool_probe.py", line 174, in main
+    final = send(label + '-answer', {**body, 'input': history, 'tool_choice': 'none'})
+  File "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/tools/grammar_tool_probe.py", line 145, in send
+    assert final['status'] == 'completed', json.dumps(final)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {"id": "resp_fdabf54cc1a240eab1b513660f827355", "object": "response", "created_at": 1791039639, "status": "incomplete", "completed_at": null, "error": null, "incomplete_details": {"reason": "max_output_tokens"}, "instructions": null, "model": "qwen3.8-flash-next", "output": [{"id": "rs_d7e0ccbb38a74d358b34840ec5ff1c80", "type": "reasoning", "status": "incomplete", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants me to provide a brief answer based on the result from the facts.lookup tool call. The result was: \"purple 999; arbitrary tool data with \u732b and  literal text. This is outside the answer grammar.\"\n\nI should just briefly report what was found.\n"}]}], "usage": {"input_tokens": 196, "output_tokens": 768, "total_tokens": 964, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 196}, "output_tokens_details": {"reasoning_tokens": 60}}, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 768, "temperature": 0, "top_p": 1.0, "text": {"format": {"type": "text"}}, "tools": [{"type": "namespace", "name": "facts", "description": "Client-owned test helpers.", "tools": [{"type": "function", "name": "lookup", "description": "Look up the text. Call this before answering.", "strict": false, "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}]}], "tool_choice": "none", "parallel_tool_calls": true, "reasoning": {"effort": "low", "summary": null}, "truncation": "disabled", "metadata": {}}

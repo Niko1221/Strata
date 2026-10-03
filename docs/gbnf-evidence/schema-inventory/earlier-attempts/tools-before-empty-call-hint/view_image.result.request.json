@@ -1,0 +1,84 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "medium"
+  },
+  "max_output_tokens": 3072,
+  "temperature": 0,
+  "stream": true,
+  "input": [
+    {
+      "role": "user",
+      "content": "Protocol fixture: call view_image exactly once using these argument values: {\"path\": \"C:\\\\fixture\\\\image.png\"}. These are direct parameter names: do not wrap them in an arguments parameter. An empty object means the function has no parameters. Emit the tool call and stop. The test client will supply a mocked result."
+    },
+    {
+      "id": "rs_0cf74bfc223f4281a04993a42bb0742c",
+      "type": "reasoning",
+      "status": "completed",
+      "summary": [],
+      "content": [
+        {
+          "type": "reasoning_text",
+          "text": "We need answer user's request. User says: \"Protocol fixture: call view_image exactly once using these argument values: {\"path\": \"C:\\\\fixture\\\\image.png\"}. These are direct parameter names: do not wrap them in an arguments parameter. An empty object means the function has no parameters. Emit the tool call and stop. The test client will supply a mocked result.\"\n\nNeed call view_image exactly once with path. Need final likely just tool call. Ensure no extra. Use function call.\n"
+        }
+      ],
+      "encrypted_content": "strata-r1.gAAAAABqwWUVlCTCZNGSPuVBKl-QOGi60EjNOSo75vhC_rqQlTnW-VAPyUjOla-8oZrh1nId5FxsUsv4u9XtROyiDKU0pTeIjzwa_6lDPB6h_yBe_SdH4ObfjdGjN5VjtNuR2AhYAUUKmlTtjWxTfzdIZNW8GcUboTo8dcjgFIGzGd29AVnH8AdDHwhStpkJ6blyivr5YOkoXeSSVYQE_r_yrZb2-2VfMvwzCScxL5ZrVEB5wwGt_L52ctp3G1cGQMZtkW_dtResQG8C5cKVdu8---k3SKIp0VUBhmKdCuxyCBKiVVXmmi6X0L6H1brr30Hyb1IxK9nbs1rpt0pXCDOY7MCH5hQiZNJd_MqSL40El_5ptM4I4uGGQcWaKrnqqB9AGXgY01hTaeENeAs0pidvuZc717jjuEgATXyv3v8JJ3dSOGH4xuBnyRzjkkoZs7L-_k6n9lSfRK2O355ARml6R-Qqn0j2ORFYpLHaIIvIah7t3efoYqteghs9IhIp5GLeP3ZjmxuE280fomdiVQY4Wzpe9AaSEo72lSBY1l_C0mp64m3LNVVJ5AdSwmAq1fwgRumT94LUnhyr6XM1v8CoxEJxqr4lWcvjJgNeVYrc2A2o_gGIwiLjq6Cw-U-2IS56o_t7p3svgOvM0JAV3Mx_ue8XT10as_ljKAFejUuhpTMC0RJf1v30qP62lobt-Iq9QVdINJGKqD2TDG4aCSIKDZ7oBGghKNwIzhM4UiIR5Q5l7r3TbK54aBExhu9CoofdJlVa7suXOPLlS6r6wXBcudtRaEcIX1VC20bAgbqng-SOw4UzT6h58o2dtV6u5ZLUdNQj_bPjbUKYAwJr2bciBnjdz0EbpqhvvwLRvey5X87K9fdPNI_voA665UvilGPyFRtTGg0JHU7w2MLUxajzoN-DA1O577Q2Oz0r8g1GwecpTK4ob6HOUhLWVL0Zx9wD1k8qG4bS"
+    },
+    {
+      "id": "fc_82f3bda6452d42b186de7a2f48e733b0",
+      "type": "function_call",
+      "status": "completed",
+      "call_id": "call_240f7b55a20b4f1395b6de5f",
+      "name": "view_image",
+      "arguments": "{\"path\":\"C:\\\\fixture\\\\image.png\"}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_240f7b55a20b4f1395b6de5f",
+      "output": "MOCK RESULT: arbitrary non-JSON text, including <tool_call>. No action was executed."
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "view_image",
+      "description": "View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Local filesystem path to an image file."
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "tool_choice": "none",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "ack",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "ack": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "ack"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

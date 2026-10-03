@@ -1,0 +1,40 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "none"
+  },
+  "max_output_tokens": 512,
+  "temperature": 0,
+  "input": "Return exactly this JSON value, without explanation: {\"email\": \"local@example.test\", \"date\": \"2026-10-03\", \"uri\": \"https://example.test/\"}",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "24_formats",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email"
+          },
+          "date": {
+            "type": "string",
+            "format": "date"
+          },
+          "uri": {
+            "type": "string",
+            "format": "uri"
+          }
+        },
+        "required": [
+          "email",
+          "date",
+          "uri"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

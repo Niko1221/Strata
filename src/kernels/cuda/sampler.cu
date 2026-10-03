@@ -80,6 +80,42 @@ __device__ __forceinline__ float apply_penalties(float logit, int count, const S
     return logit;
 }
 
+// Legality precedes every existing penalty/pruning/selection implementation.
+// Preserve raw logits for diagnostics. A legal -inf is an additional exclusion;
+// NaN/+inf on a legal candidate is an explicit numerical failure.
+__global__ void mask_logits_kernel(const float* logits, int nv, const int32_t* masks,
+                                   float* scratch, int32_t* status, const int* history,
+                                   int history_len, SamplerParams p) {
+    const int row = blockIdx.x;
+    const int words = (nv + 31) / 32;
+    const int n = history ? min(history_len, max(0, p.penalty_last_n)) : 0;
+    const int* h = history ? history + (size_t) row * history_len + history_len - n : nullptr;
+    int found = 0, bad = 0;
+    for (int id = threadIdx.x; id < nv; id += blockDim.x) {
+        const bool legal = ((uint32_t) masks[(size_t) row * words + id / 32] & (1u << (id % 32))) != 0;
+        const float raw = logits[(size_t) row * nv + id];
+        const float value = legal && isfinite(raw) ? apply_penalties(raw, history_count(h, n, id), p) : raw;
+        const bool finite = isfinite(value);
+        scratch[(size_t) row * nv + id] = legal && finite ? value : __int_as_float(0xff800000);
+        found |= legal && finite;
+        bad |= legal && (isnan(value) || value == __int_as_float(0x7f800000) || (isfinite(raw) && !finite));
+    }
+    const int any = __syncthreads_or(found);
+    const int invalid = __syncthreads_or(bad);
+    if (threadIdx.x == 0) status[row] = invalid ? 2 : any ? 0 : 1;
+}
+
+__global__ void check_masked_pick_kernel(const float* logits, int nv, const int32_t* masks,
+                                        int32_t* status, int* out) {
+    const int row = blockIdx.x;
+    const int id = out[row];
+    bool valid = id >= 0 && id < nv;
+    if (valid) valid = ((uint32_t) masks[(size_t) row * ((nv + 31) / 32) + id / 32] & (1u << (id % 32))) != 0;
+    if (valid) valid = isfinite(logits[(size_t) row * nv + id]);
+    if (!valid && status[row] == 0) status[row] = 1;
+    if (status[row]) out[row] = -1;
+}
+
 /// **THE GREEDY ARGMAX, ONE BLOCK PER TOKEN, COVERING THE VOCABULARY.**
 ///
 /// **WHY THIS IS A SEPARATE KERNEL AND NOT A BRANCH.**  `sampler_kernel` is launched as a grid over TOKENS
@@ -103,6 +139,7 @@ __global__ void sampler_greedy_kernel(const float* __restrict__ logits, int n_vo
                                       const int* __restrict__ history, int history_len, const SamplerParams p,
                                       int pmin, int plen, int* __restrict__ out) {
     const int t = blockIdx.x;
+    if (p.selection_status && p.selection_status[t]) { if (threadIdx.x == 0) out[t] = -1; return; }
     const float* l = logits + (size_t) t * n_vocab;
     (void) pmin;
     const int* hrow = history ? history + (size_t) t * history_len : nullptr;
@@ -280,6 +317,7 @@ __global__ void sampler_kernel(const float* __restrict__ logits, int n_vocab, in
                                const int* __restrict__ history, int history_len, const SamplerParams p,
                                int* __restrict__ out) {
     const int t = blockIdx.x;
+    if (p.selection_status && p.selection_status[t]) { if (threadIdx.x == 0) out[t] = -1; return; }
     if (t >= n_tokens) return;
     const float* l = logits + (size_t) t * n_vocab;
 
@@ -526,6 +564,7 @@ __global__ void __launch_bounds__(1024)
 sampler_one_block_kernel(const float* __restrict__ logits, int n_vocab, const int* __restrict__ history,
                          int history_len, const SamplerParams p, int* __restrict__ out) {
     const int t = blockIdx.x;
+    if (p.selection_status && p.selection_status[t]) { if (threadIdx.x == 0) out[t] = -1; return; }
     const float* l = logits + (size_t) t * n_vocab;
 
     // the penalty window and its membership bitmap, exactly as in `sampler_kernel`
@@ -661,6 +700,7 @@ __global__ void __launch_bounds__(kSplitWarps * 32)
 sampler_split_part_kernel(const float* __restrict__ logits, int n_vocab, const int* __restrict__ history,
                           int history_len, const SamplerParams p, int k, int n_blocks, int2* __restrict__ cand) {
     const int t = blockIdx.y;
+    if (p.selection_status && p.selection_status[t]) return;
     const float* l = logits + (size_t) t * n_vocab;
     const int warp = (int) (threadIdx.x >> 5), lane = (int) (threadIdx.x & 31);
     const int blo = (int) blockIdx.x * kSplitBlockSpan;
@@ -744,6 +784,7 @@ __global__ void __launch_bounds__(32)
 sampler_split_merge_kernel(const int2* __restrict__ cand, int n_blocks, int n_vocab, const SamplerParams p, int k,
                            int* __restrict__ out) {
     const int t = blockIdx.x;
+    if (p.selection_status && p.selection_status[t]) { if (threadIdx.x == 0) out[t] = -1; return; }
     const int lane = (int) threadIdx.x;
     __shared__ int2 lists[kSplitMaxBlocks * kSelMax];
     __shared__ int sel_ids[kSelMax];
@@ -975,12 +1016,33 @@ bool sample_greedy_cluster(const float* logits, int n_tokens, int n_vocab, int* 
 }
 
 void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* history, int history_len,
-                   const SamplerParams& p, int* out, void* stream) {
+                   const SamplerParams& p, int* out, void* stream, const TokenMask* mask) {
     if (n_tokens <= 0 || n_vocab <= 0) return;
     if (p.penalty_last_n > 0 && (history == nullptr || history_len <= 0)) {
         std::fprintf(stderr, "sample_tokens: penalty_last_n %d needs a history (got %p, len %d)\n",
                      p.penalty_last_n, (const void*) history, history_len);
         std::exit(1);
+    }
+    if (mask != nullptr) {
+        if (!mask->rows || !mask->scratch || !mask->status) {
+            std::fprintf(stderr, "sample_tokens: missing constraint buffers\n");
+            std::exit(1);
+        }
+        mask_logits_kernel<<<(unsigned) n_tokens, 256, 0, (cudaStream_t) stream>>>(
+            logits, n_vocab, mask->rows, mask->scratch, mask->status, history, history_len, p);
+        SamplerParams masked = p;
+        masked.selection_status = mask->status;
+        masked.penalty_last_n = 0; // applied exactly once, before pruning, in mask_logits_kernel
+        sample_tokens(mask->scratch, n_tokens, n_vocab, nullptr, 0, masked, out, stream);
+        check_masked_pick_kernel<<<(unsigned) n_tokens, 1, 0, (cudaStream_t) stream>>>(
+            mask->scratch, n_vocab, mask->rows, mask->status, out);
+        const cudaError_t error = cudaGetLastError();
+        if (error != cudaSuccess) {
+            std::fprintf(stderr, "sample_tokens constraint launch: %s\n", cudaGetErrorString(error));
+            std::exit(1);
+        }
+        if (stream == nullptr) cudaDeviceSynchronize();
+        return;
     }
     const unsigned shmem = (history != nullptr && history_len > 0 && p.penalty_last_n > 0)
                                ? (unsigned) ((n_vocab + 31) / 32) * sizeof(unsigned)   // the penalty bitmap
@@ -994,7 +1056,7 @@ void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* hi
         }();
         // One block per token, 1,024 threads over the vocabulary.  See `sampler_greedy_kernel`.
         const int gthreads = 1024;
-        if (!(multi && shmem == 0 && sample_greedy_cluster(logits, n_tokens, n_vocab, out, stream)))
+        if (!(multi && shmem == 0 && p.selection_status == nullptr && sample_greedy_cluster(logits, n_tokens, n_vocab, out, stream)))
             sampler_greedy_kernel<<<(unsigned) n_tokens, gthreads, shmem, (cudaStream_t) stream>>>(
                 logits, n_vocab, history, history_len, p, p.penalty_last_n, p.penalty_last_n, out);
     } else if (sampled_path() == SampledPath::Old) {

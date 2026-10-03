@@ -1,0 +1,54 @@
+event: response.created
+data: {"type": "response.created", "sequence_number": 0, "response": {"id": "resp_c5ca0182e5b24abfab324d6f6b30a23d", "object": "response", "created_at": 1791039949, "status": "queued", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 768, "temperature": 0, "top_p": 1.0, "text": {"format": {"type": "text"}}, "tools": [{"type": "namespace", "name": "facts", "description": "Client-owned test helpers.", "tools": [{"type": "function", "name": "lookup", "description": "Look up the text. Call this before answering.", "strict": false, "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}]}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "none", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+event: response.in_progress
+data: {"type": "response.in_progress", "sequence_number": 1, "response": {"id": "resp_c5ca0182e5b24abfab324d6f6b30a23d", "object": "response", "created_at": 1791039949, "status": "in_progress", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 768, "temperature": 0, "top_p": 1.0, "text": {"format": {"type": "text"}}, "tools": [{"type": "namespace", "name": "facts", "description": "Client-owned test helpers.", "tools": [{"type": "function", "name": "lookup", "description": "Look up the text. Call this before answering.", "strict": false, "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}]}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "none", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"id": "fc_e4f77110fe6641afbda32ce4ec9cc642", "type": "function_call", "status": "in_progress", "call_id": "call_218344ac467947b5ba169464", "name": "lookup", "arguments": "", "namespace": "facts"}}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 3, "item_id": "fc_e4f77110fe6641afbda32ce4ec9cc642", "output_index": 0, "delta": "{"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 4, "item_id": "fc_e4f77110fe6641afbda32ce4ec9cc642", "output_index": 0, "delta": "\"text\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 5, "item_id": "fc_e4f77110fe6641afbda32ce4ec9cc642", "output_index": 0, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 6, "item_id": "fc_e4f77110fe6641afbda32ce4ec9cc642", "output_index": 0, "delta": "purple"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 7, "item_id": "fc_e4f77110fe6641afbda32ce4ec9cc642", "output_index": 0, "delta": " "}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 8, "item_id": "fc_e4f77110fe6641afbda32ce4ec9cc642", "output_index": 0, "delta": "9"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 9, "item_id": "fc_e4f77110fe6641afbda32ce4ec9cc642", "output_index": 0, "delta": "9"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 10, "item_id": "fc_e4f77110fe6641afbda32ce4ec9cc642", "output_index": 0, "delta": "9"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 11, "item_id": "fc_e4f77110fe6641afbda32ce4ec9cc642", "output_index": 0, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 12, "item_id": "fc_e4f77110fe6641afbda32ce4ec9cc642", "output_index": 0, "delta": "}"}
+
+event: response.function_call_arguments.done
+data: {"type": "response.function_call_arguments.done", "sequence_number": 13, "item_id": "fc_e4f77110fe6641afbda32ce4ec9cc642", "output_index": 0, "arguments": "{\"text\":\"purple 999\"}"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 14, "output_index": 0, "item": {"id": "fc_e4f77110fe6641afbda32ce4ec9cc642", "type": "function_call", "status": "completed", "call_id": "call_218344ac467947b5ba169464", "name": "lookup", "arguments": "{\"text\":\"purple 999\"}", "namespace": "facts"}}
+
+event: response.completed
+data: {"type": "response.completed", "sequence_number": 15, "response": {"id": "resp_c5ca0182e5b24abfab324d6f6b30a23d", "object": "response", "created_at": 1791039949, "status": "completed", "completed_at": 1791039954, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [{"id": "fc_e4f77110fe6641afbda32ce4ec9cc642", "type": "function_call", "status": "completed", "call_id": "call_218344ac467947b5ba169464", "name": "lookup", "arguments": "{\"text\":\"purple 999\"}", "namespace": "facts"}], "usage": {"input_tokens": 299, "output_tokens": 30, "total_tokens": 329, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 299}, "output_tokens_details": {"reasoning_tokens": 0}}, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 768, "temperature": 0, "top_p": 1.0, "text": {"format": {"type": "text"}}, "tools": [{"type": "namespace", "name": "facts", "description": "Client-owned test helpers.", "tools": [{"type": "function", "name": "lookup", "description": "Look up the text. Call this before answering.", "strict": false, "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}]}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "none", "summary": null}, "truncation": "disabled", "metadata": {}}}
+

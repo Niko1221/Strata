@@ -1,0 +1,83 @@
+{
+  "id": "resp_3231e918fc7e42349626e6702533dca4",
+  "object": "response",
+  "created_at": 1791060652,
+  "status": "completed",
+  "completed_at": 1791060653,
+  "error": null,
+  "incomplete_details": null,
+  "instructions": null,
+  "model": "qwen3.8-flash-next",
+  "output": [
+    {
+      "id": "msg_018a3c02374f45fd92d58a87eb59fa60",
+      "type": "message",
+      "status": "completed",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "{\"value\": \"ready\"}",
+          "annotations": [],
+          "logprobs": []
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 156,
+    "output_tokens": 7,
+    "total_tokens": 163,
+    "input_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 156
+    },
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    }
+  },
+  "store": false,
+  "background": false,
+  "previous_response_id": null,
+  "max_output_tokens": 512,
+  "temperature": 0,
+  "top_p": 0.95,
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "25_annotations",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Answer",
+            "description": "A human-readable result.",
+            "default": "ready",
+            "examples": [
+              "ready"
+            ],
+            "readOnly": true,
+            "writeOnly": false,
+            "deprecated": false,
+            "$comment": "Annotations do not insert defaults or modify output."
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "tools": [],
+  "tool_choice": "auto",
+  "parallel_tool_calls": true,
+  "reasoning": {
+    "effort": "none",
+    "summary": null
+  },
+  "truncation": "disabled",
+  "metadata": {}
+}

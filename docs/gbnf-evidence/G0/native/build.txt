@@ -1,0 +1,310 @@
+[1/134] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml.cpp.o
+[2/134] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml-alloc.c.o
+[3/134] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-backend.cpp.o
+[4/134] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-opt.cpp.o
+[5/134] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-threading.cpp.o
+[6/134] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml.c.o
+[7/134] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-backend-meta.cpp.o
+[8/134] Building CUDA object CMakeFiles/strata_core.dir/src/core/device.cu.o
+[9/134] Building CXX object CMakeFiles/strata_core.dir/src/platform/memory.cpp.o
+[10/134] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/gguf.cpp.o
+[11/134] Building CXX object CMakeFiles/strata_core.dir/src/core/graph.cpp.o
+[12/134] Building CXX object CMakeFiles/strata_core.dir/src/core/weights.cpp.o
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/weights.cpp: In member function ‘bool strata::core::WeightTable::load(const std::string&, void*, uint64_t, std::string&, const std::set<std::__cxx11::basic_string<char> >*)’:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/weights.cpp:167:51: warning: format ‘%llu’ expects argument of type ‘long long unsigned int*’, but argument 6 has type ‘uint64_t*’ {aka ‘long unsigned int*’} [-Wformat=]
+  167 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                ~~~^
+      |                                                   |
+      |                                                   long long unsigned int*
+      |                                                %lu
+  168 |                                   name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+      |                                                         ~~~~~~~~~~
+      |                                                         |
+      |                                                         uint64_t* {aka long unsigned int*}
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/weights.cpp:167:56: warning: format ‘%llu’ expects argument of type ‘long long unsigned int*’, but argument 7 has type ‘uint64_t*’ {aka ‘long unsigned int*’} [-Wformat=]
+  167 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                     ~~~^
+      |                                                        |
+      |                                                        long long unsigned int*
+      |                                                     %lu
+  168 |                                   name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+      |                                                                     ~~~~~~~~~~~~
+      |                                                                     |
+      |                                                                     uint64_t* {aka long unsigned int*}
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/weights.cpp:167:61: warning: format ‘%llu’ expects argument of type ‘long long unsigned int*’, but argument 8 has type ‘uint64_t*’ {aka ‘long unsigned int*’} [-Wformat=]
+  167 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                          ~~~^
+      |                                                             |
+      |                                                             long long unsigned int*
+      |                                                          %lu
+  168 |                                   name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+      |                                                                                   ~~~~~~~~~~
+      |                                                                                   |
+      |                                                                                   uint64_t* {aka long unsigned int*}
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/weights.cpp:167:66: warning: format ‘%llu’ expects argument of type ‘long long unsigned int*’, but argument 9 has type ‘uint64_t*’ {aka ‘long unsigned int*’} [-Wformat=]
+  167 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                               ~~~^
+      |                                                                  |
+      |                                                                  long long unsigned int*
+      |                                                               %lu
+  168 |                                   name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+      |                                                                                               ~~~~~~~~~~~~
+      |                                                                                               |
+      |                                                                                               uint64_t* {aka long unsigned int*}
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/weights.cpp:167:71: warning: format ‘%lld’ expects argument of type ‘long long int*’, but argument 10 has type ‘int64_t*’ {aka ‘long int*’} [-Wformat=]
+  167 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                                    ~~~^
+      |                                                                       |
+      |                                                                       long long int*
+      |                                                                    %ld
+  168 |                                   name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+  169 |                                   &r.ne0, &r.ne1, &r.code_bits, &r.code_bias, &r.group_elems, &r.codebook,
+      |                                   ~~~~~~                               
+      |                                   |
+      |                                   int64_t* {aka long int*}
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/weights.cpp:167:76: warning: format ‘%lld’ expects argument of type ‘long long int*’, but argument 11 has type ‘int64_t*’ {aka ‘long int*’} [-Wformat=]
+  167 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                                         ~~~^
+      |                                                                            |
+      |                                                                            long long int*
+      |                                                                         %ld
+  168 |                                   name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+  169 |                                   &r.ne0, &r.ne1, &r.code_bits, &r.code_bias, &r.group_elems, &r.codebook,
+      |                                           ~~~~~~                            
+      |                                           |
+      |                                           int64_t* {aka long int*}
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/weights.cpp:167:96: warning: format ‘%llu’ expects argument of type ‘long long unsigned int*’, but argument 17 has type ‘uint64_t*’ {aka ‘long unsigned int*’} [-Wformat=]
+  167 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                                                             ~~~^
+      |                                                                                                |
+      |                                                                                                long long unsigned int*
+      |                                                                                             %lu
+......
+  170 |                                   &r.has_offset, &r.codes_bytes, &r.scales_bytes, &r.offset_bytes,
+      |                                                  ~~~~~~~~~~~~~~                                 
+      |                                                  |
+      |                                                  uint64_t* {aka long unsigned int*}
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/weights.cpp:167:101: warning: format ‘%llu’ expects argument of type ‘long long unsigned int*’, but argument 18 has type ‘uint64_t*’ {aka ‘long unsigned int*’} [-Wformat=]
+  167 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                                                                  ~~~^
+      |                                                                                                     |
+      |                                                                                                     long long unsigned int*
+      |                                                                                                  %lu
+......
+  170 |                                   &r.has_offset, &r.codes_bytes, &r.scales_bytes, &r.offset_bytes,
+      |                                                                  ~~~~~~~~~~~~~~~                     
+      |                                                                  |
+      |                                                                  uint64_t* {aka long unsigned int*}
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/weights.cpp:167:106: warning: format ‘%llu’ expects argument of type ‘long long unsigned int*’, but argument 19 has type ‘uint64_t*’ {aka ‘long unsigned int*’} [-Wformat=]
+  167 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                                                                       ~~~^
+      |                                                                                                          |
+      |                                                                                                          long long unsigned int*
+      |                                                                                                       %lu
+......
+  170 |                                   &r.has_offset, &r.codes_bytes, &r.scales_bytes, &r.offset_bytes,
+      |                                                                                   ~~~~~~~~~~~~~~~         
+      |                                                                                   |
+      |                                                                                   uint64_t* {aka long unsigned int*}
+[13/134] Building CXX object CMakeFiles/strata_core.dir/src/core/layout.cpp.o
+[14/134] Building CUDA object CMakeFiles/strata_core.dir/src/core/pinned.cu.o
+[15/134] Building C object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.c.o
+[16/134] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml-quants.c.o
+[17/134] Linking CXX static library ggml/src/libggml-base.a
+[18/134] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/hbm.cpp.o
+[19/134] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.cpp.o
+[20/134] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/traits.cpp.o
+[21/134] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/iqp.cpp.o
+[22/134] Building C object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/quants.c.o
+[23/134] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/amx.cpp.o
+[24/134] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/mmq.cpp.o
+[25/134] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/vec.cpp.o
+[26/134] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/binary-ops.cpp.o
+[27/134] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/unary-ops.cpp.o
+[28/134] Building C object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/x86/quants.c.o
+[29/134] Linking CXX static library libstrata_core.a
+[30/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/dequant_s2.cu.o
+[31/134] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/repack.cpp.o
+[32/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/s2_gemv.cu.o
+[33/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/s2_gemv_quads.cu.o
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/kernels/cuda/s2_gemv_quads.cu(31): warning #177-D: variable "strata::kernels::<unnamed>::CODES_PER_BYTE_S2" was declared but never referenced
+  constexpr int CODES_PER_BYTE_S2 = 4;
+                ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+[34/134] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/x86/repack.cpp.o
+[35/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/s_gemv.cu.o
+[36/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/s2_gemv_fast.cu.o
+[37/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/router_top10.cu.o
+[38/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/quantize_act.cu.o
+[39/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/rope.cu.o
+[40/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/s2_gemv_q8.cu.o
+[41/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/s2_expert_grouped.cu.o
+[42/134] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ops.cpp.o
+[43/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/sampler.cu.o
+[44/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/shared_expert.cu.o
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/kernels/cuda/shared_expert.cu(71): warning #177-D: function "strata::kernels::<unnamed>::to_f16_kernel" was declared but never referenced
+            void to_f16_kernel(const float* __restrict__ in, uint16_t* __restrict__ out, int n) {
+                 ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+[45/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/gdn.cu.o
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/kernels/cuda/gdn.cu(35): warning #177-D: function "strata::kernels::<unnamed>::softplus_f" was declared but never referenced
+                            float softplus_f(float x) { return x > 20.0f ? x : log1pf(expf(x)); }
+                                  ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+[46/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/gr.cu.o
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/kernels/cuda/gr.cu(112): warning #177-D: function "strata::kernels::<unnamed>::block_sum" was declared but never referenced
+            double block_sum(double v, double* scratch) {
+                   ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+[47/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/elementwise.cu.o
+[48/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/qsa.cu.o
+[49/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/bf16_gemv.cu.o
+[50/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/native_gr_norm.cu.o
+[51/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/native_moe.cu.o
+[52/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/native_bf16.cu.o
+[53/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/native_gdn.cu.o
+[54/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/native_gr_postops.cu.o
+[55/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/native_router.cu.o
+[56/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/native_gdn_preprocess.cu.o
+[57/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/native_qsa.cu.o
+[58/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/native_rope.cu.o
+[59/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/native_ple_postops.cu.o
+[60/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/native_flash_attn.cu.o
+[61/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/native_qsa_indexer.cu.o
+[62/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/native_qsa_score.cu.o
+[63/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/kv_q8.cu.o
+[64/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/ple.cu.o
+[65/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/kv_stream.cu.o
+[66/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/kv_q4.cu.o
+[67/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/cvec.cu.o
+[68/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/qsa_decode_attn.cu.o
+[69/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/fused_gdn.cu.o
+[70/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/qsa_prompt_attn.cu.o
+[71/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/fused_gr.cu.o
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/kernels/cuda/fused_gr.cu(321): warning #177-D: variable "strata::kernels::<unnamed>::TQ3" was declared but never referenced
+  constexpr int TQ3 = N / 8 / 32;
+                ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+[72/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/dequant_bf16.cu.o
+[73/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/qsa_select.cu.o
+[74/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/verify_kernels.cu.o
+[75/134] Building CXX object CMakeFiles/strata_kernels.dir/src/kernels/ngram.cpp.o
+[76/134] Building CXX object CMakeFiles/strata_kernels.dir/src/platform/direct_file.cpp.o
+[77/134] Building CXX object CMakeFiles/strata_kernels.dir/src/ngram/ple_reader.cpp.o
+[78/134] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/pool.cpp.o
+[79/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/iq_kernels.cu.o
+[80/134] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/expert.cpp.o
+[81/134] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/expert_layout.cpp.o
+[82/134] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/native_expert.cpp.o
+[83/134] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/q2_avx2.cpp.o
+[84/134] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/kq_avx2.cpp.o
+[85/134] Linking CXX static library ggml/src/libggml-cpu.a
+[86/134] Building CXX object CMakeFiles/strata_engine.dir/src/core/layer.cpp.o
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/layer.cpp: In function ‘bool strata::core::moe_layer(const WeightTable&, const ModelGeometry&, int64_t, int64_t, const MoEBuffers&, const float*, const float*, float*, void*, std::string&, const Doorbell*)’:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/layer.cpp:472:1: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  472 | if (!moe_route(tables, g, layer, k, b, x, stream, err, db)) return false;    return moe_finish(tables, g, layer, k, b, x, parts, out, stream, err);}
+      | ^~
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/layer.cpp:472:78: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  472 | if (!moe_route(tables, g, layer, k, b, x, stream, err, db)) return false;    return moe_finish(tables, g, layer, k, b, x, parts, out, stream, err);}
+      |                                                                              ^~~~~~
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/layer.cpp: In function ‘bool strata::core::qsa_layer(const WeightTable&, const ModelGeometry&, int64_t, int64_t, int32_t, const QsaState&, const QsaBuffers&, const float*, float*, void*, std::string&, float*)’:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/layer.cpp:896:1: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  896 | if (!gemv_quantized(*w_attnk, p_k, f_k, b.x_q8_0, b.x_q8k, b.kcur, g.n_embd, g.n_head_kv * g.head_dim,                        v.name("attn_k.weight"), stream, err, x)) return false;    if (!gemv_quantized(*w_attnv, p_v, f_v, b.x_q8_0, b.x_q8k, b.vcur, g.n_embd, g.n_head_kv * g.head_dim,                        v.name("attn_v.weight"), stream, err, x, w_attnk->native_data && w_attnv->native_data)) return false;    dump_slot(dump, g, layer, b.vcur,                            (uint64_t) 2 * g.n_embd + 2 * g.hc + (uint64_t) g.n_head * g.head_dim,                            (uint64_t) g.n_head_kv * g.head_dim, stream);    if (!normalize_rotate(b.kcur, w_kn, (int) g.n_head_kv, (int) g.head_dim)) return false;
+      | ^~
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/layer.cpp:896:186: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  896 | if (!gemv_quantized(*w_attnk, p_k, f_k, b.x_q8_0, b.x_q8k, b.kcur, g.n_embd, g.n_head_kv * g.head_dim,                        v.name("attn_k.weight"), stream, err, x)) return false;    if (!gemv_quantized(*w_attnv, p_v, f_v, b.x_q8_0, b.x_q8k, b.vcur, g.n_embd, g.n_head_kv * g.head_dim,                        v.name("attn_v.weight"), stream, err, x, w_attnk->native_data && w_attnv->native_data)) return false;    dump_slot(dump, g, layer, b.vcur,                            (uint64_t) 2 * g.n_embd + 2 * g.hc + (uint64_t) g.n_head * g.head_dim,                            (uint64_t) g.n_head_kv * g.head_dim, stream);    if (!normalize_rotate(b.kcur, w_kn, (int) g.n_head_kv, (int) g.head_dim)) return false;
+      |                                                                                                                                                                                          ^~
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/layer.cpp:961:5: warning: this ‘else’ clause does not guard... [-Wmisleading-indentation]
+  961 |     else if (st.kv_int8) kv_gather_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, b.ids, st.step, cap, s,                                 b.k_scratch, b.v_scratch, stream);    else kv_gather_step(st.k_pool, st.v_pool, st.page_table, b.ids, st.step, cap, s, b.k_scratch, b.v_scratch,                   stream);    if (native_flash_attn_short) {
+      |     ^~~~
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/layer.cpp:961:330: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘else’
+  961 |     else if (st.kv_int8) kv_gather_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, b.ids, st.step, cap, s,                                 b.k_scratch, b.v_scratch, stream);    else kv_gather_step(st.k_pool, st.v_pool, st.page_table, b.ids, st.step, cap, s, b.k_scratch, b.v_scratch,                   stream);    if (native_flash_attn_short) {
+      |                                                                                                                                                                                                                                                                                                                                          ^~
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/layer.cpp:985:5: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  985 |     if (!w_attno->native_data) quantize_q8_K(b.attn32, b.attn_q8k, g.n_head * g.head_dim, stream);    if (w_attno->native_data) {
+      |     ^~
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/layer.cpp:985:103: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  985 |     if (!w_attno->native_data) quantize_q8_K(b.attn32, b.attn_q8k, g.n_head * g.head_dim, stream);    if (w_attno->native_data) {
+      |                                                                                                       ^~
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/layer.cpp:848:774: warning: unused variable ‘n_bid’ [-Wunused-variable]
+  848 | bool qsa_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos, int32_t pos_base,               const QsaState& st, const QsaBuffers& b, const float* x, float* out, void* stream,               std::string& err, float* dump) {    using namespace strata::kernels;    const QsaShapes s = qsa_shapes(g);    const LayerView v(tables, layer);    const int64_t n_kv = pos + 1;    /* P7 audit: RoPE reads cos/sin row pos_base + pos, and the table holds max_cells rows. */    if ((int64_t) pos_base + pos >= st.max_cells || pos_base < 0) {        err = "qsa_layer: position " + std::to_string((long long) pos_base + pos) + " is outside the RoPE table (" + std::to_string((long long) st.max_cells) + " rows)";        return false;    }    const int64_t n_bid = n_kv / s.idx_block;    const int64_t width = qsa_selection_width(n_kv, s);    const int64_t cap = qsa_selection_width(kTopkMaxCells, s);
+      |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      ^~~~~
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/layer.cpp:848:819: warning: unused variable ‘width’ [-Wunused-variable]
+  848 | bool qsa_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos, int32_t pos_base,               const QsaState& st, const QsaBuffers& b, const float* x, float* out, void* stream,               std::string& err, float* dump) {    using namespace strata::kernels;    const QsaShapes s = qsa_shapes(g);    const LayerView v(tables, layer);    const int64_t n_kv = pos + 1;    /* P7 audit: RoPE reads cos/sin row pos_base + pos, and the table holds max_cells rows. */    if ((int64_t) pos_base + pos >= st.max_cells || pos_base < 0) {        err = "qsa_layer: position " + std::to_string((long long) pos_base + pos) + " is outside the RoPE table (" + std::to_string((long long) st.max_cells) + " rows)";        return false;    }    const int64_t n_bid = n_kv / s.idx_block;    const int64_t width = qsa_selection_width(n_kv, s);    const int64_t cap = qsa_selection_width(kTopkMaxCells, s);
+      |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   ^~~~~
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/layer.cpp: In function ‘bool strata::core::block_layer_pre(const WeightTable&, const ModelGeometry&, int64_t, int64_t, int32_t, const GdnBuffers&, const QsaState&, const QsaBuffers&, const MoEBuffers&, int64_t, const BlockBuffers&, void*, std::string&, const Doorbell*, const PleRun*, int, int)’:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/layer.cpp:1170:23: warning: unused variable ‘hcd’ [-Wunused-variable]
+ 1170 |         const int64_t hcd = strata::kernels::NG_HC_DIM;
+      |                       ^~~
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/layer.cpp: In function ‘bool strata::core::block_layer(const WeightTable&, const ModelGeometry&, int64_t, int64_t, int32_t, const GdnBuffers&, const QsaState&, const QsaBuffers&, const MoEBuffers&, int64_t, const BlockBuffers&, const float*, void*, std::string&, const Doorbell*, const PleRun*)’:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/layer.cpp:1320:1: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+ 1320 | if (!block_layer_pre(tables, g, layer, pos, pos_base, gb, qst, qb, mb, k, bb, stream, err, db, ple))        return false;    return block_layer_post(tables, g, layer, k, mb, bb, parts, stream, err);}}
+      | ^~
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/layer.cpp:1320:126: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+ 1320 | if (!block_layer_pre(tables, g, layer, pos, pos_base, gb, qst, qb, mb, k, bb, stream, err, db, ple))        return false;    return block_layer_post(tables, g, layer, k, mb, bb, parts, stream, err);}}
+      |                                                                                                                              ^~~~~~
+[87/134] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/iq_avx512.cpp.o
+[88/134] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/native_mmvq.cu.o
+[89/134] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/iq_avx2.cpp.o
+[90/134] Linking CXX static library libstrata_kernels.a
+[91/134] Building CXX object CMakeFiles/strata_engine.dir/src/core/session.cpp.o
+[92/134] Building CXX object CMakeFiles/strata_engine.dir/src/core/expert_cache.cpp.o
+[93/134] Building CXX object CMakeFiles/strata_engine.dir/src/core/remote_experts.cpp.o
+[94/134] Building CXX object CMakeFiles/strata_engine.dir/src/core/native_head.cpp.o
+[95/134] Building CXX object CMakeFiles/strata_engine.dir/src/core/native_dense.cpp.o
+[96/134] Building CXX object CMakeFiles/strata_engine.dir/src/core/expert_source.cpp.o
+[97/134] Building CXX object CMakeFiles/strata_engine.dir/src/core/conversation_snapshot.cpp.o
+[98/134] Building CXX object CMakeFiles/strata_engine.dir/src/core/conversation_memory.cpp.o
+[99/134] Building CXX object CMakeFiles/strata_engine.dir/src/core/conversation_state.cpp.o
+[100/134] Linking CXX static library libstrata_kernels_cpu.a
+[101/134] Building CXX object CMakeFiles/strata_engine.dir/src/core/mtp.cpp.o
+[102/134] Building CXX object CMakeFiles/strata_engine.dir/src/core/verify.cpp.o
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/verify.cpp: In static member function ‘static void strata::core::Verifier::raise_flag(uint32_t*, uint32_t)’:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/verify.cpp:1232:20: warning: unused variable ‘f’ [-Wunused-variable]
+ 1232 |     volatile long* f = (volatile long*) flag;
+      |                    ^
+[103/134] Building CXX object CMakeFiles/strata_engine.dir/src/core/peer_experts.cpp.o
+[104/134] Building CUDA object CMakeFiles/strata_mmq.dir/src/prefill/moe_fused.cu.o
+[105/134] Building CUDA object CMakeFiles/strata_mmq.dir/src/prefill/ggml_cuda_host.cu.o
+[106/134] Building CUDA object CMakeFiles/strata_mmq.dir/src/prefill/moe_fused_iq.cu.o
+[107/134] Building CUDA object CMakeFiles/strata_mmq.dir/src/prefill/moe_mmq.cu.o
+[108/134] Building CUDA object CMakeFiles/strata_mmq.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/llama.cpp-3cf03257f219afbe7334045ff7c6a06ac68c627d/ggml/src/ggml-cuda/quantize.cu.o
+[109/134] Building CUDA object CMakeFiles/strata_mmq.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/llama.cpp-3cf03257f219afbe7334045ff7c6a06ac68c627d/ggml/src/ggml-cuda/template-instances/mmq-instance-q2_0.cu.o
+[110/134] Building CUDA object CMakeFiles/strata_mmq.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/llama.cpp-3cf03257f219afbe7334045ff7c6a06ac68c627d/ggml/src/ggml-cuda/template-instances/mmq-instance-iq2_xxs.cu.o
+[111/134] Building CUDA object CMakeFiles/strata_mmq.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/llama.cpp-3cf03257f219afbe7334045ff7c6a06ac68c627d/ggml/src/ggml-cuda/template-instances/mmq-instance-iq2_xs.cu.o
+[112/134] Building CUDA object CMakeFiles/strata_mmq.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/llama.cpp-3cf03257f219afbe7334045ff7c6a06ac68c627d/ggml/src/ggml-cuda/template-instances/mmq-instance-iq2_s.cu.o
+[113/134] Building CUDA object CMakeFiles/strata_mmq.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/llama.cpp-3cf03257f219afbe7334045ff7c6a06ac68c627d/ggml/src/ggml-cuda/template-instances/mmq-instance-iq3_xxs.cu.o
+[114/134] Building CUDA object CMakeFiles/strata_mmq.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/llama.cpp-3cf03257f219afbe7334045ff7c6a06ac68c627d/ggml/src/ggml-cuda/template-instances/mmq-instance-iq3_s.cu.o
+[115/134] Linking CXX static library libstrata_engine.a
+[116/134] Building CUDA object CMakeFiles/strata_mmq.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/llama.cpp-3cf03257f219afbe7334045ff7c6a06ac68c627d/ggml/src/ggml-cuda/template-instances/mmq-instance-iq4_nl.cu.o
+[117/134] Building CUDA object CMakeFiles/strata_prefill.dir/src/prefill/gemm.cu.o
+[118/134] Building CUDA object CMakeFiles/strata_mmq.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/llama.cpp-3cf03257f219afbe7334045ff7c6a06ac68c627d/ggml/src/ggml-cuda/template-instances/mmq-instance-iq4_xs.cu.o
+[119/134] Building CXX object CMakeFiles/strata_spec.dir/src/spec/suffix_drafter.cpp.o
+[120/134] Building CXX object CMakeFiles/strata_spec.dir/src/spec/controller.cpp.o
+[121/134] Building CXX object CMakeFiles/strata_spec.dir/src/spec/draft_policy.cpp.o
+[122/134] Building CUDA object CMakeFiles/strata_prefill.dir/src/prefill/kernels.cu.o
+[123/134] Building CXX object CMakeFiles/conversation_memory_test.dir/src/core/conversation_memory_test.cpp.o
+[124/134] Building CXX object CMakeFiles/conversation_memory_test.dir/src/core/conversation_memory.cpp.o
+[125/134] Building CXX object CMakeFiles/conversation_cache_test.dir/src/core/conversation_cache_test.cpp.o
+[126/134] Linking CXX static library libstrata_spec.a
+[127/134] Linking CXX executable conversation_cache_test
+[128/134] Linking CXX executable conversation_memory_test
+[129/134] Building CXX object CMakeFiles/strata_prefill.dir/src/prefill/prefill.cpp.o
+[130/134] Building CUDA object CMakeFiles/strata_mmq.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/llama.cpp-3cf03257f219afbe7334045ff7c6a06ac68c627d/ggml/src/ggml-cuda/template-instances/mmq-instance-q8_0.cu.o
+[131/134] Linking CXX static library libstrata_mmq.a
+[132/134] Linking CXX static library libstrata_prefill.a
+[133/134] Building CXX object CMakeFiles/strata.dir/src/program/generate.cpp.o
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/program/generate.cpp:857:5: warning: ‘int {anonymous}::argmax(const std::vector<float>&)’ defined but not used [-Wunused-function]
+  857 | int argmax(const std::vector<float>& v) {
+      |     ^~~~~~
+[134/134] Linking CXX executable strata

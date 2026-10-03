@@ -1,0 +1,102 @@
+['cmake', '--build', '/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-asan', '--parallel', '2', '--target', 'grammar_native_test', 'grammar_inspection_test', 'grammar_speculation_test', 'serve_input_test']
+[0/2] Re-checking globbed directories...
+[1/7] Building CXX object CMakeFiles/grammar_native_test.dir/src/core/grammar_native_test.cpp.o
+[2/7] Building CXX object CMakeFiles/strata_grammar.dir/src/core/grammar.cpp.o
+[3/7] Linking CXX static library libstrata_grammar.a
+[4/7] Linking CXX executable grammar_inspection_test
+[5/7] Linking CXX executable grammar_native_test
+[6/7] Linking CXX executable grammar_speculation_test
+['ctest', '--test-dir', '/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-asan', '--output-on-failure', '-R', 'grammar_|serve_input', '-V']
+UpdateCTestConfiguration  from :/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-asan/DartConfiguration.tcl
+Test project /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-asan
+Constructing a list of tests
+Done constructing a list of tests
+Updating test list for fixtures
+Added 0 tests to meet fixture requirements
+Checking test dependency graph...
+Checking test dependency graph end
+test 1
+    Start 1: grammar_native_test
+
+1: Test command: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-asan/grammar_native_test "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/data/grammars/cases.json"
+1: Working Directory: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-asan
+1: Test timeout computed to be: 10000000
+1: corpus boolean.gbnf passed
+1: corpus balanced.gbnf passed
+1: corpus overlapping.gbnf passed
+1: corpus ambiguous.gbnf passed
+1: corpus unicode.gbnf passed
+1: corpus expression.gbnf passed
+1: corpus actions.gbnf passed
+1: corpus escaped.gbnf passed
+1: corpus route.gbnf passed
+1: corpus cases=41 vocabulary=261 identity=bytes-v1-fnv1a64:709f484f4e7d0c81
+1: native masks, UTF-8 fragments, recursion, accepting prefixes, stop/special IDs, forks, checkpoints, cache isolation, syntax and resource failures passed
+1: scoped grammar: reasoning, parallel tools, answer bytes, EOS, speculative phase crossings, checkpoints, budgets and isolation passed
+1: grammar native tests passed (xgrammar-0.2.8-strata-budget1)
+1/4 Test #1: grammar_native_test ..............   Passed    0.14 sec
+test 2
+    Start 2: grammar_inspection_test
+
+2: Test command: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-asan/grammar_inspection_test
+2: Working Directory: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-asan
+2: Test timeout computed to be: 10000000
+2: operation=constraint.inspect occurrence=parent.initial definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:c22f3d02a802a877:root-gbnf-v1-fnv1a64:b9c969020cf192dd committed_tokens=0 committed_bytes=0 accepting=0 terminated=0 legal_tokens=3 preview_complete=1 mask=mask-v1-fnv1a64:21ac3ccdb6d4b7d1
+2:   token=97 bytes_hex=61 stop=0 bytes_truncated=0
+2:   token=257 bytes_hex=6162 stop=0 bytes_truncated=0
+2:   token=258 bytes_hex=6163 stop=0 bytes_truncated=0
+2:   hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+2: operation=constraint.inspect occurrence=left.shared-prefix-a definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:c22f3d02a802a877:root-gbnf-v1-fnv1a64:b9c969020cf192dd committed_tokens=1 committed_bytes=1 accepting=0 terminated=0 legal_tokens=2 preview_complete=1 mask=mask-v1-fnv1a64:2edb977736eaf7f9
+2:   token=98 bytes_hex=62 stop=0 bytes_truncated=0
+2:   token=99 bytes_hex=63 stop=0 bytes_truncated=0
+2:   hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+2: operation=constraint.inspect occurrence=left.ab definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:c22f3d02a802a877:root-gbnf-v1-fnv1a64:b9c969020cf192dd committed_tokens=2 committed_bytes=2 accepting=1 terminated=0 legal_tokens=1 preview_complete=1 mask=mask-v1-fnv1a64:f442467feb0d91e4
+2:   token=256 bytes_hex= stop=1 bytes_truncated=0
+2:   hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+2: operation=constraint.inspect occurrence=right.ac definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:c22f3d02a802a877:root-gbnf-v1-fnv1a64:b9c969020cf192dd committed_tokens=1 committed_bytes=2 accepting=1 terminated=0 legal_tokens=1 preview_complete=1 mask=mask-v1-fnv1a64:f442467feb0d91e4
+2:   token=256 bytes_hex= stop=1 bytes_truncated=0
+2:   hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+2: operation=constraint.inspect occurrence=left.ended definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:c22f3d02a802a877:root-gbnf-v1-fnv1a64:b9c969020cf192dd committed_tokens=3 committed_bytes=2 accepting=1 terminated=1 legal_tokens=0 preview_complete=1 mask=none:terminal
+2:   hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+2: operation=constraint.inspect occurrence=left.restored definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:c22f3d02a802a877:root-gbnf-v1-fnv1a64:b9c969020cf192dd committed_tokens=0 committed_bytes=0 accepting=0 terminated=0 legal_tokens=3 preview_complete=1 mask=mask-v1-fnv1a64:21ac3ccdb6d4b7d1
+2:   token=97 bytes_hex=61 stop=0 bytes_truncated=0
+2:   token=257 bytes_hex=6162 stop=0 bytes_truncated=0
+2:   token=258 bytes_hex=6163 stop=0 bytes_truncated=0
+2:   hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+2: operation=constraint.inspect occurrence=accepting.with-continuation definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:c22f3d02a802a877:root-gbnf-v1-fnv1a64:9c6bc8ffce49a3b0 committed_tokens=1 committed_bytes=1 accepting=1 terminated=0 legal_tokens=2 preview_complete=1 mask=mask-v1-fnv1a64:59a3a190f565e860
+2:   token=98 bytes_hex=62 stop=0 bytes_truncated=0
+2:   token=256 bytes_hex= stop=1 bytes_truncated=0
+2:   hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+2: operation=constraint.inspect occurrence=recursive.ambiguous definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:c22f3d02a802a877:root-gbnf-v1-fnv1a64:8c0e20531b9e2d77 committed_tokens=12 committed_bytes=12 accepting=1 terminated=0 legal_tokens=3 preview_complete=1 mask=mask-v1-fnv1a64:4166f93a178f4b2e
+2:   token=97 bytes_hex=61 stop=0 bytes_truncated=0
+2:   token=256 bytes_hex= stop=1 bytes_truncated=0
+2:   token=259 bytes_hex=6161616161616161616161616161616161616161616161616161616161616161 stop=0 bytes_truncated=1
+2:   hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+2: inspection passed vocabulary=260 identity=bytes-v1-fnv1a64:c22f3d02a802a877
+2/4 Test #2: grammar_inspection_test ..........   Passed    0.09 sec
+test 3
+    Start 3: grammar_speculation_test
+
+3: Test command: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-asan/grammar_speculation_test
+3: Working Directory: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-asan
+3: Test timeout computed to be: 10000000
+3: PASS: 2169 native prefix/commit cases; synthetic proposals, no model execution
+3/4 Test #3: grammar_speculation_test .........   Passed    0.08 sec
+test 4
+    Start 4: serve_input_test
+
+4: Test command: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-asan/serve_input_test
+4: Working Directory: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-asan
+4: Test timeout computed to be: 10000000
+4: serve input: 4 chunk sizes, all frame truncations and inert payload cases passed
+4/4 Test #4: serve_input_test .................   Passed    0.02 sec
+
+The following tests passed:
+	grammar_native_test
+	grammar_inspection_test
+	grammar_speculation_test
+	serve_input_test
+
+100% tests passed, 0 tests failed out of 4
+
+Total Test time (real) =   0.34 sec

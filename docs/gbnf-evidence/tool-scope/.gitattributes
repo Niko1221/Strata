@@ -1,0 +1,5 @@
+# Captured evidence hashes refer to exact bytes, including original line endings.
+* -text whitespace=cr-at-eol
+*.sse.txt whitespace=cr-at-eol,-blank-at-eof
+TOOL_LOOP.txt whitespace=cr-at-eol,-blank-at-eof
+native-tests.txt -whitespace

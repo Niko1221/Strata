@@ -1,0 +1,84 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "medium"
+  },
+  "max_output_tokens": 3072,
+  "temperature": 0,
+  "stream": true,
+  "input": [
+    {
+      "role": "user",
+      "content": "Protocol fixture: call view_image exactly once using these argument values: {\"path\": \"C:\\\\fixture\\\\image.png\"}. Emit the tool call and stop. The test client will supply a mocked result."
+    },
+    {
+      "id": "rs_61a0125c0c294de49e7e8a2b0f982c50",
+      "type": "reasoning",
+      "status": "completed",
+      "summary": [],
+      "content": [
+        {
+          "type": "reasoning_text",
+          "text": "The user wants me to call view_image exactly once with the specified path. I should emit the tool call and stop.\n"
+        }
+      ],
+      "encrypted_content": "strata-r1.gAAAAABqwXC2GqeEKflmpB_Xb3CcwT3YLDWERn64ddYDepcdlK6PmXpkObhrWNSE0UG_4EjRdiAEvwj9N4Ghv_ROIUPVLPXLWjGQLfp5ovwkjJ0AQajJCtjZRCVd7JAksSN8tiM-D5JS265QJhP9unWzk7bBm3uahskD4fTFrruvMlFx8vFqcBm5VvRuLchjSfnREm7cUCrPPKzLMZTrH14j7P-PHaMEUsQgvrBhCjQurDpJYSFMWdQs_4bI01HnzoLG3Ca9WUGS880Wlte7PbSO9ctbAgSHPXsQe7DQ3MnnkNW_wqi5Ny7DC3NdhMta_CSMDD6ZdSgEoB-2ubQnG2mleE_eKFm87W6fA3vJYKww5YYBuvq38q6MbYACPy1EnSZkA3Sx0IiCRA8GRf-LYpPiicxlKoQlSmX4gACSxmGIJMg03UsVYeBgcuR-Rq_lBLjCTiC12L6L"
+    },
+    {
+      "id": "fc_e170b4cc12854f2a84fbb3caef92b138",
+      "type": "function_call",
+      "status": "completed",
+      "call_id": "call_43403f6cbdf640f1ad9fe9a6",
+      "name": "view_image",
+      "arguments": "{\"path\":\"C:\\\\fixture\\\\image.png\"}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_43403f6cbdf640f1ad9fe9a6",
+      "output": "MOCK RESULT: arbitrary non-JSON text, including <tool_call>. No action was executed."
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "view_image",
+      "description": "View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Local filesystem path to an image file."
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "tool_choice": "none",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "ack",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "ack": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "ack"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

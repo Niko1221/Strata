@@ -1,0 +1,31 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "medium"
+  },
+  "max_output_tokens": 3072,
+  "temperature": 0,
+  "stream": true,
+  "input": [
+    {
+      "role": "user",
+      "content": "Protocol fixture: call get_goal exactly once using these argument values: {}. Emit the tool call and stop. The test client will supply a mocked result."
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "get_goal",
+      "description": "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "instructions": "Explicit synthetic format demonstrations. These are examples, not actions to execute.\nUse the current task values, declared tools, environment and permissions.\n\nEXAMPLE 1\nUser: Read the current goal.\nAssistant native output:\n<tool_call>\n<function=get_goal>\n</function>\n</tool_call>\n\nEND EXAMPLES. The current task follows.\n\n"
+}

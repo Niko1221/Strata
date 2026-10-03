@@ -1,11 +1,12 @@
 // include/strata/core/verify.hpp - plan v0.3 P6: the speculative VERIFY window.
 //
 // T tokens at consecutive positions p0 .. p0+T-1 - the last accepted token and T-1 drafts - go through all 48
-// layers in ONE captured graph, and the head's argmax is produced for every one of them.  Token t's argmax is
-// what plain greedy decode would produce after token t, BIT FOR BIT: every kernel here is either the single-token
-// kernel applied per token, or a multi-token kernel whose per-token arithmetic is the single-token kernel's
-// (multi-column MMVQ in exact mode, the T-token GDN kernels, the per-token hit activation, the multi-token CPU
-// expert rows).  So a draft is accepted exactly when greedy decode would have produced it.
+// layers in ONE captured graph, and the target head selects a token for each row. A draft is retained only when
+// it equals the target selection at that prefix. Single-token kernels and multi-token kernels share the decoder;
+// this equality rule is exact at fixed target logits, masks, histories and position-keyed random draws.
+// T=1 with max_t=1 is persistent target-only execution of this same verifier, with no drafts.
+// Different T-token graph shapes can round differently on real hardware; G5
+// records those deviations rather than promising bitwise model-logit parity.
 //
 // What the window costs is the dense weights read ONCE for T tokens and the union of the T tokens' missed
 // experts on the CPU (measured on decode traces: 1.75x one token's misses for T=2, 2.4x for 3, 3.05x for 4).
@@ -101,6 +102,11 @@ public:
     /// or sync and never read a history staged for another position.
     void set_head_sampling(bool on) { head_sampling_ = on; if (next_) next_->set_head_sampling(on); }
 
+    /// Copy host masks for the next window. nullptr/0 clears the request-local
+    /// constraint. Masked requests always select again after graph replay, even
+    /// when greedy; a captured unconstrained pick is never authoritative.
+    bool set_token_masks(const int32_t* masks, int rows, std::string& err);
+
     /// LAYER SPLIT (multi-GPU): this verifier runs layers [layer_begin, layer_end) of every window.  A stage that
     /// does not start at layer 0 takes its residual from `handoff_in` instead of embedding the tokens; a stage that
     /// does not end at the last layer writes its residual to `handoff_out` and has no head.  The hand-off holds,
@@ -171,6 +177,8 @@ private:
     const int32_t* hist_d_ = nullptr;   ///< penalty-history row (set_history); null = no penalties apply
     int hist_len_ = 0;
     bool head_sampling_ = true;          ///< set_head_sampling
+    strata::kernels::TokenMask token_mask_;
+    int token_mask_rows_ = 0;
     int device_ = -1;                    ///< the device `init` ran on: run/commit switch to it (layer split)
     std::atomic<bool> released_{false};  ///< #267: release_gpu_waits ran (maybe on the watchdog thread): no more windows
     bool device_plan_ = false;            ///< E-6: resident-only layers planned on the device (STRATA_VERIFY_DEVICE_PLAN)

@@ -1,0 +1,28 @@
+POST /v1/chat/completions
+Content-Type: application/json
+Authorization: Bearer <your existing Strata API key>
+
+{
+  "model": "qwen3.8-flash-next",
+  "messages": [{"role": "user", "content": "Return a boolean."}],
+  "reasoning_effort": "none",
+  "max_tokens": 32,
+  "temperature": 0.8,
+  "top_p": 0.85,
+  "stream": true,
+  "grammar": "root ::= \"true\" | \"false\""
+}
+
+Pieces:
+- messages, reasoning_effort and max_tokens are this adapter's request fields.
+- grammar reaches the same shared service/native matcher as Responses.
+- stream:true returns Chat Completions chunks; it does not change generation.
+- An alternative explicit thinking-off setting is
+  "chat_template_kwargs": {"enable_thinking": false}.
+- The installed template must actually render the qualified answer boundary.
+- No response_format JSON requirement, tool, image or custom stop string can
+  be combined with grammar. Nonempty logit_bias and logprobs are unsupported.
+
+This is a request example, not captured model evidence. Enable the native build
+and supported native profile in ../NATIVE_GBNF.md. Chat does not require the separate
+experimental Responses switch.

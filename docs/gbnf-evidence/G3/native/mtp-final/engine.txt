@@ -1,0 +1,251 @@
+strata generate: PCIe probe: 26.8 GB/s host->device (best of 26.8 26.8 26.8 26.8) -> pcie_frac 0.55 (default 0.55)
+strata generate: native pack: /boot/Strata-data/packs/coder-iq1_m experts (largest blob 2.66 MB), token embedding IQ4_XS in mapped host memory (322 MiB)
+strata generate: 1406 MiB of weights loaded from /boot/Strata-data/packs/coder-iq1_m (302 canonical tensors skipped: served natively)
+strata generate: 300 native projection matrices, 2018.88 MiB of weights
+strata generate: the SSD is kept awake while rows are read: one page of the table after 100 ms without a read, until 60 s after the last request (STRATA_SSD_KEEPALIVE=0 turns it off)
+strata generate: profile /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/data/expert-profile-coder.bin: 12288 ranked pairs, built for 12288 slots
+strata generate: PLE on, table 320001536 rows of /boot/Strata-data/models/coder-IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00002-of-00002.gguf
+strata mtp: draft layer loaded, 794 MiB of VRAM (experts 675, dense 111), files read in 0.54 s (1464 MiB/s)
+strata generate: GPU 0: NVIDIA GeForce RTX 4090, compute capability 8.9
+strata generate: experts via mmap (--mmap-experts; the GGUF shards in place, no experts.bin)
+strata trace: 18992 MiB free after the weights, the session and the drafter
+strata generate: experimental native Q5_K head, 521472000 bytes
+strata generate: expert cache auto: 18.06 GiB free, 700 MiB reserved (+85 MiB for the draft head) -> 6974 slots
+strata generate: expert cache 9074 slots, 17.29 GiB of VRAM; policy is
+strata trace: 786 MiB free after opening the expert cache
+strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,
+                 so a reply can differ slightly from a run without the cache (same quality:
+                 bench/results/2026-09-27-cache-parity).
+                 PROFILE, ranked by routing frequency, no eviction.
+strata trace: 786 MiB free after the profile fill
+strata generate: pre-filled 9074 of 9074 slots from the profile; slot 0 verified
+strata generate: routing-aware prefetch of the file tier on (the next layer's router)
+strata trace: 786 MiB free after the R4 hit path
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: 5 expert-pool workers + the host thread
+strata trace: 786 MiB free after the expert cache and the graphs
+strata generate: session is up (engine 0.1.38)
+strata generate: token graph hit path: 9074 resident experts, decided on the device
+strata serve: the prompt path borrows 144 CUDA0 cache slots (0.28 GiB)
+strata trace: 594 MiB free after the head and the prompt path
+strata hc: CUDA0: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (STRATA_HC_SPLIT=1 or 0 for the earlier ones)
+strata verify: window up to 4 tokens, 62.9 MiB of device buffers
+strata mtp: draft head over 40525 tokens (81.2 MiB)
+strata trace: 444 MiB free after the verifier and the drafter's binding
+strata serve: 444 MiB of VRAM free with everything loaded
+strata trace: request 30 0
+strata trace: prompt start 29 -1
+strata verify: captured the 4-token window (upload no error, sync no error)
+strata verify: captured the 3-token window (upload no error, sync no error)
+strata trace: read 23 tokens (windows) in 2272.8 ms
+strata verify: captured the 2-token window (upload no error, sync no error)
+strata trace: read 6 tokens (windows) in 288.8 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 29 1
+strata verify: captured the 1-token window (upload no error, sync no error)
+strata trace: CURSOR prompt=30 consumed=30 produced=1 pending=16 window=1 selection_position=29
+strata trace: window 30 4
+strata trace: CURSOR prompt=30 consumed=34 produced=5 pending=11 window=4 selection_position=33
+strata trace: window 34 4
+strata trace: CURSOR prompt=30 consumed=38 produced=9 pending=220 window=4 selection_position=37
+strata trace: window 38 4
+strata trace: CURSOR prompt=30 consumed=42 produced=13 pending=20 window=4 selection_position=41
+strata trace: window 42 4
+strata trace: CURSOR prompt=30 consumed=46 produced=16 pending=11 window=4 selection_position=45
+strata decode timing: 5 windows, avg T 3.40, 3.20 tokens/window, 328.47 ms/window = verify 326.68 (GPU-reach wait 10.14 + per-layer host 311.33 [plan 0.12 actq 0.40 jobs 287.47 CPU 23.18] + stage 2.06) + commit/emit 0.03 + draft 1.74; per layer-window: CPU experts 6.41 (10.71 entries), VRAM hits 23.29, PCIe 0.00
+strata serve: STATE_HASH L=46 gdn=f0a747938b81f82e ple=bedf34e76e77aa12 tail=bee6e0af42736b89 pooled=2544266e6d9cd7e7 kv=4aaae3046292ce8c mtp=d6c261a0bf6788a5 stale=fa101663c4bca783 dead=487beaad449d93e5 pooled_full=a298ed6fbc457271 ple_prev=220,21
+strata serve: prompt 30 tokens = 0 reused + 30 read in 2612 ms (11.5 tok/s), 16 generated in 1642 ms (9.7 tok/s), drafts accepted 12 of 12, 1 checkpoints
+strata serve: decode expert cache hit rate: 68.5% (5590 hits / 8160 lookups)
+strata serve: expert tiers: GPU 5590 hits this request; since the start RAM 0 blobs, files 0 blobs 23071.7 MB read (the GGUF in place)
+strata trace: request 46 0
+strata trace: prompt start 45 -1
+strata trace: read 22 tokens (windows) in 677.0 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 45 1
+strata trace: CURSOR prompt=46 consumed=46 produced=1 pending=11 window=1 selection_position=45
+strata trace: window 46 4
+strata trace: CURSOR prompt=46 consumed=50 produced=5 pending=220 window=4 selection_position=49
+strata trace: window 50 4
+strata trace: CURSOR prompt=46 consumed=54 produced=8 pending=24 window=4 selection_position=53
+strata decode timing: 3 windows, avg T 3.00, 2.67 tokens/window, 197.45 ms/window = verify 196.45 (GPU-reach wait 9.64 + per-layer host 185.12 [plan 0.09 actq 0.33 jobs 155.08 CPU 29.45] + stage 0.98) + commit/emit 0.03 + draft 0.96; per layer-window: CPU experts 7.80 (12.83 entries), VRAM hits 17.17, PCIe 0.00
+strata serve: STATE_HASH L=54 gdn=16c731414d4176ca ple=7e61d748379bc231 tail=570e6969cb03216f pooled=bec724564a10e111 kv=2bdfe8e29aea71f6 mtp=5a9708ff1009b1d3 stale=fa101663c4bca783 dead=487beaad449d93e5 pooled_full=af68fe2a06e61353 ple_prev=11,220
+strata serve: prompt 46 tokens = 23 reused + 23 read in 691 ms (33.3 tok/s), 8 generated in 592 ms (13.5 tok/s), drafts accepted 6 of 6, 1 checkpoints
+strata serve: decode expert cache hit rate: 57.2% (2472 hits / 4320 lookups)
+strata serve: expert tiers: GPU 2472 hits this request; since the start RAM 0 blobs, files 0 blobs 28404.9 MB read (the GGUF in place)
+strata trace: request 30 0
+strata trace: prompt start 29 -1
+strata trace: read 6 tokens (windows) in 100.3 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 29 1
+strata trace: CURSOR prompt=30 consumed=30 produced=1 pending=16 window=1 selection_position=29
+strata trace: window 30 4
+strata trace: CURSOR prompt=30 consumed=34 produced=5 pending=11 window=4 selection_position=33
+strata trace: window 34 4
+strata trace: CURSOR prompt=30 consumed=38 produced=9 pending=220 window=4 selection_position=37
+strata trace: window 38 4
+strata trace: CURSOR prompt=30 consumed=42 produced=13 pending=20 window=4 selection_position=41
+strata trace: window 42 4
+strata trace: CURSOR prompt=30 consumed=46 produced=16 pending=11 window=4 selection_position=45
+strata decode timing: 5 windows, avg T 3.40, 3.20 tokens/window, 118.74 ms/window = verify 117.55 (GPU-reach wait 10.14 + per-layer host 106.68 [plan 0.11 actq 0.38 jobs 80.19 CPU 25.84] + stage 0.01) + commit/emit 0.03 + draft 1.15; per layer-window: CPU experts 6.41 (10.71 entries), VRAM hits 23.29, PCIe 0.00
+strata serve: STATE_HASH L=46 gdn=f0a747938b81f82e ple=bedf34e76e77aa12 tail=bee6e0af42736b89 pooled=2544266e6d9cd7e7 kv=4aaae3046292ce8c mtp=6ad7363a2075df02 stale=acd6f3b064c6c167 dead=487beaad449d93e5 pooled_full=a298ed6fbc457271 ple_prev=220,21
+strata serve: prompt 30 tokens = 23 reused + 7 read in 114 ms (61.4 tok/s), 16 generated in 594 ms (26.9 tok/s), drafts accepted 12 of 12, 1 checkpoints
+strata serve: decode expert cache hit rate: 68.5% (5590 hits / 8160 lookups)
+strata serve: expert tiers: GPU 5590 hits this request; since the start RAM 0 blobs, files 0 blobs 31855.0 MB read (the GGUF in place)
+strata trace: request 30 0
+strata trace: prompt start 29 -1
+strata trace: read 6 tokens (windows) in 98.4 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 29 1
+strata trace: CURSOR prompt=30 consumed=30 produced=1 pending=16 window=1 selection_position=29
+strata decode timing: 1 windows, avg T 1.00, 1.00 tokens/window, 16.62 ms/window = verify 16.59 (GPU-reach wait 7.62 + per-layer host 8.30 [plan 0.03 actq 0.11 jobs 2.90 CPU 5.16] + stage 0.01) + commit/emit 0.01 + draft 0.00; per layer-window: CPU experts 1.17 (1.17 entries), VRAM hits 8.83, PCIe 0.00
+strata serve: STATE_HASH L=30 gdn=daa4922d3417ebb4 ple=551bdfb35d818128 tail=4c4f4cf4f6d3fb6e pooled=1c325267ff9e553c kv=d073094485fa0d4f mtp=adbc3f950f3d3005 stale=2fec2aa928ca0957 dead=487beaad449d93e5 pooled_full=c64b5716cf573732 ple_prev=248069,271
+strata serve: prompt 30 tokens = 23 reused + 7 read in 112 ms (62.4 tok/s), 1 generated in 17 ms (60.2 tok/s), drafts accepted 0 of 0, 1 checkpoints
+strata serve: decode expert cache hit rate: 88.3% (424 hits / 480 lookups)
+strata serve: expert tiers: GPU 424 hits this request; since the start RAM 0 blobs, files 0 blobs 32323.6 MB read (the GGUF in place)
+strata trace: request 30 0
+strata trace: prompt start 29 -1
+strata trace: read 6 tokens (windows) in 50.2 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 29 1
+strata trace: CURSOR prompt=30 consumed=30 produced=1 pending=16 window=1 selection_position=29
+strata trace: window 30 4
+strata trace: CURSOR prompt=30 consumed=34 produced=5 pending=11 window=4 selection_position=33
+strata trace: window 34 4
+strata trace: CURSOR prompt=30 consumed=38 produced=9 pending=220 window=4 selection_position=37
+strata trace: window 38 4
+strata trace: CURSOR prompt=30 consumed=42 produced=13 pending=20 window=4 selection_position=41
+strata trace: window 42 4
+strata trace: CURSOR prompt=30 consumed=46 produced=17 pending=11 window=4 selection_position=45
+strata trace: window 46 4
+strata trace: CURSOR prompt=30 consumed=50 produced=20 pending=220 window=4 selection_position=49
+strata decode timing: 6 windows, avg T 3.50, 3.33 tokens/window, 128.85 ms/window = verify 127.60 (GPU-reach wait 10.26 + per-layer host 115.58 [plan 0.11 actq 0.39 jobs 88.55 CPU 26.39] + stage 0.01) + commit/emit 0.02 + draft 1.21; per layer-window: CPU experts 6.93 (11.78 entries), VRAM hits 23.22, PCIe 0.00
+strata serve: STATE_HASH L=50 gdn=46a393f0baa63d90 ple=5846059357fe0623 tail=adac2bd3b4ea96fc pooled=d99e568745673c7d kv=24cb9d587867bdb7 mtp=0e9a35b90fa0a8e7 stale=b2ffe074ee218075 dead=487beaad449d93e5 pooled_full=1c4a2b49ae15927f ple_prev=22,11
+strata serve: prompt 30 tokens = 23 reused + 7 read in 63 ms (110.9 tok/s), 20 generated in 773 ms (25.9 tok/s), drafts accepted 15 of 15, 1 checkpoints
+strata serve: decode expert cache hit rate: 66.3% (6688 hits / 10080 lookups)
+strata serve: expert tiers: GPU 6688 hits this request; since the start RAM 0 blobs, files 0 blobs 36225.2 MB read (the GGUF in place)
+strata trace: request 30 0
+strata trace: prompt start 29 -1
+strata trace: read 6 tokens (windows) in 100.2 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 29 1
+strata trace: CURSOR prompt=30 consumed=30 produced=1 pending=16 window=1 selection_position=29
+strata trace: window 30 4
+strata trace: CURSOR prompt=30 consumed=34 produced=5 pending=11 window=4 selection_position=33
+strata trace: window 34 4
+strata trace: CURSOR prompt=30 consumed=38 produced=9 pending=220 window=4 selection_position=37
+strata trace: window 38 4
+strata trace: CURSOR prompt=30 consumed=42 produced=13 pending=20 window=4 selection_position=41
+strata trace: window 42 4
+strata trace: CURSOR prompt=30 consumed=46 produced=17 pending=11 window=4 selection_position=45
+strata trace: window 46 4
+strata trace: CURSOR prompt=30 consumed=50 produced=20 pending=220 window=4 selection_position=49
+strata decode timing: 6 windows, avg T 3.50, 3.33 tokens/window, 122.62 ms/window = verify 121.37 (GPU-reach wait 10.26 + per-layer host 110.29 [plan 0.11 actq 0.38 jobs 83.60 CPU 26.04] + stage 0.01) + commit/emit 0.02 + draft 1.20; per layer-window: CPU experts 6.93 (11.78 entries), VRAM hits 23.22, PCIe 0.00
+strata serve: STATE_HASH L=50 gdn=46a393f0baa63d90 ple=5846059357fe0623 tail=adac2bd3b4ea96fc pooled=d99e568745673c7d kv=24cb9d587867bdb7 mtp=0e9a35b90fa0a8e7 stale=b2ffe074ee218075 dead=487beaad449d93e5 pooled_full=1c4a2b49ae15927f ple_prev=22,11
+strata serve: prompt 30 tokens = 23 reused + 7 read in 114 ms (61.6 tok/s), 20 generated in 736 ms (27.2 tok/s), drafts accepted 15 of 15, 1 checkpoints
+strata serve: decode expert cache hit rate: 66.3% (6688 hits / 10080 lookups)
+strata serve: expert tiers: GPU 6688 hits this request; since the start RAM 0 blobs, files 0 blobs 40613.1 MB read (the GGUF in place)
+strata trace: request 31 0
+strata trace: prompt start 30 -1
+strata trace: read 24 tokens (windows) in 391.5 ms
+strata trace: read 6 tokens (windows) in 86.3 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 30 1
+strata trace: CURSOR prompt=31 consumed=31 produced=1 pending=16 window=1 selection_position=30
+strata trace: window 31 4
+strata trace: CURSOR prompt=31 consumed=35 produced=5 pending=11 window=4 selection_position=34
+strata decode timing: 2 windows, avg T 2.50, 2.50 tokens/window, 57.52 ms/window = verify 56.06 (GPU-reach wait 9.27 + per-layer host 46.09 [plan 0.08 actq 0.27 jobs 35.28 CPU 10.33] + stage 0.01) + commit/emit 0.02 + draft 1.43; per layer-window: CPU experts 2.75 (4.09 entries), VRAM hits 20.91, PCIe 0.00
+strata serve: STATE_HASH L=35 gdn=38c5f309f041a5ef ple=b3dffb68443826cd tail=63830acec64ba5db pooled=9eda8e0cc6ac6f16 kv=93fcd8656190a21e mtp=ab5ee9ae2c457454 stale=00519e6a2876d583 dead=487beaad449d93e5 pooled_full=e49e15b5c5b5c234 ple_prev=220,17
+strata serve: prompt 31 tokens = 0 reused + 31 read in 533 ms (58.1 tok/s), 5 generated in 115 ms (43.5 tok/s), drafts accepted 3 of 3, 1 checkpoints
+strata serve: decode expert cache hit rate: 83.6% (2007 hits / 2400 lookups)
+strata serve: expert tiers: GPU 2007 hits this request; since the start RAM 0 blobs, files 0 blobs 42320.9 MB read (the GGUF in place)
+strata trace: request 30 0
+strata trace: prompt start 29 -1
+strata trace: read 23 tokens (windows) in 289.1 ms
+strata trace: read 6 tokens (windows) in 84.4 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 29 1
+strata trace: CURSOR prompt=30 consumed=30 produced=1 pending=16 window=1 selection_position=29
+strata trace: window 30 4
+strata trace: CURSOR prompt=30 consumed=34 produced=5 pending=11 window=4 selection_position=33
+strata trace: window 34 4
+strata trace: CURSOR prompt=30 consumed=38 produced=9 pending=220 window=4 selection_position=37
+strata trace: window 38 4
+strata trace: CURSOR prompt=30 consumed=42 produced=13 pending=20 window=4 selection_position=41
+strata trace: window 42 4
+strata trace: CURSOR prompt=30 consumed=46 produced=16 pending=11 window=4 selection_position=45
+strata decode timing: 5 windows, avg T 3.40, 3.20 tokens/window, 113.17 ms/window = verify 111.97 (GPU-reach wait 10.14 + per-layer host 101.11 [plan 0.11 actq 0.37 jobs 76.79 CPU 23.70] + stage 0.01) + commit/emit 0.03 + draft 1.15; per layer-window: CPU experts 6.41 (10.71 entries), VRAM hits 23.29, PCIe 0.00
+strata serve: STATE_HASH L=46 gdn=f0a747938b81f82e ple=bedf34e76e77aa12 tail=bee6e0af42736b89 pooled=2544266e6d9cd7e7 kv=4aaae3046292ce8c mtp=13d7d505145c11a7 stale=fa101663c4bca783 dead=487beaad449d93e5 pooled_full=a298ed6fbc457271 ple_prev=220,21
+strata serve: prompt 30 tokens = 0 reused + 30 read in 430 ms (69.7 tok/s), 16 generated in 566 ms (28.3 tok/s), drafts accepted 12 of 12, 1 checkpoints
+strata serve: decode expert cache hit rate: 68.5% (5590 hits / 8160 lookups)
+strata serve: expert tiers: GPU 5590 hits this request; since the start RAM 0 blobs, files 0 blobs 46749.5 MB read (the GGUF in place)
+strata trace: request 106 0
+strata trace: prompt start 105 -1
+strata trace: lent 144 slots for 256 tokens in 0.0 ms
+strata trace: prompt chunk 0 of 99
+strata serve: DRAFT_PREFILL path=batched mode=0 cells=99
+strata trace: read 99 tokens (batched) in 2122.0 ms
+strata trace: refill start 144 -1
+strata trace: refilled 144 slots on 1 stage(s) in 71.8 ms
+strata trace: read 6 tokens (windows) in 93.9 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 105 1
+strata trace: CURSOR prompt=106 consumed=106 produced=1 pending=727 window=1 selection_position=105
+strata trace: window 106 4
+strata trace: CURSOR prompt=106 consumed=110 produced=5 pending=292 window=4 selection_position=109
+strata trace: window 110 4
+strata trace: CURSOR prompt=106 consumed=114 produced=9 pending=460 window=4 selection_position=113
+strata trace: window 114 4
+strata trace: CURSOR prompt=106 consumed=118 produced=13 pending=271 window=4 selection_position=117
+strata trace: window 118 4
+strata trace: CURSOR prompt=106 consumed=122 produced=17 pending=11 window=4 selection_position=121
+strata trace: window 122 4
+strata trace: CURSOR prompt=106 consumed=126 produced=21 pending=262 window=4 selection_position=125
+strata trace: window 126 4
+strata trace: CURSOR prompt=106 consumed=130 produced=25 pending=292 window=4 selection_position=129
+strata trace: window 130 4
+strata trace: CURSOR prompt=106 consumed=134 produced=29 pending=2784 window=4 selection_position=133
+strata trace: window 134 4
+strata trace: CURSOR prompt=106 consumed=138 produced=33 pending=198 window=4 selection_position=137
+strata trace: window 138 4
+strata trace: CURSOR prompt=106 consumed=142 produced=37 pending=478 window=4 selection_position=141
+strata trace: window 142 4
+strata trace: CURSOR prompt=106 consumed=146 produced=41 pending=884 window=4 selection_position=145
+strata trace: window 146 4
+strata trace: CURSOR prompt=106 consumed=150 produced=45 pending=1590 window=4 selection_position=149
+strata trace: window 150 4
+strata trace: CURSOR prompt=106 consumed=154 produced=49 pending=264 window=4 selection_position=153
+strata trace: window 154 4
+strata trace: CURSOR prompt=106 consumed=158 produced=53 pending=727 window=4 selection_position=157
+strata trace: window 158 4
+strata trace: CURSOR prompt=106 consumed=162 produced=57 pending=292 window=4 selection_position=161
+strata trace: window 162 4
+strata trace: CURSOR prompt=106 consumed=166 produced=61 pending=460 window=4 selection_position=165
+strata trace: window 166 4
+strata trace: CURSOR prompt=106 consumed=170 produced=65 pending=271 window=4 selection_position=169
+strata trace: window 170 4
+strata trace: CURSOR prompt=106 consumed=174 produced=69 pending=11 window=4 selection_position=173
+strata trace: window 174 4
+strata trace: CURSOR prompt=106 consumed=178 produced=73 pending=262 window=4 selection_position=177
+strata trace: window 178 4
+strata trace: CURSOR prompt=106 consumed=182 produced=77 pending=292 window=4 selection_position=181
+strata trace: window 182 4
+strata trace: CURSOR prompt=106 consumed=186 produced=78 pending=248045 window=4 selection_position=185
+strata decode timing: 21 windows, avg T 3.86, 3.71 tokens/window, 203.79 ms/window = verify 202.33 (GPU-reach wait 10.84 + per-layer host 190.64 [plan 0.12 actq 0.45 jobs 153.04 CPU 36.85] + stage 0.13) + commit/emit 0.03 + draft 1.41; per layer-window: CPU experts 9.83 (16.12 entries), VRAM hits 22.45, PCIe 0.00
+strata serve: STATE_HASH L=186 gdn=537d996ffc9a43ff ple=680fe46f7783dc36 tail=b80bba54b6a2a69d pooled=03970a2250f8fa83 kv=a77d514de79421b8 mtp=4e336c4be19316ef stale=fa101663c4bca783 dead=2c67df276466b02a pooled_full=bea84649187027a6 ple_prev=198,248044
+strata serve: prompt 106 tokens = 0 reused + 106 read in 2344 ms (45.2 tok/s), 78 generated in 4280 ms (18.2 tok/s), drafts accepted 60 of 60, 1 checkpoints
+strata serve: decode expert cache hit rate: 58.2% (22627 hits / 38880 lookups)
+strata serve: expert tiers: GPU 22627 hits this request; since the start RAM 0 blobs, files 0 blobs 70194.3 MB read (the GGUF in place)
+strata trace: request 15 0
+strata trace: prompt start 14 -1
+strata trace: read 8 tokens (windows) in 195.7 ms
+strata trace: read 6 tokens (windows) in 160.3 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 14 1
+strata trace: CURSOR prompt=15 consumed=15 produced=1 pending=18622 window=1 selection_position=14
+strata trace: window 15 4
+strata trace: CURSOR prompt=15 consumed=19 produced=3 pending=248044 window=4 selection_position=18
+strata decode timing: 2 windows, avg T 2.50, 1.50 tokens/window, 58.75 ms/window = verify 58.02 (GPU-reach wait 9.21 + per-layer host 47.44 [plan 0.09 actq 0.31 jobs 35.34 CPU 11.56] + stage 0.64) + commit/emit 0.02 + draft 0.69; per layer-window: CPU experts 3.05 (3.88 entries), VRAM hits 21.12, PCIe 0.00
+strata serve: STATE_HASH L=19 gdn=b8ff95672f1a70b8 ple=e48f16366c16e3ec tail=737734c57d54f98d pooled=1ffa677bd6da6674 kv=fdeaa31a533e2971 mtp=dd68446203c3f76e stale=00519e6a2876d583 dead=9afdfc9101fc4e46 pooled_full=6895982a1b91a01d ple_prev=248046,198
+strata serve: prompt 15 tokens = 0 reused + 15 read in 423 ms (35.5 tok/s), 3 generated in 117 ms (25.5 tok/s), drafts accepted 3 of 3, 1 checkpoints
+strata serve: decode expert cache hit rate: 84.5% (2028 hits / 2400 lookups)
+strata serve: expert tiers: GPU 2028 hits this request; since the start RAM 0 blobs, files 0 blobs 71367.6 MB read (the GGUF in place)

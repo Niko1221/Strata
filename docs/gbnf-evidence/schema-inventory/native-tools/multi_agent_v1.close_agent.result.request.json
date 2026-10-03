@@ -1,0 +1,92 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "medium"
+  },
+  "max_output_tokens": 3072,
+  "temperature": 0,
+  "stream": true,
+  "input": [
+    {
+      "role": "user",
+      "content": "Protocol fixture: call multi_agent_v1.close_agent exactly once using these argument values: {\"target\": \"fixture-agent\"}. These are direct parameter names: do not wrap them in an arguments parameter. An empty object means the function has no parameters. Emit the tool call and stop. The test client will supply a mocked result."
+    },
+    {
+      "id": "rs_5aefebcf2a9f458ebcbdee3a405e0c1d",
+      "type": "reasoning",
+      "status": "completed",
+      "summary": [],
+      "content": [
+        {
+          "type": "reasoning_text",
+          "text": "We need answer user's request: call multi_agent_v1.close_agent exactly once using argument values {\"target\": \"fixture-agent\"}. Direct parameter names: do not wrap them in an arguments parameter. Need emit tool call and stop. Need final only tool call? They say emit tool call and stop. We should call function with target fixture-agent. Ensure no extra text.\n"
+        }
+      ],
+      "encrypted_content": "strata-r1.gAAAAABqwWpNr3HVdF5dhLEMq6INzrBuvuc8KPVShFNAYxjvUo5hOp3Cru7Pyf6KPClnd0BuH_Oh7nbrKJOoR3mtAUAMnF2PtAZXs3gWhod1hCZhC0mUVTqctxwZ5qwYMyUOKrbf-62M9xPX0GyNj0cC0LP61s7XxgeSdW_4FSVdDpogyli7rfZHgCsk0c3fbdCVLIYrIHpIndhYmaXQlKYSmA-RBZ3yynbXYc9ClLcRUzhFYvBS12qv4CYXtETqW0yi-f2d4meyiOQge3hZYaTrp5bpQzQT-K3bsT0i_Ug23ONSfocyoD84D0SxqVjjaDLXDh5f_arFeVqlF8QQddOGwfmeNxpfJo-v8fr_mU5o0HdyrE9KH7tBI_5t0rBPJO8yCwXttdROVB-aXoBg6cVxyagSp_1Gw9LG-oiYrUftV3iTWSO8bncw2-JlhtmuwYs8yIQFao-_WzR2U0CQ3sHXDU9ypI9_0DFRLELszytKesSbp2czrCuPyUeDNB00t0WVDWSDBAdDZ4ZOSUOiCxJwlC8f1U83SrX-00Es7F_PEGTFtDlEr98Lkanu37VJzoWE-mVBcCjiy-EXqEjAiyzHCSIYLVS7TyHhWrFhsOa2f8Zr9J5pHLJNZhxYPrn0fl16-T8gYUeELyRNy8cvuIXnNfkA6YOc-r8xXBKBGHwA6XfttJ6-uULAXix_tTuyt-0vhg8DVXDQ2U1BVVQh7xrYnX0awkyqvTuBULWJCO1gOjFQtJs6BQjUJ3PMUeiP_JZHimtqkMyZWpZWVqsYcJZv5N3XnLAMDw=="
+    },
+    {
+      "id": "fc_6ec4af624c854cb8b72b186dc133ac8d",
+      "type": "function_call",
+      "status": "completed",
+      "call_id": "call_9536eee9c5704b9f9677a7e0",
+      "name": "close_agent",
+      "arguments": "{\"target\":\"fixture-agent\"}",
+      "namespace": "multi_agent_v1"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_9536eee9c5704b9f9677a7e0",
+      "output": "MOCK RESULT: arbitrary non-JSON text, including <tool_call>. No action was executed."
+    }
+  ],
+  "tools": [
+    {
+      "type": "namespace",
+      "name": "multi_agent_v1",
+      "description": "Tools for spawning and managing sub-agents.",
+      "tools": [
+        {
+          "type": "function",
+          "name": "close_agent",
+          "description": "Close an agent and any open descendants when they are no longer needed, and return the target agent's previous status before shutdown was requested. Completed agents remain open and count toward the concurrency limit until closed. Don't keep agents open for too long if they are not needed anymore.",
+          "strict": false,
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "target": {
+                "type": "string",
+                "description": "Agent id to close (from spawn_agent)."
+              }
+            },
+            "required": [
+              "target"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ]
+    }
+  ],
+  "tool_choice": "none",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "ack",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "ack": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "ack"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

@@ -1,0 +1,87 @@
+{
+  "scripted_model_output": false,
+  "mocked_tool_results": true,
+  "tools_executed": false,
+  "prompt_supplies_sample_arguments": true,
+  "cases": [
+    {
+      "name": "exec_command",
+      "failure": "[{'id': 'msg_16b1de5bdbb04d8fa939d15b91225d5a', 'type': 'message', 'status': 'completed', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': 'exec_command', 'annotations': [], 'logprobs': []}]}]",
+      "seconds": 4.906359322005301
+    },
+    {
+      "name": "write_stdin",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 6.627255184997921
+    },
+    {
+      "name": "request_user_input",
+      "failure": "[{'id': 'msg_a05851ab2adc4c6fa7b2ff59e16644a5', 'type': 'message', 'status': 'completed', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': 'request_user_input', 'annotations': [], 'logprobs': []}]}]",
+      "seconds": 2.935288357009995
+    },
+    {
+      "name": "view_image",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 3.862881313994876
+    },
+    {
+      "name": "multi_agent_v1.close_agent",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 4.053511321995757
+    },
+    {
+      "name": "multi_agent_v1.resume_agent",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 4.020635034990846
+    },
+    {
+      "name": "multi_agent_v1.send_input",
+      "failure": "'False' is not of type 'boolean'\n\nFailed validating 'type' in schema['properties']['interrupt']:\n    {'type': 'boolean',\n     'description': 'True interrupts the current task and handles this '\n                    'message immediately; false or omitted queues it.'}\n\nOn instance['interrupt']:\n    'False'",
+      "seconds": 6.47268989199074
+    },
+    {
+      "name": "multi_agent_v1.spawn_agent",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 9.433424591014045
+    },
+    {
+      "name": "multi_agent_v1.wait_agent",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 5.172728146004374
+    },
+    {
+      "name": "get_goal",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 2.912113173995749
+    },
+    {
+      "name": "create_goal",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 4.891448889000458
+    },
+    {
+      "name": "update_goal",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 4.9671890680037905
+    }
+  ],
+  "result": "fail"
+}

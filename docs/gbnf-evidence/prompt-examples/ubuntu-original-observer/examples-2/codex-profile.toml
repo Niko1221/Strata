@@ -1,0 +1,19 @@
+model_instructions_file = "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/interactive/chat-20261003T211458Z-485aac/codex-ubuntu/examples-2/client-home/model-instructions.txt"
+model_catalog_json = "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/interactive/chat-20261003T211458Z-485aac/source/docs/codex/model-catalog-0.160.0.json"
+model = "qwen3.8-flash-next"
+model_provider = "strata-local"
+web_search = "disabled"
+model_reasoning_effort = "medium"
+
+[windows]
+sandbox = "unelevated"
+
+[model_providers.strata-local]
+name = "Strata local native coding qualification"
+base_url = "http://127.0.0.1:43323/v1"
+env_key = "STRATA_API_KEY"
+wire_api = "responses"
+requires_openai_auth = false
+supports_websockets = false
+request_max_retries = 0
+stream_max_retries = 0

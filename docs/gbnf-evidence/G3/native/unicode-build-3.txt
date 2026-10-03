@@ -1,0 +1,7 @@
+Test project /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-asan
+    Start 2: serve_input_test
+1/1 Test #2: serve_input_test .................   Passed    0.03 sec
+
+100% tests passed, 0 tests failed out of 1
+
+Total Test time (real) =   0.03 sec

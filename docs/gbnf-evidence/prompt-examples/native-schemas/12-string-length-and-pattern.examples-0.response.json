@@ -1,0 +1,76 @@
+{
+  "id": "resp_8fc121d513004cda90dad981b2aa83c6",
+  "object": "response",
+  "created_at": 1791062282,
+  "status": "completed",
+  "completed_at": 1791062283,
+  "error": null,
+  "incomplete_details": null,
+  "instructions": null,
+  "model": "qwen3.8-flash-next",
+  "output": [
+    {
+      "id": "msg_444d0315d40245f8871095a2a1ff1ecf",
+      "type": "message",
+      "status": "completed",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "{\"ticket\": \"AB-123\"}",
+          "annotations": [],
+          "logprobs": []
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 134,
+    "output_tokens": 11,
+    "total_tokens": 145,
+    "input_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 134
+    },
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    }
+  },
+  "store": false,
+  "background": false,
+  "previous_response_id": null,
+  "max_output_tokens": 512,
+  "temperature": 0,
+  "top_p": 0.95,
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "12_string_length_and_pattern",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "ticket": {
+            "type": "string",
+            "pattern": "^[A-Z]{2}-[0-9]{3}$",
+            "minLength": 6,
+            "maxLength": 6
+          }
+        },
+        "required": [
+          "ticket"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "tools": [],
+  "tool_choice": "auto",
+  "parallel_tool_calls": true,
+  "reasoning": {
+    "effort": "none",
+    "summary": null
+  },
+  "truncation": "disabled",
+  "metadata": {}
+}

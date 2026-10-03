@@ -1,0 +1,202 @@
+event: response.created
+data: {"type": "response.created", "sequence_number": 0, "response": {"id": "resp_4ed7318e9fb24aaa8bddcb75d541615e", "object": "response", "created_at": 1791058806, "status": "queued", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "json_schema", "name": "ack", "strict": true, "schema": {"type": "object", "properties": {"ack": {"type": "boolean", "const": true}}, "required": ["ack"], "additionalProperties": false}}}, "tools": [{"type": "function", "name": "update_goal", "description": "Update the existing goal.\nSet status to `paused` only at the user's explicit request to pause this goal, never on your own initiative. Ask if unclear; a later resume revokes that request. Report the returned status and stop goal work. Budget limits take precedence over pausing.\nSet status to `complete` only when the objective has actually been achieved and no required work remains.\nSet status to `blocked` only when the same blocking condition has repeated for at least three consecutive goal turns, counting the original/user-triggered turn and any automatic continuations, and the agent cannot make meaningful progress without user input or an external-state change.\nIf the user resumes a goal that was previously marked `blocked`, treat the resumed run as a fresh blocked audit. If the same blocking condition then repeats for at least three consecutive resumed goal turns, set status to `blocked` again.\nOnce the blocked threshold is satisfied, do not keep reporting that you are still blocked while leaving the goal active; set status to `blocked`.\nDo not use `blocked` merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.\nDo not mark a goal complete merely because its budget is nearly exhausted or because you are stopping work.\nYou cannot use this tool to resume, budget-limit, or usage-limit a goal; those status changes are controlled by the user or system.\nWhen marking a budgeted goal achieved with status `complete`, report the final token usage from the tool result to the user.", "strict": false, "parameters": {"type": "object", "properties": {"status": {"type": "string", "description": "Required. `paused` requires an explicit user request. Set to `complete` only when the objective is achieved and no required work remains. Set to `blocked` only after the same blocking condition has recurred for at least three consecutive goal turns and the agent is at an impasse. After a previously blocked goal is resumed, the resumed run starts a fresh blocked audit.", "enum": ["complete", "blocked", "paused"]}}, "required": ["status"], "additionalProperties": false}}], "tool_choice": "none", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+event: response.in_progress
+data: {"type": "response.in_progress", "sequence_number": 1, "response": {"id": "resp_4ed7318e9fb24aaa8bddcb75d541615e", "object": "response", "created_at": 1791058806, "status": "in_progress", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "json_schema", "name": "ack", "strict": true, "schema": {"type": "object", "properties": {"ack": {"type": "boolean", "const": true}}, "required": ["ack"], "additionalProperties": false}}}, "tools": [{"type": "function", "name": "update_goal", "description": "Update the existing goal.\nSet status to `paused` only at the user's explicit request to pause this goal, never on your own initiative. Ask if unclear; a later resume revokes that request. Report the returned status and stop goal work. Budget limits take precedence over pausing.\nSet status to `complete` only when the objective has actually been achieved and no required work remains.\nSet status to `blocked` only when the same blocking condition has repeated for at least three consecutive goal turns, counting the original/user-triggered turn and any automatic continuations, and the agent cannot make meaningful progress without user input or an external-state change.\nIf the user resumes a goal that was previously marked `blocked`, treat the resumed run as a fresh blocked audit. If the same blocking condition then repeats for at least three consecutive resumed goal turns, set status to `blocked` again.\nOnce the blocked threshold is satisfied, do not keep reporting that you are still blocked while leaving the goal active; set status to `blocked`.\nDo not use `blocked` merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.\nDo not mark a goal complete merely because its budget is nearly exhausted or because you are stopping work.\nYou cannot use this tool to resume, budget-limit, or usage-limit a goal; those status changes are controlled by the user or system.\nWhen marking a budgeted goal achieved with status `complete`, report the final token usage from the tool result to the user.", "strict": false, "parameters": {"type": "object", "properties": {"status": {"type": "string", "description": "Required. `paused` requires an explicit user request. Set to `complete` only when the objective is achieved and no required work remains. Set to `blocked` only after the same blocking condition has recurred for at least three consecutive goal turns and the agent is at an impasse. After a previously blocked goal is resumed, the resumed run starts a fresh blocked audit.", "enum": ["complete", "blocked", "paused"]}}, "required": ["status"], "additionalProperties": false}}], "tool_choice": "none", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+: keep-alive
+
+: keep-alive
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"id": "rs_52abb857be9f495893813f38f0559454", "type": "reasoning", "status": "in_progress", "summary": [], "content": [{"type": "reasoning_text", "text": ""}]}}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 3, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": "The"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 4, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " user"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 5, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " wants"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 6, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " me"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 7, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " to"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 8, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " call"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 9, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " update"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 10, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": "_goal"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 11, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " exactly"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 12, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " once"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 13, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " with"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 14, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " {\""}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 15, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": "status"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 16, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": "\":"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 17, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " \""}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 18, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": "complete"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 19, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": "\""}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 20, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": "}."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 21, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " I"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 22, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " already"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 23, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " did"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 24, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " that"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 25, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 26, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " The"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 27, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " tool"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 28, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " returned"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 29, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " a"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 30, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " mocked"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 31, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " result"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 32, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 33, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " I"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 34, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " should"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 35, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " now"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 36, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " emit"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 37, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " the"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 38, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " final"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 39, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " answer"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 40, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " as"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 41, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " a"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 42, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " JSON"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 43, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " value"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 44, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " matching"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 45, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " the"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 46, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " schema"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 47, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " {\""}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 48, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": "ack"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 49, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": "\":"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 50, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": " true"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 51, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": "}."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 52, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "delta": "\n"}
+
+event: response.reasoning_text.done
+data: {"type": "response.reasoning_text.done", "sequence_number": 53, "item_id": "rs_52abb857be9f495893813f38f0559454", "output_index": 0, "content_index": 0, "text": "The user wants me to call update_goal exactly once with {\"status\": \"complete\"}. I already did that. The tool returned a mocked result. I should now emit the final answer as a JSON value matching the schema {\"ack\": true}.\n"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 54, "output_index": 0, "item": {"id": "rs_52abb857be9f495893813f38f0559454", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants me to call update_goal exactly once with {\"status\": \"complete\"}. I already did that. The tool returned a mocked result. I should now emit the final answer as a JSON value matching the schema {\"ack\": true}.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWN4oC1pyW8ZwUAFFksNh2P5KA4PxTzYzMixIfN_iKovvDVj8gQiWhmmF58z8CkycojtGSv8_LpbKhd_k3ISPb6X7rz_4VCQnBxA4OeO-Kqc2sZIC4-RiEWov_S2_EvUvJ81lL_kZjVsc1F1Yqae4KMBBCCDZrOH-2vl42oHG8_wYmKonB_Wnu3ZHXyIGMq_hbZkI9budI06L8w5zVJJNCg4dxiJOyxk_8kktCoda3bKbyRXmwHtSNwWjQEbcQeFlp_CVv5aioCh2Xizq3198MV-vS30uXCwzRQ60VmaMM4K_R43HLf6HiHfTKUr35R3Lp1tNqmvseT1JAa37ZH__KpSUQ6Ws6qpv_PaUaptoqu87aIOtjFSQYHFS5r84XmaU_ZfTzQl551l7QUXxUKyaSKx1Ddyygf6AklId45numh03VqeDgZ3uyp1Iqcj0QJBi4saCc2j5C-9_VJbdjTXaqVCUdsEZBIJvFc-UP831eosNTezKuVX6eOc9YgBVuT7JG5eg3ygQupzLjISSQQAf1YhGxxwCbFDJLjhQwZDr1ynU-9uJks1wTCLzgF6NV53y5Agoynluwy7lZvMWQeCy8QiPw=="}}
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 55, "output_index": 1, "item": {"id": "msg_c505ea7953024764987e54d64d8823a5", "type": "message", "status": "in_progress", "role": "assistant", "content": []}}
+
+event: response.content_part.added
+data: {"type": "response.content_part.added", "sequence_number": 56, "item_id": "msg_c505ea7953024764987e54d64d8823a5", "output_index": 1, "content_index": 0, "part": {"type": "output_text", "text": "", "annotations": [], "logprobs": []}}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 57, "item_id": "msg_c505ea7953024764987e54d64d8823a5", "output_index": 1, "content_index": 0, "delta": "{\"", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 58, "item_id": "msg_c505ea7953024764987e54d64d8823a5", "output_index": 1, "content_index": 0, "delta": "ack", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 59, "item_id": "msg_c505ea7953024764987e54d64d8823a5", "output_index": 1, "content_index": 0, "delta": "\":", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 60, "item_id": "msg_c505ea7953024764987e54d64d8823a5", "output_index": 1, "content_index": 0, "delta": " true", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 61, "item_id": "msg_c505ea7953024764987e54d64d8823a5", "output_index": 1, "content_index": 0, "delta": "}", "logprobs": []}
+
+event: response.output_text.done
+data: {"type": "response.output_text.done", "sequence_number": 62, "item_id": "msg_c505ea7953024764987e54d64d8823a5", "output_index": 1, "content_index": 0, "text": "{\"ack\": true}", "logprobs": []}
+
+event: response.content_part.done
+data: {"type": "response.content_part.done", "sequence_number": 63, "item_id": "msg_c505ea7953024764987e54d64d8823a5", "output_index": 1, "content_index": 0, "part": {"type": "output_text", "text": "{\"ack\": true}", "annotations": [], "logprobs": []}}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 64, "output_index": 1, "item": {"id": "msg_c505ea7953024764987e54d64d8823a5", "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "{\"ack\": true}", "annotations": [], "logprobs": []}]}}
+
+event: response.completed
+data: {"type": "response.completed", "sequence_number": 65, "response": {"id": "resp_4ed7318e9fb24aaa8bddcb75d541615e", "object": "response", "created_at": 1791058806, "status": "completed", "completed_at": 1791058808, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [{"id": "rs_52abb857be9f495893813f38f0559454", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants me to call update_goal exactly once with {\"status\": \"complete\"}. I already did that. The tool returned a mocked result. I should now emit the final answer as a JSON value matching the schema {\"ack\": true}.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWN4oC1pyW8ZwUAFFksNh2P5KA4PxTzYzMixIfN_iKovvDVj8gQiWhmmF58z8CkycojtGSv8_LpbKhd_k3ISPb6X7rz_4VCQnBxA4OeO-Kqc2sZIC4-RiEWov_S2_EvUvJ81lL_kZjVsc1F1Yqae4KMBBCCDZrOH-2vl42oHG8_wYmKonB_Wnu3ZHXyIGMq_hbZkI9budI06L8w5zVJJNCg4dxiJOyxk_8kktCoda3bKbyRXmwHtSNwWjQEbcQeFlp_CVv5aioCh2Xizq3198MV-vS30uXCwzRQ60VmaMM4K_R43HLf6HiHfTKUr35R3Lp1tNqmvseT1JAa37ZH__KpSUQ6Ws6qpv_PaUaptoqu87aIOtjFSQYHFS5r84XmaU_ZfTzQl551l7QUXxUKyaSKx1Ddyygf6AklId45numh03VqeDgZ3uyp1Iqcj0QJBi4saCc2j5C-9_VJbdjTXaqVCUdsEZBIJvFc-UP831eosNTezKuVX6eOc9YgBVuT7JG5eg3ygQupzLjISSQQAf1YhGxxwCbFDJLjhQwZDr1ynU-9uJks1wTCLzgF6NV53y5Agoynluwy7lZvMWQeCy8QiPw=="}, {"id": "msg_c505ea7953024764987e54d64d8823a5", "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "{\"ack\": true}", "annotations": [], "logprobs": []}]}], "usage": {"input_tokens": 207, "output_tokens": 58, "total_tokens": 265, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 207}, "output_tokens_details": {"reasoning_tokens": 50}}, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "json_schema", "name": "ack", "strict": true, "schema": {"type": "object", "properties": {"ack": {"type": "boolean", "const": true}}, "required": ["ack"], "additionalProperties": false}}}, "tools": [{"type": "function", "name": "update_goal", "description": "Update the existing goal.\nSet status to `paused` only at the user's explicit request to pause this goal, never on your own initiative. Ask if unclear; a later resume revokes that request. Report the returned status and stop goal work. Budget limits take precedence over pausing.\nSet status to `complete` only when the objective has actually been achieved and no required work remains.\nSet status to `blocked` only when the same blocking condition has repeated for at least three consecutive goal turns, counting the original/user-triggered turn and any automatic continuations, and the agent cannot make meaningful progress without user input or an external-state change.\nIf the user resumes a goal that was previously marked `blocked`, treat the resumed run as a fresh blocked audit. If the same blocking condition then repeats for at least three consecutive resumed goal turns, set status to `blocked` again.\nOnce the blocked threshold is satisfied, do not keep reporting that you are still blocked while leaving the goal active; set status to `blocked`.\nDo not use `blocked` merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.\nDo not mark a goal complete merely because its budget is nearly exhausted or because you are stopping work.\nYou cannot use this tool to resume, budget-limit, or usage-limit a goal; those status changes are controlled by the user or system.\nWhen marking a budgeted goal achieved with status `complete`, report the final token usage from the tool result to the user.", "strict": false, "parameters": {"type": "object", "properties": {"status": {"type": "string", "description": "Required. `paused` requires an explicit user request. Set to `complete` only when the objective is achieved and no required work remains. Set to `blocked` only after the same blocking condition has recurred for at least three consecutive goal turns and the agent is at an impasse. After a previously blocked goal is resumed, the resumed run starts a fresh blocked audit.", "enum": ["complete", "blocked", "paused"]}}, "required": ["status"], "additionalProperties": false}}], "tool_choice": "none", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+

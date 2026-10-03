@@ -1,0 +1,375 @@
+event: response.created
+data: {"type": "response.created", "sequence_number": 0, "response": {"id": "resp_64cbfb39887b4a55891300f3d577d861", "object": "response", "created_at": 1791058727, "status": "queued", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "json_schema", "name": "ack", "strict": true, "schema": {"type": "object", "properties": {"ack": {"type": "boolean", "const": true}}, "required": ["ack"], "additionalProperties": false}}}, "tools": [{"type": "function", "name": "exec_command", "description": "Runs a command in a PTY, returning output or a session ID for ongoing interaction.\n\nWindows safety rules:\n- Do not compose destructive filesystem commands across shells. Do not enumerate paths in PowerShell and then pass them to `cmd /c`, batch builtins, or another shell for deletion or moving. Use one shell end-to-end, prefer native PowerShell cmdlets such as `Remove-Item` / `Move-Item` with `-LiteralPath`, and avoid string-built shell commands for file operations.\n- Before any recursive delete or move on Windows, verify the resolved absolute target paths stay within the intended workspace or explicitly named target directory. Never issue a recursive delete or move against a computed path if the final target has not been checked.\n- When using `Start-Process` to launch a background helper or service, pass `-WindowStyle Hidden` unless the user explicitly asked for a visible interactive window. Use visible windows only for interactive tools the user needs to see or control.", "strict": false, "parameters": {"type": "object", "properties": {"cmd": {"type": "string", "description": "Shell command to execute."}, "justification": {"type": "string", "description": "User-facing approval question for `require_escalated`; omit otherwise."}, "login": {"type": "boolean", "description": "True runs the shell with -l/-i semantics; false disables them. Defaults to true."}, "max_output_tokens": {"type": "number", "description": "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."}, "prefix_rule": {"type": "array", "description": "Reusable approval prefix for `cmd`, only with `sandbox_permissions: \"require_escalated\"`; for example [\"git\", \"pull\"].", "items": {"type": "string"}}, "sandbox_permissions": {"type": "string", "description": "Per-command sandbox override. Defaults to `use_default`; use `require_escalated` for unsandboxed execution.", "enum": ["use_default", "require_escalated"]}, "shell": {"type": "string", "description": "Shell binary to launch. Defaults to the user's default shell."}, "tty": {"type": "boolean", "description": "True allocates a PTY for the command; false or omitted uses plain pipes."}, "workdir": {"type": "string", "description": "Working directory for the command. Defaults to the turn cwd."}, "yield_time_ms": {"type": "number", "description": "Maximum time to wait before returning a session ID for a still-running command. Commands that finish sooner return immediately. For ordinary commands, omit this parameter to use the 10000 ms default. Effective range on Windows is 10000-30000 ms."}}, "required": ["cmd"], "additionalProperties": false}}], "tool_choice": "none", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+event: response.in_progress
+data: {"type": "response.in_progress", "sequence_number": 1, "response": {"id": "resp_64cbfb39887b4a55891300f3d577d861", "object": "response", "created_at": 1791058727, "status": "in_progress", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "json_schema", "name": "ack", "strict": true, "schema": {"type": "object", "properties": {"ack": {"type": "boolean", "const": true}}, "required": ["ack"], "additionalProperties": false}}}, "tools": [{"type": "function", "name": "exec_command", "description": "Runs a command in a PTY, returning output or a session ID for ongoing interaction.\n\nWindows safety rules:\n- Do not compose destructive filesystem commands across shells. Do not enumerate paths in PowerShell and then pass them to `cmd /c`, batch builtins, or another shell for deletion or moving. Use one shell end-to-end, prefer native PowerShell cmdlets such as `Remove-Item` / `Move-Item` with `-LiteralPath`, and avoid string-built shell commands for file operations.\n- Before any recursive delete or move on Windows, verify the resolved absolute target paths stay within the intended workspace or explicitly named target directory. Never issue a recursive delete or move against a computed path if the final target has not been checked.\n- When using `Start-Process` to launch a background helper or service, pass `-WindowStyle Hidden` unless the user explicitly asked for a visible interactive window. Use visible windows only for interactive tools the user needs to see or control.", "strict": false, "parameters": {"type": "object", "properties": {"cmd": {"type": "string", "description": "Shell command to execute."}, "justification": {"type": "string", "description": "User-facing approval question for `require_escalated`; omit otherwise."}, "login": {"type": "boolean", "description": "True runs the shell with -l/-i semantics; false disables them. Defaults to true."}, "max_output_tokens": {"type": "number", "description": "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."}, "prefix_rule": {"type": "array", "description": "Reusable approval prefix for `cmd`, only with `sandbox_permissions: \"require_escalated\"`; for example [\"git\", \"pull\"].", "items": {"type": "string"}}, "sandbox_permissions": {"type": "string", "description": "Per-command sandbox override. Defaults to `use_default`; use `require_escalated` for unsandboxed execution.", "enum": ["use_default", "require_escalated"]}, "shell": {"type": "string", "description": "Shell binary to launch. Defaults to the user's default shell."}, "tty": {"type": "boolean", "description": "True allocates a PTY for the command; false or omitted uses plain pipes."}, "workdir": {"type": "string", "description": "Working directory for the command. Defaults to the turn cwd."}, "yield_time_ms": {"type": "number", "description": "Maximum time to wait before returning a session ID for a still-running command. Commands that finish sooner return immediately. For ordinary commands, omit this parameter to use the 10000 ms default. Effective range on Windows is 10000-30000 ms."}}, "required": ["cmd"], "additionalProperties": false}}], "tool_choice": "none", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"id": "rs_3c92bc2c501548969c6a08b236217b22", "type": "reasoning", "status": "in_progress", "summary": [], "content": [{"type": "reasoning_text", "text": ""}]}}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 3, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": "The"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 4, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " user"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 5, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": "'s"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 6, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " protocol"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 7, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " fixture"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 8, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " says"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 9, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": ":"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 10, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " \""}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 11, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": "call"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 12, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " exec"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 13, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": "_command"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 14, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " exactly"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 15, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " once"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 16, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " using"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 17, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " these"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 18, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " argument"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 19, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " values"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 20, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": "..."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 21, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " Emit"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 22, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " the"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 23, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " tool"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 24, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " call"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 25, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " and"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 26, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " stop"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 27, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 28, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " The"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 29, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " test"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 30, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " client"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 31, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " will"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 32, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " supply"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 33, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " a"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 34, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " mocked"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 35, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " result"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 36, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": ".\""}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 37, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": "\n\n"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 38, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": "I"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 39, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " already"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 40, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " made"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 41, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " the"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 42, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " exec"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 43, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": "_command"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 44, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " call"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 45, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " exactly"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 46, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " once"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 47, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 48, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " The"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 49, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " result"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 50, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " came"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 51, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " back"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 52, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " as"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 53, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " a"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 54, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " mocked"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 55, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " result"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 56, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 57, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " The"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 58, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " instruction"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 59, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " says"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 60, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " \""}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 61, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": "E"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 62, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": "mit"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 63, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " the"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 64, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " tool"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 65, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " call"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 66, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " and"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 67, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " stop"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 68, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": ".\""}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 69, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " I"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 70, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": "'ve"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 71, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " done"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 72, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " that"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 73, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 74, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " Now"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 75, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " I"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 76, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " need"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 77, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " to"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 78, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " return"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 79, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " the"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 80, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " final"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 81, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " answer"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 82, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " matching"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 83, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " the"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 84, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " schema"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 85, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": ":"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 86, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " {\""}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 87, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": "ack"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 88, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": "\":"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 89, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " true"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 90, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": "}."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 91, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": "\n\n"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 92, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": "The"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 93, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " schema"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 94, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " requires"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 95, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " exactly"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 96, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " one"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 97, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " JSON"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 98, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " value"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 99, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " with"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 100, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " \""}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 101, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": "ack"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 102, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": "\":"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 103, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " true"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 104, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " and"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 105, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " no"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 106, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " additional"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 107, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": " properties"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 108, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 109, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "delta": "\n"}
+
+event: response.reasoning_text.done
+data: {"type": "response.reasoning_text.done", "sequence_number": 110, "item_id": "rs_3c92bc2c501548969c6a08b236217b22", "output_index": 0, "content_index": 0, "text": "The user's protocol fixture says: \"call exec_command exactly once using these argument values... Emit the tool call and stop. The test client will supply a mocked result.\"\n\nI already made the exec_command call exactly once. The result came back as a mocked result. The instruction says \"Emit the tool call and stop.\" I've done that. Now I need to return the final answer matching the schema: {\"ack\": true}.\n\nThe schema requires exactly one JSON value with \"ack\": true and no additional properties.\n"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 111, "output_index": 0, "item": {"id": "rs_3c92bc2c501548969c6a08b236217b22", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user's protocol fixture says: \"call exec_command exactly once using these argument values... Emit the tool call and stop. The test client will supply a mocked result.\"\n\nI already made the exec_command call exactly once. The result came back as a mocked result. The instruction says \"Emit the tool call and stop.\" I've done that. Now I need to return the final answer matching the schema: {\"ack\": true}.\n\nThe schema requires exactly one JSON value with \"ack\": true and no additional properties.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWMqs8gZWb6YxG6yOqgM6llmKxdI5RETVghm1NjUKGwLwrvca0EfZPJUvcL-maSjIKMEZ3UTRNsMYK2WP4jnSkZZKbiejECSmKe8Oq8DMbCQPkMDUDjo_23mfpJxfvu5UIPQ1KVMes-uBe1-WTaS39Fa3RV9cBDGBX4ijGdZFy34P3aBh0XJ8txobKNYBOo0O6RNk4Z6CYRdERBl9NrMyZyl5T8Oo8W3c-seFh-zb3QR40o8hCyW2Txfz51aT1gdShpccB4QhUetP3X8fZMBYuNcF7RmLc8I7dLATToXPkQj9C58Ak5Lv7jiaUB6YX2U50QAH9-Fz35YPn_429tIF6tJ0isiPhSPtgJgw4h33sHd_wFsxdrHvr-shozpH75AoygoePUd9f4GGrfLGOaC3zQokvEEqA6qTZ46M1hDxsn87MGhh6CUQb43uoXUXtmcGDGU4dhCKhhAjyFtKNLvBTzCqar6s2hzAimNwbLqHcpDXMFGXzqk4Ck9kF7DA_pQjJs2hQctwyfe3tB3M10rsal2-_FIejZMD9z1NSM2RGGkNlGFm7znSmzfdJCZjiQcfXjT-RGkvA5hiEyD03A9TVdNyhrEaKsASocRiOJM4MduV5GbN8WlQW7wYgzsUEgxigxJGM-rMlB_xm0vol9R-RazQIN3IMwzVqDNhtk0eN5-6LTB5l4zbfOwttK7-zapnrxlk9z4ocT4iOtvC9kl4rEgpoQgH3wMyfoS-nDXCwrBGdXTbXRJ-HHo-olSY5daDoJJ0jMSTj1_XNahSXZ_NSp4PNUW_Zx5SmzkNGwyY1Y04w4Quxacn7Nz0GAzHmLfx56bpj-1sMICa_i6ZLu-PM1SPQtno8U1S2Nmnlu5UOP9gVsUW-hAiWqkgdIN8OtYHEE4lPTAbLcMdcnYCXrsDCzLwdaU-5OnhvckNtB_lsS6nYP-ToKCBhUqtgA24KYqtdILX4y8e3orY9O4K8DIFVHsHw=="}}
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 112, "output_index": 1, "item": {"id": "msg_68f245c8a73f4817a13bcc37c7b7c19e", "type": "message", "status": "in_progress", "role": "assistant", "content": []}}
+
+event: response.content_part.added
+data: {"type": "response.content_part.added", "sequence_number": 113, "item_id": "msg_68f245c8a73f4817a13bcc37c7b7c19e", "output_index": 1, "content_index": 0, "part": {"type": "output_text", "text": "", "annotations": [], "logprobs": []}}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 114, "item_id": "msg_68f245c8a73f4817a13bcc37c7b7c19e", "output_index": 1, "content_index": 0, "delta": "{\"", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 115, "item_id": "msg_68f245c8a73f4817a13bcc37c7b7c19e", "output_index": 1, "content_index": 0, "delta": "ack", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 116, "item_id": "msg_68f245c8a73f4817a13bcc37c7b7c19e", "output_index": 1, "content_index": 0, "delta": "\":", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 117, "item_id": "msg_68f245c8a73f4817a13bcc37c7b7c19e", "output_index": 1, "content_index": 0, "delta": " true", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 118, "item_id": "msg_68f245c8a73f4817a13bcc37c7b7c19e", "output_index": 1, "content_index": 0, "delta": "}", "logprobs": []}
+
+event: response.output_text.done
+data: {"type": "response.output_text.done", "sequence_number": 119, "item_id": "msg_68f245c8a73f4817a13bcc37c7b7c19e", "output_index": 1, "content_index": 0, "text": "{\"ack\": true}", "logprobs": []}
+
+event: response.content_part.done
+data: {"type": "response.content_part.done", "sequence_number": 120, "item_id": "msg_68f245c8a73f4817a13bcc37c7b7c19e", "output_index": 1, "content_index": 0, "part": {"type": "output_text", "text": "{\"ack\": true}", "annotations": [], "logprobs": []}}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 121, "output_index": 1, "item": {"id": "msg_68f245c8a73f4817a13bcc37c7b7c19e", "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "{\"ack\": true}", "annotations": [], "logprobs": []}]}}
+
+event: response.completed
+data: {"type": "response.completed", "sequence_number": 122, "response": {"id": "resp_64cbfb39887b4a55891300f3d577d861", "object": "response", "created_at": 1791058727, "status": "completed", "completed_at": 1791058731, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [{"id": "rs_3c92bc2c501548969c6a08b236217b22", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user's protocol fixture says: \"call exec_command exactly once using these argument values... Emit the tool call and stop. The test client will supply a mocked result.\"\n\nI already made the exec_command call exactly once. The result came back as a mocked result. The instruction says \"Emit the tool call and stop.\" I've done that. Now I need to return the final answer matching the schema: {\"ack\": true}.\n\nThe schema requires exactly one JSON value with \"ack\": true and no additional properties.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWMqs8gZWb6YxG6yOqgM6llmKxdI5RETVghm1NjUKGwLwrvca0EfZPJUvcL-maSjIKMEZ3UTRNsMYK2WP4jnSkZZKbiejECSmKe8Oq8DMbCQPkMDUDjo_23mfpJxfvu5UIPQ1KVMes-uBe1-WTaS39Fa3RV9cBDGBX4ijGdZFy34P3aBh0XJ8txobKNYBOo0O6RNk4Z6CYRdERBl9NrMyZyl5T8Oo8W3c-seFh-zb3QR40o8hCyW2Txfz51aT1gdShpccB4QhUetP3X8fZMBYuNcF7RmLc8I7dLATToXPkQj9C58Ak5Lv7jiaUB6YX2U50QAH9-Fz35YPn_429tIF6tJ0isiPhSPtgJgw4h33sHd_wFsxdrHvr-shozpH75AoygoePUd9f4GGrfLGOaC3zQokvEEqA6qTZ46M1hDxsn87MGhh6CUQb43uoXUXtmcGDGU4dhCKhhAjyFtKNLvBTzCqar6s2hzAimNwbLqHcpDXMFGXzqk4Ck9kF7DA_pQjJs2hQctwyfe3tB3M10rsal2-_FIejZMD9z1NSM2RGGkNlGFm7znSmzfdJCZjiQcfXjT-RGkvA5hiEyD03A9TVdNyhrEaKsASocRiOJM4MduV5GbN8WlQW7wYgzsUEgxigxJGM-rMlB_xm0vol9R-RazQIN3IMwzVqDNhtk0eN5-6LTB5l4zbfOwttK7-zapnrxlk9z4ocT4iOtvC9kl4rEgpoQgH3wMyfoS-nDXCwrBGdXTbXRJ-HHo-olSY5daDoJJ0jMSTj1_XNahSXZ_NSp4PNUW_Zx5SmzkNGwyY1Y04w4Quxacn7Nz0GAzHmLfx56bpj-1sMICa_i6ZLu-PM1SPQtno8U1S2Nmnlu5UOP9gVsUW-hAiWqkgdIN8OtYHEE4lPTAbLcMdcnYCXrsDCzLwdaU-5OnhvckNtB_lsS6nYP-ToKCBhUqtgA24KYqtdILX4y8e3orY9O4K8DIFVHsHw=="}, {"id": "msg_68f245c8a73f4817a13bcc37c7b7c19e", "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "{\"ack\": true}", "annotations": [], "logprobs": []}]}], "usage": {"input_tokens": 419, "output_tokens": 115, "total_tokens": 534, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 419}, "output_tokens_details": {"reasoning_tokens": 107}}, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "json_schema", "name": "ack", "strict": true, "schema": {"type": "object", "properties": {"ack": {"type": "boolean", "const": true}}, "required": ["ack"], "additionalProperties": false}}}, "tools": [{"type": "function", "name": "exec_command", "description": "Runs a command in a PTY, returning output or a session ID for ongoing interaction.\n\nWindows safety rules:\n- Do not compose destructive filesystem commands across shells. Do not enumerate paths in PowerShell and then pass them to `cmd /c`, batch builtins, or another shell for deletion or moving. Use one shell end-to-end, prefer native PowerShell cmdlets such as `Remove-Item` / `Move-Item` with `-LiteralPath`, and avoid string-built shell commands for file operations.\n- Before any recursive delete or move on Windows, verify the resolved absolute target paths stay within the intended workspace or explicitly named target directory. Never issue a recursive delete or move against a computed path if the final target has not been checked.\n- When using `Start-Process` to launch a background helper or service, pass `-WindowStyle Hidden` unless the user explicitly asked for a visible interactive window. Use visible windows only for interactive tools the user needs to see or control.", "strict": false, "parameters": {"type": "object", "properties": {"cmd": {"type": "string", "description": "Shell command to execute."}, "justification": {"type": "string", "description": "User-facing approval question for `require_escalated`; omit otherwise."}, "login": {"type": "boolean", "description": "True runs the shell with -l/-i semantics; false disables them. Defaults to true."}, "max_output_tokens": {"type": "number", "description": "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."}, "prefix_rule": {"type": "array", "description": "Reusable approval prefix for `cmd`, only with `sandbox_permissions: \"require_escalated\"`; for example [\"git\", \"pull\"].", "items": {"type": "string"}}, "sandbox_permissions": {"type": "string", "description": "Per-command sandbox override. Defaults to `use_default`; use `require_escalated` for unsandboxed execution.", "enum": ["use_default", "require_escalated"]}, "shell": {"type": "string", "description": "Shell binary to launch. Defaults to the user's default shell."}, "tty": {"type": "boolean", "description": "True allocates a PTY for the command; false or omitted uses plain pipes."}, "workdir": {"type": "string", "description": "Working directory for the command. Defaults to the turn cwd."}, "yield_time_ms": {"type": "number", "description": "Maximum time to wait before returning a session ID for a still-running command. Commands that finish sooner return immediately. For ordinary commands, omit this parameter to use the 10000 ms default. Effective range on Windows is 10000-30000 ms."}}, "required": ["cmd"], "additionalProperties": false}}], "tool_choice": "none", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+

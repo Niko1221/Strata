@@ -1,0 +1,109 @@
+[
+  {
+    "file": "boolean.gbnf",
+    "accept": [
+      "true",
+      "false"
+    ],
+    "reject": [
+      "True",
+      "true\n",
+      "falsex"
+    ]
+  },
+  {
+    "file": "balanced.gbnf",
+    "accept": [
+      "",
+      "()",
+      "(())",
+      "()()"
+    ],
+    "reject": [
+      "(",
+      ")",
+      "(()"
+    ]
+  },
+  {
+    "file": "overlapping.gbnf",
+    "accept": [
+      "a",
+      "ab"
+    ],
+    "reject": [
+      "",
+      "abc"
+    ],
+    "notes": "Acceptance at a does not prohibit continuation b."
+  },
+  {
+    "file": "ambiguous.gbnf",
+    "accept": [
+      "x"
+    ],
+    "reject": [
+      "xx"
+    ],
+    "notes": "Do not pretend the accepting derivation is unique."
+  },
+  {
+    "file": "unicode.gbnf",
+    "accept": [
+      "café",
+      "猫",
+      "λ"
+    ],
+    "reject": [
+      "cafe"
+    ]
+  },
+  {
+    "file": "expression.gbnf",
+    "accept": [
+      "0",
+      "1+2",
+      "(1+2)*3",
+      "2/0"
+    ],
+    "reject": [
+      "01",
+      "+1",
+      "1+",
+      "()"
+    ],
+    "notes": "2/0 is structurally valid; semantic evaluator must handle division by zero."
+  },
+  {
+    "file": "actions.gbnf",
+    "accept": [
+      "WAIT",
+      "START task-a",
+      "START task-b"
+    ],
+    "reject": [
+      "START task-c"
+    ]
+  },
+  {
+    "file": "escaped.gbnf",
+    "accept": [
+      "quoted: \"yes\"",
+      "line\nnext"
+    ],
+    "reject": [
+      "quoted: yes"
+    ]
+  },
+  {
+    "file": "route.gbnf",
+    "accept": [
+      "OBSERVE",
+      "ACT",
+      "WAIT"
+    ],
+    "reject": [
+      "ACT now"
+    ]
+  }
+]

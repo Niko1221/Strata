@@ -1,0 +1,5 @@
+root ::= expr
+expr ::= term (("+" | "-") term)*
+term ::= atom (("*" | "/") atom)*
+atom ::= number | "(" expr ")"
+number ::= "0" | [1-9] [0-9]*

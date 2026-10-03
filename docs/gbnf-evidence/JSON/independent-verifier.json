@@ -1,0 +1,6 @@
+{
+  "exit_code": 0,
+  "test_file_unchanged": true,
+  "test_sha256": "a57f5fca9444625ecee0354ae70c6b26999e59a04da342339501730a2768cb9f",
+  "calc.py": "def add(a, b):\n    return a + b\n"
+}

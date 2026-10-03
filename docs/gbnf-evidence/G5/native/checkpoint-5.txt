@@ -1,0 +1,3 @@
+========= COMPUTE-SANITIZER
+PASS: 1728 exact fixed-logit/counter speculative decodes; captured and uncaptured, greedy/sampled/penalized, 2/4/8 rows, every rejection position. Synthetic target logits/proposals.
+========= ERROR SUMMARY: 0 errors

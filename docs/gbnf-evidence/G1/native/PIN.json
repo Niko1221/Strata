@@ -1,0 +1,39 @@
+{
+  "backend": "xgrammar-0.2.8-strata-budget1",
+  "dependencies": [
+    {
+      "repository": "mlc-ai/xgrammar",
+      "commit": "97787376faee5ed8466cfad57c99855e4ce2f6aa",
+      "url": "https://codeload.github.com/mlc-ai/xgrammar/tar.gz/97787376faee5ed8466cfad57c99855e4ce2f6aa",
+      "sha256": "87bc16759aadc535e3585551cfc086d0db704a1c12d0a97a3261650a62731719"
+    },
+    {
+      "repository": "dmlc/dlpack",
+      "commit": "bbd2f4d32427e548797929af08cfe2a9cbb3cf12",
+      "url": "https://codeload.github.com/dmlc/dlpack/tar.gz/bbd2f4d32427e548797929af08cfe2a9cbb3cf12",
+      "sha256": "f5dcb30f8a3d1a41d48b5d5b3fe1631dfce11de76f9e7e5bd22c6dc75a758885"
+    }
+  ],
+  "patched_files": {
+    "cpp/grammar_builder.cc": {
+      "original_sha256": "a905bdb8889ec7f5227a367d2fda772cab937d4f6ce73af7f21b49ba0e450677",
+      "patched_sha256": "389007f648251815e2595aaa105b9ba61d6a8eed8e7872d687217d6d08fe30b5"
+    },
+    "cpp/fsm.cc": {
+      "original_sha256": "9fffe80e6885502af99882b4618563f369dad6a300cb9d24f6d785410854680b",
+      "patched_sha256": "053e4278b2b1c5185813a11d71086128e9aa12707599f2aab08966ab6133adc5"
+    },
+    "cpp/earley_parser.h": {
+      "original_sha256": "2fb5450337fd1690b169d4fd6da1d2e9c311201ea4ad4f8576cdd2f14ccb8cd7",
+      "patched_sha256": "a2f3b0aff3b9e98b9e6409bd27ea55898afa1bd51b18784009add4b4926b3a47"
+    },
+    "cpp/earley_parser.cc": {
+      "original_sha256": "8f1b02c0d92aa74c810e5e5400a30860d29627eefc3230fc4f17afc031e3fea5",
+      "patched_sha256": "6d9944769299e83bff50aa8b1cb97eea6b913a41c8867087059bef45217ff4ef"
+    },
+    "cpp/grammar_compiler.cc": {
+      "original_sha256": "3f2c25c9fb8ecb079dd7813771e4fe28f0c19e98e06294508831c5a0bb8a0116",
+      "patched_sha256": "920a617dfb9d3cd0f012833f4d42256780b1e6ed73cf3f740f9c298261c60478"
+    }
+  }
+}

@@ -1,0 +1,33 @@
+{"command": ["cmake", "--build", "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-cpu", "--parallel", "4"]}
+[0/2] Re-checking globbed directories...
+[1/7] Building CXX object CMakeFiles/grammar_native_test.dir/src/core/grammar_native_test.cpp.o
+[2/7] Building CXX object CMakeFiles/strata_grammar.dir/src/core/grammar.cpp.o
+[3/7] Linking CXX static library libstrata_grammar.a
+[4/7] Linking CXX executable grammar_native_test
+[5/7] Linking CXX executable grammar_inspection_test
+[6/7] Linking CXX executable grammar_speculation_test
+{"command": ["ctest", "--test-dir", "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-cpu", "--output-on-failure", "-R", "grammar_|serve_input"]}
+Test project /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-cpu
+    Start 1: grammar_native_test
+1/4 Test #1: grammar_native_test ..............   Passed    0.01 sec
+    Start 2: grammar_inspection_test
+2/4 Test #2: grammar_inspection_test ..........   Passed    0.00 sec
+    Start 3: grammar_speculation_test
+3/4 Test #3: grammar_speculation_test .........   Passed    0.00 sec
+    Start 4: serve_input_test
+4/4 Test #4: serve_input_test .................   Passed    0.00 sec
+
+100% tests passed, 0 tests failed out of 4
+
+Total Test time (real) =   0.02 sec
+{"command": ["cmake", "--build", "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu", "--parallel", "4", "--target", "strata", "grammar_native_test", "grammar_inspection_test", "grammar_speculation_test", "grammar_speculation_gpu_test", "grammar_sampler_test", "serve_input_test"]}
+[0/2] Re-checking globbed directories...
+[1/9] Building CXX object CMakeFiles/grammar_native_test.dir/src/core/grammar_native_test.cpp.o
+[2/9] Building CXX object CMakeFiles/strata_grammar.dir/src/core/grammar.cpp.o
+[3/9] Linking CXX static library libstrata_grammar.a
+[4/9] Linking CXX executable grammar_speculation_test
+[5/9] Linking CXX executable grammar_native_test
+[6/9] Linking CXX executable grammar_inspection_test
+[7/9] Linking CXX executable grammar_speculation_gpu_test
+[8/9] Linking CXX executable strata
+BUILD_AND_CPU_TESTS_PASSED

@@ -1,0 +1,28 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "none"
+  },
+  "max_output_tokens": 512,
+  "temperature": 0,
+  "input": "Return exactly this JSON value, without explanation: {\"anything\": [1, \"x\", null]}",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "27_boolean_child_schemas",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "anything": true,
+          "forbidden": false
+        },
+        "required": [
+          "anything"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

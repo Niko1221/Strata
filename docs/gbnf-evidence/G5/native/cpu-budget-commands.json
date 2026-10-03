@@ -1,0 +1,34 @@
+[
+  [
+    "cmake",
+    "--build",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-cpu",
+    "--target",
+    "grammar_speculation_test",
+    "grammar_native_test",
+    "grammar_inspection_test",
+    "-j",
+    "4"
+  ],
+  [
+    "ctest",
+    "--test-dir",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-cpu",
+    "-R",
+    "^grammar_(speculation|native|inspection)_test$",
+    "--output-on-failure"
+  ],
+  [
+    "cmake",
+    "--build",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu",
+    "--target",
+    "strata",
+    "grammar_speculation_gpu_test",
+    "grammar_sampler_test",
+    "coupled_draft_test",
+    "suffix_drafter_test",
+    "-j",
+    "4"
+  ]
+]

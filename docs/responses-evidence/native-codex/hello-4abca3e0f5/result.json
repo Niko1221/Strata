@@ -1,0 +1,74 @@
+{
+  "result": "pass",
+  "client": "codex-cli 0.160.0",
+  "codex_sha256": "fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d",
+  "transport": "HTTP/SSE over loopback endpoint",
+  "model_output_scripted": false,
+  "native_provenance": "see separately recorded server process, binary and engine log",
+  "prompt": "Reply with exactly \"Hello world\". Do not use any tools.",
+  "return_code": 0,
+  "timed_out": false,
+  "elapsed_s": 50.005288299988024,
+  "codex_turn_completed": true,
+  "codex_final_messages": [
+    "Hello world"
+  ],
+  "responses_output_text": [
+    "Hello world"
+  ],
+  "requests": 1,
+  "health": {
+    "status": "ok",
+    "max_context": 32768,
+    "model": "qwen3.8-flash-next",
+    "images": false,
+    "api_key": true,
+    "loaded": true,
+    "service": "strata"
+  },
+  "external_http_proxy_attempts_denied": [
+    {
+      "method": "CONNECT",
+      "destination": "chatgpt.com:443"
+    },
+    {
+      "method": "CONNECT",
+      "destination": "github.com:443"
+    },
+    {
+      "method": "CONNECT",
+      "destination": "api.github.com:443"
+    },
+    {
+      "method": "CONNECT",
+      "destination": "chatgpt.com:443"
+    },
+    {
+      "method": "CONNECT",
+      "destination": "ab.chatgpt.com:443"
+    }
+  ],
+  "web_search": "disabled",
+  "configuration": "fresh credential-free Codex home plus this server's environment key",
+  "universal_compatibility": false,
+  "argv": [
+    "--no-daemon",
+    "--ask-for-approval",
+    "never",
+    "exec",
+    "--ignore-rules",
+    "--strict-config",
+    "--profile",
+    "strata",
+    "--ephemeral",
+    "--skip-git-repo-check",
+    "--sandbox",
+    "read-only",
+    "--cd",
+    "<DISPOSABLE_WORKSPACE>",
+    "--color",
+    "never",
+    "--json",
+    "Reply with exactly \"Hello world\". Do not use any tools."
+  ]
+}

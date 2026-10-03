@@ -1,0 +1,30 @@
+test_capture_is_bounded_and_eviction_returns_404 (serve.test_monitor.Monitor.test_capture_is_bounded_and_eviction_returns_404) ... ok
+test_error_and_engine_death_are_not_successes (serve.test_monitor.Monitor.test_error_and_engine_death_are_not_successes) ... [strata] done: 0 tokens in 0 s (0.0 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] done: 0 tokens in 0 s (0.0 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] done: 0 tokens in 0 s (0.0 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] done: 0 tokens in 0 s (0.0 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+ok
+test_history_is_authorized_and_does_not_capture_headers (serve.test_monitor.Monitor.test_history_is_authorized_and_does_not_capture_headers) ... [strata] done: 50 tokens in 0 s (12217.6 tok/s) (stop, cancel=False)
+ok
+test_output_and_reasoning_for_both_dialects_and_stream_modes (serve.test_monitor.Monitor.test_output_and_reasoning_for_both_dialects_and_stream_modes) ... [strata] done: 50 tokens in 0 s (18600.0 tok/s) (stop, cancel=False)
+[strata] done: 50 tokens in 0 s (5579.2 tok/s) (stop, cancel=False)
+[strata] done: 50 tokens in 0 s (45530.9 tok/s) (stop, cancel=False)
+[strata] done: 50 tokens in 0 s (8733.0 tok/s) (stop, cancel=False)
+ok
+test_page_and_relative_assets_are_served (serve.test_monitor.Monitor.test_page_and_relative_assets_are_served) ... ok
+test_queue_wait_and_loading_are_attributed_separately (serve.test_monitor.Monitor.test_queue_wait_and_loading_are_attributed_separately) ... [strata] loading the model again (it was unloaded) ...
+[strata] the engine is running again
+[strata] done: 50 tokens in 0 s (19401.9 tok/s) (stop, cancel=False)
+[strata] done: 50 tokens in 0 s (17004.4 tok/s) (stop, cancel=False)
+ok
+test_off_by_default (serve.test_monitor.MonitorOff.test_off_by_default) ... [strata] done: 7 tokens in 0 s (25332.3 tok/s) (stop, cancel=False)
+ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 5.044s
+
+OK

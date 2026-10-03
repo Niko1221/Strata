@@ -1,0 +1,305 @@
+test_free_vram_on_hip (serve.test_server.AmdTelemetry.test_free_vram_on_hip) ... ok
+test_readings (serve.test_server.AmdTelemetry.test_readings) ... ok
+test_history_and_totals (serve.test_server.CancelledRead.test_history_and_totals) ... [strata] done: 10 tokens in 0 s (26084.0 tok/s) (length, cancel=False)
+[strata] done: 10 tokens in 0 s (62230.0 tok/s) (length, cancel=False)
+[strata] done: 10 tokens in 0 s (34239.2 tok/s) (length, cancel=False)
+ok
+test_parse_done_read_field (serve.test_server.CancelledRead.test_parse_done_read_field) ... ok
+test_prompt_tokens_seen (serve.test_server.CancelledRead.test_prompt_tokens_seen) ... ok
+test_non_streamed (serve.test_server.ClientHangUp.test_non_streamed) ... [strata] done: 0 tokens in 1 s (0.0 tok/s) (cancel, cancel=True)
+ok
+test_streamed (serve.test_server.ClientHangUp.test_streamed) ... [strata] done: 0 tokens in 1 s (0.0 tok/s) (cancel, cancel=True)
+ok
+test_anthropic_mid_conversation_system (serve.test_server.ClientShapes.test_anthropic_mid_conversation_system) ... [strata] done: 12 tokens in 0 s (61605.4 tok/s) (stop, cancel=False)
+ok
+test_leading_system_unchanged (serve.test_server.ClientShapes.test_leading_system_unchanged) ... ok
+test_messages_as_a_json_string_over_http (serve.test_server.ClientShapes.test_messages_as_a_json_string_over_http) ... [strata] done: 12 tokens in 0 s (70789.9 tok/s) (stop, cancel=False)
+[strata] done: 12 tokens in 0 s (47934.9 tok/s) (stop, cancel=False)
+ok
+test_messages_sent_as_a_json_string (serve.test_server.ClientShapes.test_messages_sent_as_a_json_string) ... ok
+test_no_user_turn_is_a_400 (serve.test_server.ClientShapes.test_no_user_turn_is_a_400) ... [strata] done: 12 tokens in 0 s (67650.1 tok/s) (stop, cancel=False)
+ok
+test_openai_late_developer_and_system (serve.test_server.ClientShapes.test_openai_late_developer_and_system) ... [strata] done: 12 tokens in 0 s (68107.8 tok/s) (stop, cancel=False)
+ok
+test_query_string (serve.test_server.ClientShapes.test_query_string) ... [strata] done: 12 tokens in 0 s (66930.4 tok/s) (stop, cancel=False)
+[strata] done: 12 tokens in 0 s (70002.3 tok/s) (stop, cancel=False)
+[strata] done: 12 tokens in 0 s (69327.3 tok/s) (stop, cancel=False)
+ok
+test_vision_temp_image_removed_when_the_pipe_fails (serve.test_server.ClientShapes.test_vision_temp_image_removed_when_the_pipe_fails) ... ok
+test_desktop_detection (serve.test_server.DesktopVramNote.test_desktop_detection) ... ok
+test_when_it_applies (serve.test_server.DesktopVramNote.test_when_it_applies) ... ok
+test_when_it_does_not (serve.test_server.DesktopVramNote.test_when_it_does_not) ... ok
+test_drafts_in_history_and_totals (serve.test_server.DraftCounts.test_drafts_in_history_and_totals) ... [strata] done: 10 tokens in 0 s (52626.1 tok/s) (length, cancel=False)
+[strata] done: 10 tokens in 0 s (55043.4 tok/s) (length, cancel=False)
+[strata] done: 10 tokens in 0 s (43062.7 tok/s) (length, cancel=False), expert cache 90.0% hit
+ok
+test_an_older_engine_gets_the_advice_in_words (serve.test_server.DraftHeadHint.test_an_older_engine_gets_the_advice_in_words) ... ok
+test_other_failures_and_earlier_starts_add_nothing (serve.test_server.DraftHeadHint.test_other_failures_and_earlier_starts_add_nothing) ... ok
+test_the_engines_hint_is_relayed (serve.test_server.DraftHeadHint.test_the_engines_hint_is_relayed) ... ok
+test_engine_err_mid_stream (serve.test_server.EngineDeath.test_engine_err_mid_stream)
+The engine's ERR line after the stream started reaches the client as an error event (it used to be a ... [strata] the engine reported an error: verify: layer 31 never rang (an illegal memory access was encountered)
+[strata] done: 0 tokens in 0 s (0.0 tok/s) (error, cancel=False)
+[strata] the engine reported an error: verify: layer 31 never rang (an illegal memory access was encountered)
+[strata] done: 0 tokens in 0 s (0.0 tok/s) (error, cancel=False)
+ok
+test_error_then_restart (serve.test_server.EngineDeath.test_error_then_restart) ... [strata] the engine stopped unexpectedly (exit code -9).  The next request starts the engine again.
+[strata] done: 5 tokens in 0 s (28225.5 tok/s) (error, cancel=False)
+[strata] the engine had stopped (exit code None); starting it again (a minute or two) ...
+[strata] the engine is running again
+[strata] done: 50 tokens in 0 s (17872.4 tok/s) (length, cancel=False)
+ok
+test_a_budget_that_fits_is_unchanged (serve.test_server.FitMaxTokens.test_a_budget_that_fits_is_unchanged) ... [strata] done: 50 tokens in 0 s (13065.6 tok/s) (length, cancel=False)
+ok
+test_no_room_is_still_a_400 (serve.test_server.FitMaxTokens.test_no_room_is_still_a_400) ... [strata] done: 1 tokens in 0 s (16912.5 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+ok
+test_overshoot_is_clamped_to_the_room (serve.test_server.FitMaxTokens.test_overshoot_is_clamped_to_the_room) ... [strata] answering: 1500 of max 3842 tokens, 1499.9 tok/s, 1 s
+[strata] done: 2011 tokens in 2 s (1174.8 tok/s) (stop, cancel=False)
+[strata] answering: 1780 of max 3842 tokens, 1778.7 tok/s, 1 s
+[strata] done: 2011 tokens in 1 s (1621.5 tok/s) (stop, cancel=False)
+ok
+test_env (serve.test_server.GpuChoice.test_env) ... ok
+test_hip_ordinal (serve.test_server.GpuChoice.test_hip_ordinal)
+#325: on Windows the HIP ordinal setup resolved wins over the config's "gpu" (an iGPU takes HIP's 0). ... ok
+test_vision_device (serve.test_server.GpuChoice.test_vision_device) ... ok
+test_literal_marker_with_an_image (serve.test_server.ImageMarkers.test_literal_marker_with_an_image) ... ok
+test_no_profile_in_the_args (serve.test_server.LearnedProfile.test_no_profile_in_the_args) ... ok
+test_save_and_start_from_it (serve.test_server.LearnedProfile.test_save_and_start_from_it) ... ok
+test_without_the_key_nothing_changes (serve.test_server.LearnedProfile.test_without_the_key_nothing_changes) ... ok
+test_a_request_without_a_done_keeps_no_engine_counters (serve.test_server.LiveRate.test_a_request_without_a_done_keeps_no_engine_counters)
+An engine that dies mid-answer: the previous request's `last` must not become this row's decode rate. ... [strata] the engine stopped unexpectedly (exit code -9).  The next request starts the engine again.
+[strata] done: 3 tokens in 0 s (2678.4 tok/s) (error, cancel=False)
+ok
+test_prefill_rate_excludes_cached_tokens (serve.test_server.LiveRate.test_prefill_rate_excludes_cached_tokens) ... ok
+test_the_live_number_is_a_rate (serve.test_server.LiveRate.test_the_live_number_is_a_rate) ... [strata] done: 30 tokens in 1 s (50.1 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+ok
+test_silent_mid_answer (serve.test_server.LostStep.test_silent_mid_answer) ... [strata] the engine said nothing for 1 s during the request; the server ended the engine. The engine and the server lost step (issue #481; a very slow PC can raise "engine_silence_s" in the config, 0 = wait forever). If it happens again, please add the end of the engine log to github.com/Niko1221/Strata/issues/481. The next request starts the engine again.
+[strata] done: 1 tokens in 1 s (2.0 tok/s) (error, cancel=False)
+[strata] the engine had stopped (exit code 1); starting it again (a minute or two) ...
+[strata] the engine is running again
+[strata] done: 2 tokens in 0 s (8422.3 tok/s) (length, cancel=False)
+ok
+test_silent_mid_stream (serve.test_server.LostStep.test_silent_mid_stream) ... [strata] the engine said nothing for 1 s during the request; the server ended the engine. The engine and the server lost step (issue #481; a very slow PC can raise "engine_silence_s" in the config, 0 = wait forever). If it happens again, please add the end of the engine log to github.com/Niko1221/Strata/issues/481. The next request starts the engine again.
+[strata] done: 1 tokens in 1 s (1.9 tok/s) (error, cancel=False)
+[strata] the engine had stopped (exit code 1); starting it again (a minute or two) ...
+[strata] the engine is running again
+[strata] done: 2 tokens in 0 s (2119.4 tok/s) (length, cancel=False)
+ok
+test_stop_never_acknowledged (serve.test_server.LostStep.test_stop_never_acknowledged) ... [strata] the engine did not finish the request after it was stopped (STOP) within 0 s; the server ended the engine. The engine and the server lost step (issue #481; a very slow PC can raise "engine_silence_s" in the config, 0 = wait forever). If it happens again, please add the end of the engine log to github.com/Niko1221/Strata/issues/481. The next request starts the engine again.
+[strata] done: 2 tokens in 1 s (3.9 tok/s) (error, cancel=False)
+[strata] the engine had stopped (exit code 1); starting it again (a minute or two) ...
+[strata] the engine is running again
+[strata] done: 2 tokens in 0 s (12175.0 tok/s) (length, cancel=False)
+ok
+test_anthropic_thinks_only_when_asked (serve.test_server.MaxTokens.test_anthropic_thinks_only_when_asked) ... ok
+test_count_tokens_is_the_prompt_messages_reads (serve.test_server.MaxTokens.test_count_tokens_is_the_prompt_messages_reads) ... [strata] done: 8 tokens in 0 s (21237.0 tok/s) (length, cancel=False)
+ok
+test_debug_log_shows_the_resolved_budget (serve.test_server.MaxTokens.test_debug_log_shows_the_resolved_budget) ... ok
+test_explicit_budget_is_honoured (serve.test_server.MaxTokens.test_explicit_budget_is_honoured) ... [strata] done: 50 tokens in 0 s (9581.7 tok/s) (length, cancel=False)
+[strata] done: 50 tokens in 0 s (7643.8 tok/s) (length, cancel=False)
+[strata] done: 50 tokens in 0 s (8543.8 tok/s) (length, cancel=False)
+[strata] done: 50 tokens in 0 s (22550.0 tok/s) (length, cancel=False)
+[strata] done: 1500 tokens in 1 s (2225.8 tok/s) (length, cancel=False)
+[strata] done: 1500 tokens in 1 s (1956.0 tok/s) (length, cancel=False)
+ok
+test_explicit_budget_over_the_context_is_rejected (serve.test_server.MaxTokens.test_explicit_budget_over_the_context_is_rejected) ... ok
+test_request_line_parses_the_engine_summary (serve.test_server.MaxTokens.test_request_line_parses_the_engine_summary) ... ok
+test_unset_budget_is_the_rest_of_the_context (serve.test_server.MaxTokens.test_unset_budget_is_the_rest_of_the_context) ... [strata] answering: 1634 of max 3842 tokens, 1631.7 tok/s, 1 s
+[strata] done: 2011 tokens in 2 s (1307.1 tok/s) (stop, cancel=False)
+[strata] answering: 1433 of max 3842 tokens, 1431.5 tok/s, 1 s
+[strata] done: 2011 tokens in 2 s (1057.0 tok/s) (stop, cancel=False)
+[strata] answering: 1415 of max 3842 tokens, 1413.7 tok/s, 1 s
+[strata] done: 2011 tokens in 2 s (1037.5 tok/s) (stop, cancel=False)
+[strata] answering: 1501 of max 3842 tokens, 1500.6 tok/s, 1 s
+[strata] done: 2011 tokens in 2 s (1161.9 tok/s) (stop, cancel=False)
+[strata] answering: 1519 of max 3842 tokens, 1517.5 tok/s, 1 s
+[strata] done: 2011 tokens in 2 s (1205.4 tok/s) (stop, cancel=False)
+[strata] answering: 1388 of max 3842 tokens, 1387.4 tok/s, 1 s
+[strata] done: 2011 tokens in 2 s (1092.4 tok/s) (stop, cancel=False)
+[strata] answering: 1788 of max 3842 tokens, 1786.9 tok/s, 1 s
+[strata] done: 2011 tokens in 1 s (1605.6 tok/s) (stop, cancel=False)
+[strata] answering: 1740 of max 3842 tokens, 1739.5 tok/s, 1 s
+[strata] done: 2011 tokens in 1 s (1552.3 tok/s) (stop, cancel=False)
+[strata] answering: 1908 of max 3842 tokens, 1907.4 tok/s, 1 s
+[strata] done: 2011 tokens in 1 s (1836.2 tok/s) (stop, cancel=False)
+[strata] answering: 1698 of max 3842 tokens, 1697.7 tok/s, 1 s
+[strata] done: 2011 tokens in 1 s (1437.5 tok/s) (stop, cancel=False)
+ok
+test_unset_budget_with_a_near_full_prompt (serve.test_server.MaxTokens.test_unset_budget_with_a_near_full_prompt) ... [strata] done: 1 tokens in 0 s (22919.7 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] done: 1 tokens in 0 s (14122.2 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] done: 5 tokens in 0 s (42366.7 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] done: 1 tokens in 0 s (21845.3 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] done: 5 tokens in 0 s (33500.8 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+ok
+test_models_lists_them (serve.test_server.ModelAliases.test_models_lists_them) ... ok
+test_requests_are_answered_under_the_alias (serve.test_server.ModelAliases.test_requests_are_answered_under_the_alias) ... [strata] done: 8 tokens in 0 s (65281.0 tok/s) (length, cancel=False)
+[strata] done: 8 tokens in 0 s (65922.3 tok/s) (length, cancel=False)
+[strata] done: 8 tokens in 0 s (65154.2 tok/s) (length, cancel=False)
+[strata] done: 8 tokens in 0 s (67650.1 tok/s) (length, cancel=False)
+[strata] done: 8 tokens in 0 s (27481.1 tok/s) (length, cancel=False)
+[strata] done: 8 tokens in 0 s (26672.8 tok/s) (length, cancel=False)
+[strata] done: 8 tokens in 0 s (29279.6 tok/s) (length, cancel=False)
+[strata] done: 8 tokens in 0 s (66576.3 tok/s) (length, cancel=False)
+[strata] done: 8 tokens in 0 s (59705.4 tok/s) (length, cancel=False)
+[strata] done: 8 tokens in 0 s (65793.0 tok/s) (length, cancel=False)
+[strata] done: 8 tokens in 0 s (29203.2 tok/s) (length, cancel=False)
+[strata] done: 8 tokens in 0 s (66708.6 tok/s) (length, cancel=False)
+ok
+test_set_aliases (serve.test_server.ModelAliases.test_set_aliases) ... ok
+test_without_aliases_nothing_changes (serve.test_server.ModelAliases.test_without_aliases_nothing_changes) ... ok
+test_context_zero_is_503 (serve.test_server.RestartWindow.test_context_zero_is_503) ... ok
+test_not_alive_until_ready (serve.test_server.RestartWindow.test_not_alive_until_ready) ... ok
+test_penalty_window (serve.test_server.SamplingKeys.test_penalty_window) ... ok
+test_top_k (serve.test_server.SamplingKeys.test_top_k) ... ok
+test_tune_keys (serve.test_server.SamplingKeys.test_tune_keys) ... ok
+test_a_trusted_origin_is_strata_s_own_page (serve.test_server.SharedSettings.test_a_trusted_origin_is_strata_s_own_page) ... [strata] other apps use their own settings again
+ok
+test_off_again (serve.test_server.SharedSettings.test_off_again) ... [strata] other apps now use the Chat settings: temperature=0.3
+[strata] other apps use their own settings again
+[strata] done: 16 tokens in 0 s (33123.8 tok/s) (stop, cancel=False)
+ok
+test_only_strata_s_own_page_may_set_them (serve.test_server.SharedSettings.test_only_strata_s_own_page_may_set_them) ... [strata] other apps now use the Chat settings: temperature=1.0
+ok
+test_other_apps_get_the_chat_settings (serve.test_server.SharedSettings.test_other_apps_get_the_chat_settings) ... [strata] other apps now use the Chat settings: temperature=0.3, top_p=0.9, top_k=10, seed=7, max_tokens=77, reasoning_effort=low, experimental_speed_projection=False
+[strata] done: 16 tokens in 0 s (30066.7 tok/s) (stop, cancel=False)
+[strata] done: 5 tokens in 0 s (33825.0 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+ok
+test_proxy_headers_do_not_make_a_page_strata_s_own (serve.test_server.SharedSettings.test_proxy_headers_do_not_make_a_page_strata_s_own) ... ok
+test_they_need_the_key_when_one_is_set (serve.test_server.SharedSettings.test_they_need_the_key_when_one_is_set) ... [strata] other apps now use the Chat settings: temperature=1.0
+ok
+test_before_load_runs_first (serve.test_server.SharingTheGpu.test_before_load_runs_first) ... [strata] model unloaded; the next request loads it again
+[strata] before loading: <WORKTREE>\.venv\Scripts\python.exe -c open('C:\\Users\\dflanag3\\AppData\\Local\\Temp\\tmphile4dla\\ran', 'w').close()
+[strata] loading the model again (it was unloaded) ...
+[strata] the engine is running again
+[strata] done: 13 tokens in 0 s (26754.6 tok/s) (stop, cancel=False)
+ok
+test_idle_unload (serve.test_server.SharingTheGpu.test_idle_unload) ... [strata] the model unloads after 1 s without requests
+[strata] model unloaded after 1 s idle; the next request loads it again
+[strata] loading the model again (it was unloaded) ...
+[strata] the engine is running again
+[strata] done: 13 tokens in 0 s (37270.0 tok/s) (stop, cancel=False)
+ok
+test_load_endpoint (serve.test_server.SharingTheGpu.test_load_endpoint) ... [strata] model unloaded; the next request loads it again
+[strata] loading the model again (it was unloaded) ...
+[strata] the engine is running again
+ok
+test_min_free_vram_refuses_to_load (serve.test_server.SharingTheGpu.test_min_free_vram_refuses_to_load) ... [strata] model unloaded; the next request loads it again
+[strata] model unloaded after 1 s idle; the next request loads it again
+[strata] loading the model again (it was unloaded) ...
+[strata] the engine is running again
+[strata] done: 13 tokens in 0 s (16533.0 tok/s) (stop, cancel=False)
+ok
+test_min_free_vram_unreadable_loads (serve.test_server.SharingTheGpu.test_min_free_vram_unreadable_loads) ... [strata] model unloaded; the next request loads it again
+[strata] loading the model again (it was unloaded) ...
+[strata] the engine is running again
+[strata] done: 13 tokens in 0 s (50769.0 tok/s) (stop, cancel=False)
+ok
+test_off_by_default (serve.test_server.SharingTheGpu.test_off_by_default) ... ok
+test_unload_refused_while_a_request_runs (serve.test_server.SharingTheGpu.test_unload_refused_while_a_request_runs) ... ok
+test_unload_then_the_next_request_loads (serve.test_server.SharingTheGpu.test_unload_then_the_next_request_loads) ... [strata] model unloaded; the next request loads it again
+[strata] loading the model again (it was unloaded) ...
+[strata] the engine is running again
+[strata] done: 13 tokens in 0 s (67399.2 tok/s) (stop, cancel=False)
+ok
+test_vision_encoder_unloads_and_starts_first (serve.test_server.SharingTheGpu.test_vision_encoder_unloads_and_starts_first) ... [strata] model unloaded; the next request loads it again
+[strata] starting the vision encoder again ...
+[strata] loading the model again (it was unloaded) ...
+[strata] the engine is running again
+[strata] done: 13 tokens in 0 s (66172.3 tok/s) (stop, cancel=False)
+ok
+test_a_long_first_chunk_is_allowed (serve.test_server.SilentEngine.test_a_long_first_chunk_is_allowed) ... ok
+test_a_stop_never_acknowledged (serve.test_server.SilentEngine.test_a_stop_never_acknowledged) ... ok
+test_config (serve.test_server.SilentEngine.test_config) ... ok
+test_prompt_chunks_set_the_wait (serve.test_server.SilentEngine.test_prompt_chunks_set_the_wait) ... ok
+test_silence_mid_answer_ends_the_engine (serve.test_server.SilentEngine.test_silence_mid_answer_ends_the_engine) ... ok
+test_zero_waits_as_before (serve.test_server.SilentEngine.test_zero_waits_as_before) ... ok
+test_the_last_lines_of_this_start (serve.test_server.StartFailureLog.test_the_last_lines_of_this_start) ... ok
+test_the_start_error_has_them (serve.test_server.StartFailureLog.test_the_start_error_has_them) ... ok
+test_a_mapped_start (serve.test_server.StartNarrator.test_a_mapped_start) ... ok
+test_an_arena_start (serve.test_server.StartNarrator.test_an_arena_start) ... ok
+test_the_words_follow_the_flags (serve.test_server.StartNarrator.test_the_words_follow_the_flags) ... ok
+test_abort_then_the_next_request (serve.test_server.StatusHandover.test_abort_then_the_next_request) ... [strata] done: 15 tokens in 0 s (22028.9 tok/s) (disconnect, cancel=False)
+[strata] done: 20 tokens in 0 s (75505.0 tok/s) (length, cancel=False)
+ok
+test_status (serve.test_server.StatusNeedsTheKey.test_status) ... ok
+test_a_bad_value_is_a_400 (serve.test_server.ThinkingBudget.test_a_bad_value_is_a_400) ... ok
+test_a_budget_the_thinking_stays_under (serve.test_server.ThinkingBudget.test_a_budget_the_thinking_stays_under) ... [strata] done: 211 tokens in 0 s (32792.3 tok/s) (stop, cancel=False)
+ok
+test_a_reply_cut_while_thinking_is_named_in_the_log (serve.test_server.ThinkingBudget.test_a_reply_cut_while_thinking_is_named_in_the_log)
+#530: max tokens reached inside the thinking gives an empty answer; the server log says what helps. ... ok
+test_anthropic_stream (serve.test_server.ThinkingBudget.test_anthropic_stream) ... [strata] thinking budget reached (30 tokens): wrapping up the thinking
+[strata] done: 122 tokens in 0 s (8902.8 tok/s) (stop, cancel=False)
+ok
+test_no_room_left_to_answer (serve.test_server.ThinkingBudget.test_no_room_left_to_answer) ... [strata] done: 20 tokens in 0 s (57143.1 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+ok
+test_off_by_default (serve.test_server.ThinkingBudget.test_off_by_default) ... [strata] done: 211 tokens in 0 s (30757.9 tok/s) (stop, cancel=False)
+ok
+test_the_budget_wraps_up_the_thinking (serve.test_server.ThinkingBudget.test_the_budget_wraps_up_the_thinking) ... [strata] thinking budget reached (20 tokens): wrapping up the thinking
+[strata] done: 112 tokens in 0 s (20099.4 tok/s) (stop, cancel=False)
+ok
+test_the_config_default_and_a_request_that_turns_it_off (serve.test_server.ThinkingBudget.test_the_config_default_and_a_request_that_turns_it_off) ... [strata] thinking budget reached (20 tokens): wrapping up the thinking
+[strata] done: 112 tokens in 0 s (29502.1 tok/s) (stop, cancel=False)
+[strata] done: 211 tokens in 0 s (30233.6 tok/s) (stop, cancel=False)
+ok
+test_without_thinking_there_is_nothing_to_limit (serve.test_server.ThinkingBudget.test_without_thinking_there_is_nothing_to_limit) ... [strata] done: 17 tokens in 0 s (21052.0 tok/s) (stop, cancel=False)
+ok
+test_draft_fields (serve.test_server.TimingsDrafts.test_draft_fields) ... ok
+test_values_keep_the_terminators (serve.test_server.ToolCallTerminators.test_values_keep_the_terminators) ... ok
+test_a_call_cut_at_the_token_limit (serve.test_server.UnfinishedToolCall.test_a_call_cut_at_the_token_limit)
+The same cut by max_tokens: "length" / "max_tokens", and the whole (non-streamed) answers leave the call ... [strata] done: 119 tokens in 0 s (17016.3 tok/s) (length, cancel=False)
+[strata] done: 119 tokens in 0 s (10792.5 tok/s) (length, cancel=False)
+[strata] done: 119 tokens in 0 s (26117.0 tok/s) (length, cancel=False)
+[strata] done: 119 tokens in 0 s (13832.2 tok/s) (length, cancel=False)
+ok
+test_a_cut_call (serve.test_server.UnfinishedToolCall.test_a_cut_call) ... [strata] done: 120 tokens in 0 s (23621.0 tok/s) (stop, cancel=False)
+[strata] done: 120 tokens in 0 s (12005.7 tok/s) (stop, cancel=False)
+[strata] done: 120 tokens in 0 s (30708.8 tok/s) (stop, cancel=False)
+[strata] done: 120 tokens in 0 s (14647.0 tok/s) (stop, cancel=False)
+ok
+test_a_whole_call (serve.test_server.UnfinishedToolCall.test_a_whole_call) ... [strata] done: 147 tokens in 0 s (27064.8 tok/s) (stop, cancel=False)
+[strata] done: 147 tokens in 0 s (14300.4 tok/s) (stop, cancel=False)
+[strata] done: 147 tokens in 0 s (19254.9 tok/s) (stop, cancel=False)
+[strata] done: 147 tokens in 0 s (17361.6 tok/s) (stop, cancel=False)
+ok
+test_collect_keeps_calls_whose_arguments_parse (serve.test_server.UnfinishedToolCall.test_collect_keeps_calls_whose_arguments_parse) ... ok
+test_parser (serve.test_server.UnfinishedToolCall.test_parser) ... ok
+test_anthropic (serve.test_server.UsageAndStatus.test_anthropic) ... [strata] done: 13 tokens in 0 s (29489.4 tok/s) (stop, cancel=False), expert cache 90.0% hit
+ok
+test_cors_for_the_configured_origins_on_the_api_only (serve.test_server.UsageAndStatus.test_cors_for_the_configured_origins_on_the_api_only) ... ok
+test_cors_is_off_by_default (serve.test_server.UsageAndStatus.test_cors_is_off_by_default) ... ok
+test_no_clock (serve.test_server.UsageAndStatus.test_no_clock)
+An engine without a clock (MockEngine): no timings, nothing cached. ... [strata] done: 5 tokens in 0 s (27200.4 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+ok
+test_openai (serve.test_server.UsageAndStatus.test_openai) ... [strata] done: 13 tokens in 0 s (27678.1 tok/s) (stop, cancel=False), expert cache 90.0% hit
+ok
+test_openai_stream (serve.test_server.UsageAndStatus.test_openai_stream) ... [strata] done: 13 tokens in 0 s (4192.7 tok/s) (stop, cancel=False), expert cache 90.0% hit
+ok
+test_origin_lists_are_checked (serve.test_server.UsageAndStatus.test_origin_lists_are_checked) ... ok
+test_sse_is_not_buffered_by_proxies (serve.test_server.UsageAndStatus.test_sse_is_not_buffered_by_proxies) ... [strata] done: 13 tokens in 0 s (13244.1 tok/s) (stop, cancel=False), expert cache 90.0% hit
+ok
+test_v1_status (serve.test_server.UsageAndStatus.test_v1_status) ... [strata] done: 13 tokens in 0 s (23035.9 tok/s) (stop, cancel=False), expert cache 90.0% hit
+ok
+test_build_model_path_and_slot_status (serve.test_server.WebApp.test_build_model_path_and_slot_status) ... ok
+test_discovery_does_not_restart_a_dead_engine (serve.test_server.WebApp.test_discovery_does_not_restart_a_dead_engine) ... ok
+test_discovery_needs_the_api_key (serve.test_server.WebApp.test_discovery_needs_the_api_key) ... ok
+test_metrics (serve.test_server.WebApp.test_metrics) ... [strata] done: 5 tokens in 0 s (21290.9 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+ok
+test_metrics_need_the_key_when_one_is_set (serve.test_server.WebApp.test_metrics_need_the_key_when_one_is_set) ... ok
+test_model_discovery_and_props (serve.test_server.WebApp.test_model_discovery_and_props) ... ok
+test_only_the_app_files_are_served (serve.test_server.WebApp.test_only_the_app_files_are_served) ... ok
+test_page_and_files (serve.test_server.WebApp.test_page_and_files) ... ok
+
+----------------------------------------------------------------------
+Ran 118 tests in 80.324s
+
+OK

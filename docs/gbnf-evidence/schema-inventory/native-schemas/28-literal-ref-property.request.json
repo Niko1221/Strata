@@ -1,0 +1,39 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "none"
+  },
+  "max_output_tokens": 512,
+  "temperature": 0,
+  "input": "Return exactly this JSON value, without explanation: {\"$ref\": \"literal field\", \"count\": 2}",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "28_literal_ref_property",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "$ref": {
+            "type": "string"
+          },
+          "count": {
+            "$ref": "#/$defs/count"
+          }
+        },
+        "required": [
+          "$ref",
+          "count"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "count": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    }
+  }
+}

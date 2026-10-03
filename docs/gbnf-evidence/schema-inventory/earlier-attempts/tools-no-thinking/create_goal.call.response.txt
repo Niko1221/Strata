@@ -1,0 +1,57 @@
+event: response.created
+data: {"type": "response.created", "sequence_number": 0, "response": {"id": "resp_d9f4c83acc2a43b489e86bb492f5e010", "object": "response", "created_at": 1791058631, "status": "queued", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 1024, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "create_goal", "description": "Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks.\nSet token_budget only when an explicit token budget is requested. Fails if an unfinished goal exists; use update_goal only for status.", "strict": false, "parameters": {"type": "object", "properties": {"objective": {"type": "string", "description": "Required. The concrete objective to start pursuing. This starts a new active goal when no goal exists or replaces the current goal when it is complete."}, "token_budget": {"type": "integer", "description": "Positive token budget for the new goal. Omit unless explicitly requested."}}, "required": ["objective"], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "none", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+event: response.in_progress
+data: {"type": "response.in_progress", "sequence_number": 1, "response": {"id": "resp_d9f4c83acc2a43b489e86bb492f5e010", "object": "response", "created_at": 1791058631, "status": "in_progress", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 1024, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "create_goal", "description": "Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks.\nSet token_budget only when an explicit token budget is requested. Fails if an unfinished goal exists; use update_goal only for status.", "strict": false, "parameters": {"type": "object", "properties": {"objective": {"type": "string", "description": "Required. The concrete objective to start pursuing. This starts a new active goal when no goal exists or replaces the current goal when it is complete."}, "token_budget": {"type": "integer", "description": "Positive token budget for the new goal. Omit unless explicitly requested."}}, "required": ["objective"], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "none", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"id": "fc_23111e7628014f4682f22218fe9258e0", "type": "function_call", "status": "in_progress", "call_id": "call_fead79af0cf44badb525ab3f", "name": "create_goal", "arguments": ""}}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 3, "item_id": "fc_23111e7628014f4682f22218fe9258e0", "output_index": 0, "delta": "{"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 4, "item_id": "fc_23111e7628014f4682f22218fe9258e0", "output_index": 0, "delta": "\"objective\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 5, "item_id": "fc_23111e7628014f4682f22218fe9258e0", "output_index": 0, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 6, "item_id": "fc_23111e7628014f4682f22218fe9258e0", "output_index": 0, "delta": "Verify"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 7, "item_id": "fc_23111e7628014f4682f22218fe9258e0", "output_index": 0, "delta": " a"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 8, "item_id": "fc_23111e7628014f4682f22218fe9258e0", "output_index": 0, "delta": " fixture"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 9, "item_id": "fc_23111e7628014f4682f22218fe9258e0", "output_index": 0, "delta": "."}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 10, "item_id": "fc_23111e7628014f4682f22218fe9258e0", "output_index": 0, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 11, "item_id": "fc_23111e7628014f4682f22218fe9258e0", "output_index": 0, "delta": ",\"token_budget\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 12, "item_id": "fc_23111e7628014f4682f22218fe9258e0", "output_index": 0, "delta": "1000"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 13, "item_id": "fc_23111e7628014f4682f22218fe9258e0", "output_index": 0, "delta": "}"}
+
+event: response.function_call_arguments.done
+data: {"type": "response.function_call_arguments.done", "sequence_number": 14, "item_id": "fc_23111e7628014f4682f22218fe9258e0", "output_index": 0, "arguments": "{\"objective\":\"Verify a fixture.\",\"token_budget\":1000}"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 15, "output_index": 0, "item": {"id": "fc_23111e7628014f4682f22218fe9258e0", "type": "function_call", "status": "completed", "call_id": "call_fead79af0cf44badb525ab3f", "name": "create_goal", "arguments": "{\"objective\":\"Verify a fixture.\",\"token_budget\":1000}"}}
+
+event: response.completed
+data: {"type": "response.completed", "sequence_number": 16, "response": {"id": "resp_d9f4c83acc2a43b489e86bb492f5e010", "object": "response", "created_at": 1791058631, "status": "completed", "completed_at": 1791058635, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [{"id": "fc_23111e7628014f4682f22218fe9258e0", "type": "function_call", "status": "completed", "call_id": "call_fead79af0cf44badb525ab3f", "name": "create_goal", "arguments": "{\"objective\":\"Verify a fixture.\",\"token_budget\":1000}"}], "usage": {"input_tokens": 420, "output_tokens": 45, "total_tokens": 465, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 420}, "output_tokens_details": {"reasoning_tokens": 0}}, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 1024, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "create_goal", "description": "Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks.\nSet token_budget only when an explicit token budget is requested. Fails if an unfinished goal exists; use update_goal only for status.", "strict": false, "parameters": {"type": "object", "properties": {"objective": {"type": "string", "description": "Required. The concrete objective to start pursuing. This starts a new active goal when no goal exists or replaces the current goal when it is complete."}, "token_budget": {"type": "integer", "description": "Positive token budget for the new goal. Omit unless explicitly requested."}}, "required": ["objective"], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "none", "summary": null}, "truncation": "disabled", "metadata": {}}}
+

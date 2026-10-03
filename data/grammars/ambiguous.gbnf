@@ -1,0 +1,3 @@
+root ::= left | right
+left ::= "x"
+right ::= "x"

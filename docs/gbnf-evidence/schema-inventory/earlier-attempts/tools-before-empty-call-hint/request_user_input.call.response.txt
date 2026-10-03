@@ -1,0 +1,98 @@
+event: response.created
+data: {"type": "response.created", "sequence_number": 0, "response": {"id": "resp_d4a60d1a31824b46b6d03dbe0b606d44", "object": "response", "created_at": 1791059208, "status": "queued", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "request_user_input", "description": "Request user input for one to three short questions and wait for the response. This tool is only available in Plan mode.", "strict": false, "parameters": {"type": "object", "properties": {"questions": {"type": "array", "description": "Questions to show the user. Prefer 1 and do not exceed 3", "items": {"type": "object", "properties": {"header": {"type": "string", "description": "Short header label shown in the UI (12 or fewer chars)."}, "id": {"type": "string", "description": "Stable identifier for mapping answers (snake_case)."}, "options": {"type": "array", "description": "Provide 2-3 mutually exclusive choices. Put the recommended option first and suffix its label with \"(Recommended)\". Do not include an \"Other\" option in this list; the client will add a free-form \"Other\" option automatically.", "items": {"type": "object", "properties": {"description": {"type": "string", "description": "One short sentence explaining impact/tradeoff if selected."}, "label": {"type": "string", "description": "User-facing label (1-5 words)."}}, "required": ["label", "description"], "additionalProperties": false}}, "question": {"type": "string", "description": "Single-sentence prompt shown to the user."}}, "required": ["id", "header", "question", "options"], "additionalProperties": false}}}, "required": ["questions"], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+event: response.in_progress
+data: {"type": "response.in_progress", "sequence_number": 1, "response": {"id": "resp_d4a60d1a31824b46b6d03dbe0b606d44", "object": "response", "created_at": 1791059208, "status": "in_progress", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "request_user_input", "description": "Request user input for one to three short questions and wait for the response. This tool is only available in Plan mode.", "strict": false, "parameters": {"type": "object", "properties": {"questions": {"type": "array", "description": "Questions to show the user. Prefer 1 and do not exceed 3", "items": {"type": "object", "properties": {"header": {"type": "string", "description": "Short header label shown in the UI (12 or fewer chars)."}, "id": {"type": "string", "description": "Stable identifier for mapping answers (snake_case)."}, "options": {"type": "array", "description": "Provide 2-3 mutually exclusive choices. Put the recommended option first and suffix its label with \"(Recommended)\". Do not include an \"Other\" option in this list; the client will add a free-form \"Other\" option automatically.", "items": {"type": "object", "properties": {"description": {"type": "string", "description": "One short sentence explaining impact/tradeoff if selected."}, "label": {"type": "string", "description": "User-facing label (1-5 words)."}}, "required": ["label", "description"], "additionalProperties": false}}, "question": {"type": "string", "description": "Single-sentence prompt shown to the user."}}, "required": ["id", "header", "question", "options"], "additionalProperties": false}}}, "required": ["questions"], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"id": "rs_e9095065593f451bacd2275b23273a11", "type": "reasoning", "status": "in_progress", "summary": [], "content": [{"type": "reasoning_text", "text": ""}]}}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 3, "item_id": "rs_e9095065593f451bacd2275b23273a11", "output_index": 0, "content_index": 0, "delta": "The"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 4, "item_id": "rs_e9095065593f451bacd2275b23273a11", "output_index": 0, "content_index": 0, "delta": " user"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 5, "item_id": "rs_e9095065593f451bacd2275b23273a11", "output_index": 0, "content_index": 0, "delta": " wants"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 6, "item_id": "rs_e9095065593f451bacd2275b23273a11", "output_index": 0, "content_index": 0, "delta": " me"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 7, "item_id": "rs_e9095065593f451bacd2275b23273a11", "output_index": 0, "content_index": 0, "delta": " to"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 8, "item_id": "rs_e9095065593f451bacd2275b23273a11", "output_index": 0, "content_index": 0, "delta": " call"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 9, "item_id": "rs_e9095065593f451bacd2275b23273a11", "output_index": 0, "content_index": 0, "delta": " request"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 10, "item_id": "rs_e9095065593f451bacd2275b23273a11", "output_index": 0, "content_index": 0, "delta": "_user"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 11, "item_id": "rs_e9095065593f451bacd2275b23273a11", "output_index": 0, "content_index": 0, "delta": "_input"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 12, "item_id": "rs_e9095065593f451bacd2275b23273a11", "output_index": 0, "content_index": 0, "delta": " exactly"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 13, "item_id": "rs_e9095065593f451bacd2275b23273a11", "output_index": 0, "content_index": 0, "delta": " once"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 14, "item_id": "rs_e9095065593f451bacd2275b23273a11", "output_index": 0, "content_index": 0, "delta": " with"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 15, "item_id": "rs_e9095065593f451bacd2275b23273a11", "output_index": 0, "content_index": 0, "delta": " the"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 16, "item_id": "rs_e9095065593f451bacd2275b23273a11", "output_index": 0, "content_index": 0, "delta": " specified"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 17, "item_id": "rs_e9095065593f451bacd2275b23273a11", "output_index": 0, "content_index": 0, "delta": " arguments"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 18, "item_id": "rs_e9095065593f451bacd2275b23273a11", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 19, "item_id": "rs_e9095065593f451bacd2275b23273a11", "output_index": 0, "content_index": 0, "delta": "\n"}
+
+event: response.reasoning_text.done
+data: {"type": "response.reasoning_text.done", "sequence_number": 20, "item_id": "rs_e9095065593f451bacd2275b23273a11", "output_index": 0, "content_index": 0, "text": "The user wants me to call request_user_input exactly once with the specified arguments.\n"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 21, "output_index": 0, "item": {"id": "rs_e9095065593f451bacd2275b23273a11", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants me to call request_user_input exactly once with the specified arguments.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWUM2FAdJre-AOJBl2nAlsBbhK0MP_a3Z16uICxPvxRpigFhjHyXC-mzaUfAOoZZFyPCmJLVQPCaAdUgaO8BAqDqgi8WanNIqkquTUAcvuEQPAE0Mq7isL-wkO3F8g23DbgJrwooODiNAYl8LkxTKUPFH0YQBu1HYlucrDmg4q3v85NqLUAnvltSVtRXsVc5ZEncmhAEJ7Pf9f9d4Eb45NZh3aNrSIwIkpOmoUaSBDsGHWcwL4LWzYA-9dWSuSybYL7I2FVENAK7Uftux5yhIDlZansKmkj9-tTqaYlVbvJxjusVSYsMJU0Sykm2Hu47FXn8jS9pv2aZxtTKKrJfc-KSTq_hy6cOPVes3gjuxeh47YwLcAm-PddBY8uYq-9kM0xfVcEe-NPX7VH9WDCs0WpKGvZkcUVGBDjFOv9lLgtaEuM="}}
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 22, "output_index": 1, "item": {"id": "fc_307bbf4e533c42a9a65623b1f61d5d8c", "type": "function_call", "status": "in_progress", "call_id": "call_cc8fc4c2c6ff4dd094760b3f", "name": "request_user_input", "arguments": ""}}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 23, "item_id": "fc_307bbf4e533c42a9a65623b1f61d5d8c", "output_index": 1, "delta": "{"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 24, "item_id": "fc_307bbf4e533c42a9a65623b1f61d5d8c", "output_index": 1, "delta": "\"questions\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 25, "item_id": "fc_307bbf4e533c42a9a65623b1f61d5d8c", "output_index": 1, "delta": "[{\"id\": \"choice\", \"header\": \"Choice\", \"question\": \"Which value?\", \"options\": [{\"label\": \"One\", \"description\": \"Choose one.\"}, {\"label\": \"Two\", \"description\": \"Choose two.\"}]}]"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 26, "item_id": "fc_307bbf4e533c42a9a65623b1f61d5d8c", "output_index": 1, "delta": "}"}
+
+event: response.function_call_arguments.done
+data: {"type": "response.function_call_arguments.done", "sequence_number": 27, "item_id": "fc_307bbf4e533c42a9a65623b1f61d5d8c", "output_index": 1, "arguments": "{\"questions\":[{\"id\": \"choice\", \"header\": \"Choice\", \"question\": \"Which value?\", \"options\": [{\"label\": \"One\", \"description\": \"Choose one.\"}, {\"label\": \"Two\", \"description\": \"Choose two.\"}]}]}"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 28, "output_index": 1, "item": {"id": "fc_307bbf4e533c42a9a65623b1f61d5d8c", "type": "function_call", "status": "completed", "call_id": "call_cc8fc4c2c6ff4dd094760b3f", "name": "request_user_input", "arguments": "{\"questions\":[{\"id\": \"choice\", \"header\": \"Choice\", \"question\": \"Which value?\", \"options\": [{\"label\": \"One\", \"description\": \"Choose one.\"}, {\"label\": \"Two\", \"description\": \"Choose two.\"}]}]}"}}
+
+event: response.completed
+data: {"type": "response.completed", "sequence_number": 29, "response": {"id": "resp_d4a60d1a31824b46b6d03dbe0b606d44", "object": "response", "created_at": 1791059208, "status": "completed", "completed_at": 1791059215, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [{"id": "rs_e9095065593f451bacd2275b23273a11", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants me to call request_user_input exactly once with the specified arguments.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWUM2FAdJre-AOJBl2nAlsBbhK0MP_a3Z16uICxPvxRpigFhjHyXC-mzaUfAOoZZFyPCmJLVQPCaAdUgaO8BAqDqgi8WanNIqkquTUAcvuEQPAE0Mq7isL-wkO3F8g23DbgJrwooODiNAYl8LkxTKUPFH0YQBu1HYlucrDmg4q3v85NqLUAnvltSVtRXsVc5ZEncmhAEJ7Pf9f9d4Eb45NZh3aNrSIwIkpOmoUaSBDsGHWcwL4LWzYA-9dWSuSybYL7I2FVENAK7Uftux5yhIDlZansKmkj9-tTqaYlVbvJxjusVSYsMJU0Sykm2Hu47FXn8jS9pv2aZxtTKKrJfc-KSTq_hy6cOPVes3gjuxeh47YwLcAm-PddBY8uYq-9kM0xfVcEe-NPX7VH9WDCs0WpKGvZkcUVGBDjFOv9lLgtaEuM="}, {"id": "fc_307bbf4e533c42a9a65623b1f61d5d8c", "type": "function_call", "status": "completed", "call_id": "call_cc8fc4c2c6ff4dd094760b3f", "name": "request_user_input", "arguments": "{\"questions\":[{\"id\": \"choice\", \"header\": \"Choice\", \"question\": \"Which value?\", \"options\": [{\"label\": \"One\", \"description\": \"Choose one.\"}, {\"label\": \"Two\", \"description\": \"Choose two.\"}]}]}"}], "usage": {"input_tokens": 660, "output_tokens": 98, "total_tokens": 758, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 660}, "output_tokens_details": {"reasoning_tokens": 18}}, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "request_user_input", "description": "Request user input for one to three short questions and wait for the response. This tool is only available in Plan mode.", "strict": false, "parameters": {"type": "object", "properties": {"questions": {"type": "array", "description": "Questions to show the user. Prefer 1 and do not exceed 3", "items": {"type": "object", "properties": {"header": {"type": "string", "description": "Short header label shown in the UI (12 or fewer chars)."}, "id": {"type": "string", "description": "Stable identifier for mapping answers (snake_case)."}, "options": {"type": "array", "description": "Provide 2-3 mutually exclusive choices. Put the recommended option first and suffix its label with \"(Recommended)\". Do not include an \"Other\" option in this list; the client will add a free-form \"Other\" option automatically.", "items": {"type": "object", "properties": {"description": {"type": "string", "description": "One short sentence explaining impact/tradeoff if selected."}, "label": {"type": "string", "description": "User-facing label (1-5 words)."}}, "required": ["label", "description"], "additionalProperties": false}}, "question": {"type": "string", "description": "Single-sentence prompt shown to the user."}}, "required": ["id", "header", "question", "options"], "additionalProperties": false}}}, "required": ["questions"], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+

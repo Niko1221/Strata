@@ -1,0 +1,86 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "medium"
+  },
+  "max_output_tokens": 3072,
+  "temperature": 0,
+  "stream": true,
+  "input": [
+    {
+      "role": "user",
+      "content": "Protocol fixture: call multi_agent_v1.send_input exactly once using these argument values: {\"target\": \"fixture-agent\", \"message\": \"literal null 42 true\", \"interrupt\": false, \"items\": [{\"type\": \"text\", \"text\": \"hello\"}]}. These are direct parameter names: do not wrap them in an arguments parameter. An empty object means the function has no parameters. Emit the tool call and stop. The test client will supply a mocked result."
+    }
+  ],
+  "tools": [
+    {
+      "type": "namespace",
+      "name": "multi_agent_v1",
+      "description": "Tools for spawning and managing sub-agents.",
+      "tools": [
+        {
+          "type": "function",
+          "name": "send_input",
+          "description": "Send a message to an existing agent. Use interrupt=true to redirect work immediately. You should reuse the agent by send_input if you believe your assigned task is highly dependent on the context of a previous task.",
+          "strict": false,
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "interrupt": {
+                "type": "boolean",
+                "description": "True interrupts the current task and handles this message immediately; false or omitted queues it."
+              },
+              "items": {
+                "type": "array",
+                "description": "Structured input items. Use this to pass explicit mentions (for example app:// connector paths).",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "audio_url": {
+                      "type": "string",
+                      "description": "Audio data URL when type is audio."
+                    },
+                    "image_url": {
+                      "type": "string",
+                      "description": "Image URL when type is image."
+                    },
+                    "name": {
+                      "type": "string",
+                      "description": "Display name when type is skill or mention."
+                    },
+                    "path": {
+                      "type": "string",
+                      "description": "Path when type is local_image/local_audio/skill, or structured mention target such as app://<connector-id> or plugin://<plugin-name>@<marketplace-name> when type is mention."
+                    },
+                    "text": {
+                      "type": "string",
+                      "description": "Text content when type is text."
+                    },
+                    "type": {
+                      "type": "string",
+                      "description": "Input item type: text, image, local_image, audio, local_audio, skill, or mention."
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "message": {
+                "type": "string",
+                "description": "Legacy plain-text message to send to the agent. Use either message or items."
+              },
+              "target": {
+                "type": "string",
+                "description": "Agent id to message (from spawn_agent)."
+              }
+            },
+            "required": [
+              "target"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ]
+    }
+  ]
+}

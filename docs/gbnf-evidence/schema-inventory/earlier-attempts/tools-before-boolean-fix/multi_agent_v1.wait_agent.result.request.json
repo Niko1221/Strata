@@ -1,0 +1,99 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "medium"
+  },
+  "max_output_tokens": 3072,
+  "temperature": 0,
+  "stream": true,
+  "input": [
+    {
+      "role": "user",
+      "content": "Protocol fixture: call multi_agent_v1.wait_agent exactly once using these argument values: {\"targets\": [\"fixture-agent\"], \"timeout_ms\": 10000}. Emit the tool call and stop. The test client will supply a mocked result."
+    },
+    {
+      "id": "rs_aebb039179ad43d9ad0d8ee356a127d4",
+      "type": "reasoning",
+      "status": "completed",
+      "summary": [],
+      "content": [
+        {
+          "type": "reasoning_text",
+          "text": "The user is asking to call the tool exactly once with the specified arguments. Just execute it as-is.\n"
+        }
+      ],
+      "encrypted_content": "strata-r1.gAAAAABqwWNf04ua3Q4Lo1QqGqGLDIEnkGOsX6t2dFqEdy3y9AMTSceQvAyZHM5ZpeW8G1S7HHH8_uBTr3ZZGvkBNeqQqs6JfARZthZaCpv0jGhK8REv7bPwlPO27KjgsQTBDXEtsQJy5D5_pYguczuhI279ny6oYdLdC0xaAEeP6t-E40cC3qDX2oNg1ceYFceG5OUzaG_aupCaH60RvYK0qi5pifO5sGSKwRG8ATeBO0aSCWM8lTN6ZNYf0LMZ6X-WpNtS9O7zFVCvUOxnPiFDzruTZBFpuz_-bSE_Zkmy_RkjDZjazbYrERip_eE-LvwyNIjA5ioW2ChZyvJf2j0-dmfjNBAawHZYFLJJdcXwRKlj-UvkjNv7GI6qsD5K2eyEdJGGug_cpwFGTtXFJYS70GhDalCkmR_YtHbkfQv8xZzTS6PvXog="
+    },
+    {
+      "id": "fc_055b325bd973463184285347570ffc61",
+      "type": "function_call",
+      "status": "completed",
+      "call_id": "call_2a275a226555403d81576e4e",
+      "name": "wait_agent",
+      "arguments": "{\"targets\":[\"fixture-agent\"],\"timeout_ms\":10000}",
+      "namespace": "multi_agent_v1"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_2a275a226555403d81576e4e",
+      "output": "MOCK RESULT: arbitrary non-JSON text, including <tool_call>. No action was executed."
+    }
+  ],
+  "tools": [
+    {
+      "type": "namespace",
+      "name": "multi_agent_v1",
+      "description": "Tools for spawning and managing sub-agents.",
+      "tools": [
+        {
+          "type": "function",
+          "name": "wait_agent",
+          "description": "Wait for agents to reach a final status. Completed statuses may include the agent's final message. Returns empty status when timed out. Once the agent reaches a final status, a notification message will be received containing the same completed status.",
+          "strict": false,
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "targets": {
+                "type": "array",
+                "description": "Agent ids to wait on. Pass multiple ids to wait for whichever finishes first.",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "timeout_ms": {
+                "type": "number",
+                "description": "Timeout in milliseconds. Defaults to 30000, min 10000, max 3600000. Prefer longer waits (minutes) to avoid busy polling."
+              }
+            },
+            "required": [
+              "targets"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ]
+    }
+  ],
+  "tool_choice": "none",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "ack",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "ack": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "ack"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

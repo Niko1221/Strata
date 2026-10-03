@@ -1,0 +1,53 @@
+Test project /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-json-schema-gpu
+      Start 21: grammar_sampler_test
+ 1/10 Test #21: grammar_sampler_test .............   Passed    0.50 sec
+      Start 22: grammar_sampler_one_block
+ 2/10 Test #22: grammar_sampler_one_block ........   Passed    0.24 sec
+      Start 23: grammar_sampler_old
+ 3/10 Test #23: grammar_sampler_old ..............   Passed    0.24 sec
+      Start 47: grammar_native_test
+ 4/10 Test #47: grammar_native_test ..............   Passed    0.01 sec
+      Start 48: grammar_inspection_test
+ 5/10 Test #48: grammar_inspection_test ..........   Passed    0.00 sec
+      Start 49: grammar_speculation_test
+ 6/10 Test #49: grammar_speculation_test .........   Passed    0.00 sec
+      Start 50: grammar_speculation_split
+ 7/10 Test #50: grammar_speculation_split ........   Passed    0.60 sec
+      Start 51: grammar_speculation_one_block
+ 8/10 Test #51: grammar_speculation_one_block ....   Passed    0.60 sec
+      Start 52: grammar_speculation_old
+ 9/10 Test #52: grammar_speculation_old ..........   Passed    0.95 sec
+      Start 53: serve_input_test
+10/10 Test #53: serve_input_test .................   Passed    0.00 sec
+
+100% tests passed, 0 tests failed out of 10
+
+Total Test time (real) =   3.15 sec
+corpus boolean.gbnf passed
+corpus balanced.gbnf passed
+corpus overlapping.gbnf passed
+corpus ambiguous.gbnf passed
+corpus unicode.gbnf passed
+corpus expression.gbnf passed
+corpus actions.gbnf passed
+corpus escaped.gbnf passed
+corpus route.gbnf passed
+corpus cases=41 vocabulary=261 identity=bytes-v1-fnv1a64:709f484f4e7d0c81
+native masks, UTF-8 fragments, recursion, accepting prefixes, stop/special IDs, forks, checkpoints, cache isolation, syntax and resource failures passed
+scoped grammar: reasoning, parallel tools, answer bytes, EOS, speculative phase crossings, checkpoints, budgets and isolation passed
+JSON schema: title bounds/types/keys, JSON object, native thinking budget, tools, speculation, checkpoints passed
+corpus boolean.gbnf passed
+corpus balanced.gbnf passed
+corpus overlapping.gbnf passed
+corpus ambiguous.gbnf passed
+corpus unicode.gbnf passed
+corpus expression.gbnf passed
+corpus actions.gbnf passed
+corpus escaped.gbnf passed
+corpus route.gbnf passed
+corpus cases=41 vocabulary=248320 identity=bytes-v1-fnv1a64:6ad948532e27ffed
+JSON title with actual vocabulary: 248320 tokens, 5405341 compiled bytes, 1.32797 seconds; required/nonempty/length constraints passed
+grammar native tests passed (xgrammar-0.2.8-strata-budget1-json1)
+GPU_BEFORE 
+NATIVE_SHA256 908cb11a334772494b092df15d35267fb8b7a290ad1d431edb90f6a849a7d94c
+GPU_AFTER 

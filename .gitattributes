@@ -7,3 +7,11 @@ bench/prompts/** -text
 
 # copies of real packs' native_experts.txt, parsed byte for byte by tests/core/expert_layout_test.cpp
 tests/data/native_experts/** -text
+
+# Captured protocol bytes/logs retain framing, including the final SSE blank line.
+docs/gbnf-evidence/schema-inventory/**/*.response.txt -text -whitespace
+docs/gbnf-evidence/schema-inventory/*-tests.txt -text -whitespace
+docs/gbnf-evidence/schema-inventory/native-build.txt -text -whitespace
+docs/gbnf-evidence/prompt-examples/**/*.response.txt -text -whitespace
+docs/gbnf-evidence/prompt-examples/*-tests.txt -text -whitespace
+docs/gbnf-evidence/prompt-examples/**/*-tests.txt -text -whitespace

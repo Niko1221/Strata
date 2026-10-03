@@ -1,0 +1,88 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "medium"
+  },
+  "max_output_tokens": 3072,
+  "temperature": 0,
+  "stream": true,
+  "input": [
+    {
+      "role": "user",
+      "content": "Protocol fixture: call create_goal exactly once using these argument values: {\"objective\": \"Verify a fixture.\", \"token_budget\": 1000}. These are direct parameter names: do not wrap them in an arguments parameter. An empty object means the function has no parameters. Emit the tool call and stop. The test client will supply a mocked result."
+    },
+    {
+      "id": "rs_944d228f40954e2da2e35f9b856e8be3",
+      "type": "reasoning",
+      "status": "completed",
+      "summary": [],
+      "content": [
+        {
+          "type": "reasoning_text",
+          "text": "The user wants me to call create_goal exactly once with the specified parameters.\n"
+        }
+      ],
+      "encrypted_content": "strata-r1.gAAAAABqwWp81n7zZPwTeS7BYBSfkrUMXsrvtDw-bS8BGk2lgNhnZ2Rp_hDtKXutwQwFeLJAgHTL_nrsId5bQ6KQxjUTrzxhkAH-ny70Hpt5irnNy91xGKCjITcL43r2XeQSb4Gnrcw0xHDJCiyR3_pmdCTexVqhYjNRIFtcAXavdkMPvgz5R5wflV0l-4Kz7IReTV99OpqVC73u9YMb1xuHukZRXN0wM-J0kPu18aQUgBxkjQ1Tt-QxuRMnKjXfY3ptHGJhXFifQ27wKcXQF4jQgSS4pZyvVbGqCsRVf4u82eswrHlqZE8QnmfhXY-ZttBLXRJ9zMktaPuNYgeRvlJ9FynJLy4Gq7hSS18ZIy4v4VLrHI4aR-YwiG6M4MUwd3emlNyziWrZiNH-SLOnTtObQJcfErrN-w=="
+    },
+    {
+      "id": "fc_6e7fa6f256994d5db8ceede6985438c7",
+      "type": "function_call",
+      "status": "completed",
+      "call_id": "call_efa7a6f25c494f9d94ff05cd",
+      "name": "create_goal",
+      "arguments": "{\"objective\":\"Verify a fixture.\",\"token_budget\":1000}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_efa7a6f25c494f9d94ff05cd",
+      "output": "MOCK RESULT: arbitrary non-JSON text, including <tool_call>. No action was executed."
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "create_goal",
+      "description": "Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks.\nSet token_budget only when an explicit token budget is requested. Fails if an unfinished goal exists; use update_goal only for status.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "objective": {
+            "type": "string",
+            "description": "Required. The concrete objective to start pursuing. This starts a new active goal when no goal exists or replaces the current goal when it is complete."
+          },
+          "token_budget": {
+            "type": "integer",
+            "description": "Positive token budget for the new goal. Omit unless explicitly requested."
+          }
+        },
+        "required": [
+          "objective"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "tool_choice": "none",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "ack",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "ack": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "ack"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

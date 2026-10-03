@@ -1,0 +1,26 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "none"
+  },
+  "max_output_tokens": 512,
+  "temperature": 0,
+  "input": "Return exactly this JSON value, without explanation: [\"local\"]",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "23_unevaluated_items",
+      "strict": true,
+      "schema": {
+        "type": "array",
+        "prefixItems": [
+          {
+            "type": "string"
+          }
+        ],
+        "unevaluatedItems": false
+      }
+    }
+  }
+}

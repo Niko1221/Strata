@@ -1,0 +1,118 @@
+event: response.created
+data: {"type": "response.created", "sequence_number": 0, "response": {"id": "resp_94203bb961e248c2831866dfd6b28b46", "object": "response", "created_at": 1791060675, "status": "queued", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "json_schema", "name": "lookup_result", "strict": true, "schema": {"type": "object", "properties": {"value": {"type": "integer"}}, "required": ["value"], "additionalProperties": false}}}, "tools": [{"type": "function", "name": "lookup", "description": "Read the hidden integer. Call before answering.", "parameters": {"type": "object", "properties": {"key": {"type": "string", "enum": ["hidden"]}}, "required": ["key"], "additionalProperties": false}, "strict": true}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+event: response.in_progress
+data: {"type": "response.in_progress", "sequence_number": 1, "response": {"id": "resp_94203bb961e248c2831866dfd6b28b46", "object": "response", "created_at": 1791060675, "status": "in_progress", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "json_schema", "name": "lookup_result", "strict": true, "schema": {"type": "object", "properties": {"value": {"type": "integer"}}, "required": ["value"], "additionalProperties": false}}}, "tools": [{"type": "function", "name": "lookup", "description": "Read the hidden integer. Call before answering.", "parameters": {"type": "object", "properties": {"key": {"type": "string", "enum": ["hidden"]}}, "required": ["key"], "additionalProperties": false}, "strict": true}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+: keep-alive
+
+: keep-alive
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"id": "rs_b6b9bf5e11674f93a0f1a9dcf4efc383", "type": "reasoning", "status": "in_progress", "summary": [], "content": [{"type": "reasoning_text", "text": ""}]}}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 3, "item_id": "rs_b6b9bf5e11674f93a0f1a9dcf4efc383", "output_index": 0, "content_index": 0, "delta": "The"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 4, "item_id": "rs_b6b9bf5e11674f93a0f1a9dcf4efc383", "output_index": 0, "content_index": 0, "delta": " hidden"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 5, "item_id": "rs_b6b9bf5e11674f93a0f1a9dcf4efc383", "output_index": 0, "content_index": 0, "delta": " integer"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 6, "item_id": "rs_b6b9bf5e11674f93a0f1a9dcf4efc383", "output_index": 0, "content_index": 0, "delta": " is"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 7, "item_id": "rs_b6b9bf5e11674f93a0f1a9dcf4efc383", "output_index": 0, "content_index": 0, "delta": " "}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 8, "item_id": "rs_b6b9bf5e11674f93a0f1a9dcf4efc383", "output_index": 0, "content_index": 0, "delta": "2"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 9, "item_id": "rs_b6b9bf5e11674f93a0f1a9dcf4efc383", "output_index": 0, "content_index": 0, "delta": "7"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 10, "item_id": "rs_b6b9bf5e11674f93a0f1a9dcf4efc383", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 11, "item_id": "rs_b6b9bf5e11674f93a0f1a9dcf4efc383", "output_index": 0, "content_index": 0, "delta": " I"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 12, "item_id": "rs_b6b9bf5e11674f93a0f1a9dcf4efc383", "output_index": 0, "content_index": 0, "delta": " need"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 13, "item_id": "rs_b6b9bf5e11674f93a0f1a9dcf4efc383", "output_index": 0, "content_index": 0, "delta": " to"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 14, "item_id": "rs_b6b9bf5e11674f93a0f1a9dcf4efc383", "output_index": 0, "content_index": 0, "delta": " return"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 15, "item_id": "rs_b6b9bf5e11674f93a0f1a9dcf4efc383", "output_index": 0, "content_index": 0, "delta": " it"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 16, "item_id": "rs_b6b9bf5e11674f93a0f1a9dcf4efc383", "output_index": 0, "content_index": 0, "delta": " as"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 17, "item_id": "rs_b6b9bf5e11674f93a0f1a9dcf4efc383", "output_index": 0, "content_index": 0, "delta": " JSON"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 18, "item_id": "rs_b6b9bf5e11674f93a0f1a9dcf4efc383", "output_index": 0, "content_index": 0, "delta": " matching"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 19, "item_id": "rs_b6b9bf5e11674f93a0f1a9dcf4efc383", "output_index": 0, "content_index": 0, "delta": " the"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 20, "item_id": "rs_b6b9bf5e11674f93a0f1a9dcf4efc383", "output_index": 0, "content_index": 0, "delta": " schema"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 21, "item_id": "rs_b6b9bf5e11674f93a0f1a9dcf4efc383", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 22, "item_id": "rs_b6b9bf5e11674f93a0f1a9dcf4efc383", "output_index": 0, "content_index": 0, "delta": "\n"}
+
+event: response.reasoning_text.done
+data: {"type": "response.reasoning_text.done", "sequence_number": 23, "item_id": "rs_b6b9bf5e11674f93a0f1a9dcf4efc383", "output_index": 0, "content_index": 0, "text": "The hidden integer is 27. I need to return it as JSON matching the schema.\n"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 24, "output_index": 0, "item": {"id": "rs_b6b9bf5e11674f93a0f1a9dcf4efc383", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The hidden integer is 27. I need to return it as JSON matching the schema.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWrFh54fgjdcb-gFHggse1q69HL0jRypFTdych6Awv3ge2zUJiDDJIzAQEbpN6QXaJocxZqSK0Zp8qugiQuhcyeZu3ogLAh_23_qRyeTi2uz_DR71f2stEahQ_H9ip0NHLN7Dca4PAKUBRNFtWlk_JZqSnUGRa5unKPQ_XXjmA7Qc9BJnh3uyaIEl5PuJEMHuNHfCekCfFVZKtnOamMFwebYXC4OngiGwRmD29rjh1QBtrW9i9HzukG2kK5h3S8rDcRcK1Egw4Abht7t9qf2YZLmqLpYiw7ChW1QNPGrvImbK3DMypKX_TshNsXbqbSEwmxXc-RLgLioBI5CDbvcMVOSn4_VghQY2peFaB-a9LRlFFOBU-ARUrB_wVCq2BaDqOY7TLw4NQNi3n5HwZ_un8C1Wg=="}}
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 25, "output_index": 1, "item": {"id": "msg_e55c9e884a304a509a6b22fbc2126c15", "type": "message", "status": "in_progress", "role": "assistant", "content": []}}
+
+event: response.content_part.added
+data: {"type": "response.content_part.added", "sequence_number": 26, "item_id": "msg_e55c9e884a304a509a6b22fbc2126c15", "output_index": 1, "content_index": 0, "part": {"type": "output_text", "text": "", "annotations": [], "logprobs": []}}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 27, "item_id": "msg_e55c9e884a304a509a6b22fbc2126c15", "output_index": 1, "content_index": 0, "delta": "{\"", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 28, "item_id": "msg_e55c9e884a304a509a6b22fbc2126c15", "output_index": 1, "content_index": 0, "delta": "value", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 29, "item_id": "msg_e55c9e884a304a509a6b22fbc2126c15", "output_index": 1, "content_index": 0, "delta": "\":", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 30, "item_id": "msg_e55c9e884a304a509a6b22fbc2126c15", "output_index": 1, "content_index": 0, "delta": " ", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 31, "item_id": "msg_e55c9e884a304a509a6b22fbc2126c15", "output_index": 1, "content_index": 0, "delta": "2", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 32, "item_id": "msg_e55c9e884a304a509a6b22fbc2126c15", "output_index": 1, "content_index": 0, "delta": "7", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 33, "item_id": "msg_e55c9e884a304a509a6b22fbc2126c15", "output_index": 1, "content_index": 0, "delta": "}", "logprobs": []}
+
+event: response.output_text.done
+data: {"type": "response.output_text.done", "sequence_number": 34, "item_id": "msg_e55c9e884a304a509a6b22fbc2126c15", "output_index": 1, "content_index": 0, "text": "{\"value\": 27}", "logprobs": []}
+
+event: response.content_part.done
+data: {"type": "response.content_part.done", "sequence_number": 35, "item_id": "msg_e55c9e884a304a509a6b22fbc2126c15", "output_index": 1, "content_index": 0, "part": {"type": "output_text", "text": "{\"value\": 27}", "annotations": [], "logprobs": []}}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 36, "output_index": 1, "item": {"id": "msg_e55c9e884a304a509a6b22fbc2126c15", "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "{\"value\": 27}", "annotations": [], "logprobs": []}]}}
+
+event: response.completed
+data: {"type": "response.completed", "sequence_number": 37, "response": {"id": "resp_94203bb961e248c2831866dfd6b28b46", "object": "response", "created_at": 1791060675, "status": "completed", "completed_at": 1791060677, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [{"id": "rs_b6b9bf5e11674f93a0f1a9dcf4efc383", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The hidden integer is 27. I need to return it as JSON matching the schema.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWrFh54fgjdcb-gFHggse1q69HL0jRypFTdych6Awv3ge2zUJiDDJIzAQEbpN6QXaJocxZqSK0Zp8qugiQuhcyeZu3ogLAh_23_qRyeTi2uz_DR71f2stEahQ_H9ip0NHLN7Dca4PAKUBRNFtWlk_JZqSnUGRa5unKPQ_XXjmA7Qc9BJnh3uyaIEl5PuJEMHuNHfCekCfFVZKtnOamMFwebYXC4OngiGwRmD29rjh1QBtrW9i9HzukG2kK5h3S8rDcRcK1Egw4Abht7t9qf2YZLmqLpYiw7ChW1QNPGrvImbK3DMypKX_TshNsXbqbSEwmxXc-RLgLioBI5CDbvcMVOSn4_VghQY2peFaB-a9LRlFFOBU-ARUrB_wVCq2BaDqOY7TLw4NQNi3n5HwZ_un8C1Wg=="}, {"id": "msg_e55c9e884a304a509a6b22fbc2126c15", "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "{\"value\": 27}", "annotations": [], "logprobs": []}]}], "usage": {"input_tokens": 457, "output_tokens": 30, "total_tokens": 487, "input_tokens_details": {"cached_tokens": 417, "cache_write_tokens": 40}, "output_tokens_details": {"reasoning_tokens": 20}}, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "json_schema", "name": "lookup_result", "strict": true, "schema": {"type": "object", "properties": {"value": {"type": "integer"}}, "required": ["value"], "additionalProperties": false}}}, "tools": [{"type": "function", "name": "lookup", "description": "Read the hidden integer. Call before answering.", "parameters": {"type": "object", "properties": {"key": {"type": "string", "enum": ["hidden"]}}, "required": ["key"], "additionalProperties": false}, "strict": true}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+

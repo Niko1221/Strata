@@ -1,0 +1,96 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "medium"
+  },
+  "max_output_tokens": 3072,
+  "temperature": 0,
+  "stream": true,
+  "input": [
+    {
+      "role": "user",
+      "content": "Protocol fixture: call write_stdin exactly once using these argument values: {\"session_id\": 42, \"chars\": \"echo ready\\n\", \"yield_time_ms\": 1000, \"max_output_tokens\": 100}. Emit the tool call and stop. The test client will supply a mocked result."
+    },
+    {
+      "id": "rs_5465108095924aee98481b0e4e10978e",
+      "type": "reasoning",
+      "status": "completed",
+      "summary": [],
+      "content": [
+        {
+          "type": "reasoning_text",
+          "text": "The user wants me to call write_stdin exactly once with specific arguments. I should do that and stop.\n"
+        }
+      ],
+      "encrypted_content": "strata-r1.gAAAAABqwXCl_RHNm5sgKsuQdJAdPl1DLvGSazfLiSNumXR5jMRnirlfIchar0GO4KvwHWfWRniSyOxxd8EnMt3m7eZv7vGDBXv5PdqJw_kyaMD1O_wZiSTPUENsPq0QY0xNYVkQsuSNFpzQwqUPzxuKrr8PUsmcT004f4sxRqCyMkWcuqiXwAQAAgoSHjCSAYVF4jOcb1KnRsyv7xl55JNYtm6ra_cbQCkM_-R3805VTY2namf0k51Uotn_8YMGJk0Ks6aiPcLdFmQCl68te_OFID13o1KCbCXVzX-7U2gcrmc9PCWd0yqhzLNV4DSkWCo01cQOPPvWA1ti8fJNJJk881dDHY_WChYrp5jpA3F8nX3_-5L2tWKsr0XZdAkZcdSLfkwLNsYcmdjy7rxm28GvtS1FgBqic7VwozyNv1qFFw0qXdqMWuE="
+    },
+    {
+      "id": "fc_81cde2812d2e49a6bcc53af1634d3a9c",
+      "type": "function_call",
+      "status": "completed",
+      "call_id": "call_da0e572177004e8faddb186b",
+      "name": "write_stdin",
+      "arguments": "{\"session_id\":42,\"chars\":\"echo ready\\n\",\"yield_time_ms\":1000,\"max_output_tokens\":100}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_da0e572177004e8faddb186b",
+      "output": "MOCK RESULT: arbitrary non-JSON text, including <tool_call>. No action was executed."
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "write_stdin",
+      "description": "Writes characters to an existing unified exec session and returns recent output.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "chars": {
+            "type": "string",
+            "description": "Bytes to write to stdin. Defaults to empty, which polls without writing."
+          },
+          "max_output_tokens": {
+            "type": "number",
+            "description": "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."
+          },
+          "session_id": {
+            "type": "number",
+            "description": "Identifier of the running unified exec session."
+          },
+          "yield_time_ms": {
+            "type": "number",
+            "description": "Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default."
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "tool_choice": "none",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "ack",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "ack": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "ack"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

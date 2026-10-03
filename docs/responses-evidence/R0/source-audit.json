@@ -1,0 +1,130 @@
+{
+  "time_utc": "2026-10-03T02:32:26.217453+00:00",
+  "base_ref": "upstream/main",
+  "base_commit": "99f3dbd0b21d1401b3769e0c0d963913607f380b",
+  "remote_main_commit": "99f3dbd0b21d1401b3769e0c0d963913607f380b",
+  "branch": "work/responses-api",
+  "worktree": "<WORKSPACE>/strata-responses-stateless",
+  "source_checkout": "<WORKSPACE>/strata-responses",
+  "source_checkout_preserved": true,
+  "remote_operations": "ls-remote only; no fetch/push",
+  "remotes": [
+    "origin\tgit@github.com:CC-David-CC/Strata-a5500.git (fetch)",
+    "origin\tgit@github.com:CC-David-CC/Strata-a5500.git (push)",
+    "upstream\thttps://github.com/Niko1221/Strata.git (fetch)",
+    "upstream\thttps://github.com/Niko1221/Strata.git (push)"
+  ],
+  "worktrees": "worktree <WORKSPACE>/strata-gfx1012\nHEAD e08dfdc004336f75ecc0afaa0b38745865917098\nbranch refs/heads/feat/gfx1012-hip\n\nworktree <WORKSPACE>/strata-amd-review\nHEAD 8d397303a3b81d9e9ca4eff438a09dae30a002fa\nbranch refs/heads/contrib/gfx1012-community\n\nworktree <WORKSPACE>/strata-focused-gate\nHEAD d37c41fa5bf5b7af0f08d1d8601ff021d77835a4\nbranch refs/heads/validation/focused-fleet-0133\n\nworktree <WORKSPACE>/strata-full-expert-review\nHEAD 3fcea83d13257625f930fdc26023eacd0f0f8540\nbranch refs/heads/perf/full-expert-q4-q8\n\nworktree <WORKSPACE>/strata-gfx1012-doc-review\nHEAD 7a8a4bce3d7cbf5d44f9cb99f449422ee54ec3c6\nbranch refs/heads/contrib/gfx1012-hip\n\nworktree <WORKSPACE>/strata-gfx1012-perf\nHEAD 8505a853ee253f4d536df3d651821ef42381a64c\nbranch refs/heads/perf/gfx1012-memory\n\nworktree <WORKSPACE>/strata-p4\nHEAD 427904e2857bccafc47e3deaab10f668f971ea1b\nbranch refs/heads/strata-p4\n\nworktree <WORKSPACE>/strata-p4-contrib\nHEAD f42188b4ca468093338932a71b1491d337ea7850\nbranch refs/heads/contrib/p4-only\n\nworktree <WORKSPACE>/strata-p4-review\nHEAD 5d39c8ab414ed7f4597b8e948f592147329dca29\nbranch refs/heads/contrib/p4-0.1.31\n\nworktree <WORKSPACE>/strata-perf-review\nHEAD b60a86198e5ac71651bfd4cce01f4564ba971706\nbranch refs/heads/perf/fleet-mmvq\n\nworktree <WORKSPACE>/strata-q4-commit-boundaries\nHEAD 07aab0e05c74d0b65e566679d6ddd0e8cf9aa253\nbranch refs/heads/fix/speculative-commit-boundaries\n\nworktree <WORKSPACE>/strata-q4-diagnostics\nHEAD 2f67d5006f88b0f9cf1f07c646f6c5c3da841f73\nbranch refs/heads/diag/q4-first-divergence\n\nworktree <WORKSPACE>/strata-q4-hc-direct\nHEAD 65c7331346ecec0bd0ce66b3d92f2029dacb711a\nbranch refs/heads/perf/q4-hc-direct\n\nworktree <WORKSPACE>/strata-q4-lookup-overlap\nHEAD c86d504ee047e317538689ebed5abaea4e3bd2c5\nbranch refs/heads/perf/q4-lookup-overlap\n\nworktree <WORKSPACE>/strata-q4-lookup-verify\nHEAD 40256aebc36f98100acbccbc18756a3eff2fa3b5\nbranch refs/heads/perf/q4-lookup-verify\n\nworktree <WORKSPACE>/strata-q4-mtp-window\nHEAD 3fcea83d13257625f930fdc26023eacd0f0f8540\nbranch refs/heads/perf/q4-mtp-window\n\nworktree <WORKSPACE>/strata-q4-q8-expert-reuse\nHEAD b5d3be154c6e1398e6b93276428ce820203c71a4\nbranch refs/heads/perf/q4-q8-expert-reuse\n\nworktree <WORKSPACE>/strata-q4-rollback-sweep\nHEAD c60b87fc7b8fbf299b2d1705af4b69fb45c4d5e1\nbranch refs/heads/diag/q4-rollback-sweep\n\nworktree <WORKSPACE>/strata-q4-selective-drafting\nHEAD 11df5b6ab96c6481f8f68b5a08aae3a97d8b52b0\nbranch refs/heads/perf/q4-selective-drafting\n\nworktree <WORKSPACE>/strata-q4-single-token\nHEAD f61386a3e0603ba5d365076df0d0e8d5f624f18b\nbranch refs/heads/perf/q4-single-token\n\nworktree <WORKSPACE>/strata-q4-state-boundaries\nHEAD 5d12b6328a6f2d1329209547bd95e5997cafc9b6\nbranch refs/heads/diag/q4-state-boundaries\n\nworktree <WORKSPACE>/strata-q4-verify-policy\nHEAD 58686d6e646b89a703960fdd781fbc6a45c323d8\nbranch refs/heads/perf/q4-verify-policy\n\nworktree <WORKSPACE>/strata-q4-wide-verify\nHEAD e81d696df72ae1db0869657f301046a52031793c\nbranch refs/heads/perf/q4-wide-verify\n\nworktree <WORKSPACE>/strata-q4-window-cost-probes\nHEAD 10972da6252da83d8e4bc2a0bde839a5e0f2a8bc\nbranch refs/heads/perf/q4-window-cost-probes\n\nworktree <WORKSPACE>/strata-q8-hybrid\nHEAD 3fcea83d13257625f930fdc26023eacd0f0f8540\nbranch refs/heads/perf/q8-hybrid\n\nworktree <WORKSPACE>/strata-q8-mtp-window\nHEAD 3fcea83d13257625f930fdc26023eacd0f0f8540\nbranch refs/heads/perf/q8-mtp-window\n\nworktree <WORKSPACE>/strata-responses\nHEAD bfd77510079a68e16facbff7a762fa058452f0a7\nbranch refs/heads/feat/responses-api-451\n\nworktree <WORKSPACE>/strata-responses-pr-check\nHEAD 5cd52010974105abc07ce693ff1ab0a84829472c\ndetached\n\nworktree <WORKSPACE>/strata-responses-stateless\nHEAD 99f3dbd0b21d1401b3769e0c0d963913607f380b\nbranch refs/heads/work/responses-api\n\nworktree <WORKSPACE>/strata-roofline\nHEAD f863b2c68f30ea6342cfb0590da42aa7c09c1e73\nbranch refs/heads/archive/fleet-exploration-0133\n\nworktree <WORKSPACE>/strata-serving-amd-gate\nHEAD 1dd175d3fa4b4013f3e17c34628337de5f0176ba\nbranch refs/heads/validation/serving-gfx1012-0132\n\nworktree <WORKSPACE>/strata-serving-review\nHEAD 03ab00c632ce8b5640239583b3ff75236e36c163\nbranch refs/heads/contrib/non-mtp-serving\n\n",
+  "snapshot_archive": "Strata-a5500-main.zip",
+  "snapshot_is_trusted_commit": false,
+  "files": [
+    {
+      "path": "AGENTS.md",
+      "snapshot_sha256": "dcb3e9e4d58da5edba2be982f525dd4ace190959ef139a858e11a70a90bb0bed",
+      "git_blob_sha256": "dcb3e9e4d58da5edba2be982f525dd4ace190959ef139a858e11a70a90bb0bed",
+      "worktree_sha256": "dcb3e9e4d58da5edba2be982f525dd4ace190959ef139a858e11a70a90bb0bed",
+      "snapshot_status": "match",
+      "working_bytes_equal_git_blob": true
+    },
+    {
+      "path": "CMakeLists.txt",
+      "snapshot_sha256": "adb839f257810826765d54558a104f8f80d9c7bb9c132e03b008ec6ad6e079ee",
+      "git_blob_sha256": "7c85aa14ef1d8b7f72401036a8685860d8878403ecfa02624e9c186d73db3158",
+      "worktree_sha256": "7c85aa14ef1d8b7f72401036a8685860d8878403ecfa02624e9c186d73db3158",
+      "snapshot_status": "changed",
+      "working_bytes_equal_git_blob": true
+    },
+    {
+      "path": "serve/server.py",
+      "snapshot_sha256": "4c9174b84faa5a17d3145d781e5d0c1e612f4709d36f096128074d422b71dda0",
+      "git_blob_sha256": "fc85cfd3a5b0379c8482de7a81673cae76299751aa5fe614413bc01f1fa54408",
+      "worktree_sha256": "fc85cfd3a5b0379c8482de7a81673cae76299751aa5fe614413bc01f1fa54408",
+      "snapshot_status": "changed",
+      "working_bytes_equal_git_blob": true
+    },
+    {
+      "path": "serve/frontend.py",
+      "snapshot_sha256": "2e4f8bec798fad542cf545fe7a796a17cc37386d83c3475153db7412c4597658",
+      "git_blob_sha256": "e7b295d5240fac3b1bec1736e2c8d468030f8fe0c96bcc6a6b1570301258f3cf",
+      "worktree_sha256": "e7b295d5240fac3b1bec1736e2c8d468030f8fe0c96bcc6a6b1570301258f3cf",
+      "snapshot_status": "changed",
+      "working_bytes_equal_git_blob": true
+    },
+    {
+      "path": "serve/structured.py",
+      "snapshot_sha256": "bd45a0ed7993553a208fcc1584dc4f763e97a47e2da739b4897efc025ca03fc4",
+      "git_blob_sha256": "bd45a0ed7993553a208fcc1584dc4f763e97a47e2da739b4897efc025ca03fc4",
+      "worktree_sha256": "bd45a0ed7993553a208fcc1584dc4f763e97a47e2da739b4897efc025ca03fc4",
+      "snapshot_status": "match",
+      "working_bytes_equal_git_blob": true
+    },
+    {
+      "path": "serve/test_server.py",
+      "snapshot_sha256": "1d029dab75af4979acd6e090a0c460c449aa0ecd14722faa5f7bd961189665c7",
+      "git_blob_sha256": "cc983e23f23dd42738d01f393e2f10d7b0ea57253342e3548f8dd80f56a0841f",
+      "worktree_sha256": "cc983e23f23dd42738d01f393e2f10d7b0ea57253342e3548f8dd80f56a0841f",
+      "snapshot_status": "changed",
+      "working_bytes_equal_git_blob": true
+    },
+    {
+      "path": "serve/test_lifecycle.py",
+      "snapshot_sha256": "158225ee33713bfff7b5a900f3ab918de6f8e3182e75e751049ae0994ec8755a",
+      "git_blob_sha256": "158225ee33713bfff7b5a900f3ab918de6f8e3182e75e751049ae0994ec8755a",
+      "worktree_sha256": "158225ee33713bfff7b5a900f3ab918de6f8e3182e75e751049ae0994ec8755a",
+      "snapshot_status": "match",
+      "working_bytes_equal_git_blob": true
+    },
+    {
+      "path": "src/program/generate.cpp",
+      "snapshot_sha256": "1b26c11cc923c140294024947f59c36c8a1a9d9f7c40a3ba3c461d08e626f68d",
+      "git_blob_sha256": "27e841224c32256bf38570b6792e67704e1d9333bb055701c25b102c32d43c7f",
+      "worktree_sha256": "27e841224c32256bf38570b6792e67704e1d9333bb055701c25b102c32d43c7f",
+      "snapshot_status": "changed",
+      "working_bytes_equal_git_blob": true
+    },
+    {
+      "path": "src/core/verify.cpp",
+      "snapshot_sha256": "0165262b8f4e12ce0222ef4de86bb2a7739682f21a53350fc253bb7b9a953989",
+      "git_blob_sha256": "d5d5040feff51d94a167603096eacab48b4ae41f1acc4df534bf0bb3c0336f77",
+      "worktree_sha256": "d5d5040feff51d94a167603096eacab48b4ae41f1acc4df534bf0bb3c0336f77",
+      "snapshot_status": "changed",
+      "working_bytes_equal_git_blob": true
+    },
+    {
+      "path": "include/strata/kernels/sampler.hpp",
+      "snapshot_sha256": "89f0889563938cb12aa75744f6342e22de3f4d641c2e645ea5a8b609f062f841",
+      "git_blob_sha256": "2fadb4618763906f7bb6718db199628e22522f266a52b1ab03f8c87a4e5b9a0e",
+      "worktree_sha256": "2fadb4618763906f7bb6718db199628e22522f266a52b1ab03f8c87a4e5b9a0e",
+      "snapshot_status": "changed",
+      "working_bytes_equal_git_blob": true
+    },
+    {
+      "path": "src/kernels/cuda/sampler.cu",
+      "snapshot_sha256": "035497c8880a7951641fd9274b42306852fcbcff09fadb40294c9cd6ddfb8b4c",
+      "git_blob_sha256": "0804c1e735be50dde1b99816553a8ec3c70f48cf0f9cade447d7080a9f048530",
+      "worktree_sha256": "0804c1e735be50dde1b99816553a8ec3c70f48cf0f9cade447d7080a9f048530",
+      "snapshot_status": "changed",
+      "working_bytes_equal_git_blob": true
+    },
+    {
+      "path": "include/strata/core/coupled_draft.hpp",
+      "snapshot_sha256": "9b1773764c3867599a42a48aa41444bf79441254e9250de542d5427f093f599b",
+      "git_blob_sha256": "9b1773764c3867599a42a48aa41444bf79441254e9250de542d5427f093f599b",
+      "worktree_sha256": "9b1773764c3867599a42a48aa41444bf79441254e9250de542d5427f093f599b",
+      "snapshot_status": "match",
+      "working_bytes_equal_git_blob": true
+    },
+    {
+      "path": "include/strata/core/verify.hpp",
+      "snapshot_sha256": "20477b2578c4656b44c897aeb451476052c6e8eb563b2c5371f4c10fc50c4b78",
+      "git_blob_sha256": "fa9449c5cd25e7c55be39a0f5e02f07a4d368d360ad7f40f51ab9c53425af198",
+      "worktree_sha256": "fa9449c5cd25e7c55be39a0f5e02f07a4d368d360ad7f40f51ab9c53425af198",
+      "snapshot_status": "changed",
+      "working_bytes_equal_git_blob": true
+    }
+  ],
+  "python": "3.13.15",
+  "os": "Windows",
+  "native_engine_tested": false,
+  "gpu_contacted": false
+}

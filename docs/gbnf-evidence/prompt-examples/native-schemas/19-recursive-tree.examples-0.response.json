@@ -1,0 +1,85 @@
+{
+  "id": "resp_e290dbca571d494e880daf7ee77c1827",
+  "object": "response",
+  "created_at": 1791062293,
+  "status": "completed",
+  "completed_at": 1791062295,
+  "error": null,
+  "incomplete_details": null,
+  "instructions": null,
+  "model": "qwen3.8-flash-next",
+  "output": [
+    {
+      "id": "msg_a5720da974f446128d0569ddb7449d6b",
+      "type": "message",
+      "status": "completed",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "{\"name\": \"root\", \"children\": [{\"name\": \"leaf\", \"children\": []}]}",
+          "annotations": [],
+          "logprobs": []
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 154,
+    "output_tokens": 22,
+    "total_tokens": 176,
+    "input_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 154
+    },
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    }
+  },
+  "store": false,
+  "background": false,
+  "previous_response_id": null,
+  "max_output_tokens": 512,
+  "temperature": 0,
+  "top_p": 0.95,
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "19_recursive_tree",
+      "strict": true,
+      "schema": {
+        "$ref": "#/$defs/node",
+        "$defs": {
+          "node": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "children": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/node"
+                }
+              }
+            },
+            "required": [
+              "name",
+              "children"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    }
+  },
+  "tools": [],
+  "tool_choice": "auto",
+  "parallel_tool_calls": true,
+  "reasoning": {
+    "effort": "none",
+    "summary": null
+  },
+  "truncation": "disabled",
+  "metadata": {}
+}

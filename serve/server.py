@@ -55,6 +55,8 @@ from serve.frontend import (ChatTemplate, Event, OutputParser, anthropic_to_mess
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve.winjob import contain  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
+from serve.grammar import (ANSWER_PREFIX, THINK_PREFIX, CAPABILITY, GrammarConstraint, GrammarToken, GrammarOutput, validate_grammar_request,
+                           validate_sampling, vocabulary_identity)  # noqa: E402
 
 IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
@@ -82,7 +84,8 @@ PP_SLACK = 3.0
 # ------------------------------------------------------------------------------------------------ engines
 class Engine(Protocol):
     max_context: int
-    def generate(self, ids: list[int], max_new: int, sampling: dict, cancel: threading.Event) -> Iterator[int]: ...
+    def generate(self, ids: list[int], max_new: int, sampling: dict, cancel: threading.Event,
+                 *, constraint: GrammarConstraint | None = None) -> Iterator[int]: ...
 
 
 class MockEngine:
@@ -97,7 +100,9 @@ class MockEngine:
         self.script, self.turns = self.scripts[0], 0
         self.last_prompt: list[int] = []
 
-    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None, *, constraint=None):
+        if constraint is not None:
+            raise ValueError("MockEngine has no native grammar enforcement")
         self.last_prompt = list(ids)
         self.last_embeddings = embeddings
         if len(self.scripts) > 1:
@@ -424,6 +429,7 @@ class StrataEngine:
         """Start the engine again (the same command) after it died; the new process has its own line queue."""
         self.close()
         info = dict(self.info)
+        info.pop("grammar", None)  # a restarted/older binary must negotiate its own capability
         # #344: not alive until READY - __init__ sets max_context to 0 and blocks until the engine says READY, and a
         # request that saw alive() in that window skipped load() and failed with "context (0)".  __init__ clears
         # `ended` itself once READY (before its pump thread can set it again).
@@ -498,7 +504,38 @@ class StrataEngine:
         on = sampling.get("experimental_speed_projection")
         return f" cvec={int(on)}" if isinstance(on, bool) else ""
 
-    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+    def require_grammar(self, constraint):
+        if (constraint.json_schema or constraint.reasoning_tokens) and self.info.get("grammar") != "gbnf-v4":
+            raise ValueError("JSON output and native thinking budgets require a gbnf-v4 native build")
+        supported = ("gbnf-v4", CAPABILITY) if constraint.scoped else ("gbnf-v4", CAPABILITY, "gbnf-v2")
+        if self.info.get("grammar") not in supported:
+            raise ValueError("grammar requires a gbnf-v3 native build for reasoning/tools (gbnf-v2 for plain text) "
+                             "in a supported single-GPU text mode; "
+                             "this engine does not advertise that capability")
+
+    def validate_constraint(self, constraint):
+        """Compile before HTTP headers. Caller owns the ordinary service FIFO."""
+        self.require_grammar(constraint)
+        try:
+            self.proc.stdin.buffer.write(constraint.frame("CHECKG"))
+            self.proc.stdin.buffer.flush()
+        except OSError:
+            raise EngineDied("the engine stopped during grammar preflight") from None
+        try:
+            # Native work has its own cooperative bound. A pipe that loses step
+            # must be ended, or its late reply could belong to the next request.
+            line = self.lines.get(timeout=30)
+        except queue.Empty:
+            raise self._silent("native grammar preflight did not finish within 30 seconds") from None
+        if line is None:
+            raise EngineDied("the engine stopped during grammar preflight")
+        if line.startswith("ERR "):
+            raise ValueError(line[4:].strip())
+        if not line.startswith("GRAMMAR_OK bytes-v1-fnv1a64:"):
+            raise self._silent("unexpected native grammar preflight reply")
+        return line.strip().split(" ", 1)[1]
+
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None, *, constraint=None):
         """Yields token ids, and None as a heartbeat every 10 s while the engine is quiet (reading a long prompt):
         the HTTP layer turns it into an SSE comment, which keeps clients' watchdogs calm and notices a client that
         has gone.  A consumer that stops early (or `cancel`) makes the engine STOP, so it does not run to max_new."""
@@ -507,9 +544,18 @@ class StrataEngine:
         # an image request takes the same sampling keys as text (#75: it used to decode greedily whatever was asked)
         head = f"GENI {int(max_new)}{self.sampling_keys(sampling or {})} {embeddings}" if embeddings else \
             f"GEN {int(max_new)}{self.sampling_keys(sampling or {})}"
+        command = f"{head} {','.join(str(int(t)) for t in ids)}"
+        if constraint is not None:
+            self.require_grammar(constraint)
+            if embeddings:
+                raise ValueError("grammar cannot be combined with image embeddings")
         try:
-            self.proc.stdin.write(f"{head} {','.join(str(int(t)) for t in ids)}\n")
-            self.proc.stdin.flush()
+            if constraint is not None:
+                self.proc.stdin.buffer.write(constraint.frame(command))
+                self.proc.stdin.buffer.flush()
+            else:
+                self.proc.stdin.write(command + "\n")
+                self.proc.stdin.flush()
         except OSError:                                  # the pipe is gone: the engine died (not the client)
             raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
         done = False
@@ -544,6 +590,16 @@ class StrataEngine:
                     if cancel.is_set():
                         return
                     yield int(line[2:])
+                elif line.startswith("TG "):
+                    allow = silence
+                    if cancel.is_set():
+                        return
+                    if constraint is None or not constraint.scoped:
+                        raise ValueError("unexpected scoped native grammar token")
+                    _, channel, token = line.split()
+                    if channel not in ("answer", "reasoning", "tool", "control"):
+                        raise ValueError("invalid native grammar token channel")
+                    yield GrammarToken(int(token), channel)
                 elif line.startswith("PP "):
                     f = line.split()
                     if len(f) >= 3 and f[1].isdigit() and f[2].isdigit():
@@ -921,9 +977,12 @@ class Detokenizer:
     every generated id cost 2 ms per token after 8K tokens and 4 ms after 16K (perf-review F-1).  A tokenizer
     without `token_bytes` (the tests' byte tokenizer) keeps the re-decode."""
 
-    def __init__(self, tok):
+    def __init__(self, tok, *, strict=False):
         self.tok, self.ids, self.sent = tok, [], 0
-        self.inc = codecs.getincrementaldecoder("utf-8")(errors="replace") if hasattr(tok, "token_bytes") else None
+        if strict and not hasattr(tok, "token_bytes"):
+            raise ValueError("grammar requires incremental token bytes")
+        self.inc = codecs.getincrementaldecoder("utf-8")(errors="strict" if strict else "replace") \
+            if hasattr(tok, "token_bytes") else None
 
     def pending(self) -> bool:
         """A character is split across the tokens so far: its first bytes are held."""
@@ -970,6 +1029,8 @@ class Service:
         # #332: the API request monitor (/api-monitor) keeps the last 100 requests' prompts and answers in memory,
         # so it is off unless the config's "api_monitor" (or --api-monitor) turns it on
         self.api_monitor = False
+        self.experimental_responses = False             # stateless protocol adapter; no store or workers
+        self.responses_replay = None                     # deployment key, never a response store
         self.api_requests = collections.deque(maxlen=100)  # bounded I/O in memory; no headers or API keys
         self.request_trace = threading.local()
         self.history = collections.deque(maxlen=500)    # the last finished requests, newest last (GET /metrics)
@@ -1334,10 +1395,17 @@ class Service:
                 "ram": {"used_gib": scaled(hw.get("ram_used"), 2 ** 30, 1),
                         "total_gib": scaled(hw.get("ram_total"), 2 ** 30, 1)} if hw.get("ram_total") else None}}
 
-    def prepare(self, messages, tools, kwargs, max_new=None):
+    def prepare(self, messages, tools, kwargs, max_new=None, *, constraint=None):
         """-> (ids, thinking, max_new). An unset or non-positive max_new (some clients send -1) means "unlimited":
         the rest of the context."""
         prompt = self.template.render(messages, tools=tools, **kwargs)
+        if constraint is not None:
+            thinking = kwargs.get("enable_thinking", True) is not False
+            if constraint.thinking != thinking or constraint.tools != bool(tools) or not prompt.endswith(
+                    THINK_PREFIX if thinking else ANSWER_PREFIX):
+                raise ValueError("grammar requires the matching Qwen reasoning/answer template boundary")
+            if images_of(messages):
+                raise ValueError("grammar does not support image inputs")
         ids = self.tok.encode(prompt, parse_special=True)
         self.embeddings.path = None
         images = images_of(messages)
@@ -1381,7 +1449,7 @@ class Service:
             if room < 1:
                 raise ValueError(f"prompt ({len(ids)} tokens) leaves no room to answer in the context "
                                  f"({self.engine.max_context}); requests are never truncated")
-            max_new = room
+            max_new = min(room, 8192) if constraint is not None and constraint.json_schema else room
         elif max_new > room:
             if not self.fit_max_tokens:
                 raise ValueError(f"prompt ({len(ids)} tokens) + max tokens ({max_new}) exceeds the context "
@@ -1389,7 +1457,27 @@ class Service:
                                  f"max_tokens (at most {max(0, room)} here), or add \"fit_max_tokens\": true to the "
                                  "model's strata-<model>.json to shorten it to the room left (#545)")
             max_new = max(1, room)          # --fit-max-tokens: a shorter completion beats a 400
+        if constraint is not None and max_new > 8192:
+            raise ValueError("grammar permits at most 8192 output tokens; set an explicit smaller output limit")
         return ids, kwargs.get("enable_thinking", True) is not False, max_new
+
+    def prepare_constraint(self, constraint, sampling):
+        """Same native compiler, before headers, using existing serialized admission."""
+        validate_sampling({**self.sampling_defaults, **self.shared, **sampling})
+        if constraint.thinking and self.reasoning_budget(sampling) and constraint.reasoning_tokens != min(self.reasoning_budget(sampling), 8192):
+            raise ValueError("grammar does not support injected reasoning-budget wrap-up; disable reasoning_budget_tokens")
+        with self.fifo:
+            self.ensure_loaded()
+            validate = getattr(self.engine, "validate_constraint", None)
+            if validate is None:
+                raise ValueError("this engine does not support native grammar enforcement")
+            if not hasattr(self, "_grammar_vocabularies"):
+                self._grammar_vocabularies = {}
+            if constraint.scoped not in self._grammar_vocabularies:
+                self._grammar_vocabularies[constraint.scoped] = vocabulary_identity(self.tok, self.stop_ids, constraint.scoped)
+            actual = validate(constraint)
+            if actual != self._grammar_vocabularies[constraint.scoped]:
+                raise ValueError("native grammar and HTTP tokenizer byte tables differ")
 
     def _note(self, n, evs):
         with self.status_lock:
@@ -1427,15 +1515,19 @@ class Service:
                   f"{el:.0f} s", flush=True)
         return now
 
-    def run(self, ids, thinking, tools, max_new, sampling, cancel) -> Iterator[tuple[str, object]]:
+    def run(self, ids, thinking, tools, max_new, sampling, cancel, *, lifecycle=False,
+            constraint=None, parse_tools=True) -> Iterator[tuple[str, object]]:
         """Yields ("event", Event) as text arrives, then ("done", {"finish": .., "completion_tokens": ..})."""
         budget = self.reasoning_budget(sampling) if thinking else None   # #123: opt-in, off by default
         defaults = {**self.sampling_defaults, **self.shared}   # the config's, then the Chat settings shared with apps
         if defaults:                   # the request's own fields win (explicit 0 stays greedy)
             req_values = {k: v for k, v in (sampling or {}).items() if v is not None}
             sampling = {**defaults, **req_values}
-        parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True)
-        detok, n, finish = Detokenizer(self.tok), 0, "length"
+        scoped_output = GrammarOutput(tools) if constraint is not None and constraint.scoped else None
+        parser = None if constraint is not None else OutputParser(thinking=thinking, tools=tools, stream_tools=True,
+                                                                  parse_tools=parse_tools)
+        detok, n, finish = Detokenizer(self.tok, strict=constraint is not None), 0, "length"
+        reasoning_tokens = 0  # Responses usage: tokens consumed in the parser's reasoning region.
         timings, before = None, None                    # this request's timings; the engine's `last` before it
         raw_ids = []                                    # every generated id (STRATA_DEBUG: dump raw model text)
         emb = getattr(self.embeddings, "path", None)
@@ -1454,6 +1546,9 @@ class Service:
                             trace["queue_s"] += round(time.perf_counter() - waiting, 3)
                             trace["state"] = "generating"
                         self.status["queued"] -= 1
+                    if lifecycle and cancel.is_set():
+                        yield "done", {"finish": "cancel", "completion_tokens": 0}
+                        return
                     # issue #27: it died in an earlier request (or was unloaded) - start it again instead of failing
                     self.ensure_loaded()
                     with self.status_lock:
@@ -1462,12 +1557,16 @@ class Service:
                                            max_tokens=max_new)
                         self.last_request_at = time.time()
                         self.rate.clear()               # the previous request's samples must not leak into this one
+                    if lifecycle:
+                        yield "start", None
                     before = getattr(self.engine, "last", None)
                     last_print = time.time()
                     prompt, thought = ids, 0            # thought: the reasoning tokens so far (the budget's count)
                     while True:
-                        gen = self.engine.generate(prompt, max_new - n, sampling, cancel, embeddings=emb) if emb \
-                            else self.engine.generate(prompt, max_new - n, sampling, cancel)
+                        options = {"embeddings": emb} if emb else {}
+                        if constraint is not None:
+                            options["constraint"] = constraint
+                        gen = self.engine.generate(prompt, max_new - n, sampling, cancel, **options)
                         seg, wrap, leaving = [], False, False   # this pass's tokens; the budget is reached; closed
                         try:
                             for t in gen:
@@ -1475,22 +1574,32 @@ class Service:
                                     last_print = self._progress(last_print)
                                     yield "ping", None
                                     continue
+                                channel = t.channel if isinstance(t, GrammarToken) else None
+                                t = t.id if isinstance(t, GrammarToken) else t
+                                if scoped_output is not None and channel is None:
+                                    raise ValueError("native grammar omitted a token channel")
                                 n += 1
                                 if trace is not None and trace["first_token_s"] is None:
                                     with self.status_lock:
                                         trace["first_token_s"] = round(time.perf_counter() - trace["_clock"], 3)
                                 if t in self.stop_ids:
+                                    if constraint is not None and detok.pending():
+                                        raise ValueError("native grammar ended inside an incomplete UTF-8 character")
                                     finish = "stop"
                                     raw_ids.append(t)
                                     break
                                 raw_ids.append(t)
                                 seg.append(t)
-                                evs = parser.feed(detok.push(t))
+                                if lifecycle and (channel == "reasoning" or (parser is not None and parser.state == "reasoning")):
+                                    reasoning_tokens += 1
+                                delta = detok.push(t)
+                                evs = scoped_output.feed(channel, delta) if scoped_output is not None else \
+                                    parser.feed(delta) if parser is not None else ([Event("content", delta)] if delta else [])
                                 self._note(n, evs)
                                 last_print = self._progress(last_print)
                                 for ev in evs:
                                     yield "event", ev
-                                if budget and parser.state == "reasoning":
+                                if budget and parser is not None and parser.state == "reasoning":
                                     thought += 1
                                     # at a clean point: no tag held back, no character split across tokens
                                     if thought >= budget and not parser.buf and not detok.pending():
@@ -1531,6 +1640,8 @@ class Service:
                         for t in extra:
                             n += 1
                             raw_ids.append(t)
+                            if lifecycle and parser.state == "reasoning":
+                                reasoning_tokens += 1
                             evs = parser.feed(detok.push(t))
                             self._note(n, evs)
                             for ev in evs:
@@ -1592,7 +1703,7 @@ class Service:
                             hit_msg = f", expert cache {hit_rate*100:.1f}% hit" if hit_rate is not None else ""
                             print(f"[strata] done: {n} tokens in {el:.0f} s ({rate:.1f} tok/s) "
                                   f"({finish}, cancel={cancel.is_set()}){hit_msg}", flush=True)
-                            if finish == "length" and parser.state == "reasoning":   # #530
+                            if finish == "length" and parser is not None and parser.state == "reasoning":   # #530
                                 print("[strata] the reply reached max tokens while still thinking, so it has no "
                                       "answer: a thinking budget (reasoning_budget_tokens, in the request or in "
                                       "strata-<model>.json for every request) leaves room to answer", flush=True)
@@ -1604,10 +1715,10 @@ class Service:
         finally:
             if emb:
                 Path(emb).unlink(missing_ok=True)
-        for ev in parser.finish():
+        for ev in scoped_output.finish(finish) if scoped_output is not None else parser.finish() if parser is not None else ():
             yield "event", ev
         yield "done", {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),
-                       "timings": timings}
+                       "timings": timings, **({"reasoning_tokens": reasoning_tokens} if lifecycle else {})}
 
 
 def prompt_tokens_seen(prompt_tokens: int, last: dict) -> int:
@@ -1745,7 +1856,7 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
 
 
 # ------------------------------------------------------------------------------------------------ OpenAI
-def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel, run=None):
+def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel, run=None, *, constraint=None):
     """`run`: the events to send instead of Service.run's (run_with_mcp); its ("mcp", {...}) items become chunks with
     an empty delta and a `strata_mcp` field, which only the web app reads."""
     cid, created = "chatcmpl-" + uuid.uuid4().hex[:24], int(time.time())
@@ -1759,7 +1870,9 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
     calls = 0
     streamed = {}                                  # tool call id -> index, for calls sent piece by piece
     finished = set()                               # ... and the ones whose final tool_call came (#211)
-    for kind, x in run if run is not None else svc.run(ids, thinking, tools, max_new, req, cancel):
+    options = {"constraint": constraint} if constraint is not None else {}
+    sampling = {k: v for k, v in req.items() if k != "grammar"} if constraint is not None else req
+    for kind, x in run if run is not None else svc.run(ids, thinking, tools, max_new, sampling, cancel, **options):
         if kind == "ping":
             yield None
         elif kind == "mcp":
@@ -2223,8 +2336,13 @@ def make_handler(svc: Service):
             path = self.path.split("?")[0].rstrip("/")   # issue #55: Claude Code posts /v1/messages?beta=true
             if path.startswith("/v1/") and self._foreign_page():
                 return
+            if path == "/v1/responses" and not svc.experimental_responses:
+                self._json(404, {"error": {"message": "not found"}})
+                return
             if path == "/settings":
                 self._settings()
+                return
+            if path in ("/unload", "/load") and not self._control_body():
                 return
             # JSON from Strata's own page only, as /settings: else a plain form POST from any site unloads the model
             if path in ("/unload", "/load") and not self._own_page("the model can be loaded or unloaded"):
@@ -2245,7 +2363,18 @@ def make_handler(svc: Service):
                     self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                 return
             try:
-                req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+                if path == "/v1/responses":
+                    from serve.responses import MAX_REQUEST_BYTES, RequestError, strict_json
+                    try:
+                        size = int(self.headers.get("Content-Length", 0))
+                        if not 0 < size <= MAX_REQUEST_BYTES:
+                            raise RequestError("expected a JSON body of at most 4 MiB", "body", status=413)
+                        req = strict_json(self.rfile.read(size))
+                    except RequestError as exc:
+                        self._json(exc.status, exc.wire())
+                        return
+                else:
+                    req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
                 if not isinstance(req, dict):
                     raise ValueError("send a JSON object")
                 if path in ("/v1/load", "/v1/unload"):
@@ -2272,9 +2401,11 @@ def make_handler(svc: Service):
                         result = "loaded"
                     self._json(200, {"status": result, **svc.v1_status()})
                     return
-                if path in ("/v1/chat/completions", "/v1/messages"):
+                if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):
                     self.record = svc.begin_request(path, req)
-                if path == "/v1/chat/completions":
+                if path == "/v1/responses":
+                    self._responses(req)
+                elif path == "/v1/chat/completions":
                     self._openai(req)
                 elif path == "/v1/messages":
                     self._anthropic(req)
@@ -2334,6 +2465,28 @@ def make_handler(svc: Service):
             if version:
                 props["build_info"] = "Strata " + str(version)
             self._json(200, props)
+
+        def _control_body(self) -> bool:
+            """Consume the unused control body before replying/closing (Windows otherwise sends a TCP reset)."""
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                self._json(400, {"error": {"message": "invalid Content-Length"}})
+                return False
+            if not 0 <= length <= 65536:
+                self._json(413, {"error": {"message": "control request body is limited to 64 KiB"}})
+                return False
+            timeout = self.connection.gettimeout()
+            try:
+                self.connection.settimeout(2.0)
+                complete = len(self.rfile.read(length)) == length
+            except OSError:
+                complete = False
+            finally:
+                self.connection.settimeout(timeout)
+            if not complete:
+                self._json(400, {"error": {"message": "incomplete control request body"}})
+            return complete
 
         def _own_page(self, what) -> bool:
             """Only JSON (a form or a "simple" cross-site request can't send it without a CORS preflight, which this
@@ -2410,7 +2563,53 @@ def make_handler(svc: Service):
             finally:
                 items.close()
 
+        def _responses(self, req):
+            from serve.responses import RequestError, create_response, execute_response
+            cancel = threading.Event()
+            self._watch_client(cancel)
+            events = None
+            try:
+                prepared = create_response(svc, req)
+                events = execute_response(svc, prepared, cancel)
+                if req.get("stream"):
+                    self._sse()
+                for event in events:
+                    if cancel.is_set() and prepared.assembler.response["status"] != "failed":
+                        return
+                    if event is not None and "response" in event:
+                        self._note(response_status=event["response"]["status"])
+                    if req.get("stream"):
+                        frame = b": keep-alive\n\n" if event is None else (
+                            f"event: {event['type']}\n".encode() + b"data: " +
+                            json.dumps(event, ensure_ascii=False).encode("utf-8") + b"\n\n")
+                        self.wfile.write(frame)
+                        self.wfile.flush()
+                if cancel.is_set() and prepared.assembler.response["status"] != "failed":
+                    return
+                result = prepared.assembler.snapshot()
+                self._note(outcome=result["status"])
+                if req.get("stream"):
+                    if self.record is not None:
+                        raw = json.dumps(result, ensure_ascii=False)
+                        self._note(response=raw[:262144], response_truncated=len(raw) > 262144,
+                                   usage=result["usage"], error=result["error"])
+                else:
+                    self._json(500 if result["status"] == "failed" else 200, result)
+            except RequestError as exc:
+                self._json(exc.status, exc.wire())
+            except (EngineDied, EngineStarting, EngineStuck, GpuBusy) as exc:
+                self._json(503, {"error": {"type": "server_error", "message": str(exc)}})
+            except OSError:
+                self._note(outcome="disconnected")
+                cancel.set()
+            finally:
+                if events is not None:
+                    events.close()
+
         def _openai(self, req):
+            constraint = validate_grammar_request(req, "chat")
+            if constraint is not None and req.get("model") not in svc.model_names():
+                raise ValueError("grammar request model not found")
             req = svc.with_shared(req, "openai")
             messages, tools, kw = openai_to_messages(req)
             messages, validator = prepare_format(req.get("response_format"), messages)
@@ -2428,13 +2627,17 @@ def make_handler(svc: Service):
                 use_mcp = bool(extra)
                 tools = (tools or []) + extra or None
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
-            ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new)
+            if constraint is not None:
+                constraint = constraint.with_scope(kw.get("enable_thinking", True) is not False, tools)
+            ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, constraint=constraint)
+            if constraint is not None:
+                svc.prepare_constraint(constraint, req)
             _debug_req("openai", req, messages, tools, max_new, thinking, len(ids))
             cancel = threading.Event()
             self._watch_client(cancel)                       # #430 #431
             run = run_with_mcp(svc, svc.mcp, messages, tools, kw, ids, thinking, max_new, max_req, req, cancel,
                                {t["name"] for t in extra}) if use_mcp else None
-            chunks = openai_chunks(svc, req, ids, thinking, tools, max_new, cancel, run=run)
+            chunks = openai_chunks(svc, req, ids, thinking, tools, max_new, cancel, run=run, constraint=constraint)
             if validator is not None:
                 chunks = structured_chunks(chunks, validator)
             chunks = self._capture(chunks, "openai")
@@ -2856,6 +3059,8 @@ def main() -> int:
     ap.add_argument("--api-monitor", action="store_true",
                     help="the API request monitor at /api-monitor: keeps the last 100 requests' prompts and answers in "
                          "memory (also \"api_monitor\": true in the config; off by default)")
+    ap.add_argument("--experimental-responses", action="store_true",
+                    help="enable stateless POST /v1/responses (also experimental_responses:true in config; off by default)")
     ap.add_argument("--idle-unload", type=float, default=None, metavar="SECONDS",
                     help="unload the model after this many seconds without requests, so other programs (games, other "
                          "model servers) can use the VRAM; the next request loads it again (also \"idle_unload_s\" "
@@ -2867,6 +3072,19 @@ def main() -> int:
                                           "server's model; also \"before_load\" in the config, a string or a list)")
     a = ap.parse_args()
     cfg = json.loads(Path(a.config).read_text(encoding="utf-8-sig")) if a.config else {}   # Notepad adds a BOM
+    if type(cfg.get("experimental_responses", False)) is not bool:
+        ap.error("experimental_responses must be true or false")
+    experimental_responses = a.experimental_responses or cfg.get("experimental_responses", False)
+    responses_replay = None
+    if experimental_responses:
+        try:
+            from serve.response_replay import ReplayCodec
+        except ImportError:
+            ap.error("encrypted Responses replay needs: python -m pip install -r requirements-responses.txt")
+        try:
+            responses_replay = ReplayCodec.load()
+        except (OSError, ValueError) as exc:
+            ap.error(f"cannot load the Responses deployment key: {exc}")
     if a.gpu is not None:
         cfg["gpu"] = int(a.gpu) if a.gpu.strip().isdigit() else a.gpu
     a.host = a.host or cfg.get("host") or "127.0.0.1"   # issue #26: the run scripts pass no --host, the config can
@@ -2961,6 +3179,8 @@ def main() -> int:
         print("[strata] Host check off: any name reaches this server (allowed_hosts \"*\")" if "*" in svc.allowed_hosts
               else f"[strata] also answers to the host names {', '.join(svc.allowed_hosts)} (allowed_hosts)", flush=True)
     svc.api_monitor = a.api_monitor or cfg.get("api_monitor") is True
+    svc.experimental_responses = experimental_responses
+    svc.responses_replay = responses_replay
     if svc.api_monitor:
         print("[strata] API request monitor on (/api-monitor): the last 100 requests' prompts and answers are kept in "
               "memory" + ("" if svc.api_key else "; anyone who can reach this server can read them (no API key)"),

@@ -1,0 +1,134 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "medium"
+  },
+  "max_output_tokens": 3072,
+  "temperature": 0,
+  "stream": true,
+  "input": [
+    {
+      "role": "user",
+      "content": "Protocol fixture: call multi_agent_v1.send_input exactly once using these argument values: {\"target\": \"fixture-agent\", \"message\": \"literal null 42 true\", \"interrupt\": false, \"items\": [{\"type\": \"text\", \"text\": \"hello\"}]}. These are direct parameter names: do not wrap them in an arguments parameter. An empty object means the function has no parameters. Emit the tool call and stop. The test client will supply a mocked result."
+    },
+    {
+      "id": "rs_1b178ef8bfa14b479969daf6cbef911d",
+      "type": "reasoning",
+      "status": "completed",
+      "summary": [],
+      "content": [
+        {
+          "type": "reasoning_text",
+          "text": "The user wants me to emit exactly one tool call with the specified parameters.\n"
+        }
+      ],
+      "encrypted_content": "strata-r1.gAAAAABqwWUwg9d3ne3fxGDBUXqcQEZCosZ8CZg3inT_LMKVMQL9xcIpKUdTOl5JgifH2kd0wcwyw33PcdgjMC3UlftnkK8_R6LkKGLxbWEZDWp7GxngSs9uhUx-YET_d46plPP2BPZeLq0_eNTFCSqSXBa_SVnVaV5w3bss57P22t8c3Fg2aRQM-V0HS2I-0XPc2XDXLh2g0c9sGfsLfm_NaEIJnzzOaZrzf_7hGuS-BoO_6Xiv2KOYLBWUgv8hERFzcA-YqiaupnnyqwvJVp8MDPzHeuC8wVGJFeirH2BgwLJQJeCc2XoG1gDzAGC1CzcGITYMCm3ivuC_jmbxRHggN9FsJZWaZle5AhYAcYGu7vcLXBGXmCNo70zgupfZC-1OuJXWDgV1YefFAwKXFHg2TWLb5smW9w=="
+    },
+    {
+      "id": "fc_4323a3ecf81d49d29a0514980c6e9945",
+      "type": "function_call",
+      "status": "completed",
+      "call_id": "call_4589c1d5b59f437aaca26ecc",
+      "name": "send_input",
+      "arguments": "{\"target\":\"fixture-agent\",\"message\":\"literal null 42 true\",\"interrupt\":false,\"items\":[{\"text\": \"hello\", \"type\": \"text\"}]}",
+      "namespace": "multi_agent_v1"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_4589c1d5b59f437aaca26ecc",
+      "output": "MOCK RESULT: arbitrary non-JSON text, including <tool_call>. No action was executed."
+    }
+  ],
+  "tools": [
+    {
+      "type": "namespace",
+      "name": "multi_agent_v1",
+      "description": "Tools for spawning and managing sub-agents.",
+      "tools": [
+        {
+          "type": "function",
+          "name": "send_input",
+          "description": "Send a message to an existing agent. Use interrupt=true to redirect work immediately. You should reuse the agent by send_input if you believe your assigned task is highly dependent on the context of a previous task.",
+          "strict": false,
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "interrupt": {
+                "type": "boolean",
+                "description": "True interrupts the current task and handles this message immediately; false or omitted queues it."
+              },
+              "items": {
+                "type": "array",
+                "description": "Structured input items. Use this to pass explicit mentions (for example app:// connector paths).",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "audio_url": {
+                      "type": "string",
+                      "description": "Audio data URL when type is audio."
+                    },
+                    "image_url": {
+                      "type": "string",
+                      "description": "Image URL when type is image."
+                    },
+                    "name": {
+                      "type": "string",
+                      "description": "Display name when type is skill or mention."
+                    },
+                    "path": {
+                      "type": "string",
+                      "description": "Path when type is local_image/local_audio/skill, or structured mention target such as app://<connector-id> or plugin://<plugin-name>@<marketplace-name> when type is mention."
+                    },
+                    "text": {
+                      "type": "string",
+                      "description": "Text content when type is text."
+                    },
+                    "type": {
+                      "type": "string",
+                      "description": "Input item type: text, image, local_image, audio, local_audio, skill, or mention."
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "message": {
+                "type": "string",
+                "description": "Legacy plain-text message to send to the agent. Use either message or items."
+              },
+              "target": {
+                "type": "string",
+                "description": "Agent id to message (from spawn_agent)."
+              }
+            },
+            "required": [
+              "target"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ]
+    }
+  ],
+  "tool_choice": "none",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "ack",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "ack": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "ack"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

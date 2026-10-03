@@ -1,0 +1,12 @@
+{
+  "command": [
+    "python",
+    "-m",
+    "unittest",
+    "-v",
+    "test_calc.py"
+  ],
+  "exit_code": 0,
+  "calc.py": "def add(a, b):\n    return a + b\n\n",
+  "test_file_sha256": "a57f5fca9444625ecee0354ae70c6b26999e59a04da342339501730a2768cb9f"
+}

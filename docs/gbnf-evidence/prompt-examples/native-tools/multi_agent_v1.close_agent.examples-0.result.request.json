@@ -1,0 +1,92 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "medium"
+  },
+  "max_output_tokens": 3072,
+  "temperature": 0,
+  "stream": true,
+  "input": [
+    {
+      "role": "user",
+      "content": "Protocol fixture: call multi_agent_v1.close_agent exactly once using these argument values: {\"target\": \"fixture-agent\"}. Emit the tool call and stop. The test client will supply a mocked result."
+    },
+    {
+      "id": "rs_02928748c11140b58f4895303762df1a",
+      "type": "reasoning",
+      "status": "completed",
+      "summary": [],
+      "content": [
+        {
+          "type": "reasoning_text",
+          "text": "The user wants me to call the tool exactly once with the specified arguments and then stop.\n"
+        }
+      ],
+      "encrypted_content": "strata-r1.gAAAAABqwXC7yClcscpj6hyBUz12-BxVtz3_F2BIcO3vWbL8YdTaV8GNIDt-IbcOS1ovH7NZ4OUl2c6V6Io3jZvDx8dmBsYTAR1vadmvBnEPxUYxExa6nd3cl2yeBIDGZLhjX_J2965AbteE8vKRGNCysVxCUT9Y9mIZIwZ1YLvfaOZvVhiSO6CZFpICilberB_INKPr6N_V6CLmCmV3F08fAYD7dRpqmeCL05tjW2lCs7xygecexUdup-RlRiW0Z9b2DtGwgB_Y-a5xzuQfduCpB-Bg3QDQp_8Cf2x9duBtZP9nIitGeT9LJUMWZiNsPzqzLWt6hjhLpF_MbcfNbW-iXwMi5QXTXh1dPJze1fmGP2DRAp9xix7KoB6oAwHg35Y2xELBT9X73s5EdCJSZqXpNOZIVBEITtVMcPLVj-gQslqhZaK7rI8="
+    },
+    {
+      "id": "fc_1cc21cd4cfad4580b537c9454cf70496",
+      "type": "function_call",
+      "status": "completed",
+      "call_id": "call_6f1eac198c204c32b34dd24b",
+      "name": "close_agent",
+      "arguments": "{\"target\":\"fixture-agent\"}",
+      "namespace": "multi_agent_v1"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_6f1eac198c204c32b34dd24b",
+      "output": "MOCK RESULT: arbitrary non-JSON text, including <tool_call>. No action was executed."
+    }
+  ],
+  "tools": [
+    {
+      "type": "namespace",
+      "name": "multi_agent_v1",
+      "description": "Tools for spawning and managing sub-agents.",
+      "tools": [
+        {
+          "type": "function",
+          "name": "close_agent",
+          "description": "Close an agent and any open descendants when they are no longer needed, and return the target agent's previous status before shutdown was requested. Completed agents remain open and count toward the concurrency limit until closed. Don't keep agents open for too long if they are not needed anymore.",
+          "strict": false,
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "target": {
+                "type": "string",
+                "description": "Agent id to close (from spawn_agent)."
+              }
+            },
+            "required": [
+              "target"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ]
+    }
+  ],
+  "tool_choice": "none",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "ack",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "ack": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "ack"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

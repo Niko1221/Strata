@@ -1,0 +1,626 @@
+strata generate: PCIe probe: 26.8 GB/s host->device (best of 26.8 26.8 26.8 26.8) -> pcie_frac 0.55 (default 0.55)
+strata generate: native pack: /boot/Strata-data/packs/coder-iq1_m experts (largest blob 2.66 MB), token embedding IQ4_XS in mapped host memory (322 MiB)
+strata generate: 1406 MiB of weights loaded from /boot/Strata-data/packs/coder-iq1_m (302 canonical tensors skipped: served natively)
+strata generate: 300 native projection matrices, 2018.88 MiB of weights
+strata generate: the SSD is kept awake while rows are read: one page of the table after 100 ms without a read, until 60 s after the last request (STRATA_SSD_KEEPALIVE=0 turns it off)
+strata generate: profile /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/data/expert-profile-coder.bin: 12288 ranked pairs, built for 12288 slots
+strata generate: PLE on, table 320001536 rows of /boot/Strata-data/models/coder-IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00002-of-00002.gguf
+strata mtp: draft layer loaded, 794 MiB of VRAM (experts 675, dense 111), files read in 0.53 s (1495 MiB/s)
+strata generate: GPU 0: NVIDIA GeForce RTX 4090, compute capability 8.9
+strata generate: experts via mmap (--mmap-experts; the GGUF shards in place, no experts.bin)
+strata trace: 18992 MiB free after the weights, the session and the drafter
+strata generate: experimental native Q5_K head, 521472000 bytes
+strata generate: expert cache 7815 slots, 14.88 GiB of VRAM; policy is
+strata trace: 3260 MiB free after opening the expert cache
+strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,
+                 so a reply can differ slightly from a run without the cache (same quality:
+                 bench/results/2026-09-27-cache-parity).
+                 PROFILE, ranked by routing frequency, no eviction.
+strata trace: 3260 MiB free after the profile fill
+strata generate: pre-filled 7815 of 7815 slots from the profile; slot 0 verified
+strata generate: routing-aware prefetch of the file tier on (the next layer's router)
+strata trace: 3260 MiB free after the R4 hit path
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: 5 expert-pool workers + the host thread
+strata trace: 3260 MiB free after the expert cache and the graphs
+strata generate: session is up (engine 0.1.38)
+strata generate: token graph hit path: 7815 resident experts, decided on the device
+strata serve: the prompt path borrows 147 CUDA0 cache slots (0.28 GiB)
+strata trace: 3068 MiB free after the head and the prompt path
+strata hc: CUDA0: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (STRATA_HC_SPLIT=1 or 0 for the earlier ones)
+strata verify: window up to 4 tokens, 62.9 MiB of device buffers
+strata mtp: draft head over 40525 tokens (81.2 MiB)
+strata trace: 2918 MiB free after the verifier and the drafter's binding
+strata serve: 2918 MiB of VRAM free with everything loaded
+strata trace: request 299 0
+strata trace: prompt start 298 -1
+strata trace: lent 147 slots for 256 tokens in 0.0 ms
+strata trace: prompt chunk 0 of 292
+strata trace: prompt chunk 256 of 292
+strata trace: read 292 tokens (batched) in 10711.3 ms
+strata trace: refill start 147 -1
+strata trace: refilled 147 slots on 1 stage(s) in 35.3 ms
+strata verify: captured the 4-token window (upload no error, sync no error)
+strata verify: captured the 2-token window (upload no error, sync no error)
+strata trace: read 6 tokens (windows) in 273.5 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 298 1
+strata verify: captured the 1-token window (upload no error, sync no error)
+strata trace: CURSOR prompt=299 consumed=299 produced=1 pending=248058 window=1 selection_position=298
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0 window_ms=42.908
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=3 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 299 4
+strata trace: CURSOR prompt=299 consumed=303 produced=5 pending=17572 window=4 selection_position=302
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=184.906
+strata trace: GRAMMAR tokens=5 accepting=0 terminal=0 work=13 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 303 4
+strata trace: CURSOR prompt=299 consumed=305 produced=7 pending=38613 window=4 selection_position=304
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=2 blocked_draft=-1 end_draft=0 fallback=0 window_ms=179.546
+strata trace: GRAMMAR tokens=7 accepting=0 terminal=0 work=21 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 305 4
+strata trace: CURSOR prompt=299 consumed=309 produced=11 pending=15704 window=4 selection_position=308
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=178.231
+strata trace: GRAMMAR tokens=11 accepting=0 terminal=0 work=31 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 309 4
+strata trace: CURSOR prompt=299 consumed=310 produced=12 pending=46696 window=4 selection_position=309
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=1 blocked_draft=-1 end_draft=0 fallback=0 window_ms=192.666
+strata trace: GRAMMAR tokens=12 accepting=0 terminal=0 work=38 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 310 4
+strata trace: CURSOR prompt=299 consumed=313 produced=15 pending=54613 window=4 selection_position=312
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=3 blocked_draft=-1 end_draft=0 fallback=0 window_ms=177.876
+strata trace: GRAMMAR tokens=15 accepting=0 terminal=0 work=47 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 313 4
+strata trace: CURSOR prompt=299 consumed=317 produced=19 pending=24 window=4 selection_position=316
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=189.608
+strata trace: GRAMMAR tokens=19 accepting=0 terminal=0 work=57 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 317 4
+strata trace: CURSOR prompt=299 consumed=321 produced=23 pending=29 window=4 selection_position=320
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=215.372
+strata trace: GRAMMAR tokens=23 accepting=0 terminal=0 work=67 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 321 4
+strata trace: CURSOR prompt=299 consumed=325 produced=27 pending=29 window=4 selection_position=324
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=285.893
+strata trace: GRAMMAR tokens=27 accepting=0 terminal=0 work=77 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 325 3
+strata verify: captured the 3-token window (upload no error, sync no error)
+strata trace: CURSOR prompt=299 consumed=328 produced=30 pending=248046 window=3 selection_position=327
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=3 kept=3 blocked_draft=-1 end_draft=1 fallback=0 window_ms=117.953
+strata trace: GRAMMAR tokens=30 accepting=1 terminal=1 work=86 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata serve: prompt 299 tokens = 0 reused + 299 read in 11075 ms (27.0 tok/s), 30 generated in 1765 ms (17.0 tok/s), drafts accepted 20 of 26, 1 checkpoints
+strata serve: decode expert cache hit rate: 74.6% (12884 hits / 17280 lookups)
+strata serve: expert tiers: GPU 12884 hits this request; since the start RAM 0 blobs, files 0 blobs 32052.1 MB read (the GGUF in place)
+strata trace: request 141 0
+strata trace: prompt start 140 -1
+strata trace: lent 147 slots for 256 tokens in 0.0 ms
+strata trace: prompt chunk 0 of 134
+strata trace: read 134 tokens (batched) in 959.8 ms
+strata trace: refill start 147 -1
+strata trace: refilled 147 slots on 1 stage(s) in 157.7 ms
+strata trace: read 6 tokens (windows) in 204.1 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 140 1
+strata trace: CURSOR prompt=141 consumed=141 produced=1 pending=3313 window=1 selection_position=140
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0 window_ms=22.003
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=14 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 141 1
+strata trace: CURSOR prompt=141 consumed=142 produced=2 pending=28 window=1 selection_position=141
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0 window_ms=45.572
+strata trace: GRAMMAR tokens=2 accepting=0 terminal=0 work=19 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 142 1
+strata trace: CURSOR prompt=141 consumed=143 produced=3 pending=11855 window=1 selection_position=142
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0 window_ms=45.041
+strata trace: GRAMMAR tokens=3 accepting=0 terminal=0 work=30 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 143 1
+strata trace: CURSOR prompt=141 consumed=144 produced=4 pending=26 window=1 selection_position=143
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0 window_ms=50.763
+strata trace: GRAMMAR tokens=4 accepting=0 terminal=0 work=35 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 144 1
+strata trace: CURSOR prompt=141 consumed=145 produced=5 pending=1767 window=1 selection_position=144
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0 window_ms=30.047
+strata trace: GRAMMAR tokens=5 accepting=0 terminal=0 work=48 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 145 3
+strata trace: CURSOR prompt=141 consumed=148 produced=8 pending=198 window=3 selection_position=147
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=3 kept=3 blocked_draft=2 end_draft=0 fallback=0 window_ms=163.439
+strata trace: GRAMMAR tokens=8 accepting=1 terminal=0 work=72 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 148 1
+strata trace: CURSOR prompt=141 consumed=149 produced=9 pending=248046 window=1 selection_position=148
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0 window_ms=36.768
+strata trace: GRAMMAR tokens=9 accepting=1 terminal=1 work=74 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata serve: prompt 141 tokens = 0 reused + 141 read in 1389 ms (101.5 tok/s), 9 generated in 394 ms (22.9 tok/s), drafts accepted 2 of 2, 1 checkpoints
+strata serve: decode expert cache hit rate: 79.4% (3428 hits / 4320 lookups)
+strata serve: expert tiers: GPU 3428 hits this request; since the start RAM 0 blobs, files 0 blobs 38382.7 MB read (the GGUF in place)
+strata trace: request 299 0
+strata trace: prompt start 298 -1
+strata trace: lent 147 slots for 256 tokens in 0.0 ms
+strata trace: prompt chunk 0 of 292
+strata trace: prompt chunk 256 of 292
+strata trace: read 292 tokens (batched) in 3204.0 ms
+strata trace: refill start 147 -1
+strata trace: refilled 147 slots on 1 stage(s) in 61.1 ms
+strata trace: read 6 tokens (windows) in 152.2 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 298 1
+strata trace: CURSOR prompt=299 consumed=299 produced=1 pending=248058 window=1 selection_position=298
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0 window_ms=20.002
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=3 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 299 4
+strata trace: CURSOR prompt=299 consumed=303 produced=5 pending=17572 window=4 selection_position=302
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=97.154
+strata trace: GRAMMAR tokens=5 accepting=0 terminal=0 work=13 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 303 4
+strata trace: CURSOR prompt=299 consumed=305 produced=7 pending=38613 window=4 selection_position=304
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=2 blocked_draft=-1 end_draft=0 fallback=0 window_ms=113.225
+strata trace: GRAMMAR tokens=7 accepting=0 terminal=0 work=21 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 305 4
+strata trace: CURSOR prompt=299 consumed=309 produced=11 pending=15704 window=4 selection_position=308
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=143.727
+strata trace: GRAMMAR tokens=11 accepting=0 terminal=0 work=31 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 309 4
+strata trace: CURSOR prompt=299 consumed=310 produced=12 pending=46696 window=4 selection_position=309
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=1 blocked_draft=-1 end_draft=0 fallback=0 window_ms=146.534
+strata trace: GRAMMAR tokens=12 accepting=0 terminal=0 work=38 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 310 4
+strata trace: CURSOR prompt=299 consumed=313 produced=15 pending=54613 window=4 selection_position=312
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=3 blocked_draft=-1 end_draft=0 fallback=0 window_ms=134.846
+strata trace: GRAMMAR tokens=15 accepting=0 terminal=0 work=47 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 313 4
+strata trace: CURSOR prompt=299 consumed=317 produced=19 pending=24 window=4 selection_position=316
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=128.945
+strata trace: GRAMMAR tokens=19 accepting=0 terminal=0 work=57 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 317 4
+strata trace: CURSOR prompt=299 consumed=321 produced=23 pending=29 window=4 selection_position=320
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=150.585
+strata trace: GRAMMAR tokens=23 accepting=0 terminal=0 work=67 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 321 4
+strata trace: CURSOR prompt=299 consumed=325 produced=27 pending=29 window=4 selection_position=324
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=190.899
+strata trace: GRAMMAR tokens=27 accepting=0 terminal=0 work=77 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 325 3
+strata trace: CURSOR prompt=299 consumed=328 produced=30 pending=248046 window=3 selection_position=327
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=3 kept=3 blocked_draft=-1 end_draft=1 fallback=0 window_ms=88.866
+strata trace: GRAMMAR tokens=30 accepting=1 terminal=1 work=86 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata serve: prompt 299 tokens = 0 reused + 299 read in 3474 ms (86.1 tok/s), 30 generated in 1215 ms (24.7 tok/s), drafts accepted 20 of 26, 1 checkpoints
+strata serve: decode expert cache hit rate: 74.6% (12884 hits / 17280 lookups)
+strata serve: expert tiers: GPU 12884 hits this request; since the start RAM 0 blobs, files 0 blobs 54753.0 MB read (the GGUF in place)
+strata trace: request 141 0
+strata trace: prompt start 140 -1
+strata trace: lent 147 slots for 256 tokens in 0.0 ms
+strata trace: prompt chunk 0 of 134
+strata trace: read 134 tokens (batched) in 548.1 ms
+strata trace: refill start 147 -1
+strata trace: refilled 147 slots on 1 stage(s) in 54.9 ms
+strata trace: read 6 tokens (windows) in 158.7 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 140 1
+strata trace: CURSOR prompt=141 consumed=141 produced=1 pending=3313 window=1 selection_position=140
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0 window_ms=18.895
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=14 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 141 1
+strata trace: CURSOR prompt=141 consumed=142 produced=2 pending=28 window=1 selection_position=141
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0 window_ms=39.772
+strata trace: GRAMMAR tokens=2 accepting=0 terminal=0 work=19 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 142 1
+strata trace: CURSOR prompt=141 consumed=143 produced=3 pending=11855 window=1 selection_position=142
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0 window_ms=33.077
+strata trace: GRAMMAR tokens=3 accepting=0 terminal=0 work=30 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 143 1
+strata trace: CURSOR prompt=141 consumed=144 produced=4 pending=26 window=1 selection_position=143
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0 window_ms=35.306
+strata trace: GRAMMAR tokens=4 accepting=0 terminal=0 work=35 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 144 1
+strata trace: CURSOR prompt=141 consumed=145 produced=5 pending=1767 window=1 selection_position=144
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0 window_ms=24.799
+strata trace: GRAMMAR tokens=5 accepting=0 terminal=0 work=48 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 145 3
+strata trace: CURSOR prompt=141 consumed=148 produced=8 pending=198 window=3 selection_position=147
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=3 kept=3 blocked_draft=2 end_draft=0 fallback=0 window_ms=68.500
+strata trace: GRAMMAR tokens=8 accepting=1 terminal=0 work=72 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 148 1
+strata trace: CURSOR prompt=141 consumed=149 produced=9 pending=248046 window=1 selection_position=148
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0 window_ms=30.591
+strata trace: GRAMMAR tokens=9 accepting=1 terminal=1 work=74 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata serve: prompt 141 tokens = 0 reused + 141 read in 816 ms (172.8 tok/s), 9 generated in 251 ms (35.9 tok/s), drafts accepted 2 of 2, 1 checkpoints
+strata serve: decode expert cache hit rate: 79.4% (3428 hits / 4320 lookups)
+strata serve: expert tiers: GPU 3428 hits this request; since the start RAM 0 blobs, files 0 blobs 61083.5 MB read (the GGUF in place)
+strata trace: request 323 0
+strata trace: prompt start 322 -1
+strata trace: lent 147 slots for 256 tokens in 0.0 ms
+strata trace: prompt chunk 0 of 318
+strata trace: prompt chunk 256 of 318
+strata trace: read 318 tokens (batched) in 1631.9 ms
+strata trace: refill start 147 -1
+strata trace: refilled 147 slots on 1 stage(s) in 62.7 ms
+strata trace: read 4 tokens (windows) in 117.9 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 322 1
+strata trace: CURSOR prompt=323 consumed=323 produced=1 pending=760 window=1 selection_position=322
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0 window_ms=25.425
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=3 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 323 4
+strata trace: CURSOR prompt=323 consumed=327 produced=5 pending=310 window=4 selection_position=326
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=32.411
+strata trace: GRAMMAR tokens=5 accepting=0 terminal=0 work=13 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 327 4
+strata trace: CURSOR prompt=323 consumed=330 produced=8 pending=38613 window=4 selection_position=329
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=3 blocked_draft=-1 end_draft=0 fallback=0 window_ms=55.720
+strata trace: GRAMMAR tokens=8 accepting=0 terminal=0 work=22 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 330 4
+strata trace: CURSOR prompt=323 consumed=334 produced=12 pending=328 window=4 selection_position=333
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=54.346
+strata trace: GRAMMAR tokens=12 accepting=0 terminal=0 work=32 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 334 4
+strata trace: CURSOR prompt=323 consumed=335 produced=13 pending=54613 window=4 selection_position=334
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=1 blocked_draft=-1 end_draft=0 fallback=0 window_ms=118.971
+strata trace: GRAMMAR tokens=13 accepting=0 terminal=0 work=39 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 335 4
+strata trace: CURSOR prompt=323 consumed=339 produced=17 pending=24 window=4 selection_position=338
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=108.225
+strata trace: GRAMMAR tokens=17 accepting=0 terminal=0 work=49 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 339 4
+strata trace: CURSOR prompt=323 consumed=343 produced=21 pending=4087 window=4 selection_position=342
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=42.945
+strata trace: GRAMMAR tokens=21 accepting=0 terminal=0 work=59 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 343 4
+strata trace: CURSOR prompt=323 consumed=347 produced=25 pending=1067 window=4 selection_position=346
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=40.313
+strata trace: GRAMMAR tokens=25 accepting=0 terminal=0 work=69 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 347 4
+strata trace: CURSOR prompt=323 consumed=351 produced=29 pending=271 window=4 selection_position=350
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=77.957
+strata trace: GRAMMAR tokens=29 accepting=0 terminal=0 work=79 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 351 4
+strata trace: CURSOR prompt=323 consumed=355 produced=33 pending=1628 window=4 selection_position=354
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=101.362
+strata trace: GRAMMAR tokens=33 accepting=0 terminal=0 work=89 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 355 4
+strata trace: CURSOR prompt=323 consumed=358 produced=36 pending=38613 window=4 selection_position=357
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=3 blocked_draft=-1 end_draft=0 fallback=0 window_ms=110.665
+strata trace: GRAMMAR tokens=36 accepting=0 terminal=0 work=98 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 358 4
+strata trace: CURSOR prompt=323 consumed=362 produced=40 pending=15704 window=4 selection_position=361
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=125.341
+strata trace: GRAMMAR tokens=40 accepting=0 terminal=0 work=108 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 362 4
+strata trace: CURSOR prompt=323 consumed=363 produced=41 pending=46696 window=4 selection_position=362
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=1 blocked_draft=-1 end_draft=0 fallback=0 window_ms=158.253
+strata trace: GRAMMAR tokens=41 accepting=0 terminal=0 work=115 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 363 4
+strata trace: CURSOR prompt=323 consumed=366 produced=44 pending=54613 window=4 selection_position=365
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=3 blocked_draft=-1 end_draft=0 fallback=0 window_ms=164.795
+strata trace: GRAMMAR tokens=44 accepting=0 terminal=0 work=124 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 366 4
+strata trace: CURSOR prompt=323 consumed=370 produced=48 pending=24 window=4 selection_position=369
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=162.633
+strata trace: GRAMMAR tokens=48 accepting=0 terminal=0 work=134 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 370 4
+strata trace: CURSOR prompt=323 consumed=374 produced=52 pending=29 window=4 selection_position=373
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=169.587
+strata trace: GRAMMAR tokens=52 accepting=0 terminal=0 work=144 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 374 4
+strata trace: CURSOR prompt=323 consumed=378 produced=56 pending=29 window=4 selection_position=377
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=202.067
+strata trace: GRAMMAR tokens=56 accepting=0 terminal=0 work=154 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 378 3
+strata trace: CURSOR prompt=323 consumed=381 produced=59 pending=248046 window=3 selection_position=380
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=3 kept=3 blocked_draft=-1 end_draft=1 fallback=0 window_ms=82.356
+strata trace: GRAMMAR tokens=59 accepting=1 terminal=1 work=163 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata serve: prompt 323 tokens = 0 reused + 323 read in 1868 ms (172.9 tok/s), 59 generated in 1834 ms (32.2 tok/s), drafts accepted 41 of 50, 1 checkpoints
+strata serve: decode expert cache hit rate: 80.1% (26130 hits / 32640 lookups)
+strata serve: expert tiers: GPU 26130 hits this request; since the start RAM 0 blobs, files 0 blobs 81678.8 MB read (the GGUF in place)
+strata trace: request 196 0
+strata trace: prompt start 195 -1
+strata trace: lent 147 slots for 256 tokens in 0.0 ms
+strata trace: prompt chunk 0 of 191
+strata trace: read 191 tokens (batched) in 647.7 ms
+strata trace: refill start 147 -1
+strata trace: refilled 147 slots on 1 stage(s) in 51.7 ms
+strata trace: read 4 tokens (windows) in 104.9 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 195 1
+strata trace: CURSOR prompt=196 consumed=196 produced=1 pending=760 window=1 selection_position=195
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0 window_ms=25.356
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=3 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 196 4
+strata trace: CURSOR prompt=196 consumed=198 produced=3 pending=6587 window=4 selection_position=197
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=2 blocked_draft=-1 end_draft=0 fallback=0 window_ms=31.979
+strata trace: GRAMMAR tokens=3 accepting=0 terminal=0 work=11 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 198 4
+strata trace: CURSOR prompt=196 consumed=201 produced=6 pending=3300 window=4 selection_position=200
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=3 blocked_draft=-1 end_draft=0 fallback=0 window_ms=33.318
+strata trace: GRAMMAR tokens=6 accepting=0 terminal=0 work=20 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 201 4
+strata trace: CURSOR prompt=196 consumed=205 produced=10 pending=3018 window=4 selection_position=204
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=30.528
+strata trace: GRAMMAR tokens=10 accepting=0 terminal=0 work=30 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 205 4
+strata trace: CURSOR prompt=196 consumed=209 produced=14 pending=494 window=4 selection_position=208
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=39.769
+strata trace: GRAMMAR tokens=14 accepting=0 terminal=0 work=40 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 209 4
+strata trace: CURSOR prompt=196 consumed=212 produced=17 pending=38613 window=4 selection_position=211
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=3 blocked_draft=-1 end_draft=0 fallback=0 window_ms=40.684
+strata trace: GRAMMAR tokens=17 accepting=0 terminal=0 work=49 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 212 4
+strata trace: CURSOR prompt=196 consumed=214 produced=19 pending=1562 window=4 selection_position=213
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=2 blocked_draft=-1 end_draft=0 fallback=0 window_ms=34.543
+strata trace: GRAMMAR tokens=19 accepting=0 terminal=0 work=57 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 214 4
+strata trace: CURSOR prompt=196 consumed=218 produced=23 pending=557 window=4 selection_position=217
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=27.714
+strata trace: GRAMMAR tokens=23 accepting=0 terminal=0 work=67 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 218 4
+strata trace: CURSOR prompt=196 consumed=221 produced=26 pending=54613 window=4 selection_position=220
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=3 blocked_draft=-1 end_draft=0 fallback=0 window_ms=78.153
+strata trace: GRAMMAR tokens=26 accepting=0 terminal=0 work=76 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 221 4
+strata trace: CURSOR prompt=196 consumed=225 produced=30 pending=24 window=4 selection_position=224
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=110.357
+strata trace: GRAMMAR tokens=30 accepting=0 terminal=0 work=86 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 225 4
+strata trace: CURSOR prompt=196 consumed=229 produced=34 pending=795 window=4 selection_position=228
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=85.004
+strata trace: GRAMMAR tokens=34 accepting=0 terminal=0 work=96 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 229 4
+strata trace: CURSOR prompt=196 consumed=232 produced=37 pending=98500 window=4 selection_position=231
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=3 blocked_draft=-1 end_draft=0 fallback=0 window_ms=83.803
+strata trace: GRAMMAR tokens=37 accepting=0 terminal=0 work=105 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 232 3
+strata trace: CURSOR prompt=196 consumed=235 produced=40 pending=22419 window=3 selection_position=234
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=3 kept=3 blocked_draft=2 end_draft=0 fallback=0 window_ms=76.832
+strata trace: GRAMMAR tokens=40 accepting=0 terminal=0 work=113 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 235 4
+strata trace: CURSOR prompt=196 consumed=239 produced=44 pending=369 window=4 selection_position=238
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=70.741
+strata trace: GRAMMAR tokens=44 accepting=0 terminal=0 work=123 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 239 4
+strata trace: CURSOR prompt=196 consumed=243 produced=48 pending=30394 window=4 selection_position=242
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=54.838
+strata trace: GRAMMAR tokens=48 accepting=0 terminal=0 work=133 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 243 4
+strata trace: CURSOR prompt=196 consumed=247 produced=52 pending=1220 window=4 selection_position=246
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=38.856
+strata trace: GRAMMAR tokens=52 accepting=0 terminal=0 work=143 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 247 4
+strata trace: CURSOR prompt=196 consumed=248 produced=53 pending=1066 window=4 selection_position=247
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=1 blocked_draft=-1 end_draft=0 fallback=0 window_ms=30.039
+strata trace: GRAMMAR tokens=53 accepting=0 terminal=0 work=150 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 248 4
+strata trace: CURSOR prompt=196 consumed=251 produced=56 pending=1092 window=4 selection_position=250
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=3 blocked_draft=-1 end_draft=0 fallback=0 window_ms=31.724
+strata trace: GRAMMAR tokens=56 accepting=0 terminal=0 work=159 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 251 4
+strata trace: CURSOR prompt=196 consumed=255 produced=60 pending=198 window=4 selection_position=254
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=33.742
+strata trace: GRAMMAR tokens=60 accepting=0 terminal=0 work=169 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 255 3
+strata trace: CURSOR prompt=196 consumed=258 produced=63 pending=3313 window=3 selection_position=257
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=3 kept=3 blocked_draft=2 end_draft=0 fallback=0 window_ms=72.100
+strata trace: GRAMMAR tokens=63 accepting=0 terminal=0 work=188 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 258 1
+strata trace: CURSOR prompt=196 consumed=259 produced=64 pending=28 window=1 selection_position=258
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0 window_ms=40.687
+strata trace: GRAMMAR tokens=64 accepting=0 terminal=0 work=193 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 259 1
+strata trace: CURSOR prompt=196 consumed=260 produced=65 pending=11855 window=1 selection_position=259
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0 window_ms=40.809
+strata trace: GRAMMAR tokens=65 accepting=0 terminal=0 work=204 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 260 1
+strata trace: CURSOR prompt=196 consumed=261 produced=66 pending=26 window=1 selection_position=260
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0 window_ms=32.890
+strata trace: GRAMMAR tokens=66 accepting=0 terminal=0 work=209 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 261 1
+strata trace: CURSOR prompt=196 consumed=262 produced=67 pending=1767 window=1 selection_position=261
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0 window_ms=28.052
+strata trace: GRAMMAR tokens=67 accepting=0 terminal=0 work=222 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 262 3
+strata trace: CURSOR prompt=196 consumed=265 produced=70 pending=198 window=3 selection_position=264
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=3 kept=3 blocked_draft=2 end_draft=0 fallback=0 window_ms=80.892
+strata trace: GRAMMAR tokens=70 accepting=1 terminal=0 work=246 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 265 1
+strata trace: CURSOR prompt=196 consumed=266 produced=71 pending=248046 window=1 selection_position=265
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0 window_ms=28.357
+strata trace: GRAMMAR tokens=71 accepting=1 terminal=1 work=248 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata serve: prompt 196 tokens = 0 reused + 196 read in 862 ms (227.4 tok/s), 71 generated in 1282 ms (55.4 tok/s), drafts accepted 45 of 57, 1 checkpoints
+strata serve: decode expert cache hit rate: 88.9% (35437 hits / 39840 lookups)
+strata serve: expert tiers: GPU 35437 hits this request; since the start RAM 0 blobs, files 0 blobs 91823.7 MB read (the GGUF in place)
+strata trace: request 323 0
+strata trace: prompt start 322 -1
+strata trace: lent 147 slots for 256 tokens in 0.0 ms
+strata trace: prompt chunk 0 of 318
+strata trace: prompt chunk 256 of 318
+strata trace: read 318 tokens (batched) in 1395.9 ms
+strata trace: refill start 147 -1
+strata trace: refilled 147 slots on 1 stage(s) in 54.4 ms
+strata trace: read 4 tokens (windows) in 115.4 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 322 1
+strata trace: CURSOR prompt=323 consumed=323 produced=1 pending=760 window=1 selection_position=322
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0 window_ms=24.977
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=3 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 323 4
+strata trace: CURSOR prompt=323 consumed=327 produced=5 pending=310 window=4 selection_position=326
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=31.381
+strata trace: GRAMMAR tokens=5 accepting=0 terminal=0 work=13 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 327 4
+strata trace: CURSOR prompt=323 consumed=330 produced=8 pending=38613 window=4 selection_position=329
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=3 blocked_draft=-1 end_draft=0 fallback=0 window_ms=53.390
+strata trace: GRAMMAR tokens=8 accepting=0 terminal=0 work=22 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 330 4
+strata trace: CURSOR prompt=323 consumed=334 produced=12 pending=328 window=4 selection_position=333
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=54.326
+strata trace: GRAMMAR tokens=12 accepting=0 terminal=0 work=32 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 334 4
+strata trace: CURSOR prompt=323 consumed=335 produced=13 pending=54613 window=4 selection_position=334
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=1 blocked_draft=-1 end_draft=0 fallback=0 window_ms=103.886
+strata trace: GRAMMAR tokens=13 accepting=0 terminal=0 work=39 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 335 4
+strata trace: CURSOR prompt=323 consumed=339 produced=17 pending=24 window=4 selection_position=338
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=105.325
+strata trace: GRAMMAR tokens=17 accepting=0 terminal=0 work=49 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 339 4
+strata trace: CURSOR prompt=323 consumed=343 produced=21 pending=4087 window=4 selection_position=342
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=38.528
+strata trace: GRAMMAR tokens=21 accepting=0 terminal=0 work=59 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 343 4
+strata trace: CURSOR prompt=323 consumed=347 produced=25 pending=1067 window=4 selection_position=346
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=35.071
+strata trace: GRAMMAR tokens=25 accepting=0 terminal=0 work=69 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 347 4
+strata trace: CURSOR prompt=323 consumed=351 produced=29 pending=271 window=4 selection_position=350
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=66.969
+strata trace: GRAMMAR tokens=29 accepting=0 terminal=0 work=79 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 351 4
+strata trace: CURSOR prompt=323 consumed=355 produced=33 pending=1628 window=4 selection_position=354
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=100.666
+strata trace: GRAMMAR tokens=33 accepting=0 terminal=0 work=89 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 355 4
+strata trace: CURSOR prompt=323 consumed=358 produced=36 pending=38613 window=4 selection_position=357
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=3 blocked_draft=-1 end_draft=0 fallback=0 window_ms=110.515
+strata trace: GRAMMAR tokens=36 accepting=0 terminal=0 work=98 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 358 4
+strata trace: CURSOR prompt=323 consumed=362 produced=40 pending=15704 window=4 selection_position=361
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=125.051
+strata trace: GRAMMAR tokens=40 accepting=0 terminal=0 work=108 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 362 4
+strata trace: CURSOR prompt=323 consumed=363 produced=41 pending=46696 window=4 selection_position=362
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=1 blocked_draft=-1 end_draft=0 fallback=0 window_ms=151.239
+strata trace: GRAMMAR tokens=41 accepting=0 terminal=0 work=115 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 363 4
+strata trace: CURSOR prompt=323 consumed=366 produced=44 pending=54613 window=4 selection_position=365
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=3 blocked_draft=-1 end_draft=0 fallback=0 window_ms=158.080
+strata trace: GRAMMAR tokens=44 accepting=0 terminal=0 work=124 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 366 4
+strata trace: CURSOR prompt=323 consumed=370 produced=48 pending=24 window=4 selection_position=369
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=153.460
+strata trace: GRAMMAR tokens=48 accepting=0 terminal=0 work=134 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 370 4
+strata trace: CURSOR prompt=323 consumed=374 produced=52 pending=29 window=4 selection_position=373
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=165.271
+strata trace: GRAMMAR tokens=52 accepting=0 terminal=0 work=144 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 374 4
+strata trace: CURSOR prompt=323 consumed=378 produced=56 pending=29 window=4 selection_position=377
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=194.366
+strata trace: GRAMMAR tokens=56 accepting=0 terminal=0 work=154 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 378 3
+strata trace: CURSOR prompt=323 consumed=381 produced=59 pending=248046 window=3 selection_position=380
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=3 kept=3 blocked_draft=-1 end_draft=1 fallback=0 window_ms=79.041
+strata trace: GRAMMAR tokens=59 accepting=1 terminal=1 work=163 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata serve: prompt 323 tokens = 0 reused + 323 read in 1622 ms (199.2 tok/s), 59 generated in 1752 ms (33.7 tok/s), drafts accepted 41 of 50, 1 checkpoints
+strata serve: decode expert cache hit rate: 80.1% (26130 hits / 32640 lookups)
+strata serve: expert tiers: GPU 26130 hits this request; since the start RAM 0 blobs, files 0 blobs 112419.0 MB read (the GGUF in place)
+strata trace: request 196 0
+strata trace: prompt start 195 -1
+strata trace: lent 147 slots for 256 tokens in 0.0 ms
+strata trace: prompt chunk 0 of 191
+strata trace: read 191 tokens (batched) in 614.5 ms
+strata trace: refill start 147 -1
+strata trace: refilled 147 slots on 1 stage(s) in 51.4 ms
+strata trace: read 4 tokens (windows) in 105.1 ms
+strata trace: prompt done (slots refilled) -1 -1
+strata trace: window 195 1
+strata trace: CURSOR prompt=196 consumed=196 produced=1 pending=760 window=1 selection_position=195
+strata trace: SPEC source=target coupled=0 proposed=1 reachable=1 kept=1 blocked_draft=-1 end_draft=0 fallback=0 window_ms=21.308
+strata trace: GRAMMAR tokens=1 accepting=0 terminal=0 work=3 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 196 4
+strata trace: CURSOR prompt=196 consumed=198 produced=3 pending=6587 window=4 selection_position=197
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=2 blocked_draft=-1 end_draft=0 fallback=0 window_ms=31.299
+strata trace: GRAMMAR tokens=3 accepting=0 terminal=0 work=11 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 198 4
+strata trace: CURSOR prompt=196 consumed=201 produced=6 pending=3300 window=4 selection_position=200
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=3 blocked_draft=-1 end_draft=0 fallback=0 window_ms=27.629
+strata trace: GRAMMAR tokens=6 accepting=0 terminal=0 work=20 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 201 4
+strata trace: CURSOR prompt=196 consumed=205 produced=10 pending=3018 window=4 selection_position=204
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=29.319
+strata trace: GRAMMAR tokens=10 accepting=0 terminal=0 work=30 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 205 4
+strata trace: CURSOR prompt=196 consumed=209 produced=14 pending=494 window=4 selection_position=208
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=35.009
+strata trace: GRAMMAR tokens=14 accepting=0 terminal=0 work=40 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 209 4
+strata trace: CURSOR prompt=196 consumed=212 produced=17 pending=38613 window=4 selection_position=211
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=3 blocked_draft=-1 end_draft=0 fallback=0 window_ms=38.468
+strata trace: GRAMMAR tokens=17 accepting=0 terminal=0 work=49 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 212 4
+strata trace: CURSOR prompt=196 consumed=214 produced=19 pending=1562 window=4 selection_position=213
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=2 blocked_draft=-1 end_draft=0 fallback=0 window_ms=30.090
+strata trace: GRAMMAR tokens=19 accepting=0 terminal=0 work=57 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 214 4
+strata trace: CURSOR prompt=196 consumed=218 produced=23 pending=557 window=4 selection_position=217
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=23.451
+strata trace: GRAMMAR tokens=23 accepting=0 terminal=0 work=67 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 218 4
+strata trace: CURSOR prompt=196 consumed=221 produced=26 pending=54613 window=4 selection_position=220
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=3 blocked_draft=-1 end_draft=0 fallback=0 window_ms=68.839
+strata trace: GRAMMAR tokens=26 accepting=0 terminal=0 work=76 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 221 4
+strata trace: CURSOR prompt=196 consumed=225 produced=30 pending=24 window=4 selection_position=224
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=99.986
+strata trace: GRAMMAR tokens=30 accepting=0 terminal=0 work=86 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 225 4
+strata trace: CURSOR prompt=196 consumed=229 produced=34 pending=795 window=4 selection_position=228
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=69.395
+strata trace: GRAMMAR tokens=34 accepting=0 terminal=0 work=96 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 229 4
+strata trace: CURSOR prompt=196 consumed=232 produced=37 pending=98500 window=4 selection_position=231
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=3 blocked_draft=-1 end_draft=0 fallback=0 window_ms=74.066
+strata trace: GRAMMAR tokens=37 accepting=0 terminal=0 work=105 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 232 3
+strata trace: CURSOR prompt=196 consumed=235 produced=40 pending=22419 window=3 selection_position=234
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=3 kept=3 blocked_draft=2 end_draft=0 fallback=0 window_ms=69.222
+strata trace: GRAMMAR tokens=40 accepting=0 terminal=0 work=113 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 235 4
+strata trace: CURSOR prompt=196 consumed=239 produced=44 pending=369 window=4 selection_position=238
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=63.324
+strata trace: GRAMMAR tokens=44 accepting=0 terminal=0 work=123 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 239 4
+strata trace: CURSOR prompt=196 consumed=243 produced=48 pending=30394 window=4 selection_position=242
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=53.324
+strata trace: GRAMMAR tokens=48 accepting=0 terminal=0 work=133 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 243 4
+strata trace: CURSOR prompt=196 consumed=247 produced=52 pending=1220 window=4 selection_position=246
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=35.348
+strata trace: GRAMMAR tokens=52 accepting=0 terminal=0 work=143 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 247 4
+strata trace: CURSOR prompt=196 consumed=248 produced=53 pending=1066 window=4 selection_position=247
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=1 blocked_draft=-1 end_draft=0 fallback=0 window_ms=28.865
+strata trace: GRAMMAR tokens=53 accepting=0 terminal=0 work=150 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 248 4
+strata trace: CURSOR prompt=196 consumed=251 produced=56 pending=1092 window=4 selection_position=250
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=3 blocked_draft=-1 end_draft=0 fallback=0 window_ms=30.682
+strata trace: GRAMMAR tokens=56 accepting=0 terminal=0 work=159 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 251 4
+strata trace: CURSOR prompt=196 consumed=255 produced=60 pending=198 window=4 selection_position=254
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=4 kept=4 blocked_draft=-1 end_draft=0 fallback=0 window_ms=30.418
+strata trace: GRAMMAR tokens=60 accepting=0 terminal=0 work=169 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 255 3
+strata trace: CURSOR prompt=196 consumed=258 produced=63 pending=3313 window=3 selection_position=257
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=3 kept=3 blocked_draft=2 end_draft=0 fallback=0 window_ms=69.671
+strata trace: GRAMMAR tokens=63 accepting=0 terminal=0 work=188 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 258 1
+strata trace: CURSOR prompt=196 consumed=259 produced=64 pending=28 window=1 selection_position=258
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0 window_ms=38.792
+strata trace: GRAMMAR tokens=64 accepting=0 terminal=0 work=193 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 259 1
+strata trace: CURSOR prompt=196 consumed=260 produced=65 pending=11855 window=1 selection_position=259
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0 window_ms=35.391
+strata trace: GRAMMAR tokens=65 accepting=0 terminal=0 work=204 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 260 1
+strata trace: CURSOR prompt=196 consumed=261 produced=66 pending=26 window=1 selection_position=260
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0 window_ms=32.518
+strata trace: GRAMMAR tokens=66 accepting=0 terminal=0 work=209 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 261 1
+strata trace: CURSOR prompt=196 consumed=262 produced=67 pending=1767 window=1 selection_position=261
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0 window_ms=25.392
+strata trace: GRAMMAR tokens=67 accepting=0 terminal=0 work=222 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 262 3
+strata trace: CURSOR prompt=196 consumed=265 produced=70 pending=198 window=3 selection_position=264
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=3 kept=3 blocked_draft=2 end_draft=0 fallback=0 window_ms=60.285
+strata trace: GRAMMAR tokens=70 accepting=1 terminal=0 work=246 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata trace: window 265 1
+strata trace: CURSOR prompt=196 consumed=266 produced=71 pending=248046 window=1 selection_position=265
+strata trace: SPEC source=mtp coupled=0 proposed=4 reachable=1 kept=1 blocked_draft=0 end_draft=0 fallback=0 window_ms=28.568
+strata trace: GRAMMAR tokens=71 accepting=1 terminal=1 work=248 identity=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:3fff705808958e9c
+strata serve: prompt 196 tokens = 0 reused + 196 read in 826 ms (237.3 tok/s), 71 generated in 1151 ms (61.7 tok/s), drafts accepted 45 of 57, 1 checkpoints
+strata serve: decode expert cache hit rate: 88.9% (35437 hits / 39840 lookups)
+strata serve: expert tiers: GPU 35437 hits this request; since the start RAM 0 blobs, files 0 blobs 122564.0 MB read (the GGUF in place)

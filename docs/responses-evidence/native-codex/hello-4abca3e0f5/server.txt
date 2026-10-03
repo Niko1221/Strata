@@ -1,0 +1,43 @@
+[strata] sampling defaults from the config: temperature=0.0
+loading the model (the first start takes a minute or two) ...
+[strata] starting the engine: reading the model's weights ...
+[strata] mapping the experts from the model files (about 30 GB, --mmap-experts): they are not loaded into RAM - the OS file cache reads them as the GPU's expert cache fills and as requests need them.
+         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.
+         Please wait and don't close this window; the browser opens when it is ready.
+[strata] filling the GPU's expert cache (7815 experts, 14.88 GiB of VRAM) ...
+[strata] still starting (25 s) - please wait ...
+[strata] almost ready ...
+[strata] API request monitor on (/api-monitor): the last 100 requests' prompts and answers are kept in memory
+[strata] thinking budget: 256 tokens (reasoning_budget_tokens; a request can set its own)
+ready: http://127.0.0.1:46693/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 32768 tokens, API key required)
+       open http://127.0.0.1:46693/ in a browser to chat; close this window to stop the model
+[strata] reading the prompt: 256 of 9,343 tokens, 9 s so far
+[strata] reading the prompt: 512 of 9,343 tokens, 13 s so far
+[strata] reading the prompt: 768 of 9,343 tokens, 15 s so far
+[strata] reading the prompt: 1,024 of 9,343 tokens, 16 s so far
+[strata] reading the prompt: 1,280 of 9,343 tokens, 18 s so far
+[strata] reading the prompt: 1,792 of 9,343 tokens, 20 s so far
+[strata] reading the prompt: 2,048 of 9,343 tokens, 21 s so far
+[strata] reading the prompt: 2,560 of 9,343 tokens, 23 s so far
+[strata] reading the prompt: 3,072 of 9,343 tokens, 24 s so far
+[strata] reading the prompt: 3,328 of 9,343 tokens, 25 s so far
+[strata] reading the prompt: 3,584 of 9,343 tokens, 26 s so far
+[strata] reading the prompt: 4,096 of 9,343 tokens, 28 s so far
+[strata] reading the prompt: 4,352 of 9,343 tokens, 29 s so far
+[strata] reading the prompt: 4,864 of 9,343 tokens, 31 s so far
+[strata] reading the prompt: 5,376 of 9,343 tokens, 32 s so far
+[strata] reading the prompt: 5,888 of 9,343 tokens, 34 s so far
+[strata] reading the prompt: 6,400 of 9,343 tokens, 36 s so far
+[strata] reading the prompt: 6,912 of 9,343 tokens, 37 s so far
+[strata] reading the prompt: 7,424 of 9,343 tokens, 38 s so far
+[strata] reading the prompt: 7,936 of 9,343 tokens, 40 s so far
+[strata] reading the prompt: 8,448 of 9,343 tokens, 42 s so far
+[strata] reading the prompt: 8,869 of 9,343 tokens, 44 s so far
+[strata] reading the prompt: 9,338 of 9,343 tokens, 45 s so far
+[strata] reading the prompt: 9,342 of 9,343 tokens, 47 s so far
+[strata] done: 24 tokens in 47 s (56.4 tok/s) (stop, cancel=False), expert cache 90.0% hit
+[strata] answering: 15 of max 23393 tokens, 58.3 tok/s, 1 s
+[strata] done: 28 tokens in 1 s (55.7 tok/s) (stop, cancel=False), expert cache 89.3% hit
+
+[strata] stopping (Ctrl+C again to end the engine at once) ...
+[strata] stopped

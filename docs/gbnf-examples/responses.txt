@@ -1,0 +1,29 @@
+POST /v1/responses
+Content-Type: application/json
+Authorization: Bearer <your existing Strata API key>
+
+{
+  "model": "qwen3.8-flash-next",
+  "input": "Return a boolean.",
+  "store": false,
+  "reasoning": {"effort": "none"},
+  "max_output_tokens": 32,
+  "temperature": 0,
+  "stream": true,
+  "grammar": "root ::= \"true\" | \"false\""
+}
+
+Pieces:
+- grammar is a Strata extension: raw GBNF text, not a JSON Schema.
+- root names the language's start rule. The two alternatives are literal text.
+- input is ordinary model context; grammar constrains only generated answer bytes.
+- store:false requests the stateless Responses profile.
+- reasoning.effort:none explicitly selects the qualified answer-only boundary.
+- stream:true returns normal typed Responses events; false returns final JSON.
+- max_output_tokens bounds generation, including the selected end control.
+- The existing API key and CORS protections still apply.
+
+Either true or false can be emitted. This example is a request, not captured
+model evidence. A successful response needs an accepted native end control;
+exhausting the limit yields response.incomplete instead of repaired text.
+Use the engine build/configuration instructions in ../NATIVE_GBNF.md.

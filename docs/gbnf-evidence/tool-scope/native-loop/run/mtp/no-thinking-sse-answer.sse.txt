@@ -1,0 +1,52 @@
+event: response.created
+data: {"type": "response.created", "sequence_number": 0, "response": {"id": "resp_48dd8363f56e41ffa907e3b7f7a2abe7", "object": "response", "created_at": 1791039954, "status": "queued", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 768, "temperature": 0, "top_p": 1.0, "text": {"format": {"type": "text"}}, "tools": [{"type": "namespace", "name": "facts", "description": "Client-owned test helpers.", "tools": [{"type": "function", "name": "lookup", "description": "Look up the text. Call this before answering.", "strict": false, "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}]}], "tool_choice": "none", "parallel_tool_calls": true, "reasoning": {"effort": "none", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+event: response.in_progress
+data: {"type": "response.in_progress", "sequence_number": 1, "response": {"id": "resp_48dd8363f56e41ffa907e3b7f7a2abe7", "object": "response", "created_at": 1791039954, "status": "in_progress", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 768, "temperature": 0, "top_p": 1.0, "text": {"format": {"type": "text"}}, "tools": [{"type": "namespace", "name": "facts", "description": "Client-owned test helpers.", "tools": [{"type": "function", "name": "lookup", "description": "Look up the text. Call this before answering.", "strict": false, "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}]}], "tool_choice": "none", "parallel_tool_calls": true, "reasoning": {"effort": "none", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+: keep-alive
+
+: keep-alive
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"id": "msg_b5808e7d33084fad8cf7bd18b985f317", "type": "message", "status": "in_progress", "role": "assistant", "content": []}}
+
+event: response.content_part.added
+data: {"type": "response.content_part.added", "sequence_number": 3, "item_id": "msg_b5808e7d33084fad8cf7bd18b985f317", "output_index": 0, "content_index": 0, "part": {"type": "output_text", "text": "", "annotations": [], "logprobs": []}}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 4, "item_id": "msg_b5808e7d33084fad8cf7bd18b985f317", "output_index": 0, "content_index": 0, "delta": "color", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 5, "item_id": "msg_b5808e7d33084fad8cf7bd18b985f317", "output_index": 0, "content_index": 0, "delta": "=", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 6, "item_id": "msg_b5808e7d33084fad8cf7bd18b985f317", "output_index": 0, "content_index": 0, "delta": "blue", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 7, "item_id": "msg_b5808e7d33084fad8cf7bd18b985f317", "output_index": 0, "content_index": 0, "delta": ";", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 8, "item_id": "msg_b5808e7d33084fad8cf7bd18b985f317", "output_index": 0, "content_index": 0, "delta": "count", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 9, "item_id": "msg_b5808e7d33084fad8cf7bd18b985f317", "output_index": 0, "content_index": 0, "delta": "=", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 10, "item_id": "msg_b5808e7d33084fad8cf7bd18b985f317", "output_index": 0, "content_index": 0, "delta": "1", "logprobs": []}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 11, "item_id": "msg_b5808e7d33084fad8cf7bd18b985f317", "output_index": 0, "content_index": 0, "delta": "\n", "logprobs": []}
+
+event: response.output_text.done
+data: {"type": "response.output_text.done", "sequence_number": 12, "item_id": "msg_b5808e7d33084fad8cf7bd18b985f317", "output_index": 0, "content_index": 0, "text": "color=blue;count=1\n", "logprobs": []}
+
+event: response.content_part.done
+data: {"type": "response.content_part.done", "sequence_number": 13, "item_id": "msg_b5808e7d33084fad8cf7bd18b985f317", "output_index": 0, "content_index": 0, "part": {"type": "output_text", "text": "color=blue;count=1\n", "annotations": [], "logprobs": []}}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 14, "output_index": 0, "item": {"id": "msg_b5808e7d33084fad8cf7bd18b985f317", "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "color=blue;count=1\n", "annotations": [], "logprobs": []}]}}
+
+event: response.completed
+data: {"type": "response.completed", "sequence_number": 15, "response": {"id": "resp_48dd8363f56e41ffa907e3b7f7a2abe7", "object": "response", "created_at": 1791039954, "status": "completed", "completed_at": 1791039955, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [{"id": "msg_b5808e7d33084fad8cf7bd18b985f317", "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "color=blue;count=1\n", "annotations": [], "logprobs": []}]}], "usage": {"input_tokens": 141, "output_tokens": 9, "total_tokens": 150, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 141}, "output_tokens_details": {"reasoning_tokens": 0}}, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 768, "temperature": 0, "top_p": 1.0, "text": {"format": {"type": "text"}}, "tools": [{"type": "namespace", "name": "facts", "description": "Client-owned test helpers.", "tools": [{"type": "function", "name": "lookup", "description": "Look up the text. Call this before answering.", "strict": false, "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}]}], "tool_choice": "none", "parallel_tool_calls": true, "reasoning": {"effort": "none", "summary": null}, "truncation": "disabled", "metadata": {}}}
+

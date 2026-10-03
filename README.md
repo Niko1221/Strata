@@ -1,4 +1,42 @@
-<h1 align="center">Strata</h1>
+<h1 align="center">Strata: local Codex, Responses and native GBNF</h1>
+
+This is **CC-David-CC's `work/gbnf` contribution branch** of
+[Niko1221/Strata](https://github.com/Niko1221/Strata). It includes the Responses API
+work for [issue #451](https://github.com/Niko1221/Strata/issues/451), native grammar
+enforcement, and JSON output support. These additions are experimental and require
+the enablement steps below.
+
+**[Start here: run Codex CLI on your PC with your own local or LAN model](docs/CODEX_LOCAL.md).**
+The guide covers an Ubuntu NVIDIA model server, Windows PowerShell and Ubuntu
+clients, the required engine build, authentication, and a first read/edit/test task.
+Codex runs tools on your PC; Strata runs the model on the GPU host.
+
+| What this branch adds | Guide and examples |
+| --- | --- |
+| Stateless `POST /v1/responses`, final JSON and typed SSE, client-owned function calls, namespaced tools and reasoning replay | [Responses API and capability limits](docs/RESPONSES.md) · [request examples](docs/responses-examples/INDEX.txt) |
+| Native GBNF enforcement for generated answers, including reasoning and tool round trips | [GBNF build and API](docs/NATIVE_GBNF.md) · [inspection diagrams](docs/GBNF_INSPECTION.md) |
+| Responses `text.format` JSON object / JSON Schema output, with validation of the original schema | [JSON output](docs/JSON_OUTPUT.md) · [30 schema examples](docs/json-schema-examples.json) · [Codex tool schemas](docs/CODEX_TOOL_SCHEMAS.md) |
+| Codex CLI 0.160.0 with a model catalog, coding settings, and Windows / Ubuntu profiles | [Step-by-step Codex setup](docs/CODEX_LOCAL.md) |
+| Baseline prompts and versions with one, two or three explicit demonstrations | [Prompt examples and test commands](docs/PROMPT_EXAMPLES.md) · [PowerShell example](docs/codex/prompt-examples/windows-tools-exec_command.txt) · [Bash example](docs/codex/prompt-examples/ubuntu-tools-exec_command.txt) |
+
+**Tested:** real Windows and Ubuntu Codex clients each completed a read/edit/verify
+task with 12 passing unit tests and 45 independent checks against Qwen3.8-Flash-Next
+Coder IQ1_M on an Ubuntu RTX 4090 server. The [test report and receipts](docs/gbnf-evidence/prompt-examples/REPORT.md)
+include failures, retries and the exact tested settings. This is a qualified client
+profile; it does not establish compatibility with every Codex release or model.
+
+**How to enable it:** build with `-DSTRATA_ENABLE_GBNF=ON`, install the Responses and
+JSON requirements, select that binary in the model config, and start the server
+with `--experimental-responses` and the required keys. Both features are **off by
+default**. The [setup guide](docs/CODEX_LOCAL.md) gives the complete commands; the
+ordinary installer alone does not enable them. This branch uses `store:false` and
+client-supplied history. Hosted tools, Lark custom tools, image input through
+Responses, background jobs and server compaction are not implemented.
+
+The sections below describe the base Strata app and its upstream performance
+results. For this branch's Codex features, start with the guide above.
+
+## About Strata
 
 <p align="center"><b>Run a 125-billion-parameter AI model on your own gaming PC</b><br>
 NVIDIA or AMD graphics card (12 GB or more) · Windows or Linux · free and open source</p>
@@ -55,17 +93,25 @@ other cards: [speed of each model](docs/MODELS.md#how-fast-is-each-size), [commu
 | **Disk** | about 80 GB free, on an SSD if you can (the first start is much faster) |
 | **System** | Windows 10 / 11 or Linux, and a current graphics driver from NVIDIA or AMD |
 
-Everything else is installed for you. Two or three cards can share the model ([multi-GPU](docs/MULTI_GPU.md)).
+The standard app installer handles its dependencies. The Codex/GBNF path also needs
+the compiler setup in [the Codex guide](docs/CODEX_LOCAL.md).
+Two or three cards can share the model ([multi-GPU](docs/MULTI_GPU.md)).
 The full list: [docs/INSTALL.md](docs/INSTALL.md#what-you-need).
 
-## Install
+## Install the base Strata app
+
+For Codex, follow [the complete local Codex guide](docs/CODEX_LOCAL.md), which includes
+model installation and the additional native build. The base app steps here do not
+enable Responses or GBNF.
 
 ### Let your AI set it up
 
 Use an AI coding assistant (Claude Code, Cursor, Codex, GitHub Copilot, ...)? Paste this into it:
 
 ```text
-Set up Strata on this PC for me: https://github.com/Niko1221/Strata - follow docs/AI_SETUP.md in that repository.
+Set up the work/gbnf branch of https://github.com/CC-David-CC/Strata-a5500 for me.
+For Codex with my local/LAN model, follow docs/CODEX_LOCAL.md in that branch.
+For the base Strata app, follow docs/AI_SETUP.md but keep this fork and branch.
 ```
 
 It checks your graphics card, RAM and disk, picks the model that fits, installs it, starts it and tells you how to
@@ -74,7 +120,13 @@ connect your apps. AI tools can also install, start and stop Strata themselves t
 
 ### Or do it yourself
 
-[Download Strata](https://github.com/Niko1221/Strata/archive/refs/heads/main.zip) and unzip it (or `git clone` it).
+[Download this branch](https://github.com/CC-David-CC/Strata-a5500/archive/refs/heads/work/gbnf.zip)
+and unzip it, or clone it:
+
+```sh
+git clone --branch work/gbnf --single-branch https://github.com/CC-David-CC/Strata-a5500.git Strata-codex
+```
+
 **Windows:** double-click **`START-HERE.bat`**. **Linux:** run **`./setup.sh`** in the Strata folder.
 
 The same steps for NVIDIA and AMD: the installer finds your card and sets up the right engine for it. It asks which
@@ -136,6 +188,9 @@ Sizes, downloads and what fits where: [docs/MODELS.md](docs/MODELS.md). You can 
 
 More: [where your chats are stored](docs/INSTALL.md#where-things-are-stored), [the API](docs/DETAILS.md#using-it).
 
+For this branch's Responses endpoint and Codex client, use the authenticated URL,
+model name and profile in [the local Codex guide](docs/CODEX_LOCAL.md).
+
 ## Something went wrong?
 
 - **My PC froze the first time Strata started.** Normal while it loads the model: wait, don't close the window.
@@ -146,8 +201,10 @@ More: [where your chats are stored](docs/INSTALL.md#where-things-are-stored), [t
   close other programs (browsers use a lot), or pick a smaller size (Q2_0 or IQ2_XS).
 - **It says port 8080 is already in use.** Strata is already running - look for its window.
 
-More problems and their fixes: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). Still stuck? Open an
-[issue](https://github.com/Niko1221/Strata/issues) and attach `strata-<model>.log` from the Strata folder.
+More problems and their fixes: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+Base Strata issues are tracked [upstream](https://github.com/Niko1221/Strata/issues).
+For feedback on this contribution, include the `work/gbnf` branch, commit and relevant
+error. Remove API keys and private prompts from any logs you share.
 
 ## How does it work?
 

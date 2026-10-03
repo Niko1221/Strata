@@ -1,0 +1,117 @@
+event: response.created
+data: {"type": "response.created", "sequence_number": 0, "response": {"id": "resp_77b2b8bdcfa44b4fb32b678d7a263a0b", "object": "response", "created_at": 1791062231, "status": "queued", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "namespace", "name": "multi_agent_v1", "description": "Tools for spawning and managing sub-agents.", "tools": [{"type": "function", "name": "wait_agent", "description": "Wait for agents to reach a final status. Completed statuses may include the agent's final message. Returns empty status when timed out. Once the agent reaches a final status, a notification message will be received containing the same completed status.", "strict": false, "parameters": {"type": "object", "properties": {"targets": {"type": "array", "description": "Agent ids to wait on. Pass multiple ids to wait for whichever finishes first.", "items": {"type": "string"}}, "timeout_ms": {"type": "number", "description": "Timeout in milliseconds. Defaults to 30000, min 10000, max 3600000. Prefer longer waits (minutes) to avoid busy polling."}}, "required": ["targets"], "additionalProperties": false}}]}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+event: response.in_progress
+data: {"type": "response.in_progress", "sequence_number": 1, "response": {"id": "resp_77b2b8bdcfa44b4fb32b678d7a263a0b", "object": "response", "created_at": 1791062231, "status": "in_progress", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "namespace", "name": "multi_agent_v1", "description": "Tools for spawning and managing sub-agents.", "tools": [{"type": "function", "name": "wait_agent", "description": "Wait for agents to reach a final status. Completed statuses may include the agent's final message. Returns empty status when timed out. Once the agent reaches a final status, a notification message will be received containing the same completed status.", "strict": false, "parameters": {"type": "object", "properties": {"targets": {"type": "array", "description": "Agent ids to wait on. Pass multiple ids to wait for whichever finishes first.", "items": {"type": "string"}}, "timeout_ms": {"type": "number", "description": "Timeout in milliseconds. Defaults to 30000, min 10000, max 3600000. Prefer longer waits (minutes) to avoid busy polling."}}, "required": ["targets"], "additionalProperties": false}}]}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"id": "rs_463e3206521e43749f5b93cc6842dc72", "type": "reasoning", "status": "in_progress", "summary": [], "content": [{"type": "reasoning_text", "text": ""}]}}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 3, "item_id": "rs_463e3206521e43749f5b93cc6842dc72", "output_index": 0, "content_index": 0, "delta": "The"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 4, "item_id": "rs_463e3206521e43749f5b93cc6842dc72", "output_index": 0, "content_index": 0, "delta": " user"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 5, "item_id": "rs_463e3206521e43749f5b93cc6842dc72", "output_index": 0, "content_index": 0, "delta": " is"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 6, "item_id": "rs_463e3206521e43749f5b93cc6842dc72", "output_index": 0, "content_index": 0, "delta": " asking"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 7, "item_id": "rs_463e3206521e43749f5b93cc6842dc72", "output_index": 0, "content_index": 0, "delta": " to"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 8, "item_id": "rs_463e3206521e43749f5b93cc6842dc72", "output_index": 0, "content_index": 0, "delta": " call"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 9, "item_id": "rs_463e3206521e43749f5b93cc6842dc72", "output_index": 0, "content_index": 0, "delta": " the"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 10, "item_id": "rs_463e3206521e43749f5b93cc6842dc72", "output_index": 0, "content_index": 0, "delta": " tool"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 11, "item_id": "rs_463e3206521e43749f5b93cc6842dc72", "output_index": 0, "content_index": 0, "delta": " exactly"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 12, "item_id": "rs_463e3206521e43749f5b93cc6842dc72", "output_index": 0, "content_index": 0, "delta": " once"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 13, "item_id": "rs_463e3206521e43749f5b93cc6842dc72", "output_index": 0, "content_index": 0, "delta": " with"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 14, "item_id": "rs_463e3206521e43749f5b93cc6842dc72", "output_index": 0, "content_index": 0, "delta": " the"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 15, "item_id": "rs_463e3206521e43749f5b93cc6842dc72", "output_index": 0, "content_index": 0, "delta": " specified"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 16, "item_id": "rs_463e3206521e43749f5b93cc6842dc72", "output_index": 0, "content_index": 0, "delta": " arguments"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 17, "item_id": "rs_463e3206521e43749f5b93cc6842dc72", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 18, "item_id": "rs_463e3206521e43749f5b93cc6842dc72", "output_index": 0, "content_index": 0, "delta": " Just"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 19, "item_id": "rs_463e3206521e43749f5b93cc6842dc72", "output_index": 0, "content_index": 0, "delta": " execute"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 20, "item_id": "rs_463e3206521e43749f5b93cc6842dc72", "output_index": 0, "content_index": 0, "delta": " it"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 21, "item_id": "rs_463e3206521e43749f5b93cc6842dc72", "output_index": 0, "content_index": 0, "delta": " as"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 22, "item_id": "rs_463e3206521e43749f5b93cc6842dc72", "output_index": 0, "content_index": 0, "delta": "-is"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 23, "item_id": "rs_463e3206521e43749f5b93cc6842dc72", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 24, "item_id": "rs_463e3206521e43749f5b93cc6842dc72", "output_index": 0, "content_index": 0, "delta": "\n"}
+
+event: response.reasoning_text.done
+data: {"type": "response.reasoning_text.done", "sequence_number": 25, "item_id": "rs_463e3206521e43749f5b93cc6842dc72", "output_index": 0, "content_index": 0, "text": "The user is asking to call the tool exactly once with the specified arguments. Just execute it as-is.\n"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 26, "output_index": 0, "item": {"id": "rs_463e3206521e43749f5b93cc6842dc72", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user is asking to call the tool exactly once with the specified arguments. Just execute it as-is.\n"}], "encrypted_content": "strata-r1.gAAAAABqwXDaDDOiLDpsAlWzk6HICev50pqk8NOpy4M0tiPRGXRUjaP8nPp1JKrbR-6vkZqc3yi6d3njVVdL8l55xm84Og_QAsgljb86vRwL2UlhIOw192_xhYk1AOlryOlOtoIFTCYBxkgIWfuFnDEMbhENNfT49KIwohpiGX9NrNUZTiSdS7p5SKTAhifGSPyOexKCaOMlaTjLQzGuRxf0IbZGl5akEs8XleYz5FkEHzXWa6fxCOXVi0y_lb2qx2mM0lBwbD34FA_hcDKTPEs4tk7hgb4QSdN4dJ76aB5iYCHQYefIEoWws5qbp0YDcZR6UIeGlVb68KU9PRe2TTD4-LjAzCwp1O0kY_ujzM0av_eyETTJgVPAVgFEhAQL7_lR-IrRhJ6LeFQugifmg9qKKqix2uRsyW-6BeCRThpm7PytR9A-2tc="}}
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 27, "output_index": 1, "item": {"id": "fc_a78f87489d604a9383b8094c92436d6e", "type": "function_call", "status": "in_progress", "call_id": "call_5bd5e80dc6ac4fe2ae2df71d", "name": "wait_agent", "arguments": "", "namespace": "multi_agent_v1"}}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 28, "item_id": "fc_a78f87489d604a9383b8094c92436d6e", "output_index": 1, "delta": "{"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 29, "item_id": "fc_a78f87489d604a9383b8094c92436d6e", "output_index": 1, "delta": "\"targets\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 30, "item_id": "fc_a78f87489d604a9383b8094c92436d6e", "output_index": 1, "delta": "[\"fixture-agent\"]"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 31, "item_id": "fc_a78f87489d604a9383b8094c92436d6e", "output_index": 1, "delta": ",\"timeout_ms\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 32, "item_id": "fc_a78f87489d604a9383b8094c92436d6e", "output_index": 1, "delta": "10000"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 33, "item_id": "fc_a78f87489d604a9383b8094c92436d6e", "output_index": 1, "delta": "}"}
+
+event: response.function_call_arguments.done
+data: {"type": "response.function_call_arguments.done", "sequence_number": 34, "item_id": "fc_a78f87489d604a9383b8094c92436d6e", "output_index": 1, "arguments": "{\"targets\":[\"fixture-agent\"],\"timeout_ms\":10000}"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 35, "output_index": 1, "item": {"id": "fc_a78f87489d604a9383b8094c92436d6e", "type": "function_call", "status": "completed", "call_id": "call_5bd5e80dc6ac4fe2ae2df71d", "name": "wait_agent", "arguments": "{\"targets\":[\"fixture-agent\"],\"timeout_ms\":10000}", "namespace": "multi_agent_v1"}}
+
+event: response.completed
+data: {"type": "response.completed", "sequence_number": 36, "response": {"id": "resp_77b2b8bdcfa44b4fb32b678d7a263a0b", "object": "response", "created_at": 1791062231, "status": "completed", "completed_at": 1791062236, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [{"id": "rs_463e3206521e43749f5b93cc6842dc72", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user is asking to call the tool exactly once with the specified arguments. Just execute it as-is.\n"}], "encrypted_content": "strata-r1.gAAAAABqwXDaDDOiLDpsAlWzk6HICev50pqk8NOpy4M0tiPRGXRUjaP8nPp1JKrbR-6vkZqc3yi6d3njVVdL8l55xm84Og_QAsgljb86vRwL2UlhIOw192_xhYk1AOlryOlOtoIFTCYBxkgIWfuFnDEMbhENNfT49KIwohpiGX9NrNUZTiSdS7p5SKTAhifGSPyOexKCaOMlaTjLQzGuRxf0IbZGl5akEs8XleYz5FkEHzXWa6fxCOXVi0y_lb2qx2mM0lBwbD34FA_hcDKTPEs4tk7hgb4QSdN4dJ76aB5iYCHQYefIEoWws5qbp0YDcZR6UIeGlVb68KU9PRe2TTD4-LjAzCwp1O0kY_ujzM0av_eyETTJgVPAVgFEhAQL7_lR-IrRhJ6LeFQugifmg9qKKqix2uRsyW-6BeCRThpm7PytR9A-2tc="}, {"id": "fc_a78f87489d604a9383b8094c92436d6e", "type": "function_call", "status": "completed", "call_id": "call_5bd5e80dc6ac4fe2ae2df71d", "name": "wait_agent", "arguments": "{\"targets\":[\"fixture-agent\"],\"timeout_ms\":10000}", "namespace": "multi_agent_v1"}], "usage": {"input_tokens": 454, "output_tokens": 75, "total_tokens": 529, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 454}, "output_tokens_details": {"reasoning_tokens": 23}}, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "namespace", "name": "multi_agent_v1", "description": "Tools for spawning and managing sub-agents.", "tools": [{"type": "function", "name": "wait_agent", "description": "Wait for agents to reach a final status. Completed statuses may include the agent's final message. Returns empty status when timed out. Once the agent reaches a final status, a notification message will be received containing the same completed status.", "strict": false, "parameters": {"type": "object", "properties": {"targets": {"type": "array", "description": "Agent ids to wait on. Pass multiple ids to wait for whichever finishes first.", "items": {"type": "string"}}, "timeout_ms": {"type": "number", "description": "Timeout in milliseconds. Defaults to 30000, min 10000, max 3600000. Prefer longer waits (minutes) to avoid busy polling."}}, "required": ["targets"], "additionalProperties": false}}]}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+

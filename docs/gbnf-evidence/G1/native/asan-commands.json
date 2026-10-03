@@ -1,0 +1,34 @@
+[
+  [
+    "cmake",
+    "-S",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source",
+    "-B",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-asan",
+    "-G",
+    "Ninja",
+    "-DSTRATA_ENABLE_CUDA=OFF",
+    "-DSTRATA_NATIVE_EXPERTS=OFF",
+    "-DSTRATA_ENABLE_GBNF=ON",
+    "-DSTRATA_XGRAMMAR_DIR=/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-g1",
+    "-DSTRATA_BUILD_TESTS=OFF",
+    "-DCMAKE_BUILD_TYPE=Debug",
+    "-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer",
+    "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined"
+  ],
+  [
+    "cmake",
+    "--build",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-asan",
+    "--target",
+    "grammar_native_test",
+    "-j",
+    "3"
+  ],
+  [
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-asan/grammar_native_test",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/data/grammars/cases.json",
+    "/boot/Strata-data/packs/coder-iq1_m/tokenizer",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/evidence/g1/asan-vocab.bin"
+  ]
+]

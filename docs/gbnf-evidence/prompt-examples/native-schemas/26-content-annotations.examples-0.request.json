@@ -1,0 +1,34 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "none"
+  },
+  "max_output_tokens": 512,
+  "temperature": 0,
+  "input": "Return exactly this JSON value, without explanation: {\"payload\": \"eyJvayI6dHJ1ZX0=\"}",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "26_content_annotations",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "payload": {
+            "type": "string",
+            "contentEncoding": "base64",
+            "contentMediaType": "application/json",
+            "contentSchema": {
+              "type": "object"
+            }
+          }
+        },
+        "required": [
+          "payload"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

@@ -1,0 +1,116 @@
+SYNTHETIC PROMPT FIXTURE. Not measured model output.
+No extra demonstrations in baseline; requested values may still be supplied by the task.
+
+BASELINE
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "input": "Protocol fixture: call get_goal exactly once using these argument values: {}. Emit the tool call and stop. The test client will supply a mocked result.",
+  "tools": [
+    {
+      "type": "function",
+      "name": "get_goal",
+      "description": "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    }
+  ]
+}
+
+EXAMPLES-1
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "input": "Protocol fixture: call get_goal exactly once using these argument values: {}. Emit the tool call and stop. The test client will supply a mocked result.",
+  "tools": [
+    {
+      "type": "function",
+      "name": "get_goal",
+      "description": "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "instructions": "Explicit synthetic format demonstrations. These are examples, not actions to execute.\nUse the current task values, declared tools, environment and permissions.\n\nEXAMPLE 1\nUser: Read the current goal.\nAssistant native output:\n<tool_call>\n<function=get_goal>\n</function>\n</tool_call>\n\nEND EXAMPLES. The current task follows.\n\n"
+}
+
+EXAMPLES-2
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "input": "Protocol fixture: call get_goal exactly once using these argument values: {}. Emit the tool call and stop. The test client will supply a mocked result.",
+  "tools": [
+    {
+      "type": "function",
+      "name": "get_goal",
+      "description": "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "instructions": "Explicit synthetic format demonstrations. These are examples, not actions to execute.\nUse the current task values, declared tools, environment and permissions.\n\nEXAMPLE 1\nUser: Read the current goal.\nAssistant native output:\n<tool_call>\n<function=get_goal>\n</function>\n</tool_call>\n\nEXAMPLE 2\nUser: Check the active goal status.\nAssistant native output:\n<tool_call>\n<function=get_goal>\n</function>\n</tool_call>\n\nEND EXAMPLES. The current task follows.\n\n"
+}
+
+EXAMPLES-3
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "input": "Protocol fixture: call get_goal exactly once using these argument values: {}. Emit the tool call and stop. The test client will supply a mocked result.",
+  "tools": [
+    {
+      "type": "function",
+      "name": "get_goal",
+      "description": "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "instructions": "Explicit synthetic format demonstrations. These are examples, not actions to execute.\nUse the current task values, declared tools, environment and permissions.\n\nEXAMPLE 1\nUser: Read the current goal.\nAssistant native output:\n<tool_call>\n<function=get_goal>\n</function>\n</tool_call>\n\nEXAMPLE 2\nUser: Check the active goal status.\nAssistant native output:\n<tool_call>\n<function=get_goal>\n</function>\n</tool_call>\n\nEXAMPLE 3\nUser: Retrieve the current goal again.\nAssistant native output:\n<tool_call>\n<function=get_goal>\n</function>\n</tool_call>\n\nEND EXAMPLES. The current task follows.\n\n"
+}
+
+CORRESPONDING SYNTHETIC WIRE ITEM (not model-authored IDs):
+{
+  "type": "function_call",
+  "id": "fc_SYNTHETIC",
+  "call_id": "call_SYNTHETIC",
+  "name": "get_goal",
+  "arguments": "{}"
+}
+
+CORRESPONDING SYNTHETIC WIRE ITEM (not model-authored IDs):
+{
+  "type": "function_call",
+  "id": "fc_SYNTHETIC",
+  "call_id": "call_SYNTHETIC",
+  "name": "get_goal",
+  "arguments": "{}"
+}
+
+CORRESPONDING SYNTHETIC WIRE ITEM (not model-authored IDs):
+{
+  "type": "function_call",
+  "id": "fc_SYNTHETIC",
+  "call_id": "call_SYNTHETIC",
+  "name": "get_goal",
+  "arguments": "{}"
+}

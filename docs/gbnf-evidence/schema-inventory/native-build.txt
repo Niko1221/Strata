@@ -1,0 +1,603 @@
+COMMAND ["python3", "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/tools/prepare_xgrammar.py", "--out", "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-json1"]
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-json1
+COMMAND ["cmake", "-S", "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003", "-B", "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-json-schema-gpu", "-DCMAKE_BUILD_TYPE=Release", "-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_ENABLE_GBNF=ON", "-DSTRATA_BUILD_CONVERSATION_TESTS=ON", "-DCMAKE_CUDA_ARCHITECTURES=89", "-DCMAKE_CUDA_COMPILER=/usr/local/cuda-13.3/bin/nvcc", "-DSTRATA_GGML_DIR=/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/llama.cpp-3cf03257f219afbe7334045ff7c6a06ac68c627d", "-DSTRATA_XGRAMMAR_DIR=/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-json1"]
+-- The CXX compiler identification is GNU 15.2.0
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- The CUDA compiler identification is NVIDIA 13.3.73 with host compiler GNU 15.2.0
+-- Detecting CUDA compiler ABI info
+-- Detecting CUDA compiler ABI info - done
+-- Check for working CUDA compiler: /usr/local/cuda-13.3/bin/nvcc - skipped
+-- Detecting CUDA compile features
+-- Detecting CUDA compile features - done
+-- Found CUDAToolkit: /usr/local/cuda-13.3/targets/x86_64-linux/include;/usr/local/cuda-13.3/targets/x86_64-linux/include/cccl (found version "13.3.73")
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE
+-- Strata: CUDA enabled, arch 89
+-- strata: pack/full/experts.bin absent - the expert arena load test is NOT registered
+-- STRATA tests: no python3 with numpy was found (the configured interpreter and .venv were probed) - the iq_parity fixtures and its test are not registered; the fixtures need python3 with numpy and the repository's vendored gguf-py
+-- The C compiler identification is GNU 15.2.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- The ASM compiler identification is GNU
+-- Found assembler: /usr/bin/cc
+-- Warning: ccache not found - consider installing it for faster compilation or disable this warning with GGML_CCACHE=OFF
+-- CMAKE_SYSTEM_PROCESSOR: x86_64
+-- GGML_SYSTEM_ARCH: x86
+-- Including CPU backend
+-- x86 detected
+-- Adding CPU backend variant ggml-cpu: -march=native 
+-- ggml version: 0.24.0
+-- ggml commit:  unknown
+-- Configuring done (3.1s)
+-- Generating done (0.1s)
+-- Build files have been written to: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-json-schema-gpu
+COMMAND ["cmake", "--build", "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-json-schema-gpu", "-j", "4"]
+[  0%] Building CXX object CMakeFiles/conversation_cache_test.dir/src/core/conversation_cache_test.cpp.o
+[  1%] Building CXX object CMakeFiles/conversation_memory_test.dir/src/core/conversation_memory_test.cpp.o
+[  2%] Building CXX object CMakeFiles/strata-gguf.dir/src/artifact/gguf_reader.cpp.o
+[  2%] Building CXX object CMakeFiles/strata-dequant.dir/src/artifact/dequant.cpp.o
+[  2%] Building CXX object CMakeFiles/conversation_memory_test.dir/src/core/conversation_memory.cpp.o
+[  3%] Linking CXX executable conversation_memory_test
+[  3%] Built target conversation_memory_test
+[  4%] Building CXX object CMakeFiles/strata-plan.dir/src/plan/plan_main.cpp.o
+[  4%] Linking CXX executable strata-gguf
+[  4%] Linking CXX executable strata-plan
+[  4%] Built target strata-gguf
+[  4%] Built target strata-plan
+[  5%] Building CUDA object CMakeFiles/strata_core.dir/src/core/device.cu.o
+[  6%] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml.c.o
+[  7%] Linking CXX executable strata-dequant
+[  7%] Built target strata-dequant
+[  7%] Building CXX object CMakeFiles/strata_spec.dir/src/spec/suffix_drafter.cpp.o
+[  7%] Building CXX object CMakeFiles/strata_spec.dir/src/spec/controller.cpp.o
+[  8%] Building CXX object CMakeFiles/strata_spec.dir/src/spec/draft_policy.cpp.o
+[  8%] Linking CXX executable conversation_cache_test
+[  8%] Built target conversation_cache_test
+[  8%] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-json1/cpp/compiled_grammar.cc.o
+[  8%] Linking CXX static library libstrata_spec.a
+[  8%] Built target strata_spec
+[  8%] Building CUDA object CMakeFiles/gdn_rec_parity.dir/src/prefill/gdn_rec_parity.cu.o
+[  8%] Building CUDA object CMakeFiles/strata_core.dir/src/core/pinned.cu.o
+[  8%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml.cpp.o
+[  8%] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml-alloc.c.o
+[  9%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-backend.cpp.o
+[  9%] Linking CUDA executable gdn_rec_parity
+[  9%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-backend-meta.cpp.o
+[  9%] Built target gdn_rec_parity
+[  9%] Building CXX object CMakeFiles/conv_cache_test.dir/src/program/conv_cache_test.cpp.o
+[ 10%] Linking CXX executable conv_cache_test
+[ 10%] Built target conv_cache_test
+[ 10%] Building CXX object CMakeFiles/coupled_draft_test.dir/src/core/coupled_draft_test.cpp.o
+[ 10%] Linking CXX executable coupled_draft_test
+[ 10%] Built target coupled_draft_test
+[ 10%] Building CXX object CMakeFiles/bf16_bits_test.dir/src/kernels/bf16_bits_test.cpp.o
+[ 10%] Building CXX object CMakeFiles/strata_core.dir/src/platform/memory.cpp.o
+[ 10%] Linking CXX executable bf16_bits_test
+[ 10%] Built target bf16_bits_test
+[ 10%] Building CXX object CMakeFiles/serve_input_test.dir/src/program/serve_input_test.cpp.o
+[ 11%] Building CXX object CMakeFiles/strata_core.dir/src/core/graph.cpp.o
+[ 12%] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-json1/cpp/config.cc.o
+[ 13%] Linking CXX executable serve_input_test
+[ 13%] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-json1/cpp/converter_ext/cohere.cc.o
+[ 13%] Built target serve_input_test
+[ 14%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-opt.cpp.o
+[ 14%] Building CXX object CMakeFiles/strata_core.dir/src/core/weights.cpp.o
+[ 14%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-threading.cpp.o
+[ 14%] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml-quants.c.o
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/core/weights.cpp: In member function ‘bool strata::core::WeightTable::load(const std::string&, void*, uint64_t, std::string&, const std::set<std::__cxx11::basic_string<char> >*)’:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/core/weights.cpp:167:51: warning: format ‘%llu’ expects argument of type ‘long long unsigned int*’, but argument 6 has type ‘uint64_t*’ {aka ‘long unsigned int*’} [-Wformat=]
+  167 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                ~~~^
+      |                                                   |
+      |                                                   long long unsigned int*
+      |                                                %lu
+  168 |                                   name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+      |                                                         ~~~~~~~~~~
+      |                                                         |
+      |                                                         uint64_t* {aka long unsigned int*}
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/core/weights.cpp:167:56: warning: format ‘%llu’ expects argument of type ‘long long unsigned int*’, but argument 7 has type ‘uint64_t*’ {aka ‘long unsigned int*’} [-Wformat=]
+  167 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                     ~~~^
+      |                                                        |
+      |                                                        long long unsigned int*
+      |                                                     %lu
+  168 |                                   name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+      |                                                                     ~~~~~~~~~~~~
+      |                                                                     |
+      |                                                                     uint64_t* {aka long unsigned int*}
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/core/weights.cpp:167:61: warning: format ‘%llu’ expects argument of type ‘long long unsigned int*’, but argument 8 has type ‘uint64_t*’ {aka ‘long unsigned int*’} [-Wformat=]
+  167 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                          ~~~^
+      |                                                             |
+      |                                                             long long unsigned int*
+      |                                                          %lu
+  168 |                                   name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+      |                                                                                   ~~~~~~~~~~
+      |                                                                                   |
+      |                                                                                   uint64_t* {aka long unsigned int*}
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/core/weights.cpp:167:66: warning: format ‘%llu’ expects argument of type ‘long long unsigned int*’, but argument 9 has type ‘uint64_t*’ {aka ‘long unsigned int*’} [-Wformat=]
+  167 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                               ~~~^
+      |                                                                  |
+      |                                                                  long long unsigned int*
+      |                                                               %lu
+  168 |                                   name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+      |                                                                                               ~~~~~~~~~~~~
+      |                                                                                               |
+      |                                                                                               uint64_t* {aka long unsigned int*}
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/core/weights.cpp:167:71: warning: format ‘%lld’ expects argument of type ‘long long int*’, but argument 10 has type ‘int64_t*’ {aka ‘long int*’} [-Wformat=]
+  167 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                                    ~~~^
+      |                                                                       |
+      |                                                                       long long int*
+      |                                                                    %ld
+  168 |                                   name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+  169 |                                   &r.ne0, &r.ne1, &r.code_bits, &r.code_bias, &r.group_elems, &r.codebook,
+      |                                   ~~~~~~                               
+      |                                   |
+      |                                   int64_t* {aka long int*}
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/core/weights.cpp:167:76: warning: format ‘%lld’ expects argument of type ‘long long int*’, but argument 11 has type ‘int64_t*’ {aka ‘long int*’} [-Wformat=]
+  167 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                                         ~~~^
+      |                                                                            |
+      |                                                                            long long int*
+      |                                                                         %ld
+  168 |                                   name, &r.file, &kind, &r.src_off, &r.src_bytes, &r.dst_off, &r.dst_bytes,
+  169 |                                   &r.ne0, &r.ne1, &r.code_bits, &r.code_bias, &r.group_elems, &r.codebook,
+      |                                           ~~~~~~                            
+      |                                           |
+      |                                           int64_t* {aka long int*}
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/core/weights.cpp:167:96: warning: format ‘%llu’ expects argument of type ‘long long unsigned int*’, but argument 17 has type ‘uint64_t*’ {aka ‘long unsigned int*’} [-Wformat=]
+  167 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                                                             ~~~^
+      |                                                                                                |
+      |                                                                                                long long unsigned int*
+      |                                                                                             %lu
+......
+  170 |                                   &r.has_offset, &r.codes_bytes, &r.scales_bytes, &r.offset_bytes,
+      |                                                  ~~~~~~~~~~~~~~                                 
+      |                                                  |
+      |                                                  uint64_t* {aka long unsigned int*}
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/core/weights.cpp:167:101: warning: format ‘%llu’ expects argument of type ‘long long unsigned int*’, but argument 18 has type ‘uint64_t*’ {aka ‘long unsigned int*’} [-Wformat=]
+  167 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                                                                  ~~~^
+      |                                                                                                     |
+      |                                                                                                     long long unsigned int*
+      |                                                                                                  %lu
+......
+  170 |                                   &r.has_offset, &r.codes_bytes, &r.scales_bytes, &r.offset_bytes,
+      |                                                                  ~~~~~~~~~~~~~~~                     
+      |                                                                  |
+      |                                                                  uint64_t* {aka long unsigned int*}
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/core/weights.cpp:167:106: warning: format ‘%llu’ expects argument of type ‘long long unsigned int*’, but argument 19 has type ‘uint64_t*’ {aka ‘long unsigned int*’} [-Wformat=]
+  167 |                                   "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+      |                                                                                                       ~~~^
+      |                                                                                                          |
+      |                                                                                                          long long unsigned int*
+      |                                                                                                       %lu
+......
+  170 |                                   &r.has_offset, &r.codes_bytes, &r.scales_bytes, &r.offset_bytes,
+      |                                                                                   ~~~~~~~~~~~~~~~         
+      |                                                                                   |
+      |                                                                                   uint64_t* {aka long unsigned int*}
+[ 15%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/gguf.cpp.o
+[ 15%] Building CXX object CMakeFiles/strata_core.dir/src/core/layout.cpp.o
+[ 16%] Linking CXX static library libstrata_core.a
+[ 16%] Built target strata_core
+[ 16%] Building CXX object CMakeFiles/strata-device.dir/src/core/device_main.cpp.o
+[ 16%] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-json1/cpp/converter_ext/deepseek.cc.o
+[ 16%] Linking CXX executable strata-device
+[ 16%] Built target strata-device
+[ 16%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/dequant_s2.cu.o
+[ 17%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/s2_gemv.cu.o
+[ 17%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/s_gemv.cu.o
+[ 17%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/s2_gemv_quads.cu.o
+[ 18%] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-json1/cpp/converter_ext/glm.cc.o
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/kernels/cuda/s2_gemv_quads.cu(31): warning #177-D: variable "strata::kernels::<unnamed>::CODES_PER_BYTE_S2" was declared but never referenced
+  constexpr int CODES_PER_BYTE_S2 = 4;
+                ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+[ 19%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/s2_gemv_fast.cu.o
+[ 19%] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-json1/cpp/converter_ext/kimi_k3.cc.o
+[ 19%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/router_top10.cu.o
+[ 19%] Linking CXX static library libggml-base.a
+[ 19%] Built target ggml-base
+[ 20%] Building CXX object CMakeFiles/platform_memory_test.dir/src/platform/memory_test.cpp.o
+[ 20%] Linking CXX executable platform_memory_test
+[ 20%] Built target platform_memory_test
+[ 20%] Building CXX object CMakeFiles/pinned_shared_test.dir/src/core/pinned_shared_test.cpp.o
+[ 20%] Building C object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.c.o
+[ 21%] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-json1/cpp/converter_ext/minimax.cc.o
+[ 21%] Linking CXX executable pinned_shared_test
+[ 21%] Built target pinned_shared_test
+[ 21%] Building CUDA object CMakeFiles/strata_mmq.dir/src/prefill/moe_mmq.cu.o
+[ 21%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/quantize_act.cu.o
+[ 21%] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-json1/cpp/converter_ext/minimax_m3.cc.o
+[ 22%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.cpp.o
+[ 23%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/rope.cu.o
+[ 23%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/repack.cpp.o
+[ 23%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/sampler.cu.o
+[ 23%] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-json1/cpp/converter_ext/qwen.cc.o
+[ 24%] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-json1/cpp/earley_parser.cc.o
+[ 25%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/s2_gemv_q8.cu.o
+[ 25%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/s2_expert_grouped.cu.o
+[ 25%] Building CUDA object CMakeFiles/strata_mmq.dir/src/prefill/moe_fused.cu.o
+[ 25%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/iqp.cpp.o
+[ 25%] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-json1/cpp/fsm.cc.o
+[ 25%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/shared_expert.cu.o
+[ 26%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/hbm.cpp.o
+[ 26%] Building C object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/quants.c.o
+[ 27%] Building CUDA object CMakeFiles/strata_mmq.dir/src/prefill/moe_fused_iq.cu.o
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/kernels/cuda/shared_expert.cu(71): warning #177-D: function "strata::kernels::<unnamed>::to_f16_kernel" was declared but never referenced
+            void to_f16_kernel(const float* __restrict__ in, uint16_t* __restrict__ out, int n) {
+                 ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+[ 28%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/traits.cpp.o
+[ 29%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/gr.cu.o
+[ 29%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/amx.cpp.o
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/kernels/cuda/gr.cu(112): warning #177-D: function "strata::kernels::<unnamed>::block_sum" was declared but never referenced
+            double block_sum(double v, double* scratch) {
+                   ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+[ 29%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/mmq.cpp.o
+[ 29%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/gdn.cu.o
+[ 30%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/binary-ops.cpp.o
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/kernels/cuda/gdn.cu(35): warning #177-D: function "strata::kernels::<unnamed>::softplus_f" was declared but never referenced
+                            float softplus_f(float x) { return x > 20.0f ? x : log1pf(expf(x)); }
+                                  ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+[ 30%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/qsa.cu.o
+[ 30%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/unary-ops.cpp.o
+[ 31%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/elementwise.cu.o
+[ 31%] Building CUDA object CMakeFiles/strata_mmq.dir/src/prefill/ggml_cuda_host.cu.o
+[ 31%] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-json1/cpp/fsm_builder.cc.o
+[ 31%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/bf16_gemv.cu.o
+[ 31%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/native_mmvq.cu.o
+[ 31%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/vec.cpp.o
+[ 32%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ops.cpp.o
+[ 32%] Building CUDA object CMakeFiles/strata_mmq.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/llama.cpp-3cf03257f219afbe7334045ff7c6a06ac68c627d/ggml/src/ggml-cuda/quantize.cu.o
+[ 33%] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-json1/cpp/grammar.cc.o
+[ 34%] Building CUDA object CMakeFiles/strata_mmq.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/llama.cpp-3cf03257f219afbe7334045ff7c6a06ac68c627d/ggml/src/ggml-cuda/template-instances/mmq-instance-q2_0.cu.o
+[ 34%] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-json1/cpp/grammar_builder.cc.o
+[ 34%] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-json1/cpp/grammar_compiler.cc.o
+[ 34%] Building C object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/x86/quants.c.o
+[ 34%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/x86/repack.cpp.o
+[ 35%] Linking CXX static library libggml-cpu.a
+[ 35%] Built target ggml-cpu
+[ 36%] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-json1/cpp/grammar_functor.cc.o
+[ 36%] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-json1/cpp/grammar_matcher.cc.o
+[ 37%] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-json1/cpp/grammar_parser.cc.o
+[ 37%] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-json1/cpp/grammar_printer.cc.o
+[ 37%] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-json1/cpp/json_schema_converter.cc.o
+[ 38%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/native_bf16.cu.o
+[ 39%] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-json1/cpp/lark_converter.cc.o
+[ 39%] Building CUDA object CMakeFiles/strata_mmq.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/llama.cpp-3cf03257f219afbe7334045ff7c6a06ac68c627d/ggml/src/ggml-cuda/template-instances/mmq-instance-iq2_xxs.cu.o
+[ 39%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/native_gr_norm.cu.o
+[ 40%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/native_moe.cu.o
+[ 40%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/native_gdn.cu.o
+[ 40%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/native_gr_postops.cu.o
+[ 40%] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-json1/cpp/regex_converter.cc.o
+[ 41%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/native_router.cu.o
+[ 41%] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-json1/cpp/structural_tag.cc.o
+[ 41%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/native_gdn_preprocess.cu.o
+[ 41%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/native_qsa.cu.o
+[ 42%] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-json1/cpp/suffix_automata.cc.o
+[ 43%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/native_rope.cu.o
+[ 43%] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-json1/cpp/support/logging.cc.o
+[ 43%] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-json1/cpp/support/recursion_guard.cc.o
+[ 43%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/native_ple_postops.cu.o
+[ 44%] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-json1/cpp/testing.cc.o
+[ 44%] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-json1/cpp/tokenizer_info.cc.o
+[ 44%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/native_flash_attn.cu.o
+[ 45%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/native_qsa_indexer.cu.o
+[ 45%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/native_qsa_score.cu.o
+[ 46%] Linking CXX static library libstrata_xgrammar.a
+[ 47%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/ple.cu.o
+[ 47%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/kv_q8.cu.o
+[ 47%] Built target strata_xgrammar
+[ 48%] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/expert.cpp.o
+[ 48%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/kv_stream.cu.o
+[ 49%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/kv_q4.cu.o
+[ 50%] Building CUDA object CMakeFiles/strata_mmq.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/llama.cpp-3cf03257f219afbe7334045ff7c6a06ac68c627d/ggml/src/ggml-cuda/template-instances/mmq-instance-iq2_xs.cu.o
+[ 50%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/fused_gr.cu.o
+[ 50%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/cvec.cu.o
+[ 50%] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/pool.cpp.o
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/kernels/cuda/fused_gr.cu(321): warning #177-D: variable "strata::kernels::<unnamed>::TQ3" was declared but never referenced
+  constexpr int TQ3 = N / 8 / 32;
+                ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+[ 51%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/qsa_decode_attn.cu.o
+[ 51%] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/expert_layout.cpp.o
+[ 52%] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/q2_avx2.cpp.o
+[ 52%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/qsa_prompt_attn.cu.o
+[ 52%] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/native_expert.cpp.o
+[ 53%] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/iq_avx512.cpp.o
+[ 53%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/fused_gdn.cu.o
+[ 54%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/dequant_bf16.cu.o
+[ 54%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/qsa_select.cu.o
+[ 54%] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/iq_avx2.cpp.o
+[ 55%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/verify_kernels.cu.o
+[ 55%] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/iq_kernels.cu.o
+[ 55%] Building CXX object CMakeFiles/strata_kernels.dir/src/kernels/ngram.cpp.o
+[ 56%] Building CXX object CMakeFiles/strata_kernels.dir/src/ngram/ple_reader.cpp.o
+[ 56%] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/kq_avx2.cpp.o
+[ 57%] Linking CXX static library libstrata_kernels_cpu.a
+[ 57%] Built target strata_kernels_cpu
+[ 57%] Building CXX object CMakeFiles/strata_grammar.dir/src/core/grammar.cpp.o
+[ 57%] Building CXX object CMakeFiles/strata_kernels.dir/src/platform/direct_file.cpp.o
+[ 57%] Building CUDA object CMakeFiles/strata_mmq.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/llama.cpp-3cf03257f219afbe7334045ff7c6a06ac68c627d/ggml/src/ggml-cuda/template-instances/mmq-instance-iq2_s.cu.o
+[ 57%] Linking CXX static library libstrata_kernels.a
+[ 57%] Built target strata_kernels
+[ 57%] Building CUDA object CMakeFiles/strata_mmq.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/llama.cpp-3cf03257f219afbe7334045ff7c6a06ac68c627d/ggml/src/ggml-cuda/template-instances/mmq-instance-iq3_xxs.cu.o
+[ 58%] Building CXX object CMakeFiles/strata_grammar.dir/src/core/grammar_vocabulary.cpp.o
+[ 58%] Linking CXX static library libstrata_grammar.a
+[ 58%] Built target strata_grammar
+[ 58%] Building CXX object CMakeFiles/strata-load.dir/src/core/load_main.cpp.o
+[ 59%] Linking CXX executable strata-load
+[ 59%] Built target strata-load
+[ 59%] Building CXX object CMakeFiles/strata-concurrent.dir/src/core/concurrent_main.cpp.o
+[ 60%] Linking CXX executable strata-concurrent
+[ 60%] Built target strata-concurrent
+[ 60%] Building CXX object CMakeFiles/strata-overlap.dir/src/core/overlap_main.cpp.o
+[ 60%] Linking CXX executable strata-overlap
+[ 60%] Built target strata-overlap
+[ 60%] Building CXX object CMakeFiles/strata_engine.dir/src/core/layer.cpp.o
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/core/layer.cpp: In function ‘bool strata::core::moe_layer(const WeightTable&, const ModelGeometry&, int64_t, int64_t, const MoEBuffers&, const float*, const float*, float*, void*, std::string&, const Doorbell*)’:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/core/layer.cpp:472:1: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  472 | if (!moe_route(tables, g, layer, k, b, x, stream, err, db)) return false;    return moe_finish(tables, g, layer, k, b, x, parts, out, stream, err);}
+      | ^~
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/core/layer.cpp:472:78: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  472 | if (!moe_route(tables, g, layer, k, b, x, stream, err, db)) return false;    return moe_finish(tables, g, layer, k, b, x, parts, out, stream, err);}
+      |                                                                              ^~~~~~
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/core/layer.cpp: In function ‘bool strata::core::qsa_layer(const WeightTable&, const ModelGeometry&, int64_t, int64_t, int32_t, const QsaState&, const QsaBuffers&, const float*, float*, void*, std::string&, float*)’:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/core/layer.cpp:896:1: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  896 | if (!gemv_quantized(*w_attnk, p_k, f_k, b.x_q8_0, b.x_q8k, b.kcur, g.n_embd, g.n_head_kv * g.head_dim,                        v.name("attn_k.weight"), stream, err, x)) return false;    if (!gemv_quantized(*w_attnv, p_v, f_v, b.x_q8_0, b.x_q8k, b.vcur, g.n_embd, g.n_head_kv * g.head_dim,                        v.name("attn_v.weight"), stream, err, x, w_attnk->native_data && w_attnv->native_data)) return false;    dump_slot(dump, g, layer, b.vcur,                            (uint64_t) 2 * g.n_embd + 2 * g.hc + (uint64_t) g.n_head * g.head_dim,                            (uint64_t) g.n_head_kv * g.head_dim, stream);    if (!normalize_rotate(b.kcur, w_kn, (int) g.n_head_kv, (int) g.head_dim)) return false;
+      | ^~
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/core/layer.cpp:896:186: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  896 | if (!gemv_quantized(*w_attnk, p_k, f_k, b.x_q8_0, b.x_q8k, b.kcur, g.n_embd, g.n_head_kv * g.head_dim,                        v.name("attn_k.weight"), stream, err, x)) return false;    if (!gemv_quantized(*w_attnv, p_v, f_v, b.x_q8_0, b.x_q8k, b.vcur, g.n_embd, g.n_head_kv * g.head_dim,                        v.name("attn_v.weight"), stream, err, x, w_attnk->native_data && w_attnv->native_data)) return false;    dump_slot(dump, g, layer, b.vcur,                            (uint64_t) 2 * g.n_embd + 2 * g.hc + (uint64_t) g.n_head * g.head_dim,                            (uint64_t) g.n_head_kv * g.head_dim, stream);    if (!normalize_rotate(b.kcur, w_kn, (int) g.n_head_kv, (int) g.head_dim)) return false;
+      |                                                                                                                                                                                          ^~
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/core/layer.cpp:961:5: warning: this ‘else’ clause does not guard... [-Wmisleading-indentation]
+  961 |     else if (st.kv_int8) kv_gather_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, b.ids, st.step, cap, s,                                 b.k_scratch, b.v_scratch, stream);    else kv_gather_step(st.k_pool, st.v_pool, st.page_table, b.ids, st.step, cap, s, b.k_scratch, b.v_scratch,                   stream);    if (native_flash_attn_short) {
+      |     ^~~~
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/core/layer.cpp:961:330: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘else’
+  961 |     else if (st.kv_int8) kv_gather_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, b.ids, st.step, cap, s,                                 b.k_scratch, b.v_scratch, stream);    else kv_gather_step(st.k_pool, st.v_pool, st.page_table, b.ids, st.step, cap, s, b.k_scratch, b.v_scratch,                   stream);    if (native_flash_attn_short) {
+      |                                                                                                                                                                                                                                                                                                                                          ^~
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/core/layer.cpp:985:5: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  985 |     if (!w_attno->native_data) quantize_q8_K(b.attn32, b.attn_q8k, g.n_head * g.head_dim, stream);    if (w_attno->native_data) {
+      |     ^~
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/core/layer.cpp:985:103: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  985 |     if (!w_attno->native_data) quantize_q8_K(b.attn32, b.attn_q8k, g.n_head * g.head_dim, stream);    if (w_attno->native_data) {
+      |                                                                                                       ^~
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/core/layer.cpp:848:774: warning: unused variable ‘n_bid’ [-Wunused-variable]
+  848 | bool qsa_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos, int32_t pos_base,               const QsaState& st, const QsaBuffers& b, const float* x, float* out, void* stream,               std::string& err, float* dump) {    using namespace strata::kernels;    const QsaShapes s = qsa_shapes(g);    const LayerView v(tables, layer);    const int64_t n_kv = pos + 1;    /* P7 audit: RoPE reads cos/sin row pos_base + pos, and the table holds max_cells rows. */    if ((int64_t) pos_base + pos >= st.max_cells || pos_base < 0) {        err = "qsa_layer: position " + std::to_string((long long) pos_base + pos) + " is outside the RoPE table (" + std::to_string((long long) st.max_cells) + " rows)";        return false;    }    const int64_t n_bid = n_kv / s.idx_block;    const int64_t width = qsa_selection_width(n_kv, s);    const int64_t cap = qsa_selection_width(kTopkMaxCells, s);
+      |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      ^~~~~
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/core/layer.cpp:848:819: warning: unused variable ‘width’ [-Wunused-variable]
+  848 | bool qsa_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos, int32_t pos_base,               const QsaState& st, const QsaBuffers& b, const float* x, float* out, void* stream,               std::string& err, float* dump) {    using namespace strata::kernels;    const QsaShapes s = qsa_shapes(g);    const LayerView v(tables, layer);    const int64_t n_kv = pos + 1;    /* P7 audit: RoPE reads cos/sin row pos_base + pos, and the table holds max_cells rows. */    if ((int64_t) pos_base + pos >= st.max_cells || pos_base < 0) {        err = "qsa_layer: position " + std::to_string((long long) pos_base + pos) + " is outside the RoPE table (" + std::to_string((long long) st.max_cells) + " rows)";        return false;    }    const int64_t n_bid = n_kv / s.idx_block;    const int64_t width = qsa_selection_width(n_kv, s);    const int64_t cap = qsa_selection_width(kTopkMaxCells, s);
+      |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   ^~~~~
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/core/layer.cpp: In function ‘bool strata::core::block_layer_pre(const WeightTable&, const ModelGeometry&, int64_t, int64_t, int32_t, const GdnBuffers&, const QsaState&, const QsaBuffers&, const MoEBuffers&, int64_t, const BlockBuffers&, void*, std::string&, const Doorbell*, const PleRun*, int, int)’:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/core/layer.cpp:1170:23: warning: unused variable ‘hcd’ [-Wunused-variable]
+ 1170 |         const int64_t hcd = strata::kernels::NG_HC_DIM;
+      |                       ^~~
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/core/layer.cpp: In function ‘bool strata::core::block_layer(const WeightTable&, const ModelGeometry&, int64_t, int64_t, int32_t, const GdnBuffers&, const QsaState&, const QsaBuffers&, const MoEBuffers&, int64_t, const BlockBuffers&, const float*, void*, std::string&, const Doorbell*, const PleRun*)’:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/core/layer.cpp:1320:1: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+ 1320 | if (!block_layer_pre(tables, g, layer, pos, pos_base, gb, qst, qb, mb, k, bb, stream, err, db, ple))        return false;    return block_layer_post(tables, g, layer, k, mb, bb, parts, stream, err);}}
+      | ^~
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/core/layer.cpp:1320:126: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+ 1320 | if (!block_layer_pre(tables, g, layer, pos, pos_base, gb, qst, qb, mb, k, bb, stream, err, db, ple))        return false;    return block_layer_post(tables, g, layer, k, mb, bb, parts, stream, err);}}
+      |                                                                                                                              ^~~~~~
+[ 60%] Building CXX object CMakeFiles/strata_engine.dir/src/core/session.cpp.o
+[ 61%] Building CUDA object CMakeFiles/strata_mmq.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/llama.cpp-3cf03257f219afbe7334045ff7c6a06ac68c627d/ggml/src/ggml-cuda/template-instances/mmq-instance-iq3_s.cu.o
+[ 62%] Building CXX object CMakeFiles/strata_engine.dir/src/core/expert_source.cpp.o
+[ 62%] Building CXX object CMakeFiles/strata_engine.dir/src/core/remote_experts.cpp.o
+[ 63%] Building CXX object CMakeFiles/strata_engine.dir/src/core/expert_cache.cpp.o
+[ 63%] Building CXX object CMakeFiles/strata_engine.dir/src/core/native_head.cpp.o
+[ 63%] Building CUDA object CMakeFiles/strata_mmq.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/llama.cpp-3cf03257f219afbe7334045ff7c6a06ac68c627d/ggml/src/ggml-cuda/template-instances/mmq-instance-iq4_nl.cu.o
+[ 63%] Building CXX object CMakeFiles/strata_engine.dir/src/core/native_dense.cpp.o
+[ 64%] Building CXX object CMakeFiles/strata_engine.dir/src/core/verify.cpp.o
+[ 64%] Building CUDA object CMakeFiles/strata_mmq.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/llama.cpp-3cf03257f219afbe7334045ff7c6a06ac68c627d/ggml/src/ggml-cuda/template-instances/mmq-instance-iq4_xs.cu.o
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/core/verify.cpp: In static member function ‘static void strata::core::Verifier::raise_flag(uint32_t*, uint32_t)’:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/core/verify.cpp:1268:20: warning: unused variable ‘f’ [-Wunused-variable]
+ 1268 |     volatile long* f = (volatile long*) flag;
+      |                    ^
+[ 64%] Building CXX object CMakeFiles/strata_engine.dir/src/core/mtp.cpp.o
+[ 64%] Building CXX object CMakeFiles/strata_engine.dir/src/core/conversation_snapshot.cpp.o
+[ 65%] Building CUDA object CMakeFiles/strata_mmq.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/llama.cpp-3cf03257f219afbe7334045ff7c6a06ac68c627d/ggml/src/ggml-cuda/template-instances/mmq-instance-q8_0.cu.o
+[ 66%] Building CXX object CMakeFiles/strata_engine.dir/src/core/conversation_state.cpp.o
+[ 66%] Building CXX object CMakeFiles/strata_engine.dir/src/core/conversation_memory.cpp.o
+[ 66%] Building CXX object CMakeFiles/strata_engine.dir/src/core/peer_experts.cpp.o
+[ 67%] Linking CXX static library libstrata_engine.a
+[ 67%] Built target strata_engine
+[ 67%] Building CXX object CMakeFiles/dequant_s2_parity.dir/src/kernels/dequant_s2_parity.cpp.o
+[ 68%] Linking CXX executable dequant_s2_parity
+[ 68%] Built target dequant_s2_parity
+[ 69%] Building CXX object CMakeFiles/s2_gemv_parity.dir/src/kernels/s2_gemv_parity.cpp.o
+[ 69%] Linking CXX executable s2_gemv_parity
+[ 69%] Built target s2_gemv_parity
+[ 69%] Building CXX object CMakeFiles/iq_parity.dir/src/kernels/iq_parity.cpp.o
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/kernels/iq_parity.cpp: In function ‘int main(int, char**)’:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/kernels/iq_parity.cpp:47:19: warning: ignoring return value of ‘size_t fread(void*, size_t, size_t, FILE*)’ declared with attribute ‘warn_unused_result’ [-Wunused-result]
+   47 |         std::fread(hdr, 4, 3, f);
+      |         ~~~~~~~~~~^~~~~~~~~~~~~~
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/kernels/iq_parity.cpp:52:19: warning: ignoring return value of ‘size_t fread(void*, size_t, size_t, FILE*)’ declared with attribute ‘warn_unused_result’ [-Wunused-result]
+   52 |         std::fread(ref.data(), 4, ref.size(), g);
+      |         ~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[ 70%] Linking CXX executable iq_parity
+[ 70%] Built target iq_parity
+[ 70%] Building CXX object CMakeFiles/mmvq_multi_parity.dir/src/kernels/mmvq_multi_parity.cpp.o
+[ 70%] Linking CXX executable mmvq_multi_parity
+[ 70%] Built target mmvq_multi_parity
+[ 71%] Building CXX object CMakeFiles/iq_multi_parity.dir/src/kernels/iq_multi_parity.cpp.o
+[ 71%] Linking CXX executable iq_multi_parity
+[ 71%] Built target iq_multi_parity
+[ 71%] Building CXX object CMakeFiles/native_grouped_parity.dir/src/kernels/native_grouped_parity.cpp.o
+[ 72%] Linking CXX executable native_grouped_parity
+[ 72%] Built target native_grouped_parity
+[ 72%] Building CXX object CMakeFiles/shared_expert_parity.dir/src/kernels/shared_expert_parity.cpp.o
+[ 72%] Linking CXX executable shared_expert_parity
+[ 72%] Built target shared_expert_parity
+[ 72%] Building CXX object CMakeFiles/gr_parity.dir/src/kernels/gr_parity.cpp.o
+[ 73%] Linking CXX executable gr_parity
+[ 73%] Built target gr_parity
+[ 73%] Building CXX object CMakeFiles/gdn_parity.dir/src/kernels/gdn_parity.cpp.o
+[ 73%] Building CXX object CMakeFiles/s2_gemv_q8_parity.dir/src/kernels/s2_gemv_q8_parity.cpp.o
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/kernels/gdn_parity.cpp: In function ‘int main(int, char**)’:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/kernels/gdn_parity.cpp:244:14: warning: variable ‘to_ref_layout’ set but not used [-Wunused-but-set-variable]
+  244 |         auto to_ref_layout = [&](const std::vector<float>& d) {
+      |              ^~~~~~~~~~~~~
+[ 74%] Linking CXX executable s2_gemv_q8_parity
+[ 74%] Built target s2_gemv_q8_parity
+[ 75%] Building CXX object CMakeFiles/sampler_parity.dir/src/kernels/sampler_parity.cpp.o
+[ 76%] Linking CXX executable gdn_parity
+[ 76%] Built target gdn_parity
+[ 76%] Building CXX object CMakeFiles/grammar_sampler_test.dir/src/kernels/grammar_sampler_test.cpp.o
+[ 77%] Linking CXX executable grammar_sampler_test
+[ 77%] Built target grammar_sampler_test
+[ 78%] Building CXX object CMakeFiles/decode_cluster_parity.dir/src/kernels/decode_cluster_parity.cpp.o
+[ 78%] Building CXX object CMakeFiles/rope_parity.dir/src/kernels/rope_parity.cpp.o
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/kernels/rope_parity.cpp: In function ‘int main(int, char**)’:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/kernels/rope_parity.cpp:168:13: warning: variable ‘moved’ set but not used [-Wunused-but-set-variable]
+  168 |         int moved[4] = {0, 0, 0, 0};       // dims 0, 1, half, half+1
+      |             ^~~~~
+[ 78%] Linking CXX executable decode_cluster_parity
+[ 78%] Built target decode_cluster_parity
+[ 79%] Building CXX object CMakeFiles/quantize_act_parity.dir/src/kernels/quantize_act_parity.cpp.o
+[ 80%] Linking CXX executable rope_parity
+[ 80%] Linking CXX executable sampler_parity
+[ 80%] Built target rope_parity
+[ 80%] Built target sampler_parity
+[ 80%] Building CXX object CMakeFiles/router_top10_parity.dir/src/kernels/router_top10_parity.cpp.o
+[ 80%] Building CXX object CMakeFiles/s_gemv_parity.dir/src/kernels/s_gemv_parity.cpp.o
+[ 80%] Linking CXX executable quantize_act_parity
+[ 80%] Built target quantize_act_parity
+[ 80%] Building CXX object CMakeFiles/elementwise_parity.dir/src/kernels/elementwise_parity.cpp.o
+[ 81%] Linking CXX executable router_top10_parity
+[ 81%] Built target router_top10_parity
+[ 82%] Building CXX object CMakeFiles/bf16_gemv_parity.dir/src/kernels/bf16_gemv_parity.cpp.o
+[ 82%] Linking CXX executable elementwise_parity
+[ 82%] Built target elementwise_parity
+[ 83%] Building CXX object CMakeFiles/s_gemv_q8k_parity.dir/src/kernels/s_gemv_q8k_parity.cpp.o
+[ 83%] Linking CXX executable bf16_gemv_parity
+[ 83%] Built target bf16_gemv_parity
+[ 83%] Building CXX object CMakeFiles/qsa_parity.dir/src/kernels/qsa_parity.cpp.o
+[ 83%] Linking CXX executable s_gemv_parity
+[ 83%] Built target s_gemv_parity
+[ 84%] Building CXX object CMakeFiles/ple_parity.dir/src/kernels/ple_parity.cpp.o
+[ 84%] Linking CXX executable s_gemv_q8k_parity
+[ 84%] Built target s_gemv_q8k_parity
+[ 84%] Building CXX object CMakeFiles/kv_q8_parity.dir/src/kernels/kv_q8_parity.cpp.o
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/kernels/ple_parity.cpp:117:22: warning: ‘std::vector<unsigned char> {anonymous}::read_path(const char*)’ defined but not used [-Wunused-function]
+  117 | std::vector<uint8_t> read_path(const char* path) {
+      |                      ^~~~~~~~~
+[ 85%] Linking CXX executable kv_q8_parity
+[ 85%] Built target kv_q8_parity
+[ 85%] Building CXX object CMakeFiles/kv_stream_parity.dir/src/kernels/kv_stream_parity.cpp.o
+[ 85%] Linking CXX executable ple_parity
+[ 85%] Built target ple_parity
+[ 85%] Building CXX object CMakeFiles/kv_hybrid_parity.dir/src/kernels/kv_hybrid_parity.cpp.o
+[ 86%] Linking CXX executable kv_stream_parity
+[ 86%] Built target kv_stream_parity
+[ 87%] Building CXX object CMakeFiles/kv_q4_parity.dir/src/kernels/kv_q4_parity.cpp.o
+[ 87%] Linking CXX static library libstrata_mmq.a
+[ 87%] Linking CXX executable kv_hybrid_parity
+[ 87%] Built target strata_mmq
+[ 88%] Building CXX object CMakeFiles/cvec_parity.dir/src/kernels/cvec_parity.cpp.o
+[ 88%] Built target kv_hybrid_parity
+[ 88%] Building CXX object CMakeFiles/s2_expert_grouped_parity.dir/src/kernels/s2_expert_grouped_parity.cpp.o
+[ 88%] Linking CXX executable kv_q4_parity
+[ 88%] Built target kv_q4_parity
+[ 88%] Building CXX object CMakeFiles/ple_reader_test.dir/src/ngram/ple_reader_test.cpp.o
+[ 88%] Linking CXX executable cvec_parity
+[ 88%] Built target cvec_parity
+[ 89%] Building CXX object CMakeFiles/native_expert_parity.dir/src/kernels/native_expert_parity.cpp.o
+[ 90%] Linking CXX executable ple_reader_test
+[ 90%] Linking CXX executable qsa_parity
+[ 90%] Built target ple_reader_test
+[ 91%] Building CXX object CMakeFiles/grammar_native_test.dir/src/core/grammar_native_test.cpp.o
+[ 91%] Built target qsa_parity
+[ 91%] Building CXX object CMakeFiles/grammar_inspection_test.dir/src/core/grammar_inspection_test.cpp.o
+[ 91%] Linking CXX executable s2_expert_grouped_parity
+[ 91%] Built target s2_expert_grouped_parity
+[ 92%] Building CXX object CMakeFiles/grammar_speculation_test.dir/src/core/grammar_speculation_test.cpp.o
+[ 92%] Linking CXX executable grammar_speculation_test
+[ 92%] Built target grammar_speculation_test
+[ 92%] Building CXX object CMakeFiles/grammar_speculation_gpu_test.dir/src/kernels/grammar_speculation_gpu_test.cpp.o
+[ 92%] Linking CXX executable grammar_inspection_test
+[ 92%] Built target grammar_inspection_test
+[ 92%] Building CXX object CMakeFiles/file_expert_source_test.dir/tests/core/file_expert_source_test.cpp.o
+[ 92%] Linking CXX executable native_expert_parity
+[ 92%] Built target native_expert_parity
+[ 93%] Building CXX object CMakeFiles/expert_profile_save_test.dir/tests/core/expert_profile_save_test.cpp.o
+In file included from /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/kernels/grammar_speculation_gpu_test.cpp:5:
+In function ‘strata::program::RetainedWindow strata::program::retained_window(const int32_t*, const int32_t*, int, int64_t, const std::vector<long int>&, bool)’,
+    inlined from ‘Result run(Device&, std::shared_ptr<const strata::grammar::Compiled>, strata::kernels::SamplerParams, int, int, int, int, const Result*, bool)’ at /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/kernels/grammar_speculation_gpu_test.cpp:89:59,
+    inlined from ‘int main()’ at /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/kernels/grammar_speculation_gpu_test.cpp:164:93:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/include/strata/program/speculative_window.hpp:23:54: warning: array subscript 1 is outside array bounds of ‘int [1]’ [-Warray-bounds=]
+   23 |         if (eos || row + 1 == limit || inputs[row + 1] != selected[row]) return {row + 1, eos};
+      |                                        ~~~~~~~~~~~~~~^
+In file included from /usr/include/x86_64-linux-gnu/c++/15/bits/c++allocator.h:33,
+                 from /usr/include/c++/15/bits/allocator.h:46,
+                 from /usr/include/c++/15/string:45,
+                 from /usr/include/c++/15/stdexcept:41,
+                 from /usr/include/c++/15/system_error:45,
+                 from /usr/include/c++/15/bits/fs_fwd.h:35,
+                 from /usr/include/c++/15/filesystem:53,
+                 from /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/include/strata/core/grammar.hpp:5,
+                 from /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/kernels/grammar_speculation_gpu_test.cpp:3:
+In member function ‘_Tp* std::__new_allocator<_Tp>::allocate(size_type, const void*) [with _Tp = int]’,
+    inlined from ‘constexpr _Tp* std::allocator< <template-parameter-1-1> >::allocate(std::size_t) [with _Tp = int]’ at /usr/include/c++/15/bits/allocator.h:203:40,
+    inlined from ‘static constexpr _Tp* std::allocator_traits<std::allocator<_CharT> >::allocate(allocator_type&, size_type) [with _Tp = int]’ at /usr/include/c++/15/bits/alloc_traits.h:614:28,
+    inlined from ‘constexpr std::_Vector_base<_Tp, _Alloc>::pointer std::_Vector_base<_Tp, _Alloc>::_M_allocate(std::size_t) [with _Tp = int; _Alloc = std::allocator<int>]’ at /usr/include/c++/15/bits/stl_vector.h:387:33,
+    inlined from ‘constexpr void std::_Vector_base<_Tp, _Alloc>::_M_create_storage(std::size_t) [with _Tp = int; _Alloc = std::allocator<int>]’ at /usr/include/c++/15/bits/stl_vector.h:405:44,
+    inlined from ‘constexpr std::_Vector_base<_Tp, _Alloc>::_Vector_base(std::size_t, const allocator_type&) [with _Tp = int; _Alloc = std::allocator<int>]’ at /usr/include/c++/15/bits/stl_vector.h:341:26,
+    inlined from ‘constexpr std::vector<_Tp, _Alloc>::vector(size_type, const value_type&, const allocator_type&) [with _Tp = int; _Alloc = std::allocator<int>]’ at /usr/include/c++/15/bits/stl_vector.h:601:47,
+    inlined from ‘Result run(Device&, std::shared_ptr<const strata::grammar::Compiled>, strata::kernels::SamplerParams, int, int, int, int, const Result*, bool)’ at /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/kernels/grammar_speculation_gpu_test.cpp:49:42,
+    inlined from ‘int main()’ at /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/kernels/grammar_speculation_gpu_test.cpp:164:93:
+/usr/include/c++/15/bits/new_allocator.h:151:73: note: at offset 4 into object of size 4 allocated by ‘operator new’
+  151 |         return static_cast<_Tp*>(_GLIBCXX_OPERATOR_NEW(__n * sizeof(_Tp)));
+      |                                                                         ^
+[ 93%] Linking CXX executable grammar_speculation_gpu_test
+[ 93%] Linking CXX executable expert_profile_save_test
+[ 93%] Built target expert_profile_save_test
+[ 93%] Built target grammar_speculation_gpu_test
+[ 93%] Building CXX object CMakeFiles/conversation_snapshot_test.dir/src/core/conversation_snapshot_test.cpp.o
+[ 93%] Building CXX object CMakeFiles/conversation_validation_test.dir/src/core/conversation_validation_test.cpp.o
+[ 94%] Linking CXX executable file_expert_source_test
+[ 94%] Built target file_expert_source_test
+[ 95%] Building CXX object CMakeFiles/conversation_transfer_test.dir/src/core/conversation_validation_test.cpp.o
+[ 95%] Linking CXX executable grammar_native_test
+[ 95%] Built target grammar_native_test
+[ 95%] Building CUDA object CMakeFiles/strata_prefill.dir/src/prefill/gemm.cu.o
+[ 96%] Linking CXX executable conversation_validation_test
+[ 96%] Built target conversation_validation_test
+[ 97%] Building CUDA object CMakeFiles/strata_prefill.dir/src/prefill/kernels.cu.o
+[ 97%] Linking CXX executable conversation_snapshot_test
+[ 97%] Built target conversation_snapshot_test
+[ 97%] Building CXX object CMakeFiles/strata_prefill.dir/src/prefill/prefill.cpp.o
+[ 97%] Linking CXX executable conversation_transfer_test
+[ 97%] Built target conversation_transfer_test
+[ 98%] Linking CXX static library libstrata_prefill.a
+[ 98%] Built target strata_prefill
+[100%] Building CXX object CMakeFiles/strata.dir/src/program/generate.cpp.o
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/json-schema-source-20261003/src/program/generate.cpp:864:5: warning: ‘int {anonymous}::argmax(const std::vector<float>&)’ defined but not used [-Wunused-function]
+  864 | int argmax(const std::vector<float>& v) {
+      |     ^~~~~~
+[100%] Linking CXX executable strata
+[100%] Built target strata

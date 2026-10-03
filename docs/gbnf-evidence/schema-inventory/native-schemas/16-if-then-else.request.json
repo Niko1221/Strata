@@ -1,0 +1,55 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "none"
+  },
+  "max_output_tokens": 512,
+  "temperature": 0,
+  "input": "Return exactly this JSON value, without explanation: {\"kind\": \"count\", \"value\": 3}",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "16_if_then_else",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "enum": [
+              "count",
+              "text"
+            ]
+          },
+          "value": {}
+        },
+        "required": [
+          "kind",
+          "value"
+        ],
+        "additionalProperties": false,
+        "if": {
+          "properties": {
+            "kind": {
+              "const": "count"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "value": {
+              "type": "integer"
+            }
+          }
+        },
+        "else": {
+          "properties": {
+            "value": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+}

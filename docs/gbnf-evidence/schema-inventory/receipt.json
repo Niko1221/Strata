@@ -1,0 +1,44 @@
+{
+  "source_commit": "ab36ceed2453d9ff7cfff430467a5a2d8f307365",
+  "host": "llm-49",
+  "client_sha256": "fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d",
+  "native_sha256": "908cb11a334772494b092df15d35267fb8b7a290ad1d431edb90f6a849a7d94c",
+  "coding_settings": {
+    "sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 20,
+      "min_p": 0.0,
+      "presence_penalty": 0.0,
+      "frequency_penalty": 0.0,
+      "repetition_penalty": 1.0
+    },
+    "reasoning_budget_tokens": 2048
+  },
+  "catalog_sha256": "3e581a91dc603e66e3d663846f279d0fb1c876ba5c0a60fcb535fbcb5035d8e5",
+  "cleanup": {
+    "server_stopped": true
+  },
+  "branch": "work/gbnf",
+  "worktree": "strata-native-gbnf",
+  "model": "Qwen3.8-Flash-Next Coder IQ1_M",
+  "gpu": "RTX 4090",
+  "context": 32768,
+  "kv": "int8",
+  "spec": 4,
+  "suffix": 0,
+  "validator": "jsonschema==4.26.0",
+  "backend": "xgrammar-0.2.8-strata-budget1-json1",
+  "python_tests": 239,
+  "native_test_groups": 10,
+  "native_schema_examples": 30,
+  "native_tool_loops": 12,
+  "native_tool_http_requests": 24,
+  "strict_json_probe_cases": 7,
+  "tool_probe_reasoning": "medium",
+  "tool_probe_temperature": 0,
+  "known_sample_prompts": true,
+  "mocked_external_tool_results": true,
+  "probe_executed_tool_actions": false,
+  "native_source_inputs_verified": true
+}

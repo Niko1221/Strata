@@ -2,8 +2,9 @@
 //
 // Under sampling the verify window samples row t of a window at position pos0 as Philox(seed, pos0 + t) over the
 // sampler chain (penalties -> top_k -> top_p -> min_p -> temperature -> inverse-CDF pick; verify.cpp run(),
-// sampler.cu), and a draft is kept only when it EQUALS that row's pick.  The output is therefore a function of the
-// seed alone, whatever the drafts are: drafts only decide how many tokens a window yields.
+// sampler.cu), and a draft is kept only when it EQUALS that row's pick. At fixed target logits, masks and histories,
+// proposals only decide how many tokens a window yields. A seed alone does not guarantee identical logits across
+// different GPU graph shapes or expert residency; native numerical parity must be measured separately.
 //
 // The MTP draft layer used to propose its ARGMAX.  In coupled mode it SAMPLES instead, with the target's own chain
 // (the request's top_k / top_p / min_p / temperature and penalties over the same history) and the SAME uniform the

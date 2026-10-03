@@ -1,0 +1,84 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "medium"
+  },
+  "max_output_tokens": 3072,
+  "temperature": 0,
+  "input": [
+    {
+      "role": "user",
+      "content": "Call lookup with key hidden to read the hidden integer. Do not guess. Then give the value as JSON."
+    },
+    {
+      "id": "rs_a67f451246eb46c7a8efefe338d77bf2",
+      "type": "reasoning",
+      "status": "completed",
+      "summary": [],
+      "content": [
+        {
+          "type": "reasoning_text",
+          "text": "The user wants me to call the lookup function with the key \"hidden\" to read the hidden integer, and then return it as JSON.\n"
+        }
+      ],
+      "encrypted_content": "strata-r1.gAAAAABqwWrD2issk5AQJ1B0GdcgUW0kjAa1m55HltIxhV5dDP8UYyklDOL6P_1awNoJ2u716C_tRMI2BjdN5WvI_PR-OwO6xiHCyLJUIRn-BasQSyWDaUDLC7OP0m1ratuYI3w2NJKpAChp5PJ3YNolfVjPL4ke3T8F2GPKSsmJJvwb-m8wVeoPmBbW2yvS-Mej4NysN168Cf1Dt90s9w5XqSts55Lcx2V8WX5TsIO8p6Z7BHw7ZeJea96_VJ8-dWTmeykPWXdknYUToHSekC4u0DBQO12Z2PSi-vRGMqzZPxZMJKAgfv_IBTouKv48HlVix3OD_FxGy524MN_txjN4eE1ZBqKWjjHppOlrYIyPqM-Zy3ZoeRe610uwPSXUbU1XCdxmoTjhyGgc4ltdwD4LPIgRZWcHlt9sYyjSdfa-nwXBesP2nUATO_njJLWgZ49uMfZDWtJ-x2NaYY2zoervT3buE-QH5w=="
+    },
+    {
+      "id": "fc_0b36312c56f34b46a3fd688296602967",
+      "type": "function_call",
+      "status": "completed",
+      "call_id": "call_d2b0849cae7b4d4a91f7601b",
+      "name": "lookup",
+      "arguments": "{\"key\":\"hidden\"}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_d2b0849cae7b4d4a91f7601b",
+      "output": "MOCK EXTERNAL TOOL RESULT (not JSON): the hidden integer is 27. Other arbitrary text: purple."
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "lookup",
+      "description": "Read the hidden integer. Call before answering.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "enum": [
+              "hidden"
+            ]
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "additionalProperties": false
+      },
+      "strict": true
+    }
+  ],
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "lookup_result",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "stream": true
+}

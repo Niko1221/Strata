@@ -1,0 +1,12 @@
+[
+  "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/venv/bin/python",
+  "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/tools/grammar_state_probe.py",
+  "--config",
+  "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/g2-target.json",
+  "--inspector",
+  "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-cpu/grammar_inspection_test",
+  "--matcher-tests",
+  "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-cpu/grammar_native_test",
+  "--out",
+  "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/evidence/g4/state-checkpoint"
+]

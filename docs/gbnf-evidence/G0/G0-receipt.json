@@ -1,0 +1,47 @@
+{
+  "phase": "G0",
+  "result": "pass",
+  "commit": "b7e2336b9373ea7e241f6e00f2c9ddee576f2310",
+  "tree": "1d074d9f91c925e90b8cf3f70157377850166f5e",
+  "branch": "work/gbnf",
+  "worktree": "C:/Users/dflanag3/Documents/fleet/strata-native-gbnf",
+  "parent_r4_commit": "96092670da0dc3c1cfcce99bb90a3e6ca25ae1d9",
+  "native_profile": {
+    "host": "llm-49 (r4090)",
+    "gpu": "RTX 4090",
+    "model": "Coder IQ1_M",
+    "cuda": "13.3.73",
+    "modes": [
+      "target-only",
+      "MTP",
+      "MTP plus suffix"
+    ],
+    "binary_sha256": "ed77a1c3d4bf93b3434383a1b7ed2c303ee0e3d68a802460759793b8a109d029",
+    "target_cursor_windows": 213,
+    "suffix_windows_exercised": 3
+  },
+  "tests": {
+    "native_selected_passed": 10,
+    "python_passed": 235,
+    "python_skipped": 5
+  },
+  "evidence_hash_encoding": "exact Git blob bytes at commit (LF), not checkout newline conversion",
+  "evidence": {
+    "docs/gbnf-evidence/G0/REPORT.md": "81c8b55b2abc1e546dd62c279a10af2a7da5571414dcba9f26f9397e2663e97e",
+    "docs/gbnf-evidence/G0/CURSOR.md": "9f3c3afd0d1f5ceacac9e2c3cc06d0955990446dc501d9251eccbc84d0b3149e",
+    "docs/gbnf-evidence/G0/native-source-manifest.json": "f25ed8bf0b2f834af57ad2fca81c35569fc049d56267b9b9f8c7c4ea274acdd9",
+    "docs/gbnf-evidence/G0/native/target-1/result.json": "b3c9321ff4a33a9e542044b36d7aea36b2a45a8997396aa8fdfbbab49099e831",
+    "docs/gbnf-evidence/G0/native/mtp-1/result.json": "514108350af9027dbd4f934de891bd8a6fea9375091feba2c5793cdd4ed118eb",
+    "docs/gbnf-evidence/G0/native/suffix-1/result.json": "e0176cc42290d6dc0b70658ade32c664d154fbe5961110e4818463c4bcd02f35",
+    "docs/gbnf-evidence/G0/native/target-only-native-tests.txt": "6526b1167e953a27e44eda0758f5808d0173812685365b96a3b7257eb7369f0b",
+    "docs/gbnf-evidence/G0/python-regressions.txt": "20fb2eda08b2e3efc139ed4070db054d9afd5f0382c7ff68757867040dd152fa",
+    "docs/gbnf-evidence/G0/detokenizer-tests.txt": "18adcb758104275ef5b56f698e265d9a3c771f4f62a813f76ff0b1217ac2ec9b"
+  },
+  "limitations": [
+    "Single Linux/CUDA GPU qualification only",
+    "No parked conversation snapshots without MTP",
+    "Grammar not yet implemented at G0",
+    "Existing unconstrained speculative budget/commit tail requires G5 audit and correction"
+  ],
+  "next_gate": "G1 native grammar compiler/tokenizer/matcher"
+}

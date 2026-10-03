@@ -1,0 +1,10 @@
+corpus frozen.gbnf passed
+corpus fresh.gbnf passed
+corpus after.gbnf passed
+corpus cases=18 vocabulary=261 identity=bytes-v1-fnv1a64:709f484f4e7d0c81
+native masks, UTF-8 fragments, recursion, accepting prefixes, stop/special IDs, forks, checkpoints, cache isolation, syntax and resource failures passed
+corpus frozen.gbnf passed
+corpus fresh.gbnf passed
+corpus after.gbnf passed
+corpus cases=18 vocabulary=248320 identity=bytes-v1-fnv1a64:6ad948532e27ffed
+grammar native tests passed (xgrammar-0.2.8-strata-budget1)

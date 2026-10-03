@@ -1,0 +1,6 @@
+accepted=1 sample_bytes=24 work=223632 seconds=0.00229964
+accepted=0 sample_bytes=49 work=7675448 seconds=0.0830841
+accepted=0 sample_bytes=1012 work=7675448 seconds=0.082306
+accepted=1 sample_bytes=24 work=50956 seconds=0.00062802
+accepted=1 sample_bytes=49 work=115881 seconds=0.00130722
+accepted=1 sample_bytes=1012 work=2616792 seconds=0.0286112

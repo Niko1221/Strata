@@ -1,0 +1,185 @@
+{
+  "source_verified": true,
+  "streams": [
+    {
+      "file": "wire-00.response.txt",
+      "events": 380,
+      "status": "completed",
+      "response_id": "resp_8af3a26dc20142a597805c1a10d64e1d",
+      "output_types": [
+        "reasoning",
+        "message",
+        "function_call",
+        "function_call"
+      ],
+      "reassembles_final": true,
+      "wire_matches_monitor": true,
+      "request_not_rewritten": true
+    },
+    {
+      "file": "wire-01.response.txt",
+      "events": 598,
+      "status": "completed",
+      "response_id": "resp_e61eaa23d705484bbfdaf823edf580ea",
+      "output_types": [
+        "reasoning",
+        "message",
+        "function_call",
+        "function_call"
+      ],
+      "reassembles_final": true,
+      "wire_matches_monitor": true,
+      "request_not_rewritten": true
+    },
+    {
+      "file": "wire-02.response.txt",
+      "events": 265,
+      "status": "completed",
+      "response_id": "resp_e840f80f2a8749738026913a94b4b4e3",
+      "output_types": [
+        "reasoning",
+        "message",
+        "function_call"
+      ],
+      "reassembles_final": true,
+      "wire_matches_monitor": true,
+      "request_not_rewritten": true
+    },
+    {
+      "file": "wire-03.response.txt",
+      "events": 742,
+      "status": "completed",
+      "response_id": "resp_fa9af42e433a4612bb7d149e80246d68",
+      "output_types": [
+        "reasoning",
+        "message",
+        "function_call"
+      ],
+      "reassembles_final": true,
+      "wire_matches_monitor": true,
+      "request_not_rewritten": true
+    },
+    {
+      "file": "wire-04.response.txt",
+      "events": 373,
+      "status": "completed",
+      "response_id": "resp_c56deeb19c694f87bb321fd30d51281d",
+      "output_types": [
+        "reasoning",
+        "message",
+        "function_call"
+      ],
+      "reassembles_final": true,
+      "wire_matches_monitor": true,
+      "request_not_rewritten": true
+    },
+    {
+      "file": "wire-05.response.txt",
+      "events": 400,
+      "status": "completed",
+      "response_id": "resp_423d4a05082c464f8f66eec5516bcad5",
+      "output_types": [
+        "reasoning",
+        "message",
+        "function_call"
+      ],
+      "reassembles_final": true,
+      "wire_matches_monitor": true,
+      "request_not_rewritten": true
+    },
+    {
+      "file": "wire-06.response.txt",
+      "events": 222,
+      "status": "completed",
+      "response_id": "resp_d52b10b51e4e4b71a9682ed5b6cf9895",
+      "output_types": [
+        "reasoning",
+        "function_call"
+      ],
+      "reassembles_final": true,
+      "wire_matches_monitor": true,
+      "request_not_rewritten": true
+    },
+    {
+      "file": "wire-07.response.txt",
+      "events": 748,
+      "status": "completed",
+      "response_id": "resp_8e534b7e9bf64976b743bc38c5dd60dd",
+      "output_types": [
+        "reasoning",
+        "message"
+      ],
+      "reassembles_final": true,
+      "wire_matches_monitor": true,
+      "request_not_rewritten": true
+    }
+  ],
+  "actions": {
+    "client_test_exit_codes": [
+      1,
+      0
+    ],
+    "missing_file_exit_codes": [
+      1
+    ],
+    "command_errors": [
+      {
+        "command": "\"C:\\\\WINDOWS\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\" -Command \"Get-Content -LiteralPath 'C:\\\\Users\\\\dflanag3\\\\Documents\\\\fleet\\\\.fleet_work\\\\strata-native-coding-20261003\\\\coding-20261003T164853Z-13d824\\\\probe\\\\coding workspace\\\\input files\\\\values.txt' -Encoding Text\"",
+        "exit_code": 1
+      },
+      {
+        "command": "\"C:\\\\WINDOWS\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\" -Command \"Set-Location 'C:\\\\Users\\\\dflanag3\\\\Documents\\\\fleet\\\\.fleet_work\\\\strata-native-coding-20261003\\\\coding-20261003T164853Z-13d824\\\\probe\\\\coding workspace'; Get-Content -LiteralPath 'input files/does-not-exist.fixture' -ErrorAction Stop\"",
+        "exit_code": 1
+      },
+      {
+        "command": "\"C:\\\\WINDOWS\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\" -Command \"Set-Location 'C:\\\\Users\\\\dflanag3\\\\Documents\\\\fleet\\\\.fleet_work\\\\strata-native-coding-20261003\\\\coding-20261003T164853Z-13d824\\\\probe\\\\coding workspace'; & 'C:\\\\Program Files\\\\Python313\\\\python.exe' -B -m unittest -v test_settings.py\"",
+        "exit_code": 1
+      }
+    ],
+    "tool_definitions": [
+      {
+        "type": "function",
+        "name": "exec_command",
+        "strict": false
+      },
+      {
+        "type": "function",
+        "name": "write_stdin",
+        "strict": false
+      },
+      {
+        "type": "function",
+        "name": "request_user_input",
+        "strict": false
+      },
+      {
+        "type": "function",
+        "name": "view_image",
+        "strict": false
+      },
+      {
+        "type": "namespace",
+        "name": "multi_agent_v1",
+        "strict": null
+      },
+      {
+        "type": "function",
+        "name": "get_goal",
+        "strict": false
+      },
+      {
+        "type": "function",
+        "name": "create_goal",
+        "strict": false
+      },
+      {
+        "type": "function",
+        "name": "update_goal",
+        "strict": false
+      }
+    ],
+    "model_instructions_sha256": "c088b223771f02cb32ea572a8165f0639b720ded12ae0f515ee498afcab65c51"
+  },
+  "no_manual_encrypted_state_inspection": true,
+  "probe_source_sha256_matches": true
+}

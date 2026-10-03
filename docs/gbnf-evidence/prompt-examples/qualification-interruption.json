@@ -1,0 +1,13 @@
+{
+  "reason": "Stop redundant hinted runs after identifying a false-negative observation checker; completed baselines and one-example attempts remain unchanged.",
+  "signalled_owned_processes": [
+    {
+      "pid": 3519008,
+      "role": "probe"
+    },
+    {
+      "pid": 3798304,
+      "role": "client"
+    }
+  ]
+}

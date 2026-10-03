@@ -1,0 +1,16 @@
+[1/12] Building CXX object CMakeFiles/mmvq_multi_parity.dir/src/kernels/mmvq_multi_parity.cpp.o
+[2/12] Building CXX object CMakeFiles/conv_cache_test.dir/src/program/conv_cache_test.cpp.o
+[3/12] Building CXX object CMakeFiles/gdn_parity.dir/src/kernels/gdn_parity.cpp.o
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/kernels/gdn_parity.cpp: In function ‘int main(int, char**)’:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/kernels/gdn_parity.cpp:244:14: warning: variable ‘to_ref_layout’ set but not used [-Wunused-but-set-variable]
+  244 |         auto to_ref_layout = [&](const std::vector<float>& d) {
+      |              ^~~~~~~~~~~~~
+[4/12] Linking CXX executable mmvq_multi_parity
+[5/12] Linking CXX executable gdn_parity
+[6/12] Linking CXX executable conv_cache_test
+[7/12] Building CXX object CMakeFiles/coupled_draft_test.dir/src/core/coupled_draft_test.cpp.o
+[8/12] Linking CXX executable coupled_draft_test
+[9/12] Building CXX object CMakeFiles/sampler_parity.dir/src/kernels/sampler_parity.cpp.o
+[10/12] Linking CXX executable sampler_parity
+[11/12] Building CUDA object CMakeFiles/gdn_rec_parity.dir/src/prefill/gdn_rec_parity.cu.o
+[12/12] Linking CUDA executable gdn_rec_parity

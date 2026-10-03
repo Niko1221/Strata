@@ -1,0 +1,37 @@
+[
+  [
+    "cmake",
+    "--build",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu",
+    "--target",
+    "strata",
+    "serve_input_test",
+    "-j",
+    "4"
+  ],
+  [
+    "ctest",
+    "--test-dir",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu",
+    "-R",
+    "^serve_input_test$",
+    "--output-on-failure"
+  ],
+  [
+    "cmake",
+    "--build",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-asan",
+    "--target",
+    "serve_input_test",
+    "-j",
+    "2"
+  ],
+  [
+    "ctest",
+    "--test-dir",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-asan",
+    "-R",
+    "^serve_input_test$",
+    "--output-on-failure"
+  ]
+]

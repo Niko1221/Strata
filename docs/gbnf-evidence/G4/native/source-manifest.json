@@ -1,0 +1,9 @@
+{
+  "include/strata/core/grammar.hpp": "ef4398cd9d8eaf93c1f7e9d0a21d89a982878bd55100ac97b1e57a1db2d81558",
+  "src/core/grammar.cpp": "ecb9573fa989f22d50c1f1af065ceb61453ef685e7dedbdab0972cc3346863ef",
+  "src/core/grammar_inspection_test.cpp": "7effd5c7afc0ce1858c0c244632f880a66852f8fa999dc768076946d7bece63c",
+  "cmake/xgrammar.cmake": "f77d89c24fb9e61271fd9908f9522ed16ca5babc6e696321441a54036fc1687e",
+  "tools/grammar_state_contract.py": "93133e066b611693022d03e62204cbe198d3666dbd93321c8db9b88ac556bee5",
+  "tools/test_grammar_state_contract.py": "8924c8e409efbcd204946e49a6b2b63d7bef5735a804ef067544045d4a31604c",
+  "tools/grammar_state_probe.py": "ded3b13dba8e75f18524eb84d73d02ccf12f6d692ea03037a506e02ec7438408"
+}

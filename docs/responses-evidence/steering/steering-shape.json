@@ -1,0 +1,106 @@
+[
+  {
+    "real_capture_derived_summary": true,
+    "http_status": 200,
+    "status": "completed",
+    "inputs": [
+      {
+        "type": "message",
+        "role": "developer",
+        "encrypted_replay_present": false
+      },
+      {
+        "type": "message",
+        "role": "user",
+        "encrypted_replay_present": false
+      },
+      {
+        "type": "message",
+        "role": "user",
+        "encrypted_replay_present": false
+      },
+      {
+        "type": "reasoning",
+        "role": null,
+        "encrypted_replay_present": true
+      },
+      {
+        "type": "message",
+        "role": "assistant",
+        "encrypted_replay_present": false
+      },
+      {
+        "type": "function_call",
+        "role": null,
+        "encrypted_replay_present": false
+      },
+      {
+        "type": "function_call_output",
+        "role": null,
+        "encrypted_replay_present": false
+      },
+      {
+        "type": "reasoning",
+        "role": null,
+        "encrypted_replay_present": true
+      },
+      {
+        "type": "message",
+        "role": "assistant",
+        "encrypted_replay_present": false
+      },
+      {
+        "type": "function_call",
+        "role": null,
+        "encrypted_replay_present": false
+      },
+      {
+        "type": "function_call_output",
+        "role": null,
+        "encrypted_replay_present": false
+      },
+      {
+        "type": "reasoning",
+        "role": null,
+        "encrypted_replay_present": true
+      },
+      {
+        "type": "message",
+        "role": "assistant",
+        "encrypted_replay_present": false
+      },
+      {
+        "type": "message",
+        "role": "user",
+        "encrypted_replay_present": false
+      },
+      {
+        "type": "reasoning",
+        "role": null,
+        "encrypted_replay_present": true
+      },
+      {
+        "type": "message",
+        "role": "user",
+        "encrypted_replay_present": false
+      },
+      {
+        "type": "message",
+        "role": "developer",
+        "encrypted_replay_present": false
+      },
+      {
+        "type": "message",
+        "role": "user",
+        "encrypted_replay_present": false
+      },
+      {
+        "type": "message",
+        "role": "user",
+        "encrypted_replay_present": false
+      }
+    ],
+    "answer": "STEER_OK",
+    "encrypted_content_policy": "Not copied or decrypted; role/presence only."
+  }
+]

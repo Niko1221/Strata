@@ -1,0 +1,77 @@
+{
+  "id": "resp_7c441591826b4397b00daf7827ed88c4",
+  "object": "response",
+  "created_at": 1791062296,
+  "status": "completed",
+  "completed_at": 1791062298,
+  "error": null,
+  "incomplete_details": null,
+  "instructions": null,
+  "model": "qwen3.8-flash-next",
+  "output": [
+    {
+      "id": "msg_035acb025c074f7fa28bc93955a3656a",
+      "type": "message",
+      "status": "completed",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "{\"value\": 1, \"child\": {\"value\": 2}}",
+          "annotations": [],
+          "logprobs": []
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 128,
+    "output_tokens": 16,
+    "total_tokens": 144,
+    "input_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 128
+    },
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    }
+  },
+  "store": false,
+  "background": false,
+  "previous_response_id": null,
+  "max_output_tokens": 512,
+  "temperature": 0,
+  "top_p": 0.95,
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "21_dynamic_anchor_ref",
+      "strict": true,
+      "schema": {
+        "$dynamicAnchor": "node",
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "integer"
+          },
+          "child": {
+            "$dynamicRef": "#node"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "tools": [],
+  "tool_choice": "auto",
+  "parallel_tool_calls": true,
+  "reasoning": {
+    "effort": "none",
+    "summary": null
+  },
+  "truncation": "disabled",
+  "metadata": {}
+}

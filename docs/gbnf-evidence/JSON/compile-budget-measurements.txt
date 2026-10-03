@@ -1,0 +1,20 @@
+schema {"type":"object","properties":{"title":{"type":"string","minLength":1,"maxLength":36}},"required":["title"],"additionalProperties":false}
+FAIL grammar resource limit: work budget exhausted limit=5000000 seconds=0.0526685
+FAIL grammar resource limit: work budget exhausted limit=10000000 seconds=0.105536
+FAIL grammar resource limit: work budget exhausted limit=20000000 seconds=0.212517
+FAIL grammar resource limit: work budget exhausted limit=50000000 seconds=0.527341
+FAIL grammar resource limit: work budget exhausted limit=100000000 seconds=1.08001
+schema {"type":"object"}
+PASS bytes=1051085 limit=5000000 seconds=0.03176
+PASS bytes=1051085 limit=10000000 seconds=0.0287788
+PASS bytes=1051085 limit=20000000 seconds=0.0288178
+PASS bytes=1051085 limit=50000000 seconds=0.0288881
+PASS bytes=1051085 limit=100000000 seconds=0.0293234
+schema {"type":"object","properties":{"title":{"type":"string","minLength":1,"maxLength":36}},"required":["title"],"additionalProperties":false}
+PASS bytes=5405341 limit=150000000 seconds=1.17585
+PASS bytes=5405341 limit=220000000 seconds=1.16429
+PASS bytes=5405341 limit=300000000 seconds=1.16587
+schema {"type":"object"}
+PASS bytes=1051085 limit=150000000 seconds=0.0284474
+PASS bytes=1051085 limit=220000000 seconds=0.0285412
+PASS bytes=1051085 limit=300000000 seconds=0.0285303

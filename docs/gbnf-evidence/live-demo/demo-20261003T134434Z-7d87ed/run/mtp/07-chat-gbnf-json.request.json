@@ -1,0 +1,13 @@
+{
+  "model": "qwen3.8-flash-next",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Reply with exactly this sentence: The sky is purple and the number is 999."
+    }
+  ],
+  "reasoning_effort": "none",
+  "temperature": 0,
+  "max_tokens": 64,
+  "grammar": "root ::= \"color=\" color \";count=\" count \"\\n\"\ncolor ::= \"red\" | \"green\" | \"blue\"\ncount ::= [1-3]"
+}

@@ -1,0 +1,36 @@
+[
+  {
+    "example_count": 0,
+    "original_result": "fail",
+    "original_receipt": "ubuntu-original-observer/examples-0/result.json",
+    "corrected_observations": {
+      "client_observed_failing_tests": true,
+      "client_verified_after_failure": true,
+      "expected_missing_file_failure": true,
+      "errors_with_zero_shell_status": [
+        1,
+        2
+      ],
+      "command_observation_version": 2
+    },
+    "independent_verifier_passed": true,
+    "note": "Reassessment of saved output, not a rerun. The original receipt is unchanged; a fresh baseline is in codex-ubuntu/."
+  },
+  {
+    "example_count": 1,
+    "original_result": "fail",
+    "original_receipt": "ubuntu-original-observer/examples-1/result.json",
+    "corrected_observations": {
+      "client_observed_failing_tests": true,
+      "client_verified_after_failure": true,
+      "expected_missing_file_failure": true,
+      "errors_with_zero_shell_status": [
+        1,
+        2
+      ],
+      "command_observation_version": 2
+    },
+    "independent_verifier_passed": true,
+    "note": "Reassessment of saved output, not a rerun. The original receipt is unchanged; a fresh baseline is in codex-ubuntu/."
+  }
+]

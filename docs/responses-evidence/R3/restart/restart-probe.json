@@ -1,0 +1,15 @@
+{
+  "result": "pass",
+  "server_pids": [
+    18208,
+    7452
+  ],
+  "server": "Strata HTTP + Service + MockEngine",
+  "model_output_provenance": "synthetic scripts in this probe",
+  "persisted_files": [
+    "deployment key only"
+  ],
+  "encrypted_only_reasoning_replayed": true,
+  "no_response_store": true,
+  "native_inference_test": false
+}

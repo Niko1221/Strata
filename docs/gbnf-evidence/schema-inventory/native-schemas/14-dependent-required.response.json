@@ -1,0 +1,79 @@
+{
+  "id": "resp_4c825a566d274ff0914c1966dc09f068",
+  "object": "response",
+  "created_at": 1791060635,
+  "status": "completed",
+  "completed_at": 1791060636,
+  "error": null,
+  "incomplete_details": null,
+  "instructions": null,
+  "model": "qwen3.8-flash-next",
+  "output": [
+    {
+      "id": "msg_a8d44ed1ecd54a07b2ffcd5261513c62",
+      "type": "message",
+      "status": "completed",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "{\"credit_card\": \"example\", \"billing_address\": \"example street\"}",
+          "annotations": [],
+          "logprobs": []
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 131,
+    "output_tokens": 16,
+    "total_tokens": 147,
+    "input_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 131
+    },
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    }
+  },
+  "store": false,
+  "background": false,
+  "previous_response_id": null,
+  "max_output_tokens": 512,
+  "temperature": 0,
+  "top_p": 0.95,
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "14_dependent_required",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "credit_card": {
+            "type": "string"
+          },
+          "billing_address": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "additionalProperties": false,
+        "dependentRequired": {
+          "credit_card": [
+            "billing_address"
+          ]
+        }
+      }
+    }
+  },
+  "tools": [],
+  "tool_choice": "auto",
+  "parallel_tool_calls": true,
+  "reasoning": {
+    "effort": "none",
+    "summary": null
+  },
+  "truncation": "disabled",
+  "metadata": {}
+}

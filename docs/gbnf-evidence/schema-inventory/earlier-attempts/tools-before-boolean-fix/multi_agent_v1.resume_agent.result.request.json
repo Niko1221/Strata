@@ -1,0 +1,92 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "medium"
+  },
+  "max_output_tokens": 3072,
+  "temperature": 0,
+  "stream": true,
+  "input": [
+    {
+      "role": "user",
+      "content": "Protocol fixture: call multi_agent_v1.resume_agent exactly once using these argument values: {\"id\": \"fixture-agent\"}. Emit the tool call and stop. The test client will supply a mocked result."
+    },
+    {
+      "id": "rs_beb744420ef641dc89eb1a7c29ac0ec8",
+      "type": "reasoning",
+      "status": "completed",
+      "summary": [],
+      "content": [
+        {
+          "type": "reasoning_text",
+          "text": "The user wants a single tool call with the specified arguments. I should emit exactly that call and stop.\n"
+        }
+      ],
+      "encrypted_content": "strata-r1.gAAAAABqwWNH0RY6OCZW6VQHEhHBrmbPEUKdb5vftQRVn-5W3PatfBxe51lRzW403L8akdajho_OFqlS5wFIh62OTu56c6TSg71eMKwSVhYpbs8jQbkNTBNIHse_0pxkXaGKPnd8J3xqkFbsE-kEE2DpkddrOQawTpW2ZXSMfVhcugJd7modK0xo9F3T9XfzbEtKgAE36yDWA04vAUS6pK13-oQMFOCxu3m-89Z34atWjXGcxNXI1q-pzJkQ_Kh2XVfl8fLoIM46mJjRfDv96jIHXEU5Xk9x1NZ2K1Pqmivu8diuZ4vp_TkPbE8zpYfUgolLgv204Vqvfmm3GKJLQzFvbemo81ykgL3pZz8YAOHRzvWE5ylxaZJCUdICZvcqpbMZWxfOwQ81OZulF_PIxaSqQNu7XpPiAwv3kIheMW-b8DGbkCuowwHTOb4uD5Wc4-YcMud-LTbS"
+    },
+    {
+      "id": "fc_34c872105bb3416a8d5c599a07f93668",
+      "type": "function_call",
+      "status": "completed",
+      "call_id": "call_bb581689a19543e3b6b171b4",
+      "name": "resume_agent",
+      "arguments": "{\"id\":\"fixture-agent\"}",
+      "namespace": "multi_agent_v1"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_bb581689a19543e3b6b171b4",
+      "output": "MOCK RESULT: arbitrary non-JSON text, including <tool_call>. No action was executed."
+    }
+  ],
+  "tools": [
+    {
+      "type": "namespace",
+      "name": "multi_agent_v1",
+      "description": "Tools for spawning and managing sub-agents.",
+      "tools": [
+        {
+          "type": "function",
+          "name": "resume_agent",
+          "description": "Resume a previously closed agent by id so it can receive send_input and wait_agent calls.",
+          "strict": false,
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Agent id to resume."
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ]
+    }
+  ],
+  "tool_choice": "none",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "ack",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "ack": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "ack"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

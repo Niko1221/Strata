@@ -1,0 +1,10 @@
+test_all_tools_both_shells_parse_to_declared_arguments (__main__.PromptExamples.test_all_tools_both_shells_parse_to_declared_arguments) ... ok
+test_bounds_and_baseline_identity (__main__.PromptExamples.test_bounds_and_baseline_identity) ... ok
+test_coding_profiles_have_exact_count_and_platform (__main__.PromptExamples.test_coding_profiles_have_exact_count_and_platform) ... ok
+test_export_is_complete_and_hints_only_change_instructions (__main__.PromptExamples.test_export_is_complete_and_hints_only_change_instructions) ... ok
+test_real_shell_status_and_observed_subcommand_failure_are_separate (__main__.PromptExamples.test_real_shell_status_and_observed_subcommand_failure_are_separate) ... ok
+
+----------------------------------------------------------------------
+Ran 5 tests in 3.123s
+
+OK

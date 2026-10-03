@@ -1,0 +1,87 @@
+event: response.created
+data: {"type": "response.created", "sequence_number": 0, "response": {"id": "resp_f8cbb1d370c2409e9394be1f94f0f1aa", "object": "response", "created_at": 1791060597, "status": "queued", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "get_goal", "description": "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.", "strict": false, "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+event: response.in_progress
+data: {"type": "response.in_progress", "sequence_number": 1, "response": {"id": "resp_f8cbb1d370c2409e9394be1f94f0f1aa", "object": "response", "created_at": 1791060597, "status": "in_progress", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "get_goal", "description": "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.", "strict": false, "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"id": "rs_4cb7c4efe484465a9d1819f5fef9a606", "type": "reasoning", "status": "in_progress", "summary": [], "content": [{"type": "reasoning_text", "text": ""}]}}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 3, "item_id": "rs_4cb7c4efe484465a9d1819f5fef9a606", "output_index": 0, "content_index": 0, "delta": "The"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 4, "item_id": "rs_4cb7c4efe484465a9d1819f5fef9a606", "output_index": 0, "content_index": 0, "delta": " instruction"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 5, "item_id": "rs_4cb7c4efe484465a9d1819f5fef9a606", "output_index": 0, "content_index": 0, "delta": " is"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 6, "item_id": "rs_4cb7c4efe484465a9d1819f5fef9a606", "output_index": 0, "content_index": 0, "delta": " clear"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 7, "item_id": "rs_4cb7c4efe484465a9d1819f5fef9a606", "output_index": 0, "content_index": 0, "delta": ":"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 8, "item_id": "rs_4cb7c4efe484465a9d1819f5fef9a606", "output_index": 0, "content_index": 0, "delta": " call"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 9, "item_id": "rs_4cb7c4efe484465a9d1819f5fef9a606", "output_index": 0, "content_index": 0, "delta": " get"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 10, "item_id": "rs_4cb7c4efe484465a9d1819f5fef9a606", "output_index": 0, "content_index": 0, "delta": "_goal"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 11, "item_id": "rs_4cb7c4efe484465a9d1819f5fef9a606", "output_index": 0, "content_index": 0, "delta": " once"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 12, "item_id": "rs_4cb7c4efe484465a9d1819f5fef9a606", "output_index": 0, "content_index": 0, "delta": " with"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 13, "item_id": "rs_4cb7c4efe484465a9d1819f5fef9a606", "output_index": 0, "content_index": 0, "delta": " empty"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 14, "item_id": "rs_4cb7c4efe484465a9d1819f5fef9a606", "output_index": 0, "content_index": 0, "delta": " arguments"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 15, "item_id": "rs_4cb7c4efe484465a9d1819f5fef9a606", "output_index": 0, "content_index": 0, "delta": " and"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 16, "item_id": "rs_4cb7c4efe484465a9d1819f5fef9a606", "output_index": 0, "content_index": 0, "delta": " stop"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 17, "item_id": "rs_4cb7c4efe484465a9d1819f5fef9a606", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 18, "item_id": "rs_4cb7c4efe484465a9d1819f5fef9a606", "output_index": 0, "content_index": 0, "delta": "\n"}
+
+event: response.reasoning_text.done
+data: {"type": "response.reasoning_text.done", "sequence_number": 19, "item_id": "rs_4cb7c4efe484465a9d1819f5fef9a606", "output_index": 0, "content_index": 0, "text": "The instruction is clear: call get_goal once with empty arguments and stop.\n"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 20, "output_index": 0, "item": {"id": "rs_4cb7c4efe484465a9d1819f5fef9a606", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The instruction is clear: call get_goal once with empty arguments and stop.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWp49x-eb-4OuImjP4TW_ROgDVa-_QQIv0RuXU4h8jysvdCe5UNv4b5J4l44vxbDt5bo30LvS5HVwD356Qis95_xlPemtMHA3-NmZ4z7dHcQnhU05i_JQQ7RCThfPfgKzo73MxtyStajdxblz0WPmP8DJVtwhsmTaSOgmSN2EtLEL8vDlQPVvMRh249dMByWQv6rrI298VuhO5jDyHel9nOAz7TyGBY7isPE8B-dV3UWQNLP_uIb_wcho-y2LM0JyyCZo_Jzze5xwEOTlloduaJBl9iGYUzUtatlZc1g6G2FcFmZYxGJliktVe9_rKIdB0ZnEhoMo8I29DXMvasCpHZvSPR4nAVwPoc9BL78aJJBczjF09VD_BGxkP7XMuXy3g-5oukGP3GyCsItFj3G-5mMQA=="}}
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 21, "output_index": 1, "item": {"id": "fc_61732003de304997a6fd7e97599287e6", "type": "function_call", "status": "in_progress", "call_id": "call_047ad9f6e8e64765a5ed03b9", "name": "get_goal", "arguments": ""}}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 22, "item_id": "fc_61732003de304997a6fd7e97599287e6", "output_index": 1, "delta": "{"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 23, "item_id": "fc_61732003de304997a6fd7e97599287e6", "output_index": 1, "delta": "}"}
+
+event: response.function_call_arguments.done
+data: {"type": "response.function_call_arguments.done", "sequence_number": 24, "item_id": "fc_61732003de304997a6fd7e97599287e6", "output_index": 1, "arguments": "{}"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 25, "output_index": 1, "item": {"id": "fc_61732003de304997a6fd7e97599287e6", "type": "function_call", "status": "completed", "call_id": "call_047ad9f6e8e64765a5ed03b9", "name": "get_goal", "arguments": "{}"}}
+
+event: response.completed
+data: {"type": "response.completed", "sequence_number": 26, "response": {"id": "resp_f8cbb1d370c2409e9394be1f94f0f1aa", "object": "response", "created_at": 1791060597, "status": "completed", "completed_at": 1791060600, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [{"id": "rs_4cb7c4efe484465a9d1819f5fef9a606", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The instruction is clear: call get_goal once with empty arguments and stop.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWp49x-eb-4OuImjP4TW_ROgDVa-_QQIv0RuXU4h8jysvdCe5UNv4b5J4l44vxbDt5bo30LvS5HVwD356Qis95_xlPemtMHA3-NmZ4z7dHcQnhU05i_JQQ7RCThfPfgKzo73MxtyStajdxblz0WPmP8DJVtwhsmTaSOgmSN2EtLEL8vDlQPVvMRh249dMByWQv6rrI298VuhO5jDyHel9nOAz7TyGBY7isPE8B-dV3UWQNLP_uIb_wcho-y2LM0JyyCZo_Jzze5xwEOTlloduaJBl9iGYUzUtatlZc1g6G2FcFmZYxGJliktVe9_rKIdB0ZnEhoMo8I29DXMvasCpHZvSPR4nAVwPoc9BL78aJJBczjF09VD_BGxkP7XMuXy3g-5oukGP3GyCsItFj3G-5mMQA=="}, {"id": "fc_61732003de304997a6fd7e97599287e6", "type": "function_call", "status": "completed", "call_id": "call_047ad9f6e8e64765a5ed03b9", "name": "get_goal", "arguments": "{}"}], "usage": {"input_tokens": 359, "output_tokens": 32, "total_tokens": 391, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 359}, "output_tokens_details": {"reasoning_tokens": 17}}, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "get_goal", "description": "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.", "strict": false, "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+

@@ -1,0 +1,74 @@
+[
+  {
+    "type": "function_call",
+    "name": "exec_command",
+    "arguments": "{\"cmd\":\"Set-Location 'C:\\\\Users\\\\dflanag3\\\\Documents\\\\Strata-JSON-Final-20261003'; ls\"}",
+    "call_id": "call_8c10569aa33441529cf6accb",
+    "internal_chat_message_metadata_passthrough": {
+      "turn_id": "01a10337-7c3f-74b2-b229-ff3467574b69"
+    }
+  },
+  {
+    "type": "function_call_output",
+    "call_id": "call_8c10569aa33441529cf6accb",
+    "output": "Chunk ID: ded2a0\nWall time: 0.5675 seconds\nProcess exited with code 0\nOriginal token count: 142\nOutput:\n\r\n\r\n    Directory: <FIXTURE_WORKSPACE>\r\n\r\n\r\nMode                 LastWriteTime         Length Name                                                                 \r\n----                 -------------         ------ ----                                                                 \r\n-a----         10/3/2026   3:18 PM             34 calc.py                                                              \r\n-a----         10/3/2026   3:18 PM            342 test_calc.py                                                         \r\n\r\n\r\n",
+    "internal_chat_message_metadata_passthrough": {
+      "turn_id": "01a10337-7c3f-74b2-b229-ff3467574b69",
+      "create_time": 1791055387.3231783
+    }
+  },
+  {
+    "type": "function_call",
+    "name": "exec_command",
+    "arguments": "{\"cmd\":\"Get-Content calc.py; echo '---'; Get-Content test_calc.py\"}",
+    "call_id": "call_9b5cd4c693a24ccdbde783c2",
+    "internal_chat_message_metadata_passthrough": {
+      "turn_id": "01a10337-7c3f-74b2-b229-ff3467574b69"
+    }
+  },
+  {
+    "type": "function_call_output",
+    "call_id": "call_9b5cd4c693a24ccdbde783c2",
+    "output": "Chunk ID: 66be3e\nWall time: 0.3732 seconds\nProcess exited with code 0\nOriginal token count: 96\nOutput:\ndef add(a, b):\r\n    return a - b\r\n---\r\nimport unittest\r\nfrom calc import add\r\n\r\nclass AdditionTests(unittest.TestCase):\r\n    def test_positive(self):\r\n        self.assertEqual(add(2, 3), 5)\r\n    def test_negative(self):\r\n        self.assertEqual(add(-4, -2), -6)\r\n    def test_zero(self):\r\n        self.assertEqual(add(0, 0), 0)\r\n\r\nif __name__ == '__main__':\r\n    unittest.main()\r\n",
+    "internal_chat_message_metadata_passthrough": {
+      "turn_id": "01a10337-7c3f-74b2-b229-ff3467574b69",
+      "create_time": 1791055433.7759266
+    }
+  },
+  {
+    "type": "function_call",
+    "name": "exec_command",
+    "arguments": "{\"cmd\":\"Set-Content -Path calc.py -Value @'\\ndef add(a, b):\\n    return a + b\\n'@ -Encoding utf8\"}",
+    "call_id": "call_df78296ed90b446e9c5b057f",
+    "internal_chat_message_metadata_passthrough": {
+      "turn_id": "01a10337-7c3f-74b2-b229-ff3467574b69"
+    }
+  },
+  {
+    "type": "function_call_output",
+    "call_id": "call_df78296ed90b446e9c5b057f",
+    "output": "Chunk ID: 1a2374\nWall time: 0.3049 seconds\nProcess exited with code 0\nOriginal token count: 0\nOutput:\n",
+    "internal_chat_message_metadata_passthrough": {
+      "turn_id": "01a10337-7c3f-74b2-b229-ff3467574b69",
+      "create_time": 1791055441.1723988
+    }
+  },
+  {
+    "type": "function_call",
+    "name": "exec_command",
+    "arguments": "{\"cmd\":\"Get-Content calc.py; python -m unittest -v test_calc.py\"}",
+    "call_id": "call_9fefcbcdc5ee421faaf460da",
+    "internal_chat_message_metadata_passthrough": {
+      "turn_id": "01a10337-7c3f-74b2-b229-ff3467574b69"
+    }
+  },
+  {
+    "type": "function_call_output",
+    "call_id": "call_9fefcbcdc5ee421faaf460da",
+    "output": "Chunk ID: 984c38\nWall time: 0.5370 seconds\nProcess exited with code 0\nOriginal token count: 79\nOutput:\ndef add(a, b):\r\n    return a + b\r\ntest_negative (test_calc.AdditionTests.test_negative) ... ok\r\ntest_positive (test_calc.AdditionTests.test_positive) ... ok\r\ntest_zero (test_calc.AdditionTests.test_zero) ... ok\r\n\r\n----------------------------------------------------------------------\r\nRan 3 tests in 0.000s\r\n\r\nOK\r\n",
+    "internal_chat_message_metadata_passthrough": {
+      "turn_id": "01a10337-7c3f-74b2-b229-ff3467574b69",
+      "create_time": 1791055448.466856
+    }
+  }
+]

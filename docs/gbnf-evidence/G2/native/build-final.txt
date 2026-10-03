@@ -1,0 +1,7 @@
+[0/2] Re-checking globbed directories...
+[1/7] Building CXX object CMakeFiles/grammar_sampler_test.dir/src/kernels/grammar_sampler_test.cpp.o
+[2/7] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/sampler.cu.o
+[3/7] Linking CXX static library libstrata_kernels.a
+[4/7] Linking CXX executable grammar_sampler_test
+[5/7] Linking CXX executable sampler_parity
+[6/7] Linking CXX executable strata

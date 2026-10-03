@@ -1,0 +1,148 @@
+test_basic (test_settings.SettingsTests.test_basic) ... ok
+test_case_and_order (test_settings.SettingsTests.test_case_and_order) ... ok
+test_duplicate (test_settings.SettingsTests.test_duplicate) ... FAIL
+test_empty (test_settings.SettingsTests.test_empty) ... ERROR
+test_empty_key (test_settings.SettingsTests.test_empty_key) ... FAIL
+test_first_equal (test_settings.SettingsTests.test_first_equal) ... ERROR
+test_line_endings (test_settings.SettingsTests.test_line_endings) ... ERROR
+test_literal_fixture (test_settings.SettingsTests.test_literal_fixture) ... ERROR
+test_missing_equal (test_settings.SettingsTests.test_missing_equal) ... FAIL
+test_trim_and_empty_value (test_settings.SettingsTests.test_trim_and_empty_value) ... FAIL
+test_type (test_settings.SettingsTests.test_type) ... 
+  test_type (test_settings.SettingsTests.test_type) (value=None) ... ERROR
+  test_type (test_settings.SettingsTests.test_type) (value=1) ... ERROR
+  test_type (test_settings.SettingsTests.test_type) (value=[]) ... ERROR
+test_unicode (test_settings.SettingsTests.test_unicode) ... ok
+
+======================================================================
+ERROR: test_empty (test_settings.SettingsTests.test_empty)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/interactive/chat-20261003T211458Z-485aac/codex-ubuntu/examples-2/coding workspace/test_settings.py", line 9, in test_empty
+    self.assertEqual(parse_settings(" \n\t\r\n  # comment\n"), {})
+                     ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/interactive/chat-20261003T211458Z-485aac/codex-ubuntu/examples-2/coding workspace/settings_parser.py", line 6, in parse_settings
+    key, value = line.split("=")
+    ^^^^^^^^^^
+ValueError: not enough values to unpack (expected 2, got 1)
+
+======================================================================
+ERROR: test_first_equal (test_settings.SettingsTests.test_first_equal)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/interactive/chat-20261003T211458Z-485aac/codex-ubuntu/examples-2/coding workspace/test_settings.py", line 13, in test_first_equal
+    self.assertEqual(parse_settings("url=https://example.invalid/?a=b=c"), {"url": "https://example.invalid/?a=b=c"})
+                     ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/interactive/chat-20261003T211458Z-485aac/codex-ubuntu/examples-2/coding workspace/settings_parser.py", line 6, in parse_settings
+    key, value = line.split("=")
+    ^^^^^^^^^^
+ValueError: too many values to unpack (expected 2, got 4)
+
+======================================================================
+ERROR: test_line_endings (test_settings.SettingsTests.test_line_endings)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/interactive/chat-20261003T211458Z-485aac/codex-ubuntu/examples-2/coding workspace/test_settings.py", line 17, in test_line_endings
+    self.assertEqual(parse_settings("a=1\rb=2\r\nc=3\n"), {"a": "1", "b": "2", "c": "3"})
+                     ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/interactive/chat-20261003T211458Z-485aac/codex-ubuntu/examples-2/coding workspace/settings_parser.py", line 6, in parse_settings
+    key, value = line.split("=")
+    ^^^^^^^^^^
+ValueError: too many values to unpack (expected 2, got 3)
+
+======================================================================
+ERROR: test_literal_fixture (test_settings.SettingsTests.test_literal_fixture)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/interactive/chat-20261003T211458Z-485aac/codex-ubuntu/examples-2/coding workspace/test_settings.py", line 20, in test_literal_fixture
+    self.assertEqual(parse_settings(data)["literal"], '<tool_call>{"x":"a=b"}</tool_call> # data')
+                     ~~~~~~~~~~~~~~^^^^^^
+  File "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/interactive/chat-20261003T211458Z-485aac/codex-ubuntu/examples-2/coding workspace/settings_parser.py", line 6, in parse_settings
+    key, value = line.split("=")
+    ^^^^^^^^^^
+ValueError: too many values to unpack (expected 2, got 3)
+
+======================================================================
+ERROR: test_type (test_settings.SettingsTests.test_type) (value=None)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/interactive/chat-20261003T211458Z-485aac/codex-ubuntu/examples-2/coding workspace/test_settings.py", line 34, in test_type
+    parse_settings(value)
+    ~~~~~~~~~~~~~~^^^^^^^
+  File "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/interactive/chat-20261003T211458Z-485aac/codex-ubuntu/examples-2/coding workspace/settings_parser.py", line 3, in parse_settings
+    for line in text.split("\n"):
+                ^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'split'
+
+======================================================================
+ERROR: test_type (test_settings.SettingsTests.test_type) (value=1)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/interactive/chat-20261003T211458Z-485aac/codex-ubuntu/examples-2/coding workspace/test_settings.py", line 34, in test_type
+    parse_settings(value)
+    ~~~~~~~~~~~~~~^^^^^^^
+  File "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/interactive/chat-20261003T211458Z-485aac/codex-ubuntu/examples-2/coding workspace/settings_parser.py", line 3, in parse_settings
+    for line in text.split("\n"):
+                ^^^^^^^^^^
+AttributeError: 'int' object has no attribute 'split'
+
+======================================================================
+ERROR: test_type (test_settings.SettingsTests.test_type) (value=[])
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/interactive/chat-20261003T211458Z-485aac/codex-ubuntu/examples-2/coding workspace/test_settings.py", line 34, in test_type
+    parse_settings(value)
+    ~~~~~~~~~~~~~~^^^^^^^
+  File "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/interactive/chat-20261003T211458Z-485aac/codex-ubuntu/examples-2/coding workspace/settings_parser.py", line 3, in parse_settings
+    for line in text.split("\n"):
+                ^^^^^^^^^^
+AttributeError: 'list' object has no attribute 'split'
+
+======================================================================
+FAIL: test_duplicate (test_settings.SettingsTests.test_duplicate)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/interactive/chat-20261003T211458Z-485aac/codex-ubuntu/examples-2/coding workspace/test_settings.py", line 23, in test_duplicate
+    with self.assertRaisesRegex(ValueError, "3"):
+         ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_empty_key (test_settings.SettingsTests.test_empty_key)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/interactive/chat-20261003T211458Z-485aac/codex-ubuntu/examples-2/coding workspace/test_settings.py", line 26, in test_empty_key
+    with self.assertRaisesRegex(ValueError, "2"):
+         ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_missing_equal (test_settings.SettingsTests.test_missing_equal)
+----------------------------------------------------------------------
+ValueError: not enough values to unpack (expected 2, got 1)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/interactive/chat-20261003T211458Z-485aac/codex-ubuntu/examples-2/coding workspace/test_settings.py", line 29, in test_missing_equal
+    with self.assertRaisesRegex(ValueError, "3"):
+         ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+AssertionError: "3" does not match "not enough values to unpack (expected 2, got 1)"
+
+======================================================================
+FAIL: test_trim_and_empty_value (test_settings.SettingsTests.test_trim_and_empty_value)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/interactive/chat-20261003T211458Z-485aac/codex-ubuntu/examples-2/coding workspace/test_settings.py", line 11, in test_trim_and_empty_value
+    self.assertEqual(parse_settings("  a =  1  \nempty=  "), {"a": "1", "empty": ""})
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'  a ': '  1  ', 'empty': '  '} != {'a': '1', 'empty': ''}
+- {'  a ': '  1  ', 'empty': '  '}
+?   -- -    -- --             --
+
++ {'a': '1', 'empty': ''}
+
+----------------------------------------------------------------------
+Ran 12 tests in 0.002s
+
+FAILED (failures=4, errors=7)

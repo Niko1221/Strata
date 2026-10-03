@@ -1,0 +1,10 @@
+Repair parse_settings(text) in settings_parser.py. Use only the Python standard library.
+Input must be a str, otherwise raise TypeError. Return a normal dict, preserving insertion order.
+Use splitlines() so LF, CRLF, and CR work. Ignore blank lines and lines whose stripped text begins '#'.
+Every remaining line must contain '='. Split only at the first '='. Strip whitespace around key and value.
+An empty value is valid. An empty key, a missing '=', or a duplicate key raises ValueError whose message
+includes the original 1-based physical line number. Keys are case-sensitive. Do not unquote, unescape,
+expand environment variables, interpret inline '#', or execute values. Preserve Unicode exactly.
+Only settings_parser.py may change. Do not modify this specification, tests, fixtures, or sentinel bytes.
+Run python3 -B -m unittest -v test_settings.py before and after your edit.
+Use Bash quoting for file names containing spaces or brackets. No network or installations.

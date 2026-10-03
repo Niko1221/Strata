@@ -1,0 +1,214 @@
+[strata] starting the engine: reading the model's weights ...
+[strata] mapping the experts from the model files (about 30 GB, --mmap-experts): they are not loaded into RAM - the OS file cache reads them as the GPU's expert cache fills and as requests need them.
+         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.
+         Please wait and don't close this window; the browser opens when it is ready.
+[strata] filling the GPU's expert cache (7815 experts, 14.88 GiB of VRAM) ...
+[strata] still starting (25 s) - please wait ...
+[strata] almost ready ...
+target capability {"info": {"version": "0.1.38", "context": 4096, "kv": "int8", "kv_resident": 0, "expert_slots": 7815, "expert_cache_mib": 15233, "expert_slots_primary": 7815, "expert_cache_primary_mib": 15233, "spec": 1, "mtp_max": 0, "lookup": 0, "vram_free_mib": 3818, "cvec": 0, "arena_mib": 0, "pool_workers": 5, "pcie_frac": "0.55", "spec_min_p": "0.00", "conversation_cache_mib": 0, "conversation_cache_slots": 4, "conversation_cache_min_free_mib": 2560, "decode_mode": "target", "requested_spec": 1, "requeste
+[strata] reading the prompt: 20 of 27 tokens, 3 s so far
+[strata] answering: 5 of max 128 tokens, 16.6 tok/s, 4 s
+[strata] done: 16 tokens in 5 s (14.4 tok/s) (stop, cancel=False), expert cache 81.0% hit
+responses JSON literal markers and Unicode {"text": "<think>literal</think>\n猫 café", "status": "completed", "wire": {"id": "resp_bd1147cd140d4b3fa4e892c7d89943ad", "access_programs": null, "created_at": 1791013967.0, "error": null, "incomplete_details": null, "instructions": null, "metadata": {}, "model": "qwen3.8-flash-next", "object": "response", "output": [{"id": "msg_47ad57074ba848c595e0f4a2479b7132", "content": [{"annotations": [], "text": "<think>literal</think>\n猫 café", "type": "output_text", "logprobs": []}], "role": "assistant
+[strata] done: 16 tokens in 1 s (42.7 tok/s) (stop, cancel=False), expert cache 81.0% hit
+responses SSE literal markers and Unicode {"text": "<think>literal</think>\n猫 café", "status": "completed", "wire": [{"response": {"id": "resp_9f04b1308d164639a84f8e3a8b623e50", "access_programs": null, "created_at": 1791013972.0, "error": null, "incomplete_details": null, "instructions": null, "metadata": {}, "model": "qwen3.8-flash-next", "object": "response", "output": [], "parallel_tool_calls": true, "temperature": 0.0, "tool_choice": "auto", "tools": [], "top_p": 1.0, "background": false, "completed_at": null, "conversation": null,
+[strata] done: 14 tokens in 1 s (22.7 tok/s) (stop, cancel=False), expert cache 80.0% hit
+responses sampled SSE {"text": "<think>literal</think>\n猫 café", "status": "completed", "wire": [{"response": {"id": "resp_77ab60c43fbb48429d7b2387d1858e45", "access_programs": null, "created_at": 1791013973.0, "error": null, "incomplete_details": null, "instructions": null, "metadata": {}, "model": "qwen3.8-flash-next", "object": "response", "output": [], "parallel_tool_calls": true, "temperature": 0.8, "tool_choice": "auto", "tools": [], "top_p": 0.85, "background": false, "completed_at": null, "conversation": null
+[strata] done: 1 tokens in 0 s (0.0 tok/s) (stop, cancel=False), expert cache 74.8% hit
+responses epsilon completion {"text": "", "status": "completed", "wire": [{"response": {"id": "resp_919caf83f5c1404da9699accc23e0330", "access_programs": null, "created_at": 1791013974.0, "error": null, "incomplete_details": null, "instructions": null, "metadata": {}, "model": "qwen3.8-flash-next", "object": "response", "output": [], "parallel_tool_calls": true, "temperature": 0.0, "tool_choice": "auto", "tools": [], "top_p": 1.0, "background": false, "completed_at": null, "conversation": null, "max_output_tokens": 128, "ma
+[strata] reading the prompt: 18 of 19 tokens, 1 s so far
+[strata] done: 5 tokens in 2 s (13.0 tok/s) (stop, cancel=False), expert cache 69.4% hit
+responses recursive language {"text": "((x))", "status": "completed", "wire": {"id": "resp_7309a028143041669ac39b3f5aa4917f", "access_programs": null, "created_at": 1791013974.0, "error": null, "incomplete_details": null, "instructions": null, "metadata": {}, "model": "qwen3.8-flash-next", "object": "response", "output": [{"id": "msg_38525df4d5b6440d9bce9c8e0b2218c7", "content": [{"annotations": [], "text": "((x))", "type": "output_text", "logprobs": []}], "role": "assistant", "status": "completed", "type": "message", "phas
+responses rejection before SSE headers {"request_extra": {"grammar": "root ::= missing"}, "status": 400, "content_type": "application/json", "error": {"error": {"type": "invalid_request_error", "code": "invalid_grammar", "param": "grammar", "message": "[07:52:56] /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-g1/cpp/grammar_parser.cc:820: EBNF parser error at line 1, column 10: Rule \"missing\" is not defined"}}}
+responses rejection before SSE headers {"request_extra": {"grammar": "root ::= root"}, "status": 400, "content_type": "application/json", "error": {"error": {"type": "invalid_request_error", "code": "invalid_grammar", "param": "grammar", "message": "grammar has no tokenizer-realizable continuation"}}}
+responses rejection before SSE headers {"request_extra": {"grammar": "root ::= \"x\"\u0000"}, "status": 400, "content_type": "application/json", "error": {"error": {"type": "invalid_request_error", "code": "unsupported_parameter", "param": "grammar", "message": "grammar must contain 1..8192 UTF-8 bytes, without NUL"}}}
+responses rejection before SSE headers {"request_extra": {"grammar": "root ::= \"猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫
+responses rejection before SSE headers {"request_extra": {"tools": [{"type": "function", "name": "bad", "strict": false}]}, "status": 400, "content_type": "application/json", "error": {"error": {"type": "invalid_request_error", "code": "unsupported_parameter", "param": "grammar", "message": "grammar cannot be combined with tools or MCP"}}}
+responses rejection before SSE headers {"request_extra": {"stop": "END"}, "status": 400, "content_type": "application/json", "error": {"error": {"type": "invalid_request_error", "code": "unsupported_parameter", "param": "stop", "message": "unsupported parameter"}}}
+responses rejection before SSE headers {"request_extra": {"stream_options": {"include_usage": true}}, "status": 400, "content_type": "application/json", "error": {"error": {"type": "invalid_request_error", "code": "unsupported_parameter", "param": "stream_options", "message": "unsupported parameter"}}}
+responses rejection before SSE headers {"request_extra": {"reasoning": {"effort": "low"}}, "status": 400, "content_type": "application/json", "error": {"error": {"type": "invalid_request_error", "code": "unsupported_parameter", "param": "grammar", "message": "grammar requires reasoning to be explicitly disabled"}}}
+responses rejection before SSE headers {"request_extra": {"text": {"format": {"type": "json_object"}}}, "status": 400, "content_type": "application/json", "error": {"error": {"type": "invalid_request_error", "code": "unsupported_parameter", "param": "grammar", "message": "grammar requires plain text.format"}}}
+[strata] answering: 8 of max 128 tokens, 49.6 tok/s, 1 s
+[strata] done: 16 tokens in 1 s (43.4 tok/s) (stop, cancel=False), expert cache 81.0% hit
+chat JSON literal markers and Unicode {"text": "<think>literal</think>\n猫 café", "status": "stop", "wire": {"id": "chatcmpl-8bf3fc4ed2384394b2410b48", "choices": [{"finish_reason": "stop", "index": 0, "logprobs": null, "message": {"content": "<think>literal</think>\n猫 café", "refusal": null, "role": "assistant", "annotations": null, "audio": null, "function_call": null, "tool_calls": null}}], "created": 1791013976, "model": "qwen3.8-flash-next", "object": "chat.completion", "metadata": null, "moderation": null, "service_tier": null,
+[strata] done: 16 tokens in 1 s (43.5 tok/s) (stop, cancel=False), expert cache 81.0% hit
+chat SSE literal markers and Unicode {"text": "<think>literal</think>\n猫 café", "status": "stop", "wire": [{"id": "chatcmpl-c930e905e985472289a20576", "choices": [{"delta": {"content": "", "function_call": null, "refusal": null, "role": "assistant", "tool_calls": null}, "finish_reason": null, "index": 0, "logprobs": null}], "created": 1791013977, "model": "qwen3.8-flash-next", "object": "chat.completion.chunk", "moderation": null, "obfuscation": null, "service_tier": null, "system_fingerprint": null, "usage": null}, {"id": "chatcmp
+[strata] done: 17 tokens in 1 s (32.1 tok/s) (stop, cancel=False), expert cache 80.3% hit
+chat sampled SSE {"text": "<think>literal</think>\n猫 café", "status": "stop", "wire": [{"id": "chatcmpl-9f2187a9b01244719acf68ae", "choices": [{"delta": {"content": "", "function_call": null, "refusal": null, "role": "assistant", "tool_calls": null}, "finish_reason": null, "index": 0, "logprobs": null}], "created": 1791013977, "model": "qwen3.8-flash-next", "object": "chat.completion.chunk", "moderation": null, "obfuscation": null, "service_tier": null, "system_fingerprint": null, "usage": null}, {"id": "chatcmp
+[strata] done: 1 tokens in 0 s (0.0 tok/s) (stop, cancel=False), expert cache 74.8% hit
+chat epsilon completion {"text": "", "status": "stop", "wire": [{"id": "chatcmpl-fbf24340fcf74856b950bd9d", "choices": [{"delta": {"content": "", "function_call": null, "refusal": null, "role": "assistant", "tool_calls": null}, "finish_reason": null, "index": 0, "logprobs": null}], "created": 1791013978, "model": "qwen3.8-flash-next", "object": "chat.completion.chunk", "moderation": null, "obfuscation": null, "service_tier": null, "system_fingerprint": null, "usage": null}, {"id": "chatcmpl-fbf24340fcf74856b950bd9d", "
+[strata] done: 5 tokens in 1 s (30.3 tok/s) (stop, cancel=False), expert cache 69.4% hit
+chat recursive language {"text": "((x))", "status": "stop", "wire": {"id": "chatcmpl-fa14139e374849b28e9bf54c", "choices": [{"finish_reason": "stop", "index": 0, "logprobs": null, "message": {"content": "((x))", "refusal": null, "role": "assistant", "annotations": null, "audio": null, "function_call": null, "tool_calls": null}}], "created": 1791013978, "model": "qwen3.8-flash-next", "object": "chat.completion", "metadata": null, "moderation": null, "service_tier": null, "system_fingerprint": null, "usage": {"completion
+chat rejection before SSE headers {"request_extra": {"grammar": "root ::= missing"}, "status": 400, "content_type": "application/json", "error": {"error": {"type": "invalid_request_error", "message": "[07:52:59] /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata-g1/cpp/grammar_parser.cc:820: EBNF parser error at line 1, column 10: Rule \"missing\" is not defined"}}}
+chat rejection before SSE headers {"request_extra": {"grammar": "root ::= root"}, "status": 400, "content_type": "application/json", "error": {"error": {"type": "invalid_request_error", "message": "grammar has no tokenizer-realizable continuation"}}}
+chat rejection before SSE headers {"request_extra": {"grammar": "root ::= \"x\"\u0000"}, "status": 400, "content_type": "application/json", "error": {"error": {"type": "invalid_request_error", "message": "grammar must contain 1..8192 UTF-8 bytes, without NUL"}}}
+chat rejection before SSE headers {"request_extra": {"grammar": "root ::= \"猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫猫
+chat rejection before SSE headers {"request_extra": {"tools": [{"type": "function", "name": "bad", "strict": false}]}, "status": 400, "content_type": "application/json", "error": {"error": {"type": "invalid_request_error", "message": "grammar cannot be combined with tools or MCP"}}}
+chat rejection before SSE headers {"request_extra": {"stop": "END"}, "status": 400, "content_type": "application/json", "error": {"error": {"type": "invalid_request_error", "message": "grammar cannot be combined with custom stop strings"}}}
+chat rejection before SSE headers {"request_extra": {"stream_options": {"include_usage": true}}, "status": 400, "content_type": "application/json", "error": {"error": {"type": "invalid_request_error", "message": "grammar does not support stream_options; the existing Chat stream includes usage in its final choice chunk"}}}
+chat rejection before SSE headers {"request_extra": {"reasoning": {"effort": "low"}}, "status": 400, "content_type": "application/json", "error": {"error": {"type": "invalid_request_error", "message": "grammar requires reasoning to be explicitly disabled"}}}
+chat rejection before SSE headers {"request_extra": {"response_format": {"type": "json_object"}}, "status": 400, "content_type": "application/json", "error": {"error": {"type": "invalid_request_error", "message": "grammar cannot be combined with response_format JSON requirements"}}}
+[strata] answering: 7 of max 128 tokens, 39.1 tok/s, 1 s
+[strata] done: 19 tokens in 1 s (34.7 tok/s) (stop, cancel=False), expert cache 80.8% hit
+Chat sampled penalties {"parameters": {"grammar": "root ::= \"<think>literal</think>\\n猫 café\"\n# STOP\n# GEN 4 99\n", "repetition_penalty": 1.2, "penalty_last_n": 64, "top_k": 3, "min_p": 0.05, "seed": 434, "temperature": 0.8, "top_p": 0.85, "presence_penalty": 0.1, "frequency_penalty": 0.2}, "text": "<think>literal</think>\n猫 café", "status": "stop", "wire": [{"id": "chatcmpl-00f38f45a06b40399844e625", "choices": [{"delta": {"content": "", "function_call": null, "refusal": null, "role": "assistant", "tool_calls": n
+[strata] done: 9 tokens in 1 s (22.5 tok/s) (stop, cancel=False), expert cache 75.6% hit
+[strata] done: 1 tokens in 0 s (401.7 tok/s) (length, cancel=False), expert cache 74.8% hit
+SSE UTF-8 budget 1 {"text": "c", "status": "incomplete", "wire": [{"response": {"id": "resp_921055bc5ea4463580d1125d03acc833", "access_programs": null, "created_at": 1791013981.0, "error": null, "incomplete_details": null, "instructions": null, "metadata": {}, "model": "qwen3.8-flash-next", "object": "response", "output": [], "parallel_tool_calls": true, "temperature": 0.0, "tool_choice": "auto", "tools": [], "top_p": 1.0, "background": false, "completed_at": null, "conversation": null, "max_output_tokens": 1, "ma
+[strata] done: 2 tokens in 0 s (75.7 tok/s) (length, cancel=False), expert cache 79.4% hit
+SSE UTF-8 budget 2 {"text": "caf", "status": "incomplete", "wire": [{"response": {"id": "resp_bd499c331c8a4365abba92ba62867299", "access_programs": null, "created_at": 1791013982.0, "error": null, "incomplete_details": null, "instructions": null, "metadata": {}, "model": "qwen3.8-flash-next", "object": "response", "output": [], "parallel_tool_calls": true, "temperature": 0.0, "tool_choice": "auto", "tools": [], "top_p": 1.0, "background": false, "completed_at": null, "conversation": null, "max_output_tokens": 2, "
+[strata] done: 3 tokens in 0 s (55.3 tok/s) (length, cancel=False), expert cache 79.9% hit
+SSE UTF-8 budget 3 {"text": "café", "status": "incomplete", "wire": [{"response": {"id": "resp_3d7644ce41384243ac74d3abc3ad4cc1", "access_programs": null, "created_at": 1791013982.0, "error": null, "incomplete_details": null, "instructions": null, "metadata": {}, "model": "qwen3.8-flash-next", "object": "response", "output": [], "parallel_tool_calls": true, "temperature": 0.0, "tool_choice": "auto", "tools": [], "top_p": 1.0, "background": false, "completed_at": null, "conversation": null, "max_output_tokens": 3,
+[strata] done: 4 tokens in 0 s (42.7 tok/s) (length, cancel=False), expert cache 77.4% hit
+SSE UTF-8 budget 4 {"text": "café ", "status": "incomplete", "wire": [{"response": {"id": "resp_02727819e08943a5bbc0234e5ead8cd8", "access_programs": null, "created_at": 1791013982.0, "error": null, "incomplete_details": null, "instructions": null, "metadata": {}, "model": "qwen3.8-flash-next", "object": "response", "output": [], "parallel_tool_calls": true, "temperature": 0.0, "tool_choice": "auto", "tools": [], "top_p": 1.0, "background": false, "completed_at": null, "conversation": null, "max_output_tokens": 4,
+[strata] done: 5 tokens in 0 s (41.5 tok/s) (length, cancel=False), expert cache 78.0% hit
+SSE UTF-8 budget 5 {"text": "café ", "status": "incomplete", "wire": [{"response": {"id": "resp_36b0eea58a8c476d97c0ee318a440a69", "access_programs": null, "created_at": 1791013983.0, "error": null, "incomplete_details": null, "instructions": null, "metadata": {}, "model": "qwen3.8-flash-next", "object": "response", "output": [], "parallel_tool_calls": true, "temperature": 0.0, "tool_choice": "auto", "tools": [], "top_p": 1.0, "background": false, "completed_at": null, "conversation": null, "max_output_tokens": 5,
+[strata] done: 6 tokens in 0 s (40.0 tok/s) (length, cancel=False), expert cache 77.6% hit
+SSE UTF-8 budget 6 {"text": "café ", "status": "incomplete", "wire": [{"response": {"id": "resp_1851e836064a4ee0a11cb5acd317ca61", "access_programs": null, "created_at": 1791013983.0, "error": null, "incomplete_details": null, "instructions": null, "metadata": {}, "model": "qwen3.8-flash-next", "object": "response", "output": [], "parallel_tool_calls": true, "temperature": 0.0, "tool_choice": "auto", "tools": [], "top_p": 1.0, "background": false, "completed_at": null, "conversation": null, "max_output_tokens": 6,
+[strata] done: 7 tokens in 0 s (37.4 tok/s) (length, cancel=False), expert cache 76.4% hit
+SSE UTF-8 budget 7 {"text": "café ", "status": "incomplete", "wire": [{"response": {"id": "resp_ebc9a79b387741898f4a32a023477b5b", "access_programs": null, "created_at": 1791013983.0, "error": null, "incomplete_details": null, "instructions": null, "metadata": {}, "model": "qwen3.8-flash-next", "object": "response", "output": [], "parallel_tool_calls": true, "temperature": 0.0, "tool_choice": "auto", "tools": [], "top_p": 1.0, "background": false, "completed_at": null, "conversation": null, "max_output_tokens": 7,
+[strata] done: 8 tokens in 0 s (36.4 tok/s) (length, cancel=False), expert cache 75.8% hit
+SSE UTF-8 budget 8 {"text": "café 🐈", "status": "incomplete", "wire": [{"response": {"id": "resp_76d6e50d37a349f8a186c852713be8ea", "access_programs": null, "created_at": 1791013984.0, "error": null, "incomplete_details": null, "instructions": null, "metadata": {}, "model": "qwen3.8-flash-next", "object": "response", "output": [], "parallel_tool_calls": true, "temperature": 0.0, "tool_choice": "auto", "tools": [], "top_p": 1.0, "background": false, "completed_at": null, "conversation": null, "max_output_tokens": 8
+[strata] done: 3 tokens in 0 s (29.5 tok/s) (stop, cancel=False), expert cache 78.6% hit
+[strata] done: 4 tokens in 0 s (40.3 tok/s) (stop, cancel=False), expert cache 80.3% hit
+concurrent adapters independent {"outputs": ["alpha", "beta"]}
+[strata] done: 3 tokens in 0 s (24.2 tok/s) (disconnect, cancel=True), expert cache 78.6% hit
+[strata] done: 4 tokens in 0 s (37.6 tok/s) (stop, cancel=False), expert cache 80.9% hit
+HTTP disconnect drained and next request clean {"text": "true", "history": [{"finish": "disconnect", "output_tokens": 3, "engine_generated": 4}, {"finish": "stop", "output_tokens": 4, "engine_generated": 4}]}
+[strata] done: 2 tokens in 0 s (18.1 tok/s) (stop, cancel=False), expert cache 73.8% hit
+[strata] done: 2 tokens in 0 s (46.8 tok/s) (stop, cancel=False), expert cache 73.8% hit
+benchmark warmup {"output": "4", "plain_native": {"generated": 2, "prompt_tokens": 27, "prompt_ms": 221.9, "decode_ms": 139.9, "finish": "stop", "drafts_accepted": 0, "drafts_offered": 0, "reused": 20, "hits": 708, "lookups": 960, "ram_blobs": 0, "file_blobs": 0, "file_mb": 317.5, "prompt_read": 7}, "grammar_native": {"generated": 2, "prompt_tokens": 27, "prompt_ms": 224.5, "decode_ms": 72.1, "finish": "stop", "drafts_accepted": 0, "drafts_offered": 0, "reused": 20, "hits": 708, "lookups": 960, "ram_blobs": 0, "
+[strata] done: 2 tokens in 0 s (47.9 tok/s) (stop, cancel=False), expert cache 73.8% hit
+[strata] done: 2 tokens in 0 s (47.4 tok/s) (stop, cancel=False), expert cache 73.8% hit
+[strata] done: 2 tokens in 0 s (47.5 tok/s) (stop, cancel=False), expert cache 73.8% hit
+[strata] done: 2 tokens in 0 s (47.6 tok/s) (stop, cancel=False), expert cache 73.8% hit
+[strata] done: 2 tokens in 0 s (47.7 tok/s) (stop, cancel=False), expert cache 73.8% hit
+[strata] done: 2 tokens in 0 s (47.4 tok/s) (stop, cancel=False), expert cache 73.8% hit
+[strata] done: 2 tokens in 0 s (47.6 tok/s) (stop, cancel=False), expert cache 73.8% hit
+[strata] done: 2 tokens in 0 s (47.7 tok/s) (stop, cancel=False), expert cache 73.8% hit
+[strata] done: 2 tokens in 0 s (48.0 tok/s) (stop, cancel=False), expert cache 73.8% hit
+[strata] done: 2 tokens in 0 s (47.2 tok/s) (stop, cancel=False), expert cache 73.8% hit
+[strata] done: 2 tokens in 0 s (47.3 tok/s) (stop, cancel=False), expert cache 73.8% hit
+[strata] done: 2 tokens in 0 s (47.7 tok/s) (stop, cancel=False), expert cache 73.8% hit
+alternating benchmark passed {"rows": 12, "output": "4"}
+[strata] reading the prompt: 20 of 27 tokens, 1 s so far
+[strata] answering: 7 of max 96 tokens, 10.2 tok/s, 2 s
+[strata] answering: 15 of max 96 tokens, 8.8 tok/s, 3 s
+[strata] done: 20 tokens in 3 s (9.3 tok/s) (stop, cancel=False), expert cache 54.6% hit
+[strata] answering: 13 of max 96 tokens, 17.6 tok/s, 1 s
+[strata] done: 20 tokens in 1 s (16.3 tok/s) (stop, cancel=False), expert cache 54.6% hit
+[strata] answering: 14 of max 96 tokens, 16.9 tok/s, 1 s
+[strata] done: 20 tokens in 1 s (16.4 tok/s) (stop, cancel=False), expert cache 54.6% hit
+[strata] answering: 14 of max 96 tokens, 16.9 tok/s, 1 s
+[strata] done: 20 tokens in 1 s (16.4 tok/s) (stop, cancel=False), expert cache 54.6% hit
+[strata] answering: 14 of max 96 tokens, 16.9 tok/s, 1 s
+[strata] done: 20 tokens in 1 s (16.2 tok/s) (stop, cancel=False), expert cache 54.6% hit
+[strata] answering: 14 of max 96 tokens, 16.9 tok/s, 1 s
+[strata] done: 20 tokens in 1 s (16.4 tok/s) (stop, cancel=False), expert cache 54.6% hit
+[strata] answering: 14 of max 96 tokens, 16.9 tok/s, 1 s
+[strata] done: 20 tokens in 1 s (16.4 tok/s) (stop, cancel=False), expert cache 54.6% hit
+[strata] answering: 14 of max 96 tokens, 17.0 tok/s, 1 s
+[strata] done: 20 tokens in 1 s (16.4 tok/s) (stop, cancel=False), expert cache 54.6% hit
+[strata] answering: 14 of max 96 tokens, 16.9 tok/s, 1 s
+[strata] done: 20 tokens in 1 s (16.4 tok/s) (stop, cancel=False), expert cache 54.6% hit
+[strata] answering: 14 of max 96 tokens, 16.9 tok/s, 1 s
+[strata] done: 20 tokens in 1 s (16.4 tok/s) (stop, cancel=False), expert cache 54.6% hit
+[strata] answering: 14 of max 96 tokens, 17.0 tok/s, 1 s
+[strata] done: 20 tokens in 1 s (16.4 tok/s) (stop, cancel=False), expert cache 54.6% hit
+[strata] answering: 14 of max 96 tokens, 16.9 tok/s, 1 s
+[strata] done: 20 tokens in 1 s (16.4 tok/s) (stop, cancel=False), expert cache 54.6% hit
+[strata] answering: 14 of max 96 tokens, 17.0 tok/s, 1 s
+[strata] done: 20 tokens in 1 s (16.5 tok/s) (stop, cancel=False), expert cache 54.6% hit
+[strata] answering: 14 of max 96 tokens, 17.0 tok/s, 1 s
+[strata] done: 20 tokens in 1 s (16.4 tok/s) (stop, cancel=False), expert cache 54.6% hit
+[strata] answering: 14 of max 96 tokens, 16.9 tok/s, 1 s
+[strata] done: 20 tokens in 1 s (16.4 tok/s) (stop, cancel=False), expert cache 54.6% hit
+concurrent benchmark digits {"results": [{"wall_s": 1.4603677999984939, "first_text_delta_s": null}, {"wall_s": 2.9182159269985277, "first_text_delta_s": 1.6955952950011124}]}
+[strata] reading the prompt: 28 of 29 tokens, 1 s so far
+[strata] answering: 16 of max 96 tokens, 15.7 tok/s, 2 s
+[strata] answering: 31 of max 96 tokens, 15.2 tok/s, 3 s
+[strata] done: 34 tokens in 3 s (15.5 tok/s) (stop, cancel=False), expert cache 54.4% hit
+[strata] answering: 16 of max 96 tokens, 20.4 tok/s, 1 s
+[strata] answering: 32 of max 96 tokens, 17.9 tok/s, 2 s
+[strata] done: 34 tokens in 2 s (18.2 tok/s) (stop, cancel=False), expert cache 54.4% hit
+[strata] answering: 16 of max 96 tokens, 20.4 tok/s, 1 s
+[strata] answering: 32 of max 96 tokens, 17.8 tok/s, 2 s
+[strata] done: 34 tokens in 2 s (18.2 tok/s) (stop, cancel=False), expert cache 54.4% hit
+[strata] answering: 16 of max 96 tokens, 20.4 tok/s, 1 s
+[strata] answering: 32 of max 96 tokens, 17.9 tok/s, 2 s
+[strata] done: 34 tokens in 2 s (18.2 tok/s) (stop, cancel=False), expert cache 54.4% hit
+[strata] answering: 16 of max 96 tokens, 20.4 tok/s, 1 s
+[strata] answering: 32 of max 96 tokens, 17.8 tok/s, 2 s
+[strata] done: 34 tokens in 2 s (18.2 tok/s) (stop, cancel=False), expert cache 54.4% hit
+[strata] answering: 16 of max 96 tokens, 20.4 tok/s, 1 s
+[strata] answering: 32 of max 96 tokens, 17.8 tok/s, 2 s
+[strata] done: 34 tokens in 2 s (18.2 tok/s) (stop, cancel=False), expert cache 54.4% hit
+[strata] answering: 16 of max 96 tokens, 20.4 tok/s, 1 s
+[strata] answering: 32 of max 96 tokens, 17.8 tok/s, 2 s
+[strata] done: 34 tokens in 2 s (18.2 tok/s) (stop, cancel=False), expert cache 54.4% hit
+[strata] answering: 16 of max 96 tokens, 20.4 tok/s, 1 s
+[strata] answering: 32 of max 96 tokens, 17.8 tok/s, 2 s
+[strata] done: 34 tokens in 2 s (18.2 tok/s) (stop, cancel=False), expert cache 54.4% hit
+[strata] answering: 16 of max 96 tokens, 20.4 tok/s, 1 s
+[strata] answering: 32 of max 96 tokens, 17.9 tok/s, 2 s
+[strata] done: 34 tokens in 2 s (18.2 tok/s) (stop, cancel=False), expert cache 54.4% hit
+[strata] answering: 16 of max 96 tokens, 20.4 tok/s, 1 s
+[strata] answering: 32 of max 96 tokens, 17.8 tok/s, 2 s
+[strata] done: 34 tokens in 2 s (18.2 tok/s) (stop, cancel=False), expert cache 54.4% hit
+[strata] answering: 16 of max 96 tokens, 20.4 tok/s, 1 s
+[strata] answering: 32 of max 96 tokens, 17.8 tok/s, 2 s
+[strata] done: 34 tokens in 2 s (18.2 tok/s) (stop, cancel=False), expert cache 54.4% hit
+[strata] answering: 16 of max 96 tokens, 20.4 tok/s, 1 s
+[strata] answering: 32 of max 96 tokens, 17.9 tok/s, 2 s
+[strata] done: 34 tokens in 2 s (18.2 tok/s) (stop, cancel=False), expert cache 54.4% hit
+[strata] answering: 16 of max 96 tokens, 20.4 tok/s, 1 s
+[strata] answering: 32 of max 96 tokens, 17.8 tok/s, 2 s
+[strata] done: 34 tokens in 2 s (18.2 tok/s) (stop, cancel=False), expert cache 54.4% hit
+[strata] answering: 16 of max 96 tokens, 20.4 tok/s, 1 s
+[strata] answering: 32 of max 96 tokens, 17.8 tok/s, 2 s
+[strata] done: 34 tokens in 2 s (18.2 tok/s) (stop, cancel=False), expert cache 54.4% hit
+[strata] answering: 16 of max 96 tokens, 20.4 tok/s, 1 s
+[strata] answering: 32 of max 96 tokens, 17.8 tok/s, 2 s
+[strata] done: 34 tokens in 2 s (18.2 tok/s) (stop, cancel=False), expert cache 54.4% hit
+concurrent benchmark repeats {"results": [{"wall_s": 2.0918349339990527, "first_text_delta_s": null}, {"wall_s": 4.180391762005456, "first_text_delta_s": 2.310908515006304}]}
+[strata] answering: 16 of max 96 tokens, 20.4 tok/s, 1 s
+[strata] answering: 32 of max 96 tokens, 17.9 tok/s, 2 s
+[strata] done: 34 tokens in 2 s (18.2 tok/s) (stop, cancel=False), expert cache 54.4% hit
+[strata] answering: 16 of max 96 tokens, 20.4 tok/s, 1 s
+[strata] answering: 32 of max 96 tokens, 17.8 tok/s, 2 s
+[strata] done: 34 tokens in 2 s (18.2 tok/s) (stop, cancel=False), expert cache 54.4% hit
+[strata] answering: 16 of max 96 tokens, 20.4 tok/s, 1 s
+[strata] answering: 32 of max 96 tokens, 17.8 tok/s, 2 s
+[strata] done: 34 tokens in 2 s (18.2 tok/s) (stop, cancel=False), expert cache 54.4% hit
+[strata] answering: 17 of max 96 tokens, 20.2 tok/s, 1 s
+[strata] done: 34 tokens in 2 s (18.2 tok/s) (stop, cancel=False), expert cache 54.4% hit
+[strata] answering: 16 of max 96 tokens, 20.4 tok/s, 1 s
+[strata] answering: 32 of max 96 tokens, 17.9 tok/s, 2 s
+[strata] done: 34 tokens in 2 s (18.2 tok/s) (stop, cancel=False), expert cache 54.4% hit
+[strata] answering: 16 of max 96 tokens, 20.4 tok/s, 1 s
+[strata] answering: 32 of max 96 tokens, 17.8 tok/s, 2 s
+[strata] done: 34 tokens in 2 s (18.2 tok/s) (stop, cancel=False), expert cache 54.4% hit
+[strata] answering: 16 of max 96 tokens, 20.4 tok/s, 1 s
+[strata] answering: 32 of max 96 tokens, 17.9 tok/s, 2 s
+[strata] done: 34 tokens in 2 s (18.2 tok/s) (stop, cancel=False), expert cache 54.4% hit
+[strata] answering: 17 of max 96 tokens, 20.2 tok/s, 1 s
+[strata] done: 34 tokens in 2 s (18.2 tok/s) (stop, cancel=False), expert cache 54.4% hit
+[strata] answering: 16 of max 96 tokens, 20.4 tok/s, 1 s
+[strata] answering: 32 of max 96 tokens, 17.9 tok/s, 2 s
+[strata] done: 34 tokens in 2 s (18.2 tok/s) (stop, cancel=False), expert cache 54.4% hit
+[strata] answering: 17 of max 96 tokens, 20.3 tok/s, 1 s
+[strata] done: 34 tokens in 2 s (18.2 tok/s) (stop, cancel=False), expert cache 54.4% hit
+[strata] answering: 16 of max 96 tokens, 20.4 tok/s, 1 s
+[strata] answering: 32 of max 96 tokens, 17.8 tok/s, 2 s
+[strata] done: 34 tokens in 2 s (18.2 tok/s) (stop, cancel=False), expert cache 54.4% hit
+[strata] answering: 16 of max 96 tokens, 20.4 tok/s, 1 s
+[strata] answering: 32 of max 96 tokens, 17.9 tok/s, 2 s
+[strata] done: 34 tokens in 2 s (18.2 tok/s) (stop, cancel=False), expert cache 54.4% hit
+[strata] answering: 17 of max 96 tokens, 20.2 tok/s, 1 s
+[strata] done: 34 tokens in 2 s (18.2 tok/s) (stop, cancel=False), expert cache 54.4% hit
+[strata] answering: 16 of max 96 tokens, 20.4 tok/s, 1 s
+[strata] answering: 32 of max 96 tokens, 17.6 tok/s, 2 s
+[strata] done: 34 tokens in 2 s (17.9 tok/s) (stop, cancel=False), expert cache 54.4% hit
+[strata] answering: 17 of max 96 tokens, 20.3 tok/s, 1 s
+[strata] done: 34 tokens in 2 s (18.2 tok/s) (stop, cancel=False), expert cache 54.4% hit
+concurrent benchmark sampled-repeats {"results": [{"wall_s": 4.198396662999585, "first_text_delta_s": null}, {"wall_s": 2.115868651002529, "first_text_delta_s": 0.21949449500243645}]}
+constrained speculation benchmark {"rows": 36}

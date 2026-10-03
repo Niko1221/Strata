@@ -1,0 +1,10 @@
+[0/2] Re-checking globbed directories...
+[1/7] Building CXX object CMakeFiles/strata_engine.dir/src/core/mtp.cpp.o
+[2/7] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/sampler.cu.o
+[3/7] Linking CXX static library libstrata_kernels.a
+[4/7] Linking CXX static library libstrata_engine.a
+[5/7] Building CXX object CMakeFiles/strata.dir/src/program/generate.cpp.o
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/program/generate.cpp:864:5: warning: ‘int {anonymous}::argmax(const std::vector<float>&)’ defined but not used [-Wunused-function]
+  864 | int argmax(const std::vector<float>& v) {
+      |     ^~~~~~
+[6/7] Linking CXX executable strata

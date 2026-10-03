@@ -1,0 +1,40 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "none"
+  },
+  "max_output_tokens": 512,
+  "temperature": 0,
+  "input": "Return exactly this JSON value, without explanation: {\"position\": [\"calc.py\", 2]}",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "05_tuple_prefix_items",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "position": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "items": false,
+            "minItems": 2,
+            "maxItems": 2
+          }
+        },
+        "required": [
+          "position"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

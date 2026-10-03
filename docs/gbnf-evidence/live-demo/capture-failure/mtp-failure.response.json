@@ -1,0 +1,36 @@
+{
+  "id": "resp_6a74894c0c7d4a09b6404047697fcef5",
+  "object": "response",
+  "created_at": 1791034997,
+  "status": "failed",
+  "completed_at": null,
+  "error": {
+    "code": "server_error",
+    "message": "[Errno 32] Broken pipe"
+  },
+  "incomplete_details": null,
+  "instructions": null,
+  "model": "qwen3.8-flash-next",
+  "output": [],
+  "usage": null,
+  "store": false,
+  "background": false,
+  "previous_response_id": null,
+  "max_output_tokens": 64,
+  "temperature": 0,
+  "top_p": 1.0,
+  "text": {
+    "format": {
+      "type": "text"
+    }
+  },
+  "tools": [],
+  "tool_choice": "auto",
+  "parallel_tool_calls": true,
+  "reasoning": {
+    "effort": "none",
+    "summary": null
+  },
+  "truncation": "disabled",
+  "metadata": {}
+}

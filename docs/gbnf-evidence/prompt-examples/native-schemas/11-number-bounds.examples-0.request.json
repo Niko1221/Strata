@@ -1,0 +1,38 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "none"
+  },
+  "max_output_tokens": 512,
+  "temperature": 0,
+  "input": "Return exactly this JSON value, without explanation: {\"ratio\": 0.5, \"positive\": 2}",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "11_number_bounds",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "ratio": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "multipleOf": 0.25
+          },
+          "positive": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "exclusiveMaximum": 10
+          }
+        },
+        "required": [
+          "ratio",
+          "positive"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

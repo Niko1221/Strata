@@ -1,0 +1,31 @@
+{
+  "source_commit": "36e9035ec4fa789eb5ba1cec5988b8d4ffb889cf",
+  "branch": "work/gbnf",
+  "worktree": "C:\\Users\\dflanag3\\Documents\\fleet\\strata-native-gbnf",
+  "responses_fix_commit": "82587463b81c9787f69b72b5f73e008a983d18f9",
+  "native_sha256": "656a6c16c2c148ec730c1b4b78f1e904417f2efb5cbce2455473156ce746a1ed",
+  "codex_sha256": "fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d",
+  "result": "pass",
+  "requests": 8,
+  "tool_calls": 9,
+  "independent_checks": 45,
+  "fixture_tests": 12,
+  "native_edge_cases": 19,
+  "combined_server_tests": 203,
+  "responses_server_tests": 195,
+  "other_server_tests": {
+    "run": 32,
+    "passed": 27,
+    "skipped": 5
+  },
+  "elapsed_s": 528.784,
+  "deployment_keys_retained": false,
+  "native_engine_stopped": true,
+  "earlier_attempts": [
+    "undeclared function with stock fallback instructions",
+    "literal marker misparsed in a reasoning summary",
+    "repair and verification passed but literal marker in final answer failed the turn"
+  ],
+  "profile_specific": true,
+  "universal_codex_compatibility": false
+}

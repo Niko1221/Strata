@@ -1,0 +1,29 @@
+[
+  {
+    "example": 1,
+    "arguments": {
+      "cmd": "cat -- 'demo [file].py'",
+      "max_output_tokens": 1000
+    },
+    "exit_code": 0,
+    "output": "value = 1\n"
+  },
+  {
+    "example": 2,
+    "arguments": {
+      "cmd": "printf 'value = 2\\n' > 'demo [file].py'",
+      "max_output_tokens": 1000
+    },
+    "exit_code": 0,
+    "output": ""
+  },
+  {
+    "example": 3,
+    "arguments": {
+      "cmd": "python3 -B -c \"import pathlib; p=pathlib.Path('demo [file].py'); assert p.read_bytes() == b'value = 2\\n'; print('PASS')\"",
+      "max_output_tokens": 1000
+    },
+    "exit_code": 0,
+    "output": "PASS\n"
+  }
+]

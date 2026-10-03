@@ -1,0 +1,3 @@
+========= COMPUTE-SANITIZER
+grammar sampler: 46 captured/uncaptured cases passed; 248320 logits, 3 rows each
+========= ERROR SUMMARY: 0 errors

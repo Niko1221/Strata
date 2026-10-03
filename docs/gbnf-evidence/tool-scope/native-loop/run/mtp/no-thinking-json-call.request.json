@@ -1,0 +1,43 @@
+{
+  "model": "qwen3.8-flash-next",
+  "input": [
+    {
+      "role": "user",
+      "content": "First call facts.lookup with text \"purple 999\". Wait for the tool result before answering. Once its result exists, answer briefly."
+    }
+  ],
+  "store": false,
+  "tools": [
+    {
+      "type": "namespace",
+      "name": "facts",
+      "description": "Client-owned test helpers.",
+      "tools": [
+        {
+          "type": "function",
+          "name": "lookup",
+          "description": "Look up the text. Call this before answering.",
+          "strict": false,
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "text"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "grammar": "root ::= \"color=blue;count=1\\n\"",
+  "reasoning": {
+    "effort": "none"
+  },
+  "max_output_tokens": 768,
+  "temperature": 0,
+  "stream": false
+}

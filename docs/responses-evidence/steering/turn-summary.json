@@ -1,0 +1,31 @@
+[
+  {
+    "timestamp": "2026-10-03T19:03:47.808Z",
+    "type": "task_complete",
+    "turn_id": "01a10325-8304-7133-9c74-c094b1052ef0",
+    "last_agent_message": "Fixed and verified.\n\n- `calc.py:2` \u2014 changed `return a - b` to `return a + b`.\n- `python -m unittest -v test_calc.py` result: all 3 tests passed (`test_negative`, `test_positive`, `test_zero` ... ok), \"Ran 3 tests in 0.001s\", status **OK**, exit code 0.",
+    "started_at": 1791054152,
+    "completed_at": 1791054227,
+    "duration_ms": 75274,
+    "time_to_first_token_ms": 49623
+  },
+  {
+    "timestamp": "2026-10-03T19:05:17.654Z",
+    "type": "turn_aborted",
+    "turn_id": "01a10327-8093-7dd1-b09b-8ca434ee2040",
+    "reason": "interrupted",
+    "started_at": 1791054282,
+    "completed_at": 1791054317,
+    "duration_ms": 34671
+  },
+  {
+    "timestamp": "2026-10-03T19:06:40.706Z",
+    "type": "task_complete",
+    "turn_id": "01a10328-a8e5-7630-b518-4ba8ae59752d",
+    "last_agent_message": "STEER_OK",
+    "started_at": 1791054358,
+    "completed_at": 1791054400,
+    "duration_ms": 41877,
+    "time_to_first_token_ms": 40896
+  }
+]

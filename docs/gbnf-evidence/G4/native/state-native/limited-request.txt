@@ -1,0 +1,13 @@
+POST /v1/responses
+
+{
+  "model": "qwen3.8-flash-next",
+  "input": "Choose START task-a if it is available. Otherwise choose WAIT.",
+  "store": false,
+  "reasoning": {
+    "effort": "none"
+  },
+  "temperature": 0,
+  "max_output_tokens": 1,
+  "grammar": "root ::= \"WAIT\"\n"
+}

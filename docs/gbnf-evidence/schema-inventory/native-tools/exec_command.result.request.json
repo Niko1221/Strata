@@ -1,0 +1,127 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "medium"
+  },
+  "max_output_tokens": 3072,
+  "temperature": 0,
+  "stream": true,
+  "input": [
+    {
+      "role": "user",
+      "content": "Protocol fixture: call exec_command exactly once using these argument values: {\"cmd\": \"Write-Output \\\"caf\\u00e9 \\\\ literal <tool_call>\\\"\", \"workdir\": \"C:\\\\fixture with spaces\", \"yield_time_ms\": 10000, \"tty\": false, \"login\": false, \"max_output_tokens\": 1000}. These are direct parameter names: do not wrap them in an arguments parameter. An empty object means the function has no parameters. Emit the tool call and stop. The test client will supply a mocked result."
+    },
+    {
+      "id": "rs_d4ed84a7a8f142edb7f89a8096fe9111",
+      "type": "reasoning",
+      "status": "completed",
+      "summary": [],
+      "content": [
+        {
+          "type": "reasoning_text",
+          "text": "The user wants a single exec_command call with exact parameters.\n"
+        }
+      ],
+      "encrypted_content": "strata-r1.gAAAAABqwWolc804gS2oFSGnRv59HH_DWrltQ42Nc7mS73hg-sIO4OWafF9Rx1jhIRxRE7WLLOw9Fl_6YuTjpykgQcUznanrmKnGKKXTp0qqCa_NPBWkfIPzAPghzZbDBZEpDJ-gAW9VGwOqGgR377vO46CkX4Yf3dMa3aLjpQi8rddC7Ik1fF12yfu2qtArPjJMSuijzKZiUooM_uZ5yDsFoeHYb7EtkSNztbbHvdJTQJmKd8DnTzRQ2xXqm8CzZg7YUGujIEczpKpxl6ifVCz7i0dL5Fw9DPOpyzsuDoHRfz1WId8TCdQGyZUXAH00PZoeFHc7k1JBaYUviSIYDjTqRLPFO-gB0GvLuEu-Xaiyra0SGZDhzUZ6jxar2_rTTwCIixkMfokz"
+    },
+    {
+      "id": "fc_bb773229594c4706a0c50a429d238118",
+      "type": "function_call",
+      "status": "completed",
+      "call_id": "call_b5938ba9ccec4fffa2f8b932",
+      "name": "exec_command",
+      "arguments": "{\"cmd\":\"Write-Output \\\"caf\\u00e9 \\\\ literal <tool_call>\\\"\",\"workdir\":\"C:\\\\fixture with spaces\",\"yield_time_ms\":10000,\"tty\":false,\"login\":false,\"max_output_tokens\":1000}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_b5938ba9ccec4fffa2f8b932",
+      "output": "MOCK RESULT: arbitrary non-JSON text, including <tool_call>. No action was executed."
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "exec_command",
+      "description": "Runs a command in a PTY, returning output or a session ID for ongoing interaction.\n\nWindows safety rules:\n- Do not compose destructive filesystem commands across shells. Do not enumerate paths in PowerShell and then pass them to `cmd /c`, batch builtins, or another shell for deletion or moving. Use one shell end-to-end, prefer native PowerShell cmdlets such as `Remove-Item` / `Move-Item` with `-LiteralPath`, and avoid string-built shell commands for file operations.\n- Before any recursive delete or move on Windows, verify the resolved absolute target paths stay within the intended workspace or explicitly named target directory. Never issue a recursive delete or move against a computed path if the final target has not been checked.\n- When using `Start-Process` to launch a background helper or service, pass `-WindowStyle Hidden` unless the user explicitly asked for a visible interactive window. Use visible windows only for interactive tools the user needs to see or control.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "cmd": {
+            "type": "string",
+            "description": "Shell command to execute."
+          },
+          "justification": {
+            "type": "string",
+            "description": "User-facing approval question for `require_escalated`; omit otherwise."
+          },
+          "login": {
+            "type": "boolean",
+            "description": "True runs the shell with -l/-i semantics; false disables them. Defaults to true."
+          },
+          "max_output_tokens": {
+            "type": "number",
+            "description": "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."
+          },
+          "prefix_rule": {
+            "type": "array",
+            "description": "Reusable approval prefix for `cmd`, only with `sandbox_permissions: \"require_escalated\"`; for example [\"git\", \"pull\"].",
+            "items": {
+              "type": "string"
+            }
+          },
+          "sandbox_permissions": {
+            "type": "string",
+            "description": "Per-command sandbox override. Defaults to `use_default`; use `require_escalated` for unsandboxed execution.",
+            "enum": [
+              "use_default",
+              "require_escalated"
+            ]
+          },
+          "shell": {
+            "type": "string",
+            "description": "Shell binary to launch. Defaults to the user's default shell."
+          },
+          "tty": {
+            "type": "boolean",
+            "description": "True allocates a PTY for the command; false or omitted uses plain pipes."
+          },
+          "workdir": {
+            "type": "string",
+            "description": "Working directory for the command. Defaults to the turn cwd."
+          },
+          "yield_time_ms": {
+            "type": "number",
+            "description": "Maximum time to wait before returning a session ID for a still-running command. Commands that finish sooner return immediately. For ordinary commands, omit this parameter to use the 10000 ms default. Effective range on Windows is 10000-30000 ms."
+          }
+        },
+        "required": [
+          "cmd"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "tool_choice": "none",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "ack",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "ack": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "ack"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

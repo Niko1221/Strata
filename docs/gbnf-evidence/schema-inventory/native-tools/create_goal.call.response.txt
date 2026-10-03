@@ -1,0 +1,114 @@
+event: response.created
+data: {"type": "response.created", "sequence_number": 0, "response": {"id": "resp_1041333e4792412d943afb97c02db544", "object": "response", "created_at": 1791060601, "status": "queued", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "create_goal", "description": "Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks.\nSet token_budget only when an explicit token budget is requested. Fails if an unfinished goal exists; use update_goal only for status.", "strict": false, "parameters": {"type": "object", "properties": {"objective": {"type": "string", "description": "Required. The concrete objective to start pursuing. This starts a new active goal when no goal exists or replaces the current goal when it is complete."}, "token_budget": {"type": "integer", "description": "Positive token budget for the new goal. Omit unless explicitly requested."}}, "required": ["objective"], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+event: response.in_progress
+data: {"type": "response.in_progress", "sequence_number": 1, "response": {"id": "resp_1041333e4792412d943afb97c02db544", "object": "response", "created_at": 1791060601, "status": "in_progress", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "create_goal", "description": "Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks.\nSet token_budget only when an explicit token budget is requested. Fails if an unfinished goal exists; use update_goal only for status.", "strict": false, "parameters": {"type": "object", "properties": {"objective": {"type": "string", "description": "Required. The concrete objective to start pursuing. This starts a new active goal when no goal exists or replaces the current goal when it is complete."}, "token_budget": {"type": "integer", "description": "Positive token budget for the new goal. Omit unless explicitly requested."}}, "required": ["objective"], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"id": "rs_944d228f40954e2da2e35f9b856e8be3", "type": "reasoning", "status": "in_progress", "summary": [], "content": [{"type": "reasoning_text", "text": ""}]}}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 3, "item_id": "rs_944d228f40954e2da2e35f9b856e8be3", "output_index": 0, "content_index": 0, "delta": "The"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 4, "item_id": "rs_944d228f40954e2da2e35f9b856e8be3", "output_index": 0, "content_index": 0, "delta": " user"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 5, "item_id": "rs_944d228f40954e2da2e35f9b856e8be3", "output_index": 0, "content_index": 0, "delta": " wants"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 6, "item_id": "rs_944d228f40954e2da2e35f9b856e8be3", "output_index": 0, "content_index": 0, "delta": " me"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 7, "item_id": "rs_944d228f40954e2da2e35f9b856e8be3", "output_index": 0, "content_index": 0, "delta": " to"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 8, "item_id": "rs_944d228f40954e2da2e35f9b856e8be3", "output_index": 0, "content_index": 0, "delta": " call"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 9, "item_id": "rs_944d228f40954e2da2e35f9b856e8be3", "output_index": 0, "content_index": 0, "delta": " create"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 10, "item_id": "rs_944d228f40954e2da2e35f9b856e8be3", "output_index": 0, "content_index": 0, "delta": "_goal"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 11, "item_id": "rs_944d228f40954e2da2e35f9b856e8be3", "output_index": 0, "content_index": 0, "delta": " exactly"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 12, "item_id": "rs_944d228f40954e2da2e35f9b856e8be3", "output_index": 0, "content_index": 0, "delta": " once"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 13, "item_id": "rs_944d228f40954e2da2e35f9b856e8be3", "output_index": 0, "content_index": 0, "delta": " with"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 14, "item_id": "rs_944d228f40954e2da2e35f9b856e8be3", "output_index": 0, "content_index": 0, "delta": " the"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 15, "item_id": "rs_944d228f40954e2da2e35f9b856e8be3", "output_index": 0, "content_index": 0, "delta": " specified"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 16, "item_id": "rs_944d228f40954e2da2e35f9b856e8be3", "output_index": 0, "content_index": 0, "delta": " parameters"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 17, "item_id": "rs_944d228f40954e2da2e35f9b856e8be3", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 18, "item_id": "rs_944d228f40954e2da2e35f9b856e8be3", "output_index": 0, "content_index": 0, "delta": "\n"}
+
+event: response.reasoning_text.done
+data: {"type": "response.reasoning_text.done", "sequence_number": 19, "item_id": "rs_944d228f40954e2da2e35f9b856e8be3", "output_index": 0, "content_index": 0, "text": "The user wants me to call create_goal exactly once with the specified parameters.\n"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 20, "output_index": 0, "item": {"id": "rs_944d228f40954e2da2e35f9b856e8be3", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants me to call create_goal exactly once with the specified parameters.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWp81n7zZPwTeS7BYBSfkrUMXsrvtDw-bS8BGk2lgNhnZ2Rp_hDtKXutwQwFeLJAgHTL_nrsId5bQ6KQxjUTrzxhkAH-ny70Hpt5irnNy91xGKCjITcL43r2XeQSb4Gnrcw0xHDJCiyR3_pmdCTexVqhYjNRIFtcAXavdkMPvgz5R5wflV0l-4Kz7IReTV99OpqVC73u9YMb1xuHukZRXN0wM-J0kPu18aQUgBxkjQ1Tt-QxuRMnKjXfY3ptHGJhXFifQ27wKcXQF4jQgSS4pZyvVbGqCsRVf4u82eswrHlqZE8QnmfhXY-ZttBLXRJ9zMktaPuNYgeRvlJ9FynJLy4Gq7hSS18ZIy4v4VLrHI4aR-YwiG6M4MUwd3emlNyziWrZiNH-SLOnTtObQJcfErrN-w=="}}
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 21, "output_index": 1, "item": {"id": "fc_6e7fa6f256994d5db8ceede6985438c7", "type": "function_call", "status": "in_progress", "call_id": "call_efa7a6f25c494f9d94ff05cd", "name": "create_goal", "arguments": ""}}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 22, "item_id": "fc_6e7fa6f256994d5db8ceede6985438c7", "output_index": 1, "delta": "{"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 23, "item_id": "fc_6e7fa6f256994d5db8ceede6985438c7", "output_index": 1, "delta": "\"objective\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 24, "item_id": "fc_6e7fa6f256994d5db8ceede6985438c7", "output_index": 1, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 25, "item_id": "fc_6e7fa6f256994d5db8ceede6985438c7", "output_index": 1, "delta": "Verify"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 26, "item_id": "fc_6e7fa6f256994d5db8ceede6985438c7", "output_index": 1, "delta": " a"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 27, "item_id": "fc_6e7fa6f256994d5db8ceede6985438c7", "output_index": 1, "delta": " fixture"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 28, "item_id": "fc_6e7fa6f256994d5db8ceede6985438c7", "output_index": 1, "delta": "."}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 29, "item_id": "fc_6e7fa6f256994d5db8ceede6985438c7", "output_index": 1, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 30, "item_id": "fc_6e7fa6f256994d5db8ceede6985438c7", "output_index": 1, "delta": ",\"token_budget\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 31, "item_id": "fc_6e7fa6f256994d5db8ceede6985438c7", "output_index": 1, "delta": "1000"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 32, "item_id": "fc_6e7fa6f256994d5db8ceede6985438c7", "output_index": 1, "delta": "}"}
+
+event: response.function_call_arguments.done
+data: {"type": "response.function_call_arguments.done", "sequence_number": 33, "item_id": "fc_6e7fa6f256994d5db8ceede6985438c7", "output_index": 1, "arguments": "{\"objective\":\"Verify a fixture.\",\"token_budget\":1000}"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 34, "output_index": 1, "item": {"id": "fc_6e7fa6f256994d5db8ceede6985438c7", "type": "function_call", "status": "completed", "call_id": "call_efa7a6f25c494f9d94ff05cd", "name": "create_goal", "arguments": "{\"objective\":\"Verify a fixture.\",\"token_budget\":1000}"}}
+
+event: response.completed
+data: {"type": "response.completed", "sequence_number": 35, "response": {"id": "resp_1041333e4792412d943afb97c02db544", "object": "response", "created_at": 1791060601, "status": "completed", "completed_at": 1791060605, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [{"id": "rs_944d228f40954e2da2e35f9b856e8be3", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants me to call create_goal exactly once with the specified parameters.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWp81n7zZPwTeS7BYBSfkrUMXsrvtDw-bS8BGk2lgNhnZ2Rp_hDtKXutwQwFeLJAgHTL_nrsId5bQ6KQxjUTrzxhkAH-ny70Hpt5irnNy91xGKCjITcL43r2XeQSb4Gnrcw0xHDJCiyR3_pmdCTexVqhYjNRIFtcAXavdkMPvgz5R5wflV0l-4Kz7IReTV99OpqVC73u9YMb1xuHukZRXN0wM-J0kPu18aQUgBxkjQ1Tt-QxuRMnKjXfY3ptHGJhXFifQ27wKcXQF4jQgSS4pZyvVbGqCsRVf4u82eswrHlqZE8QnmfhXY-ZttBLXRJ9zMktaPuNYgeRvlJ9FynJLy4Gq7hSS18ZIy4v4VLrHI4aR-YwiG6M4MUwd3emlNyziWrZiNH-SLOnTtObQJcfErrN-w=="}, {"id": "fc_6e7fa6f256994d5db8ceede6985438c7", "type": "function_call", "status": "completed", "call_id": "call_efa7a6f25c494f9d94ff05cd", "name": "create_goal", "arguments": "{\"objective\":\"Verify a fixture.\",\"token_budget\":1000}"}], "usage": {"input_tokens": 443, "output_tokens": 63, "total_tokens": 506, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 443}, "output_tokens_details": {"reasoning_tokens": 17}}, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "create_goal", "description": "Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks.\nSet token_budget only when an explicit token budget is requested. Fails if an unfinished goal exists; use update_goal only for status.", "strict": false, "parameters": {"type": "object", "properties": {"objective": {"type": "string", "description": "Required. The concrete objective to start pursuing. This starts a new active goal when no goal exists or replaces the current goal when it is complete."}, "token_budget": {"type": "integer", "description": "Positive token budget for the new goal. Omit unless explicitly requested."}}, "required": ["objective"], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+

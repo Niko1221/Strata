@@ -1,0 +1,94 @@
+{
+  "scripted_model_output": false,
+  "mocked_tool_results": true,
+  "tools_executed": false,
+  "prompt_supplies_sample_arguments": true,
+  "reasoning": "medium",
+  "cases": [
+    {
+      "name": "exec_command",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 23.95603251599823
+    },
+    {
+      "name": "write_stdin",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 8.113550212001428
+    },
+    {
+      "name": "request_user_input",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 8.53534050899907
+    },
+    {
+      "name": "view_image",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 11.240363796998281
+    },
+    {
+      "name": "multi_agent_v1.close_agent",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 11.418861772006494
+    },
+    {
+      "name": "multi_agent_v1.resume_agent",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 5.1906162580125965
+    },
+    {
+      "name": "multi_agent_v1.send_input",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 9.554328544007149
+    },
+    {
+      "name": "multi_agent_v1.spawn_agent",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 10.81074903899571
+    },
+    {
+      "name": "multi_agent_v1.wait_agent",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 7.66648683299718
+    },
+    {
+      "name": "get_goal",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 4.096604827995179
+    },
+    {
+      "name": "create_goal",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 5.7464254229998915
+    },
+    {
+      "name": "update_goal",
+      "generated_call_matches_schema_and_sample": true,
+      "mock_result_replayed_with_json_answer": true,
+      "stream_reassembled": true,
+      "seconds": 6.144608352013165
+    }
+  ],
+  "result": "pass"
+}

@@ -1,0 +1,14 @@
+{
+  "python": "3.14.4",
+  "platform": "Linux-7.0.0-34-generic-x86_64-with-glibc2.43",
+  "gpu": "NVIDIA GeForce RTX 4090, 595.91.07, 24564 MiB",
+  "packages": {
+    "cryptography": "50.0.2",
+    "jinja2": "3.1.6",
+    "regex": "2026.9.10"
+  },
+  "client_host": {
+    "python": "3.13.15",
+    "platform": "Windows-11-10.0.26200-SP0"
+  }
+}

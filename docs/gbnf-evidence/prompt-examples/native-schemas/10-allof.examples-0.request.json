@@ -1,0 +1,41 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "none"
+  },
+  "max_output_tokens": 512,
+  "temperature": 0,
+  "input": "Return exactly this JSON value, without explanation: {\"score\": 8}",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "10_allof",
+      "strict": true,
+      "schema": {
+        "allOf": [
+          {
+            "type": "object",
+            "properties": {
+              "score": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "score"
+            ]
+          },
+          {
+            "properties": {
+              "score": {
+                "minimum": 0,
+                "maximum": 10
+              }
+            }
+          }
+        ],
+        "unevaluatedProperties": false
+      }
+    }
+  }
+}

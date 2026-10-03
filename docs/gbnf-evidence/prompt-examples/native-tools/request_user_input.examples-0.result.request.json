@@ -1,0 +1,130 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "medium"
+  },
+  "max_output_tokens": 3072,
+  "temperature": 0,
+  "stream": true,
+  "input": [
+    {
+      "role": "user",
+      "content": "Protocol fixture: call request_user_input exactly once using these argument values: {\"questions\": [{\"id\": \"choice\", \"header\": \"Choice\", \"question\": \"Which value?\", \"options\": [{\"label\": \"One\", \"description\": \"Choose one.\"}, {\"label\": \"Two\", \"description\": \"Choose two.\"}]}]}. Emit the tool call and stop. The test client will supply a mocked result."
+    },
+    {
+      "id": "rs_0e184afbc74c4374814cb5b06ddeaf8b",
+      "type": "reasoning",
+      "status": "completed",
+      "summary": [],
+      "content": [
+        {
+          "type": "reasoning_text",
+          "text": "The user wants me to call request_user_input exactly once with the specified arguments.\n"
+        }
+      ],
+      "encrypted_content": "strata-r1.gAAAAABqwXCuDtu4PF4cjkjrMX0gWVKuoAIujLXmbM_hAKNIcmV5GNMEht7MjcJQiXfq_BNkvPmXn_F-741BJfBjYF2xrB4dumcEaEXX3_e6ItvzCaSnayP2DbTZGTU5k2oXcb-R2vdejX_SUHEzQRYbDRdtTzvyDfzQWom18jT3GL45PzOBvY85-Ssuvj8puvohgkReqXt0Lvc9Bm6NkMlQPFt3VZMBFMEIDQkxbM-TERhytD4lnLbcukGk5Ciw-cWkA0-ykW4EzGlAo-nLSwc05b0dTVNy3zLixFCHj4QV-QigyHvwNQb5rH1UtAgwvrpRIRFIDT_dLuk71p32IHRcBxpA5L6BRBP5DUuokHSbEZSqbQpOWnLKvIGQmNfMdvxyEgWzSPFeZ1iz414Yr84r1byn6Au5reEJ_R5zVuy1B6tsfr_7M88="
+    },
+    {
+      "id": "fc_1fe2d6fc0bbe4f1c9cf4893e48d8c654",
+      "type": "function_call",
+      "status": "completed",
+      "call_id": "call_c8f9e4f8485e43959363d315",
+      "name": "request_user_input",
+      "arguments": "{\"questions\":[{\"id\": \"choice\", \"header\": \"Choice\", \"question\": \"Which value?\", \"options\": [{\"label\": \"One\", \"description\": \"Choose one.\"}, {\"label\": \"Two\", \"description\": \"Choose two.\"}]}]}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_c8f9e4f8485e43959363d315",
+      "output": "MOCK RESULT: arbitrary non-JSON text, including <tool_call>. No action was executed."
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "request_user_input",
+      "description": "Request user input for one to three short questions and wait for the response. This tool is only available in Plan mode.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "questions": {
+            "type": "array",
+            "description": "Questions to show the user. Prefer 1 and do not exceed 3",
+            "items": {
+              "type": "object",
+              "properties": {
+                "header": {
+                  "type": "string",
+                  "description": "Short header label shown in the UI (12 or fewer chars)."
+                },
+                "id": {
+                  "type": "string",
+                  "description": "Stable identifier for mapping answers (snake_case)."
+                },
+                "options": {
+                  "type": "array",
+                  "description": "Provide 2-3 mutually exclusive choices. Put the recommended option first and suffix its label with \"(Recommended)\". Do not include an \"Other\" option in this list; the client will add a free-form \"Other\" option automatically.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "description": {
+                        "type": "string",
+                        "description": "One short sentence explaining impact/tradeoff if selected."
+                      },
+                      "label": {
+                        "type": "string",
+                        "description": "User-facing label (1-5 words)."
+                      }
+                    },
+                    "required": [
+                      "label",
+                      "description"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "question": {
+                  "type": "string",
+                  "description": "Single-sentence prompt shown to the user."
+                }
+              },
+              "required": [
+                "id",
+                "header",
+                "question",
+                "options"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "questions"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "tool_choice": "none",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "ack",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "ack": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "ack"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

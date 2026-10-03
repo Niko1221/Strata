@@ -1,0 +1,32 @@
+-- The CXX compiler identification is GNU 15.2.0
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Config file: /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-97787376faee5ed8466cfad57c99855e4ce2f6aa/cmake/config.cmake
+-- Build type: Release
+-- Build Python bindings: ON
+-- Build C++ tests: OFF
+-- CUDA architectures: native
+-- Enable C++ trace: OFF
+-- Found Python: /usr/bin/python3 (found version "3.14.4") found components: Interpreter Development.Module
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    import tvm_ffi, os; print(os.path.join(os.path.dirname(tvm_ffi.__file__), 'share', 'cmake', 'tvm_ffi'))
+    ^^^^^^^^^^^^^^^^^^
+ModuleNotFoundError: No module named 'tvm_ffi'
+CMake Error at cpp/tvm_ffi/CMakeLists.txt:17 (find_package):
+  Could not find a package configuration file provided by "tvm_ffi" with any
+  of the following names:
+
+    tvm_ffiConfig.cmake
+    tvm_ffi-config.cmake
+
+  Add the installation prefix of "tvm_ffi" to CMAKE_PREFIX_PATH or set
+  "tvm_ffi_DIR" to a directory containing one of the above files.  If
+  "tvm_ffi" provides a separate development package or SDK, be sure it has
+  been installed.
+
+
+-- Configuring incomplete, errors occurred!

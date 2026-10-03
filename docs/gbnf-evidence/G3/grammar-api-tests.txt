@@ -1,0 +1,40 @@
+test_close_releases_service_and_constraint_does_not_leak (serve.test_grammar.Contract.test_close_releases_service_and_constraint_does_not_leak) ... [strata] done: 1 tokens in 0 s (12866.0 tok/s) (disconnect, cancel=True)
+[strata] done: 6 tokens in 0 s (62446.2 tok/s) (stop, cancel=False)
+ok
+test_conflicts_and_explicit_thinking_off (serve.test_grammar.Contract.test_conflicts_and_explicit_thinking_off) ... ok
+test_invalid_utf8_or_incomplete_eos_fails_without_completion (serve.test_grammar.Contract.test_invalid_utf8_or_incomplete_eos_fails_without_completion) ... [strata] the engine reported an error: 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte
+[strata] done: 1 tokens in 0 s (0.0 tok/s) (error, cancel=False)
+[strata] the engine reported an error: native grammar ended inside an incomplete UTF-8 character
+[strata] done: 2 tokens in 0 s (24105.2 tok/s) (error, cancel=False)
+ok
+test_mock_engine_does_not_claim_grammar (serve.test_grammar.Contract.test_mock_engine_does_not_claim_grammar) ... ok
+test_partial_unicode_no_replacement_and_same_terminal (serve.test_grammar.Contract.test_partial_unicode_no_replacement_and_same_terminal) ... [strata] done: 1 tokens in 0 s (34952.5 tok/s) (length, cancel=False)
+[strata] done: 2 tokens in 0 s (55924.1 tok/s) (length, cancel=False)
+[strata] done: 3 tokens in 0 s (53544.3 tok/s) (length, cancel=False)
+[strata] done: 4 tokens in 0 s (63550.1 tok/s) (length, cancel=False)
+[strata] done: 5 tokens in 0 s (62789.0 tok/s) (length, cancel=False)
+ok
+test_template_and_tokenizer_mismatch (serve.test_grammar.Contract.test_template_and_tokenizer_mismatch) ... ok
+test_utf8_byte_frame_and_inert_payload (serve.test_grammar.Contract.test_utf8_byte_frame_and_inert_payload) ... ok
+test_both_adapters_stream_and_final_preserve_literal_markers (serve.test_grammar.HTTP.test_both_adapters_stream_and_final_preserve_literal_markers) ... [strata] done: 27 tokens in 0 s (128251.7 tok/s) (stop, cancel=False)
+[strata] done: 27 tokens in 0 s (13713.5 tok/s) (stop, cancel=False)
+[strata] done: 27 tokens in 0 s (176671.2 tok/s) (stop, cancel=False)
+[strata] done: 27 tokens in 0 s (13243.6 tok/s) (stop, cancel=False)
+ok
+test_concurrent_preflight_and_generation_remain_request_local (serve.test_grammar.HTTP.test_concurrent_preflight_and_generation_remain_request_local) ... [strata] done: 10 tokens in 0 s (618.0 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (646.9 tok/s) (stop, cancel=False)
+ok
+test_errors_before_stream_headers_and_auth_cors (serve.test_grammar.HTTP.test_errors_before_stream_headers_and_auth_cors) ... [strata] refused an API request from the web page 'https://evil.example' (no API key; add its host to "allowed_hosts" or its origin to "cors_origins" in the config)
+[strata] refused an API request from the web page 'https://evil.example' (no API key; add its host to "allowed_hosts" or its origin to "cors_origins" in the config)
+ok
+test_missing_old_or_speculative_capability_writes_nothing (serve.test_grammar.NativePipe.test_missing_old_or_speculative_capability_writes_nothing) ... ok
+test_penalties_reach_native_frame_once (serve.test_grammar.NativePipe.test_penalties_reach_native_frame_once) ... ok
+test_preflight_and_generate_atomic_binary_frames (serve.test_grammar.NativePipe.test_preflight_and_generate_atomic_binary_frames) ... ok
+test_rejected_check_leaves_next_reply_intact (serve.test_grammar.NativePipe.test_rejected_check_leaves_next_reply_intact) ... ok
+test_restart_does_not_reuse_old_capability (serve.test_grammar.NativePipe.test_restart_does_not_reuse_old_capability) ... ok
+test_unexpected_or_late_preflight_ends_desynchronized_process (serve.test_grammar.NativePipe.test_unexpected_or_late_preflight_ends_desynchronized_process) ... ok
+
+----------------------------------------------------------------------
+Ran 16 tests in 2.314s
+
+OK

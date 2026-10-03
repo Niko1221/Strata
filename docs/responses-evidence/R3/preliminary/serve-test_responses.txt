@@ -1,0 +1,52 @@
+test_auth_cors_and_host_origin_guards (serve.test_responses.HttpBoundary.test_auth_cors_and_host_origin_guards) ... [strata] done: 12 tokens in 0 s (20729.7 tok/s) (stop, cancel=False)
+[strata] refused a request for Host 'evil.example' from 127.0.0.1: not a name this server answers to (add it to "allowed_hosts" in the config or STRATA_ALLOWED_HOSTS, or set an API key)
+[strata] refused an API request from the web page 'https://evil.example' (no API key; add its host to "allowed_hosts" or its origin to "cors_origins" in the config)
+ok
+test_flag_off_and_old_endpoints (serve.test_responses.HttpBoundary.test_flag_off_and_old_endpoints) ... [strata] done: 12 tokens in 0 s (34076.9 tok/s) (stop, cancel=False)
+ok
+test_invalid_json_and_context_before_success (serve.test_responses.HttpBoundary.test_invalid_json_and_context_before_success) ... ok
+test_monitor_observes_final_snapshot (serve.test_responses.HttpBoundary.test_monitor_observes_final_snapshot) ... [strata] done: 12 tokens in 0 s (35395.0 tok/s) (stop, cancel=False)
+ok
+test_no_storage_or_previous_instruction_inheritance (serve.test_responses.HttpBoundary.test_no_storage_or_previous_instruction_inheritance) ... [strata] done: 12 tokens in 0 s (37282.7 tok/s) (stop, cancel=False)
+[strata] done: 12 tokens in 0 s (19493.3 tok/s) (stop, cancel=False)
+ok
+test_bad_transition_does_not_invent_lifecycle_states (serve.test_responses.Lifecycle.test_bad_transition_does_not_invent_lifecycle_states) ... ok
+test_budget_means_incomplete (serve.test_responses.Lifecycle.test_budget_means_incomplete) ... [strata] done: 2 tokens in 0 s (7774.4 tok/s) (length, cancel=False)
+ok
+test_normal_execution_and_terminal_immutability (serve.test_responses.Lifecycle.test_normal_execution_and_terminal_immutability) ... [strata] done: 6 tokens in 0 s (27807.5 tok/s) (stop, cancel=False)
+ok
+test_bad_types_and_limits (serve.test_responses.Normalization.test_bad_types_and_limits) ... ok
+test_explicit_stateless_contract (serve.test_responses.Normalization.test_explicit_stateless_contract) ... ok
+test_json_transport_is_strict_without_schema_support (serve.test_responses.Normalization.test_json_transport_is_strict_without_schema_support) ... ok
+test_known_harmless_metadata_and_effective_sampling (serve.test_responses.Normalization.test_known_harmless_metadata_and_effective_sampling) ... ok
+test_priority_order_and_content_bearing_ids (serve.test_responses.Normalization.test_priority_order_and_content_bearing_ids) ... ok
+test_unsupported_capabilities_rejected_before_load (serve.test_responses.Normalization.test_unsupported_capabilities_rejected_before_load) ... ok
+test_cli_config_and_default_activation (serve.test_responses.Startup.test_cli_config_and_default_activation) ... ok
+test_disconnect_queued_prefill_decode_and_next_request (serve.test_responses.Streaming.test_disconnect_queued_prefill_decode_and_next_request) ... [strata] done: 13 tokens in 0 s (19301.2 tok/s) (stop, cancel=False)
+[strata] done: 0 tokens in 0 s (0.0 tok/s) (disconnect, cancel=True)
+[strata] done: 13 tokens in 0 s (19501.4 tok/s) (stop, cancel=False)
+[strata] done: 3 tokens in 0 s (1744.2 tok/s) (disconnect, cancel=True)
+[strata] done: 13 tokens in 0 s (12471.6 tok/s) (stop, cancel=False)
+ok
+test_empty_response_and_output_limit (serve.test_responses.Streaming.test_empty_response_and_output_limit) ... [strata] done: 1 tokens in 0 s (0.0 tok/s) (stop, cancel=False)
+[strata] done: 2 tokens in 0 s (1724.6 tok/s) (length, cancel=False)
+ok
+test_error_after_headers_is_failed_and_next_request_works (serve.test_responses.Streaming.test_error_after_headers_is_failed_and_next_request_works) ... [strata] scripted generation failure.  The next request starts the engine again.
+[strata] done: 0 tokens in 0 s (0.0 tok/s) (error, cancel=False)
+[strata] done: 7 tokens in 0 s (16035.0 tok/s) (stop, cancel=False)
+[strata] scripted generation failure.  The next request starts the engine again.
+[strata] done: 3 tokens in 0 s (1675.0 tok/s) (error, cancel=False)
+[strata] done: 7 tokens in 0 s (13994.3 tok/s) (stop, cancel=False)
+ok
+test_iterator_close_confirms_stop_after_drain (serve.test_responses.Streaming.test_iterator_close_confirms_stop_after_drain) ... ok
+test_missing_done_is_failure_not_completion (serve.test_responses.Streaming.test_missing_done_is_failure_not_completion) ... ok
+test_nonstream_failure_is_not_http_success (serve.test_responses.Streaming.test_nonstream_failure_is_not_http_success) ... ok
+test_preflight_error_precedes_stream_headers (serve.test_responses.Streaming.test_preflight_error_precedes_stream_headers) ... ok
+test_unicode_reassembly_matches_final_json (serve.test_responses.Streaming.test_unicode_reassembly_matches_final_json) ... [strata] done: 30 tokens in 0 s (51632.8 tok/s) (stop, cancel=False)
+[strata] done: 30 tokens in 0 s (8916.5 tok/s) (stop, cancel=False)
+ok
+
+----------------------------------------------------------------------
+Ran 23 tests in 13.964s
+
+OK

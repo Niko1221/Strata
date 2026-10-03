@@ -1,0 +1,71 @@
+operation=constraint.inspect occurrence=parent.initial definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:c22f3d02a802a877:root-gbnf-v1-fnv1a64:b9c969020cf192dd committed_tokens=0 committed_bytes=0 accepting=0 terminated=0 legal_tokens=3 preview_complete=1 mask=mask-v1-fnv1a64:21ac3ccdb6d4b7d1
+  token=97 bytes_hex=61 stop=0 bytes_truncated=0
+  token=257 bytes_hex=6162 stop=0 bytes_truncated=0
+  token=258 bytes_hex=6163 stop=0 bytes_truncated=0
+  hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+operation=constraint.inspect occurrence=left.shared-prefix-a definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:c22f3d02a802a877:root-gbnf-v1-fnv1a64:b9c969020cf192dd committed_tokens=1 committed_bytes=1 accepting=0 terminated=0 legal_tokens=2 preview_complete=1 mask=mask-v1-fnv1a64:2edb977736eaf7f9
+  token=98 bytes_hex=62 stop=0 bytes_truncated=0
+  token=99 bytes_hex=63 stop=0 bytes_truncated=0
+  hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+operation=constraint.inspect occurrence=left.ab definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:c22f3d02a802a877:root-gbnf-v1-fnv1a64:b9c969020cf192dd committed_tokens=2 committed_bytes=2 accepting=1 terminated=0 legal_tokens=1 preview_complete=1 mask=mask-v1-fnv1a64:f442467feb0d91e4
+  token=256 bytes_hex= stop=1 bytes_truncated=0
+  hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+operation=constraint.inspect occurrence=right.ac definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:c22f3d02a802a877:root-gbnf-v1-fnv1a64:b9c969020cf192dd committed_tokens=1 committed_bytes=2 accepting=1 terminated=0 legal_tokens=1 preview_complete=1 mask=mask-v1-fnv1a64:f442467feb0d91e4
+  token=256 bytes_hex= stop=1 bytes_truncated=0
+  hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+operation=constraint.inspect occurrence=left.ended definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:c22f3d02a802a877:root-gbnf-v1-fnv1a64:b9c969020cf192dd committed_tokens=3 committed_bytes=2 accepting=1 terminated=1 legal_tokens=0 preview_complete=1 mask=none:terminal
+  hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+operation=constraint.inspect occurrence=left.restored definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:c22f3d02a802a877:root-gbnf-v1-fnv1a64:b9c969020cf192dd committed_tokens=0 committed_bytes=0 accepting=0 terminated=0 legal_tokens=3 preview_complete=1 mask=mask-v1-fnv1a64:21ac3ccdb6d4b7d1
+  token=97 bytes_hex=61 stop=0 bytes_truncated=0
+  token=257 bytes_hex=6162 stop=0 bytes_truncated=0
+  token=258 bytes_hex=6163 stop=0 bytes_truncated=0
+  hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+operation=constraint.inspect occurrence=accepting.with-continuation definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:c22f3d02a802a877:root-gbnf-v1-fnv1a64:9c6bc8ffce49a3b0 committed_tokens=1 committed_bytes=1 accepting=1 terminated=0 legal_tokens=2 preview_complete=1 mask=mask-v1-fnv1a64:59a3a190f565e860
+  token=98 bytes_hex=62 stop=0 bytes_truncated=0
+  token=256 bytes_hex= stop=1 bytes_truncated=0
+  hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+operation=constraint.inspect occurrence=recursive.ambiguous definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:c22f3d02a802a877:root-gbnf-v1-fnv1a64:8c0e20531b9e2d77 committed_tokens=12 committed_bytes=12 accepting=1 terminated=0 legal_tokens=3 preview_complete=1 mask=mask-v1-fnv1a64:4166f93a178f4b2e
+  token=97 bytes_hex=61 stop=0 bytes_truncated=0
+  token=256 bytes_hex= stop=1 bytes_truncated=0
+  token=259 bytes_hex=6161616161616161616161616161616161616161616161616161616161616161 stop=0 bytes_truncated=1
+  hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+inspection passed vocabulary=260 identity=bytes-v1-fnv1a64:c22f3d02a802a877
+operation=constraint.inspect occurrence=parent.initial definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:b9c969020cf192dd committed_tokens=0 committed_bytes=0 accepting=0 terminated=0 legal_tokens=3 preview_complete=1 mask=mask-v1-fnv1a64:e274ba3580b16bc4
+  token=64 bytes_hex=61 stop=0 bytes_truncated=0
+  token=365 bytes_hex=6162 stop=0 bytes_truncated=0
+  token=565 bytes_hex=6163 stop=0 bytes_truncated=0
+  hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+operation=constraint.inspect occurrence=left.shared-prefix-a definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:b9c969020cf192dd committed_tokens=1 committed_bytes=1 accepting=0 terminated=0 legal_tokens=2 preview_complete=1 mask=mask-v1-fnv1a64:b8841fa0e5587e63
+  token=65 bytes_hex=62 stop=0 bytes_truncated=0
+  token=66 bytes_hex=63 stop=0 bytes_truncated=0
+  hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+operation=constraint.inspect occurrence=left.ab definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:b9c969020cf192dd committed_tokens=2 committed_bytes=2 accepting=1 terminated=0 legal_tokens=2 preview_complete=1 mask=mask-v1-fnv1a64:4a3dd8b5f8b43415
+  token=248044 bytes_hex= stop=1 bytes_truncated=0
+  token=248046 bytes_hex= stop=1 bytes_truncated=0
+  hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+operation=constraint.inspect occurrence=right.ac definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:b9c969020cf192dd committed_tokens=1 committed_bytes=2 accepting=1 terminated=0 legal_tokens=2 preview_complete=1 mask=mask-v1-fnv1a64:4a3dd8b5f8b43415
+  token=248044 bytes_hex= stop=1 bytes_truncated=0
+  token=248046 bytes_hex= stop=1 bytes_truncated=0
+  hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+operation=constraint.inspect occurrence=left.ended definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:b9c969020cf192dd committed_tokens=3 committed_bytes=2 accepting=1 terminated=1 legal_tokens=0 preview_complete=1 mask=none:terminal
+  hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+operation=constraint.inspect occurrence=left.restored definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:b9c969020cf192dd committed_tokens=0 committed_bytes=0 accepting=0 terminated=0 legal_tokens=3 preview_complete=1 mask=mask-v1-fnv1a64:e274ba3580b16bc4
+  token=64 bytes_hex=61 stop=0 bytes_truncated=0
+  token=365 bytes_hex=6162 stop=0 bytes_truncated=0
+  token=565 bytes_hex=6163 stop=0 bytes_truncated=0
+  hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+operation=constraint.inspect occurrence=accepting.with-continuation definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:9c6bc8ffce49a3b0 committed_tokens=1 committed_bytes=1 accepting=1 terminated=0 legal_tokens=3 preview_complete=1 mask=mask-v1-fnv1a64:cd15ebd4ec5b41f7
+  token=65 bytes_hex=62 stop=0 bytes_truncated=0
+  token=248044 bytes_hex= stop=1 bytes_truncated=0
+  token=248046 bytes_hex= stop=1 bytes_truncated=0
+  hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+operation=constraint.inspect occurrence=recursive.ambiguous definition=xgrammar-0.2.8-strata-budget1:bytes-v1-fnv1a64:6ad948532e27ffed:root-gbnf-v1-fnv1a64:8c0e20531b9e2d77 committed_tokens=12 committed_bytes=12 accepting=1 terminated=0 legal_tokens=7 preview_complete=1 mask=mask-v1-fnv1a64:36349fb0326c8ea3
+  token=64 bytes_hex=61 stop=0 bytes_truncated=0
+  token=5137 bytes_hex=6161 stop=0 bytes_truncated=0
+  token=27528 bytes_hex=61616161 stop=0 bytes_truncated=0
+  token=31564 bytes_hex=616161 stop=0 bytes_truncated=0
+  token=67089 bytes_hex=6161616161616161 stop=0 bytes_truncated=0
+  token=248044 bytes_hex= stop=1 bytes_truncated=0
+  token=248046 bytes_hex= stop=1 bytes_truncated=0
+  hypotheses=backend_union_not_enumerated model_checkpoint=false raw_model_probability=not_collected grammar_conditioned_probability=not_collected final_sampler_probability=not_collected branch_mass=not_inferred
+inspection passed vocabulary=248320 identity=bytes-v1-fnv1a64:6ad948532e27ffed

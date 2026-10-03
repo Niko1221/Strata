@@ -1,0 +1,111 @@
+event: response.created
+data: {"type": "response.created", "sequence_number": 0, "response": {"id": "resp_7fb26ac503674166958391465f850672", "object": "response", "created_at": 1791062200, "status": "queued", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "namespace", "name": "multi_agent_v1", "description": "Tools for spawning and managing sub-agents.", "tools": [{"type": "function", "name": "close_agent", "description": "Close an agent and any open descendants when they are no longer needed, and return the target agent's previous status before shutdown was requested. Completed agents remain open and count toward the concurrency limit until closed. Don't keep agents open for too long if they are not needed anymore.", "strict": false, "parameters": {"type": "object", "properties": {"target": {"type": "string", "description": "Agent id to close (from spawn_agent)."}}, "required": ["target"], "additionalProperties": false}}]}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+event: response.in_progress
+data: {"type": "response.in_progress", "sequence_number": 1, "response": {"id": "resp_7fb26ac503674166958391465f850672", "object": "response", "created_at": 1791062200, "status": "in_progress", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "namespace", "name": "multi_agent_v1", "description": "Tools for spawning and managing sub-agents.", "tools": [{"type": "function", "name": "close_agent", "description": "Close an agent and any open descendants when they are no longer needed, and return the target agent's previous status before shutdown was requested. Completed agents remain open and count toward the concurrency limit until closed. Don't keep agents open for too long if they are not needed anymore.", "strict": false, "parameters": {"type": "object", "properties": {"target": {"type": "string", "description": "Agent id to close (from spawn_agent)."}}, "required": ["target"], "additionalProperties": false}}]}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"id": "rs_02928748c11140b58f4895303762df1a", "type": "reasoning", "status": "in_progress", "summary": [], "content": [{"type": "reasoning_text", "text": ""}]}}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 3, "item_id": "rs_02928748c11140b58f4895303762df1a", "output_index": 0, "content_index": 0, "delta": "The"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 4, "item_id": "rs_02928748c11140b58f4895303762df1a", "output_index": 0, "content_index": 0, "delta": " user"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 5, "item_id": "rs_02928748c11140b58f4895303762df1a", "output_index": 0, "content_index": 0, "delta": " wants"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 6, "item_id": "rs_02928748c11140b58f4895303762df1a", "output_index": 0, "content_index": 0, "delta": " me"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 7, "item_id": "rs_02928748c11140b58f4895303762df1a", "output_index": 0, "content_index": 0, "delta": " to"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 8, "item_id": "rs_02928748c11140b58f4895303762df1a", "output_index": 0, "content_index": 0, "delta": " call"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 9, "item_id": "rs_02928748c11140b58f4895303762df1a", "output_index": 0, "content_index": 0, "delta": " the"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 10, "item_id": "rs_02928748c11140b58f4895303762df1a", "output_index": 0, "content_index": 0, "delta": " tool"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 11, "item_id": "rs_02928748c11140b58f4895303762df1a", "output_index": 0, "content_index": 0, "delta": " exactly"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 12, "item_id": "rs_02928748c11140b58f4895303762df1a", "output_index": 0, "content_index": 0, "delta": " once"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 13, "item_id": "rs_02928748c11140b58f4895303762df1a", "output_index": 0, "content_index": 0, "delta": " with"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 14, "item_id": "rs_02928748c11140b58f4895303762df1a", "output_index": 0, "content_index": 0, "delta": " the"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 15, "item_id": "rs_02928748c11140b58f4895303762df1a", "output_index": 0, "content_index": 0, "delta": " specified"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 16, "item_id": "rs_02928748c11140b58f4895303762df1a", "output_index": 0, "content_index": 0, "delta": " arguments"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 17, "item_id": "rs_02928748c11140b58f4895303762df1a", "output_index": 0, "content_index": 0, "delta": " and"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 18, "item_id": "rs_02928748c11140b58f4895303762df1a", "output_index": 0, "content_index": 0, "delta": " then"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 19, "item_id": "rs_02928748c11140b58f4895303762df1a", "output_index": 0, "content_index": 0, "delta": " stop"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 20, "item_id": "rs_02928748c11140b58f4895303762df1a", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 21, "item_id": "rs_02928748c11140b58f4895303762df1a", "output_index": 0, "content_index": 0, "delta": "\n"}
+
+event: response.reasoning_text.done
+data: {"type": "response.reasoning_text.done", "sequence_number": 22, "item_id": "rs_02928748c11140b58f4895303762df1a", "output_index": 0, "content_index": 0, "text": "The user wants me to call the tool exactly once with the specified arguments and then stop.\n"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 23, "output_index": 0, "item": {"id": "rs_02928748c11140b58f4895303762df1a", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants me to call the tool exactly once with the specified arguments and then stop.\n"}], "encrypted_content": "strata-r1.gAAAAABqwXC7yClcscpj6hyBUz12-BxVtz3_F2BIcO3vWbL8YdTaV8GNIDt-IbcOS1ovH7NZ4OUl2c6V6Io3jZvDx8dmBsYTAR1vadmvBnEPxUYxExa6nd3cl2yeBIDGZLhjX_J2965AbteE8vKRGNCysVxCUT9Y9mIZIwZ1YLvfaOZvVhiSO6CZFpICilberB_INKPr6N_V6CLmCmV3F08fAYD7dRpqmeCL05tjW2lCs7xygecexUdup-RlRiW0Z9b2DtGwgB_Y-a5xzuQfduCpB-Bg3QDQp_8Cf2x9duBtZP9nIitGeT9LJUMWZiNsPzqzLWt6hjhLpF_MbcfNbW-iXwMi5QXTXh1dPJze1fmGP2DRAp9xix7KoB6oAwHg35Y2xELBT9X73s5EdCJSZqXpNOZIVBEITtVMcPLVj-gQslqhZaK7rI8="}}
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 24, "output_index": 1, "item": {"id": "fc_1cc21cd4cfad4580b537c9454cf70496", "type": "function_call", "status": "in_progress", "call_id": "call_6f1eac198c204c32b34dd24b", "name": "close_agent", "arguments": "", "namespace": "multi_agent_v1"}}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 25, "item_id": "fc_1cc21cd4cfad4580b537c9454cf70496", "output_index": 1, "delta": "{"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 26, "item_id": "fc_1cc21cd4cfad4580b537c9454cf70496", "output_index": 1, "delta": "\"target\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 27, "item_id": "fc_1cc21cd4cfad4580b537c9454cf70496", "output_index": 1, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 28, "item_id": "fc_1cc21cd4cfad4580b537c9454cf70496", "output_index": 1, "delta": "fixture"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 29, "item_id": "fc_1cc21cd4cfad4580b537c9454cf70496", "output_index": 1, "delta": "-agent"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 30, "item_id": "fc_1cc21cd4cfad4580b537c9454cf70496", "output_index": 1, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 31, "item_id": "fc_1cc21cd4cfad4580b537c9454cf70496", "output_index": 1, "delta": "}"}
+
+event: response.function_call_arguments.done
+data: {"type": "response.function_call_arguments.done", "sequence_number": 32, "item_id": "fc_1cc21cd4cfad4580b537c9454cf70496", "output_index": 1, "arguments": "{\"target\":\"fixture-agent\"}"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 33, "output_index": 1, "item": {"id": "fc_1cc21cd4cfad4580b537c9454cf70496", "type": "function_call", "status": "completed", "call_id": "call_6f1eac198c204c32b34dd24b", "name": "close_agent", "arguments": "{\"target\":\"fixture-agent\"}", "namespace": "multi_agent_v1"}}
+
+event: response.completed
+data: {"type": "response.completed", "sequence_number": 34, "response": {"id": "resp_7fb26ac503674166958391465f850672", "object": "response", "created_at": 1791062200, "status": "completed", "completed_at": 1791062204, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [{"id": "rs_02928748c11140b58f4895303762df1a", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants me to call the tool exactly once with the specified arguments and then stop.\n"}], "encrypted_content": "strata-r1.gAAAAABqwXC7yClcscpj6hyBUz12-BxVtz3_F2BIcO3vWbL8YdTaV8GNIDt-IbcOS1ovH7NZ4OUl2c6V6Io3jZvDx8dmBsYTAR1vadmvBnEPxUYxExa6nd3cl2yeBIDGZLhjX_J2965AbteE8vKRGNCysVxCUT9Y9mIZIwZ1YLvfaOZvVhiSO6CZFpICilberB_INKPr6N_V6CLmCmV3F08fAYD7dRpqmeCL05tjW2lCs7xygecexUdup-RlRiW0Z9b2DtGwgB_Y-a5xzuQfduCpB-Bg3QDQp_8Cf2x9duBtZP9nIitGeT9LJUMWZiNsPzqzLWt6hjhLpF_MbcfNbW-iXwMi5QXTXh1dPJze1fmGP2DRAp9xix7KoB6oAwHg35Y2xELBT9X73s5EdCJSZqXpNOZIVBEITtVMcPLVj-gQslqhZaK7rI8="}, {"id": "fc_1cc21cd4cfad4580b537c9454cf70496", "type": "function_call", "status": "completed", "call_id": "call_6f1eac198c204c32b34dd24b", "name": "close_agent", "arguments": "{\"target\":\"fixture-agent\"}", "namespace": "multi_agent_v1"}], "usage": {"input_tokens": 381, "output_tokens": 52, "total_tokens": 433, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 381}, "output_tokens_details": {"reasoning_tokens": 20}}, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "namespace", "name": "multi_agent_v1", "description": "Tools for spawning and managing sub-agents.", "tools": [{"type": "function", "name": "close_agent", "description": "Close an agent and any open descendants when they are no longer needed, and return the target agent's previous status before shutdown was requested. Completed agents remain open and count toward the concurrency limit until closed. Don't keep agents open for too long if they are not needed anymore.", "strict": false, "parameters": {"type": "object", "properties": {"target": {"type": "string", "description": "Agent id to close (from spawn_agent)."}}, "required": ["target"], "additionalProperties": false}}]}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+

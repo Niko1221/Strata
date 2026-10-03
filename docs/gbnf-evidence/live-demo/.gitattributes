@@ -1,0 +1,2 @@
+# An SSE event ends with a blank line, including the terminal event.
+*.sse.txt -text whitespace=-blank-at-eof

@@ -1,0 +1,50 @@
+Starting real native target decoder
+[strata] starting the engine: reading the model's weights ...
+[strata] mapping the experts from the model files (about 30 GB, --mmap-experts): they are not loaded into RAM - the OS file cache reads them as the GPU's expert cache fills and as requests need them.
+         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.
+         Please wait and don't close this window; the browser opens when it is ready.
+[strata] filling the GPU's expert cache (7815 experts, 14.88 GiB of VRAM) ...
+[strata] still starting (25 s) - please wait ...
+[strata] almost ready ...
+[strata] reading the prompt: 24 of 31 tokens, 4 s so far
+[strata] answering: 3 of max 64 tokens, 8.0 tok/s, 5 s
+[strata] answering: 10 of max 64 tokens, 7.1 tok/s, 6 s
+[strata] done: 14 tokens in 6 s (7.5 tok/s) (stop, cancel=False), expert cache 61.0% hit
+target / 01-unconstrained: {"http_status": 200, "response_status": "completed", "text": "The sky is purple and the number is 999.", "wall_seconds": 6.2264}
+[strata] answering: 9 of max 64 tokens, 10.7 tok/s, 1 s
+[strata] done: 10 tokens in 1 s (11.2 tok/s) (stop, cancel=False), expert cache 76.3% hit
+target / 02-gbnf-json: {"http_status": 200, "response_status": "completed", "text": "color=blue;count=1\n", "wall_seconds": 1.8736}
+[strata] done: 10 tokens in 1 s (33.1 tok/s) (stop, cancel=False), expert cache 76.3% hit
+target / 03-gbnf-sse: {"http_status": 200, "response_status": "completed", "text": "color=blue;count=1\n", "wall_seconds": 0.5588}
+[strata] done: 9 tokens in 1 s (15.6 tok/s) (stop, cancel=False), expert cache 75.4% hit
+target / 04-unicode-sse: {"http_status": 200, "response_status": "completed", "text": "café 🐈", "wall_seconds": 0.8295}
+[strata] done: 1 tokens in 0 s (3032.8 tok/s) (length, cancel=False), expert cache 77.7% hit
+target / 05-token-limit: {"http_status": 200, "response_status": "incomplete", "text": "c", "wall_seconds": 0.259}
+target / 06-invalid-grammar: {"http_status": 400, "wall_seconds": 0.0112}
+[strata] done: 10 tokens in 1 s (32.7 tok/s) (stop, cancel=False), expert cache 76.3% hit
+target / 07-chat-gbnf-json: {"http_status": 200, "response_status": "stop", "text": "color=blue;count=1\n", "wall_seconds": 0.5596}
+Starting real native mtp decoder
+[strata] starting the engine: reading the model's weights ...
+[strata] mapping the experts from the model files (about 30 GB, --mmap-experts): they are not loaded into RAM - the OS file cache reads them as the GPU's expert cache fills and as requests need them.
+         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.
+         Please wait and don't close this window; the browser opens when it is ready.
+[strata] filling the GPU's expert cache (7815 experts, 14.88 GiB of VRAM) ...
+[strata] still starting (25 s) - please wait ...
+[strata] almost ready ...
+[strata] reading the prompt: 24 of 31 tokens, 3 s so far
+[strata] answering: 2 of max 64 tokens, 3.4 tok/s, 5 s
+[strata] done: 14 tokens in 6 s (6.9 tok/s) (stop, cancel=False), expert cache 59.5% hit
+mtp / 01-unconstrained: {"http_status": 200, "response_status": "completed", "text": "The sky is purple and the number is 999.", "wall_seconds": 6.1058}
+[strata] answering: 9 of max 64 tokens, 11.5 tok/s, 1 s
+[strata] done: 10 tokens in 1 s (11.8 tok/s) (stop, cancel=False), expert cache 76.7% hit
+mtp / 02-gbnf-json: {"http_status": 200, "response_status": "completed", "text": "color=blue;count=1\n", "wall_seconds": 1.808}
+[strata] done: 10 tokens in 1 s (34.3 tok/s) (stop, cancel=False), expert cache 76.7% hit
+mtp / 03-gbnf-sse: {"http_status": 200, "response_status": "completed", "text": "color=blue;count=1\n", "wall_seconds": 0.5258}
+[strata] done: 9 tokens in 1 s (16.0 tok/s) (stop, cancel=False), expert cache 75.2% hit
+mtp / 04-unicode-sse: {"http_status": 200, "response_status": "completed", "text": "café 🐈", "wall_seconds": 0.8025}
+[strata] done: 1 tokens in 0 s (2707.7 tok/s) (length, cancel=False), expert cache 76.9% hit
+mtp / 05-token-limit: {"http_status": 200, "response_status": "incomplete", "text": "c", "wall_seconds": 0.2367}
+mtp / 06-invalid-grammar: {"http_status": 400, "wall_seconds": 0.0105}
+[strata] done: 10 tokens in 1 s (34.1 tok/s) (stop, cancel=False), expert cache 76.7% hit
+mtp / 07-chat-gbnf-json: {"http_status": 200, "response_status": "stop", "text": "color=blue;count=1\n", "wall_seconds": 0.5178}
+PASS: 14 HTTP cases on real target-only and MTP native generation

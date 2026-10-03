@@ -1,0 +1,19 @@
+Test project /home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu
+    Start 21: grammar_sampler_test
+1/7 Test #21: grammar_sampler_test .............   Passed    0.47 sec
+    Start 22: grammar_sampler_one_block
+2/7 Test #22: grammar_sampler_one_block ........   Passed    0.24 sec
+    Start 23: grammar_sampler_old
+3/7 Test #23: grammar_sampler_old ..............   Passed    0.24 sec
+    Start 45: coupled_draft_test
+4/7 Test #45: coupled_draft_test ...............   Passed    0.00 sec
+    Start 50: grammar_speculation_split
+5/7 Test #50: grammar_speculation_split ........   Passed    0.59 sec
+    Start 51: grammar_speculation_one_block
+6/7 Test #51: grammar_speculation_one_block ....   Passed    0.61 sec
+    Start 52: grammar_speculation_old
+7/7 Test #52: grammar_speculation_old ..........   Passed    0.97 sec
+
+100% tests passed, 0 tests failed out of 7
+
+Total Test time (real) =   3.14 sec

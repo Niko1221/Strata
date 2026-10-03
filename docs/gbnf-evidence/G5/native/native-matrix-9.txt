@@ -1,0 +1,32 @@
+{
+  "target": {
+    "rows": 32,
+    "compared_committed_rows": 32,
+    "first_divergent_requests": [],
+    "scratch_file_sha256": "aaa1dc5ef3c7a766e98658b70aa4b2a796ebf9eb5baaf68313ada165dd19e7e1"
+  },
+  "mtp": {
+    "rows": 32,
+    "compared_committed_rows": 32,
+    "first_divergent_requests": [],
+    "scratch_file_sha256": "a2ab841ec80ccc8589fd116df4e32654795e305c388a9acba25ba64329644999"
+  },
+  "coupled": {
+    "rows": 32,
+    "compared_committed_rows": 32,
+    "first_divergent_requests": [],
+    "scratch_file_sha256": "a2ab841ec80ccc8589fd116df4e32654795e305c388a9acba25ba64329644999"
+  },
+  "suffix": {
+    "rows": 32,
+    "compared_committed_rows": 32,
+    "first_divergent_requests": [],
+    "scratch_file_sha256": "8da1ca89f7dd2c0dad665c49444d9c65ad704741356229bc2d277d7c842954d3"
+  },
+  "suffix-coupled": {
+    "rows": 32,
+    "compared_committed_rows": 32,
+    "first_divergent_requests": [],
+    "scratch_file_sha256": "8da1ca89f7dd2c0dad665c49444d9c65ad704741356229bc2d277d7c842954d3"
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "none"
+  },
+  "max_output_tokens": 512,
+  "temperature": 0,
+  "input": "Return exactly this JSON value, without explanation: {\"value\": \"ready\"}",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "25_annotations",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Answer",
+            "description": "A human-readable result.",
+            "default": "ready",
+            "examples": [
+              "ready"
+            ],
+            "readOnly": true,
+            "writeOnly": false,
+            "deprecated": false,
+            "$comment": "Annotations do not insert defaults or modify output."
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

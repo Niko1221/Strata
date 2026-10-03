@@ -1,0 +1,19 @@
+model_instructions_file = "C:/Users/dflanag3/Documents/fleet/.fleet_work/strata-native-coding-20261003/chat-20261003T211458Z-485aac/codex-windows/examples-0/client-home/model-instructions.txt"
+model_catalog_json = "C:/Users/dflanag3/Documents/fleet/strata-native-gbnf/docs/codex/model-catalog-0.160.0.json"
+model = "qwen3.8-flash-next"
+model_provider = "strata-local"
+web_search = "disabled"
+model_reasoning_effort = "medium"
+
+[windows]
+sandbox = "unelevated"
+
+[model_providers.strata-local]
+name = "Strata local native coding qualification"
+base_url = "http://127.0.0.1:64869/v1"
+env_key = "STRATA_API_KEY"
+wire_api = "responses"
+requires_openai_auth = false
+supports_websockets = false
+request_max_retries = 0
+stream_max_retries = 0

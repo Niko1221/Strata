@@ -1,0 +1,214 @@
+{
+  "scripted_model_output": false,
+  "mocked_tool_results": true,
+  "tools_executed": false,
+  "prompt_supplies_sample_arguments": true,
+  "reasoning": "medium",
+  "platform": "windows",
+  "hint_on_failure": true,
+  "maximum_examples": 3,
+  "cases": [
+    {
+      "name": "exec_command",
+      "attempts": [
+        {
+          "example_count": 0,
+          "prompt_sha256": "458bfdac9cf0c8ce97eaab92ae766ef69f6778018f5e270fe7194fcd1c276bd8",
+          "generated_call_matches_schema_and_sample": true,
+          "mock_result_replayed_with_json_answer": true,
+          "stream_reassembled": true,
+          "passed": true,
+          "seconds": 33.62351159998798
+        }
+      ],
+      "passed_with_examples": 0,
+      "baseline_passed": true
+    },
+    {
+      "name": "write_stdin",
+      "attempts": [
+        {
+          "example_count": 0,
+          "prompt_sha256": "b9afbfce1ea6876737653e4dedc08ffe073be94a0942186465e8f6201fe7245b",
+          "generated_call_matches_schema_and_sample": true,
+          "mock_result_replayed_with_json_answer": true,
+          "stream_reassembled": true,
+          "passed": true,
+          "seconds": 8.650011099991389
+        }
+      ],
+      "passed_with_examples": 0,
+      "baseline_passed": true
+    },
+    {
+      "name": "request_user_input",
+      "attempts": [
+        {
+          "example_count": 0,
+          "prompt_sha256": "a5fdec0c404bff5b4d9d671e14e8788427e02f8f39aae8af1558b8a6e7854478",
+          "generated_call_matches_schema_and_sample": true,
+          "mock_result_replayed_with_json_answer": true,
+          "stream_reassembled": true,
+          "passed": true,
+          "seconds": 8.759878999990178
+        }
+      ],
+      "passed_with_examples": 0,
+      "baseline_passed": true
+    },
+    {
+      "name": "view_image",
+      "attempts": [
+        {
+          "example_count": 0,
+          "prompt_sha256": "a1f8e8e444ae2847623f86559b1956d7b3ecf0e80a434997c5b9bd3f320dcb0f",
+          "generated_call_matches_schema_and_sample": true,
+          "mock_result_replayed_with_json_answer": true,
+          "stream_reassembled": true,
+          "passed": true,
+          "seconds": 4.964629299996886
+        }
+      ],
+      "passed_with_examples": 0,
+      "baseline_passed": true
+    },
+    {
+      "name": "multi_agent_v1.close_agent",
+      "attempts": [
+        {
+          "example_count": 0,
+          "prompt_sha256": "93ca736ab37b2541ac0b6771a42818d1f8ce38cae2fd0bbbd1749e46293870c9",
+          "generated_call_matches_schema_and_sample": true,
+          "mock_result_replayed_with_json_answer": true,
+          "stream_reassembled": true,
+          "passed": true,
+          "seconds": 5.024620000011055
+        }
+      ],
+      "passed_with_examples": 0,
+      "baseline_passed": true
+    },
+    {
+      "name": "multi_agent_v1.resume_agent",
+      "attempts": [
+        {
+          "example_count": 0,
+          "prompt_sha256": "cc04542234cf5a6a694d43c6c782e0b7edc5dc9837e697a2f3b8b62328d268a5",
+          "generated_call_matches_schema_and_sample": true,
+          "mock_result_replayed_with_json_answer": true,
+          "stream_reassembled": true,
+          "passed": true,
+          "seconds": 5.408528900006786
+        }
+      ],
+      "passed_with_examples": 0,
+      "baseline_passed": true
+    },
+    {
+      "name": "multi_agent_v1.send_input",
+      "attempts": [
+        {
+          "example_count": 0,
+          "prompt_sha256": "0e5e97dac2ac624ee6ac6a449ad54ff4d22525a973ab1959dcfca701671e0a9d",
+          "generated_call_matches_schema_and_sample": true,
+          "mock_result_replayed_with_json_answer": true,
+          "stream_reassembled": true,
+          "passed": true,
+          "seconds": 9.256664600019576
+        }
+      ],
+      "passed_with_examples": 0,
+      "baseline_passed": true
+    },
+    {
+      "name": "multi_agent_v1.spawn_agent",
+      "attempts": [
+        {
+          "example_count": 0,
+          "prompt_sha256": "a1afd4728532b857163432236b0bbb2da715a4da56bea85c93339878ccc5e0b4",
+          "generated_call_matches_schema_and_sample": true,
+          "mock_result_replayed_with_json_answer": true,
+          "stream_reassembled": true,
+          "passed": true,
+          "seconds": 11.15854340000078
+        }
+      ],
+      "passed_with_examples": 0,
+      "baseline_passed": true
+    },
+    {
+      "name": "multi_agent_v1.wait_agent",
+      "attempts": [
+        {
+          "example_count": 0,
+          "prompt_sha256": "1f595e1d7105bd2c7b516adbc1356f9d641e7026c285e133418c4ffb22483dc1",
+          "generated_call_matches_schema_and_sample": true,
+          "mock_result_replayed_with_json_answer": true,
+          "stream_reassembled": true,
+          "passed": true,
+          "seconds": 10.309327199996915
+        }
+      ],
+      "passed_with_examples": 0,
+      "baseline_passed": true
+    },
+    {
+      "name": "get_goal",
+      "attempts": [
+        {
+          "example_count": 0,
+          "prompt_sha256": "f7213244d1a6a6038d06d2a81e015733d9aafaaa244d7b3ef24b771ab447e080",
+          "failure": "Additional properties are not allowed ('arguments' was unexpected)\n\nFailed validating 'additionalProperties' in schema:\n    {'type': 'object',\n     'properties': {},\n     'required': [],\n     'additionalProperties': False}\n\nOn instance:\n    {'arguments': {}}",
+          "passed": false,
+          "seconds": 2.8051717999915127
+        },
+        {
+          "example_count": 1,
+          "prompt_sha256": "254feaf00001abf0b3f51fbc2683a67346e164bb2a2cc88ce60b624c777ee1c8",
+          "generated_call_matches_schema_and_sample": true,
+          "mock_result_replayed_with_json_answer": true,
+          "stream_reassembled": true,
+          "passed": true,
+          "seconds": 3.75255860001198
+        }
+      ],
+      "passed_with_examples": 1,
+      "baseline_passed": false
+    },
+    {
+      "name": "create_goal",
+      "attempts": [
+        {
+          "example_count": 0,
+          "prompt_sha256": "b8ed5d3389cef2623b429f613ece8e46d3a9a32fa037e23bfe6bee1c31318e98",
+          "generated_call_matches_schema_and_sample": true,
+          "mock_result_replayed_with_json_answer": true,
+          "stream_reassembled": true,
+          "passed": true,
+          "seconds": 9.37136869999813
+        }
+      ],
+      "passed_with_examples": 0,
+      "baseline_passed": true
+    },
+    {
+      "name": "update_goal",
+      "attempts": [
+        {
+          "example_count": 0,
+          "prompt_sha256": "a9b6c09b6f9904e41bab7e2c6c9a23c9fe6dbac9915e4b8d8bd0b086463e2a65",
+          "generated_call_matches_schema_and_sample": true,
+          "mock_result_replayed_with_json_answer": true,
+          "stream_reassembled": true,
+          "passed": true,
+          "seconds": 6.10584609999205
+        }
+      ],
+      "passed_with_examples": 0,
+      "baseline_passed": true
+    }
+  ],
+  "result": "pass",
+  "baseline_passes": 11,
+  "hinted_passes": 1
+}

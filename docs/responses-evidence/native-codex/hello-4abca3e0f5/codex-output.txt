@@ -1,0 +1,7 @@
+{"type":"thread.started","thread_id":"01a100e0-9fb9-72e3-84a5-71bd3d37ac23"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Model metadata for `qwen3.8-flash-next` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."}}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_1","type":"reasoning","text":"The recorded reasoning indicates that the user's request is to respond with the exact phrase \"Hello world\" and to avoid using any tools."}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Hello world"}}
+{"type":"turn.completed","usage":{"input_tokens":9438,"cached_input_tokens":0,"cache_write_input_tokens":9438,"output_tokens":52,"reasoning_output_tokens":20}}
+Reading additional input from stdin...

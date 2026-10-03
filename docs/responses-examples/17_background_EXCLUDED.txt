@@ -1,0 +1,12 @@
+SYNTHETIC DOCUMENTATION EXAMPLE
+Status: Excluded; no background jobs or cancel endpoint
+
+POST /v1/responses
+Content-Type: application/json
+
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "input": "Hello.",
+  "background": true
+}

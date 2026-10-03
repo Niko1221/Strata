@@ -1,0 +1,134 @@
+event: response.created
+data: {"type": "response.created", "sequence_number": 0, "response": {"id": "resp_1ac52f765ce64ec5bb7c40507b02bfc5", "object": "response", "created_at": 1791058762, "status": "queued", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "namespace", "name": "multi_agent_v1", "description": "Tools for spawning and managing sub-agents.", "tools": [{"type": "function", "name": "send_input", "description": "Send a message to an existing agent. Use interrupt=true to redirect work immediately. You should reuse the agent by send_input if you believe your assigned task is highly dependent on the context of a previous task.", "strict": false, "parameters": {"type": "object", "properties": {"interrupt": {"type": "boolean", "description": "True interrupts the current task and handles this message immediately; false or omitted queues it."}, "items": {"type": "array", "description": "Structured input items. Use this to pass explicit mentions (for example app:// connector paths).", "items": {"type": "object", "properties": {"audio_url": {"type": "string", "description": "Audio data URL when type is audio."}, "image_url": {"type": "string", "description": "Image URL when type is image."}, "name": {"type": "string", "description": "Display name when type is skill or mention."}, "path": {"type": "string", "description": "Path when type is local_image/local_audio/skill, or structured mention target such as app://<connector-id> or plugin://<plugin-name>@<marketplace-name> when type is mention."}, "text": {"type": "string", "description": "Text content when type is text."}, "type": {"type": "string", "description": "Input item type: text, image, local_image, audio, local_audio, skill, or mention."}}, "additionalProperties": false}}, "message": {"type": "string", "description": "Legacy plain-text message to send to the agent. Use either message or items."}, "target": {"type": "string", "description": "Agent id to message (from spawn_agent)."}}, "required": ["target"], "additionalProperties": false}}]}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+event: response.in_progress
+data: {"type": "response.in_progress", "sequence_number": 1, "response": {"id": "resp_1ac52f765ce64ec5bb7c40507b02bfc5", "object": "response", "created_at": 1791058762, "status": "in_progress", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "namespace", "name": "multi_agent_v1", "description": "Tools for spawning and managing sub-agents.", "tools": [{"type": "function", "name": "send_input", "description": "Send a message to an existing agent. Use interrupt=true to redirect work immediately. You should reuse the agent by send_input if you believe your assigned task is highly dependent on the context of a previous task.", "strict": false, "parameters": {"type": "object", "properties": {"interrupt": {"type": "boolean", "description": "True interrupts the current task and handles this message immediately; false or omitted queues it."}, "items": {"type": "array", "description": "Structured input items. Use this to pass explicit mentions (for example app:// connector paths).", "items": {"type": "object", "properties": {"audio_url": {"type": "string", "description": "Audio data URL when type is audio."}, "image_url": {"type": "string", "description": "Image URL when type is image."}, "name": {"type": "string", "description": "Display name when type is skill or mention."}, "path": {"type": "string", "description": "Path when type is local_image/local_audio/skill, or structured mention target such as app://<connector-id> or plugin://<plugin-name>@<marketplace-name> when type is mention."}, "text": {"type": "string", "description": "Text content when type is text."}, "type": {"type": "string", "description": "Input item type: text, image, local_image, audio, local_audio, skill, or mention."}}, "additionalProperties": false}}, "message": {"type": "string", "description": "Legacy plain-text message to send to the agent. Use either message or items."}, "target": {"type": "string", "description": "Agent id to message (from spawn_agent)."}}, "required": ["target"], "additionalProperties": false}}]}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"id": "rs_6a1be682f7884197b1f2437b0bd475df", "type": "reasoning", "status": "in_progress", "summary": [], "content": [{"type": "reasoning_text", "text": ""}]}}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 3, "item_id": "rs_6a1be682f7884197b1f2437b0bd475df", "output_index": 0, "content_index": 0, "delta": "The"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 4, "item_id": "rs_6a1be682f7884197b1f2437b0bd475df", "output_index": 0, "content_index": 0, "delta": " user"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 5, "item_id": "rs_6a1be682f7884197b1f2437b0bd475df", "output_index": 0, "content_index": 0, "delta": " wants"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 6, "item_id": "rs_6a1be682f7884197b1f2437b0bd475df", "output_index": 0, "content_index": 0, "delta": " exactly"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 7, "item_id": "rs_6a1be682f7884197b1f2437b0bd475df", "output_index": 0, "content_index": 0, "delta": " one"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 8, "item_id": "rs_6a1be682f7884197b1f2437b0bd475df", "output_index": 0, "content_index": 0, "delta": " tool"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 9, "item_id": "rs_6a1be682f7884197b1f2437b0bd475df", "output_index": 0, "content_index": 0, "delta": " call"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 10, "item_id": "rs_6a1be682f7884197b1f2437b0bd475df", "output_index": 0, "content_index": 0, "delta": " with"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 11, "item_id": "rs_6a1be682f7884197b1f2437b0bd475df", "output_index": 0, "content_index": 0, "delta": " the"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 12, "item_id": "rs_6a1be682f7884197b1f2437b0bd475df", "output_index": 0, "content_index": 0, "delta": " specified"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 13, "item_id": "rs_6a1be682f7884197b1f2437b0bd475df", "output_index": 0, "content_index": 0, "delta": " arguments"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 14, "item_id": "rs_6a1be682f7884197b1f2437b0bd475df", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 15, "item_id": "rs_6a1be682f7884197b1f2437b0bd475df", "output_index": 0, "content_index": 0, "delta": "\n"}
+
+event: response.reasoning_text.done
+data: {"type": "response.reasoning_text.done", "sequence_number": 16, "item_id": "rs_6a1be682f7884197b1f2437b0bd475df", "output_index": 0, "content_index": 0, "text": "The user wants exactly one tool call with the specified arguments.\n"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 17, "output_index": 0, "item": {"id": "rs_6a1be682f7884197b1f2437b0bd475df", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants exactly one tool call with the specified arguments.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWNO9RGvaKOyeJ4IdW3uGJpNJZY7rVF-mxNERETd1t5M3LRv7DWnWmPkE4LYFfhXsAba6Df6HMLN-Krf6B8Z7s4LRXyMCs7FS6lKTL0QOqR4TOG3vK9nGYJImXSds4jw7D3hK7MqRQIv3VgBVkUenfVVFQTuOP1Pv2-6jkAThsu0FWGbrG4LodALCSuvgHs5vQZwiiri4IG3tHRUy2owbEAIdh5yvzezqjYdd6opINLTj_GaXWNPVcE1u93AZrM26LFq8nOPKJjD2Antg8Kq9JQUhR6zdfAYHEvK6aegECRZ6fUOSulKjIwT9v5eWMG6DWX0vJWuydgVJXzQk0_3jr7euGW4tDVcisW0ElTKmbsnrN-jmV791hHYnzBwugkGft7H"}}
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 18, "output_index": 1, "item": {"id": "fc_fd54950a47f7401e8fd8ccd9e9397b96", "type": "function_call", "status": "in_progress", "call_id": "call_09f5dad3b31b4e30812fce84", "name": "send_input", "arguments": "", "namespace": "multi_agent_v1"}}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 19, "item_id": "fc_fd54950a47f7401e8fd8ccd9e9397b96", "output_index": 1, "delta": "{"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 20, "item_id": "fc_fd54950a47f7401e8fd8ccd9e9397b96", "output_index": 1, "delta": "\"target\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 21, "item_id": "fc_fd54950a47f7401e8fd8ccd9e9397b96", "output_index": 1, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 22, "item_id": "fc_fd54950a47f7401e8fd8ccd9e9397b96", "output_index": 1, "delta": "fixture"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 23, "item_id": "fc_fd54950a47f7401e8fd8ccd9e9397b96", "output_index": 1, "delta": "-agent"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 24, "item_id": "fc_fd54950a47f7401e8fd8ccd9e9397b96", "output_index": 1, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 25, "item_id": "fc_fd54950a47f7401e8fd8ccd9e9397b96", "output_index": 1, "delta": ",\"message\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 26, "item_id": "fc_fd54950a47f7401e8fd8ccd9e9397b96", "output_index": 1, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 27, "item_id": "fc_fd54950a47f7401e8fd8ccd9e9397b96", "output_index": 1, "delta": "literal"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 28, "item_id": "fc_fd54950a47f7401e8fd8ccd9e9397b96", "output_index": 1, "delta": " null"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 29, "item_id": "fc_fd54950a47f7401e8fd8ccd9e9397b96", "output_index": 1, "delta": " "}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 30, "item_id": "fc_fd54950a47f7401e8fd8ccd9e9397b96", "output_index": 1, "delta": "4"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 31, "item_id": "fc_fd54950a47f7401e8fd8ccd9e9397b96", "output_index": 1, "delta": "2"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 32, "item_id": "fc_fd54950a47f7401e8fd8ccd9e9397b96", "output_index": 1, "delta": " true"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 33, "item_id": "fc_fd54950a47f7401e8fd8ccd9e9397b96", "output_index": 1, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 34, "item_id": "fc_fd54950a47f7401e8fd8ccd9e9397b96", "output_index": 1, "delta": ",\"interrupt\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 35, "item_id": "fc_fd54950a47f7401e8fd8ccd9e9397b96", "output_index": 1, "delta": "\"False\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 36, "item_id": "fc_fd54950a47f7401e8fd8ccd9e9397b96", "output_index": 1, "delta": ",\"items\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 37, "item_id": "fc_fd54950a47f7401e8fd8ccd9e9397b96", "output_index": 1, "delta": "[{\"type\": \"text\", \"text\": \"hello\"}]"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 38, "item_id": "fc_fd54950a47f7401e8fd8ccd9e9397b96", "output_index": 1, "delta": "}"}
+
+event: response.function_call_arguments.done
+data: {"type": "response.function_call_arguments.done", "sequence_number": 39, "item_id": "fc_fd54950a47f7401e8fd8ccd9e9397b96", "output_index": 1, "arguments": "{\"target\":\"fixture-agent\",\"message\":\"literal null 42 true\",\"interrupt\":\"False\",\"items\":[{\"type\": \"text\", \"text\": \"hello\"}]}"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 40, "output_index": 1, "item": {"id": "fc_fd54950a47f7401e8fd8ccd9e9397b96", "type": "function_call", "status": "completed", "call_id": "call_09f5dad3b31b4e30812fce84", "name": "send_input", "arguments": "{\"target\":\"fixture-agent\",\"message\":\"literal null 42 true\",\"interrupt\":\"False\",\"items\":[{\"type\": \"text\", \"text\": \"hello\"}]}", "namespace": "multi_agent_v1"}}
+
+event: response.completed
+data: {"type": "response.completed", "sequence_number": 41, "response": {"id": "resp_1ac52f765ce64ec5bb7c40507b02bfc5", "object": "response", "created_at": 1791058762, "status": "completed", "completed_at": 1791058769, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [{"id": "rs_6a1be682f7884197b1f2437b0bd475df", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants exactly one tool call with the specified arguments.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWNO9RGvaKOyeJ4IdW3uGJpNJZY7rVF-mxNERETd1t5M3LRv7DWnWmPkE4LYFfhXsAba6Df6HMLN-Krf6B8Z7s4LRXyMCs7FS6lKTL0QOqR4TOG3vK9nGYJImXSds4jw7D3hK7MqRQIv3VgBVkUenfVVFQTuOP1Pv2-6jkAThsu0FWGbrG4LodALCSuvgHs5vQZwiiri4IG3tHRUy2owbEAIdh5yvzezqjYdd6opINLTj_GaXWNPVcE1u93AZrM26LFq8nOPKJjD2Antg8Kq9JQUhR6zdfAYHEvK6aegECRZ6fUOSulKjIwT9v5eWMG6DWX0vJWuydgVJXzQk0_3jr7euGW4tDVcisW0ElTKmbsnrN-jmV791hHYnzBwugkGft7H"}, {"id": "fc_fd54950a47f7401e8fd8ccd9e9397b96", "type": "function_call", "status": "completed", "call_id": "call_09f5dad3b31b4e30812fce84", "name": "send_input", "arguments": "{\"target\":\"fixture-agent\",\"message\":\"literal null 42 true\",\"interrupt\":\"False\",\"items\":[{\"type\": \"text\", \"text\": \"hello\"}]}", "namespace": "multi_agent_v1"}], "usage": {"input_tokens": 688, "output_tokens": 99, "total_tokens": 787, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 688}, "output_tokens_details": {"reasoning_tokens": 14}}, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "namespace", "name": "multi_agent_v1", "description": "Tools for spawning and managing sub-agents.", "tools": [{"type": "function", "name": "send_input", "description": "Send a message to an existing agent. Use interrupt=true to redirect work immediately. You should reuse the agent by send_input if you believe your assigned task is highly dependent on the context of a previous task.", "strict": false, "parameters": {"type": "object", "properties": {"interrupt": {"type": "boolean", "description": "True interrupts the current task and handles this message immediately; false or omitted queues it."}, "items": {"type": "array", "description": "Structured input items. Use this to pass explicit mentions (for example app:// connector paths).", "items": {"type": "object", "properties": {"audio_url": {"type": "string", "description": "Audio data URL when type is audio."}, "image_url": {"type": "string", "description": "Image URL when type is image."}, "name": {"type": "string", "description": "Display name when type is skill or mention."}, "path": {"type": "string", "description": "Path when type is local_image/local_audio/skill, or structured mention target such as app://<connector-id> or plugin://<plugin-name>@<marketplace-name> when type is mention."}, "text": {"type": "string", "description": "Text content when type is text."}, "type": {"type": "string", "description": "Input item type: text, image, local_image, audio, local_audio, skill, or mention."}}, "additionalProperties": false}}, "message": {"type": "string", "description": "Legacy plain-text message to send to the agent. Use either message or items."}, "target": {"type": "string", "description": "Agent id to message (from spawn_agent)."}}, "required": ["target"], "additionalProperties": false}}]}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+

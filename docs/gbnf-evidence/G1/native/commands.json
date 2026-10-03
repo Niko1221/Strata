@@ -1,0 +1,26 @@
+[
+  [
+    "cmake",
+    "-S",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source",
+    "-B",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-cpu",
+    "-G",
+    "Ninja",
+    "-DSTRATA_ENABLE_CUDA=OFF",
+    "-DSTRATA_NATIVE_EXPERTS=OFF",
+    "-DSTRATA_ENABLE_GBNF=ON",
+    "-DSTRATA_XGRAMMAR_DIR=/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata",
+    "-DSTRATA_BUILD_TESTS=OFF",
+    "-DCMAKE_BUILD_TYPE=Release"
+  ],
+  [
+    "cmake",
+    "--build",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-cpu",
+    "--target",
+    "grammar_native_test",
+    "-j",
+    "4"
+  ]
+]

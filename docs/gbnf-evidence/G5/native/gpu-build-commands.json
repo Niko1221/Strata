@@ -1,0 +1,14 @@
+[
+  [
+    "cmake",
+    "--build",
+    "/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/build-gbnf-gpu",
+    "--target",
+    "strata",
+    "grammar_speculation_gpu_test",
+    "grammar_sampler_test",
+    "coupled_draft_test",
+    "-j",
+    "4"
+  ]
+]

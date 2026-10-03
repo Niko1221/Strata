@@ -1,0 +1,47 @@
+[0/2] Re-checking globbed directories...
+[1/35] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata/cpp/config.cc.o
+[2/35] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata/cpp/converter_ext/deepseek.cc.o
+[3/35] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata/cpp/converter_ext/glm.cc.o
+[4/35] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata/cpp/converter_ext/kimi_k3.cc.o
+[5/35] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata/cpp/converter_ext/minimax.cc.o
+[6/35] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata/cpp/converter_ext/cohere.cc.o
+[7/35] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata/cpp/converter_ext/qwen.cc.o
+[8/35] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata/cpp/compiled_grammar.cc.o
+[9/35] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata/cpp/converter_ext/minimax_m3.cc.o
+[10/35] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata/cpp/earley_parser.cc.o
+[11/35] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata/cpp/fsm_builder.cc.o
+[12/35] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata/cpp/grammar_builder.cc.o
+[13/35] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata/cpp/grammar.cc.o
+[14/35] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata/cpp/fsm.cc.o
+[15/35] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata/cpp/grammar_parser.cc.o
+[16/35] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata/cpp/grammar_compiler.cc.o
+[17/35] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata/cpp/grammar_printer.cc.o
+[18/35] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata/cpp/grammar_matcher.cc.o
+[19/35] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata/cpp/grammar_functor.cc.o
+[20/35] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata/cpp/regex_converter.cc.o
+[21/35] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata/cpp/suffix_automata.cc.o
+[22/35] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata/cpp/support/logging.cc.o
+[23/35] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata/cpp/support/recursion_guard.cc.o
+[24/35] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata/cpp/testing.cc.o
+[25/35] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata/cpp/lark_converter.cc.o
+[26/35] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata/cpp/tokenizer_info.cc.o
+[27/35] Building CXX object CMakeFiles/strata_grammar.dir/src/core/grammar_vocabulary.cpp.o
+[28/35] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata/cpp/structural_tag.cc.o
+[29/35] Building CXX object CMakeFiles/strata_xgrammar.dir/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/dependencies/xgrammar-strata/cpp/json_schema_converter.cc.o
+[30/35] Linking CXX static library libstrata_xgrammar.a
+[31/35] Building CXX object CMakeFiles/strata_grammar.dir/src/core/grammar.cpp.o
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/grammar.cpp: In constructor ‘strata::grammar::Matcher::Impl::Impl(std::shared_ptr<const strata::grammar::Compiled>, uint64_t)’:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/grammar.cpp:91:84: warning: missing initializer for member ‘strata::grammar::detail::WorkBudget::deadline’ [-Wmissing-field-initializers]
+   91 |         : compiled(std::move(c)), matcher(compiled->grammar, std::nullopt, false), budget{limit},
+      |                                                                                    ^~~~~~~~~~~~~
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/grammar.cpp: In constructor ‘strata::grammar::Matcher::Matcher(std::shared_ptr<const strata::grammar::Compiled>, uint64_t)’:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/grammar.cpp:103:36: warning: missing initializer for member ‘strata::grammar::detail::WorkBudget::deadline’ [-Wmissing-field-initializers]
+  103 |     detail::WorkBudget budget{limit};
+      |                                    ^
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/grammar.cpp: In member function ‘std::shared_ptr<const strata::grammar::Compiled> strata::grammar::Compiler::compile(const std::string&, uint64_t)’:
+/home/dflanag3/fleet-downloads/strata-native-gbnf-20261003/source/src/core/grammar.cpp:221:36: warning: missing initializer for member ‘strata::grammar::detail::WorkBudget::deadline’ [-Wmissing-field-initializers]
+  221 |     detail::WorkBudget budget{limit};
+      |                                    ^
+[32/35] Linking CXX static library libstrata_grammar.a
+[33/35] Building CXX object CMakeFiles/grammar_native_test.dir/src/core/grammar_native_test.cpp.o
+[34/35] Linking CXX executable grammar_native_test

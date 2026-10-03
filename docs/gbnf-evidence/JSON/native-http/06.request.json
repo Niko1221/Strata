@@ -1,0 +1,74 @@
+{
+  "model": "qwen3.8-flash-next",
+  "store": false,
+  "reasoning": {
+    "effort": "medium"
+  },
+  "max_output_tokens": 3072,
+  "temperature": 0,
+  "input": [
+    {
+      "role": "user",
+      "content": "Call lookup to read the hidden integer. Do not guess. Then give the value as JSON."
+    },
+    {
+      "id": "rs_d36d9cbf84c94606ae37a64d6ae05929",
+      "type": "reasoning",
+      "status": "completed",
+      "summary": [],
+      "content": [
+        {
+          "type": "reasoning_text",
+          "text": "We need to call lookup.\n"
+        }
+      ],
+      "encrypted_content": "strata-r1.gAAAAABqwVae1H3bI9s6mKnfH8Tv0x4FjMvcBZpEPlYctZzpVXAuV1E2S04e9lZsnq-BakFYZIk9My54xisYTnzXTK_gO3hGUTY0moxBYIQDbxVOcrK0AS2pslIKBGjuClQE4n0r8v0yCuyqULIolT3T4WoFmAT6gEfkb0i1_v_k7aOB_gUR1Qfz-7cl9XWqRKcJpc_WwUXaP8vDdavrHG-etV69CIQ7XPtwwbx_2icCjL9QoPyUtmdUb7BdLrfvDksKgdprzqxbRGAm44k0GMGogx8S4s33veVfh1IU2gktVWTp4x8Iz8nHsP2HjkeHfnqbLmLMuADjx4yea6WI_FWok-b69v_RkQ=="
+    },
+    {
+      "id": "fc_2bc6f4c27cd14438a3f5eb7ba739fbe9",
+      "type": "function_call",
+      "status": "completed",
+      "call_id": "call_5417bd0d1a014fafafc64f07",
+      "name": "lookup",
+      "arguments": "{}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_5417bd0d1a014fafafc64f07",
+      "output": "MOCK EXTERNAL TOOL RESULT (not JSON): the hidden integer is 27. Other arbitrary text: purple."
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "lookup",
+      "description": "Read the hidden integer. Call before answering.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "strict": false
+    }
+  ],
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "lookup_result",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "stream": true
+}

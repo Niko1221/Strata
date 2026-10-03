@@ -1,0 +1,11 @@
+attrs==26.1.0
+cffi==2.1.1
+cryptography==50.0.2
+Jinja2==3.1.6
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+MarkupSafe==3.0.4
+pycparser==3.0
+referencing==0.37.0
+regex==2026.9.10
+rpds-py==2026.6.3

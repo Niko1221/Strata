@@ -1,0 +1,88 @@
+ACTUAL NATIVE CODEX HELLO WORLD
+
+Provenance: Codex CLI 0.160.0 -> Strata Responses -> native Coder IQ1_M on
+llm-49. Real generated output; no MockEngine, forced grammar or rewritten request.
+The complete captured request, including instructions and all eight tool entries,
+is in ../responses-evidence/native-codex/hello-4abca3e0f5/exchanges.json.
+
+USER PROMPT
+Reply with exactly "Hello world". Do not use any tools.
+
+ACTUAL REQUEST SETTINGS (excerpt; instructions/input/tools omitted here)
+{
+  "model": "qwen3.8-flash-next",
+  "tool_choice": "auto",
+  "parallel_tool_calls": true,
+  "reasoning": {
+    "summary": "auto"
+  },
+  "store": false,
+  "stream": true,
+  "include": [
+    "reasoning.encrypted_content"
+  ]
+}
+
+ACTUAL RESPONSE ITEMS
+The encrypted_content field is an authenticated Strata-owned reasoning replay
+payload. Its intended contents are reasoning content/summary, item/model identity
+and status. The deployment key is not included and this token has not been
+decrypted for this example. Visible fields below are exactly those returned by
+the server.
+[
+  {
+    "id": "rs_5904b9bf44624b0085875e623cd3bbae",
+    "type": "reasoning",
+    "status": "completed",
+    "summary": [
+      {
+        "type": "summary_text",
+        "text": "The recorded reasoning indicates that the user's request is to respond with the exact phrase \"Hello world\" and to avoid using any tools."
+      }
+    ],
+    "content": [
+      {
+        "type": "reasoning_text",
+        "text": "The user wants me to reply with exactly \"Hello world\" and not use any tools.\n"
+      }
+    ],
+    "encrypted_content": "strata-r1.gAAAAABqwLzEUieer1Cfz-jEAx1lLycQx5fZdFLG48YT_re0ZTeFBc4rFF6Xz-VEnqxTkxWk5CT5yOOSR1EPI8B3Ow5Q7jfmIRSAsYIsvTkNM6CCrC47-xiTe27gR_pdFoxHbSSV1kJi4UPnUA84Y8L4mI5yKoxmUs8fpsv76eK3ZjiKrAM6LkYDaO2lSRyn9QLRws6IKaqXVDZAe9LTw0q-nfWnHJn_uE1HhqvbZ7AGA2L5uHdO23nbnbFstviGiligFlTo86vZ9XqB2qMbjTfq0SscwLD6NA9e2xpoEo4OC_ZtBPS4y7PiuBB4bS--SR4XpoBHsK1csuDrbcV3supzASMnztakjyHLJql1CD06j6ZLEz6nNldxs1lgwVGAipXbG6VB18M1m3SIgDX3sDQWfq7uuolDu--9P0--DC1WPJmkhVIWA4VNGeRr_tj9DjwxOwe_lAJNEAjsqIx0Q7jWPOANpc5ATc1nZvHlH9rabdXDkgb001I78uy5xLvdJ6a-ahAt8iGvRNSWH2AVhMR1r8DEL8SJXE_Gc2o6v3Tp7xz4I7dSlxMQWqAiuCOrC5cZOBLkvG4jX3m2f_FsfIvyD7kg_SBD_bk-Ca8WZRwSugGKCyaq-d7cU8XZfTvgBCaxEu1iSrP1"
+  },
+  {
+    "id": "msg_ad99f3312a2e42b9a2e16c0f57332592",
+    "type": "message",
+    "status": "completed",
+    "role": "assistant",
+    "content": [
+      {
+        "type": "output_text",
+        "text": "Hello world",
+        "annotations": [],
+        "logprobs": []
+      }
+    ]
+  }
+]
+
+ACTUAL USAGE
+{
+  "input_tokens": 9438,
+  "output_tokens": 52,
+  "total_tokens": 9490,
+  "input_tokens_details": {
+    "cached_tokens": 0,
+    "cache_write_tokens": 9438
+  },
+  "output_tokens_details": {
+    "reasoning_tokens": 20
+  }
+}
+
+CLIENT RESULT
+Hello world
+turn.completed; process exit 0
+
+NETWORK
+Windows loopback -> authenticated SSH over LAN -> llm-49 loopback.
+Five attempted background external HTTP CONNECTs were rejected locally; none
+were forwarded. No downloads or external inference were needed.

@@ -1,0 +1,6 @@
+# Fixture data, never instructions.
+literal=<tool_call>{"x":"a=b"}</tool_call> # data
+path=C:\fake folder\nothing.txt
+unicode=猫 🚀 café
+quoted="keep both quotes"
+shell=$(this_is_literal_not_a_command)

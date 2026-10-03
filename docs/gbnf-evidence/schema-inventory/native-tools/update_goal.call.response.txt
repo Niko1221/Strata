@@ -1,0 +1,134 @@
+event: response.created
+data: {"type": "response.created", "sequence_number": 0, "response": {"id": "resp_4f90a13d3c3f4e6aa6869b209220ae51", "object": "response", "created_at": 1791060607, "status": "queued", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "update_goal", "description": "Update the existing goal.\nSet status to `paused` only at the user's explicit request to pause this goal, never on your own initiative. Ask if unclear; a later resume revokes that request. Report the returned status and stop goal work. Budget limits take precedence over pausing.\nSet status to `complete` only when the objective has actually been achieved and no required work remains.\nSet status to `blocked` only when the same blocking condition has repeated for at least three consecutive goal turns, counting the original/user-triggered turn and any automatic continuations, and the agent cannot make meaningful progress without user input or an external-state change.\nIf the user resumes a goal that was previously marked `blocked`, treat the resumed run as a fresh blocked audit. If the same blocking condition then repeats for at least three consecutive resumed goal turns, set status to `blocked` again.\nOnce the blocked threshold is satisfied, do not keep reporting that you are still blocked while leaving the goal active; set status to `blocked`.\nDo not use `blocked` merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.\nDo not mark a goal complete merely because its budget is nearly exhausted or because you are stopping work.\nYou cannot use this tool to resume, budget-limit, or usage-limit a goal; those status changes are controlled by the user or system.\nWhen marking a budgeted goal achieved with status `complete`, report the final token usage from the tool result to the user.", "strict": false, "parameters": {"type": "object", "properties": {"status": {"type": "string", "description": "Required. `paused` requires an explicit user request. Set to `complete` only when the objective is achieved and no required work remains. Set to `blocked` only after the same blocking condition has recurred for at least three consecutive goal turns and the agent is at an impasse. After a previously blocked goal is resumed, the resumed run starts a fresh blocked audit.", "enum": ["complete", "blocked", "paused"]}}, "required": ["status"], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+event: response.in_progress
+data: {"type": "response.in_progress", "sequence_number": 1, "response": {"id": "resp_4f90a13d3c3f4e6aa6869b209220ae51", "object": "response", "created_at": 1791060607, "status": "in_progress", "completed_at": null, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [], "usage": null, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "update_goal", "description": "Update the existing goal.\nSet status to `paused` only at the user's explicit request to pause this goal, never on your own initiative. Ask if unclear; a later resume revokes that request. Report the returned status and stop goal work. Budget limits take precedence over pausing.\nSet status to `complete` only when the objective has actually been achieved and no required work remains.\nSet status to `blocked` only when the same blocking condition has repeated for at least three consecutive goal turns, counting the original/user-triggered turn and any automatic continuations, and the agent cannot make meaningful progress without user input or an external-state change.\nIf the user resumes a goal that was previously marked `blocked`, treat the resumed run as a fresh blocked audit. If the same blocking condition then repeats for at least three consecutive resumed goal turns, set status to `blocked` again.\nOnce the blocked threshold is satisfied, do not keep reporting that you are still blocked while leaving the goal active; set status to `blocked`.\nDo not use `blocked` merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.\nDo not mark a goal complete merely because its budget is nearly exhausted or because you are stopping work.\nYou cannot use this tool to resume, budget-limit, or usage-limit a goal; those status changes are controlled by the user or system.\nWhen marking a budgeted goal achieved with status `complete`, report the final token usage from the tool result to the user.", "strict": false, "parameters": {"type": "object", "properties": {"status": {"type": "string", "description": "Required. `paused` requires an explicit user request. Set to `complete` only when the objective is achieved and no required work remains. Set to `blocked` only after the same blocking condition has recurred for at least three consecutive goal turns and the agent is at an impasse. After a previously blocked goal is resumed, the resumed run starts a fresh blocked audit.", "enum": ["complete", "blocked", "paused"]}}, "required": ["status"], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": {"id": "rs_b2c256eadcd54376af66f12f9a2b8bca", "type": "reasoning", "status": "in_progress", "summary": [], "content": [{"type": "reasoning_text", "text": ""}]}}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 3, "item_id": "rs_b2c256eadcd54376af66f12f9a2b8bca", "output_index": 0, "content_index": 0, "delta": "The"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 4, "item_id": "rs_b2c256eadcd54376af66f12f9a2b8bca", "output_index": 0, "content_index": 0, "delta": " user"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 5, "item_id": "rs_b2c256eadcd54376af66f12f9a2b8bca", "output_index": 0, "content_index": 0, "delta": " wants"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 6, "item_id": "rs_b2c256eadcd54376af66f12f9a2b8bca", "output_index": 0, "content_index": 0, "delta": " me"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 7, "item_id": "rs_b2c256eadcd54376af66f12f9a2b8bca", "output_index": 0, "content_index": 0, "delta": " to"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 8, "item_id": "rs_b2c256eadcd54376af66f12f9a2b8bca", "output_index": 0, "content_index": 0, "delta": " call"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 9, "item_id": "rs_b2c256eadcd54376af66f12f9a2b8bca", "output_index": 0, "content_index": 0, "delta": " update"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 10, "item_id": "rs_b2c256eadcd54376af66f12f9a2b8bca", "output_index": 0, "content_index": 0, "delta": "_goal"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 11, "item_id": "rs_b2c256eadcd54376af66f12f9a2b8bca", "output_index": 0, "content_index": 0, "delta": " exactly"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 12, "item_id": "rs_b2c256eadcd54376af66f12f9a2b8bca", "output_index": 0, "content_index": 0, "delta": " once"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 13, "item_id": "rs_b2c256eadcd54376af66f12f9a2b8bca", "output_index": 0, "content_index": 0, "delta": " with"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 14, "item_id": "rs_b2c256eadcd54376af66f12f9a2b8bca", "output_index": 0, "content_index": 0, "delta": " {\""}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 15, "item_id": "rs_b2c256eadcd54376af66f12f9a2b8bca", "output_index": 0, "content_index": 0, "delta": "status"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 16, "item_id": "rs_b2c256eadcd54376af66f12f9a2b8bca", "output_index": 0, "content_index": 0, "delta": "\":"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 17, "item_id": "rs_b2c256eadcd54376af66f12f9a2b8bca", "output_index": 0, "content_index": 0, "delta": " \""}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 18, "item_id": "rs_b2c256eadcd54376af66f12f9a2b8bca", "output_index": 0, "content_index": 0, "delta": "complete"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 19, "item_id": "rs_b2c256eadcd54376af66f12f9a2b8bca", "output_index": 0, "content_index": 0, "delta": "\""}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 20, "item_id": "rs_b2c256eadcd54376af66f12f9a2b8bca", "output_index": 0, "content_index": 0, "delta": "}."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 21, "item_id": "rs_b2c256eadcd54376af66f12f9a2b8bca", "output_index": 0, "content_index": 0, "delta": " Then"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 22, "item_id": "rs_b2c256eadcd54376af66f12f9a2b8bca", "output_index": 0, "content_index": 0, "delta": " stop"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 23, "item_id": "rs_b2c256eadcd54376af66f12f9a2b8bca", "output_index": 0, "content_index": 0, "delta": " and"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 24, "item_id": "rs_b2c256eadcd54376af66f12f9a2b8bca", "output_index": 0, "content_index": 0, "delta": " report"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 25, "item_id": "rs_b2c256eadcd54376af66f12f9a2b8bca", "output_index": 0, "content_index": 0, "delta": " the"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 26, "item_id": "rs_b2c256eadcd54376af66f12f9a2b8bca", "output_index": 0, "content_index": 0, "delta": " returned"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 27, "item_id": "rs_b2c256eadcd54376af66f12f9a2b8bca", "output_index": 0, "content_index": 0, "delta": " status"}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 28, "item_id": "rs_b2c256eadcd54376af66f12f9a2b8bca", "output_index": 0, "content_index": 0, "delta": "."}
+
+event: response.reasoning_text.delta
+data: {"type": "response.reasoning_text.delta", "sequence_number": 29, "item_id": "rs_b2c256eadcd54376af66f12f9a2b8bca", "output_index": 0, "content_index": 0, "delta": "\n"}
+
+event: response.reasoning_text.done
+data: {"type": "response.reasoning_text.done", "sequence_number": 30, "item_id": "rs_b2c256eadcd54376af66f12f9a2b8bca", "output_index": 0, "content_index": 0, "text": "The user wants me to call update_goal exactly once with {\"status\": \"complete\"}. Then stop and report the returned status.\n"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 31, "output_index": 0, "item": {"id": "rs_b2c256eadcd54376af66f12f9a2b8bca", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants me to call update_goal exactly once with {\"status\": \"complete\"}. Then stop and report the returned status.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWqD3lCdVJJ02OUDneoDPwiODUGPCmOih0YRo_rzzvofhrBFCA5dtRxQUEwoT7v970GNgsjcH_0bFyjeMi8KGYhwcE8PE9ApRZDLbmdIGPvV3FVdTSBgdpLD-ou-w35yg2k4vYMLr_wvPv7OF_SiZ5MRFgudVwk905A8ru5dDhx-cI_JtI5Eh6gTnenHtMfNQN8Kk-BqYUHuzJ_7UsQh0Y4wRg9_80W9s_9RlalMG3jHwBdlXsseO8TzmRKAQOA_7QyRHixDvdK3FYgJMmpig8z6EargB_oa8RZqGdtjCdtNincaOsr5A3OMgnnZDPER8tTnmqAQPKo83bHLUYEqnGcRrd0_IXzthebScqtbC8YtRzspRCPy8_bcNC9ZMZgc2vGygSBhFaWEy3zYmV-l8sLRCegtOfYGWQK3vL2ixkmxj4-slc3IweMo55R5cfeLwLAXP4QlVEBvYT2cRXBWys15Xg=="}}
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "sequence_number": 32, "output_index": 1, "item": {"id": "fc_2a913aca713d4911ba3fb4b1db9d5bc9", "type": "function_call", "status": "in_progress", "call_id": "call_7c0beb95b2f14ffda5335f5c", "name": "update_goal", "arguments": ""}}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 33, "item_id": "fc_2a913aca713d4911ba3fb4b1db9d5bc9", "output_index": 1, "delta": "{"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 34, "item_id": "fc_2a913aca713d4911ba3fb4b1db9d5bc9", "output_index": 1, "delta": "\"status\":"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 35, "item_id": "fc_2a913aca713d4911ba3fb4b1db9d5bc9", "output_index": 1, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 36, "item_id": "fc_2a913aca713d4911ba3fb4b1db9d5bc9", "output_index": 1, "delta": "complete"}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 37, "item_id": "fc_2a913aca713d4911ba3fb4b1db9d5bc9", "output_index": 1, "delta": "\""}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "sequence_number": 38, "item_id": "fc_2a913aca713d4911ba3fb4b1db9d5bc9", "output_index": 1, "delta": "}"}
+
+event: response.function_call_arguments.done
+data: {"type": "response.function_call_arguments.done", "sequence_number": 39, "item_id": "fc_2a913aca713d4911ba3fb4b1db9d5bc9", "output_index": 1, "arguments": "{\"status\":\"complete\"}"}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "sequence_number": 40, "output_index": 1, "item": {"id": "fc_2a913aca713d4911ba3fb4b1db9d5bc9", "type": "function_call", "status": "completed", "call_id": "call_7c0beb95b2f14ffda5335f5c", "name": "update_goal", "arguments": "{\"status\":\"complete\"}"}}
+
+event: response.completed
+data: {"type": "response.completed", "sequence_number": 41, "response": {"id": "resp_4f90a13d3c3f4e6aa6869b209220ae51", "object": "response", "created_at": 1791060607, "status": "completed", "completed_at": 1791060611, "error": null, "incomplete_details": null, "instructions": null, "model": "qwen3.8-flash-next", "output": [{"id": "rs_b2c256eadcd54376af66f12f9a2b8bca", "type": "reasoning", "status": "completed", "summary": [], "content": [{"type": "reasoning_text", "text": "The user wants me to call update_goal exactly once with {\"status\": \"complete\"}. Then stop and report the returned status.\n"}], "encrypted_content": "strata-r1.gAAAAABqwWqD3lCdVJJ02OUDneoDPwiODUGPCmOih0YRo_rzzvofhrBFCA5dtRxQUEwoT7v970GNgsjcH_0bFyjeMi8KGYhwcE8PE9ApRZDLbmdIGPvV3FVdTSBgdpLD-ou-w35yg2k4vYMLr_wvPv7OF_SiZ5MRFgudVwk905A8ru5dDhx-cI_JtI5Eh6gTnenHtMfNQN8Kk-BqYUHuzJ_7UsQh0Y4wRg9_80W9s_9RlalMG3jHwBdlXsseO8TzmRKAQOA_7QyRHixDvdK3FYgJMmpig8z6EargB_oa8RZqGdtjCdtNincaOsr5A3OMgnnZDPER8tTnmqAQPKo83bHLUYEqnGcRrd0_IXzthebScqtbC8YtRzspRCPy8_bcNC9ZMZgc2vGygSBhFaWEy3zYmV-l8sLRCegtOfYGWQK3vL2ixkmxj4-slc3IweMo55R5cfeLwLAXP4QlVEBvYT2cRXBWys15Xg=="}, {"id": "fc_2a913aca713d4911ba3fb4b1db9d5bc9", "type": "function_call", "status": "completed", "call_id": "call_7c0beb95b2f14ffda5335f5c", "name": "update_goal", "arguments": "{\"status\":\"complete\"}"}], "usage": {"input_tokens": 721, "output_tokens": 55, "total_tokens": 776, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 721}, "output_tokens_details": {"reasoning_tokens": 28}}, "store": false, "background": false, "previous_response_id": null, "max_output_tokens": 3072, "temperature": 0, "top_p": 0.95, "text": {"format": {"type": "text"}}, "tools": [{"type": "function", "name": "update_goal", "description": "Update the existing goal.\nSet status to `paused` only at the user's explicit request to pause this goal, never on your own initiative. Ask if unclear; a later resume revokes that request. Report the returned status and stop goal work. Budget limits take precedence over pausing.\nSet status to `complete` only when the objective has actually been achieved and no required work remains.\nSet status to `blocked` only when the same blocking condition has repeated for at least three consecutive goal turns, counting the original/user-triggered turn and any automatic continuations, and the agent cannot make meaningful progress without user input or an external-state change.\nIf the user resumes a goal that was previously marked `blocked`, treat the resumed run as a fresh blocked audit. If the same blocking condition then repeats for at least three consecutive resumed goal turns, set status to `blocked` again.\nOnce the blocked threshold is satisfied, do not keep reporting that you are still blocked while leaving the goal active; set status to `blocked`.\nDo not use `blocked` merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.\nDo not mark a goal complete merely because its budget is nearly exhausted or because you are stopping work.\nYou cannot use this tool to resume, budget-limit, or usage-limit a goal; those status changes are controlled by the user or system.\nWhen marking a budgeted goal achieved with status `complete`, report the final token usage from the tool result to the user.", "strict": false, "parameters": {"type": "object", "properties": {"status": {"type": "string", "description": "Required. `paused` requires an explicit user request. Set to `complete` only when the objective is achieved and no required work remains. Set to `blocked` only after the same blocking condition has recurred for at least three consecutive goal turns and the agent is at an impasse. After a previously blocked goal is resumed, the resumed run starts a fresh blocked audit.", "enum": ["complete", "blocked", "paused"]}}, "required": ["status"], "additionalProperties": false}}], "tool_choice": "auto", "parallel_tool_calls": true, "reasoning": {"effort": "medium", "summary": null}, "truncation": "disabled", "metadata": {}}}
+

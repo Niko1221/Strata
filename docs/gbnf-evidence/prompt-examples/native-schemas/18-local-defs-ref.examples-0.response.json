@@ -1,0 +1,91 @@
+{
+  "id": "resp_2f116134fba840729e09fbb1f67bf697",
+  "object": "response",
+  "created_at": 1791062291,
+  "status": "completed",
+  "completed_at": 1791062293,
+  "error": null,
+  "incomplete_details": null,
+  "instructions": null,
+  "model": "qwen3.8-flash-next",
+  "output": [
+    {
+      "id": "msg_55518bd4976c42ff82a342e8436877b9",
+      "type": "message",
+      "status": "completed",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "{\"rows\": [\"café\"], \"ok\": true}",
+          "annotations": [],
+          "logprobs": []
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 169,
+    "output_tokens": 13,
+    "total_tokens": 182,
+    "input_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 169
+    },
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    }
+  },
+  "store": false,
+  "background": false,
+  "previous_response_id": null,
+  "max_output_tokens": 512,
+  "temperature": 0,
+  "top_p": 0.95,
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "18_local_defs_ref",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/label"
+            },
+            "minItems": 1,
+            "maxItems": 1
+          },
+          "ok": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "rows",
+          "ok"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "label": {
+            "type": "string",
+            "enum": [
+              "café"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "tools": [],
+  "tool_choice": "auto",
+  "parallel_tool_calls": true,
+  "reasoning": {
+    "effort": "none",
+    "summary": null
+  },
+  "truncation": "disabled",
+  "metadata": {}
+}
