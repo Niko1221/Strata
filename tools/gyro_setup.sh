@@ -14,7 +14,12 @@ while [ $# -gt 0 ]; do case "$1" in
 case "$MODEL" in S) F=Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf; P=gyro-s;; M) F=Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf; P=gyro-m;;
   *) echo "--model must be S or M"; exit 2;; esac
 step() { printf '\n== %s\n' "$*"; }
-for t in git cmake ninja python3; do command -v $t >/dev/null || { echo "missing: $t"; exit 1; }; done
+for t in git python3; do command -v $t >/dev/null || { echo "missing: $t"; exit 1; }; done
+
+step "python environment (also provides cmake >= 3.24 and ninja)"
+[ -x .venv/bin/python ] || python3 -m venv .venv
+.venv/bin/pip install -q -r requirements.txt huggingface_hub hf_transfer
+export PATH="$PWD/.venv/bin:$PATH"
 
 step "agentionai llama.cpp fork (GGML with the trellis types) -> $LLAMA"
 [ -d "$LLAMA/ggml" ] || git clone --depth 1 https://github.com/agentionai/llama.cpp "$LLAMA"
@@ -33,10 +38,6 @@ elif [ "$BACKEND" = hip ]; then
     -DCMAKE_HIP_ARCHITECTURES="$HIP_ARCH" -DSTRATA_GGML_DIR="$LLAMA"
 else echo "--backend must be cuda or hip"; exit 2; fi
 cmake --build build -j
-
-step "python environment"
-[ -x .venv/bin/python ] || python3 -m venv .venv
-.venv/bin/pip install -q -r requirements.txt huggingface_hub hf_transfer
 
 step "download $F -> $MODELS (keep it on a fast local SSD: the n-gram table is read per token)"
 mkdir -p "$MODELS"
