@@ -107,6 +107,14 @@ English/code subset from before (40,525 ids, ~110 MiB less VRAM, English answers
 almost no drafts). `--draft-vocab cyrillic` takes the English/code subset plus the whole Cyrillic script (58,963
 ids): the shipped subsets hold 142 of the vocabulary's 18,580 Cyrillic tokens, so Ukrainian or Russian answers got
 1.4 tokens a round; with it 2.1, and 83 -> 109 tokens/s (RTX 5090, the NVFP4 fork), English unchanged.
+`--draft-vocab fr` (#597) takes the English/code subset plus 6,062 Latin tokens French text uses (46,587 ids,
+~20 MiB more than `en`): French shares its script with English, so no range covers it, and 23% of the tokens of a
+French answer were outside the English/code subset ("serveur", "début", "réseau"). The tokens are the ones that make
+99% of the occurrences of 8 French Wikipedia articles (258,528 tokens; 0.55% stay outside). On 12 French prompts
+of 300 tokens, the drafts accepted went from 0.52 to 0.64 and decode from 141 to 158 tokens/s (IQ3_S, RTX 5090,
+`--spec 4`; +11% as the median over the prompts, every prompt and every pass faster); on 4 code prompts speed
+stayed within the run-to-run spread.
+`tools/draft_vocab.py --cover-text <text> --cover 0.99` builds such a subset for any language from a text in it.
 `tools/draft_vocab.py` builds and inspects subsets. When the start stops with "the draft head does not fit" (a
 12 GB card with a long context, #474), the engine says how much the head needs, how much VRAM is free and which
 smaller subset fits, and the server's start error repeats it; setup suggests `--draft-vocab en` on cards under
