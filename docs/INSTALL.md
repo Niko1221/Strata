@@ -120,6 +120,15 @@ The same idea, in a container (NVIDIA cards).
    The server listens on `0.0.0.0:8080` by default; set `-e API_KEY=<secret>` before exposing the port
    to a network. The image has a `HEALTHCHECK` on `/health`, so `docker ps` shows the container
    healthy once the model is loaded, and `GET /v1/status` says what it is running.
+4. Model files you already have (setup's `--gguf-dir`): mount their folder and name it, e.g.
+   `-v /models/UD-Q4_K_XL:/gguf -e GGUF_DIR=/gguf -e FAMILY=unsloth -e MODEL=UD-Q4_K_XL`.
+   Mount it writable for the first start: setup checks the Unsloth file's SHA-256 once and keeps the
+   result as `<shard>.done` next to each shard; later starts skip setup, so `:ro` is fine then.
+   `-e RESIDENT_BUDGET_GIB=N` and `-e KV_STREAMING=on|off|auto` pass setup's `--resident-budget-gib`
+   and `--kv-streaming` (with `REINSTALL=1` for a model already set up).
+5. Stopping: the engine releases its page-locked RAM (tens of GB) on SIGTERM, which takes longer than
+   Docker's default 10 s; give it time, or `docker stop` kills it (exit 137):
+   `docker run --stop-timeout 60 ...`, `docker stop -t 60 <name>`, or `stop_grace_period: 60s` in Compose.
 
 ## Updating
 
