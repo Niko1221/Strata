@@ -332,7 +332,7 @@ void restore_thread_affinity(ThreadAffinity previous) {
     cpu_set_t set;
     CPU_ZERO(&set);
     for (int i = 0; i < 64; ++i)
-        if ((previous >> i) & 1) CPU_SET(i, &set);
+        if ((previous.mask >> i) & 1) CPU_SET(i, &set);
     pthread_setaffinity_np(pthread_self(), sizeof set, &set);
 #endif
 }

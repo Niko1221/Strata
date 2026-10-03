@@ -27,8 +27,6 @@
 // batch, whose description the host cannot change until that job's `done` has landed.
 #pragma once
 
-#include <cstdint>
-
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/cpu/native_expert.hpp"
 
@@ -103,7 +101,8 @@ std::vector<int> physical_cores(bool skip_first, PoolAffinity affinity = PoolAff
 /// host is free to land on a worker's core or its SMT sibling.  That 1.35x is not the kernel.
 ///
 /// The previous processor affinity. `valid` is false when querying or setting affinity failed.
-/// On Windows, `group` identifies the processor group and `mask` the processors within it.
+/// On Windows, `group` identifies the processor group and `mask` the processors within it. On Linux,
+/// `mask` retains the low 64 CPUs from the prior affinity API.
 struct ThreadAffinity {
     uint64_t mask = 0;
     uint16_t group = 0;
