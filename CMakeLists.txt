@@ -1043,6 +1043,15 @@ if(STRATA_ENABLE_CUDA AND STRATA_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_
 endif()
 
 if(STRATA_BUILD_TESTS)
+  if(WIN32)
+    add_executable(pool_affinity_test src/kernels/cpu/pool_affinity_test.cpp)
+    target_link_libraries(pool_affinity_test PRIVATE strata_kernels_cpu)
+    add_test(NAME pool_affinity_test COMMAND pool_affinity_test)
+  elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(pool_affinity_test src/kernels/cpu/pool_affinity_linux_test.cpp)
+    target_link_libraries(pool_affinity_test PRIVATE strata_kernels_cpu)
+    add_test(NAME pool_affinity_test COMMAND pool_affinity_test)
+  endif()
   # Plan v0.3 P6: one expert applied to several tokens, bitwise vs the single-token kernel (synthetic, CPU only).
   # plan v0.3 P5: the device dequantizers vs the artifact's CPU dequantizers on the real shards (not a ctest: needs
   # the 38 GB model; run it by hand or from tools/gpu_session.py)
