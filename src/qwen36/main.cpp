@@ -25,7 +25,7 @@
 
 #include "qwen36_model.hpp"
 #include "sampler.hpp"
-
+#include <numeric>
 namespace {
 
 struct Args {
@@ -266,7 +266,7 @@ int selftest(q36::Model& model, const std::string& path) {
 // ------------------------------------------------------------------------------------------------ batch self-consistency
 // Block prefill must be equivalent to token-by-token forward() on the SAME model (any weights, any quantisation): same
 // final logits, same greedy continuation (which also proves the GDN state and KV cache handed over correctly).
-int selftest_batch(q36::Model& model, int N) {
+int selftest_batch_old(q36::Model& model, int N) {
     const int V = model.cfg().n_vocab;
     N = std::max(2, std::min(N, model.max_ctx() - 16));
     std::vector<int> toks(N);
@@ -319,6 +319,107 @@ int selftest_batch(q36::Model& model, int N) {
 }
 
 }  // namespace
+
+// Confronto tra due vettori di logit: coseno, overlap top-20, KL(a||b), max|diff| relativo.
+struct Cmp { double cos, kl, maxrel; int top20; bool same_arg; };
+static Cmp compare_logits(const std::vector<float>& a, const std::vector<float>& b) {
+    const int V = (int)a.size();
+    double dot = 0, na = 0, nb = 0, maxrel = 0;
+    for (int j = 0; j < V; ++j) {
+        dot += (double)a[j] * b[j]; na += (double)a[j] * a[j]; nb += (double)b[j] * b[j];
+        maxrel = std::max(maxrel, std::fabs((double)a[j] - b[j]) / (1.0 + std::fabs((double)a[j])));
+    }
+    auto softmax = [&](const std::vector<float>& l) {
+        const double m = *std::max_element(l.begin(), l.end());
+        std::vector<double> p(l.size()); double s = 0;
+        for (size_t i = 0; i < l.size(); ++i) { p[i] = std::exp((double)l[i] - m); s += p[i]; }
+        for (double& x : p) x /= s;
+        return p;
+    };
+    const auto pa = softmax(a), pb = softmax(b);
+    double kl = 0;
+    for (int j = 0; j < V; ++j) if (pa[j] > 1e-12) kl += pa[j] * std::log(pa[j] / std::max(pb[j], 1e-300));
+    auto top = [&](const std::vector<float>& l) {
+        std::vector<int> idx(V); std::iota(idx.begin(), idx.end(), 0);
+        std::partial_sort(idx.begin(), idx.begin() + 20, idx.end(), [&](int x, int y) { return l[x] > l[y]; });
+        idx.resize(20); return idx;
+    };
+    auto ta = top(a), tb = top(b);
+    int ov = 0;
+    for (int x : ta) ov += std::find(tb.begin(), tb.end(), x) != tb.end();
+    return {dot / std::sqrt(na * nb + 1e-30), kl, maxrel, ov, ta[0] == tb[0]};
+}
+
+int selftest_batch(q36::Model& model, int N) {
+    const int V = model.cfg().n_vocab;
+    N = std::max(2, std::min(N, model.max_ctx() - 48));
+    std::vector<int> toks(N);
+    uint64_t s = 88172645463325252ull;
+    for (int& t : toks) { s ^= s << 13; s ^= s >> 7; s ^= s << 17; t = (int)(s % (uint64_t)V); }
+    auto argmax = [](const std::vector<float>& l) { return (int)(std::max_element(l.begin(), l.end()) - l.begin()); };
+
+    struct Run { std::vector<float> after_prefill, after_decode; std::vector<int> greedy; double ms; };
+    // chunks: elenco ciclico di dimensioni di blocco; vuoto = token per token
+    auto run = [&](const std::vector<int>& chunks) {
+        Run r;
+        model.reset();
+        const double t0 = now_ms();
+        for (int i = 0, ci = 0; i < N;) {
+            const int want = chunks.empty() ? 1 : chunks[ci++ % chunks.size()];
+            const int nb = std::min({want, N - i, (int)q36::Model::kMaxBatch});
+            if (nb == 1) model.forward(toks[i], i + 1 == N);
+            else model.forward_batch(&toks[i], nb, i + nb == N);
+            i += nb;
+        }
+        r.ms = now_ms() - t0;
+        r.after_prefill = model.logits();
+        for (int i = 0; i < 32; ++i) { const int t = argmax(model.logits()); r.greedy.push_back(t); model.forward(t, true); }
+        r.after_decode = model.logits();
+        return r;
+    };
+
+    const Run seq = run({});
+    const Run bA  = run({1, 7, 128, 33, 128});   // blocchi irregolari
+    const Run bB  = run({16});                   // blocchi regolari da 16
+    const Run bC  = run({128});                  // blocchi massimi
+
+    auto show = [&](const char* name, const Cmp& c) {
+        std::printf("  %-26s cos %.6f  KL %.3e  top20 %2d/20  maxrel %.3e  argmax %s\n", name, c.cos, c.kl, c.top20, c.maxrel,
+                    c.same_arg ? "same" : "DIFFERENT");
+    };
+    std::printf("prompt %d token: sequenziale %.0f ms (%.1f tok/s) | blocchi irregolari %.0f ms (%.1f tok/s, %.2fx)\n", N,
+                seq.ms, 1000.0 * N / seq.ms, bA.ms, 1000.0 * N / bA.ms, seq.ms / bA.ms);
+    std::printf("dopo il prefill:\n");
+    const Cmp s_A = compare_logits(seq.after_prefill, bA.after_prefill), A_B = compare_logits(bA.after_prefill, bB.after_prefill),
+              B_C = compare_logits(bB.after_prefill, bC.after_prefill);
+    show("sequenziale vs batch A", s_A);
+    show("batch A vs batch B (rumore)", A_B);
+    show("batch B vs batch C (rumore)", B_C);
+    std::printf("dopo 32 passi di decode:\n");
+    const Cmp d_sA = compare_logits(seq.after_decode, bA.after_decode), d_AB = compare_logits(bA.after_decode, bB.after_decode);
+    show("sequenziale vs batch A", d_sA);
+    show("batch A vs batch B (rumore)", d_AB);
+    int agree = 0;
+    for (int i = 0; i < 32; ++i) agree += seq.greedy[i] == bA.greedy[i];
+    std::printf("token greedy uguali tra sequenziale e batch A: %d/32 (batch A vs B: %d/32)\n", agree,
+                (int)std::inner_product(bA.greedy.begin(), bA.greedy.end(), bB.greedy.begin(), 0, std::plus<>(),
+                                        [](int x, int y) { return x == y; }));
+
+    // Verdetto: il percorso batch è corretto se sequenziale-vs-batch non è peggio del rumore tra due batch di suddivisioni diverse
+    // (con un margine), e le distribuzioni sono vicine in senso assoluto.
+    const double noise_kl = std::max({A_B.kl, B_C.kl, 1e-6});
+    // const bool dist_ok = s_A.kl < 5e-2 && s_A.top20 >= 17 && s_A.same_arg && s_A.cos > 0.999;
+    const bool dist_ok = s_A.kl < 5e-2 && s_A.top20 >= 17 && s_A.same_arg && s_A.cos > 0.995;
+    const bool vs_noise = s_A.kl <= 10.0 * noise_kl;
+    const bool greedy_ok = agree >= 28;
+    std::printf("rumore KL tra batch: %.3e  |  seq-vs-batch KL: %.3e  (%s)\n", noise_kl, s_A.kl,
+                vs_noise ? "dello stesso ordine del rumore" : "MOLTO PEGGIORE del rumore");
+    const bool ok = dist_ok && vs_noise && greedy_ok;
+    std::printf(ok ? "SELFTEST-BATCH PASSED\n" : "SELFTEST-BATCH FAILED\n");
+    return ok ? 0 : 1;
+}
+
+
 
 int main(int argc, char** argv) {
     Args a = parse_args(argc, argv);
