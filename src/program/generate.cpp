@@ -2390,9 +2390,11 @@ int main(int argc, char** argv) {
     //     for the ~0.1% of the mass it pushes out of its cache);
     //   - which experts a cache holds: its layers' profiled pairs, hottest first, until its free VRAM (less the
     //     reserve, the prompt path's buffers and, on a later GPU, 1 GiB for its windows and the drafter) is used;
-    //     the routed mass of rank r is taken as (r+1)^-1.2 (fits the sweep's hit rates: K=24/26/28 predicted
-    //     99.53/99.34/99.15%, measured 99.5/99.4/99.0%).
-    // Up to 3 GPUs every placement is tried; beyond, the layers are shared in proportion to speed.
+    //     the routed mass a cache holds follows the COVERAGE CURVE below, not the (r+1)^-1.2 this used to use.
+    // Up to 4 GPUs every placement is tried; beyond, the layers are shared in proportion to speed.
+    // A FOUR-WAY PLACEMENT USED TO BE THE PROPORTIONAL GUESS AND NOTHING ELSE.  That formula reads only
+    // `layer_ms`, so on four GPUs the free VRAM a placement leaves for expert caches - the whole point of
+    // the search - never entered it.  It does now; see the ns == 4 branch below.
     // STRATA_SPLIT_MISS_MS tunes the miss cost (a slower CPU: higher).
     // THE PROMPT PATH'S BUFFERS ARE BORROWED FROM THE CACHE, NOT WITHHELD BESIDE IT.  With borrowing the cache
     // is sized first and at full size, and the prompt path is laid out in the tail of it (`Prefill::relayout`),
@@ -2460,9 +2462,42 @@ int main(int argc, char** argv) {
                          (double) cap[(size_t) i] / 1073741824.0);
         }
         const double miss_ms = std::getenv("STRATA_SPLIT_MISS_MS") ? std::atof(std::getenv("STRATA_SPLIT_MISS_MS")) : 190.0;
-        std::vector<double> mass(profile.size());
+        // ---- THE COVERAGE CURVE: HOW MUCH ROUTED MASS A CACHE HOLDS, AND WHY IT IS NO LONGER A POWER LAW.
+        //
+        // `mass[r]` used to be (r+1)^-1.2, fitted to the 5080+3090 sweep.  That fit is still right ON THE RIG IT
+        // WAS FITTED TO - at 20,000 pairs held it predicts 99.35% of the routed mass and that rig measured 99.4%.
+        // It is wrong on THIS model, badly: it claims the top 5,805 pairs hold 94.9% of the mass, and the 4-way
+        // rig measures 69.2% (four boots, 14.9M decode lookups).  No exponent reconciles them, because the curve
+        // is a property of the MODEL'S ROUTING, not a universal constant - and the profile file carries only a
+        // RANKING, with no counts, so it cannot be read off the data either.  (tools/make_profile.py has the
+        // frequencies, and drops them; see the note there.)
+        //
+        // What the two rigs do agree on is that the hit rate follows the HELD COUNT and almost nothing else: two
+        // different splits - K=10,19,34 and K=2,3,27 with helper tiers - held 14,541 and 14,384 pairs and measured
+        // 92.2% and 89.8%.  So the curve is taken over the held FRACTION f, as H(f) = 1 - (1 - f)^b, and each
+        // rank's mass is that curve's increment, which makes any prefix of N pairs sum to exactly H(N/total)
+        // while a cache holding colder-than-prefix pairs still scores below it.
+        //
+        // b = 3 IS CHOSEN TO LEAVE THE PREVIOUSLY VALIDATED REGIME WHERE IT WAS.  At 20,000 held (f = 0.8138) it
+        // gives 99.35%, against the old fit's 99.35% and that rig's measured 99.4% - the 2-GPU placement is
+        // untouched.  At this rig's f = 0.59 it gives 93.2% against 92.2% measured.  Below f ~ 0.5 the two curves
+        // diverge, and that is the whole point: it is exactly the regime where the old one was wrong, and where
+        // it told the search that stranding a card's VRAM costs almost nothing.  With this curve the 4-way rig's
+        // K=2,3,27 - which holds 5,805 pairs - is charged for the misses it really takes.  (Both that rig's
+        // stranding figures here and the ~20 GiB in this branch's first commit were measured BEFORE the weight
+        // carve landed: a stage holding only its own layers has far less to strand.)
+        //
+        // THE CURVE IS A FIT TO ONE MODEL'S TRAFFIC.  STRATA_SPLIT_COVER_B overrides b for a model whose routing
+        // is sharper or flatter, and STRATA_SPLIT_MISS_MS still scales the miss cost it feeds.
+        const size_t n_ranked = profile.size();
+        const double cover_b = std::getenv("STRATA_SPLIT_COVER_B") ? std::atof(std::getenv("STRATA_SPLIT_COVER_B")) : 3.0;
+        std::vector<double> mass(n_ranked);
         double total_mass = 0;
-        for (size_t r = 0; r < profile.size(); ++r) total_mass += (mass[r] = std::pow((double) r + 1.0, -1.2));
+        for (size_t r = 0; r < n_ranked; ++r) {
+            const double hi = std::pow(1.0 - (double) r / (double) n_ranked, cover_b);
+            const double lo = std::pow(1.0 - (double) (r + 1) / (double) n_ranked, cover_b);
+            total_mass += (mass[r] = hi - lo);
+        }
         auto cost = [&](int64_t l) -> int64_t {
             return native_pack ? ((int64_t) lay.blob_bytes(l) + 255) / 256 * 256 : (int64_t) lay.max_blob;
         };
@@ -2505,20 +2540,18 @@ int main(int argc, char** argv) {
         };
         std::vector<int64_t> best, at((size_t) ns - 1);
         double best_ms = 1e30, best_mass = 0;
-        int64_t best_held = 0;
+        int64_t best_held = 0, tried = 0;
         auto consider = [&]() {
             double hm = 0;
             int64_t held = 0;
             const double ms = predict(at, hm, held);
+            ++tried;
             if (ms < best_ms) { best = at; best_ms = ms; best_mass = hm; best_held = held; }
         };
         const int64_t L = g.n_layers;
-        if (ns == 2) {
-            for (int64_t k = 2; k < L; ++k) { at[0] = k; consider(); }
-        } else if (ns == 3) {
-            for (int64_t k1 = 2; k1 + 1 < L; ++k1)
-                for (int64_t k2 = k1 + 1; k2 < L; ++k2) { at[0] = k1; at[1] = k2; consider(); }
-        } else {
+        // share the layers in proportion to speed: the fallback beyond four GPUs, and the only placement a
+        // model too small to hold four stages has (see the ns == 4 branch).
+        auto proportional = [&]() {
             double total = 0;
             for (const double c : layer_ms) total += 1.0 / c;
             double acc = 0;
@@ -2528,13 +2561,84 @@ int main(int argc, char** argv) {
                                                     i == 0 ? 2 : at[(size_t) i - 1] + 1, L - (ns - 1 - i));
             }
             consider();
+        };
+        if (ns == 2) {
+            for (int64_t k = 2; k < L; ++k) { at[0] = k; consider(); }
+        } else if (ns == 3) {
+            for (int64_t k1 = 2; k1 + 1 < L; ++k1)
+                for (int64_t k2 = k1 + 1; k2 < L; ++k2) { at[0] = k1; at[1] = k2; consider(); }
+        } else if (ns == 4) {
+            // ---- EVERY FOUR-WAY PLACEMENT IS TRIED.  This branch used to share the layers in proportion to
+            // speed and score that ONE candidate, and that formula reads only `layer_ms` - never `capr`.  So
+            // on a four-GPU rig free VRAM and cache capacity did not influence the placement AT ALL, and the
+            // card with the most room left could be handed the fewest layers: on this 3060/3060/5060/5060 box
+            // CUDA1 ended up with 1,841 MiB no cache could use while CUDA2 ran 15 layers it could only hold a
+            // third of.  All C(L-3,3) placements - 15,180 at 48 layers - are now scored.
+            //
+            // A STAGE'S FILL DEPENDS ONLY ON ITS OWN RANGE AND ITS OWN FREE VRAM.  `predict` hands each ranked
+            // pair to the one stage that owns its layer and each stage stops at its first pair that does not
+            // fit, so the four fills are independent and a placement's held mass is a SUM over its four
+            // ranges.  That is what makes this affordable: each distinct range is walked once and memoised,
+            // 1,121 walks instead of 15,180 - measured at 14 ms against 740 ms, for the same answer.
+            // `le` runs to L inclusive, so a row is L+1 wide - keying on a stride of L would put the last
+            // stage's [lb, L) one past the end of the vector.
+            const size_t stride = (size_t) L + 1;
+            std::vector<double> held_mass_at((size_t) ns * (size_t) L * stride, -1.0);
+            std::vector<int64_t> held_at(held_mass_at.size(), 0);
+            auto range_hold = [&](int i, int64_t lb, int64_t le) -> size_t {
+                const size_t key = ((size_t) i * (size_t) L + (size_t) lb) * stride + (size_t) le;
+                if (held_mass_at[key] < 0.0) {
+                    // one stage's own carve, exactly as `predict` prices it - including CUDA0's router keep
+                    const int64_t room = cap[(size_t) i] -
+                        (int64_t) strata::core::session_bytes(g, o.max_context, K, lb, le) -
+                        (int64_t) (i == 0 ? cuda0_bytes(lb, le) : weight_bytes(lb, le));
+                    double hm = 0;
+                    int64_t used = 0, cnt = 0;
+                    for (size_t r = 0; r < profile.size(); ++r) {
+                        const int64_t l = profile[r].first;
+                        if (l < lb || l >= le) continue;
+                        if (used + cost(l) > room) break;   // the fill stops exactly where predict's does
+                        used += cost(l);
+                        hm += mass[r];
+                        ++cnt;
+                    }
+                    held_mass_at[key] = hm;
+                    held_at[key] = cnt;
+                }
+                return key;
+            };
+            const double denom = std::max(total_mass, 1e-9);
+            for (int64_t k1 = 2; k1 + 2 < L; ++k1)
+                for (int64_t k2 = k1 + 1; k2 + 1 < L; ++k2)
+                    for (int64_t k3 = k2 + 1; k3 < L; ++k3) {
+                        const size_t a = range_hold(0, 0, k1), b = range_hold(1, k1, k2);
+                        const size_t c = range_hold(2, k2, k3), d = range_hold(3, k3, L);
+                        const double hm = held_mass_at[a] + held_mass_at[b] + held_mass_at[c] + held_mass_at[d];
+                        const double ms = miss_ms * (1.0 - hm / denom) +
+                                          (double) k1 * layer_ms[0] + (double) (k2 - k1) * layer_ms[1] +
+                                          (double) (k3 - k2) * layer_ms[2] + (double) (L - k3) * layer_ms[3];
+                        ++tried;
+                        if (ms < best_ms) {
+                            best = {k1, k2, k3};
+                            best_ms = ms;
+                            best_mass = hm / denom;
+                            best_held = held_at[a] + held_at[b] + held_at[c] + held_at[d];
+                        }
+                    }
+            // Four stages into fewer than five layers: nothing was enumerated, so keep the old guess rather
+            // than leave `best` empty - an empty split would leave every stage's lb/le unset.
+            if (best.empty()) proportional();
+        } else {
+            // Beyond four GPUs the placements outnumber any budget worth spending at startup (C(46,4) is
+            // 163,185 at five).  Nothing on this rig reaches it.
+            proportional();
         }
         split_at = best;
         std::string ks;
         for (const int64_t k : split_at) ks += (ks.empty() ? "" : ",") + std::to_string(k);
         std::fprintf(stderr, "strata generate: layer split auto: K=%s - predicted %.1f ms per decode window; the caches "
-                             "hold %lld of %zu profiled pairs (~%.1f%% of the routed mass)\n", ks.c_str(), best_ms,
-                     (long long) best_held, profile.size(), 100.0 * best_mass);
+                             "hold %lld of %zu profiled pairs (~%.1f%% of the routed mass), best of %lld placements\n",
+                     ks.c_str(), best_ms, (long long) best_held, profile.size(), 100.0 * best_mass, (long long) tried);
     }
     for (size_t i = 0; i < split_at.size(); ++i)
         if (split_at[i] >= g.n_layers) {
