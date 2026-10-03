@@ -18,6 +18,12 @@ Qwen3.8-Flash-Next models. It is not the GGUF draft file from the Gyro repositor
 
 ## Quick setup
 
+Gyro support lives on the `feat/apr-types` branch of the agentionai fork:
+
+```sh
+git clone -b feat/apr-types https://github.com/agentionai/Strata && cd Strata
+```
+
 `tools/gyro_setup.sh` does every step below on Linux:
 
 ```sh
