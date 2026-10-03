@@ -6,7 +6,6 @@
   "physical_cores": 64,
   "logical_processors": 128,
   "ram_gib": 127.876,
-  "available_ram_gib_before_install": 77.723,
   "gpu": [
     {
       "Name": "Meta Virtual Monitor",
@@ -77,5 +76,6 @@
       "Speed": 3200,
       "ConfiguredClockSpeed": 3200
     }
-  ]
+  ],
+  "available_ram_gib_before_model_load": 77.723
 }
