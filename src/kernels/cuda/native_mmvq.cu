@@ -151,6 +151,22 @@ __global__ void native_quantize_q8_1_kernel(const float* __restrict__ x,
     if (i % Q8K == 0) y[i / Q8K].ds = make_half2(d, sum);
 }
 
+__launch_bounds__(QUANT_THREADS, 1)
+__global__ void native_swiglu_quantize_q8_1_kernel(const float* __restrict__ gate,
+                                                   const float* __restrict__ up,
+                                                   Q81Block* __restrict__ y, int n_in) {
+    const int i = int(blockIdx.x) * QUANT_THREADS + int(threadIdx.x);
+    if (i >= n_in) return; // n_in is a multiple of 32: only whole warps return.
+    const float gi = gate[i];
+    const float xi = __fmul_rn(__fdividef(gi, __fadd_rn(1.0f, __expf(-gi))), up[i]);
+    const float amax = warp_max(fabsf(xi));
+    const float sum = warp_sum(xi);
+    const float d = amax / 127.0f;
+    const int8_t q = amax == 0.0f ? 0 : roundf(xi / d);
+    y[i / Q8K].qs[i % Q8K] = q;
+    if (i % Q8K == 0) y[i / Q8K].ds = make_half2(d, sum);
+}
+
 // Exact pinned vec_dot_q5_K_q8_1_impl_vmmq expression and integer dot order.
 __device__ __forceinline__ float q5_q8_dot_impl(
     const int* __restrict__ vl, const int* __restrict__ vh, const int* __restrict__ u,
@@ -997,7 +1013,7 @@ struct SmallTraits {
 bool g_multi_exact = true;   // until the upstream layout is timed on an idle GPU (plan rule: default only what is measured)
 
 template<typename F, int NCOLS, int NW, int ROWS>
-__launch_bounds__(NW * WARP, 1)
+__launch_bounds__(NW * WARP, (ROWS <= 2 ? 4 : 1))
 __global__ void native_mmvq_multi_kernel(const typename F::Block* __restrict__ w,
                                          const Q81Block* __restrict__ x,
                                          float* __restrict__ y, int n_in, int n_out) {
@@ -1054,8 +1070,9 @@ void launch_multi_n(const void* weights, const void* x_q8_1, float* y, int n_in,
     }
     const dim3 threads(WARP, WARPS);
     if (n_in / F::DIV < F::BPI) {
-        const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
-        native_mmvq_multi_kernel<F, NCOLS, WARPS, WARPS><<<blocks, threads, 0, s>>>(w, x, y, n_in, n_out);
+        constexpr int ROWS = 2;
+        const unsigned blocks = unsigned((std::size_t(n_out) + ROWS - 1) / ROWS);
+        native_mmvq_multi_kernel<F, NCOLS, WARPS, ROWS><<<blocks, threads, 0, s>>>(w, x, y, n_in, n_out);
     } else {
         native_mmvq_multi_kernel<F, NCOLS, WARPS, 1><<<unsigned(n_out), threads, 0, s>>>(w, x, y, n_in, n_out);
     }
@@ -1160,6 +1177,21 @@ void native_quantize_q8_1(const float* x, void* x_q8_1, int n_in, int ncols, voi
     const unsigned blocks = unsigned((std::size_t(n_total) + QUANT_THREADS - 1) / QUANT_THREADS);
     native_quantize_q8_1_kernel<<<blocks, QUANT_THREADS, 0,
                                  static_cast<cudaStream_t>(stream)>>>(x, static_cast<Q81Block*>(x_q8_1), n_total);
+    launch_check();
+}
+
+void native_swiglu_quantize_q8_1(const float* gate, const float* up, void* x_q8_1,
+                                 int n_in, int ncols, void* stream) {
+    validate_shape(n_in, ncols);
+    validate_pointer(gate);
+    validate_pointer(up);
+    validate_pointer(x_q8_1);
+    validate_stream(stream);
+    const int n_total = n_in * ncols;
+    const unsigned blocks = unsigned((std::size_t(n_total) + QUANT_THREADS - 1) / QUANT_THREADS);
+    native_swiglu_quantize_q8_1_kernel<<<blocks, QUANT_THREADS, 0,
+                                         static_cast<cudaStream_t>(stream)>>>(
+        gate, up, static_cast<Q81Block*>(x_q8_1), n_total);
     launch_check();
 }
 

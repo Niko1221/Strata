@@ -197,6 +197,7 @@ void ck(cudaError_t e, const char* what) {
 }  // namespace
 
 void ple_set_native_bf16(bool enabled) { native_bf16 = enabled; }
+bool ple_native_bf16_enabled() { return native_bf16; }
 void ple_set_native_postops(bool enabled) { native_postops = enabled; }
 bool ple_native_postops_enabled() { return native_postops; }
 
@@ -363,6 +364,23 @@ void ple_block(const float* emb, const float* hidden, const float* hist_rows, co
     // **NO `cudaStreamSynchronize` HERE.**  It was there to make the function self-contained for the parity
     // test, and inside a capture it is an error - a caller that wants the result immediately synchronises
     // itself, and the engine's caller does not want that at all.
+}
+
+void ple_block_projected(const float* projected_key, const float* projected_value, const float* hidden,
+                         const float* hist_rows, const PleWeights& w, PleOut& out, void* scratch, void* stream) {
+    if (!projected_key || !projected_value || !hidden || !hist_rows || !out.result || !scratch) return;
+    const int n_embd = NG_N_EMBD, hc = NG_HC, hc_dim = NG_HC_DIM;
+    float* d_scratch = (float*) scratch;
+    float* d_key = d_scratch;
+    float* d_query = d_key + hc_dim;
+    float* d_norm = d_query + hc_dim;
+    float* d_gated = d_norm + hc_dim;
+    float* d_conv = d_gated + hc_dim;
+    float* d_value = d_conv + hc_dim;
+    float* d_gate = d_value + n_embd;
+    float* norm_dst = out.normalized ? out.normalized : d_norm;
+    NativePlePostopsBuffers buffers{d_query, norm_dst, d_gate, d_gated, norm_dst, d_conv, out.result};
+    native_ple_postops(projected_key, hidden, projected_value, hist_rows, w, buffers, stream);
 }
 
 }  // namespace strata::kernels

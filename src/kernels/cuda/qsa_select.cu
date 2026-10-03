@@ -521,12 +521,76 @@ __global__ void __launch_bounds__(TK_T) block_topk_reg_kernel(const float* __res
     }
     const float* sc = scores + qi * max_blocks;
     const int64_t nb = n_bid + 1;
-    const int64_t per = (nb + TK_T - 1) / TK_T;       // <= PER (the caller checks)
+    const int64_t per = (nb + TK_T - 1) / TK_T;
     const int64_t b0 = (int64_t) t * per, b1 = (b0 + per < nb) ? b0 + per : nb;
+    auto weight = [&](int64_t b) -> int { return b < n_bid ? R : (int) (n_kv - n_bid * R); };
+    if (per > PER) {
+        uint32_t prefix = 0;
+        int above = 0;
+        for (int shift = 24; shift >= 0; shift -= 8) {
+            for (int i = lane; i < 256; i += 32) hist[warp][i] = 0;
+            __syncwarp();
+            const uint32_t hi_mask = shift == 24 ? 0u : (0xffffffffu << (shift + 8));
+            for (int64_t b = b0; b < b1; ++b) {
+                const int w = weight(b);
+                if (w == 0) continue;
+                const uint32_t k = order_key(sc[b]);
+                if ((k & hi_mask) == (prefix & hi_mask)) atomicAdd(&hist[warp][(k >> shift) & 255], w);
+            }
+            __syncthreads();
+            if (t < 256) {
+                int s = 0;
+                for (int w2 = 0; w2 < TK_T / 32; ++w2) s += hist[w2][t];
+                hist[0][t] = s;
+            }
+            __syncthreads();
+            if (t == 0) {
+                int cum = above, d = 255;
+                for (; d > 0; --d) {
+                    if (cum + hist[0][d] >= width) break;
+                    cum += hist[0][d];
+                }
+                s_digit = d;
+                s_above = cum;
+            }
+            __syncthreads();
+            prefix |= (uint32_t) s_digit << shift;
+            above = s_above;
+            __syncthreads();
+        }
+        const uint32_t thr = prefix;
+        const int64_t eq_budget = width - above;
+        int gt = 0, eq = 0;
+        for (int64_t b = b0; b < b1; ++b) {
+            const int w = weight(b);
+            if (w == 0) continue;
+            const uint32_t k = order_key(sc[b]);
+            if (k > thr) gt += w;
+            else if (k == thr) eq += w;
+        }
+        int tot;
+        const int eq_before = block_excl_scan(eq, s_warp, tot);
+        int64_t my_eq = eq_budget - eq_before;
+        if (my_eq < 0) my_eq = 0;
+        if (my_eq > eq) my_eq = eq;
+        const int sel = gt + (int) my_eq;
+        int64_t wpos = block_excl_scan(sel, s_warp, tot);
+        int64_t eq_left = my_eq;
+        for (int64_t b = b0; b < b1; ++b) {
+            const int w = weight(b);
+            if (w == 0) continue;
+            const uint32_t k = order_key(sc[b]);
+            if (k > thr) {
+                for (int c = 0; c < w; ++c) out[wpos++] = (int32_t) (b * R + c);
+            } else if (k == thr) {
+                for (int c = 0; c < w && eq_left > 0; ++c, --eq_left) out[wpos++] = (int32_t) (b * R + c);
+            }
+        }
+        return;
+    }
     uint32_t key[PER];
 #pragma unroll
     for (int j = 0; j < PER; ++j) key[j] = (b0 + j < b1) ? order_key(sc[b0 + j]) : 0u;
-    auto weight = [&](int64_t b) -> int { return b < n_bid ? R : (int) (n_kv - n_bid * R); };
     uint32_t prefix = 0;
     int above = 0;
     for (int shift = 24; shift >= 0; shift -= 8) {
@@ -1092,7 +1156,7 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
 #else
     const bool too_small = false;
 #endif
-    if (old || too_small || reach > fit) {
+    if (old || too_small || (capacity_guard && reach > fit)) {
         qsa_block_topk_ref(scores, steps, nq, max_blocks, cap, s, ids, stream);
         return;
     }
@@ -1100,7 +1164,7 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
         std::fprintf(stderr, "qsa_block_topk: unsupported geometry or cap\n");
         std::exit(1);
     }
-    if (reach <= (int64_t) TK_T * TK_PER)
+    if (reach <= (int64_t) TK_T * TK_PER || TK_PER == TK_PER_MAX)
         block_topk_reg_kernel<TK_PER><<<(unsigned) nq, TK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks, cap, ids);
     else
         block_topk_reg_kernel<TK_PER_MAX><<<(unsigned) nq, TK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks, cap, ids);
