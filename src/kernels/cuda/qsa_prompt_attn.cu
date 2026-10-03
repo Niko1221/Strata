@@ -1596,7 +1596,7 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
         // for how far the model amplifies an FP32-level change.  cp.async needs sm_80, so Turing runs the
         // synchronous v1 kernel too.
         static const bool v1 = std::getenv("STRATA_PROMPT_ATTN_V1") != nullptr;
-        if (volta) return launch70<1>(q, pools, ids, steps, cap, s, attn, n_q, st);
+        if (volta && !v1) return launch70<1>(q, pools, ids, steps, cap, s, attn, n_q, st);
         if (v1 || turing) return launch<1>(q, pools, ids, steps, cap, s, attn, n_q, st);
         return launch_i8(q, pools, ids, steps, cap, s, attn, n_q, st);
     }
