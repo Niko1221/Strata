@@ -1,0 +1,1657 @@
+{
+  "started": 1791059433.5689542,
+  "source": "1a50d913bf910a1f63fbc1a0788a7083e3ca5f8c",
+  "kv": "fp16",
+  "weights": "Q8_0",
+  "engine_sha256": "d14ed6b69a1814ce4b5c08932a47d6921a55fa0aa8dea50427ccf0782d1ad997",
+  "scope": "One storage change; unchanged cache capacity, PCIe split, routing and adaptive waits.",
+  "current": "mtp-rotate1-r2",
+  "source_fixture_and_gpu_memcheck_passed": true,
+  "default_off_exact_tokens": true,
+  "comparisons": [
+    {
+      "control": "serial-rotate0-r1",
+      "candidate": "serial-rotate1-r1",
+      "cases": [
+        {
+          "task": "coding",
+          "control_tps": 70.0741115848109,
+          "rotation_tps": 75.38724306496259,
+          "gain_pct": 7.582160315684061,
+          "first_token_difference": null
+        },
+        {
+          "task": "editing",
+          "control_tps": 57.50902790648043,
+          "rotation_tps": 61.931113731893916,
+          "gain_pct": 7.68937675768846,
+          "first_token_difference": null
+        }
+      ]
+    },
+    {
+      "control": "mtp-rotate0-r1",
+      "candidate": "mtp-rotate1-r1",
+      "cases": [
+        {
+          "task": "coding",
+          "control_tps": 112.61905285616875,
+          "rotation_tps": 131.86699976820253,
+          "gain_pct": 17.091199423081882,
+          "first_token_difference": null
+        },
+        {
+          "task": "editing",
+          "control_tps": 88.81102505615736,
+          "rotation_tps": 107.63877939306025,
+          "gain_pct": 21.199793972648816,
+          "first_token_difference": null
+        }
+      ]
+    },
+    {
+      "control": "ngram-rotate0-r1",
+      "candidate": "ngram-rotate1-r1",
+      "cases": [
+        {
+          "task": "coding",
+          "control_tps": 70.6416385548818,
+          "rotation_tps": 76.31312227985453,
+          "gain_pct": 8.028527991414759,
+          "first_token_difference": 415
+        },
+        {
+          "task": "editing",
+          "control_tps": 88.41763517364049,
+          "rotation_tps": 108.13664924230424,
+          "gain_pct": 22.302127884260003,
+          "first_token_difference": null
+        }
+      ]
+    },
+    {
+      "control": "mtp-ngram-rotate0-r1",
+      "candidate": "mtp-ngram-rotate1-r1",
+      "cases": [
+        {
+          "task": "coding",
+          "control_tps": 107.90646701160205,
+          "rotation_tps": 131.0552249312088,
+          "gain_pct": 21.452614065399644,
+          "first_token_difference": 95
+        },
+        {
+          "task": "editing",
+          "control_tps": 88.30402800893388,
+          "rotation_tps": 106.45043921201726,
+          "gain_pct": 20.5499246322574,
+          "first_token_difference": null
+        }
+      ]
+    },
+    {
+      "control": "serial-rotate0-r2",
+      "candidate": "serial-rotate1-r2",
+      "cases": [
+        {
+          "task": "coding",
+          "control_tps": 69.99555692265628,
+          "rotation_tps": 75.6400596847346,
+          "gain_pct": 8.064087222443828,
+          "first_token_difference": null
+        },
+        {
+          "task": "editing",
+          "control_tps": 57.42936300517089,
+          "rotation_tps": 62.056845039694565,
+          "gain_pct": 8.05769347312284,
+          "first_token_difference": null
+        }
+      ]
+    },
+    {
+      "control": "mtp-rotate0-r2",
+      "candidate": "mtp-rotate1-r2",
+      "cases": [
+        {
+          "task": "coding",
+          "control_tps": 107.48512107821013,
+          "rotation_tps": 132.5309001488384,
+          "gain_pct": 23.30162428007505,
+          "first_token_difference": null
+        },
+        {
+          "task": "editing",
+          "control_tps": 86.73335422613351,
+          "rotation_tps": 107.56189535824203,
+          "gain_pct": 24.01445362968875,
+          "first_token_difference": null
+        }
+      ]
+    }
+  ],
+  "semantic_gate_failures": [
+    "ngram",
+    "mtp-ngram"
+  ],
+  "completed": true,
+  "finished": 1791061618.6997786,
+  "hardware": "RTX PRO 6000 Blackwell Workstation Edition 96GB; Ryzen 9 7950X; 128GB installed RAM",
+  "records": [
+    {
+      "label": "default-off-old",
+      "mode": "serial",
+      "rotate": 0,
+      "started": 1791059434.6467023,
+      "finished": 1791059549.832958,
+      "engine_info": {
+        "version": "0.1.38",
+        "context": 16384,
+        "kv": "fp16",
+        "kv_resident": 0,
+        "expert_slots": 16000,
+        "expert_cache_mib": 79687,
+        "expert_slots_primary": 16000,
+        "expert_cache_primary_mib": 79687,
+        "spec": 8,
+        "mtp_max": 4,
+        "lookup": 0,
+        "vram_free_mib": 6806,
+        "cvec": 0,
+        "arena_mib": 42712,
+        "pool_workers": 15,
+        "pcie_frac": "0.55",
+        "spec_min_p": "0.50",
+        "conversation_cache_mib": 0,
+        "conversation_cache_slots": 4,
+        "conversation_cache_min_free_mib": 2560,
+        "engine": "0.1.38"
+      },
+      "startup_seconds": 100.82954036998854,
+      "prompt_sha256": {
+        "coding": "2ed72583751bab5d54c04471e7aad32e43e14b4708f4fb7647ffde5289612eeb"
+      },
+      "rotation_counters": [],
+      "diagnostics": [
+        "strata decode timing: 256 windows, avg T 1.00, 1.00 tokens/window, 17.04 ms/window = verify 13.24 (GPU-reach wait 9.15 + per-layer host 3.53 [plan 0.04 actq 0.02 jobs 0.06 CPU 3.31] + stage 0.00) + commit/emit 0.02 + draft 0.00; per layer-window: CPU experts 0.46 (0.46 entries), VRAM hits 9.37, PCIe 0.17",
+        "strata serve: resident RAM: 41.71 GiB of experts in RAM, 1204 exchanged with the VRAM tier, 0 blob reads from the file",
+        "strata serve: expert tiers: GPU 115114 hits this request; since the start RAM 17557 blobs, files 0 blobs 83563.6 MB read (the GGUF in place)"
+      ],
+      "cases": [
+        {
+          "task": "coding",
+          "repetition": 1,
+          "input_tokens": 8192,
+          "output_tokens": 256,
+          "timings": {
+            "generated": 256,
+            "prompt_tokens": 8192,
+            "prompt_ms": 1946.3,
+            "decode_ms": 4362.1,
+            "finish": "length",
+            "drafts_accepted": 0,
+            "drafts_offered": 0,
+            "reused": 0,
+            "hits": 115114,
+            "lookups": 120762,
+            "ram_blobs": 8981,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "prompt_read": 8192
+          },
+          "wall_seconds": 6.309380505990703,
+          "first_token_seconds": 1.9747902419912862,
+          "prefill_tps": 4209.011971432976,
+          "decode_tps": 58.68732949726049,
+          "effective_output_tps": 40.574506444322104,
+          "output_budget_reached": true,
+          "natural_stop": false,
+          "token_count": 256,
+          "token_ids_sha256_json": "91a706dcdcf37e780cdaaeff1605a284233c1a4933a65a3f291c17f3867f25fc"
+        }
+      ]
+    },
+    {
+      "label": "default-off-new",
+      "mode": "serial",
+      "rotate": 0,
+      "started": 1791059549.8336797,
+      "finished": 1791059662.8890355,
+      "engine_info": {
+        "version": "0.1.38",
+        "context": 16384,
+        "kv": "fp16",
+        "kv_resident": 0,
+        "expert_slots": 16000,
+        "expert_cache_mib": 79687,
+        "expert_slots_primary": 16000,
+        "expert_cache_primary_mib": 79687,
+        "spec": 8,
+        "mtp_max": 4,
+        "lookup": 0,
+        "vram_free_mib": 6806,
+        "cvec": 0,
+        "arena_mib": 42712,
+        "pool_workers": 15,
+        "pcie_frac": "0.55",
+        "spec_min_p": "0.50",
+        "conversation_cache_mib": 0,
+        "conversation_cache_slots": 4,
+        "conversation_cache_min_free_mib": 2560,
+        "engine": "0.1.38"
+      },
+      "startup_seconds": 98.72989973299264,
+      "prompt_sha256": {
+        "coding": "2ed72583751bab5d54c04471e7aad32e43e14b4708f4fb7647ffde5289612eeb"
+      },
+      "rotation_counters": [],
+      "diagnostics": [
+        "strata decode timing: 256 windows, avg T 1.00, 1.00 tokens/window, 17.21 ms/window = verify 13.28 (GPU-reach wait 9.11 + per-layer host 3.61 [plan 0.04 actq 0.02 jobs 0.07 CPU 3.38] + stage 0.00) + commit/emit 0.03 + draft 0.00; per layer-window: CPU experts 0.46 (0.46 entries), VRAM hits 9.37, PCIe 0.17",
+        "strata serve: resident RAM: 41.71 GiB of experts in RAM, 1204 exchanged with the VRAM tier, 0 blob reads from the file",
+        "strata serve: expert tiers: GPU 115114 hits this request; since the start RAM 17557 blobs, files 0 blobs 83563.6 MB read (the GGUF in place)"
+      ],
+      "cases": [
+        {
+          "task": "coding",
+          "repetition": 1,
+          "input_tokens": 8192,
+          "output_tokens": 256,
+          "timings": {
+            "generated": 256,
+            "prompt_tokens": 8192,
+            "prompt_ms": 1974.4,
+            "decode_ms": 4406.8,
+            "finish": "length",
+            "drafts_accepted": 0,
+            "drafts_offered": 0,
+            "reused": 0,
+            "hits": 115114,
+            "lookups": 120762,
+            "ram_blobs": 8981,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "prompt_read": 8192
+          },
+          "wall_seconds": 6.382927719008876,
+          "first_token_seconds": 2.0024270950088976,
+          "prefill_tps": 4149.108589951377,
+          "decode_tps": 58.09203957520196,
+          "effective_output_tps": 40.10698714911204,
+          "output_budget_reached": true,
+          "natural_stop": false,
+          "token_count": 256,
+          "token_ids_sha256_json": "91a706dcdcf37e780cdaaeff1605a284233c1a4933a65a3f291c17f3867f25fc"
+        }
+      ]
+    },
+    {
+      "label": "serial-rotate0-r1",
+      "mode": "serial",
+      "rotate": 0,
+      "started": 1791059662.8904257,
+      "finished": 1791059835.2138405,
+      "engine_info": {
+        "version": "0.1.38",
+        "context": 73728,
+        "kv": "fp16",
+        "kv_resident": 0,
+        "expert_slots": 16400,
+        "expert_cache_mib": 81679,
+        "expert_slots_primary": 16400,
+        "expert_cache_primary_mib": 81679,
+        "spec": 8,
+        "mtp_max": 4,
+        "lookup": 0,
+        "vram_free_mib": 3374,
+        "cvec": 0,
+        "arena_mib": 40720,
+        "pool_workers": 15,
+        "pcie_frac": "0.55",
+        "spec_min_p": "0.50",
+        "conversation_cache_mib": 0,
+        "conversation_cache_slots": 4,
+        "conversation_cache_min_free_mib": 2560,
+        "engine": "0.1.38"
+      },
+      "startup_seconds": 102.82656470600341,
+      "prompt_sha256": {
+        "coding": "a8024ab0ba6b95ae36f2b9bd621723ed0f9b98e64ad82b94d389cdacb2232896",
+        "editing": "06080d4c63a012112b7fbd334e4b4c32da7b85006b8018208f80b79b3ae3c829"
+      },
+      "rotation_counters": [],
+      "diagnostics": [
+        "strata decode timing: 1024 windows, avg T 1.00, 1.00 tokens/window, 14.27 ms/window = verify 12.36 (GPU-reach wait 9.31 + per-layer host 2.53 [plan 0.03 actq 0.02 jobs 0.06 CPU 2.34] + stage 0.00) + commit/emit 0.02 + draft 0.00; per layer-window: CPU experts 0.34 (0.34 entries), VRAM hits 9.56, PCIe 0.11",
+        "strata serve: resident RAM: 39.77 GiB of experts in RAM, 2377 exchanged with the VRAM tier, 0 blob reads from the file",
+        "strata serve: expert tiers: GPU 469667 hits this request; since the start RAM 89645 blobs, files 0 blobs 85652.6 MB read (the GGUF in place)",
+        "strata decode timing: 1024 windows, avg T 1.00, 1.00 tokens/window, 17.39 ms/window = verify 15.03 (GPU-reach wait 9.23 + per-layer host 5.29 [plan 0.04 actq 0.02 jobs 0.08 CPU 5.08] + stage 0.00) + commit/emit 0.02 + draft 0.00; per layer-window: CPU experts 0.69 (0.69 entries), VRAM hits 9.01, PCIe 0.30",
+        "strata serve: resident RAM: 39.77 GiB of experts in RAM, 5354 exchanged with the VRAM tier, 0 blob reads from the file",
+        "strata serve: expert tiers: GPU 442680 hits this request; since the start RAM 206864 blobs, files 0 blobs 85652.6 MB read (the GGUF in place)"
+      ],
+      "cases": [
+        {
+          "task": "coding",
+          "repetition": 1,
+          "input_tokens": 65536,
+          "output_tokens": 1024,
+          "timings": {
+            "generated": 1024,
+            "prompt_tokens": 65536,
+            "prompt_ms": 14466.3,
+            "decode_ms": 14613.1,
+            "finish": "length",
+            "drafts_accepted": 0,
+            "drafts_offered": 0,
+            "reused": 0,
+            "hits": 469667,
+            "lookups": 486147,
+            "ram_blobs": 24237,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "prompt_read": 65536
+          },
+          "wall_seconds": 29.0869200219895,
+          "first_token_seconds": 14.499678053995012,
+          "prefill_tps": 4530.253070930369,
+          "decode_tps": 70.0741115848109,
+          "effective_output_tps": 35.20482743535113,
+          "output_budget_reached": true,
+          "natural_stop": false,
+          "token_count": 1024,
+          "token_ids_sha256_json": "b1f0b9db418f250daa39ec15507b7e60afa8168c32bd23e7e7fdab178f95c25a"
+        },
+        {
+          "task": "editing",
+          "repetition": 1,
+          "input_tokens": 65536,
+          "output_tokens": 1024,
+          "timings": {
+            "generated": 1024,
+            "prompt_tokens": 65536,
+            "prompt_ms": 14281.0,
+            "decode_ms": 17805.9,
+            "finish": "length",
+            "drafts_accepted": 0,
+            "drafts_offered": 0,
+            "reused": 0,
+            "hits": 442680,
+            "lookups": 476601,
+            "ram_blobs": 51811,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "prompt_read": 65536
+          },
+          "wall_seconds": 32.09541184900445,
+          "first_token_seconds": 14.301793113991152,
+          "prefill_tps": 4589.034381345844,
+          "decode_tps": 57.50902790648043,
+          "effective_output_tps": 31.904871787204154,
+          "output_budget_reached": true,
+          "natural_stop": false,
+          "token_count": 1024,
+          "token_ids_sha256_json": "f589849c7fb94131aecdd2b4e016ec7437b7f48da8a5d32a29b703508ce4d723"
+        }
+      ]
+    },
+    {
+      "label": "serial-rotate1-r1",
+      "mode": "serial",
+      "rotate": 1,
+      "started": 1791059835.2159784,
+      "finished": 1791060002.0726082,
+      "engine_info": {
+        "version": "0.1.38",
+        "context": 73728,
+        "kv": "fp16",
+        "kv_resident": 0,
+        "expert_slots": 16400,
+        "expert_cache_mib": 81679,
+        "expert_slots_primary": 16400,
+        "expert_cache_primary_mib": 81679,
+        "spec": 8,
+        "mtp_max": 4,
+        "lookup": 0,
+        "vram_free_mib": 3374,
+        "cvec": 0,
+        "arena_mib": 40720,
+        "pool_workers": 15,
+        "pcie_frac": "0.55",
+        "spec_min_p": "0.50",
+        "conversation_cache_mib": 0,
+        "conversation_cache_slots": 4,
+        "conversation_cache_min_free_mib": 2560,
+        "engine": "0.1.38"
+      },
+      "startup_seconds": 99.78008953599783,
+      "prompt_sha256": {
+        "coding": "a8024ab0ba6b95ae36f2b9bd621723ed0f9b98e64ad82b94d389cdacb2232896",
+        "editing": "06080d4c63a012112b7fbd334e4b4c32da7b85006b8018208f80b79b3ae3c829"
+      },
+      "rotation_counters": [
+        [
+          2377,
+          12413644800
+        ],
+        [
+          5354,
+          27960729600
+        ]
+      ],
+      "diagnostics": [
+        "strata decode timing: 1024 windows, avg T 1.00, 1.00 tokens/window, 13.26 ms/window = verify 12.36 (GPU-reach wait 9.28 + per-layer host 2.56 [plan 0.04 actq 0.02 jobs 0.07 CPU 2.33] + stage 0.00) + commit/emit 0.02 + draft 0.00; per layer-window: CPU experts 0.34 (0.34 entries), VRAM hits 9.56, PCIe 0.11",
+        "strata serve: resident RAM: 39.77 GiB of experts in RAM, 2377 exchanged with the VRAM tier, 0 blob reads from the file",
+        "strata serve: exchange rotation: 2377 blocks, 12413644800 host memcpy bytes avoided (cumulative payload)",
+        "strata serve: expert tiers: GPU 469667 hits this request; since the start RAM 89645 blobs, files 0 blobs 85652.6 MB read (the GGUF in place)",
+        "strata decode timing: 1024 windows, avg T 1.00, 1.00 tokens/window, 16.15 ms/window = verify 15.03 (GPU-reach wait 9.20 + per-layer host 5.32 [plan 0.05 actq 0.03 jobs 0.10 CPU 5.07] + stage 0.01) + commit/emit 0.03 + draft 0.00; per layer-window: CPU experts 0.69 (0.69 entries), VRAM hits 9.01, PCIe 0.30",
+        "strata serve: resident RAM: 39.77 GiB of experts in RAM, 5354 exchanged with the VRAM tier, 0 blob reads from the file",
+        "strata serve: exchange rotation: 5354 blocks, 27960729600 host memcpy bytes avoided (cumulative payload)",
+        "strata serve: expert tiers: GPU 442680 hits this request; since the start RAM 206864 blobs, files 0 blobs 85652.6 MB read (the GGUF in place)"
+      ],
+      "cases": [
+        {
+          "task": "coding",
+          "repetition": 1,
+          "input_tokens": 65536,
+          "output_tokens": 1024,
+          "timings": {
+            "generated": 1024,
+            "prompt_tokens": 65536,
+            "prompt_ms": 14476.9,
+            "decode_ms": 13583.2,
+            "finish": "length",
+            "drafts_accepted": 0,
+            "drafts_offered": 0,
+            "reused": 0,
+            "hits": 469667,
+            "lookups": 486147,
+            "ram_blobs": 24237,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "prompt_read": 65536
+          },
+          "wall_seconds": 28.068842431996018,
+          "first_token_seconds": 14.515397836003103,
+          "prefill_tps": 4526.936015307145,
+          "decode_tps": 75.38724306496259,
+          "effective_output_tps": 36.48173245764955,
+          "output_budget_reached": true,
+          "natural_stop": false,
+          "token_count": 1024,
+          "token_ids_sha256_json": "b1f0b9db418f250daa39ec15507b7e60afa8168c32bd23e7e7fdab178f95c25a"
+        },
+        {
+          "task": "editing",
+          "repetition": 1,
+          "input_tokens": 65536,
+          "output_tokens": 1024,
+          "timings": {
+            "generated": 1024,
+            "prompt_tokens": 65536,
+            "prompt_ms": 14274.1,
+            "decode_ms": 16534.5,
+            "finish": "length",
+            "drafts_accepted": 0,
+            "drafts_offered": 0,
+            "reused": 0,
+            "hits": 442680,
+            "lookups": 476601,
+            "ram_blobs": 51811,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "prompt_read": 65536
+          },
+          "wall_seconds": 30.816419602997485,
+          "first_token_seconds": 14.294387393994839,
+          "prefill_tps": 4591.2526884356985,
+          "decode_tps": 61.931113731893916,
+          "effective_output_tps": 33.229038713517404,
+          "output_budget_reached": true,
+          "natural_stop": false,
+          "token_count": 1024,
+          "token_ids_sha256_json": "f589849c7fb94131aecdd2b4e016ec7437b7f48da8a5d32a29b703508ce4d723"
+        }
+      ]
+    },
+    {
+      "label": "mtp-rotate1-r1",
+      "mode": "mtp",
+      "rotate": 1,
+      "started": 1791060002.0757282,
+      "finished": 1791060157.088186,
+      "engine_info": {
+        "version": "0.1.38",
+        "context": 73728,
+        "kv": "fp16",
+        "kv_resident": 0,
+        "expert_slots": 16192,
+        "expert_cache_mib": 80643,
+        "expert_slots_primary": 16192,
+        "expert_cache_primary_mib": 80643,
+        "spec": 8,
+        "mtp_max": 4,
+        "lookup": 0,
+        "vram_free_mib": 3332,
+        "cvec": 0,
+        "arena_mib": 41756,
+        "pool_workers": 15,
+        "pcie_frac": "0.55",
+        "spec_min_p": "0.50",
+        "conversation_cache_mib": 0,
+        "conversation_cache_slots": 4,
+        "conversation_cache_min_free_mib": 2560,
+        "engine": "0.1.38"
+      },
+      "startup_seconds": 99.90941234800266,
+      "prompt_sha256": {
+        "coding": "a8024ab0ba6b95ae36f2b9bd621723ed0f9b98e64ad82b94d389cdacb2232896",
+        "editing": "06080d4c63a012112b7fbd334e4b4c32da7b85006b8018208f80b79b3ae3c829"
+      },
+      "rotation_counters": [
+        [
+          3167,
+          16539340800
+        ],
+        [
+          7247,
+          37846732800
+        ]
+      ],
+      "diagnostics": [
+        "strata decode timing: 319 windows, avg T 3.63, 3.21 tokens/window, 24.34 ms/window = verify 19.31 (GPU-reach wait 12.49 + per-layer host 6.05 [plan 0.12 actq 0.08 jobs 0.22 CPU 5.51] + stage 0.02) + commit/emit 0.04 + draft 1.95; per layer-window: CPU experts 0.75 (0.88 entries), VRAM hits 35.00, PCIe 0.40",
+        "strata serve: resident RAM: 40.78 GiB of experts in RAM, 3167 exchanged with the VRAM tier, 0 blob reads from the file",
+        "strata serve: exchange rotation: 3167 blocks, 16539340800 host memcpy bytes avoided (cumulative payload)",
+        "strata serve: expert tiers: GPU 535854 hits this request; since the start RAM 87779 blobs, files 0 blobs 84566.3 MB read (the GGUF in place)",
+        "strata decode timing: 262 windows, avg T 3.97, 3.91 tokens/window, 36.31 ms/window = verify 29.17 (GPU-reach wait 14.49 + per-layer host 14.04 [plan 0.16 actq 0.09 jobs 0.31 CPU 13.34] + stage 0.02) + commit/emit 0.03 + draft 2.06; per layer-window: CPU experts 1.68 (1.83 entries), VRAM hits 36.58, PCIe 1.22",
+        "strata serve: resident RAM: 40.78 GiB of experts in RAM, 7247 exchanged with the VRAM tier, 0 blob reads from the file",
+        "strata serve: exchange rotation: 7247 blocks, 37846732800 host memcpy bytes avoided (cumulative payload)",
+        "strata serve: expert tiers: GPU 460004 hits this request; since the start RAM 195412 blobs, files 0 blobs 84566.3 MB read (the GGUF in place)"
+      ],
+      "cases": [
+        {
+          "task": "coding",
+          "repetition": 1,
+          "input_tokens": 65536,
+          "output_tokens": 1024,
+          "timings": {
+            "generated": 1024,
+            "prompt_tokens": 65536,
+            "prompt_ms": 14779.7,
+            "decode_ms": 7765.4,
+            "finish": "length",
+            "drafts_accepted": 705,
+            "drafts_offered": 839,
+            "reused": 0,
+            "hits": 535854,
+            "lookups": 549352,
+            "ram_blobs": 20707,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "prompt_read": 65536
+          },
+          "wall_seconds": 22.553107995001483,
+          "first_token_seconds": 14.813492494009552,
+          "prefill_tps": 4434.190139177385,
+          "decode_tps": 131.86699976820253,
+          "effective_output_tps": 45.40394167522066,
+          "output_budget_reached": true,
+          "natural_stop": false,
+          "token_count": 1024,
+          "token_ids_sha256_json": "8fc414fe6f9a02863395f5098a6f48d5866a71e1a2a92cbf3dba349b66d85bc6"
+        },
+        {
+          "task": "editing",
+          "repetition": 1,
+          "input_tokens": 65536,
+          "output_tokens": 1024,
+          "timings": {
+            "generated": 1024,
+            "prompt_tokens": 65536,
+            "prompt_ms": 14649.5,
+            "decode_ms": 9513.3,
+            "finish": "length",
+            "drafts_accepted": 762,
+            "drafts_offered": 777,
+            "reused": 0,
+            "hits": 460004,
+            "lookups": 482984,
+            "ram_blobs": 40561,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "prompt_read": 65536
+          },
+          "wall_seconds": 24.171530204999726,
+          "first_token_seconds": 14.670165858988184,
+          "prefill_tps": 4473.5997815625105,
+          "decode_tps": 107.63877939306025,
+          "effective_output_tps": 42.36388806647385,
+          "output_budget_reached": true,
+          "natural_stop": false,
+          "token_count": 1024,
+          "token_ids_sha256_json": "f589849c7fb94131aecdd2b4e016ec7437b7f48da8a5d32a29b703508ce4d723"
+        }
+      ]
+    },
+    {
+      "label": "mtp-rotate0-r1",
+      "mode": "mtp",
+      "rotate": 0,
+      "started": 1791060157.0904458,
+      "finished": 1791060314.8167925,
+      "engine_info": {
+        "version": "0.1.38",
+        "context": 73728,
+        "kv": "fp16",
+        "kv_resident": 0,
+        "expert_slots": 16192,
+        "expert_cache_mib": 80643,
+        "expert_slots_primary": 16192,
+        "expert_cache_primary_mib": 80643,
+        "spec": 8,
+        "mtp_max": 4,
+        "lookup": 0,
+        "vram_free_mib": 3332,
+        "cvec": 0,
+        "arena_mib": 41756,
+        "pool_workers": 15,
+        "pcie_frac": "0.55",
+        "spec_min_p": "0.50",
+        "conversation_cache_mib": 0,
+        "conversation_cache_slots": 4,
+        "conversation_cache_min_free_mib": 2560,
+        "engine": "0.1.38"
+      },
+      "startup_seconds": 99.65106777999608,
+      "prompt_sha256": {
+        "coding": "a8024ab0ba6b95ae36f2b9bd621723ed0f9b98e64ad82b94d389cdacb2232896",
+        "editing": "06080d4c63a012112b7fbd334e4b4c32da7b85006b8018208f80b79b3ae3c829"
+      },
+      "rotation_counters": [],
+      "diagnostics": [
+        "strata decode timing: 319 windows, avg T 3.63, 3.21 tokens/window, 28.50 ms/window = verify 19.28 (GPU-reach wait 12.58 + per-layer host 5.94 [plan 0.13 actq 0.08 jobs 0.21 CPU 5.41] + stage 0.02) + commit/emit 0.03 + draft 1.95; per layer-window: CPU experts 0.75 (0.88 entries), VRAM hits 35.00, PCIe 0.40",
+        "strata serve: resident RAM: 40.78 GiB of experts in RAM, 3167 exchanged with the VRAM tier, 0 blob reads from the file",
+        "strata serve: expert tiers: GPU 535854 hits this request; since the start RAM 87779 blobs, files 0 blobs 84566.3 MB read (the GGUF in place)",
+        "strata decode timing: 262 windows, avg T 3.97, 3.91 tokens/window, 44.01 ms/window = verify 29.25 (GPU-reach wait 14.46 + per-layer host 14.15 [plan 0.18 actq 0.09 jobs 0.35 CPU 13.41] + stage 0.02) + commit/emit 0.04 + draft 2.07; per layer-window: CPU experts 1.68 (1.83 entries), VRAM hits 36.58, PCIe 1.22",
+        "strata serve: resident RAM: 40.78 GiB of experts in RAM, 7247 exchanged with the VRAM tier, 0 blob reads from the file",
+        "strata serve: expert tiers: GPU 460004 hits this request; since the start RAM 195412 blobs, files 0 blobs 84566.3 MB read (the GGUF in place)"
+      ],
+      "cases": [
+        {
+          "task": "coding",
+          "repetition": 1,
+          "input_tokens": 65536,
+          "output_tokens": 1024,
+          "timings": {
+            "generated": 1024,
+            "prompt_tokens": 65536,
+            "prompt_ms": 14761.8,
+            "decode_ms": 9092.6,
+            "finish": "length",
+            "drafts_accepted": 705,
+            "drafts_offered": 839,
+            "reused": 0,
+            "hits": 535854,
+            "lookups": 549352,
+            "ram_blobs": 20707,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "prompt_read": 65536
+          },
+          "wall_seconds": 23.862744480997208,
+          "first_token_seconds": 14.795706214994425,
+          "prefill_tps": 4439.566990475417,
+          "decode_tps": 112.61905285616875,
+          "effective_output_tps": 42.91207999211697,
+          "output_budget_reached": true,
+          "natural_stop": false,
+          "token_count": 1024,
+          "token_ids_sha256_json": "8fc414fe6f9a02863395f5098a6f48d5866a71e1a2a92cbf3dba349b66d85bc6"
+        },
+        {
+          "task": "editing",
+          "repetition": 1,
+          "input_tokens": 65536,
+          "output_tokens": 1024,
+          "timings": {
+            "generated": 1024,
+            "prompt_tokens": 65536,
+            "prompt_ms": 14652.2,
+            "decode_ms": 11530.1,
+            "finish": "length",
+            "drafts_accepted": 762,
+            "drafts_offered": 777,
+            "reused": 0,
+            "hits": 460004,
+            "lookups": 482984,
+            "ram_blobs": 40561,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "prompt_read": 65536
+          },
+          "wall_seconds": 26.1901433729945,
+          "first_token_seconds": 14.671953839992057,
+          "prefill_tps": 4472.775419390944,
+          "decode_tps": 88.81102505615736,
+          "effective_output_tps": 39.09867866763492,
+          "output_budget_reached": true,
+          "natural_stop": false,
+          "token_count": 1024,
+          "token_ids_sha256_json": "f589849c7fb94131aecdd2b4e016ec7437b7f48da8a5d32a29b703508ce4d723"
+        }
+      ]
+    },
+    {
+      "label": "ngram-rotate0-r1",
+      "mode": "ngram",
+      "rotate": 0,
+      "started": 1791060314.822053,
+      "finished": 1791060478.2368777,
+      "engine_info": {
+        "version": "0.1.38",
+        "context": 73728,
+        "kv": "fp16",
+        "kv_resident": 0,
+        "expert_slots": 16400,
+        "expert_cache_mib": 81679,
+        "expert_slots_primary": 16400,
+        "expert_cache_primary_mib": 81679,
+        "spec": 8,
+        "mtp_max": 4,
+        "lookup": 3,
+        "vram_free_mib": 3374,
+        "cvec": 0,
+        "arena_mib": 40720,
+        "pool_workers": 15,
+        "pcie_frac": "0.55",
+        "spec_min_p": "0.50",
+        "conversation_cache_mib": 0,
+        "conversation_cache_slots": 4,
+        "conversation_cache_min_free_mib": 2560,
+        "engine": "0.1.38"
+      },
+      "startup_seconds": 100.1971700899885,
+      "prompt_sha256": {
+        "coding": "a8024ab0ba6b95ae36f2b9bd621723ed0f9b98e64ad82b94d389cdacb2232896",
+        "editing": "06080d4c63a012112b7fbd334e4b4c32da7b85006b8018208f80b79b3ae3c829"
+      },
+      "rotation_counters": [],
+      "diagnostics": [
+        "strata decode timing: 976 windows, avg T 1.15, 1.05 tokens/window, 14.85 ms/window = verify 12.74 (GPU-reach wait 9.54 + per-layer host 2.62 [plan 0.04 actq 0.02 jobs 0.07 CPU 2.42] + stage 0.01) + commit/emit 0.03 + draft 0.00; per layer-window: CPU experts 0.34 (0.35 entries), VRAM hits 11.01, PCIe 0.12",
+        "strata serve: resident RAM: 39.77 GiB of experts in RAM, 2514 exchanged with the VRAM tier, 0 blob reads from the file",
+        "strata serve: expert tiers: GPU 515605 hits this request; since the start RAM 89619 blobs, files 0 blobs 85652.6 MB read (the GGUF in place)",
+        "strata decode timing: 253 windows, avg T 4.69, 4.05 tokens/window, 45.78 ms/window = verify 32.48 (GPU-reach wait 16.65 + per-layer host 15.09 [plan 0.20 actq 0.08 jobs 0.34 CPU 14.32] + stage 0.02) + commit/emit 0.05 + draft 0.00; per layer-window: CPU experts 1.80 (1.99 entries), VRAM hits 43.43, PCIe 1.38",
+        "strata serve: resident RAM: 39.77 GiB of experts in RAM, 6751 exchanged with the VRAM tier, 0 blob reads from the file",
+        "strata serve: expert tiers: GPU 527428 hits this request; since the start RAM 197868 blobs, files 0 blobs 85652.6 MB read (the GGUF in place)"
+      ],
+      "cases": [
+        {
+          "task": "coding",
+          "repetition": 1,
+          "input_tokens": 65536,
+          "output_tokens": 1024,
+          "timings": {
+            "generated": 1024,
+            "prompt_tokens": 65536,
+            "prompt_ms": 14419.5,
+            "decode_ms": 14495.7,
+            "finish": "length",
+            "drafts_accepted": 48,
+            "drafts_offered": 144,
+            "reused": 0,
+            "hits": 515605,
+            "lookups": 531845,
+            "ram_blobs": 24211,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "prompt_read": 65536
+          },
+          "wall_seconds": 28.92314779800654,
+          "first_token_seconds": 14.453723084996454,
+          "prefill_tps": 4544.956482541003,
+          "decode_tps": 70.6416385548818,
+          "effective_output_tps": 35.40416856254411,
+          "output_budget_reached": true,
+          "natural_stop": false,
+          "token_count": 1024,
+          "token_ids_sha256_json": "7a426bec9e1cee1cc551a327649ba6982af1ca2773a028e9791c77f061a9d5a4"
+        },
+        {
+          "task": "editing",
+          "repetition": 1,
+          "input_tokens": 65536,
+          "output_tokens": 1024,
+          "timings": {
+            "generated": 1024,
+            "prompt_tokens": 65536,
+            "prompt_ms": 14294.8,
+            "decode_ms": 11581.4,
+            "finish": "length",
+            "drafts_accepted": 771,
+            "drafts_offered": 933,
+            "reused": 0,
+            "hits": 527428,
+            "lookups": 551652,
+            "ram_blobs": 42841,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "prompt_read": 65536
+          },
+          "wall_seconds": 25.88589959399542,
+          "first_token_seconds": 14.316361969991704,
+          "prefill_tps": 4584.604191734057,
+          "decode_tps": 88.41763517364049,
+          "effective_output_tps": 39.558215710514865,
+          "output_budget_reached": true,
+          "natural_stop": false,
+          "token_count": 1024,
+          "token_ids_sha256_json": "f589849c7fb94131aecdd2b4e016ec7437b7f48da8a5d32a29b703508ce4d723"
+        }
+      ]
+    },
+    {
+      "label": "ngram-rotate1-r1",
+      "mode": "ngram",
+      "rotate": 1,
+      "started": 1791060478.2410734,
+      "finished": 1791060639.7025797,
+      "engine_info": {
+        "version": "0.1.38",
+        "context": 73728,
+        "kv": "fp16",
+        "kv_resident": 0,
+        "expert_slots": 16400,
+        "expert_cache_mib": 81679,
+        "expert_slots_primary": 16400,
+        "expert_cache_primary_mib": 81679,
+        "spec": 8,
+        "mtp_max": 4,
+        "lookup": 3,
+        "vram_free_mib": 3374,
+        "cvec": 0,
+        "arena_mib": 40720,
+        "pool_workers": 15,
+        "pcie_frac": "0.55",
+        "spec_min_p": "0.50",
+        "conversation_cache_mib": 0,
+        "conversation_cache_slots": 4,
+        "conversation_cache_min_free_mib": 2560,
+        "engine": "0.1.38"
+      },
+      "startup_seconds": 101.76720999499958,
+      "prompt_sha256": {
+        "coding": "a8024ab0ba6b95ae36f2b9bd621723ed0f9b98e64ad82b94d389cdacb2232896",
+        "editing": "06080d4c63a012112b7fbd334e4b4c32da7b85006b8018208f80b79b3ae3c829"
+      },
+      "rotation_counters": [
+        [
+          2417,
+          12622540800
+        ],
+        [
+          6616,
+          34551398400
+        ]
+      ],
+      "diagnostics": [
+        "strata decode timing: 1000 windows, avg T 1.06, 1.02 tokens/window, 13.42 ms/window = verify 12.48 (GPU-reach wait 9.43 + per-layer host 2.48 [plan 0.03 actq 0.02 jobs 0.06 CPU 2.29] + stage 0.00) + commit/emit 0.02 + draft 0.00; per layer-window: CPU experts 0.34 (0.34 entries), VRAM hits 10.15, PCIe 0.11",
+        "strata serve: resident RAM: 39.77 GiB of experts in RAM, 2417 exchanged with the VRAM tier, 0 blob reads from the file",
+        "strata serve: exchange rotation: 2417 blocks, 12622540800 host memcpy bytes avoided (cumulative payload)",
+        "strata serve: expert tiers: GPU 487128 hits this request; since the start RAM 89383 blobs, files 0 blobs 85652.6 MB read (the GGUF in place)",
+        "strata decode timing: 214 windows, avg T 5.22, 4.79 tokens/window, 44.25 ms/window = verify 36.97 (GPU-reach wait 18.35 + per-layer host 17.76 [plan 0.21 actq 0.10 jobs 0.33 CPU 16.96] + stage 0.02) + commit/emit 0.05 + draft 0.00; per layer-window: CPU experts 2.14 (2.39 entries), VRAM hits 48.05, PCIe 1.72",
+        "strata serve: resident RAM: 39.77 GiB of experts in RAM, 6616 exchanged with the VRAM tier, 0 blob reads from the file",
+        "strata serve: exchange rotation: 6616 blocks, 34551398400 host memcpy bytes avoided (cumulative payload)",
+        "strata serve: expert tiers: GPU 493574 hits this request; since the start RAM 198631 blobs, files 0 blobs 85652.6 MB read (the GGUF in place)"
+      ],
+      "cases": [
+        {
+          "task": "coding",
+          "repetition": 1,
+          "input_tokens": 65536,
+          "output_tokens": 1024,
+          "timings": {
+            "generated": 1024,
+            "prompt_tokens": 65536,
+            "prompt_ms": 14469.4,
+            "decode_ms": 13418.4,
+            "finish": "length",
+            "drafts_accepted": 24,
+            "drafts_offered": 60,
+            "reused": 0,
+            "hits": 487128,
+            "lookups": 503295,
+            "ram_blobs": 23975,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "prompt_read": 65536
+          },
+          "wall_seconds": 27.895872437002254,
+          "first_token_seconds": 14.503601695003454,
+          "prefill_tps": 4529.282485797615,
+          "decode_tps": 76.31312227985453,
+          "effective_output_tps": 36.70793958183303,
+          "output_budget_reached": true,
+          "natural_stop": false,
+          "token_count": 1024,
+          "token_ids_sha256_json": "129df82704ed5a89121c36cbc55f5cfc4b9520d312c0b81d657d278966751cf7"
+        },
+        {
+          "task": "editing",
+          "repetition": 1,
+          "input_tokens": 65536,
+          "output_tokens": 1024,
+          "timings": {
+            "generated": 1024,
+            "prompt_tokens": 65536,
+            "prompt_ms": 14289.9,
+            "decode_ms": 9469.5,
+            "finish": "length",
+            "drafts_accepted": 810,
+            "drafts_offered": 904,
+            "reused": 0,
+            "hits": 493574,
+            "lookups": 518158,
+            "ram_blobs": 43840,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "prompt_read": 65536
+          },
+          "wall_seconds": 23.768409147000057,
+          "first_token_seconds": 14.3107672729966,
+          "prefill_tps": 4586.176250358645,
+          "decode_tps": 108.13664924230424,
+          "effective_output_tps": 43.08239536213322,
+          "output_budget_reached": true,
+          "natural_stop": false,
+          "token_count": 1024,
+          "token_ids_sha256_json": "f589849c7fb94131aecdd2b4e016ec7437b7f48da8a5d32a29b703508ce4d723"
+        }
+      ]
+    },
+    {
+      "label": "mtp-ngram-rotate1-r1",
+      "mode": "mtp-ngram",
+      "rotate": 1,
+      "started": 1791060639.7122455,
+      "finished": 1791060797.1119206,
+      "engine_info": {
+        "version": "0.1.38",
+        "context": 73728,
+        "kv": "fp16",
+        "kv_resident": 0,
+        "expert_slots": 16192,
+        "expert_cache_mib": 80643,
+        "expert_slots_primary": 16192,
+        "expert_cache_primary_mib": 80643,
+        "spec": 8,
+        "mtp_max": 4,
+        "lookup": 3,
+        "vram_free_mib": 3332,
+        "cvec": 0,
+        "arena_mib": 41756,
+        "pool_workers": 15,
+        "pcie_frac": "0.55",
+        "spec_min_p": "0.50",
+        "conversation_cache_mib": 0,
+        "conversation_cache_slots": 4,
+        "conversation_cache_min_free_mib": 2560,
+        "engine": "0.1.38"
+      },
+      "startup_seconds": 102.56193727698701,
+      "prompt_sha256": {
+        "coding": "a8024ab0ba6b95ae36f2b9bd621723ed0f9b98e64ad82b94d389cdacb2232896",
+        "editing": "06080d4c63a012112b7fbd334e4b4c32da7b85006b8018208f80b79b3ae3c829"
+      },
+      "rotation_counters": [
+        [
+          3225,
+          16842240000
+        ],
+        [
+          7132,
+          37246156800
+        ]
+      ],
+      "diagnostics": [
+        "strata decode timing: 321 windows, avg T 3.64, 3.19 tokens/window, 24.34 ms/window = verify 19.30 (GPU-reach wait 12.63 + per-layer host 5.87 [plan 0.11 actq 0.08 jobs 0.19 CPU 5.33] + stage 0.02) + commit/emit 0.02 + draft 1.95; per layer-window: CPU experts 0.75 (0.87 entries), VRAM hits 35.09, PCIe 0.40",
+        "strata serve: resident RAM: 40.78 GiB of experts in RAM, 3225 exchanged with the VRAM tier, 0 blob reads from the file",
+        "strata serve: exchange rotation: 3225 blocks, 16842240000 host memcpy bytes avoided (cumulative payload)",
+        "strata serve: expert tiers: GPU 540628 hits this request; since the start RAM 87947 blobs, files 0 blobs 84566.3 MB read (the GGUF in place)",
+        "strata decode timing: 247 windows, avg T 4.29, 4.15 tokens/window, 38.95 ms/window = verify 31.68 (GPU-reach wait 15.62 + per-layer host 15.28 [plan 0.17 actq 0.09 jobs 0.33 CPU 14.55] + stage 0.02) + commit/emit 0.03 + draft 2.08; per layer-window: CPU experts 1.83 (2.03 entries), VRAM hits 39.38, PCIe 1.40",
+        "strata serve: resident RAM: 40.78 GiB of experts in RAM, 7132 exchanged with the VRAM tier, 0 blob reads from the file",
+        "strata serve: exchange rotation: 7132 blocks, 37246156800 host memcpy bytes avoided (cumulative payload)",
+        "strata serve: expert tiers: GPU 466840 hits this request; since the start RAM 197195 blobs, files 0 blobs 84566.3 MB read (the GGUF in place)"
+      ],
+      "cases": [
+        {
+          "task": "coding",
+          "repetition": 1,
+          "input_tokens": 65536,
+          "output_tokens": 1024,
+          "timings": {
+            "generated": 1024,
+            "prompt_tokens": 65536,
+            "prompt_ms": 14751.3,
+            "decode_ms": 7813.5,
+            "finish": "length",
+            "drafts_accepted": 703,
+            "drafts_offered": 847,
+            "reused": 0,
+            "hits": 540628,
+            "lookups": 554092,
+            "ram_blobs": 20875,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "prompt_read": 65536
+          },
+          "wall_seconds": 22.572804088995326,
+          "first_token_seconds": 14.785380970002734,
+          "prefill_tps": 4442.727081680937,
+          "decode_tps": 131.0552249312088,
+          "effective_output_tps": 45.36432407612219,
+          "output_budget_reached": true,
+          "natural_stop": false,
+          "token_count": 1024,
+          "token_ids_sha256_json": "5dbf3c7759b26dbb14c658b12b487b796cc0dabcee4cd71358054525312671f2"
+        },
+        {
+          "task": "editing",
+          "repetition": 1,
+          "input_tokens": 65536,
+          "output_tokens": 1024,
+          "timings": {
+            "generated": 1024,
+            "prompt_tokens": 65536,
+            "prompt_ms": 14607.1,
+            "decode_ms": 9619.5,
+            "finish": "length",
+            "drafts_accepted": 777,
+            "drafts_offered": 812,
+            "reused": 0,
+            "hits": 466840,
+            "lookups": 490886,
+            "ram_blobs": 42176,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "prompt_read": 65536
+          },
+          "wall_seconds": 24.23557726299623,
+          "first_token_seconds": 14.628590230000555,
+          "prefill_tps": 4486.585290714789,
+          "decode_tps": 106.45043921201726,
+          "effective_output_tps": 42.25193354744147,
+          "output_budget_reached": true,
+          "natural_stop": false,
+          "token_count": 1024,
+          "token_ids_sha256_json": "f589849c7fb94131aecdd2b4e016ec7437b7f48da8a5d32a29b703508ce4d723"
+        }
+      ]
+    },
+    {
+      "label": "mtp-ngram-rotate0-r1",
+      "mode": "mtp-ngram",
+      "rotate": 0,
+      "started": 1791060797.115917,
+      "finished": 1791060958.4971037,
+      "engine_info": {
+        "version": "0.1.38",
+        "context": 73728,
+        "kv": "fp16",
+        "kv_resident": 0,
+        "expert_slots": 16192,
+        "expert_cache_mib": 80643,
+        "expert_slots_primary": 16192,
+        "expert_cache_primary_mib": 80643,
+        "spec": 8,
+        "mtp_max": 4,
+        "lookup": 3,
+        "vram_free_mib": 3332,
+        "cvec": 0,
+        "arena_mib": 41756,
+        "pool_workers": 15,
+        "pcie_frac": "0.55",
+        "spec_min_p": "0.50",
+        "conversation_cache_mib": 0,
+        "conversation_cache_slots": 4,
+        "conversation_cache_min_free_mib": 2560,
+        "engine": "0.1.38"
+      },
+      "startup_seconds": 102.60903605299245,
+      "prompt_sha256": {
+        "coding": "a8024ab0ba6b95ae36f2b9bd621723ed0f9b98e64ad82b94d389cdacb2232896",
+        "editing": "06080d4c63a012112b7fbd334e4b4c32da7b85006b8018208f80b79b3ae3c829"
+      },
+      "rotation_counters": [],
+      "diagnostics": [
+        "strata decode timing: 332 windows, avg T 3.55, 3.08 tokens/window, 28.58 ms/window = verify 18.88 (GPU-reach wait 12.36 + per-layer host 5.72 [plan 0.13 actq 0.07 jobs 0.21 CPU 5.18] + stage 0.02) + commit/emit 0.05 + draft 1.92; per layer-window: CPU experts 0.70 (0.83 entries), VRAM hits 34.26, PCIe 0.37",
+        "strata serve: resident RAM: 40.78 GiB of experts in RAM, 3273 exchanged with the VRAM tier, 0 blob reads from the file",
+        "strata serve: expert tiers: GPU 546013 hits this request; since the start RAM 87395 blobs, files 0 blobs 84566.3 MB read (the GGUF in place)",
+        "strata decode timing: 164 windows, avg T 6.65, 6.24 tokens/window, 70.71 ms/window = verify 48.14 (GPU-reach wait 21.25 + per-layer host 25.86 [plan 0.32 actq 0.14 jobs 0.60 CPU 24.53] + stage 0.03) + commit/emit 0.05 + draft 2.13; per layer-window: CPU experts 2.91 (3.34 entries), VRAM hits 60.46, PCIe 2.57",
+        "strata serve: resident RAM: 40.78 GiB of experts in RAM, 7119 exchanged with the VRAM tier, 0 blob reads from the file",
+        "strata serve: expert tiers: GPU 475976 hits this request; since the start RAM 201513 blobs, files 0 blobs 84566.3 MB read (the GGUF in place)"
+      ],
+      "cases": [
+        {
+          "task": "coding",
+          "repetition": 1,
+          "input_tokens": 65536,
+          "output_tokens": 1024,
+          "timings": {
+            "generated": 1024,
+            "prompt_tokens": 65536,
+            "prompt_ms": 14783.1,
+            "decode_ms": 9489.7,
+            "finish": "length",
+            "drafts_accepted": 692,
+            "drafts_offered": 846,
+            "reused": 0,
+            "hits": 546013,
+            "lookups": 559238,
+            "ram_blobs": 20323,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "prompt_read": 65536
+          },
+          "wall_seconds": 24.280889528992702,
+          "first_token_seconds": 14.81728138300241,
+          "prefill_tps": 4433.170309339719,
+          "decode_tps": 107.90646701160205,
+          "effective_output_tps": 42.173084259425025,
+          "output_budget_reached": true,
+          "natural_stop": false,
+          "token_count": 1024,
+          "token_ids_sha256_json": "a0a4f08daf3fbf7ee9ce14aeb4d91d3034ad9065fed1a0752e057b0bf7cedffe"
+        },
+        {
+          "task": "editing",
+          "repetition": 1,
+          "input_tokens": 65536,
+          "output_tokens": 1024,
+          "timings": {
+            "generated": 1024,
+            "prompt_tokens": 65536,
+            "prompt_ms": 14642.8,
+            "decode_ms": 11596.3,
+            "finish": "length",
+            "drafts_accepted": 860,
+            "drafts_offered": 927,
+            "reused": 0,
+            "hits": 475976,
+            "lookups": 502306,
+            "ram_blobs": 47046,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "prompt_read": 65536
+          },
+          "wall_seconds": 26.248063631996047,
+          "first_token_seconds": 14.664420018001692,
+          "prefill_tps": 4475.646734231158,
+          "decode_tps": 88.30402800893388,
+          "effective_output_tps": 39.0124016139521,
+          "output_budget_reached": true,
+          "natural_stop": false,
+          "token_count": 1024,
+          "token_ids_sha256_json": "f589849c7fb94131aecdd2b4e016ec7437b7f48da8a5d32a29b703508ce4d723"
+        }
+      ]
+    },
+    {
+      "label": "serial-rotate1-r2",
+      "mode": "serial",
+      "rotate": 1,
+      "started": 1791060958.5091474,
+      "finished": 1791061129.6268992,
+      "engine_info": {
+        "version": "0.1.38",
+        "context": 73728,
+        "kv": "fp16",
+        "kv_resident": 0,
+        "expert_slots": 16400,
+        "expert_cache_mib": 81679,
+        "expert_slots_primary": 16400,
+        "expert_cache_primary_mib": 81679,
+        "spec": 8,
+        "mtp_max": 4,
+        "lookup": 0,
+        "vram_free_mib": 3374,
+        "cvec": 0,
+        "arena_mib": 40720,
+        "pool_workers": 15,
+        "pcie_frac": "0.55",
+        "spec_min_p": "0.50",
+        "conversation_cache_mib": 0,
+        "conversation_cache_slots": 4,
+        "conversation_cache_min_free_mib": 2560,
+        "engine": "0.1.38"
+      },
+      "startup_seconds": 104.58304748299997,
+      "prompt_sha256": {
+        "coding": "a8024ab0ba6b95ae36f2b9bd621723ed0f9b98e64ad82b94d389cdacb2232896",
+        "editing": "06080d4c63a012112b7fbd334e4b4c32da7b85006b8018208f80b79b3ae3c829"
+      },
+      "rotation_counters": [
+        [
+          2377,
+          12413644800
+        ],
+        [
+          5354,
+          27960729600
+        ]
+      ],
+      "diagnostics": [
+        "strata decode timing: 1024 windows, avg T 1.00, 1.00 tokens/window, 13.22 ms/window = verify 12.33 (GPU-reach wait 9.29 + per-layer host 2.52 [plan 0.03 actq 0.02 jobs 0.06 CPU 2.30] + stage 0.00) + commit/emit 0.01 + draft 0.00; per layer-window: CPU experts 0.34 (0.34 entries), VRAM hits 9.56, PCIe 0.11",
+        "strata serve: resident RAM: 39.77 GiB of experts in RAM, 2377 exchanged with the VRAM tier, 0 blob reads from the file",
+        "strata serve: exchange rotation: 2377 blocks, 12413644800 host memcpy bytes avoided (cumulative payload)",
+        "strata serve: expert tiers: GPU 469667 hits this request; since the start RAM 89645 blobs, files 0 blobs 85652.6 MB read (the GGUF in place)",
+        "strata decode timing: 1024 windows, avg T 1.00, 1.00 tokens/window, 16.11 ms/window = verify 15.01 (GPU-reach wait 9.21 + per-layer host 5.29 [plan 0.04 actq 0.02 jobs 0.08 CPU 5.03] + stage 0.00) + commit/emit 0.02 + draft 0.00; per layer-window: CPU experts 0.69 (0.69 entries), VRAM hits 9.01, PCIe 0.30",
+        "strata serve: resident RAM: 39.77 GiB of experts in RAM, 5354 exchanged with the VRAM tier, 0 blob reads from the file",
+        "strata serve: exchange rotation: 5354 blocks, 27960729600 host memcpy bytes avoided (cumulative payload)",
+        "strata serve: expert tiers: GPU 442680 hits this request; since the start RAM 206864 blobs, files 0 blobs 85652.6 MB read (the GGUF in place)"
+      ],
+      "cases": [
+        {
+          "task": "coding",
+          "repetition": 1,
+          "input_tokens": 65536,
+          "output_tokens": 1024,
+          "timings": {
+            "generated": 1024,
+            "prompt_tokens": 65536,
+            "prompt_ms": 14465.7,
+            "decode_ms": 13537.8,
+            "finish": "length",
+            "drafts_accepted": 0,
+            "drafts_offered": 0,
+            "reused": 0,
+            "hits": 469667,
+            "lookups": 486147,
+            "ram_blobs": 24237,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "prompt_read": 65536
+          },
+          "wall_seconds": 28.01145876100054,
+          "first_token_seconds": 14.498814306993154,
+          "prefill_tps": 4530.440974166477,
+          "decode_tps": 75.6400596847346,
+          "effective_output_tps": 36.556468148873506,
+          "output_budget_reached": true,
+          "natural_stop": false,
+          "token_count": 1024,
+          "token_ids_sha256_json": "b1f0b9db418f250daa39ec15507b7e60afa8168c32bd23e7e7fdab178f95c25a"
+        },
+        {
+          "task": "editing",
+          "repetition": 1,
+          "input_tokens": 65536,
+          "output_tokens": 1024,
+          "timings": {
+            "generated": 1024,
+            "prompt_tokens": 65536,
+            "prompt_ms": 14274.2,
+            "decode_ms": 16501.0,
+            "finish": "length",
+            "drafts_accepted": 0,
+            "drafts_offered": 0,
+            "reused": 0,
+            "hits": 442680,
+            "lookups": 476601,
+            "ram_blobs": 51811,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "prompt_read": 65536
+          },
+          "wall_seconds": 30.78319443500368,
+          "first_token_seconds": 14.294631630997173,
+          "prefill_tps": 4591.220523742136,
+          "decode_tps": 62.056845039694565,
+          "effective_output_tps": 33.26490375006715,
+          "output_budget_reached": true,
+          "natural_stop": false,
+          "token_count": 1024,
+          "token_ids_sha256_json": "f589849c7fb94131aecdd2b4e016ec7437b7f48da8a5d32a29b703508ce4d723"
+        }
+      ]
+    },
+    {
+      "label": "serial-rotate0-r2",
+      "mode": "serial",
+      "rotate": 0,
+      "started": 1791061129.6321235,
+      "finished": 1791061299.7734563,
+      "engine_info": {
+        "version": "0.1.38",
+        "context": 73728,
+        "kv": "fp16",
+        "kv_resident": 0,
+        "expert_slots": 16400,
+        "expert_cache_mib": 81679,
+        "expert_slots_primary": 16400,
+        "expert_cache_primary_mib": 81679,
+        "spec": 8,
+        "mtp_max": 4,
+        "lookup": 0,
+        "vram_free_mib": 3374,
+        "cvec": 0,
+        "arena_mib": 40720,
+        "pool_workers": 15,
+        "pcie_frac": "0.55",
+        "spec_min_p": "0.50",
+        "conversation_cache_mib": 0,
+        "conversation_cache_slots": 4,
+        "conversation_cache_min_free_mib": 2560,
+        "engine": "0.1.38"
+      },
+      "startup_seconds": 100.56648208599654,
+      "prompt_sha256": {
+        "coding": "a8024ab0ba6b95ae36f2b9bd621723ed0f9b98e64ad82b94d389cdacb2232896",
+        "editing": "06080d4c63a012112b7fbd334e4b4c32da7b85006b8018208f80b79b3ae3c829"
+      },
+      "rotation_counters": [],
+      "diagnostics": [
+        "strata decode timing: 1024 windows, avg T 1.00, 1.00 tokens/window, 14.29 ms/window = verify 12.40 (GPU-reach wait 9.30 + per-layer host 2.57 [plan 0.03 actq 0.02 jobs 0.06 CPU 2.37] + stage 0.00) + commit/emit 0.02 + draft 0.00; per layer-window: CPU experts 0.34 (0.34 entries), VRAM hits 9.56, PCIe 0.11",
+        "strata serve: resident RAM: 39.77 GiB of experts in RAM, 2377 exchanged with the VRAM tier, 0 blob reads from the file",
+        "strata serve: expert tiers: GPU 469667 hits this request; since the start RAM 89645 blobs, files 0 blobs 85652.6 MB read (the GGUF in place)",
+        "strata decode timing: 1024 windows, avg T 1.00, 1.00 tokens/window, 17.41 ms/window = verify 15.05 (GPU-reach wait 9.23 + per-layer host 5.30 [plan 0.04 actq 0.02 jobs 0.09 CPU 5.09] + stage 0.01) + commit/emit 0.03 + draft 0.00; per layer-window: CPU experts 0.69 (0.69 entries), VRAM hits 9.01, PCIe 0.30",
+        "strata serve: resident RAM: 39.77 GiB of experts in RAM, 5354 exchanged with the VRAM tier, 0 blob reads from the file",
+        "strata serve: expert tiers: GPU 442680 hits this request; since the start RAM 206864 blobs, files 0 blobs 85652.6 MB read (the GGUF in place)"
+      ],
+      "cases": [
+        {
+          "task": "coding",
+          "repetition": 1,
+          "input_tokens": 65536,
+          "output_tokens": 1024,
+          "timings": {
+            "generated": 1024,
+            "prompt_tokens": 65536,
+            "prompt_ms": 14469.3,
+            "decode_ms": 14629.5,
+            "finish": "length",
+            "drafts_accepted": 0,
+            "drafts_offered": 0,
+            "reused": 0,
+            "hits": 469667,
+            "lookups": 486147,
+            "ram_blobs": 24237,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "prompt_read": 65536
+          },
+          "wall_seconds": 29.107095999002922,
+          "first_token_seconds": 14.503855535003822,
+          "prefill_tps": 4529.313788503936,
+          "decode_tps": 69.99555692265628,
+          "effective_output_tps": 35.18042473337353,
+          "output_budget_reached": true,
+          "natural_stop": false,
+          "token_count": 1024,
+          "token_ids_sha256_json": "b1f0b9db418f250daa39ec15507b7e60afa8168c32bd23e7e7fdab178f95c25a"
+        },
+        {
+          "task": "editing",
+          "repetition": 1,
+          "input_tokens": 65536,
+          "output_tokens": 1024,
+          "timings": {
+            "generated": 1024,
+            "prompt_tokens": 65536,
+            "prompt_ms": 14274.6,
+            "decode_ms": 17830.6,
+            "finish": "length",
+            "drafts_accepted": 0,
+            "drafts_offered": 0,
+            "reused": 0,
+            "hits": 442680,
+            "lookups": 476601,
+            "ram_blobs": 51811,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "prompt_read": 65536
+          },
+          "wall_seconds": 32.11327083699871,
+          "first_token_seconds": 14.294979678990785,
+          "prefill_tps": 4591.091869474451,
+          "decode_tps": 57.42936300517089,
+          "effective_output_tps": 31.88712869510064,
+          "output_budget_reached": true,
+          "natural_stop": false,
+          "token_count": 1024,
+          "token_ids_sha256_json": "f589849c7fb94131aecdd2b4e016ec7437b7f48da8a5d32a29b703508ce4d723"
+        }
+      ]
+    },
+    {
+      "label": "mtp-rotate0-r2",
+      "mode": "mtp",
+      "rotate": 0,
+      "started": 1791061299.7858903,
+      "finished": 1791061463.225917,
+      "engine_info": {
+        "version": "0.1.38",
+        "context": 73728,
+        "kv": "fp16",
+        "kv_resident": 0,
+        "expert_slots": 16192,
+        "expert_cache_mib": 80643,
+        "expert_slots_primary": 16192,
+        "expert_cache_primary_mib": 80643,
+        "spec": 8,
+        "mtp_max": 4,
+        "lookup": 0,
+        "vram_free_mib": 3332,
+        "cvec": 0,
+        "arena_mib": 41756,
+        "pool_workers": 15,
+        "pcie_frac": "0.55",
+        "spec_min_p": "0.50",
+        "conversation_cache_mib": 0,
+        "conversation_cache_slots": 4,
+        "conversation_cache_min_free_mib": 2560,
+        "engine": "0.1.38"
+      },
+      "startup_seconds": 104.4582471199974,
+      "prompt_sha256": {
+        "coding": "a8024ab0ba6b95ae36f2b9bd621723ed0f9b98e64ad82b94d389cdacb2232896",
+        "editing": "06080d4c63a012112b7fbd334e4b4c32da7b85006b8018208f80b79b3ae3c829"
+      },
+      "rotation_counters": [],
+      "diagnostics": [
+        "strata decode timing: 319 windows, avg T 3.63, 3.21 tokens/window, 29.86 ms/window = verify 19.39 (GPU-reach wait 12.40 + per-layer host 6.22 [plan 0.15 actq 0.09 jobs 0.23 CPU 5.62] + stage 0.02) + commit/emit 0.03 + draft 1.96; per layer-window: CPU experts 0.75 (0.88 entries), VRAM hits 35.00, PCIe 0.40",
+        "strata serve: resident RAM: 40.78 GiB of experts in RAM, 3167 exchanged with the VRAM tier, 0 blob reads from the file",
+        "strata serve: expert tiers: GPU 535854 hits this request; since the start RAM 87779 blobs, files 0 blobs 84566.3 MB read (the GGUF in place)",
+        "strata decode timing: 262 windows, avg T 3.97, 3.91 tokens/window, 45.06 ms/window = verify 29.28 (GPU-reach wait 14.36 + per-layer host 14.28 [plan 0.18 actq 0.10 jobs 0.36 CPU 13.51] + stage 0.02) + commit/emit 0.04 + draft 2.08; per layer-window: CPU experts 1.68 (1.83 entries), VRAM hits 36.58, PCIe 1.22",
+        "strata serve: resident RAM: 40.78 GiB of experts in RAM, 7247 exchanged with the VRAM tier, 0 blob reads from the file",
+        "strata serve: expert tiers: GPU 460004 hits this request; since the start RAM 195412 blobs, files 0 blobs 84566.3 MB read (the GGUF in place)"
+      ],
+      "cases": [
+        {
+          "task": "coding",
+          "repetition": 1,
+          "input_tokens": 65536,
+          "output_tokens": 1024,
+          "timings": {
+            "generated": 1024,
+            "prompt_tokens": 65536,
+            "prompt_ms": 14789.6,
+            "decode_ms": 9526.9,
+            "finish": "length",
+            "drafts_accepted": 705,
+            "drafts_offered": 839,
+            "reused": 0,
+            "hits": 535854,
+            "lookups": 549352,
+            "ram_blobs": 20707,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "prompt_read": 65536
+          },
+          "wall_seconds": 24.324055168006453,
+          "first_token_seconds": 14.823123629001202,
+          "prefill_tps": 4431.22193974144,
+          "decode_tps": 107.48512107821013,
+          "effective_output_tps": 42.09824360811647,
+          "output_budget_reached": true,
+          "natural_stop": false,
+          "token_count": 1024,
+          "token_ids_sha256_json": "8fc414fe6f9a02863395f5098a6f48d5866a71e1a2a92cbf3dba349b66d85bc6"
+        },
+        {
+          "task": "editing",
+          "repetition": 1,
+          "input_tokens": 65536,
+          "output_tokens": 1024,
+          "timings": {
+            "generated": 1024,
+            "prompt_tokens": 65536,
+            "prompt_ms": 14610.4,
+            "decode_ms": 11806.3,
+            "finish": "length",
+            "drafts_accepted": 762,
+            "drafts_offered": 777,
+            "reused": 0,
+            "hits": 460004,
+            "lookups": 482984,
+            "ram_blobs": 40561,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "prompt_read": 65536
+          },
+          "wall_seconds": 26.425500018987805,
+          "first_token_seconds": 14.631357186997775,
+          "prefill_tps": 4485.571921371078,
+          "decode_tps": 86.73335422613351,
+          "effective_output_tps": 38.75044934870538,
+          "output_budget_reached": true,
+          "natural_stop": false,
+          "token_count": 1024,
+          "token_ids_sha256_json": "f589849c7fb94131aecdd2b4e016ec7437b7f48da8a5d32a29b703508ce4d723"
+        }
+      ]
+    },
+    {
+      "label": "mtp-rotate1-r2",
+      "mode": "mtp",
+      "rotate": 1,
+      "started": 1791061463.2331083,
+      "finished": 1791061618.6862164,
+      "engine_info": {
+        "version": "0.1.38",
+        "context": 73728,
+        "kv": "fp16",
+        "kv_resident": 0,
+        "expert_slots": 16192,
+        "expert_cache_mib": 80643,
+        "expert_slots_primary": 16192,
+        "expert_cache_primary_mib": 80643,
+        "spec": 8,
+        "mtp_max": 4,
+        "lookup": 0,
+        "vram_free_mib": 3332,
+        "cvec": 0,
+        "arena_mib": 41756,
+        "pool_workers": 15,
+        "pcie_frac": "0.55",
+        "spec_min_p": "0.50",
+        "conversation_cache_mib": 0,
+        "conversation_cache_slots": 4,
+        "conversation_cache_min_free_mib": 2560,
+        "engine": "0.1.38"
+      },
+      "startup_seconds": 100.56336062599439,
+      "prompt_sha256": {
+        "coding": "a8024ab0ba6b95ae36f2b9bd621723ed0f9b98e64ad82b94d389cdacb2232896",
+        "editing": "06080d4c63a012112b7fbd334e4b4c32da7b85006b8018208f80b79b3ae3c829"
+      },
+      "rotation_counters": [
+        [
+          3167,
+          16539340800
+        ],
+        [
+          7247,
+          37846732800
+        ]
+      ],
+      "diagnostics": [
+        "strata decode timing: 319 windows, avg T 3.63, 3.21 tokens/window, 24.22 ms/window = verify 19.23 (GPU-reach wait 12.57 + per-layer host 5.91 [plan 0.12 actq 0.08 jobs 0.18 CPU 5.37] + stage 0.02) + commit/emit 0.03 + draft 1.96; per layer-window: CPU experts 0.75 (0.88 entries), VRAM hits 35.00, PCIe 0.40",
+        "strata serve: resident RAM: 40.78 GiB of experts in RAM, 3167 exchanged with the VRAM tier, 0 blob reads from the file",
+        "strata serve: exchange rotation: 3167 blocks, 16539340800 host memcpy bytes avoided (cumulative payload)",
+        "strata serve: expert tiers: GPU 535854 hits this request; since the start RAM 87779 blobs, files 0 blobs 84566.3 MB read (the GGUF in place)",
+        "strata decode timing: 262 windows, avg T 3.97, 3.91 tokens/window, 36.34 ms/window = verify 29.21 (GPU-reach wait 14.58 + per-layer host 13.99 [plan 0.16 actq 0.09 jobs 0.27 CPU 13.35] + stage 0.02) + commit/emit 0.04 + draft 2.07; per layer-window: CPU experts 1.68 (1.83 entries), VRAM hits 36.58, PCIe 1.22",
+        "strata serve: resident RAM: 40.78 GiB of experts in RAM, 7247 exchanged with the VRAM tier, 0 blob reads from the file",
+        "strata serve: exchange rotation: 7247 blocks, 37846732800 host memcpy bytes avoided (cumulative payload)",
+        "strata serve: expert tiers: GPU 460004 hits this request; since the start RAM 195412 blobs, files 0 blobs 84566.3 MB read (the GGUF in place)"
+      ],
+      "cases": [
+        {
+          "task": "coding",
+          "repetition": 1,
+          "input_tokens": 65536,
+          "output_tokens": 1024,
+          "timings": {
+            "generated": 1024,
+            "prompt_tokens": 65536,
+            "prompt_ms": 14790.2,
+            "decode_ms": 7726.5,
+            "finish": "length",
+            "drafts_accepted": 705,
+            "drafts_offered": 839,
+            "reused": 0,
+            "hits": 535854,
+            "lookups": 549352,
+            "ram_blobs": 20707,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "prompt_read": 65536
+          },
+          "wall_seconds": 22.52570759700029,
+          "first_token_seconds": 14.823821015001158,
+          "prefill_tps": 4431.042176576381,
+          "decode_tps": 132.5309001488384,
+          "effective_output_tps": 45.459171286426724,
+          "output_budget_reached": true,
+          "natural_stop": false,
+          "token_count": 1024,
+          "token_ids_sha256_json": "8fc414fe6f9a02863395f5098a6f48d5866a71e1a2a92cbf3dba349b66d85bc6"
+        },
+        {
+          "task": "editing",
+          "repetition": 1,
+          "input_tokens": 65536,
+          "output_tokens": 1024,
+          "timings": {
+            "generated": 1024,
+            "prompt_tokens": 65536,
+            "prompt_ms": 14642.8,
+            "decode_ms": 9520.1,
+            "finish": "length",
+            "drafts_accepted": 762,
+            "drafts_offered": 777,
+            "reused": 0,
+            "hits": 460004,
+            "lookups": 482984,
+            "ram_blobs": 40561,
+            "file_blobs": 0,
+            "file_mb": 0.0,
+            "prompt_read": 65536
+          },
+          "wall_seconds": 24.17042398599733,
+          "first_token_seconds": 14.662326663004933,
+          "prefill_tps": 4475.646734231158,
+          "decode_tps": 107.56189535824203,
+          "effective_output_tps": 42.36582695418312,
+          "output_budget_reached": true,
+          "natural_stop": false,
+          "token_count": 1024,
+          "token_ids_sha256_json": "f589849c7fb94131aecdd2b4e016ec7437b7f48da8a5d32a29b703508ce4d723"
+        }
+      ]
+    }
+  ],
+  "scope_limit": "Coding/editing throughput samples, not a general quality evaluation; suffix coding failed exact-token gates.",
+  "resource_samples": {
+    "samples": 1061,
+    "min_available_ram_GiB": 22.875503540039062,
+    "max_gpu_MiB": 94025.0,
+    "foreign_gpu_samples": 0
+  }
+}

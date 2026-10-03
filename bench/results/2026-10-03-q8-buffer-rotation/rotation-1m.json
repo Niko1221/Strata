@@ -1,0 +1,366 @@
+{
+  "started": 1791064060.3934772,
+  "source": "1a50d913bf910a1f63fbc1a0788a7083e3ca5f8c",
+  "engine_sha256": "d14ed6b69a1814ce4b5c08932a47d6921a55fa0aa8dea50427ccf0782d1ad997",
+  "weights": "Q8_0",
+  "kv": "fp16",
+  "rope": "YaRN factor 4, original context 262144",
+  "allocated_context": 1048576,
+  "expert_cache_slots": 10874,
+  "resident_expert_budget_gib": 56,
+  "ple": "RAM",
+  "mode": "MTP, suffix drafts off",
+  "input_tokens": 1044472,
+  "output_budget": 4096,
+  "protocol_reserve": 8,
+  "stop_policy": "Natural EOS allowed, same prompt and maximum output for both arms.",
+  "earlier_result": {
+    "engine_source": "e359f44851e86f25162bf7fe2f70c2e387e0672b",
+    "output_tps": 41.3645,
+    "same_binary_control": false
+  },
+  "comparisons": [
+    {
+      "control": "1m-copy",
+      "candidate": "1m-rotate",
+      "rotation_active": true,
+      "first_token_difference": null,
+      "control_output_tokens": 2787,
+      "candidate_output_tokens": 2787,
+      "control_tps": 41.45254969620799,
+      "rotation_tps": 44.85163715717546,
+      "decode_gain_pct": 8.199947858161337,
+      "control_effective_tps": 2.5131782952403383,
+      "rotation_effective_tps": 2.5504235600449037,
+      "effective_gain_pct": 1.4819985066361285,
+      "control_prefill_seconds": 1041.5554,
+      "rotation_prefill_seconds": 1030.4702,
+      "matched_output_claim": true
+    }
+  ],
+  "scope": "One unprofiled paired comparison; report either sign of gain, fallback, failure and output divergence.",
+  "current": "1m-rotate",
+  "probe_rotation_active": true,
+  "completed": true,
+  "finished": 1791066598.3812573,
+  "systemd": {
+    "MainPID": "0",
+    "Result": "success",
+    "ExecMainStatus": "0",
+    "ActiveState": "inactive",
+    "SubState": "dead"
+  },
+  "records": [
+    {
+      "label": "allocation-probe-rotate1",
+      "rotation_requested": true,
+      "started": 1791064060.3939767,
+      "input_tokens": 8192,
+      "output_budget": 128,
+      "exit": 0,
+      "finished": 1791064180.6276364,
+      "rotation_active": true,
+      "placement": [
+        "strata generate: rope scaling yarn, factor 4 (freq_scale 0.25, base 1e+07, mscale 1.138629), --max-context 1048576 against a trained context of 262144",
+        "strata generate: PLE table locked in RAM (--ple-io ram) in 0.5 s",
+        "FileExpertSource: RAM budget 56.00 GiB: 11513 of the 66.64 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files",
+        "FileExpertSource: mapped pinned cache complement ready: resident 56.00 GiB, pinned 56.00 GiB; page-locked and mapped",
+        "FileExpertSource: exchange buffer rotation enabled: 96 buffers, 5222400 bytes each; no host commit memcpy",
+        "strata generate: resident RAM mode: 56.00 GiB of experts in RAM (page-locked), 10874 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)",
+        "strata decode timing: 48 windows, avg T 3.42, 2.67 tokens/window, 67.73 ms/window = verify 57.83 (GPU-reach wait 11.72 + per-layer host 44.63 [plan 0.16 actq 0.11 jobs 23.27 CPU 20.88] + stage 0.02) + commit/emit 0.09 + draft 1.63; per layer-window: CPU experts 2.58 (3.66 entries), VRAM hits 28.55, PCIe 1.75",
+        "strata serve: resident RAM: 56.00 GiB of experts in RAM, 975 exchanged with the VRAM tier, 1067 blob reads from the file",
+        "strata serve: exchange rotation: 975 blocks, 5091840000 host memcpy bytes avoided (cumulative payload)"
+      ],
+      "prompt_sha256": {
+        "coding": "2ed72583751bab5d54c04471e7aad32e43e14b4708f4fb7647ffde5289612eeb"
+      },
+      "engine_info": {
+        "version": "0.1.38",
+        "context": 1048576,
+        "kv": "fp16",
+        "kv_resident": 0,
+        "expert_slots": 10874,
+        "expert_cache_mib": 54157,
+        "expert_slots_primary": 10874,
+        "expert_cache_primary_mib": 54157,
+        "spec": 8,
+        "mtp_max": 4,
+        "lookup": 0,
+        "vram_free_mib": 3228,
+        "cvec": 0,
+        "arena_mib": 57340,
+        "pool_workers": 15,
+        "pcie_frac": "0.55",
+        "spec_min_p": "0.50",
+        "conversation_cache_mib": 0,
+        "conversation_cache_slots": 4,
+        "conversation_cache_min_free_mib": 2560,
+        "engine": "0.1.38"
+      },
+      "startup_seconds": 98.89779164099309,
+      "case": {
+        "task": "coding",
+        "repetition": 1,
+        "input_tokens": 8192,
+        "output_tokens": 128,
+        "timings": {
+          "generated": 128,
+          "prompt_tokens": 8192,
+          "prompt_ms": 8147.9,
+          "decode_ms": 3251.3,
+          "finish": "length",
+          "drafts_accepted": 80,
+          "drafts_offered": 116,
+          "reused": 0,
+          "hits": 65774,
+          "lookups": 74196,
+          "ram_blobs": 10064,
+          "file_blobs": 1067,
+          "file_mb": 2151.6,
+          "prompt_read": 8192
+        },
+        "wall_seconds": 11.435133986000437,
+        "first_token_seconds": 8.235146065999288,
+        "prefill_tps": 1005.4124375605985,
+        "decode_tps": 39.36886783748039,
+        "effective_output_tps": 11.193572384609146,
+        "output_budget_reached": true,
+        "natural_stop": false,
+        "token_sha256": "aa54ef91643ad9e63dedb6103d2f97afc8990aa54831d8a58af81f97374bb1a9",
+        "token_hash_format": "UTF-8 compact JSON array of token IDs"
+      }
+    },
+    {
+      "label": "1m-copy",
+      "rotation_requested": false,
+      "started": 1791064180.629577,
+      "input_tokens": 1044472,
+      "output_budget": 4096,
+      "exit": 0,
+      "finished": 1791065398.2782001,
+      "rotation_active": false,
+      "placement": [
+        "strata generate: rope scaling yarn, factor 4 (freq_scale 0.25, base 1e+07, mscale 1.138629), --max-context 1048576 against a trained context of 262144",
+        "strata generate: PLE table locked in RAM (--ple-io ram) in 0.5 s",
+        "FileExpertSource: RAM budget 56.00 GiB: 11513 of the 66.64 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files",
+        "FileExpertSource: mapped pinned cache complement ready: resident 56.00 GiB, pinned 56.00 GiB; page-locked and mapped",
+        "strata generate: resident RAM mode: 56.00 GiB of experts in RAM (page-locked), 10874 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)",
+        "strata decode timing: 825 windows, avg T 3.74, 3.38 tokens/window, 81.50 ms/window = verify 66.28 (GPU-reach wait 27.25 + per-layer host 38.32 [plan 0.18 actq 0.10 jobs 25.48 CPU 12.47] + stage 0.05) + commit/emit 0.06 + draft 1.95; per layer-window: CPU experts 1.70 (2.02 entries), VRAM hits 34.42, PCIe 0.94",
+        "strata serve: resident RAM: 56.00 GiB of experts in RAM, 12924 exchanged with the VRAM tier, 18209 blob reads from the file"
+      ],
+      "prompt_sha256": {
+        "coding": "1704a1bc672bc6589b345b8e0e2c121cc67234fa2685dc7ee57efd9b7b292fff"
+      },
+      "engine_info": {
+        "version": "0.1.38",
+        "context": 1048576,
+        "kv": "fp16",
+        "kv_resident": 0,
+        "expert_slots": 10874,
+        "expert_cache_mib": 54157,
+        "expert_slots_primary": 10874,
+        "expert_cache_primary_mib": 54157,
+        "spec": 8,
+        "mtp_max": 4,
+        "lookup": 0,
+        "vram_free_mib": 3228,
+        "cvec": 0,
+        "arena_mib": 57340,
+        "pool_workers": 15,
+        "pcie_frac": "0.55",
+        "spec_min_p": "0.50",
+        "conversation_cache_mib": 0,
+        "conversation_cache_slots": 4,
+        "conversation_cache_min_free_mib": 2560,
+        "engine": "0.1.38"
+      },
+      "startup_seconds": 98.80139464400418,
+      "case": {
+        "task": "coding",
+        "repetition": 1,
+        "input_tokens": 1044472,
+        "output_tokens": 2787,
+        "timings": {
+          "generated": 2787,
+          "prompt_tokens": 1044472,
+          "prompt_ms": 1041555.4,
+          "decode_ms": 67233.5,
+          "finish": "stop",
+          "drafts_accepted": 1962,
+          "drafts_offered": 2264,
+          "reused": 0,
+          "hits": 1362886,
+          "lookups": 1443017,
+          "ram_blobs": 101586,
+          "file_blobs": 18209,
+          "file_mb": 47936.4,
+          "prompt_read": 1044472
+        },
+        "wall_seconds": 1108.9543488729978,
+        "first_token_seconds": 1041.7771514009946,
+        "prefill_tps": 1002.8002351099135,
+        "decode_tps": 41.45254969620799,
+        "effective_output_tps": 2.5131782952403383,
+        "output_budget_reached": false,
+        "natural_stop": true,
+        "token_sha256": "a230262da355dda856b2a7d1721789608fdaf416191722d11ab5d1ab5d2b4441",
+        "token_hash_format": "UTF-8 compact JSON array of token IDs"
+      }
+    },
+    {
+      "label": "1m-rotate",
+      "rotation_requested": true,
+      "started": 1791065398.281196,
+      "input_tokens": 1044472,
+      "output_budget": 4096,
+      "exit": 0,
+      "finished": 1791066598.3786068,
+      "rotation_active": true,
+      "placement": [
+        "strata generate: rope scaling yarn, factor 4 (freq_scale 0.25, base 1e+07, mscale 1.138629), --max-context 1048576 against a trained context of 262144",
+        "strata generate: PLE table locked in RAM (--ple-io ram) in 0.5 s",
+        "FileExpertSource: RAM budget 56.00 GiB: 11513 of the 66.64 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files",
+        "FileExpertSource: mapped pinned cache complement ready: resident 56.00 GiB, pinned 56.00 GiB; page-locked and mapped",
+        "FileExpertSource: exchange buffer rotation enabled: 96 buffers, 5222400 bytes each; no host commit memcpy",
+        "strata generate: resident RAM mode: 56.00 GiB of experts in RAM (page-locked), 10874 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)",
+        "strata decode timing: 825 windows, avg T 3.74, 3.38 tokens/window, 75.32 ms/window = verify 67.17 (GPU-reach wait 27.33 + per-layer host 39.18 [plan 0.18 actq 0.10 jobs 26.41 CPU 12.37] + stage 0.02) + commit/emit 0.05 + draft 1.97; per layer-window: CPU experts 1.70 (2.02 entries), VRAM hits 34.42, PCIe 0.94",
+        "strata serve: resident RAM: 56.00 GiB of experts in RAM, 12924 exchanged with the VRAM tier, 18209 blob reads from the file",
+        "strata serve: exchange rotation: 12924 blocks, 67494297600 host memcpy bytes avoided (cumulative payload)"
+      ],
+      "prompt_sha256": {
+        "coding": "1704a1bc672bc6589b345b8e0e2c121cc67234fa2685dc7ee57efd9b7b292fff"
+      },
+      "engine_info": {
+        "version": "0.1.38",
+        "context": 1048576,
+        "kv": "fp16",
+        "kv_resident": 0,
+        "expert_slots": 10874,
+        "expert_cache_mib": 54157,
+        "expert_slots_primary": 10874,
+        "expert_cache_primary_mib": 54157,
+        "spec": 8,
+        "mtp_max": 4,
+        "lookup": 0,
+        "vram_free_mib": 3228,
+        "cvec": 0,
+        "arena_mib": 57340,
+        "pool_workers": 15,
+        "pcie_frac": "0.55",
+        "spec_min_p": "0.50",
+        "conversation_cache_mib": 0,
+        "conversation_cache_slots": 4,
+        "conversation_cache_min_free_mib": 2560,
+        "engine": "0.1.38"
+      },
+      "startup_seconds": 97.4166627079976,
+      "case": {
+        "task": "coding",
+        "repetition": 1,
+        "input_tokens": 1044472,
+        "output_tokens": 2787,
+        "timings": {
+          "generated": 2787,
+          "prompt_tokens": 1044472,
+          "prompt_ms": 1030470.2,
+          "decode_ms": 62138.2,
+          "finish": "stop",
+          "drafts_accepted": 1962,
+          "drafts_offered": 2264,
+          "reused": 0,
+          "hits": 1362886,
+          "lookups": 1443017,
+          "ram_blobs": 101586,
+          "file_blobs": 18209,
+          "file_mb": 47936.4,
+          "prompt_read": 1044472
+        },
+        "wall_seconds": 1092.7596669280028,
+        "first_token_seconds": 1030.6808466200018,
+        "prefill_tps": 1013.587777696046,
+        "decode_tps": 44.85163715717546,
+        "effective_output_tps": 2.5504235600449037,
+        "output_budget_reached": false,
+        "natural_stop": true,
+        "token_sha256": "a230262da355dda856b2a7d1721789608fdaf416191722d11ab5d1ab5d2b4441",
+        "token_hash_format": "UTF-8 compact JSON array of token IDs"
+      }
+    }
+  ],
+  "resource_samples": {
+    "count": 1229,
+    "minimum_available_ram_gib": 7.828266143798828,
+    "maximum_sampled_gpu_memory_mib": 94109,
+    "unreadable_gpu_samples": 0,
+    "foreign_gpu_samples": 0,
+    "limit": "Sampled telemetry, not continuous maxima; benchmark unit configured MemorySwapMax=0."
+  },
+  "paired_work_counters": {
+    "hits": [
+      1362886,
+      1362886
+    ],
+    "lookups": [
+      1443017,
+      1443017
+    ],
+    "ram_blobs": [
+      101586,
+      101586
+    ],
+    "file_blobs": [
+      18209,
+      18209
+    ],
+    "file_mb": [
+      47936.4,
+      47936.4
+    ],
+    "drafts_accepted": [
+      1962,
+      1962
+    ],
+    "drafts_offered": [
+      2264,
+      2264
+    ]
+  },
+  "paired_work_counters_match": true,
+  "historical_control_comparison": {
+    "old_result": "/home/dflanag3/fleet-downloads/rtxpro-q8-fp16-1m-reserve8-20261003/staged-context-attempt-01/1m-mtp-input1044472-reserve8/result.json",
+    "same_prompt": true,
+    "same_token_ids": true,
+    "old_tps": 41.364509340037934,
+    "new_control_tps": 41.45254969620799,
+    "work_counters": {
+      "hits": [
+        1362886,
+        1362886
+      ],
+      "lookups": [
+        1443017,
+        1443017
+      ],
+      "ram_blobs": [
+        101586,
+        101586
+      ],
+      "file_blobs": [
+        18209,
+        18209
+      ],
+      "file_mb": [
+        47936.4,
+        47936.4
+      ],
+      "drafts_accepted": [
+        1962,
+        1962
+      ],
+      "drafts_offered": [
+        2264,
+        2264
+      ]
+    }
+  }
+}

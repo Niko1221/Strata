@@ -1,0 +1,167 @@
+{
+  "started": 1791062562.8793256,
+  "finished": 1791063332.6629558,
+  "completed": true,
+  "engine_sha256": "d14ed6b69a1814ce4b5c08932a47d6921a55fa0aa8dea50427ccf0782d1ad997",
+  "comparisons": [
+    {
+      "a": "ngram-rotate0-r1",
+      "b": "ngram-rotate1-r1",
+      "first_output_token_difference": 412,
+      "first_window_schedule_difference": 164,
+      "first_route_id_difference_before_schedule_diverges": null,
+      "window_a": [
+        65700,
+        2
+      ],
+      "window_b": [
+        65700,
+        1
+      ]
+    },
+    {
+      "a": "ngram-rotate0-r1",
+      "b": "ngram-rotate0-r2",
+      "first_output_token_difference": 412,
+      "first_window_schedule_difference": 165,
+      "first_route_id_difference_before_schedule_diverges": null,
+      "window_a": [
+        65702,
+        2
+      ],
+      "window_b": [
+        65702,
+        4
+      ]
+    },
+    {
+      "a": "mtp-ngram-rotate0-r1",
+      "b": "mtp-ngram-rotate1-r1",
+      "first_output_token_difference": 95,
+      "first_window_schedule_difference": 23,
+      "first_route_id_difference_before_schedule_diverges": null,
+      "window_a": [
+        65578,
+        2
+      ],
+      "window_b": [
+        65578,
+        4
+      ]
+    },
+    {
+      "a": "mtp-ngram-rotate0-r1",
+      "b": "mtp-ngram-rotate0-r2",
+      "first_output_token_difference": null,
+      "first_window_schedule_difference": null,
+      "first_route_id_difference_before_schedule_diverges": null
+    }
+  ],
+  "engine_source": "1a50d913bf910a1f63fbc1a0788a7083e3ca5f8c",
+  "tool_source": "fda65a71a25287f7c0ca4bdce65533ecaecc14de",
+  "weights": "Q8_0",
+  "kv": "fp16",
+  "rope": "native",
+  "input_tokens": 65536,
+  "output_budget": 512,
+  "allocated_context": 73728,
+  "instrumented_only": true,
+  "records": [
+    {
+      "label": "ngram-rotate0-r1",
+      "mode": "ngram",
+      "rotate": 0,
+      "prompt_sha256": {
+        "coding": "a8024ab0ba6b95ae36f2b9bd621723ed0f9b98e64ad82b94d389cdacb2232896"
+      },
+      "output_tokens": 512,
+      "output_token_sha256": "1b4d57fbba50c45da15e11190a8319f6442a6c0b9b69c9f629c1559de87fe7c1",
+      "windows": 508,
+      "window_sha256": "55cd08e0a3d4e851a92828905e19309ba0e5670ac076c37fdcf5af783af07388",
+      "file_blobs": 0,
+      "drafts_offered": 32,
+      "drafts_accepted": 4
+    },
+    {
+      "label": "ngram-rotate1-r1",
+      "mode": "ngram",
+      "rotate": 1,
+      "prompt_sha256": {
+        "coding": "a8024ab0ba6b95ae36f2b9bd621723ed0f9b98e64ad82b94d389cdacb2232896"
+      },
+      "output_tokens": 512,
+      "output_token_sha256": "d728163d4a1bba659895952eb8a51737dc49a35f87d63176e00d88a35b495f31",
+      "windows": 509,
+      "window_sha256": "1b2c262f23bc2c8575e7d56d355bb3ba53fdacf4c5879a6848a2069f2f02b855",
+      "file_blobs": 0,
+      "drafts_offered": 20,
+      "drafts_accepted": 3
+    },
+    {
+      "label": "ngram-rotate0-r2",
+      "mode": "ngram",
+      "rotate": 0,
+      "prompt_sha256": {
+        "coding": "a8024ab0ba6b95ae36f2b9bd621723ed0f9b98e64ad82b94d389cdacb2232896"
+      },
+      "output_tokens": 512,
+      "output_token_sha256": "57ccf053f4f21a14e9816cf5ca86ea682bc62fe8696212a3ddaa480cc2635288",
+      "windows": 508,
+      "window_sha256": "0cfcf9c7768ddbf90c4e29399d38bbe8827146e4e40910c058354ad0732a1b1c",
+      "file_blobs": 0,
+      "drafts_offered": 34,
+      "drafts_accepted": 4
+    },
+    {
+      "label": "mtp-ngram-rotate0-r1",
+      "mode": "mtp-ngram",
+      "rotate": 0,
+      "prompt_sha256": {
+        "coding": "a8024ab0ba6b95ae36f2b9bd621723ed0f9b98e64ad82b94d389cdacb2232896"
+      },
+      "output_tokens": 512,
+      "output_token_sha256": "412a2932673c34ad9ec59aa4cd935ef94cc7f2bdfbbe734cb94c51246d7d4178",
+      "windows": 178,
+      "window_sha256": "4b68ef403cafd17a63c96fcde43c1b63de36b042989ac93b3a2112753dee22ac",
+      "file_blobs": 0,
+      "drafts_offered": 420,
+      "drafts_accepted": 334
+    },
+    {
+      "label": "mtp-ngram-rotate1-r1",
+      "mode": "mtp-ngram",
+      "rotate": 1,
+      "prompt_sha256": {
+        "coding": "a8024ab0ba6b95ae36f2b9bd621723ed0f9b98e64ad82b94d389cdacb2232896"
+      },
+      "output_tokens": 512,
+      "output_token_sha256": "58587785311961d08ff01429536871896d6ef02dbbd45036106b3eea575c635d",
+      "windows": 171,
+      "window_sha256": "9b91f1412b920148267231afb7810e2700596c753b0d6fd5ff947cf5897019a8",
+      "file_blobs": 0,
+      "drafts_offered": 426,
+      "drafts_accepted": 341
+    },
+    {
+      "label": "mtp-ngram-rotate0-r2",
+      "mode": "mtp-ngram",
+      "rotate": 0,
+      "prompt_sha256": {
+        "coding": "a8024ab0ba6b95ae36f2b9bd621723ed0f9b98e64ad82b94d389cdacb2232896"
+      },
+      "output_tokens": 512,
+      "output_token_sha256": "412a2932673c34ad9ec59aa4cd935ef94cc7f2bdfbbe734cb94c51246d7d4178",
+      "windows": 178,
+      "window_sha256": "4b68ef403cafd17a63c96fcde43c1b63de36b042989ac93b3a2112753dee22ac",
+      "file_blobs": 0,
+      "drafts_offered": 420,
+      "drafts_accepted": 334
+    }
+  ],
+  "limitations": [
+    "No instrumented rates are performance evidence.",
+    "Only ordered expert IDs before batch schedule divergence are compared.",
+    "Serving route weights are placeholders. No logits, route weights or committed state comparison.",
+    "Coding only; editing results remain in the separate unprofiled 1024-token benchmark."
+  ]
+}
