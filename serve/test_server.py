@@ -550,6 +550,17 @@ class ClientShapes(unittest.TestCase):
             with self.subTest(calls=calls), self.assertRaisesRegex(ValueError, "tool_calls must be a list of objects"):
                 openai_to_messages({"messages": [{"role": "assistant", "content": "", "tool_calls": calls}]})
 
+    def test_tool_call_malformed_arguments_fallback(self):
+        from serve.frontend import openai_to_messages
+        bad_call = [{"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{malformed_json"}}]
+        msgs, tools, kwargs = openai_to_messages({"messages": [{"role": "user", "content": "u"},
+                                                               {"role": "assistant", "content": "", "tool_calls": bad_call}]})
+        self.assertEqual(msgs[1]["tool_calls"], [{"function": {"name": "f", "arguments": {"raw": "{malformed_json"}}}])
+        tpl = ChatTemplate(ROOT / "serve/chat_template.jinja")
+        rendered = tpl.render(msgs, tools=tools, **kwargs)
+        self.assertIn("<function=f>", rendered)
+        self.assertIn("<parameter=raw>\n{malformed_json", rendered)
+
 
 class SamplingKeys(unittest.TestCase):
     """The GEN line's sampling keys: top_k 0 ("off") or wider than the engine's 64 get the widest list, 64 (they used
