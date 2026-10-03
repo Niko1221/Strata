@@ -1,4 +1,4 @@
-// src/kernels/ple_fp8_parity.cpp - the FP8 PLE table (tools/ple_fp8_pack.py) read through PleTable, against values
+// src/kernels/ple_fp8_parity.cpp - the FP8 PLE table (tools/ple_table_pack.py) read through PleTable, against values
 // decoded from the checkpoint itself, and against the IQ4_NL table it replaces.
 //
 //     ple_fp8_parity <ple-fp8.gguf> <reference.bin> [<iq4nl shard.gguf>]

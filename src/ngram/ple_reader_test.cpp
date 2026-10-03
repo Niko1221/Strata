@@ -75,6 +75,114 @@ bool check_rows(ng::PleReader& rd, const std::vector<uint32_t>& rows, uint32_t n
     return true;
 }
 
+/// THE BF16 TABLE, and the claim it rests on.  A bfloat16 is literally the top half of a float32, so widening
+/// one is a shift: exact for every value, normal or not, with no rounding to hide behind.  These patterns are
+/// the ones a lossy path would break on - the subnormals and the NaN/inf encodings a saturating cast to FP8
+/// would collapse - so a table that came back through the FP8 route would not reproduce all of them.
+void bf16_widening_is_exact() {
+    const uint16_t bits[] = {0x0000, 0x8000, 0x3f80, 0xbf80, 0x7f7f, 0xff7f,  // 0, -0, 1, -1, max, -max
+                             0x0001, 0x8001, 0x007f, 0x7f80, 0xff80,          // smallest subnormals, +-inf
+                             0x7fc0, 0x7f81, 0x4049, 0xc249, 0x3c75};        // NaN, signalling NaN, 3.14, -3.14
+    for (uint16_t b : bits) {
+        uint8_t row[2 * k::PLE_HEAD_DIM];
+        std::memset(row, 0, sizeof row);
+        row[0] = (uint8_t) b;                       // little-endian: the low byte first
+        row[1] = (uint8_t) (b >> 8);
+        float out[k::PLE_HEAD_DIM];
+        k::bf16_dequant_row(row, out);
+        uint32_t want = (uint32_t) b << 16, got;
+        std::memcpy(&got, &out[0], sizeof got);
+        CHECK(got == want, "bf16 0x%04x widened to 0x%08x, not 0x%08x", b, got, want);
+        bool tail_zero = true;                      // one element under test must not have shifted the rest
+        for (int j = 1; j < k::PLE_HEAD_DIM; ++j) tail_zero = tail_zero && out[j] == 0.0f;
+        CHECK(tail_zero, "bf16 0x%04x: the rest of the row is not zero", b);
+    }
+}
+
+/// The value the WRITER puts at (row, element).  Every element is a distinct pattern, so a row read at the
+/// wrong width or the wrong offset lands on values that belong to another element or another row.
+uint16_t bf16_cell_bits(uint32_t row, int j) {
+    return (uint16_t) (0x3f80u + (uint16_t) (j * 7 + (int) (row % 61)));
+}
+
+/// The value the CHECKER expects, decoded from those bytes independently of `bf16_dequant_row`.
+float bf16_cell_value(uint32_t row, int j) {
+    const uint32_t bits = (uint32_t) bf16_cell_bits(row, j) << 16;
+    float v;
+    std::memcpy(&v, &bits, sizeof v);
+    return v;
+}
+
+/// A MINIMAL PLE-ONLY GGUF holding that table, so the file layout can be exercised end to end: one tensor with
+/// the name and shape the engine looks for, type 30 (GGML_TYPE_BF16), data at offset 0 of the data section.
+std::string write_bf16_table(const std::string& dir, uint32_t rows) {
+    const std::string path = dir + "/ple_bf16_selftest.gguf";
+    std::ofstream f(path, std::ios::binary);
+    if (!f) { std::fprintf(stderr, "cannot write %s\n", path.c_str()); return {}; }
+    const auto le = [](auto value, int bytes) {
+        std::string out((size_t) bytes, '\0');
+        for (int i = 0; i < bytes; ++i) out[(size_t) i] = (char) ((value >> (8 * i)) & 0xff);
+        return out;
+    };
+    const auto gguf_string = [&](const char* s) {
+        return le((uint64_t) std::strlen(s), 8) + std::string(s);
+    };
+    std::string head = "GGUF" + le(3u, 4) + le(1ull, 8) + le(1ull, 8);      // v3, 1 KV pair, 1 tensor
+    head += gguf_string("general.architecture") + le(8u, 4) + gguf_string("strata-ple");   // 8 = STRING
+    head += gguf_string("per_layer_token_embd.weight") + le(2u, 4);
+    head += le((uint64_t) k::PLE_HEAD_DIM, 8) + le((uint64_t) rows, 8);   // ne0 is the fast axis
+    head += le(30u, 4) + le(0ull, 8);                                     // GGML_TYPE_BF16, offset 0
+    while (head.size() % 32) head += '\0';                               // GGUF aligns tensor data to 32
+    f.write(head.data(), (std::streamsize) head.size());
+    for (uint32_t r = 0; r < rows; ++r) {
+        uint8_t row[2 * k::PLE_HEAD_DIM];
+        for (int j = 0; j < k::PLE_HEAD_DIM; ++j) {
+            const uint16_t w = bf16_cell_bits(r, j);
+            row[2 * j] = (uint8_t) w;
+            row[2 * j + 1] = (uint8_t) (w >> 8);
+        }
+        f.write((const char*) row, sizeof row);
+    }
+    f.close();
+    return f ? path : std::string();
+}
+
+/// THE SAME ROWS BACK OUT OF THAT TABLE, THROUGH BOTH I/O MODES.  Direct is the default and the path this
+/// feature is for, and its row is 320 B where the reader started at 90 B - what is checked here is that the
+/// table's own row width travels all the way through the direct reader, and that both modes agree.
+void bf16_table_round_trip(const std::string& dir, uint32_t rows) {
+    const std::string path = write_bf16_table(dir, rows);
+    if (path.empty()) { CHECK(false, "no BF16 table was written"); return; }
+    std::mt19937 rng(11);
+    std::vector<uint32_t> want(rows);
+    for (uint32_t i = 0; i < rows; ++i) want[i] = rng() % rows;
+    for (k::PleIo mode : {k::PleIo::Direct, k::PleIo::Mmap}) {
+        const char* name = mode == k::PleIo::Direct ? "direct" : "mmap";
+        k::PleTable t;
+        std::string err;
+        k::PleIoOptions io;
+        io.mode = mode;
+        io.max_inflight = 8;
+        io.cache_rows = 0;
+        CHECK(t.open(path, err, io), "open a BF16 table in %s mode: %s", name, err.c_str());
+        if (!g_fail) {
+            CHECK(std::strcmp(t.format(), "BF16") == 0, "format is \"%s\", not BF16", t.format());
+            CHECK(t.rows() == rows, "rows: %llu, not %u", (unsigned long long) t.rows(), rows);
+        }
+        float got[k::PLE_HEAD_DIM];
+        for (uint32_t r : want) {
+            t.read_row(r, got);
+            for (int j = 0; j < k::PLE_HEAD_DIM; ++j)
+                if (got[j] != bf16_cell_value(r, j)) {
+                    CHECK(false, "%s: row %u element %d read %.9g, expected %.9g", name, r, j,
+                          (double) got[j], (double) bf16_cell_value(r, j));
+                    break;
+                }
+        }
+    }
+    std::filesystem::remove(path);
+}
+
 // row_bytes: ng::ROW_BYTES (90, IQ4_NL) is the production default; 110 (#296, OrcaRouter's Q5_0 PLE rows) is
 // run too, through the exact same generic row_bytes path -- nothing here is IQ4_NL-specific, so a second row
 // size run here is the correctness evidence for lifting ngram.cpp's "Q5_0 PLE requires --ple-io mmap" refusal.
@@ -288,6 +396,8 @@ int main(int argc, char** argv) {
     if (self) {
         // ng::ROW_BYTES (90, IQ4_NL, production default) and 110 (#296, OrcaRouter's Q5_0 PLE rows) through the
         // same generic row_bytes path -- see the comment on selftest().
+        bf16_widening_is_exact();                  // the BF16 reader's own claim, no file needed
+        bf16_table_round_trip(dir, 2000);          // ... and it end to end, through both readers
         const int r90 = selftest(dir, ng::ROW_BYTES);
         const int r110 = selftest(dir, 110);
         return r90 != 0 ? r90 : r110;

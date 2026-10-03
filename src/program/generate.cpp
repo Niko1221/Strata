@@ -1621,7 +1621,7 @@ int main(int argc, char** argv) {
             // every shard of the model (<name>-0000N-of-0000M.gguf beside --native), then the PLE shard: a split
             // may put any layer in any shard (Swift's GGUFs: layers 13-47 in shard 2, the PLE table in shard 1)
             o.native_dense_gguf = o.native_shards;
-            // a PLE-only table (tools/ple_fp8_pack.py: architecture strata-ple) holds no projections
+            // a PLE-only table (tools/ple_table_pack.py: architecture strata-ple) holds no projections
             bool ple_only = false;
             try {
                 strata::GgufFile pg(o.ple_gguf);

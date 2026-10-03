@@ -206,7 +206,7 @@ inline bool block_geometry(uint32_t t, int& elems, int& bytes) {
         elems = 256;
         bytes = 56;
         return true;
-    case 24:   // I8: raw bytes (the FP8 PLE table of tools/ple_fp8_pack.py)
+    case 24:   // I8: raw bytes (the FP8 PLE table of tools/ple_table_pack.py)
         elems = 1;
         bytes = 1;
         return true;

@@ -1031,7 +1031,7 @@ if(STRATA_NATIVE_EXPERTS)
     add_executable(q5_projection_parity src/kernels/q5_projection_parity.cpp)
     target_include_directories(q5_projection_parity PRIVATE ${_strata_gpu_include_directories})
     target_link_libraries(q5_projection_parity PRIVATE strata_kernels strata_artifact ggml-base ${_strata_gpu_runtime_target})
-    # #291: the FP8 PLE table (tools/ple_fp8_pack.py) through PleTable vs the checkpoint's own values
+    # #291: the FP8 PLE table (tools/ple_table_pack.py) through PleTable vs the checkpoint's own values
     add_executable(ple_fp8_parity src/kernels/ple_fp8_parity.cpp)
     target_link_libraries(ple_fp8_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   endif()
