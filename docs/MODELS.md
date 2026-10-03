@@ -116,6 +116,27 @@ More: [details](DETAILS.md#or-swift-15-a-fine-tune-that-thinks-shorter).
 START-HERE.bat --setup --family swift --model IQ2_XS
 ```
 
+### CYBER-FROST-3.8 (Blackfrost)
+
+**[CYBER-FROST-3.8](https://huggingface.co/Blackfrost-AI/CYBER-FROST-3.8-BF16)** - a fine-tune by Blackfrost-AI.
+A requant of it is published as
+**[CYBER-FROST-3.8-PS-GUFF](https://huggingface.co/peasantsmith/CYBER-FROST-3.8-PS-GUFF)** (Q5_K_M).
+Its own license applies (see its page).
+
+It is **not** an installer option. Two things set it apart from the versions above:
+
+- **Its own GGUF declares a nextn (MTP) prediction block** - `qwen4exp.nextn_predict_layers = 1`, with
+  `qwen4exp.block_count = 49` (48 trunk layers plus the prediction block). **Strata before this change reads
+  neither key**, so the model is rejected at the architecture check. It needs the three engine changes described
+  in [CYBER_FROST.md](CYBER_FROST.md).
+- **Its size.** Q5_K_M keeps every expert, so the pack is larger than any size in the table above and needs more
+  RAM than the IQ3_S size does.
+
+Like the family's other versions it uses the base model's MTP draft layer, because this fine-tune ships none of its
+own: the same source `tools/mtp_fetch.py` already reads.
+
+Packing it, and the three engine changes that let it load, are in [CYBER_FROST.md](CYBER_FROST.md).
+
 ### Unsloth UD-Q4_K_XL (experimental)
 
 **Unsloth's 4-bit UD-Q4_K_XL** (experimental) is the fourth version in setup's menu (`--family unsloth`): the closest
