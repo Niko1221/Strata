@@ -233,7 +233,8 @@ class StdioTransport:
         try:
             if os.name == "nt":                          # npx.cmd -> node: end the whole tree
                 subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"], stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL, timeout=10)
+                               stderr=subprocess.DEVNULL, timeout=10,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             else:
                 os.killpg(p.pid, signal.SIGTERM)
                 try:

@@ -1,0 +1,154 @@
+/* Strata Manager - the Manager view and shell on top of the Strata UI kit (tokens.css, components.css)
+   and serve/web/app.css (loaded as serve-app.css: the Chat/Monitor/About layout, unmodified).  Colours,
+   type, radii and shadows come only from the kit's tokens, so the Manager page is indistinguishable in
+   design from Strata's own pages.  Deliberately thin: no framework, no build step. */
+
+.view--manager { overflow-y: auto; }
+
+/* ---------------------------------------------------------------- the page's column */
+.manager { max-width: 1080px; width: 100%; margin: 0 auto; padding: var(--st-s-6);
+           display: flex; flex-direction: column; gap: var(--st-s-5); }
+.manager .st-card { display: flex; flex-direction: column; gap: var(--st-s-3); }
+.manager .st-card > .req-head, .manager .st-card > .state-card__head { flex: none; }
+
+/* Strata is not running: the clean offline state on Chat / Monitor / About */
+.st-offline { display: flex; align-items: flex-start; gap: 10px; margin: var(--st-s-4) var(--st-s-6) 0;
+              padding: 12px 16px; border: 1px solid color-mix(in srgb, var(--st-warn) 40%, var(--st-line));
+              border-radius: var(--st-r-md); background: var(--st-warn-tint); font-size: var(--st-fs-sm);
+              color: var(--st-ink-soft); }
+.st-offline .st-icon { color: var(--st-warn); margin-top: 2px; }
+.st-offline strong { color: var(--st-warn-text); font-weight: var(--st-fw-bold); }
+.st-offline span { display: inline-flex; flex-direction: column; gap: 2px; }
+
+/* ---------------------------------------------------------------- system card */
+.mg-sys .sys { font-size: var(--st-fs-sm); color: var(--st-ink-muted); }
+.mg-pill { display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 14px; margin-left: auto;
+           border-radius: var(--st-r-pill); border: 1px solid var(--st-line); background: var(--st-surface-2);
+           font-size: var(--st-fs-sm); font-weight: var(--st-fw-medium); color: var(--st-ink-soft);
+           font-variant-numeric: tabular-nums; white-space: nowrap; }
+.mg-pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--st-ink-muted); }
+.mg-pill[data-state="running"]::before, .mg-pill[data-state="external"]::before { background: var(--st-accent); }
+.mg-pill[data-state="running"], .mg-pill[data-state="external"] { color: var(--st-accent-text); }
+.mg-pill[data-state="starting"]::before, .mg-pill[data-state="stopping"]::before,
+.mg-pill[data-state="restarting"]::before { background: var(--st-warn); }
+.mg-pill[data-state="starting"], .mg-pill[data-state="stopping"], .mg-pill[data-state="restarting"] { color: var(--st-warn-text); }
+.mg-pill[data-state="error"]::before { background: var(--st-danger); }
+.mg-pill[data-state="error"] { color: var(--st-danger-text); }
+
+.mg-external { display: flex; align-items: flex-start; gap: 10px; padding: 10px 14px; border-radius: var(--st-r-md);
+               border: 1px solid color-mix(in srgb, var(--st-warn) 40%, var(--st-line));
+               background: var(--st-warn-tint); font-size: var(--st-fs-sm); color: var(--st-ink-soft); }
+.mg-external .st-icon { color: var(--st-warn); margin-top: 2px; }
+.mg-external strong { color: var(--st-warn-text); font-weight: var(--st-fw-bold); }
+
+/* ---------------------------------------------------------------- the editor */
+.mg-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: var(--st-s-4);
+           margin-top: var(--st-s-4); }
+select.st-input { appearance: none; padding-right: 32px;
+    background-image: linear-gradient(45deg, transparent 50%, var(--st-ink-muted) 50%),
+                      linear-gradient(135deg, var(--st-ink-muted) 50%, transparent 50%);
+    background-position: calc(100% - 16px) 50%, calc(100% - 11px) 50%;
+    background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; }
+select.st-input:disabled { opacity: .55; cursor: not-allowed; }
+.mg-check { width: 20px; height: 20px; accent-color: var(--st-accent); align-self: start; }
+.ctx-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.ctx-chips .chip { cursor: pointer; }
+.ctx-chips .chip[aria-checked="true"] { border-color: var(--st-accent); color: var(--st-accent-text);
+                                        background: var(--st-accent-tint); }
+.mg-seg { grid-template-columns: repeat(3, 1fr); }
+.mg-seg label { display: grid; place-items: center; height: 32px; border-radius: 10px; cursor: pointer;
+                color: var(--st-ink-muted); font: 500 var(--st-fs-sm)/1 var(--st-font); }
+.mg-seg label:hover { color: var(--st-ink); }
+.mg-seg input { position: absolute; opacity: 0; pointer-events: none; }
+.mg-seg input:checked + span { background: var(--st-surface); color: var(--st-ink); font-weight: var(--st-fw-bold);
+                               box-shadow: var(--st-sh-card); border-radius: 10px; }
+.mg-seg input:disabled + span { opacity: .45; cursor: not-allowed; }
+.mg-seg span { display: grid; place-items: center; width: 100%; height: 100%; }
+.mg-field-wide { margin-top: var(--st-s-4); }
+.mg-file { display: flex; gap: var(--st-s-2); }
+.mg-file .st-input { flex: 1; min-width: 0; }
+
+.mg-adv { border: 1px solid var(--st-line); border-radius: var(--st-r-md); padding: var(--st-s-3);
+          margin-top: var(--st-s-4); }
+.mg-adv summary { cursor: pointer; font-weight: var(--st-fw-medium); color: var(--st-ink-soft);
+                  font-size: var(--st-fs-sm); list-style: none; }
+.mg-adv summary::-webkit-details-marker { display: none; }
+.mg-adv[open] { background: var(--st-surface-2); }
+.mg-adv[open] summary { color: var(--st-ink); }
+.mg-adv .mg-grid { margin-top: var(--st-s-3); }
+
+/* ---------------------------------------------------------------- actions */
+.actions { display: flex; align-items: center; gap: var(--st-s-2); margin-top: var(--st-s-5); flex-wrap: wrap; }
+.actions .st-btn--lg { order: 3; }
+.actions #op { order: 2; }
+.actions #stop, .actions #force-stop, .actions #restart, .actions #save { order: 4; }
+.st-btn--lg { height: 48px; padding: 0 26px; font-size: var(--st-fs-md); font-weight: var(--st-fw-bold); }
+.st-btn--sm { height: 30px; padding: 0 12px; font-size: var(--st-fs-xs); }
+
+.mg-op { display: inline-flex; align-items: center; gap: 8px; height: 42px; padding: 0 14px;
+         color: var(--st-warn-text); font-size: var(--st-fs-sm); font-weight: var(--st-fw-medium);
+         border: 1px solid color-mix(in srgb, var(--st-warn) 45%, var(--st-line));
+         border-radius: var(--st-r-md); background: var(--st-warn-tint); font-variant-numeric: tabular-nums; }
+.spinner { width: 14px; height: 14px; flex: none;
+           border: 2px solid color-mix(in srgb, var(--st-warn) 35%, transparent);
+           border-top-color: var(--st-warn); border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* the custom-GGUF preparation card: the running setup.py state + its live log (or the failure's tail) */
+.mg-prepare { margin-top: var(--st-s-3); border: 1px solid var(--st-line); border-radius: var(--st-r-md);
+              padding: var(--st-s-3); background: var(--st-surface-2); }
+.mg-prepare-head { display: flex; align-items: center; gap: 10px; font-size: var(--st-fs-sm);
+                   font-weight: var(--st-fw-medium); color: var(--st-ink); }
+.mg-prepare .mg-log { margin: var(--st-s-2) 0 0; max-height: 180px; overflow: auto; padding: var(--st-s-2) var(--st-s-3);
+                      font-family: var(--st-font-mono); }
+
+/* ---------------------------------------------------------------- models */
+.badge { display: inline-flex; align-items: center; padding: 1px 9px; border-radius: var(--st-r-pill);
+         font-size: var(--st-fs-xs); font-weight: var(--st-fw-bold); }
+.badge.quant { background: var(--st-info-tint); color: var(--st-info-text); }
+.badge.current { background: var(--st-accent-tint); color: var(--st-accent-text); }
+.mg-models { list-style: none; margin: var(--st-s-2) 0 0; padding: 0; display: flex; flex-direction: column;
+             gap: var(--st-s-3); }
+.model { background: var(--st-surface-2); border: 1px solid var(--st-line-soft);
+         border-radius: var(--st-r-md); padding: var(--st-s-3) var(--st-s-4); }
+.model__top { display: flex; align-items: center; gap: var(--st-s-3); flex-wrap: wrap; }
+.model__title { font-weight: var(--st-fw-bold); font-size: var(--st-fs-base); }
+.model__meta { font-size: var(--st-fs-xs); color: var(--st-ink-muted); margin-top: var(--st-s-1);
+               line-height: 1.5; }
+.model__gguf { font-size: var(--st-fs-xs); color: var(--st-ink-soft); margin-top: var(--st-s-1);
+               overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+button.select, button.edit { margin-left: auto; }
+button.edit { margin-left: 0; }
+
+/* ---------------------------------------------------------------- log */
+.logcard .mg-log { margin: var(--st-s-2) 0 0; max-height: 320px; overflow: auto; padding: var(--st-s-3) var(--st-s-4);
+                   font: 400 12.5px/1.5 var(--st-font-mono); color: var(--st-ink-soft);
+                   background: var(--st-code-bg); border: 1px solid var(--st-line); border-radius: var(--st-r-md);
+                   white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* ---------------------------------------------------------------- folder picker modal */
+.modal { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(10, 14, 17, .55); z-index: 60; }
+.modal__box { width: 640px; max-width: 94vw; max-height: 80vh; overflow: auto; background: var(--st-surface);
+              border: 1px solid var(--st-line); border-radius: var(--st-r-lg); padding: var(--st-s-5); }
+.modal__box h3 { margin: 0; font-size: var(--st-fs-md); font-weight: var(--st-fw-bold); }
+.dirline { display: flex; gap: var(--st-s-2); margin-top: var(--st-s-3); }
+.dirline .st-input { flex: 1; min-width: 0; }
+.mg-dirs { list-style: none; margin: var(--st-s-3) 0 0; padding: 0; max-height: 40vh; overflow: auto; }
+.mg-dirs li { padding: 6px 10px; border-radius: var(--st-r-sm); cursor: pointer; }
+.mg-dirs li:hover { background: var(--st-accent-tint); }
+.mg-dirs .dir { font-family: var(--st-font-mono); font-size: var(--st-fs-xs); color: var(--st-ink-soft); }
+.modal__actions { display: flex; gap: var(--st-s-3); margin-top: var(--st-s-4); }
+
+.note { font-size: var(--st-fs-xs); color: var(--st-ink-muted); margin: var(--st-s-2) 0 0; line-height: 1.45; }
+.mono { font-family: var(--st-font-mono); font-size: var(--st-fs-xs); }
+.warn-ink { color: var(--st-warn-text); }
+
+/* ---------------------------------------------------------------- narrow screens */
+@media (max-width: 760px) {
+  .manager { padding: var(--st-s-4); }
+  .mg-grid { grid-template-columns: 1fr; }
+  .mg-file { flex-wrap: wrap; }
+  .mg-file .st-input { flex-basis: 100%; }
+  .st-offline { margin: var(--st-s-3); }
+  .mg-pill { white-space: normal; }
+}

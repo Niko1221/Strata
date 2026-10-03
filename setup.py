@@ -59,6 +59,23 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 WIN = os.name == "nt"
+
+
+def child_flags() -> int:
+    """Windows subprocess creation flags for the SHORT utility commands setup itself runs (nvidia-smi,
+    powershell, the python tools): subprocess.CREATE_NO_WINDOW when this process has NO console - a
+    pythonw/GUI context (the Manager imports setup.py) where a console child would otherwise flash a
+    transient black window.  An interactive terminal run keeps its console behavior exactly (no flag), and
+    a child the Manager itself spawned keeps the hidden console it was given (it HAS a console).  0 on
+    Linux."""
+    if not WIN:
+        return 0
+    try:
+        if ctypes.windll.kernel32.GetConsoleWindow():
+            return 0                    # a real (or hidden) console to inherit: normal behavior
+        return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    except Exception:
+        return 0
 # #214: every Hugging Face file comes from a fixed commit of its repository (the `sha` of
 # https://huggingface.co/api/models/<repo> when this was pinned), so a checkout installs the same files on any
 # day.  A revision the repository no longer has falls back to its current files, with a message (download()).
@@ -239,7 +256,7 @@ def run(cmd, cwd=None, env=None, check=True, quiet=False):
     say("  > " + " ".join(str(c) for c in cmd))
     r = subprocess.run([str(c) for c in cmd], cwd=cwd, env=env,
                        stdout=subprocess.PIPE if quiet else None, stderr=subprocess.STDOUT if quiet else None,
-                       text=True)
+                       text=True, creationflags=child_flags())
     if check and r.returncode != 0:
         if quiet and r.stdout:
             say(r.stdout[-4000:])
@@ -249,7 +266,8 @@ def run(cmd, cwd=None, env=None, check=True, quiet=False):
 
 def out(cmd):
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=60).stdout
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=60,
+                              creationflags=child_flags()).stdout
     except (OSError, subprocess.TimeoutExpired):
         return ""
 
@@ -1317,7 +1335,7 @@ def hip_devices(probe: Path | None = None, text: str | None = None) -> list[dict
             env = dict(os.environ)                     # the ready-made engine's ROCm DLLs (rocm/bin beside it)
             env["PATH"] = os.pathsep.join([str(d) for d in hip_lib_dirs(probe.parent)] + [env.get("PATH", "")])
             r = subprocess.run([str(probe), "--list-devices"], capture_output=True, text=True, timeout=120,
-                               cwd=str(probe.parent), env=env)
+                               creationflags=child_flags(), cwd=str(probe.parent), env=env)
         except (OSError, subprocess.TimeoutExpired):
             return None
         if r.returncode != 0:
@@ -2369,6 +2387,18 @@ def write_config(path: Path, cfg: dict):
     os.replace(tmp, path)
 
 
+def api_identity(fam: dict, model: str, variant: str | None) -> tuple:
+    """(model_name, aliases) a config should advertise: the name /v1/models and /v1/status report, and the alias
+    list to keep so old clients still work.  The published model keeps only its own name (qwen3.8-flash-next-q2_0);
+    a --variant build is its OWN API model (qwen3.8-flash-next-q2_0-abliterated) with the canonical name kept as
+    an alias - clients that send the published id are still answered, while the APIs truthfully say what is
+    loaded."""
+    canonical = f"{fam['name']}-{model.lower()}"
+    if not variant:
+        return canonical, None
+    return f"{canonical}-{variant}", [canonical]
+
+
 def readable_config(path: Path) -> bool:
     """#459: a config that parses as a JSON object; any other gets a one-line warning naming it."""
     text = None
@@ -2396,20 +2426,36 @@ def previous_config(elsewhere_first: list, settings: dict):
     return next((c for c in sorted(cands, key=lambda p: p.stat().st_mtime, reverse=True) if readable_config(c)), None)
 
 
+def split_size_variant(tag: str, family: str) -> tuple:
+    """(size, variant) from a config stem's tail: q2_0 -> (Q2_0, None); q2_0-abliterated -> (Q2_0,
+    "abliterated").  The longest known size wins (UD-Q4_K_XL keeps its dash, IQ3_XXS before IQ3_XS) and a
+    variant is everything after the first '-'.  (None, None) when the stem is not a known size."""
+    rest = tag[len(FAMILIES[family]["tag"]):] if tag.startswith(FAMILIES[family]["tag"]) else tag
+    for q in sorted(MODELS, key=len, reverse=True):
+        low = q.lower()
+        if rest == low:
+            return q, None
+        if rest.startswith(low + "-"):
+            return q, rest[len(low) + 1:]
+    return None, None
+
+
 def choices_from_config(cfg_path: Path) -> dict:
-    """The setup answers a config was written with (family, size, context, KV, images, projection, network)."""
+    """The setup answers a config was written with (family, size, variant, context, KV, images, projection,
+    network).  `variant` is the custom-build label of a strata-<size>-<variant>.json config (None for the
+    published files), read from the file name - the config file itself is the identity."""
     cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
     tag = cfg_path.stem[len("strata-"):]
     family = next((f for f, d in FAMILIES.items() if d["tag"] and tag.startswith(d["tag"])), "qwen")
-    model = (tag[len(FAMILIES[family]["tag"]):] if tag.startswith(FAMILIES[family]["tag"]) else tag).upper()
-    if model not in MODELS:                            # (sizes have no dash except UD-Q4_K_XL: the old rule)
+    model, variant = split_size_variant(tag, family)
+    if model is None:                                  # (sizes have no dash except UD-Q4_K_XL: the old rule)
         model = tag.split("-")[-1].upper()
     a = cfg.get("args", [])
     val = lambda k: a[a.index(k) + 1] if k in a and a.index(k) + 1 < len(a) else None   # noqa: E731
     vis = cfg.get("vision")
     esp = val("--control-vector-scaled")
     esp_path = esp.rsplit(":", 1)[0] if esp else None
-    return {"family": family, "model": model if model in MODELS else None,
+    return {"family": family, "model": model if model in MODELS else None, "variant": variant,
             "context": int(val("--max-context")) if val("--max-context") else None,
             "kv": val("--kv") if val("--kv") in ("int8", "q4_0") else None,
             "vision": ("gpu" if vis.get("gpu") else "cpu") if isinstance(vis, dict) else "none",
@@ -2730,7 +2776,7 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
         # so there the server is PID 1 and docker stop's SIGTERM reaches the process that can
         # answer the engine with QUIT. Normal Linux starts keep spawning the server as a child.
         os.execv(cmd[0], cmd)
-    return subprocess.call(cmd)
+    return subprocess.call(cmd, creationflags=child_flags())
 
 
 # the draft subsets setup copied before (sha256): replaced by the current one, a subset made by hand is kept
@@ -2748,6 +2794,17 @@ def saved_draft_vocab(cfg_path: Path) -> str | None:
     except (OSError, ValueError, AttributeError):
         return None
     return v if v in DRAFT_VOCABS else None
+
+
+def saved_aliases(cfg_path: Path) -> list[str] | None:
+    """The aliases a config already carries (setup's own default for a --variant build, or ones edited by hand), or
+    None.  A setup run again never overwrites aliases the owner edited: only the defaults it would write itself are
+    replaced."""
+    try:
+        a = json.loads(cfg_path.read_text(encoding="utf-8-sig")).get("aliases")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return a if isinstance(a, list) and all(isinstance(x, str) for x in a) else None
 
 
 DRAFT_VOCAB_MIB = {"cjk": 348, "cyrillic": 193, "en": 133}   # the draft head's VRAM per subset (IQ3_S: the largest)
@@ -2817,7 +2874,7 @@ def mtp_corrupt(mtp: Path, env=None) -> bool:
     if not (mtp / "tensors").is_dir():
         return False
     r = subprocess.run([sys.executable, str(ROOT / "tools" / "mtp_fetch.py"), "verify", "--out", str(mtp)], env=env,
-                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, creationflags=child_flags())
     return r.returncode == 3
 
 
@@ -2953,6 +3010,13 @@ def main() -> int:
     ap.add_argument("--models-dir", help="where the GGUF files go (default: <data folder>/models)")
     ap.add_argument("--gguf-dir", help="use GGUF files you already have (a folder with every shard: "
                                        "<name>-00001-of-0000N.gguf ... -0000N-of-0000N.gguf)")
+    ap.add_argument("--variant", metavar="LABEL",
+                    help="a label for your OWN GGUF build (e.g. --variant abliterated), so several builds of the "
+                         "same size can coexist: the config, its pack and the logs are named "
+                         "strata-<size>-<label> instead of strata-<size>, and the API model name gains the label "
+                         "too (qwen3.8-flash-next-q2_0-abliterated), with the canonical name kept as an alias for "
+                         "clients that still send it. Letters, digits, '-' and '_' only.  "
+                         "The published files never need it; Strata's Manager passes it for custom GGUFs.")
     ap.add_argument("--yes", action="store_true", help="accept the recommended answers")
     ap.add_argument("--setup", action="store_true", help="install another model or change settings")
     ap.add_argument("--no-start", action="store_true", help="install only, do not start the model")
@@ -3261,7 +3325,11 @@ def main() -> int:
     if not low_ram and budget is None and ram < MODELS[model]["ram_gb"] - 4:
         confirm_paging(model, ram, a.low_ram, a.yes, bool(a.model))
     ok(f"size: {model}")
-    tag = fam["tag"] + model                           # names of the pack, config and start script
+    variant = (a.variant or "").strip().lower()
+    if a.variant and not re.fullmatch(r"[a-z0-9_-]+", variant):
+        fail("--variant takes letters, digits, '-' and '_' only (no spaces): it names the config file as "
+             f"strata-{fam['tag']}{model.lower()}-<variant>.json")
+    tag = fam["tag"] + model + (("-" + variant) if variant else "")   # names of the pack, config, start script
     small = min(x["vram_gb"] for x in chosen)         # each card keeps its layers' KV of the whole context
     rec_ctx = 32768 if small < 14 else 65536 if small < 20 else 131072
     if budget is not None:                             # UD-Q4_K_XL: every GB of KV is a GB fewer of cached experts
@@ -3626,9 +3694,12 @@ def main() -> int:
         # the package's profile, with llama.cpp's flags (the engine takes the same ones)
         args += ["--control-vector-scaled", f"{esp}:1.0", "--control-vector-layer-range", "4", "44",
                  "--cvec-mode", "project", "--cvec-dir", "per-layer"]
+    model_name, aliases = api_identity(fam, model, variant)   # a --variant build is its own API model
     cfg = {"exe": str(eng / EXE), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
-           "model_name": f"{fam['name']}-{model.lower()}", "log": str(ROOT / f"strata-{tag.lower()}.log"),
+           "model_name": model_name, "log": str(ROOT / f"strata-{tag.lower()}.log"),
            "lib_dirs": lib_dirs, "port": port}
+    if aliases:
+        cfg["aliases"] = list(aliases)        # the canonical name kept: clients sending it are still answered
     if hip:
         cfg["backend"] = "hip"
         # the dense prompt GEMMs through hipBLASLt with kernels measured on this GPU generation (tools/hip; +40-60%
@@ -3658,6 +3729,9 @@ def main() -> int:
         if vision == "cpu":
             cfg["vision"]["threads"] = max(1, (os.cpu_count() or 8) // 2)
     cfg_path = ROOT / f"strata-{tag.lower()}.json"
+    keep = saved_aliases(cfg_path)
+    if keep is not None and keep != aliases:
+        cfg["aliases"] = keep                 # aliases edited by hand are never overwritten
     cal = None if hip else saved_calibration(cfg)     # tools/calibrate.py is NVIDIA-only for now
     if cal is not None:
         sys.path.insert(0, str(ROOT / "tools"))
