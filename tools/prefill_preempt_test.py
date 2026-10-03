@@ -151,7 +151,8 @@ class Engine:
 def engine_args(cfg: dict, *, prefill: int, preempt: bool, max_context: int | None = None,
                 kv_resident: int | None = None, expert_slots: int | None = None) -> list[str]:
     drop = {"--max-context", "--kv-resident", "--prefill", "--adapt-swaps", "--pcie-frac", "--prompt-cache",
-            "--prefill-preempt", "--prefill-preempt-min-tokens", "--prefill-preempt-max", "--expert-cache"}
+            "--prefill-preempt", "--prefill-preempt-min-tokens", "--prefill-preempt-max", "--expert-cache",
+            "--spec-min-p"}
     out, skip = [], False
     for a in cfg["args"]:
         if skip:
@@ -162,9 +163,13 @@ def engine_args(cfg: dict, *, prefill: int, preempt: bool, max_context: int | No
             continue
         out.append(a)
     # suffix-draft 0: the lookup drafter's policy is learned over the whole process, so the two arms' window
-    # shapes would drift apart and the state hash would differ in ULPs while the tokens still match
-    out += ["--adapt-swaps", "0", "--pcie-frac", "0", "--suffix-draft", "0", "--prompt-cache", "6",
-            "--prefill", str(prefill)]
+    # shapes would drift apart and the state hash would differ in ULPs while the tokens still match.
+    # spec-min-p 0 for the same reason one level down: the verify window's T is otherwise gated by the DRAFTER's
+    # probabilities, and the drafter's prompt KV is E-9 non-bit-identical territory - one flipped probability
+    # threshold reshuffles every later window shape and, through it, the main state's ULPs.  Constant shapes
+    # keep the comparison about the park, not about the drafter.
+    out += ["--adapt-swaps", "0", "--pcie-frac", "0", "--suffix-draft", "0", "--spec-min-p", "0",
+            "--prompt-cache", "6", "--prefill", str(prefill)]
     out += ["--max-context", str(max_context or 32768)]
     if kv_resident is not None:
         out += ["--kv-resident", str(kv_resident)]
