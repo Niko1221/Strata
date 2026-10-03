@@ -47,7 +47,7 @@ A separate experimental-build 32K request read 32,685 fresh prompt tokens, gener
 tok/s, 48.87 decode tok/s, 93.34 seconds TTFT, and 98.55 seconds total latency. This is one observation, not a
 three-run median, and is not included in the table.
 
-## Final automatic-settings check
+## Automatic-settings check before the review follow-up
 
 The final build at `d828e8e2cea24908f9d24597e987257ed293acc1` selected **63 workers** without `--pool-workers`.
 With `--expert-cache auto`, it selected 2,675 effective slots and had 1,143 MiB of VRAM free after startup.
@@ -65,8 +65,9 @@ and expert-cache settings before and after. It ran on a normal desktop; other ap
 memory varied, so the measurements are evidence for this machine and workload rather than a controlled claim about
 all systems. They do not establish results for other CPUs, operating systems, GPUs, or models.
 
-The experimental Windows HIP build compiled, and the processor-group affinity API test and pool stress test passed. The AVX-512
-pool test was skipped. A Linux build could not be run because the WSL virtual disk was unavailable. Microsoft's
+The experimental Windows HIP build compiled, and the processor-group affinity API test passed. Both the AVX-512
+pool self-test and `pool_stress` skipped their workloads on this CPU. `pool_stress` returns zero when skipped, so
+the original CTest summary's "Passed" is not a stress-workload pass. A Linux build could not be run because the WSL virtual disk was unavailable. Microsoft's
 [processor-group documentation](https://learn.microsoft.com/en-us/windows/win32/procthread/processor-groups)
 describes the group-relative processor numbers and Windows 11 primary-group behavior;
 [SetThreadAffinityMask](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-setthreadaffinitymask)
@@ -78,3 +79,8 @@ does not claim an operating-system or Docker fix.
 The full probe, raw inference runs, configs, build metadata, and reproduction script are preserved at
 [the measurement directory](../../bench/results/2026-10-03-windows-groups/README.md).
 The [original official-release measurements](../../bench/results/2026-10-03-rx6900xt-coder/README.md) retain the earlier manual-worker sweep as historical evidence.
+
+After these measurements, PR #626 changed the host path to reversible CPU Set selection while keeping hard group
+affinity on pool-owned workers. The saved throughput figures above belong to their recorded revisions, not this
+later host-restoration change. Its [review validation](../../bench/results/2026-10-03-windows-groups/review-validation.md)
+records the build and regression tests; inference throughput was not remeasured for that revision.

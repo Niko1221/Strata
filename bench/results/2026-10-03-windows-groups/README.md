@@ -15,7 +15,7 @@ With the same explicit 63 workers and 3,245 effective expert-cache slots, decode
 
 [comparison.csv](comparison.csv) and [comparison.json](comparison.json) collect median/min/max values from each saved summary. Every session includes requests, generated text, stream timings and usage in `raw.jsonl`, an excluded `warmup.json`, health snapshots, and engine log excerpts. The single 32K observation and final automatic-cache validation are labelled separately from the paired comparison.
 
-## Final automatic settings
+## Automatic settings before the review follow-up
 
 The final build at `d828e8e2cea24908f9d24597e987257ed293acc1` removed the earlier hardware-specific cap. Started without `--pool-workers`, it selected **63 workers**. Auto cache selected **2,675 slots**, with 1,143 MiB free after startup. Its three-run short/4K decode medians were **43.13 / 57.91 tok/s**; TTFT medians were **2.20 / 14.29 seconds**. These validate the final default path, but the different cache capacity and generated text/draft acceptance mean they are not the matched before/after affinity comparison. See [final-auto](final-auto), [final-auto-metadata.json](final-auto-metadata.json), and [final-installed-config.json](final-installed-config.json).
 
@@ -35,4 +35,8 @@ python bench/results/2026-10-03-windows-groups/benchmark.py --url http://127.0.0
 
 Restart the model between configurations; use a new output directory and verify `prefix_reused_tokens` is zero. To reproduce the single longer check, use `--cases 32k --runs 1`. For final automatic selection, use the final code revision and omit `--pool-workers`, with `--expert-cache auto`. Do not overwrite the recorded evidence directories.
 
-The generated clamp function passed 2,001 bounded integer cases in [coding-smoke-check.json](coding-smoke-check.json); reproduce with `check_code.py --url http://127.0.0.1:8081`. This is an operational smoke check, not a general coding-quality score. [cpu-tests-final.txt](cpu-tests-final.txt) records the final affinity and stress tests. `cpu-tests.txt` is the earlier candidate's record and includes a worker-default test subsequently removed with that proposal. The AVX-512 pool self-test was skipped on this CPU; Linux compilation was unavailable because the configured WSL image was missing.
+The generated clamp function passed 2,001 bounded integer cases in [coding-smoke-check.json](coding-smoke-check.json); reproduce with `check_code.py --url http://127.0.0.1:8081`. This is an operational smoke check, not a general coding-quality score. [cpu-tests-final.txt](cpu-tests-final.txt) records the pre-review affinity and stress-test invocations. `cpu-tests.txt` is the earlier candidate's record and includes a worker-default test subsequently removed with that proposal. Both the AVX-512 pool self-test and `pool_stress` skipped their workloads on this CPU. The latter returns zero, so its CTest "Passed" line does not establish a stress-workload pass. Linux compilation was unavailable because the configured WSL image was missing.
+
+## Review follow-up
+
+The later host-restoration correction in PR #626 uses reversible CPU Set selection and is covered by separate [review validation](review-validation.md). It was built and tested, but throughput was not remeasured; all speed figures above remain tied to their original recorded revisions. Local account-name components in captured test paths are redacted as `<user>`; test names, outcomes and timing values are unchanged.
