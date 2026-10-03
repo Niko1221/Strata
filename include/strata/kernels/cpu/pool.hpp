@@ -100,18 +100,23 @@ std::vector<int> physical_cores(bool skip_first, PoolAffinity affinity = PoolAff
 /// - exactly 5/6 of L9's 44.14 on 6 - and at **26.9 GB/s inside the host loop**, where the unpinned spinning
 /// host is free to land on a worker's core or its SMT sibling.  That 1.35x is not the kernel.
 ///
-/// The previous processor affinity. `valid` is false when querying or setting affinity failed.
-/// On Windows, `group` identifies the processor group and `mask` the processors within it. On Linux,
-/// `mask` retains the low 64 CPUs from the prior affinity API.
+/// The previous host placement. `valid` is false when querying or setting placement failed.
+/// Windows uses a reversible CPU Set selection, leaving hard affinity (including Windows 11's implicit
+/// all-group eligibility) untouched. An empty selection restores inheritance from the process defaults.
+/// Linux retains the low 64 CPUs from the prior affinity API.
 struct ThreadAffinity {
+#if defined(_WIN32)
+    std::vector<unsigned long> cpu_sets;
+#else
     uint64_t mask = 0;
-    uint16_t group = 0;
+#endif
     bool valid = false;
 };
 
-/// Pins the calling thread to one encoded physical processor and returns its previous affinity.
+/// Selects one encoded processor for the caller; Windows CPU Sets respect existing hard-affinity limits.
+/// Restore on the same calling thread. Pool-owned workers use hard group affinity instead.
 ThreadAffinity pin_current_thread(int core);
-void restore_thread_affinity(ThreadAffinity previous);
+void restore_thread_affinity(const ThreadAffinity& previous);
 
 class ExpertPool {
 public:

@@ -290,9 +290,16 @@ bool pin_this_thread(int core, [[maybe_unused]] int worker = -1) {
 ThreadAffinity pin_current_thread(int core) {
     if (core < 0) return {};
 #if defined(_WIN32)
-    GROUP_AFFINITY previous{};
-    if (!detail::set_thread_group_affinity(core, -1, &previous)) return {};
-    return {(uint64_t) previous.Mask, previous.Group, true};
+    ThreadAffinity previous;
+    ULONG target = 0;
+    if (!detail::get_thread_cpu_sets(previous.cpu_sets) || !detail::cpu_set_for_core(core, target) ||
+        !SetThreadSelectedCpuSets(GetCurrentThread(), &target, 1)) {
+        std::fprintf(stderr, "strata cpu pool: host CPU Set selection for processor %d failed: %lu; previous placement kept\n",
+                     core, (unsigned long) GetLastError());
+        return {};
+    }
+    previous.valid = true;
+    return previous;
 #else
     cpu_set_t prev;
     CPU_ZERO(&prev);
@@ -301,20 +308,21 @@ ThreadAffinity pin_current_thread(int core) {
     for (int i = 0; i < CPU_SETSIZE && i < 64; ++i)
         if (CPU_ISSET(i, &prev)) mask |= 1ul << i;
     if (!pin_this_thread(core)) return {};
-    return {mask, 0, true};
+    return {mask, true};
 #endif
 }
 
-void restore_thread_affinity(ThreadAffinity previous) {
-    if (!previous.valid || previous.mask == 0) return;
+void restore_thread_affinity(const ThreadAffinity& previous) {
+    if (!previous.valid) return;
 #if defined(_WIN32)
-    GROUP_AFFINITY target{};
-    target.Group = previous.group;
-    target.Mask = (KAFFINITY) previous.mask;
-    if (!SetThreadGroupAffinity(GetCurrentThread(), &target, nullptr))
-        std::fprintf(stderr, "strata cpu pool: SetThreadGroupAffinity restore to group %u (mask 0x%llx) failed: %lu\n",
-                     (unsigned) target.Group, (unsigned long long) target.Mask, (unsigned long) GetLastError());
+    // Clearing an originally empty selection restores process-default/all-group eligibility without
+    // turning the caller's implicit Windows 11 affinity into an explicit single-group hard mask.
+    if (!SetThreadSelectedCpuSets(GetCurrentThread(), previous.cpu_sets.empty() ? nullptr : previous.cpu_sets.data(),
+                                 (ULONG) previous.cpu_sets.size()))
+        std::fprintf(stderr, "strata cpu pool: host CPU Set restoration failed: %lu\n",
+                     (unsigned long) GetLastError());
 #else
+    if (previous.mask == 0) return;
     cpu_set_t set;
     CPU_ZERO(&set);
     for (int i = 0; i < 64; ++i)
