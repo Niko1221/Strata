@@ -1,4 +1,4 @@
-﻿# Strata Engine - top-level build (P1.S1).
+# Strata Engine - top-level build (P1.S1).
 #
 # Targets (phase-1 Ă‚Â§P1.S1): `strata_artifact` (no CUDA dependency), `tests`.  `strata_plan` and the C++
 # `strata-pack` are added when their sources exist - a target with no sources would make the build graph
@@ -33,7 +33,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 option(STRATA_ENABLE_CUDA "Build the CUDA targets (Phase 2+)" OFF)
-option(STRATA_ENABLE_HIP "Build the HIP targets for wave32 AMD GPUs (gfx1100, gfx1201; gfx1030 unvalidated)" OFF)
+option(STRATA_ENABLE_HIP "Build the HIP targets for wave32 AMD GPUs (gfx1100, gfx1201; gfx1012/gfx1030 unvalidated)" OFF)
 option(STRATA_PREFILL_MMQ "Build the optional GGML MMQ prefill path for HIP" OFF)
 # CUDA: MMQ prompt kernels for Q4_K / Q5_K / Q5_1 (Unsloth's UD-Q4_K_XL experts).  Off by default: the engine loads
 # every kernel when it starts (CUDA_MODULE_LOADING=EAGER), so these took ~5 MB of VRAM - 1-3 expert slots - from every
@@ -113,7 +113,7 @@ if(STRATA_ENABLE_CUDA)
   set(_strata_gpu_include_directories ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
 elseif(STRATA_ENABLE_HIP)
   set(_strata_gpu_runtime_target strata_hip_runtime)
-  set(_strata_gpu_blas_target roc::hipblas)
+  set(_strata_gpu_blas_target ${STRATA_HIP_BLAS_TARGETS})
   set(_strata_gpu_include_directories ${STRATA_HIP_COMPAT_INCLUDE_DIR})
 endif()
 
@@ -418,6 +418,14 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   if(STRATA_ENABLE_HIP)
     enable_testing()
     set(_strata_hip_tests)
+    add_executable(hip_prefill_gemm tests/hip/prefill_gemm.cpp)
+    target_link_libraries(hip_prefill_gemm PRIVATE strata_prefill strata_hip_runtime)
+    add_test(NAME hip_prefill_gemm COMMAND hip_prefill_gemm)
+    list(APPEND _strata_hip_tests hip_prefill_gemm)
+    add_executable(hip_q2_zero tests/hip/q2_zero.cpp)
+    target_link_libraries(hip_q2_zero PRIVATE strata_kernels strata_hip_runtime)
+    add_test(NAME hip_q2_zero COMMAND hip_q2_zero)
+    list(APPEND _strata_hip_tests hip_q2_zero)
     add_executable(hip_expert_cache_staging tests/hip/expert_cache_staging.cpp)
     target_link_libraries(hip_expert_cache_staging PRIVATE strata_engine)
     add_test(NAME hip_expert_cache_staging COMMAND hip_expert_cache_staging)

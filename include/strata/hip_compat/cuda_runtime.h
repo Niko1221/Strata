@@ -10,6 +10,7 @@
 #endif
 #endif
 #include <hip/hip_runtime.h>
+#include <hip/hip_version.h>
 // Do not let HIP's legacy macro corrupt libstdc++ attribute names.
 #ifdef __noinline__
 #undef __noinline__
@@ -36,7 +37,11 @@
 #define cudaEventSynchronize hipEventSynchronize
 #define cudaEvent_t hipEvent_t
 #define cudaFree hipFree
+#if HIP_VERSION_MAJOR < 7
+#define cudaFreeHost hipHostFree
+#else
 #define cudaFreeHost hipFreeHost
+#endif
 #define cudaFuncAttributeMaxDynamicSharedMemorySize hipFuncAttributeMaxDynamicSharedMemorySize
 #define cudaGetDevice hipGetDevice
 #define cudaGetDeviceCount hipGetDeviceCount
@@ -51,9 +56,15 @@
 #define cudaGraphUpload hipGraphUpload
 #define cudaGraph_t hipGraph_t
 #define cudaHostAlloc hipHostMalloc
+#if HIP_VERSION_MAJOR < 7
+#define cudaHostAllocDefault hipHostMallocDefault
+#define cudaHostAllocMapped hipHostMallocMapped
+#define cudaHostAllocPortable hipHostMallocPortable
+#else
 #define cudaHostAllocDefault hipHostAllocDefault
 #define cudaHostAllocMapped hipHostAllocMapped
 #define cudaHostAllocPortable hipHostAllocPortable
+#endif
 #define cudaHostGetDevicePointer hipHostGetDevicePointer
 #define cudaHostRegister hipHostRegister
 #define cudaHostRegisterMapped hipHostRegisterMapped
