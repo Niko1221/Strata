@@ -2724,6 +2724,38 @@ class AnswerBeforeTheBody(unittest.TestCase):
         finally:
             self.svc.api_key = ""
 
+    def test_a_wrong_key_and_a_body_of_megabytes(self):
+        """An agent client's conversation, or one screenshot, is several MiB, and a rotated key is when the 401 matters."""
+        self.svc.api_key = "secret"
+        try:
+            self.assertEqual(self.status("POST", "/v1/chat/completions", body=b'{"x": "' + b"a" * (80 << 20) + b'"}'),
+                             "HTTP/1.0 401 Unauthorized")
+        finally:
+            self.svc.api_key = ""
+
+    def test_a_body_that_comes_in_drops_does_not_hold_the_connection(self):
+        """A client that announces a body and sends it a byte at a time is let go after DRAIN_SECONDS, with its
+        answer: the time limit is on the whole body, not on each read."""
+        self.svc.api_key = "secret"
+        try:
+            with mock.patch.object(self.httpd.RequestHandlerClass, "DRAIN_SECONDS", 0.5), \
+                    socket.create_connection(("127.0.0.1", self.port), timeout=10) as s:
+                s.sendall((f"POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1:{self.port}\r\n"
+                           f"Content-Length: {1 << 20}\r\n\r\n").encode())
+                started, answer = time.monotonic(), b""
+                s.settimeout(0.2)
+                while True:
+                    try:
+                        if not (chunk := s.recv(65536)):
+                            break
+                        answer += chunk
+                    except TimeoutError:
+                        s.sendall(b"a")                      # a byte every 0.2 s keeps each read of the server alive
+            self.assertEqual(answer.split(b"\r\n", 1)[0], b"HTTP/1.0 401 Unauthorized")
+            self.assertLess(time.monotonic() - started, 5)
+        finally:
+            self.svc.api_key = ""
+
     def test_load_and_unload(self):
         self.assertEqual(self.status("POST", "/unload"), "HTTP/1.0 200 OK")
         self.assertEqual(self.status("POST", "/load"), "HTTP/1.0 200 OK")
