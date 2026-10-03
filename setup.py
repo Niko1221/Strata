@@ -2992,6 +2992,9 @@ def main() -> int:
         ap.error("--resident-budget-gib takes a number of GiB above 0, e.g. --resident-budget-gib 32")
     if a.vram_reserve_mib is not None and a.vram_reserve_mib < 0:
         ap.error("--vram-reserve-mib takes a number of MiB, 0 or more, e.g. --vram-reserve-mib 2048")
+    if a.api_key is not None and not a.api_key.strip():
+        # #213: an empty key would be dropped, or written to the config, where the server would run without one
+        ap.error("--api-key is empty: give a key, or leave --api-key out")
     if a.gpu is not None:                             # --gpu 0,2 means --gpus 0,2 (a user tried it: issue report)
         if "," in a.gpu:
             a.gpus, a.gpu = a.gpus or a.gpu, None
