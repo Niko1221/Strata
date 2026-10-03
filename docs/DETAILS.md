@@ -634,7 +634,10 @@ DIR becomes one absolute path at start (`--slot-save-path` relative to the serve
 `slot_save_path` relative to the config's `"cwd"`), created with mode 0700 when missing. It should be private to the
 user that runs Strata: the files hold the conversation's token IDs and state, are created with mode 0600 on Linux
 (on Windows they inherit the folder's permissions), and nothing deletes them - about 1.2 GB per 63K-token
-conversation; a save refuses to leave less than `--session-min-free-mib` (default 4096) free on that disk. NAME may
+conversation. Before it writes, a save checks that the disk has room for the whole new file plus
+`--session-min-free-mib` (an engine argument, in the config's `args`; default 4096, 0 = no check) - also when it
+replaces a file, whose space comes back only after the rename. This is a preflight, not a quota or a reservation.
+NAME may
 not contain a path, a drive, a stream (`:`), a Windows device name (`NUL`, `CON.bin`, `COM1`...), a control character,
 a leading dot or a trailing dot or space.
 
@@ -679,7 +682,8 @@ samples (size, first and last MiB) every file the engine loads, by its role: the
 layer's gate/up/down GGUF as `native_experts.txt` names it, also one outside the CLI shards - and the MTP's files; not
 other files in those folders, and not the path, so a moved model folder still matches. A
 change in the middle of a file that keeps its size is not seen: do not change model files while their sessions are
-kept. The config fingerprint covers the engine version (an update makes older files unrestorable), CUDA or HIP,
+kept. The config fingerprint covers the engine version string (another version is refused; two builds of the same version
+are not told apart - there is no build hash), CUDA or HIP,
 `--kv`, `STRATA_KV_ROT`, `--kv-resident`, `--max-context`, `--mtp-window`, the resolved rope configuration (type,
 base, factor, freq scale, original context, the YaRN knobs - the cached K is post-RoPE), the loaded control vector (a
 digest of the tables uploaded: every file's content times its exact scale, the mode, the layer range and the
@@ -687,13 +691,14 @@ direction) and the arithmetic switches (`--native-*`, `--no-ple`, the A/B arms).
 the expert tier are not in it: they change what comes next, not what the saved cells hold.
 
 A save writes a temporary file with a new hidden name beside `path` (created exclusively, never an existing file or
-link), flushes it to the disk, renames it over `path` (`MoveFileExW` on Windows, which promises no transaction on
-every filesystem) and flushes the folder. A save that fails before the rename keeps the old file at `path` and removes
+link), flushes it to the disk, renames it over `path` (`MoveFileExW` with write-through on Windows, which promises no transaction
+on every filesystem) and, on POSIX, flushes the folder (Windows has no folder flush; the file flush and the
+write-through rename are all it does). A save that fails before the rename keeps the old file at `path` and removes
 only its own temporary file. Once the rename is done the old file is gone: if the folder flush then fails, the save
 fails with `published` set - the new file's bytes are complete and flushed, but its name may not survive a power loss.
 A filesystem that cannot flush a folder (`EINVAL`) is not a failure; the engine logs it. A restore opens `path` without following a symbolic link (or a Windows reparse point) and refuses
 anything but a regular file with one name; it checks the size, the header, both fingerprints (before the payload is
-read), that the parse's peak (the image, the read buffer, the per-segment overhead) fits in RAM above the parking
+parsed; the first 16 MiB block, header included, is already read), that the parse's peak (the image, the read buffer, the per-segment overhead) fits in RAM above the parking
 floor (`--conversation-cache-min-free-mib`), the file's size against the largest this session can restore, the
 geometry and layer range before any state array, and every count against the bytes left and this session's exact
 limits (context and cells, checkpoints, layers, each running-state array, each K/V part) before allocating it, the payload hash
@@ -702,15 +707,26 @@ was. A transfer failure after the device writes began ends the engine (`FATAL`) 
 state; the server reports `500` and starts it again. A restore does not park the outgoing session. Not supported with
 `--layer-split`, `--peer-device` or `--prompt-cache 0` (the RAM conversation cache need not be on). On Linux the file
 moves with `O_DIRECT` in 16 MiB blocks when the filesystem takes it (buffered I/O otherwise, or with
-`STRATA_SESSION_BUFFERED=1`); on Windows with buffered I/O. Linux/CUDA only has been run; the Windows build, HIP and
-AMD cards were not.
+`STRATA_SESSION_BUFFERED=1`); on Windows with buffered I/O. The engine has been run on Linux/CUDA only. An earlier
+revision's CPU file-I/O test passed as a 32-bit Windows executable under Wine; the current code has not been built
+for Windows, and the Windows engine, HIP and AMD cards have not been run.
 
-Measured on an RTX 4070 Ti (12 GB), Ryzen 9 5900X, 64 GB RAM, NVMe, IQ3_XXS, a 63,025-token conversation: file
-1.20 GB, save 0.70 s including the flushes to disk (0.64-0.67 s over 10 more saves, 5 replacing one file and 5 new),
-restore 0.86 s in a new engine process, then the next 32-token turn in 1.12 s with the same 32 output tokens as the
-same turn without a restart; the cold first turn takes 25.5 s. In the same run a symbolic link, a second hard link,
-a file with one flipped payload byte and a file restored by an engine with another `--rope-freq-base` were refused
-with the session untouched.
+A session file saves conversation state, not all of the process's execution history. Exact future token replay
+across restarts is not guaranteed: expert residency and CPU/GPU rounding can change later output. In a 63K test the
+first 32-token continuation after a restore matched the process that kept running; on the next continuation three
+restored processes agreed with one another but differed from that process from the 28th token on. A refused,
+corrupted restore in between did not change the restored processes' continuation. The cause of this divergence has
+not been isolated.
+
+Measured on an RTX 4070 Ti (12 GB), Ryzen 9 5900X, 64 GB RAM, NVMe ext4, IQ3_XXS, a 63,025-token conversation
+(engine 0.1.38 with this change, binary sha256 `3bbe4fc3...`): file 1.20 GB, save 0.65 s including the flushes to
+disk (10 more saves of the 1.20 GB state after a further turn: 0.59-0.61 s replacing one file, 0.80-1.18 s to new
+names), restore 1.05 s in a new engine process, then the next 32-token turn in 1.14 s with the same 32 output tokens as
+the same turn without a restart (1.00 s); the cold first turn takes 25.5 s. The save reported 73 `SESSION` lines, never
+more than 16 MiB apart. A symbolic link, a second hard link and a file with one flipped payload byte were refused
+(the last also while a restored conversation was live, which then went on to answer); a fresh engine with another
+`--rope-freq-base` refused the file and then answered; a save with a RAM floor above the machine's RAM was refused as
+`memory` before any copy, the file it would have replaced untouched. The times are single runs.
 
 **Current limits (v1):** one request at a time, and one conversation cached at a time (switching between two chats
 re-reads the other one unless the opt-in cache above is enabled); images only when set up with them (below); no video. **Temperature / top_p / top_k / min_p /
