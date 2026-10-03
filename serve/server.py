@@ -1975,7 +1975,7 @@ def make_handler(svc: Service):
         record = None                                       # #332: this request's monitor record, if kept
         watch_done = None                                   # #430 #431: stops this request's disconnect watcher
         body_read = False                                   # whether a handler took this request's body
-        DRAIN_LIMIT = 1 << 20                               # the most an unread body is read and dropped
+        DRAIN_SECONDS = 5                                   # the longest an unread body is read and dropped
 
         def log_message(self, fmt, *args):
             pass
@@ -1992,7 +1992,9 @@ def make_handler(svc: Service):
             """An answer sent before the body was read (a 401, a 403, /load, a method with no handler) must not close
             the connection on unread bytes: the close then sends a reset, and a client that sends its body after the
             headers (http.client, urllib, requests) gets a connection error instead of the answer.  So the body is
-            read and dropped here, once, after an answer.  A body over DRAIN_LIMIT is left unread."""
+            read and dropped here, once, after an answer, in pieces so that its size is never held in memory.  What
+            has not arrived DRAIN_SECONDS later is left unread: the limit is time, so that a conversation of many
+            megabytes, at any speed the client has, still gets its answer."""
             headers = getattr(self, "headers", None)
             if self.body_read or headers is None:
                 return
@@ -2000,11 +2002,16 @@ def make_handler(svc: Service):
                 left = int(headers.get("Content-Length", 0))
             except ValueError:
                 return
-            if not 0 < left <= self.DRAIN_LIMIT:
+            if left <= 0:
                 return
-            self.connection.settimeout(5)                    # a client that never sends what it announced
+            deadline = time.monotonic() + self.DRAIN_SECONDS
             try:
-                self.rfile.read(left)
+                while left > 0 and (wait := deadline - time.monotonic()) > 0:
+                    self.connection.settimeout(wait)         # a client that never sends what it announced
+                    piece = self.rfile.read1(min(left, 1 << 20))   # one socket read: read() would wait for it all
+                    if not piece:
+                        break
+                    left -= len(piece)
             except OSError:
                 pass
 
