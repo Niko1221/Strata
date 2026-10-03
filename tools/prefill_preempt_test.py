@@ -83,10 +83,26 @@ class Engine:
         self.info: dict[str, object] = {}
         self.pump = threading.Thread(target=self._pump, daemon=True)
         self.pump.start()
+        self.sampler = threading.Thread(target=self._sample_rss, daemon=True)
+        self.sampler.start()
         ready = self._next_line(lambda l: l.startswith("READY"), timeout=1800)
         if ready is None:
             raise RuntimeError(f"the engine did not become ready (log: {log_path})")
         self.max_context = int(ready.split()[1])
+
+    def _sample_rss(self):
+        """VmRSS/VmHWM every 2 s into the protocol.  A SIGKILL leaves no stderr and the kernel log of this box is
+        not recoverable after the fact (the B0 death, 2026-10-03): a resident-set timeline next to the protocol is
+        what correlates an OOM kill - or rules one out - when the engine dies without a word."""
+        status = Path(f"/proc/{self.proc.pid}/status")
+        while not self.eof_seen and self.proc.poll() is None:
+            try:
+                fields = {l.split(":", 1)[0]: l.split(":", 1)[1] for l in status.read_text().splitlines() if ":" in l}
+                self._record("rss", vm_rss_kib=int(fields["VmRSS"].split()[0]),
+                             vm_hwm_kib=int(fields["VmHWM"].split()[0]))
+            except (OSError, ValueError, KeyError):
+                return          # the process is gone (or /proc does not exist): nothing more to sample
+            time.sleep(2.0)
 
     def _pump(self):
         # explicit readline (not `for line in`): the file iterator's read-ahead can sit on a partial buffer
@@ -296,6 +312,16 @@ def start_engine(name: str, exe: str, args: list[str], workdir: Path) -> Engine:
     return Engine(exe, args, workdir / f"{name}.log")
 
 
+def require_pinned_geometry(e: Engine, expert_slots: int, label: str) -> None:
+    """INFO expert_slots is the tier the engine ACTUALLY built.  A pin that came back different is a different
+    resident expert set - a different model on one side of the comparison (the repeat-3 5-vs-128 failure of
+    2026-10-03 was exactly this, silently).  Fail the scenario here, by name, before any tokens are compared."""
+    got = str(e.info.get("expert_slots", "") or "")
+    if expert_slots and got != str(expert_slots):
+        raise RuntimeError(f"{label}: engine built an expert cache of {got} slots, not the pinned "
+                           f"{expert_slots} - the two arms would not run the same resident set")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--engine", default=str(DEFAULT_ENGINE))
@@ -347,6 +373,9 @@ def main() -> int:
             ("streaming-kv", dict(trigger=4096, preempts=[2], cancel=False, max_context=65536, kv_resident=8192,
                                   own_refs=True)),
             ("repeat-3", dict(trigger=2048, preempts=[2, 3, 4], cancel=False)),
+            # ten parks over an A long enough to hold them (default --prefill-preempt-max is 16): repeated
+            # parks must not drift, and every boundary's interim output must match
+            ("repeat-10", dict(trigger=2048, preempts=list(range(2, 12)), cancel=False, a_chunks=11)),
             ("cancel-parked", dict(trigger=2048, preempts=[2], cancel=True)),
             ("decode-nopark", dict(trigger=None, preempts=[2], cancel=False)),   # B queued during A's decode
         ]
@@ -372,14 +401,17 @@ def main() -> int:
                                                max_context=sc.get("max_context"),
                                                kv_resident=sc.get("kv_resident"),
                                                expert_slots=expert_slots), workdir)
+            require_pinned_geometry(sc_ctrl, expert_slots, f"control-{name}")
             try:
+                sc_a_ids = deterministic_tokens(sc.get("a_chunks", 3 if args.quick else 6) * chunk
+                                                + args.tail_tokens, seed=7)
                 sc_ctrl.gen(None, warm_ids, 8)
                 sc_ctrl.collect(None)
                 sc_b = {"tokens": [], "finish": "length"}
                 if sc["preempts"]:
                     sc_ctrl.gen(None, b_ids, b_max_new)
                     sc_b = sc_ctrl.collect(None)
-                sc_ctrl.gen(None, a_ids, args.max_new)
+                sc_ctrl.gen(None, sc_a_ids, args.max_new)
                 sc_a = sc_ctrl.collect(None)
                 sc_refs = (sc_a, sc_b, sc_ctrl.state_hash())
                 (workdir / f"reference-{name}.json").write_text(json.dumps({
@@ -391,10 +423,11 @@ def main() -> int:
                              engine_args(cfg, prefill=chunk, preempt=True, max_context=sc.get("max_context"),
                                          kv_resident=sc.get("kv_resident"), expert_slots=expert_slots),
                              workdir)
+            require_pinned_geometry(e, expert_slots, f"preempt-{name}")
             try:
                 e.gen(None, warm_ids, 8)
                 e.collect(None)
-                fails = run_scenario(e, name, sc, a_ids, b_ids, sc_refs[0], sc_refs[1], sc_refs[2],
+                fails = run_scenario(e, name, sc, sc_a_ids, b_ids, sc_refs[0], sc_refs[1], sc_refs[2],
                                      args.max_new, chunk, b_max_new)
             finally:
                 e.close()
@@ -545,6 +578,17 @@ def run_scenario(e: Engine, name: str, sc: dict, a_ids, b_ids, ref_a, ref_b, ref
             diff = state_differences(ref_hash, got)
             if diff:
                 failures.append(f"{name}: state hash differs ({', '.join(diff)}): ref {ref_hash} got {got}")
+
+    # after A's final commit the engine must stay healthy: a fresh request's output matches the B reference
+    # (the same prompt on the control engine), and QUIT still ends the process cleanly (every caller closes)
+    n_c = min(8, b_max_new) or 1
+    e.gen(None, b_ids, n_c)
+    h = e.collect(None)
+    if ref_b["tokens"] and h["tokens"] != ref_b["tokens"][:n_c]:
+        first = next((i for i in range(min(len(h["tokens"]), len(ref_b["tokens"])))
+                      if h["tokens"][i] != ref_b["tokens"][i]), min(len(h["tokens"]), len(ref_b["tokens"])))
+        failures.append(f"{name}: the request after A's DONE does not match the B reference "
+                        f"({len(h['tokens'])} tokens, first difference at [{first}])")
     return failures
 
 

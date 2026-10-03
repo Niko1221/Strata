@@ -16,6 +16,8 @@
 
 #include "strata/core/device.hpp"
 #include "strata/core/expert_cache.hpp"
+#include "strata/core/expert_pack.hpp"
+#include "strata/core/crash_report.hpp"
 #include "strata/core/conversation_snapshot.hpp"
 #include "strata/core/conversation_memory.hpp"
 #include "strata/core/prefill_preempt_budget.hpp"
@@ -1331,6 +1333,7 @@ double pcie_frac_for_gbps(double gbps, double base) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    strata::core::install_crash_report();       // a signal dies loudly on stderr: B0's silent loss must not repeat
     // **UNBUFFERED, BECAUSE THE INTERESTING OUTPUT IS THE OUTPUT BEFORE A CRASH.**  `stdout` redirected to a
     // pipe or a file is block-buffered, so a program that dies loses every line it had already printed - which
     // turns "it crashed at step 7" into "it crashed somewhere", and the difference is a debugging session.
@@ -3216,14 +3219,27 @@ int main(int argc, char** argv) {
         cudaMemGetInfo(&free_b, &total_b);
         const auto& lay = strata::kernels::cpu::expert_layout();
         const uint64_t budget = (uint64_t) o.expert_cache * lay.max_blob;   // what the uniform sizing granted
-        uint64_t used = 0;
-        size_t free_room = free_b > ((size_t) o.vram_reserve_mib << 20) ? free_b - ((size_t) o.vram_reserve_mib << 20) : 0;
-        const uint64_t cap = std::min<uint64_t>(budget, (uint64_t) free_room);
-        for (const auto& pr : profile) {
-            const uint64_t b = (lay.blob_bytes(pr.first) + 255) / 256 * 256;
-            if (used + b > cap) break;
-            used += b;
-            sized_slots.push_back((int64_t) lay.blob_bytes(pr.first));
+        const size_t free_room = free_b > ((size_t) o.vram_reserve_mib << 20) ? free_b - ((size_t) o.vram_reserve_mib << 20) : 0;
+        std::vector<int64_t> pair_bytes;
+        pair_bytes.reserve(profile.size());
+        for (const auto& pr : profile) pair_bytes.push_back((int64_t) lay.blob_bytes(pr.first));
+        // An explicit `--expert-cache N` packs EXACTLY the first N pairs: the resident set is a pure function of
+        // N, which is what a pinned geometry means (two engines of one comparison must build the same set - the
+        // free-VRAM-capped packing here once built 5621 vs 5616 slots from the same flag and split an interim
+        // request's answer, bench/results/prefill-preempt 2026-10-03).  Auto keeps sizing from what is free.
+        // If the requested pairs do not fit, the allocation below fails saying so - the same warning the layer
+        // split gives names the knob first.
+        const uint64_t cap = auto_cache ? std::min<uint64_t>(budget, (uint64_t) free_room) : UINT64_MAX;
+        sized_slots = strata::core::pack_expert_slot_bytes(pair_bytes, cap,
+                                                           auto_cache ? profile.size() : (size_t) o.expert_cache);
+        if (!auto_cache) {
+            uint64_t need = 0;
+            for (const int64_t s : sized_slots) need += (uint64_t) (s + 255) / 256 * 256;
+            if (need > (uint64_t) free_room)
+                std::fprintf(stderr, "strata generate: WARNING: --expert-cache %d needs %lld MiB but only %zu MiB is "
+                                     "free past the %d MiB reserve; if the cache does not fit, a smaller "
+                                     "--expert-cache (or --expert-cache auto) makes the start work\n",
+                             o.expert_cache, (long long) (need >> 20), (size_t) (free_room >> 20), o.vram_reserve_mib);
         }
         o.expert_cache = (int) sized_slots.size();
     }

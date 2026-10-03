@@ -9,7 +9,8 @@ from pathlib import Path
 from collections import defaultdict, deque
 from types import SimpleNamespace
 from unittest.mock import Mock
-from tools.prefill_preempt_test import engine_args, state_differences, HASH_RE, parse_state_match, output_differences, Engine, run_scenario
+from tools.prefill_preempt_test import (engine_args, state_differences, HASH_RE, parse_state_match,
+                                        output_differences, require_pinned_geometry, Engine, run_scenario)
 
 
 class HarnessChecks(unittest.TestCase):
@@ -107,7 +108,7 @@ class HarnessChecks(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'exit=0'):
             e.close()
 
-    def repeated_scenario(self, positions):
+    def repeated_scenario(self, positions, health_token=7):
         e = self.engine_stub()
         e.gen, e.send, e.state_hash = Mock(), Mock(), Mock(return_value={})
         e.lines.put('PP 2048 8683 1 1')
@@ -119,6 +120,8 @@ class HarnessChecks(unittest.TestCase):
             e.lines.put(f'RESUME {pos} id=1')
         e.lines.put('T 7 id=1')
         e.lines.put('DONE 1 8683 0 0 length id=1')
+        e.lines.put(f'T {health_token}')                  # the post-A health request matches the B reference
+        e.lines.put('DONE 1 8 0 0 length')
         ref = {'tokens': [7], 'finish': 'length'}
         return run_scenario(e, 'repeat-test', {'trigger': 2048, 'preempts': [2, 3, 4], 'cancel': False},
                             [1] * 8683, [2] * 8, ref, ref, {}, 1, 2048)
@@ -132,23 +135,41 @@ class HarnessChecks(unittest.TestCase):
         failures = self.repeated_scenario([2048, 2048, 4096])
         self.assertTrue(any('advance a full chunk' in f for f in failures))
 
+    def test_engine_must_serve_a_matching_request_after_a_done(self):
+        self.assertEqual(self.repeated_scenario([2048, 4096, 6144]), [])
+        failures = self.repeated_scenario([2048, 4096, 6144], health_token=999)
+        self.assertTrue(any("after A's DONE" in f for f in failures))
+
     def test_snapshot_budget_from_config_does_not_disable_boundary_tests(self):
         cfg = {'args': ['--prefill-preempt-snapshot-mib', '1']}
         args = engine_args(cfg, prefill=2048, preempt=True)
         self.assertEqual(args.count('--prefill-preempt-snapshot-mib'), 1)
         self.assertEqual(args[args.index('--prefill-preempt-snapshot-mib') + 1], '4096')
 
+    def test_geometry_mismatch_fails_before_tokens_are_compared(self):
+        # the repeat-3 5-vs-128 failure: both arms silently built different resident expert sets from the same pin
+        e = self.engine_stub()
+        e.info = {'expert_slots': '5616'}
+        with self.assertRaisesRegex(RuntimeError, '5616.*not the pinned 5621'):
+            require_pinned_geometry(e, 5621, 'control-repeat-3')
+        e.info = {'expert_slots': '5621'}
+        self.assertIsNone(require_pinned_geometry(e, 5621, 'control-repeat-3'))
+        e.info = {}
+        with self.assertRaisesRegex(RuntimeError, 'not the pinned'):
+            require_pinned_geometry(e, 5621, 'preempt-repeat-3')
+
     @unittest.skipIf(os.name == 'nt', 'executable Python fixture uses a Unix shebang')
     def test_real_pipe_records_pump_times_and_clean_quit(self):
         with tempfile.TemporaryDirectory() as tmp:
             exe = Path(tmp) / 'fake-engine'
-            exe.write_text('#!' + sys.executable + '\n' + '''import sys
+            exe.write_text('#!' + sys.executable + '\n' + '''import sys, time
 print('INFO expert_slots=100', flush=True)
 print('READY 10000', flush=True)
 for line in sys.stdin:
     if line.strip() == 'QUIT':
         break
     if line.startswith('GEN '):
+        time.sleep(0.3)                      # alive long enough for the RSS sampler to see it
         print('RESUME 0 id=2', flush=True)
         print('T 123 id=2', flush=True)
         print('DONE 1 8 1 1 stop id=2', flush=True)
@@ -167,6 +188,9 @@ for line in sys.stdin:
             events = [json.loads(line) for line in (Path(tmp) / 'engine.protocol.jsonl').read_text().splitlines()]
             self.assertEqual(events[-1]['event'], 'quit_exit')
             self.assertEqual(events[-1]['returncode'], 0)
+            if os.name == 'posix':
+                # the resident-set timeline that correlates a silent kill with (or clears it of) memory pressure
+                self.assertTrue(any(ev['event'] == 'rss' and ev['vm_rss_kib'] > 0 for ev in events))
 
 
 if __name__ == '__main__':
