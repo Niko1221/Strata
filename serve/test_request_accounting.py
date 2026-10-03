@@ -22,6 +22,7 @@ class ClockedThinkingEngine(ThinkingEngine):
         self.attempts = 0
         self.done = []
         self.fail_continuation = False
+        self.cancel_continuation = False
 
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
         self.attempts += 1
@@ -35,6 +36,8 @@ class ClockedThinkingEngine(ThinkingEngine):
                 generated += 1
                 stopped = token in self.tok.encode("<|im_end|>", parse_special=True)
                 yield token
+                if self.cancel_continuation and not first and generated == 3:
+                    cancel.set()
         finally:
             # The continuation reuses the original prompt plus the generated thinking.
             reused = self.REUSED if first else len(self.prompts[0]) + self.done[0]["generated"]
@@ -87,17 +90,25 @@ class RequestAccounting(unittest.TestCase):
         self.assertEqual(usage["prompt_tokens_details"]["cached_tokens"], self.engine.REUSED)
         self.assertEqual(usage["total_tokens"], original + usage["completion_tokens"])
 
-    def assert_request_work(self, timings):
+    def assert_request_work(self, timings, completion_tokens, finish="stop"):
         original = len(self.engine.prompts[0])
+        self.assertEqual(len(self.engine.done), 2)
+        native_generated = sum(done["generated"] for done in self.engine.done)
         self.assertEqual((timings["cache_n"], timings["prompt_n"]), (5, original - 5))
         self.assertEqual((timings["prompt_ms"], timings["predicted_ms"]), (47.0, 280.0))
+        self.assertEqual(timings["predicted_n"], completion_tokens)
+        self.assertGreater(completion_tokens, native_generated, "wrap-up tokens count as output, not native decode")
+        self.assertEqual(timings["predicted_per_second"], round(native_generated / 0.280, 1))
+        self.assertEqual(timings["predicted_per_token_ms"], round(280.0 / native_generated, 3))
         self.assertEqual((timings["draft_n"], timings["draft_n_accepted"]), (29, 15))
         code, raw = self.request("/metrics")
         self.assertEqual(code, 200)
         metrics = json.loads(raw)
         row, totals = metrics["requests"][0], metrics["totals"]
+        self.assertEqual(row["finish"], finish)
         self.assertEqual((row["prompt_tokens"], row["reused"], row["prompt_read"]), (original, 5, original - 5))
-        self.assertEqual(row["engine_generated"], sum(done["generated"] for done in self.engine.done))
+        self.assertEqual(row["engine_generated"], native_generated)
+        self.assertEqual(row["decode_tok_s"], timings["predicted_per_second"])
         self.assertEqual((row["prompt_ms"], row["decode_ms"]), (47.0, 280.0))
         self.assertEqual((row["ram_blobs"], row["file_blobs"], row["file_mb"]), (4, 6, 4.0))
         self.assertAlmostEqual(row["hit_rate"], 16 / 18, places=3)
@@ -113,14 +124,25 @@ class RequestAccounting(unittest.TestCase):
         self.assertEqual(response["choices"][0]["message"]["content"], self.engine.ANSWER)
         self.assertEqual(response["choices"][0]["finish_reason"], "stop")
         self.assert_original_input(response["usage"])
-        self.assert_request_work(response["timings"])
+        self.assert_request_work(response["timings"], response["usage"]["completion_tokens"])
 
     def test_openai_stream_keeps_original_cache_and_all_segment_work(self):
         events = self.chat(stream=True)
         final = events[-1]
         self.assertEqual(final["choices"][0]["finish_reason"], "stop")
         self.assert_original_input(final["usage"])
-        self.assert_request_work(final["timings"])
+        self.assert_request_work(final["timings"], final["usage"]["completion_tokens"])
+
+    def test_cancelled_continuation_keeps_original_input_and_counts_each_done_once(self):
+        self.engine.cancel_continuation = True
+        events = self.chat(stream=True)
+        final = events[-1]
+        content = "".join(event["choices"][0]["delta"].get("content", "") for event in events)
+        self.assertEqual(content, "The")
+        self.assertEqual(final["choices"][0]["finish_reason"], "stop")
+        self.assertEqual([done["generated"] for done in self.engine.done], [20, 3])
+        self.assert_original_input(final["usage"])
+        self.assert_request_work(final["timings"], final["usage"]["completion_tokens"], finish="cancel")
 
     def test_anthropic_nonstream_classifies_only_original_input_as_cached(self):
         usage = self.chat("/v1/messages")["usage"]
