@@ -101,6 +101,9 @@ Prompts are read in chunks that flow through the cards in turn; while a later ca
 already reads chunk c+1. Conversation checkpoints save and restore every card's state; the adaptive expert swaps copy
 into the card that owns the layer.
 
+The opt-in conversation cache disk store (`--conversation-cache-disk`) saves that state in files: one record per
+conversation, with one image per stage. It accepts `--layer-split`, unlike the host-RAM conversation cache.
+
 ## Limits (for now)
 
 - **Works across cards** (bench/results/2026-09-29-layer-split-limits):
@@ -108,6 +111,9 @@ into the card that owns the layer.
   - control vectors and the experimental speed projection: each card holds the vector's tables, switched on and
     off per request on all of them;
   - KV streaming (`--kv-resident`): each card streams the KV of its own session;
+  - the conversation cache disk store (`--conversation-cache-disk`): one record per conversation holds one image
+    per stage; a run reuses a record only when the layer split, the devices, and the other compatibility inputs
+    match;
   - the MTP draft layer's own K/V: when a window is set and is smaller than the context (`--mtp-window`;
     default 32,768 cells; a window of 0, or at least the context, keeps the draft layer's K/V fully in VRAM),
     the draft layer's K/V is a ring of that window over its own pinned host copy, independent of

@@ -94,6 +94,20 @@ For a Tesla V100, build with a CUDA 12.x toolkit and retain `sm_70` support. See
 
 The server normally listens on localhost. If you expose it to other machines, configure an API key and use a trusted network. Do not publish secrets or private configuration in issues, benchmark results, or pull requests.
 
+### Conversation cache disk (opt-in)
+
+The conversation state has three tiers. Tier 1 (L1) is the live session in GPU memory; it always exists. Tier 2 (L2) is the optional host-RAM cache (`--conversation-cache-mib`). Tier 3 (L3) is an optional disk store that keeps parked conversations in files across restarts.
+
+To use the disk store, add `--conversation-cache-disk strata-conversations --conversation-cache-disk-gib 25` to the engine arguments. The path and a positive GiB budget are required together. The store is off by default, it needs `--serve`, it works with `--conversation-cache-mib 0`, and it supports `--layer-split` on multiple GPUs. Optional: `--conversation-cache-disk-slots N` caps the record count, and `--conversation-cache-disk-min-free-mib N` keeps free space on the filesystem.
+
+A record is reused only when the prompt starts with exactly its tokens and images and its control-vector mode matches. The files are checksummed and versioned, the engine writes each one through a temporary file, and it removes invalid files at startup. The store evicts the least recently used record when it reaches its byte budget, its record cap, or the free-space floor. A corrupt or incompatible record is removed, and the request falls back to normal prompt processing.
+
+The disk tier accelerates conversation alternation and server restarts. It does not add concurrent execution: the engine still serves one request at a time. GPU capture must complete before the active session is overwritten, but the file write runs asynchronously while the next request uses the GPUs. Restore is synchronous. Save and restore stage the record in host RAM, and the engine releases that memory after the file operation. Each park writes a full record to the storage device, so frequent switching consumes flash write endurance; stop the server and delete the directory to clear the cache. Size the GiB budget for the conversations you want to keep, not for one record. See [details](docs/DETAILS.md#using-it) for the full behavior, limits, and sizing guidance.
+
+#### Measured V100 result
+
+On this fork's two-V100, layer-split configuration, resuming a 33,725-token conversation from a 25 GiB NVMe cache took 1,614.6 ms to read and 315.8 ms to restore. The complete resumed prompt phase, including 22 new tokens, took 3,015.1 ms. A cold read of the same 33,725-token prefix took 20,332.7 ms. This is a **6.74x speed-up** and an **85.2% prompt-latency reduction** for the resumed request. The 943.6 MiB record restored byte-exact main-model state and identical output across both GPUs. Restart recovery passed byte-exact parity, and corrupt-record fallback produced matching output. See [the benchmark report](benchmarks/v100-l3-conversation-cache-2026-10-03.md).
+
 ## Contributing
 
 Contributions are welcome. You do not need a V100 to help: documentation, tests, setup, server behavior, API compatibility, and improvements for other supported devices are useful. V100-specific code and performance results benefit from validation on real Volta hardware.

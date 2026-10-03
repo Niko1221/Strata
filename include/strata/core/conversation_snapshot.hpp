@@ -76,4 +76,20 @@ ConversationRestore conversation_snapshot_restore(const SavedConversation& image
                                                    const ModelGeometry& g, const QsaState& draft,
                                                    std::string& error);
 
+// ---- Stage images (the L3 disk tier).  A layer split parks as one record per conversation: one
+// image per stage, each holding only that stage's carve and its own K/V.  The stage that owns the
+// MTP drafter uses the draft variants above (its kv.back() is the draft layer); every other stage
+// uses these, which save and restore the session's carve alone (kv.size() == owned QSA layers).
+// A stage image never nests another stage's parts.
+bool conversation_stage_bytes(const ConversationView& view, const SessionState& session,
+                              const ModelGeometry& g, size_t& bytes, std::string& error);
+bool conversation_stage_save(SavedConversation& image, const ConversationView& view,
+                             const SessionState& session, const ModelGeometry& g, std::string& error);
+bool conversation_stage_validate(const SavedConversation& image, const SessionState& session,
+                                 const ModelGeometry& g, std::string& error);
+// Same contract as conversation_snapshot_restore: invalid images are rejected before any CUDA
+// call, a transfer failure may leave partial state and the caller MUST NOT continue inference.
+ConversationRestore conversation_stage_restore(const SavedConversation& image, SessionState& session,
+                                               const ModelGeometry& g, std::string& error);
+
 } // namespace strata::core
