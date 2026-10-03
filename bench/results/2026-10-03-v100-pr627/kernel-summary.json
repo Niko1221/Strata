@@ -1,0 +1,24 @@
+{
+  "upstream_revision": "bf4c315",
+  "baseline_revision": "53ec8b0",
+  "kv_gather_32k_2051_ids": {
+    "baseline_us": [16.19, 16.30],
+    "candidate_us": [14.62, 14.68],
+    "parity": "passed, including 4-byte-offset code pool fallback"
+  },
+  "gdn_recurrence_4096_tokens": {
+    "baseline_ms": 4.2288,
+    "candidate_ms": 3.9343,
+    "fp32_output_max_relative_to_reference_scale": 0.00001778,
+    "fp32_state_max_relative_to_reference_scale": 0.0000003353,
+    "fp16_output_max_relative_to_reference_scale": 0.0004042,
+    "nonfinite_count": 0,
+    "timing_repeats": 10
+  },
+  "validation": {
+    "ctest": {"passed": 3, "tests": ["kv_q8_parity", "gdn_parity", "prefill_gdn_parity"]},
+    "candidate_needle": {"passed": 6, "total": 6, "lengths": ["1k", "32k"], "depths_percent": [10, 50, 90]},
+    "baseline_needle": {"passed": 2, "total": 2, "lengths": ["1k", "32k"], "depths_percent": [50]},
+    "candidate_openai_diagnostics": {"passed": 5, "total": 5}
+  }
+}

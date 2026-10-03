@@ -425,6 +425,16 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_link_libraries(prefill_gemm_parity PRIVATE strata_prefill CUDA::cudart)
   add_test(NAME prefill_gemm_parity COMMAND prefill_gemm_parity)
 
+  if(STRATA_BUILD_TESTS AND STRATA_ENABLE_CUDA)
+    # the GDN prompt recurrence: the fast four-accumulator chain split (STRATA_GDN_REC_FAST=1) against the baseline
+    # pipelined kernel on the same bounded inputs (exit 77 without a CUDA device)
+    add_executable(prefill_gdn_parity tests/cuda/prefill_gdn_parity.cpp)
+    target_include_directories(prefill_gdn_parity PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+    target_link_libraries(prefill_gdn_parity PRIVATE strata_prefill CUDA::cudart)
+    add_test(NAME prefill_gdn_parity COMMAND prefill_gdn_parity)
+    set_tests_properties(prefill_gdn_parity PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
+  endif()
+
   add_executable(strata src/program/generate.cpp)
   target_include_directories(strata PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(strata PRIVATE strata_engine strata_prefill strata_spec ${_strata_gpu_runtime_target})
