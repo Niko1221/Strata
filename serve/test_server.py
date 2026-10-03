@@ -296,6 +296,41 @@ class ToolCallTerminators(unittest.TestCase):
                         self.assertEqual(json.loads(streamed), {"path": "doc.md", "content": self.CONTENT})
 
 
+class ToolCallTagInProse(unittest.TestCase):
+    """A reply that names the `<tool_call>` tag in its prose before the real call keeps the tag as content and still
+    returns the call; it was a "malformed tool call" ValueError that ended the request.  A call is the tag followed
+    (after whitespace) by `<function=`."""
+    SCHEMA = ToolCallTerminators.SCHEMA
+    CALL = ("<tool_call>\n<function=write>\n<parameter=path>\na.md\n</parameter>\n<parameter=content>\nhi\n"
+            "</parameter>\n</function>\n</tool_call>")
+
+    def parse(self, text, stream_tools, step):
+        from serve.frontend import OutputParser
+        p = OutputParser(thinking=True, tools=self.SCHEMA, stream_tools=stream_tools)
+        evs = []
+        for i in range(0, len(text), step):
+            evs += p.feed(text[i:i + step])
+        evs += p.finish()
+        return ([e.call.arguments for e in evs if e.kind == "tool_call"],
+                "".join(e.text for e in evs if e.kind == "content"))
+
+    def test_named_tag_is_content(self):
+        call = {"path": "a.md", "content": "hi"}
+        for prose in ("I will use the `<tool_call>` format now.", "Next I emit a <tool_call> block.",
+                      "Two tags <tool_call> and <tool_call>x, then the call."):
+            for stream_tools in (False, True):
+                for step in (1, 7, 10_000):
+                    with self.subTest(prose=prose, stream_tools=stream_tools, step=step):
+                        calls, content = self.parse(f"</think>\n\n{prose}\n{self.CALL}", stream_tools, step)
+                        self.assertEqual((calls, content), ([call], prose))
+
+    def test_tag_alone_at_the_end_is_content(self):
+        for step in (1, 7, 10_000):
+            with self.subTest(step=step):
+                self.assertEqual(self.parse("</think>\n\nThe format starts with <tool_call>", False, step),
+                                 ([], "The format starts with <tool_call>"))
+
+
 class UnfinishedToolCall(unittest.TestCase):
     """#211: a call the output ends inside is not reported as a whole one - its streamed JSON is not closed and the
     finish reason is not "tool_calls" / "tool_use" - so a client can tell it from a call to run."""
