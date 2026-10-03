@@ -1,0 +1,25 @@
+{
+  "baseline_revision": "1026dff",
+  "candidate_kernel_revision": "584815e",
+  "upstream_kernel_revision": "ee0843da07ee8da96fa0b5afebfdd8dde6c0b587",
+  "measured_after_reboot": true,
+  "workload": {"context": 32768, "queries": 2048, "timed_repetitions": 5},
+  "gpu0": {
+    "int8_prompt_ms": {"baseline_fork_tensor_core": 19.463, "candidate": 14.041},
+    "fp16_prompt_ms": {"baseline_fork_tensor_core": 36.200, "candidate": 28.960},
+    "int8_max_absolute_error_vs_fp64": {"baseline": 0.00000556, "candidate": 0.00000508},
+    "fp16_max_absolute_error_vs_fp64": {"baseline": 0.00000529, "candidate": 0.00000529}
+  },
+  "gpu1": {
+    "int8_candidate_prompt_ms": 13.998,
+    "fp16_candidate_prompt_ms": 29.061,
+    "int8_max_absolute_error_vs_fp64": 0.00000508,
+    "fp16_max_absolute_error_vs_fp64": 0.00000529
+  },
+  "validation": {
+    "qsa_prompt_attn_parity": "passed on both GPUs for int8 and fp16 at 32K, and int8 at 1500 and 2100 cells",
+    "kv_hybrid_parity": "passed on both GPUs, including K8V4 prompt attention",
+    "bitwise_equivalent": false,
+    "non_volta_hardware_tested": false
+  }
+}

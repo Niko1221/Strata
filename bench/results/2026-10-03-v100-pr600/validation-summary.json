@@ -1,0 +1,11 @@
+{
+  "default_prompt_parity": "passed",
+  "int8_original_kernel_control_parity": "passed",
+  "default_int8_ms": 13.782,
+  "original_control_int8_ms": 19.509,
+  "needle_passed": 7,
+  "needle_total": 7,
+  "openai_diagnostics_passed": 5,
+  "openai_diagnostics_total": 5,
+  "review": "no concrete introduced correctness defect found"
+}

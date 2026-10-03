@@ -1,0 +1,18 @@
+[
+  {
+    "label": "131072",
+    "target": 131072,
+    "prompt_tokens": 131063,
+    "reused": 0,
+    "prompt_ms": 67706.9,
+    "prompt_tok_s": 1935.7,
+    "output_tokens": 128,
+    "decode_ms": 2255.4,
+    "decode_tok_s": 56.8,
+    "hit_rate": 0.979,
+    "duration_s": 70.0,
+    "wall_s": 70.7,
+    "seed": 600,
+    "max_tokens": 128
+  }
+]
