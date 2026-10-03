@@ -3,6 +3,7 @@
 #include "strata/core/weights.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/kernels/native_mmvq.hpp"
+#include "strata/platform/memory.hpp"
 
 #include <cuda_runtime.h>
 #include <algorithm>
@@ -150,6 +151,10 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                 if (next != offsets.end() && bytes > *next - tensor.offset) {
                     err = "native dense: overlapping payload " + tensor.name; return false;
                 }
+                // the uploads below read these: ask for them now so the reads overlap
+                if (eligible(tensor, include_ple_key) && !outside(tensor.name) &&
+                    strata::kernels::native_mmvq_supported(tensor.type))
+                    strata::platform::advise_willneed(gguf.tensor_data(tensor), bytes);
             }
             for (const auto& tensor : gguf.tensors()) {
                 if (!eligible(tensor, include_ple_key) || outside(tensor.name)) continue;
