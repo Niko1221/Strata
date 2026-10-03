@@ -365,6 +365,10 @@ bool qsa_prompt_attn_xmx(const float* q, const QsaAttnPools& pools, const int32_
                          const QsaShapes& s, float* attn, int64_t n_q, void* stream) {
     // STRATA_PROMPT_ATTN_XMX=1 (64-cell chunks) or =32 (32-cell chunks); unset or 0: the caller's fallback
     static const int mode = [] { const char* v = std::getenv("STRATA_PROMPT_ATTN_XMX"); return v ? std::atoi(v) : 0; }();
+#ifdef STRATA_SYCL_NO_XMX
+    (void) q; (void) pools; (void) ids; (void) steps; (void) cap; (void) s; (void) attn; (void) n_q; (void) stream; (void) mode;
+    return false;
+#else
     if (mode == 0 || n_q <= 0) return false;
     if (pools.k_q4 != nullptr || s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !ids || !steps ||
         !pools.page_table)
@@ -381,5 +385,6 @@ bool qsa_prompt_attn_xmx(const float* q, const QsaAttnPools& pools, const int32_
     if (!ch64 && have < Layout<32>::bytes) return false;
     return ch64 ? dispatch<64>(q, pools, ids, steps, cap, s, attn, n_q, st)
                 : dispatch<32>(q, pools, ids, steps, cap, s, attn, n_q, st);
+#endif
 }
 }  // namespace strata::kernels

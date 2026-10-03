@@ -5314,6 +5314,10 @@ void gemm_kernel(Src src, const sycl::half* X, int K, int slab_k, float* Y, int6
 
 bool xmx_gemm_iq(int ty, const void* gate, const void* up, int64_t K, int n_out, const uint16_t* X, int M, float* Y,
                  int64_t ldy, void* stream) {
+#ifdef STRATA_SYCL_NO_XMX
+    (void) ty; (void) gate; (void) up; (void) K; (void) n_out; (void) X; (void) M; (void) Y; (void) ldy; (void) stream;
+    return false;
+#else
     if (!is_iq(ty) || ty == 16 || ty == 17 || ty == 29 || ty == 23 || ty == 11) return false;   // dq_dispatch covers these; the rest untested here
     if (M <= 0 || n_out <= 0 || n_out % xmx::NT != 0 || K <= 0) return false;
     const bool by_block = (K % 256) == 0;
@@ -5343,5 +5347,6 @@ bool xmx_gemm_iq(int ty, const void* gate, const void* up, int64_t K, int n_out,
             });
     });
     return true;
+#endif
 }
 }  // namespace strata::kernels
