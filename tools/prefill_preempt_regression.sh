@@ -6,7 +6,7 @@
 #   3. the engine parity harness on the real model (tools/prefill_preempt_test.py, GPU)
 #
 #   tools/prefill_preempt_regression.sh 3
-set -u
+set -u -o pipefail
 cd "$(dirname "$0")/.."
 N=${1:-3}
 BUILD=build

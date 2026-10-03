@@ -68,8 +68,13 @@ class Engine:
         self.max_context = int(ready.split()[1])
 
     def _pump(self):
-        for line in self.proc.stdout:
-            self.lines.put(line.rstrip("\n"))
+        # explicit readline (not `for line in`): the file iterator's read-ahead can sit on a partial buffer
+        # while the engine waits for the other end of a conversation, and lines stop flowing
+        try:
+            for line in iter(self.proc.stdout.readline, ""):
+                self.lines.put(line.rstrip("\n"))
+        except (ValueError, OSError):
+            pass
         self.lines.put(None)
 
     def _next_line(self, pred, timeout: float) -> str | None:
@@ -333,6 +338,9 @@ def run_scenario(e: Engine, name: str, sc: dict, a_ids, b_ids, ref_a, ref_b, ref
                 break
             e.send("RESUME id=1")
             if not last:
+                # wait for the engine's RESUME echo (the restore is done) before offering the next boundary:
+                # a YIELD that lands while the resume is still being processed would be wiped by it
+                e._next_line(lambda l: l.startswith("RESUME"), timeout=120)
                 e.gen(sc["preempts"][i + 1], b_ids, max_new)   # A reads one chunk, parks again for the next one
                 e.send("YIELD")
             if last:
