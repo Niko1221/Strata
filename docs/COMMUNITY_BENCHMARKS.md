@@ -15,6 +15,11 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](../bench/results/2026-09-30-community-rtx-5090/README.md):
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
   each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.
+- [2026-10-03: RTX 4090, Ryzen 9 7950X, 48 GB RAM](../bench/results/2026-10-03-community-rtx4090-iq3s-140k-code/README.md):
+  Strata 0.1.38, Flash-Next IQ3_S, 143,360-token context, `draft_vocab=cyrillic`;
+  three runs each at ~4,096, ~32,768, and ~125,000 prompt tokens, plus six recall
+  checks (6/6 found). A paired run with Russian prompts is in
+  [2026-10-03-community-rtx4090-iq3s-140k-ru](../bench/results/2026-10-03-community-rtx4090-iq3s-140k-ru/README.md).
 
 ## What to record
 
