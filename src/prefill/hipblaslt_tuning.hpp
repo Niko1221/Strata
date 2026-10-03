@@ -48,7 +48,14 @@ public:
                     err = "invalid tuning header at line " + std::to_string(line_number);
                     return false;
                 }
-                if (arch != expected_arch) {
+                // A table's solution IDs are scoped to its hipBLASLt version and its architecture FAMILY:
+                // gfx1200/gfx1201 (RDNA4) share them, as gfx1100/gfx1101/gfx1102 (RDNA3) do.  A card can report
+                // its sibling - an R9700 (gfx1201) under HSA_OVERRIDE_GFX_VERSION=12.0.0 reports gfx1200 - and
+                // must still load its own calibration.  A solution ID that does not exist on the running card
+                // fails the per-solution gate in prefill/gemm.cu (getAlgosFromIndex / matmulIsAlgoSupported) and
+                // falls back to hipBLASEx, so the header gate does not need to be exact.
+                const auto family = [](const std::string& a) { return a.substr(0, 5); };  // "gfx12", "gfx11"
+                if (family(arch) != family(expected_arch)) {
                     err = "tuning architecture mismatch: file=" + arch + " runtime=" + expected_arch;
                     return false;
                 }
