@@ -38,11 +38,18 @@ class FakeProc:
         cmd, _, path = s.strip().partition(" ")
         script = self.engine.script
         if script is not None:                      # a scripted answer: a list of lines, None = the process ends
-            for line in script:
-                if isinstance(line, float):
-                    time.sleep(line)
-                else:
-                    self.engine.lines.put(line)
+            # played by its own thread, like the real engine's output: write() returns at once, so the server's
+            # wait (and its deadline) is already running when a delayed line arrives
+            def play():
+                for line in script:
+                    if self.killed:
+                        return
+                    if isinstance(line, float):
+                        time.sleep(line)
+                    else:
+                        self.engine.lines.put(line)
+            self.player = threading.Thread(target=play, daemon=True)
+            self.player.start()
             return
         if cmd == "SAVE":
             if self.engine.fail:
@@ -105,9 +112,18 @@ class Slots(unittest.TestCase):
         self.engine.fail = False
         self.engine.script = None
         self.engine.silence_s = 300.0
-        self.engine.ended = False
-        self.engine.proc = FakeProc(self.engine)
+        self.fresh_engine()
         self.svc.slot_save_path = self.dir.name
+
+    def fresh_engine(self):
+        self.engine.ended = False
+        old = getattr(self.engine.proc, "player", None)
+        if old is not None:                          # the previous scripted engine has finished...
+            self.engine.proc.killed = True
+            old.join(timeout=5)
+        while not self.engine.lines.empty():         # ...and left no line for the next exchange
+            self.engine.lines.get_nowait()
+        self.engine.proc = FakeProc(self.engine)
 
     def post(self, path, body, headers=None):
         req = urllib.request.Request(self.base + path, data=json.dumps(body).encode(),
@@ -214,10 +230,70 @@ class Slots(unittest.TestCase):
         self.engine.silence_s = 0.3
         self.engine.script = [0.2, "SESSION 268435456 1198691396\n", 0.2, "SESSION 536870912 1198691396\n", 0.2,
                               "SAVED 63000 1198691396 2000.0\n"]
+        t0 = time.monotonic()
         s, b = self.post("/slots/0?action=save", {"filename": "long.bin"})
         self.assertEqual(s, 200, b)
+        self.assertGreater(time.monotonic() - t0, 0.5)       # the lines arrived during the wait, past its 0.3 s
         self.assertEqual(b["n_written"], 1198691396)
         self.assertFalse(self.engine.ended)
+
+    def test_a_small_save_reports_its_only_partial_block(self):
+        """B: a file below one 16 MiB block still reports (the start, then its last partial block)."""
+        self.engine.silence_s = 0.3
+        self.engine.script = ["SESSION 0 56834\n", 0.2, "SESSION 56834 56834\n", 0.2, "SAVED 120 56834 410.0\n"]
+        s, b = self.post("/slots/0?action=save", {"filename": "small.bin"})
+        self.assertEqual(s, 200, b)
+        self.assertEqual(b["n_written"], 56834)
+        self.assertFalse(self.engine.ended)
+
+    def test_a_blocking_step_gets_its_announced_allowance(self):
+        """B: SWAIT gives one non-streaming step (a flush, the device transfer) its own bounded wait."""
+        self.engine.silence_s = 0.3
+        self.engine.script = ["SESSION 1198691396 1198691396\n", "SWAIT flush 1\n", 0.7, "SWAIT publish 1\n", 0.7,
+                              "SAVED 63000 1198691396 2000.0\n"]
+        t0 = time.monotonic()
+        s, b = self.post("/slots/0?action=save", {"filename": "flush.bin"})
+        self.assertEqual(s, 200, b)
+        self.assertGreater(time.monotonic() - t0, 1.3)       # longer than the silence limit, twice
+        self.assertFalse(self.engine.ended)
+        Path(self.dir.name, "flush.bin").write_bytes(b"x")    # the scripted engine wrote nothing; restore needs a file
+        self.engine.script = ["SESSION 16777216 1198691396\n", 0.2, "SWAIT validate 1\n", 0.7, "SWAIT transfer 1\n", 0.7,
+                              "RESTORED 63000 1198691396 900.0\n"]
+        s, b = self.post("/slots/0?action=restore", {"filename": "flush.bin"})
+        self.assertEqual(s, 200, b)
+
+    def test_a_blocking_step_that_never_ends_is_ended(self):
+        """B: the allowance is a bound, not a heartbeat: a step that outlives it ends the engine."""
+        self.engine.silence_s = 0.3
+        self.engine.script = ["SWAIT flush 1\n"]               # then nothing
+        t0 = time.monotonic()
+        s, b = self.post("/slots/0?action=save", {"filename": "stuck.bin"})
+        took = time.monotonic() - t0
+        self.assertEqual(s, 500, b)
+        self.assertGreater(took, 0.9)
+        self.assertLess(took, 5)
+        self.assertIn("blocking step allowed 1 s", b["error"]["message"])
+        self.assertTrue(self.engine.ended and self.engine.proc.killed)
+
+    def test_progress_ends_the_allowance(self):
+        """B: after a SESSION line the ordinary silence limit applies again (the allowance was for one step)."""
+        self.engine.silence_s = 0.3
+        self.engine.script = ["SWAIT transfer 2\n", "SESSION 1 2\n", 0.8, "SAVED 1 2 1.0\n"]
+        s, b = self.post("/slots/0?action=save", {"filename": "reset.bin"})
+        self.assertEqual(s, 500, b)
+        self.assertIn("said nothing", b["error"]["message"])
+        self.assertNotIn("blocking step", b["error"]["message"])
+        self.assertTrue(self.engine.ended)
+
+    def test_malformed_allowances_end_the_engine(self):
+        for script in (["SWAIT flush 0\n"], ["SWAIT flush 3601\n"], ["SWAIT 5\n"], ["SWAIT flush x\n"],
+                       ["SWAIT flush -1\n"], ["SWAIT fl:sh 5\n"], ["SWAIT flush 5 extra\n"]):
+            with self.subTest(script=script):
+                self.fresh_engine()
+                self.engine.script = script + [0.1, "SAVED 1 2 1.0\n"]
+                s, b = self.post("/slots/0?action=save", {"filename": "bad.bin"})
+                self.assertEqual(s, 500, b)
+                self.assertTrue(self.engine.ended and self.engine.proc.killed)
 
     def test_a_silent_engine_is_ended_not_waited_for(self):
         self.engine.silence_s = 0.3

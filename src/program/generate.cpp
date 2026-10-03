@@ -1021,13 +1021,6 @@ bool adapt_nowait() {
     return v;
 }
 
-int argmax(const std::vector<float>& v) {
-    int best = 0;
-    for (size_t i = 1; i < v.size(); ++i)
-        if (v[i] > v[best]) best = (int) i;
-    return best;
-}
-
 // ---- --serve's conversation cache.  A chat or an agent sends the whole conversation again with every request, and
 // reading it again is what made a long session wait minutes for every turn.  What a sequence leaves behind splits in
 // two, and only one half needs copying:
@@ -5208,7 +5201,8 @@ int main(int argc, char** argv) {
         // that change what the saved bytes mean - the rope (K is cached post-RoPE), the loaded control vector, the
         // K/V format and the arithmetic switches.  Sampling, seeds, draft tuning and the expert tier are not in it.
         std::optional<uint64_t> model_fp, config_fp;
-        auto session_identity = [&](strata::core::SessionFileIdentity& id, std::string& e) -> bool {
+        auto session_identity = [&](strata::core::SessionFileIdentity& id, std::string& e,
+                                    const std::function<void()>& next_file) -> bool {
             if (!model_fp) {
                 // what the loaders actually resolved: the CLI inputs, the pack's files and - from the expert source
                 // itself - every file its experts were read from (native_experts.txt can name GGUFs per layer/role)
@@ -5234,7 +5228,9 @@ int main(int argc, char** argv) {
                     files.push_back({"mtp draft_vocab.bin", o.mtp + "/draft_vocab.bin", true});
                 }
                 uint64_t fp = 0;
-                if (!strata::core::session_model_fingerprint(files, fp, e, [] { strata::core::progress_beat(); }))
+                // each file is one blocking read of at most 2 MiB (head and tail): announced before it starts
+                if (next_file) next_file();
+                if (!strata::core::session_model_fingerprint(files, fp, e, next_file))
                     return false;
                 model_fp = fp;
             }
@@ -5821,6 +5817,8 @@ int main(int argc, char** argv) {
                         const uint64_t b = p.beats.load();
                         if (!p.busy.load() || b != last) { last = b; ticks_at = p.ticks.load(); since = now; continue; }
                         if (now - since < std::chrono::seconds(limit)) continue;
+                        // a blocking step's explicit allowance (session files): still within it, not yet stuck
+                        if (strata::core::progress_now_ms() < p.allow_until_ms.load()) continue;
                         std::fprintf(stderr, "strata serve: no progress for %d s during a request (%s) - stopping "
                                              "the engine so the server starts it again (issue #29)\n",
                                      limit, stage_text().c_str());
@@ -6322,16 +6320,29 @@ int main(int argc, char** argv) {
             if (line == "QUIT") break;
             // the watchdog watches a request from here until this iteration ends, whichever way it ends
             struct BusyScope {
-                BusyScope() { strata::core::progress().busy.store(true); strata::core::progress_at("request"); }
-                ~BusyScope() { strata::core::progress().busy.store(false); strata::core::progress_at("idle"); }
+                BusyScope() {
+                    strata::core::progress().allow_until_ms.store(0);
+                    strata::core::progress().busy.store(true);
+                    strata::core::progress_at("request");
+                }
+                ~BusyScope() {
+                    strata::core::progress().busy.store(false);
+                    strata::core::progress().allow_until_ms.store(0);
+                    strata::core::progress_at("idle");
+                }
             } busy_scope;
             stop_req.store(false);   // a STOP that arrived between requests is stale
             err.clear();
             // Disk sessions: SAVE <path> | RESTORE <path>, between requests (the path runs to the end of the line,
             // UTF-8).  The file holds what a parked conversation holds (conversation_file.hpp).  Answers: SAVED /
-            // RESTORED <tokens> <bytes> <ms>; ERR <reason> for a refusal that left the session as it was;
-            // FATAL <reason> (and the engine exits) for a restore transfer that failed after the device state was
-            // touched.  While a large file moves, SESSION <done> <total> lines show it is moving (and beat the watchdog).
+            // RESTORED <tokens> <bytes> <ms>; SERR <invalid|storage|memory|io> <published 0|1> <reason> for a refusal
+            // or failure that leaves the engine in step (the live session as it was, unless published=1 says the new
+            // file already replaced the old one); FATAL <reason> (and the engine exits) for a restore transfer that
+            // failed after the device state was touched.  On the way: SESSION <done> <total> after every block of
+            // the file moved (at most 16 MiB), and SWAIT <phase> <seconds> before a step that blocks in one call
+            // (fingerprint file, state capture, file flush, rename + folder flush, validation, device transfer):
+            // that step is allowed <seconds> (session_phase_limit_s) by the watchdog and by the server, no more.
+            // (A verifier commit that fails before the command still answers ERR and exits, as for a request.)
             if (line.rfind("SAVE ", 0) == 0 || line.rfind("RESTORE ", 0) == 0) {
                 const bool save = line[0] == 'S';
                 const std::string path = line.substr(save ? 5 : 8);
@@ -6350,8 +6361,16 @@ int main(int argc, char** argv) {
                 auto moving = [&](uint64_t done, uint64_t total) {
                     strata::core::progress_at(save ? "writing a session file, MiB" : "reading a session file, MiB",
                                               (int64_t) (done >> 20));
-                    strata::core::progress_beat();
+                    strata::core::progress_allow(0);   // a block moved: the ordinary watchdog limit again, and a beat
                     std::printf("SESSION %llu %llu\n", (unsigned long long) done, (unsigned long long) total);
+                    std::fflush(stdout);
+                };
+                // a step that blocks in one call: its explicit allowance, on both sides, announced before it starts
+                auto blocking = [&](const char* phase, uint64_t bytes) {
+                    const int64_t s = strata::core::session_phase_limit_s(bytes);
+                    strata::core::progress_at(phase);
+                    strata::core::progress_allow(s);
+                    std::printf("SWAIT %s %lld\n", phase, (long long) s);
                     std::fflush(stdout);
                 };
                 strata::core::progress_at(save ? "saving a session" : "restoring a session");
@@ -6365,7 +6384,10 @@ int main(int argc, char** argv) {
                 }
                 strata::core::SessionFileIdentity id;
                 try {
-                    if (!session_identity(id, err)) { refuse(err, strata::core::SessionError::io); continue; }
+                    if (!session_identity(id, err, [&] { blocking("fingerprint", 2u << 20); })) {
+                        refuse(err, strata::core::SessionError::io);
+                        continue;
+                    }
                 } catch (const std::bad_alloc&) {
                     refuse("session identity: out of memory", strata::core::SessionError::memory);
                     continue;
@@ -6378,34 +6400,50 @@ int main(int argc, char** argv) {
                     size_t bytes = 0, kept = 0;
                     double capture_ms = 0;
                     try {
-                        // only the deepest checkpoint goes to disk (the next turn's resume point); the K/V is streamed
-                        // from the authoritative pools straight into the file, without a full host capture
-                        const auto disk_checks = strata::core::session_checkpoints_to_save(checks);
-                        kept = disk_checks.size();
-                        // RAM PREFLIGHT for the save (not a reservation): the copied running state, the checkpoint
-                        // copies (this list and the one in `meta`) and the 16 MiB write buffer, above the parking floor
+                        // RAM PREFLIGHT for the save (not a reservation), BEFORE anything is copied: the deepest
+                        // checkpoint is chosen by reference, and the copies it will take (the list below and the one
+                        // in `meta`), the copied live running state with its tokens and images, the K/V source
+                        // directory and the 16 MiB write buffer are asked for above the parking floor.  Only the
+                        // deepest checkpoint goes to disk (the next turn's resume point); the K/V is streamed from
+                        // the authoritative pools straight into the file, without a full host capture.
+                        strata::core::SessionSaveLive sl;
                         {
-                            uint64_t need = (uint64_t) (17u << 20) + (uint64_t) live.size() * sizeof(int32_t);
                             strata::core::ConversationStateSizes z;
                             std::string why;
-                            if (strata::core::conversation_session_sizes(g, ss, z, why))
-                                need += z.gdn + z.ple + (uint64_t) std::max<int64_t>(ss.qsa_alloc, 0) *
-                                                            (z.tail + z.dead + z.block_pos);
-                            for (const auto& c : disk_checks) need += 2 * (uint64_t) c.bytes();
-                            const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
-                            const auto avail = strata::core::conversation_available_memory();
-                            if (!strata::core::conversation_memory_admit(avail, need, floor)) {
-                                refuse("not enough RAM to save the session (" + std::to_string(need >> 20) +
-                                       " MiB plus a floor of " + std::to_string((long long) o.conversation_cache_min_free_mib) +
-                                       " MiB needed, " + (avail ? std::to_string(*avail >> 20) + " MiB available)"
-                                                                : "RAM telemetry unavailable)"),
-                                       strata::core::SessionError::memory);
-                                continue;
+                            uint64_t state = UINT64_MAX;   // unknown sizes: the preflight refuses rather than guesses
+                            if (strata::core::conversation_session_sizes(g, ss, z, why)) {
+                                const uint64_t q = (uint64_t) std::max<int64_t>(ss.qsa_alloc, 0);
+                                const uint64_t per = (uint64_t) z.tail + z.dead + z.block_pos;
+                                if (q == 0 || per <= (UINT64_MAX - z.gdn - z.ple) / q) state = z.gdn + z.ple + q * per;
                             }
+                            sl.state_bytes = state;
+                            sl.tokens = live.size();
+                            sl.images = live_imgs.size();
+                            sl.kv_layers = (uint64_t) std::max<int64_t>(ss.qsa_alloc, 0) + 1;
                         }
+                        const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
+                        auto admit = [&](uint64_t need, std::string& why) {
+                            const auto avail = strata::core::conversation_available_memory();
+                            if (strata::core::conversation_memory_admit(avail, need, floor)) return true;
+                            why = "not enough RAM to save the session (" +
+                                  (need == UINT64_MAX ? std::string("unknown") : std::to_string(need >> 20)) +
+                                  " MiB plus a floor of " + std::to_string((long long) o.conversation_cache_min_free_mib) +
+                                  " MiB needed, " + (avail ? std::to_string(*avail >> 20) + " MiB available)"
+                                                           : "RAM telemetry unavailable)");
+                            return false;
+                        };
+                        std::vector<ConvCheckpoint> disk_checks;
+                        std::string why;
+                        if (!strata::core::session_save_checkpoints(checks, sl, admit, disk_checks, why)) {
+                            refuse(why, strata::core::SessionError::memory);
+                            continue;
+                        }
+                        kept = disk_checks.size();
                         const strata::core::ConversationView view{live, live_imgs, disk_checks, cvec_cached};
                         strata::core::SavedConversation meta;
                         std::vector<strata::core::SessionKvSource> sources;
+                        // the live running state comes off the device in one synchronous copy
+                        blocking("capture", sl.state_bytes == UINT64_MAX ? 0 : sl.state_bytes);
                         if (!strata::core::conversation_snapshot_sources(meta, sources, view, ss, g, mtp.kv_state(),
                                                                          err)) {
                             refuse(err, strata::core::SessionError::io);
@@ -6415,6 +6453,7 @@ int main(int argc, char** argv) {
                         strata::core::SessionWriteOptions wo;
                         wo.min_free_bytes = (uint64_t) o.session_min_free_mib << 20;
                         wo.progress = moving;
+                        wo.phase = blocking;
                         strata::core::SessionStatus st;
                         if (!strata::core::session_file_write(path, meta, sources, id, bytes, err, wo, &st)) {
                             refuse(err, st.error, st.published);
@@ -6466,12 +6505,15 @@ int main(int argc, char** argv) {
                     }
                     const double read_ms = ms();
                     // the whole image against this engine, still without any device write
+                    blocking("validate", bytes);
                     if (!strata::core::conversation_snapshot_validate(image, ss, g, mtp.kv_state(), err)) {
                         refuse(err);
                         continue;
                     }
                     conversations.take_reuse();   // retained K/V described the outgoing session
                     live_ok = false;
+                    // host -> device in synchronous copies of the whole state: one bounded allowance
+                    blocking("transfer", bytes);
                     if (strata::core::conversation_snapshot_restore(image, ss, g, mtp.kv_state(), err) !=
                         strata::core::ConversationRestore::restored) {
                         // validated above: a failure here is a transfer failure, after device writes began - never

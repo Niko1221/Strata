@@ -723,9 +723,13 @@ tokens in the measurement below). Only the deepest checkpoint is saved, so an ed
 Clients still send their messages (and images): the file holds engine state and token/image identity, not a chat
 export. Underneath, `strata --serve` takes `SAVE <path>` and `RESTORE <path>` on stdin between requests and answers
 `SAVED <tokens> <bytes> <ms>`, `RESTORED <tokens> <bytes> <ms>`, `SERR <kind> <published 0|1> <reason>` (failed,
-the engine and the session as they were) or `FATAL <reason>` (then exits); `SESSION <done> <total>` lines report a large
-file as it moves (at most once a second and at every 256 MiB). The server checks every line: a malformed or unknown
-one, counts that are negative or go back, or a time that is not a finite number end the engine as out of step.
+the engine and the session as they were) or `FATAL <reason>` (then exits). On the way, `SESSION <done> <total>` follows
+every block of the file that moved (at most 16 MiB, the last partial block and a small file included), and
+`SWAIT <phase> <seconds>` comes before a step that blocks in one call (`fingerprint`, `capture`, `flush`, `publish`,
+`validate`, `transfer`): that step is allowed those seconds - 60 plus one per 4 MiB it concerns, at most 3600 - by the
+engine's watchdog and by the server, then it counts as stuck. The next line clears the allowance. The server checks
+every line: a malformed or unknown one, counts that are negative or go back, an allowance outside 1..3600 or a time
+that is not a finite number end the engine as out of step.
 
 One file holds the running state, the deepest checkpoint, every QSA layer's K/V up to the conversation's length and
 the draft layer's K/V. Format v1, little-endian, fixed-width integers, IEEE-754 floats (a big-endian build does not
