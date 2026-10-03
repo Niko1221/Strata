@@ -49,8 +49,9 @@ void ck(cublasStatus_t s, const char* what) {
 }
 
 #if !defined(__HIPCC__)
-// Volta (sm_70) has no BF16 tensor cores: cuBLAS runs a BF16 GEMM there as a CUDA-core FP32 kernel (magma_sgemmEx,
-// about 10% of a prompt's GPU time on a V100).  Gemm::bf16 converts both operands into the dequantization scratch and
+// Volta (sm_70) and Turing (sm_75) have no BF16 tensor cores: cuBLAS runs a BF16 GEMM there as a CUDA-core FP32 kernel
+// (magma_sgemmEx, about 10% of a prompt's GPU time on a V100, 32% of the GPU kernel time of a 3.7K prompt on an RTX
+// 4000).  Gemm::bf16 converts both operands into the dequantization scratch and
 // takes the FP16 tensor-core path instead.  What changes, exactly:
 //  - a BF16 value converts without error while its magnitude is at least 2^-17 and below 65504: FP16 has more mantissa
 //    bits than BF16 there.  Smaller magnitudes lose mantissa bits (FP16 subnormals step by 2^-24) and below 2^-25 become
@@ -87,13 +88,13 @@ int current_cc() {
     return v;
 }
 
-// STRATA_BF16_VIA_F16=0 turns the Volta path off (the A/B arm: the same engine with cuBLAS's own BF16 kernel).
+// STRATA_BF16_VIA_F16=0 turns the Volta/Turing path off (the A/B arm: the same engine with cuBLAS's own BF16 kernel).
 bool bf16_via_f16() {
     static const bool off = [] {
         const char* e = std::getenv("STRATA_BF16_VIA_F16");
         return e != nullptr && e[0] == '0';
     }();
-    return !off && current_cc() == 70;
+    return !off && (current_cc() == 70 || current_cc() == 75);
 }
 #endif
 
