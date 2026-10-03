@@ -42,6 +42,38 @@ Raw data: [`summary.json`](bench/results/2026-10-02-v100-single-cooled/summary.j
 
 Recent V100 pull requests include measured kernel-level changes and explicitly report when end-to-end gains are not established. For example, the prompt-attention port from upstream PR #600 reported 27.9% less int8 attention kernel time at its measured shape, while model prefill changes ranged from +1.3% to +3.0% in the reported runs; it did not establish a reliable decode gain. Read the [full report](benchmarks/v100-q2_0-pr600-2026-10-03.md) before comparing results.
 
+## V100 performance work
+
+The V100 work spans the prompt path, decode path, memory use, storage reads, and multi-GPU execution. The changes below are in the fork's merged history; each link includes its own test method, hardware details, and limitations. Kernel timing improvements do not necessarily produce the same percentage gain in full-model throughput.
+
+### Prompt processing
+
+- **BF16-to-FP16 tensor-core GEMMs on Volta:** Volta does not have native BF16 GEMM support. The fork converts BF16 weights exactly to FP16 and uses V100 tensor cores for prompt GEMMs instead of the scalar fallback. The associated FP16 prompt activation images use the right bit representation.
+- **Faster PLE table reads:** switch POSIX PLE reads to queued `io_uring` O_DIRECT operations, with a synchronous fallback. One measured fresh 8K PLE gather dropped from about 6.9 seconds to 7 milliseconds.
+- **Q2_0 MMQ prefill:** enable the existing llama.cpp Q2_0 matrix-matrix quantized path for Strata's internal expert type. A measured 14,486-token prompt improved 6.5% in prefill throughput (926.1 to 986.2–986.9 tokens/s).
+- **Score only live QSA blocks:** avoid scoring blocks beyond the current prompt's live range. On a measured 15,423-token prompt, QSA selection time fell 91.1%; end-to-end prefill throughput rose from 961.0 to 1,111.3–1,112.9 tokens/s in the reported tests.
+- **Tensor-core prompt attention for Volta:** use `mma.m8n8k4` on the V100 instead of the FP32 fallback. An earlier PR measured roughly 1.6–1.9× speed in the attention kernel and higher prompt throughput in its tests. The later upstream PR #600 port reduced int8 attention kernel time 27.9% at one measured shape; reported end-to-end prefill deltas were smaller (+1.3% to +3.0% in its 4K–32K tests).
+
+### Decode and multi-GPU execution
+
+- **Batched verification window:** run multiple speculative decode positions together, reducing per-token launch overhead. Paired historical tests reported faster output generation, but results vary by prompt and runtime conditions.
+- **Tiled QSA block scoring:** reuse selected key data across query tiles instead of repeatedly reading it. The measured 256-query / 65K-block kernel fell from 3.5 ms to 1.3 ms; its per-score arithmetic remained bit-identical.
+- **Fused Volta GR and batched KV append:** combine work across verification positions and append KV data in fewer launches. On the tested dual-V100 setup, decode increased 5.6–17.3% across 4K–32K prompts, while prefill was approximately unchanged.
+- **Asymmetric dual-V100 tuning:** improve host-row handling, device-plan dispatch, and memory ownership for a two-card configuration. One earlier installed configuration showed prefill gains of 13.3–18.7% at 4K–32K, but decode results were mixed and both GPUs thermally slowed during that run. These values do not isolate each code change.
+- **Reduce weight and dispatch overhead:** load only the layers owned by each card when using an explicit split, avoid unnecessary CPU activation quantization and empty dispatch barriers, and optionally run paired-row expert kernels. GPU0's measured native dense allocation fell from 1,376.20 MiB to 541.27 MiB. The paired-row mode is opt-in; the reported whole-model results did not establish a decode improvement.
+
+### Attention kernels and memory traffic
+
+- **Decode attention (upstream PR #540 port):** reduce score shuffles and shared-memory traffic while preserving accumulation order. The measured kernel time fell from 52.90 to 31.13 microseconds on GPU0 for M=1, and from 180.42 to 111.85 microseconds for M=8. The reported whole-model decode changes were small; prefill was effectively unchanged.
+- **Prompt attention (upstream PR #600 port):** use the Volta tensor-core implementation with four independent MMA computations. The PR reports correctness checks and kernel-level / model-level measurements; the 27.9% kernel reduction should not be read as a 27.9% increase in full-model speed.
+- **KV gather and GDN recurrence (upstream PR #627 ports):** use wider aligned int8 KV loads with a safe original-width fallback, and use multiple accumulators for the V100 prompt recurrence. Measured kernel times improved about 10% for a 32K KV gather and about 7% for a 4,096-token recurrence. Paired model prefill differed by less than 0.2%; no reliable end-to-end decode gain was established.
+
+### Build support and evidence
+
+The fork has also repaired CUDA configuration and linking for `sm_70`, maintained V100 device admission through upstream merges, and adapted upstream changes when their architecture requirements exclude Volta. These compatibility fixes keep the optimized paths buildable; they are not themselves performance claims.
+
+For the full evidence and implementation scope, see [PR #1](https://github.com/jmnargi/Strata-V100/pull/1), [#2](https://github.com/jmnargi/Strata-V100/pull/2), [#5](https://github.com/jmnargi/Strata-V100/pull/5), [#6](https://github.com/jmnargi/Strata-V100/pull/6), [#11](https://github.com/jmnargi/Strata-V100/pull/11), [#12](https://github.com/jmnargi/Strata-V100/pull/12), [#15](https://github.com/jmnargi/Strata-V100/pull/15), [#16](https://github.com/jmnargi/Strata-V100/pull/16), and [#17](https://github.com/jmnargi/Strata-V100/pull/17). The results use different dates, builds, prompts, GPU placements, and protocols. They are historical measurements, not a single controlled before/after comparison or a guarantee of gains on every V100 system.
+
 ## Get started
 
 This fork tracks the upstream installation experience. For complete and current platform requirements, model choices, and options, see the [installation guide](docs/INSTALL.md), [model guide](docs/MODELS.md), and [upstream setup guide](docs/AI_SETUP.md).
