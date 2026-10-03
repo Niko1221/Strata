@@ -72,6 +72,9 @@ RATE_MIN_SPAN_S = 0.25      # younger than this there is no rate yet: the mean s
 # server (the engine's main thread waits, untimed, for its next command): the engine is ended and the request fails;
 # the next request starts it again.  The config's "engine_silence_s" sets it (0: wait forever, as before).
 ENGINE_SILENCE_S = 300.0
+# Disk sessions: the longest allowance an engine may announce (`SWAIT <phase> <s>`) for one step that blocks in a
+# single call (a file flush, the host->device transfer); the engine's own bound is the same (session_phase_limit_s).
+SESSION_WAIT_MAX_S = 3600
 # ... except while a prompt is read: a PP line comes once per chunk (up to 32768 tokens with --prefill auto, issue
 # #282), and the slowest PCs read ~100 tok/s, so a first chunk can take minutes before the first line.  Until the first
 # PP the wait adds the chunk's tokens at PP_FLOOR_TOK_S; after one, a chunk may take PP_SLACK x the last one's time.
@@ -637,8 +640,11 @@ class StrataEngine:
         malformed one, a bare ERR, an answer with negative counts or a non-finite time - means the two sides lost
         step: the engine is ended (EngineDied) and the next request starts it again.  EngineDied also when it ended
         by itself (a restore transfer that failed after the device state changed ends it on purpose: FATAL), and
-        EngineSilent (#481) when it printed nothing valid - a SESSION progress line counts only when its numbers are
-        - for engine_silence_s."""
+        EngineSilent (#481) when it printed nothing valid for engine_silence_s - a SESSION progress line (one per
+        block of the file moved, at most 16 MiB) counts only when its numbers are.  `SWAIT <phase> <seconds>` announces
+        a step that blocks in one call (a flush, the device transfer): until the next line the wait is that step's
+        explicit allowance (at most SESSION_WAIT_MAX_S) when it is longer than engine_silence_s - no more, so a step
+        that never ends is still ended."""
         if action not in ("save", "restore") or any(c in path for c in "\r\n\0"):
             raise ValueError("invalid session command")
         try:
@@ -666,14 +672,17 @@ class StrataEngine:
             return int(s)
 
         last_done = -1
+        allow = 0.0                                         # the announced blocking step's allowance, seconds
         while True:
-            left = silence - (time.monotonic() - heard) if silence > 0 else None
+            limit = max(silence, allow)
+            left = limit - (time.monotonic() - heard) if silence > 0 else None
             try:
                 if left is not None and left <= 0:
                     raise queue.Empty
                 line = self.lines.get(timeout=left)
             except queue.Empty:
-                raise self._silent(f"the engine said nothing for {silence:.0f} s during a session {action}") from None
+                raise self._silent(f"the engine said nothing for {limit:.0f} s during a session {action}"
+                                   + (f" (in a blocking step allowed {allow:.0f} s)" if allow > silence else "")) from None
             if line is None:
                 raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
             f = line.split()
@@ -688,7 +697,18 @@ class StrataEngine:
                 except ValueError:
                     raise out_of_step(line) from None
                 last_done = done
-                heard = time.monotonic()
+                heard, allow = time.monotonic(), 0.0
+                continue
+            if head == "SWAIT":                            # a blocking step starts: its bounded allowance
+                try:
+                    if len(f) != 3 or not f[1].isalpha() or not f[1].isascii():
+                        raise ValueError
+                    seconds = count(f[2])
+                    if not 0 < seconds <= SESSION_WAIT_MAX_S:
+                        raise ValueError
+                except ValueError:
+                    raise out_of_step(line) from None
+                heard, allow = time.monotonic(), float(seconds)
                 continue
             if head == "FATAL":
                 raise EngineDied(line[6:].strip() or "the engine ended during a session restore")

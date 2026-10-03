@@ -47,24 +47,15 @@ constexpr char kMagic[8] = {'S', 'T', 'R', 'S', 'E', 'S', 'S', '\x01'};
 constexpr char kEnd[8] = {'S', 'T', 'R', 'S', 'E', 'N', 'D', '\x01'};
 constexpr uint32_t kVersion = 1;
 constexpr size_t kHeader = 64, kTrailer = 16;
-constexpr uint64_t kProgressEvery = 256ull << 20;
 
-// Progress for a large transfer: after a block when a second has passed since the last report, and always at a
-// 256 MiB boundary - so a slow disk still reports (and beats the engine's watchdog) once per 16 MiB block.
+// Progress for a transfer: one report after every block that was handed to (or read from) the OS, whatever its size
+// - the last, partial block included - so a small file reports too, and each report follows real movement.
 class Ticker {
 public:
-    explicit Ticker(const std::function<void(uint64_t, uint64_t)>& fn) : fn_(fn), last_(Clock::now()) {}
-    void operator()(uint64_t before, uint64_t done, uint64_t total) {
-        if (!fn_) return;
-        const auto now = Clock::now();
-        if (done / kProgressEvery == before / kProgressEvery && now - last_ < std::chrono::seconds(1)) return;
-        last_ = now;
-        fn_(done, total);
-    }
+    explicit Ticker(const SessionProgress& fn) : fn_(fn) {}
+    void operator()(uint64_t done, uint64_t total) { if (fn_) fn_(done, total); }
 private:
-    using Clock = std::chrono::steady_clock;
-    std::function<void(uint64_t, uint64_t)> fn_;
-    Clock::time_point last_;
+    SessionProgress fn_;
 };
 
 SessionError errno_kind(int e) {
@@ -565,13 +556,16 @@ public:
         const size_t padded = f_.direct() ? (used_ + kAlign - 1) / kAlign * kAlign : used_;
         std::memset(buf_.get() + used_, 0, padded - used_);
         bool ok = f_.write_all(buf_.get(), padded);
+        if (ok && used_ && progress) (*progress)(total_, expected);   // the last, partial block
         ok = ok && (padded == used_ || f_.truncate(total_));
+        if (ok && durable && phase) phase("flush", total_);
         if (ok && durable && flush_fault) { fail_with(flush_fault); ok = false; }
         ok = ok && (!durable || f_.sync());
         ok = f_.close() && ok;
         return ok;
     }
     std::optional<Ticker> progress;
+    SessionPhase phase;
     uint64_t expected = 0;
     int write_fault = 0, flush_fault = 0;   // tests: errno values injected at the first block write / the file flush
 private:
@@ -580,7 +574,7 @@ private:
         if (write_fault) { fail_with(write_fault); return false; }
         if (!f_.write_all(buf_.get(), used_)) return false;
         used_ = 0;
-        if (progress) (*progress)(total_ - kBlock, total_, expected);
+        if (progress) (*progress)(total_, expected);
         return true;
     }
     Aligned buf_;
@@ -622,7 +616,7 @@ private:
         }
         const uint64_t before = total_;
         total_ += have_;
-        if (progress) (*progress)(before, total_, expected);
+        if (progress && total_ > before) (*progress)(total_, expected);
         return have_ > 0;
     }
     Aligned buf_;
@@ -1068,7 +1062,9 @@ bool write_impl(const std::string& path, const SavedConversation& image, const s
     FileSink f(raw);
     if (!f.ok()) { st.error = SessionError::memory; error = "session file: " + f.error(); return false; }
     if (opt.progress) f.progress.emplace(opt.progress);
+    f.phase = opt.phase;
     f.expected = total;
+    if (f.progress) (*f.progress)(0, total);   // the temporary file exists: the transfer starts
     const std::function<int(const char*)>* fault = opt.fault ? &opt.fault : nullptr;
     f.write_fault = injected(fault, "write");
     f.flush_fault = injected(fault, "file_flush");
@@ -1091,10 +1087,13 @@ bool write_impl(const std::string& path, const SavedConversation& image, const s
         why = out.read_failed ? "K/V source read" + (out.read_error.empty() ? std::string() : ": " + out.read_error)
                               : f.error();
         st.error = out.read_failed ? SessionError::io : f.kind();
-    } else if (pub.publish(why, opt.durable, st, fault)) {
-        st.error = SessionError::none;
-        bytes = (size_t) total;
-        return true;
+    } else {
+        if (opt.phase) opt.phase("publish", total);
+        if (pub.publish(why, opt.durable, st, fault)) {
+            st.error = SessionError::none;
+            bytes = (size_t) total;
+            return true;
+        }
     }
     error = "session file: writing " + path + " failed" + (why.empty() ? std::string() : ": " + why);
     if (st.published) error += " (the new file has already replaced the old one; its folder entry may not survive a power loss)";
@@ -1119,11 +1118,40 @@ bool write_guarded(const std::string& path, const SavedConversation& image, cons
 } // namespace
 
 std::vector<ConversationCheckpoint> session_checkpoints_to_save(const std::vector<ConversationCheckpoint>& chain) {
+    const ConversationCheckpoint* deepest = session_deepest_checkpoint(chain);
+    if (!deepest) return {};
+    return {*deepest};
+}
+
+const ConversationCheckpoint* session_deepest_checkpoint(const std::vector<ConversationCheckpoint>& chain) {
     const ConversationCheckpoint* deepest = nullptr;
     for (const auto& c : chain)
         if (!deepest || c.ids.size() > deepest->ids.size()) deepest = &c;
-    if (!deepest) return {};
-    return {*deepest};
+    return deepest;
+}
+
+uint64_t session_save_peak_bytes(const ConversationCheckpoint* deepest, const SessionSaveLive& live) {
+    uint64_t n = sat_add(kBlock, uint64_t(1) << 20);                          // write buffer, small vectors
+    if (deepest) n = sat_add(n, sat_mul(2, deepest->bytes()));                // the list and the image's copy
+    n = sat_add(n, live.state_bytes);                                         // the live running state
+    n = sat_add(n, sat_mul(live.tokens, sizeof(int32_t)));                    // its token list
+    n = sat_add(n, sat_mul(live.images, sizeof(ConversationImageKey)));       // its images
+    n = sat_add(n, sat_mul(live.kv_layers, sizeof(SessionKvSource) + 256));   // the K/V source directory
+    return n;
+}
+
+bool session_save_checkpoints(const std::vector<ConversationCheckpoint>& chain, const SessionSaveLive& live,
+                              const std::function<bool(uint64_t need_bytes, std::string& why)>& admit,
+                              std::vector<ConversationCheckpoint>& out, std::string& why) {
+    out.clear();
+    const ConversationCheckpoint* deepest = session_deepest_checkpoint(chain);
+    if (admit && !admit(session_save_peak_bytes(deepest, live), why)) return false;
+    if (deepest) out.push_back(*deepest);
+    return true;
+}
+
+int64_t session_phase_limit_s(uint64_t bytes) {
+    return std::min<int64_t>(3600, 60 + (int64_t) std::min<uint64_t>(bytes >> 22, 3600));
 }
 
 bool session_file_write(const std::string& path, const SavedConversation& meta, const std::vector<SessionKvSource>& kv,
@@ -1159,6 +1187,9 @@ bool read_impl(const std::string& path, const SessionFileIdentity& id, SavedConv
     }
     FileSource f(raw);
     if (!f.ok()) { st.error = SessionError::memory; error = "session file: " + f.error(); return false; }
+    // installed before the first block (the header's) is read: every block reports, the first one included
+    if (limits.progress) f.progress.emplace(limits.progress);
+    f.expected = size;
     uint8_t h[kHeader];
     if (!f.read(h, kHeader)) { st.error = f.kind(); error = "session file: header read error: " + f.error(); return false; }
     uint32_t version = 0, hsize = 0;
@@ -1185,8 +1216,6 @@ bool read_impl(const std::string& path, const SessionFileIdentity& id, SavedConv
             return false;
         }
     }
-    if (limits.progress) f.progress.emplace(limits.progress);
-    f.expected = size;
     SavedConversation parsed;
     In in{&f, SessionHasher(0), payload, error, limits};
     if (!get_payload(in, parsed)) { st.error = in.kind; return false; }

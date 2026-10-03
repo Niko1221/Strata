@@ -12,11 +12,14 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <new>
 #include <utility>
 #include <vector>
 #ifndef _WIN32
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -202,6 +205,8 @@ int main() {
     }
     // buffered I/O (the path taken where direct I/O is refused or unavailable) writes and reads the same bytes
     {
+        const char* inherited = std::getenv("STRATA_SESSION_BUFFERED");
+        const std::string kept = inherited ? inherited : "";
         set_env("STRATA_SESSION_BUFFERED", "1");
         const fs::path p = dir / "buffered.bin";
         check(session_file_write(p.string(), original, id, written, error), "buffered write");
@@ -209,7 +214,7 @@ int main() {
         SavedConversation back;
         size_t read = 0;
         check(session_file_read(p.string(), id, back, read, error) && same(original, back), "buffered read");
-        set_env("STRATA_SESSION_BUFFERED", nullptr);
+        set_env("STRATA_SESSION_BUFFERED", inherited ? kept.c_str() : nullptr);   // the caller's choice again
     }
 
     const std::vector<char> image = slurp(good);
@@ -291,19 +296,22 @@ int main() {
         uint64_t f1 = 0, f2 = 0, f3 = 0, f4 = 0, f5 = 0, f6 = 0, f7 = 0, f8 = 0;
         const std::vector<SessionModelFile> both = {{"a", m1.string()}, {"b", m2.string()}};
         check(session_model_fingerprint(both, f1, error), "fingerprint ok");
-        check(session_model_fingerprint({{"a", m1.string()}}, f2, error), "fingerprint subset ok");
-        check(session_model_fingerprint({{"b", m1.string()}, {"a", m2.string()}}, f5, error), "fingerprint roles ok");
+        const std::vector<SessionModelFile> subset = {{"a", m1.string()}};
+        const std::vector<SessionModelFile> roles = {{"b", m1.string()}, {"a", m2.string()}};
+        check(session_model_fingerprint(subset, f2, error), "fingerprint subset ok");
+        check(session_model_fingerprint(roles, f5, error), "fingerprint roles ok");
         check(f1 != f5, "fingerprint follows the role each file plays");
         // a moved folder: same roles, same bytes, other paths
         const fs::path moved = dir / "moved";
         fs::create_directories(moved);
         fs::copy_file(m1, moved / "m1.bin"); fs::copy_file(m2, moved / "m2.bin");
-        check(session_model_fingerprint({{"a", (moved / "m1.bin").string()}, {"b", (moved / "m2.bin").string()}}, f6,
-                                        error) && f6 == f1, "fingerprint does not follow the folder");
+        const std::vector<SessionModelFile> moved_list = {{"a", (moved / "m1.bin").string()}, {"b", (moved / "m2.bin").string()}};
+        check(session_model_fingerprint(moved_list, f6, error) && f6 == f1, "fingerprint does not follow the folder");
         // an optional input that is absent is recorded, not an error; a present one changes the fingerprint
-        check(session_model_fingerprint({{"a", m1.string()}, {"b", m2.string()}, {"c", (dir / "nothere").string(), true}},
-                                        f7, error), "absent optional input ok");
-        check(session_model_fingerprint({{"a", m1.string()}, {"b", m2.string()}, {"c", m2.string(), true}}, f8, error) &&
+        const std::vector<SessionModelFile> absent = {{"a", m1.string()}, {"b", m2.string()}, {"c", (dir / "nothere").string(), true}};
+        const std::vector<SessionModelFile> present = {{"a", m1.string()}, {"b", m2.string()}, {"c", m2.string(), true}};
+        check(session_model_fingerprint(absent, f7, error), "absent optional input ok");
+        check(session_model_fingerprint(present, f8, error) &&
               f7 != f8 && f7 != f1, "optional input presence enters the fingerprint");
         auto d = slurp(m1); d[10] = 'z'; spit(m1, d);
         check(session_model_fingerprint(both, f3, error), "fingerprint after edit ok");
@@ -561,6 +569,128 @@ int main() {
               std::string(session_error_name(SessionError::memory)) == "memory" &&
               std::string(session_error_name(SessionError::invalid)) == "invalid" &&
               std::string(session_error_name(SessionError::io)) == "io", "status: protocol names");
+    }
+    // B: progress after every block, the last partial one included (a file below 16 MiB reports too), and the
+    // blocking steps announced before they start
+    {
+        const fs::path p = dir / "progress.bin";
+        std::vector<std::pair<uint64_t, uint64_t>> seen;
+        std::vector<std::string> phases;
+        SessionWriteOptions opt;
+        opt.progress = [&](uint64_t d, uint64_t t) { seen.push_back({d, t}); };
+        opt.phase = [&](const char* ph, uint64_t b) { phases.push_back(std::string(ph) + ":" + std::to_string(b)); };
+        // a file below one block (the sample without its K/V layers) reports too: at the start and its one block
+        SavedConversation small = original;
+        small.kv.clear();
+        check(session_file_write(p.string(), small, id, written, error, opt), "progress: small write");
+        check(written > 0 && written < (16u << 20), "progress: the small file is below one block");
+        check(seen.size() == 2 && seen[0] == std::make_pair(uint64_t(0), uint64_t(written)) &&
+              seen[1] == std::make_pair(uint64_t(written), uint64_t(written)), "progress: start and the partial block");
+        check(phases.size() == 2 && phases[0] == "flush:" + std::to_string(written) &&
+              phases[1] == "publish:" + std::to_string(written), "progress: flush and publish announced, in order");
+        opt.durable = false;
+        phases.clear();
+        check(session_file_write(p.string(), small, id, written, error, opt) && phases.size() == 1 &&
+              phases[0].rfind("publish:", 0) == 0, "progress: no flush step announced without a flush");
+        // a read reports every block, the first (the header's) included
+        seen.clear();
+        SessionReadLimits l;
+        l.progress = [&](uint64_t d, uint64_t t) { seen.push_back({d, t}); };
+        SavedConversation back;
+        size_t n = 0;
+        check(session_file_read(p.string(), id, back, n, error, l) && seen.size() == 1 &&
+              seen[0] == std::make_pair(uint64_t(n), uint64_t(n)), "progress: a small read reports its one block");
+        // the fixed sample: one full block and a partial one, both reported on write and on read
+        seen.clear();
+        opt.durable = true;
+        check(session_file_write(p.string(), original, id, written, error, opt) && written > (16u << 20) &&
+              written < (32u << 20), "progress: sample write");
+        check(seen.size() == 3 && seen[1].first == (16u << 20) && seen[2].first == written,
+              "progress: the sample's full block and its partial last block");
+        seen.clear();
+        check(session_file_read(p.string(), id, back, n, error, l) && seen.size() == 2 &&
+              seen[0].first == (16u << 20) && seen[1].first == n, "progress: the sample's read reports both blocks");
+        // a multi-block streamed write: 16 MiB blocks then the partial one, never more than a block apart
+        SavedConversation meta = original;
+        meta.kv.clear();
+        std::vector<SessionKvSource> big(1);
+        big[0].sizes = {(40u << 20) + 123, 0, 0, 0, 0};
+        big[0].read = [](size_t, size_t, void* d, size_t c) { std::memset(d, 0x5a, c); return true; };
+        seen.clear();
+        opt.durable = true;
+        check(session_file_write(p.string(), meta, big, id, written, error, opt), "progress: 40 MiB write");
+        bool steps = seen.size() == 4 && seen.front().first == 0 && seen.back().first == written;
+        for (size_t i = 1; i < seen.size(); ++i)
+            steps = steps && seen[i].first > seen[i - 1].first && seen[i].first - seen[i - 1].first <= (16u << 20);
+        check(steps, "progress: every block reported, at most 16 MiB apart, the last one at the end");
+        // the allowance of a blocking step: bounded, growing with its size
+        check(session_phase_limit_s(0) == 60 && session_phase_limit_s(1198691396) == 60 + (1198691396 >> 22) &&
+              session_phase_limit_s(UINT64_MAX) == 3600, "phase limit: 60 s + 1 s per 4 MiB, at most an hour");
+    }
+    // A: the SAVE's RAM preflight comes BEFORE the checkpoint is copied
+    {
+        std::vector<ConversationCheckpoint> chain;
+        chain.push_back(checkpoint(10, 2));
+        chain.push_back(checkpoint(700, 3));
+        chain.back().gdn.assign(8u << 20, 0x11);   // the deepest: an 8 MiB running state
+        const auto before = chain;
+        SessionSaveLive live;
+        live.state_bytes = 5000; live.tokens = 1000; live.images = 1; live.kv_layers = 13;
+        check(session_deepest_checkpoint(chain) == &chain[1], "save: deepest chosen by reference");
+        const uint64_t need = session_save_peak_bytes(&chain[1], live);
+        check(need >= 2 * (uint64_t) chain[1].bytes() + 5000 + 4000 + (16u << 20) &&
+              need <= 2 * (uint64_t) chain[1].bytes() + 5000 + 4000 + (18u << 20),
+              "save: the peak counts two checkpoint copies, the live state, tokens and the buffer");
+        SessionSaveLive huge = live;
+        huge.state_bytes = UINT64_MAX;
+        check(session_save_peak_bytes(&chain[1], huge) == UINT64_MAX, "save: the peak saturates");
+        std::vector<ConversationCheckpoint> out(1);
+        std::string why;
+        uint64_t asked = 0;
+        bool empty_when_asked = false;
+        const auto refuse = [&](uint64_t n, std::string& w) { asked = n; empty_when_asked = out.empty(); w = "low RAM"; return false; };
+        check(!session_save_checkpoints(chain, live, refuse, out, why) && why == "low RAM" && asked == need,
+              "save: the preflight is asked for the peak and can refuse");
+        check(empty_when_asked && out.empty(), "save: refused before any copy (nothing copied)");
+        bool same_chain = chain.size() == before.size();
+        for (size_t i = 0; same_chain && i < chain.size(); ++i) same_chain = same_checkpoint(chain[i], before[i]);
+        check(same_chain, "save: a refusal leaves the live checkpoints untouched");
+        const auto agree = [&](uint64_t, std::string&) { return true; };
+        check(session_save_checkpoints(chain, live, agree, out, why) && out.size() == 1 &&
+              same_checkpoint(out[0], chain[1]), "save: admitted, the deepest checkpoint is copied");
+        check(session_save_checkpoints({}, live, agree, out, why) && out.empty(), "save: no checkpoints, none copied");
+#if defined(__linux__) && !defined(__SANITIZE_ADDRESS__) && !defined(STRATA_NO_RLIMIT_TEST)
+        // under a real address-space limit that cannot hold one more copy: the refusal comes first, no bad_alloc;
+        // and the same limit with an admitting preflight does fail at the copy (the test can see the difference)
+        std::vector<ConversationCheckpoint> fat(1);
+        fat[0].ids = {1, 2, 3};
+        fat[0].gdn.assign(256u << 20, 0x22);
+        const fs::path old_file = dir / "old-session.bin";
+        spit(old_file, std::vector<char>(9, 'o'));
+        std::fflush(nullptr);
+        const pid_t pid = ::fork();
+        if (pid == 0) {
+            long pages = 0, rss = 0;
+            if (FILE* f = std::fopen("/proc/self/statm", "r")) { if (std::fscanf(f, "%ld %ld", &pages, &rss) != 2) pages = 0; std::fclose(f); }
+            struct rlimit rl {};
+            rl.rlim_cur = rl.rlim_max = (rlim_t) pages * (rlim_t) ::sysconf(_SC_PAGESIZE) + (64u << 20);
+            if (pages <= 0 || ::setrlimit(RLIMIT_AS, &rl) != 0) ::_exit(10);
+            std::vector<ConversationCheckpoint> o2;
+            std::string w;
+            const auto low = [](uint64_t n, std::string& m) { m = "need " + std::to_string(n); return false; };
+            bool refused = false;
+            try { refused = !session_save_checkpoints(fat, live, low, o2, w) && o2.empty(); } catch (...) { ::_exit(11); }
+            if (!refused) ::_exit(12);
+            try { session_save_checkpoints(fat, live, agree, o2, w); } catch (const std::bad_alloc&) { ::_exit(0); }
+            ::_exit(13);   // the copy fitted: the limit did not bite, the test proves nothing
+        }
+        int status = 0;
+        check(pid > 0 && ::waitpid(pid, &status, 0) == pid, "save: low-memory child ran");
+        check(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "save: under a low address-space limit the preflight refuses before the copy (an admitted copy fails)");
+        check(fat[0].gdn.size() == (256u << 20) && fat[0].gdn[12345] == 0x22 &&
+              slurp(old_file) == std::vector<char>(9, 'o'), "save: live state and the old file intact");
+#endif
     }
     // R6: the folder the free-space query is asked about
     {

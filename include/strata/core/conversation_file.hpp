@@ -126,14 +126,29 @@ struct SessionStatus {
     bool dir_flush_unsupported = false;
 };
 
+// Progress of a file transfer: (bytes done, bytes in the file).  A write reports once when its temporary file is
+// created (0) and after every block it hands to the OS (16 MiB, or less for the last one: a small file reports too);
+// a read reports after every block it reads (16 MiB, or what is left; the first one, which holds the header, too).
+// Each report follows a completed transfer of at most 16 MiB: no step between two reports moves more.
+using SessionProgress = std::function<void(uint64_t done, uint64_t total)>;
+// A step that does not stream - one call that blocks until it is done, over far more than 16 MiB or on the OS's
+// schedule (flushing the file, the rename and folder flush) - is announced before it starts, with the bytes it
+// concerns.  The engine turns this into an explicit, bounded allowance (session_phase_limit_s) for its watchdog and
+// for the server; when the allowance runs out the step is stuck.
+using SessionPhase = std::function<void(const char* phase, uint64_t bytes)>;
+// The longest a non-streaming step over `bytes` may take before both sides call it stuck: 60 s plus one second per
+// 4 MiB (a slow disk or network folder at 4 MiB/s), at most an hour.  1.2 GB: 345 s.
+int64_t session_phase_limit_s(uint64_t bytes);
+
 // Optional knobs of a write.
 struct SessionWriteOptions {
     // the free-space PREFLIGHT: refused when the disk has less than the new file plus this many bytes free before the
     // write starts.  Not a reservation: other writers can take the space afterwards.
     uint64_t min_free_bytes = 0;
     bool durable = true;            // flush the file before the rename and (POSIX) the folder after it
-    // after a 16 MiB block at most once a second, and at least at every 256 MiB boundary
-    std::function<void(uint64_t done, uint64_t total)> progress;
+    SessionProgress progress;
+    // "flush" (the file's flush, `bytes` = the file) and "publish" (rename and folder flush), before each starts
+    SessionPhase phase;
     // tests: return an errno value to make a step fail ("write", "file_flush", "rename", "dir_flush"), 0 to go on
     std::function<int(const char* step)> fault;
 };
@@ -167,6 +182,25 @@ bool session_file_write(const std::string& path, const SavedConversation& meta, 
 // The checkpoints worth a disk write: the deepest one (the next turn's resume point when the live tail was
 // rewritten).  Earlier checkpoints only serve edits further back and cost ~118 MB each at this geometry.
 std::vector<ConversationCheckpoint> session_checkpoints_to_save(const std::vector<ConversationCheckpoint>& chain);
+// The same choice without a copy (nullptr for an empty chain).
+const ConversationCheckpoint* session_deepest_checkpoint(const std::vector<ConversationCheckpoint>& chain);
+
+// What a SAVE copies into RAM besides what the engine already holds, for its RAM preflight.
+struct SessionSaveLive {
+    uint64_t state_bytes = 0;   // the live running state (gdn + ple + every owned QSA layer's tail, dead, block_pos)
+    uint64_t tokens = 0, images = 0;
+    uint64_t kv_layers = 0;     // K/V sources (owned QSA layers + the draft)
+};
+// The peak, with saturating arithmetic: two copies of the deepest checkpoint (the list handed to the capture and the
+// one inside the captured image), the copied live state with its token and image lists, the K/V source directory,
+// the 16 MiB write buffer and 1 MiB for the small vectors.
+uint64_t session_save_peak_bytes(const ConversationCheckpoint* deepest, const SessionSaveLive& live);
+// The SAVE's RAM PREFLIGHT, BEFORE anything is copied: `admit` is asked for session_save_peak_bytes; only when it
+// agrees is the deepest checkpoint copied into `out`.  On a refusal nothing was allocated, `out` is empty, `chain`
+// and the live state are untouched and no file was opened.  Not a reservation.
+bool session_save_checkpoints(const std::vector<ConversationCheckpoint>& chain, const SessionSaveLive& live,
+                              const std::function<bool(uint64_t need_bytes, std::string& why)>& admit,
+                              std::vector<ConversationCheckpoint>& out, std::string& why);
 
 // What a read checks before it allocates.  Every count is checked against the bytes left in the payload and against
 // these limits BEFORE its array is allocated; the defaults accept whatever the payload can hold.  The engine sets all
@@ -187,8 +221,7 @@ struct SessionReadLimits {
     // the RAM PREFLIGHT: asked once the header and identity match and before any payload allocation, with what the
     // parse holds at its peak (session_read_peak_bytes); false refuses the file.  Not a reservation.
     std::function<bool(uint64_t need_bytes, std::string& why)> admit;
-    // after a 16 MiB block at most once a second, and at least at every 256 MiB boundary
-    std::function<void(uint64_t done, uint64_t total)> progress;
+    SessionProgress progress;
 };
 // The largest file these limits admit (UINT64_MAX when one of them is open); session_file_read applies it.
 uint64_t session_read_max_file_bytes(const SessionReadLimits& limits);
