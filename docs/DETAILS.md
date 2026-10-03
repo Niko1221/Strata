@@ -709,17 +709,23 @@ a leading dot or a trailing dot or space.
 The request must be `Content-Type: application/json` (else `415`) and come from no browser page, Strata's own or a
 trusted origin (another site's `Origin` gets `403`, also with an API key); the Host and API-key checks apply as
 everywhere. Errors: `501` without `--slot-save-path`; `400` for a slot other than 0, an unknown action, a refused
-file name, or a file the engine refuses (the reason is in `error.message`; the session is as it was); `404` for a
-restore of a missing file; `503` while the model is not loaded or when the RAM to read the file is not there; `507`
-when the disk has no room; `500` when the engine ended (a restore transfer failure, below, or an engine that said
-nothing for `engine_silence_s`) - the next request starts it again. A save or restore waits for the running request
+file name, or a file the engine refuses as invalid (not a session file, corrupt, another model or configuration, over
+this session's limits; the session is as it was); `404` for a restore of a missing file; `503` while the model is not
+loaded, when the RAM to read the file is not there or an allocation failed; `507` when the disk has no room (the
+free-space reserve, or the OS reports no space or quota); `500` for any other I/O failure (permissions, read, write,
+flush, rename) and when the engine ended (a restore transfer failure, below, an engine that said nothing for
+`engine_silence_s`, or one that answered out of protocol) - the next request starts it again. The status follows the
+engine's category (`error.kind`: `invalid`, `memory`, `storage`, `io`), never the words of the message. A save that
+failed after its new file had replaced the old one says so with `error.published: true` (below). A save or restore waits for the running request
 (the same queue), shows in `/status` and counts as activity for the idle unload. A later request whose messages
 continue the restored conversation reuses the restored state or its checkpoint; a short tail may be read again (35
 tokens in the measurement below). Only the deepest checkpoint is saved, so an edit further back reads more again.
 Clients still send their messages (and images): the file holds engine state and token/image identity, not a chat
 export. Underneath, `strata --serve` takes `SAVE <path>` and `RESTORE <path>` on stdin between requests and answers
-`SAVED <tokens> <bytes> <ms>`, `RESTORED <tokens> <bytes> <ms>`, `ERR <reason>` (refused, nothing changed) or
-`FATAL <reason>` (then exits); `SESSION <done> <total>` lines report a large file as it moves (every 256 MiB).
+`SAVED <tokens> <bytes> <ms>`, `RESTORED <tokens> <bytes> <ms>`, `SERR <kind> <published 0|1> <reason>` (failed,
+the engine and the session as they were) or `FATAL <reason>` (then exits); `SESSION <done> <total>` lines report a large
+file as it moves (at most once a second and at every 256 MiB). The server checks every line: a malformed or unknown
+one, counts that are negative or go back, or a time that is not a finite number end the engine as out of step.
 
 One file holds the running state, the deepest checkpoint, every QSA layer's K/V up to the conversation's length and
 the draft layer's K/V. Format v1, little-endian, fixed-width integers, IEEE-754 floats (a big-endian build does not
@@ -732,8 +738,10 @@ this engine wrote. An unknown version is refused; a new format gets a new versio
 
 A file is bound to the model inputs and to the settings that change what the saved bytes mean. The model fingerprint
 samples (size, first and last MiB) every file the engine loads, by its role: the GGUF shards (also
-`--native-dense-gguf`, the head shards and `--embd-gguf`), the PLE shard, the pack's index/dense/embedding/expert files
-and the MTP's files - not other files in those folders, and not the path, so a moved model folder still matches. A
+`--native-dense-gguf`, the head shards and `--embd-gguf`), the PLE shard, the pack's index/dense/embedding files and
+`native_experts.txt`, every file the expert source resolved - the pack's `experts.bin`, or for a pack read in place each
+layer's gate/up/down GGUF as `native_experts.txt` names it, also one outside the CLI shards - and the MTP's files; not
+other files in those folders, and not the path, so a moved model folder still matches. A
 change in the middle of a file that keeps its size is not seen: do not change model files while their sessions are
 kept. The config fingerprint covers the engine version (an update makes older files unrestorable), CUDA or HIP,
 `--kv`, `STRATA_KV_ROT`, `--kv-resident`, `--max-context`, `--mtp-window`, the resolved rope configuration (type,
@@ -744,11 +752,15 @@ the expert tier are not in it: they change what comes next, not what the saved c
 
 A save writes a temporary file with a new hidden name beside `path` (created exclusively, never an existing file or
 link), flushes it to the disk, renames it over `path` (`MoveFileExW` on Windows, which promises no transaction on
-every filesystem) and flushes the folder; a failed save keeps the old file at `path` and removes only its own
-temporary file. A restore opens `path` without following a symbolic link (or a Windows reparse point) and refuses
+every filesystem) and flushes the folder. A save that fails before the rename keeps the old file at `path` and removes
+only its own temporary file. Once the rename is done the old file is gone: if the folder flush then fails, the save
+fails with `published` set - the new file's bytes are complete and flushed, but its name may not survive a power loss.
+A filesystem that cannot flush a folder (`EINVAL`) is not a failure; the engine logs it. A restore opens `path` without following a symbolic link (or a Windows reparse point) and refuses
 anything but a regular file with one name; it checks the size, the header, both fingerprints (before the payload is
-read), that the parsed image fits in RAM above the parking floor (`--conversation-cache-min-free-mib`), every count
-against the bytes left and this engine's limits (context, checkpoints, layers) before allocating it, the payload hash
+read), that the parse's peak (the image, the read buffer, the per-segment overhead) fits in RAM above the parking
+floor (`--conversation-cache-min-free-mib`), the file's size against the largest this session can restore, the
+geometry and layer range before any state array, and every count against the bytes left and this session's exact
+limits (context and cells, checkpoints, layers, each running-state array, each K/V part) before allocating it, the payload hash
 and then the usual snapshot validation - all before any device write, and a refusal leaves the current session as it
 was. A transfer failure after the device writes began ends the engine (`FATAL`) rather than decode from a partial
 state; the server reports `500` and starts it again. A restore does not park the outgoing session. Not supported with

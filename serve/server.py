@@ -29,6 +29,7 @@ import hmac
 import codecs
 import ctypes
 import json
+import math
 import os
 import queue
 import re
@@ -143,6 +144,23 @@ class EngineSilent(EngineDied):
     """#481: the engine said nothing for too long during a request (or never acknowledged a STOP): the two sides lost
     step - the engine waiting for its next command, the server for this request's end - and the server ended it.  An
     EngineDied, so the request ends with an error and the next one starts the engine again."""
+
+
+class SessionRefused(ValueError):
+    """Disk sessions: the engine refused or failed a SAVE / RESTORE and is still in step (`SERR <kind> <published>
+    <reason>`).  `kind` is the engine's category - invalid (400), storage (507), memory (503), io (500); `published`:
+    a save whose new file already replaced the old one before a later step (the folder flush) failed."""
+
+    STATUS = {"invalid": 400, "storage": 507, "memory": 503, "io": 500}
+
+    def __init__(self, kind: str, message: str, published: bool = False):
+        super().__init__(message)
+        self.kind = kind if kind in self.STATUS else "io"
+        self.published = published
+
+    @property
+    def status(self) -> int:
+        return self.STATUS[self.kind]
 
 
 class EngineStuck(RuntimeError):
@@ -1225,10 +1243,13 @@ class StrataEngine:
 
     def session_file(self, action: str, path: str) -> dict:
         """Disk sessions: `SAVE <path>` / `RESTORE <path>` between requests (the caller holds the service FIFO).
-        -> {"tokens", "bytes", "ms"}.  ValueError with the engine's reason when it refused the file and the session is
-        as it was; EngineDied when the engine ended (a restore transfer that failed after the device state changed
-        ends it on purpose: FATAL), and EngineSilent (#481) when it printed nothing - no SESSION progress line either -
-        for engine_silence_s."""
+        -> {"tokens", "bytes", "ms"}.  SessionRefused (kind, published) when the engine refused or failed the file and
+        is still in step (`SERR <kind> <0|1> <reason>`).  Any line this exchange does not allow - an unknown or
+        malformed one, a bare ERR, an answer with negative counts or a non-finite time - means the two sides lost
+        step: the engine is ended (EngineDied) and the next request starts it again.  EngineDied also when it ended
+        by itself (a restore transfer that failed after the device state changed ends it on purpose: FATAL), and
+        EngineSilent (#481) when it printed nothing valid - a SESSION progress line counts only when its numbers are
+        - for engine_silence_s."""
         if action not in ("save", "restore") or any(c in path for c in "\r\n\0"):
             raise ValueError("invalid session command")
         try:
@@ -1238,7 +1259,24 @@ class StrataEngine:
             raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
         silence = float(self.silence_s or 0)
         heard = time.monotonic()
-        want = "SAVED " if action == "save" else "RESTORED "
+        want = "SAVED" if action == "save" else "RESTORED"
+
+        def out_of_step(line: str) -> EngineDied:
+            self.ended = True                               # not alive from now: the next request restarts it
+            try:
+                self.proc.kill()
+                self.proc.wait(timeout=20)
+            except (OSError, AttributeError, subprocess.TimeoutExpired):
+                pass
+            return EngineDied(f"the engine answered a session {action} with {line.strip()[:200]!r}; "
+                              "the server ended the engine")
+
+        def count(s: str) -> int:
+            if not s.isdigit():                             # no sign, no blank, no fraction
+                raise ValueError
+            return int(s)
+
+        last_done = -1
         while True:
             left = silence - (time.monotonic() - heard) if silence > 0 else None
             try:
@@ -1249,23 +1287,41 @@ class StrataEngine:
                 raise self._silent(f"the engine said nothing for {silence:.0f} s during a session {action}") from None
             if line is None:
                 raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
-            heard = time.monotonic()
-            if line.startswith("SESSION "):               # a large file moving: progress, also a heartbeat
+            f = line.split()
+            head = f[0] if f else ""
+            if head == "SESSION":                          # a large file moving: progress, and a heartbeat
+                try:
+                    if len(f) != 3:
+                        raise ValueError
+                    done, total = count(f[1]), count(f[2])
+                    if done > total or done < last_done:
+                        raise ValueError
+                except ValueError:
+                    raise out_of_step(line) from None
+                last_done = done
+                heard = time.monotonic()
                 continue
-            if line.startswith("FATAL"):
+            if head == "FATAL":
                 raise EngineDied(line[6:].strip() or "the engine ended during a session restore")
-            if line.startswith("ERR"):
-                raise ValueError(line[4:].strip())
-            if line.startswith(want):
-                f = line.split()
+            if head == "SERR":
+                parts = line.rstrip("\r\n").split(" ", 3)
+                if len(parts) != 4 or parts[1] not in SessionRefused.STATUS or parts[2] not in ("0", "1"):
+                    raise out_of_step(line)
+                raise SessionRefused(parts[1], parts[3].strip(), parts[2] == "1")
+            if head == want:
                 try:
                     if len(f) != 4:
                         raise ValueError
-                    return {"tokens": int(f[1]), "bytes": int(f[2]), "ms": float(f[3])}
+                    tokens, size, ms = count(f[1]), count(f[2]), float(f[3])
+                    if not math.isfinite(ms) or ms < 0:
+                        raise ValueError
                 except ValueError:
-                    raise EngineDied(f"the engine answered a session {action} with {line.strip()!r}") from None
-            if line.startswith(("SAVED ", "RESTORED ", "T ", "DONE")):
-                raise EngineDied(f"the engine answered a session {action} with {line.strip()!r}")
+                    raise out_of_step(line) from None
+                return {"tokens": tokens, "bytes": size, "ms": ms}
+            if head == "INFO" or head == "WARN":          # engine log lines may interleave; they are not answers
+                heard = time.monotonic()
+                continue
+            raise out_of_step(line)
 
     def close(self):
         """End the engine process: QUIT first (the engine frees its memory itself - unpinning tens of GB can take
@@ -1839,9 +1895,14 @@ class Service:
                                        prompt_tokens=None, generated=None, max_tokens=None)
                 try:
                     r = self.engine.session_file(action, path)
-                except ValueError as e:
-                    msg = str(e)
-                    return error(507 if "disk space" in msg else 503 if "RAM" in msg else 400, msg)
+                except SessionRefused as e:
+                    body = error(e.status, str(e))
+                    body[1]["error"]["kind"] = e.kind
+                    if e.published:
+                        body[1]["error"]["published"] = True
+                    return body
+                except ValueError as e:                     # the request itself (an invalid command)
+                    return error(400, str(e))
                 finally:
                     with self.status_lock:
                         self.status["busy"] = False

@@ -34,6 +34,15 @@ bool conversation_kv_verify(const ConversationKv& image, const QsaState& state, 
 // conversation_kv_save).  Caller synchronizes the device first and keeps the state untouched while it is read.
 bool conversation_kv_source(SessionKvSource& source, const QsaState& state, const ModelGeometry& g,
                             int64_t upto, bool include_index, std::string& error);
+// The bytes of each K/V part (k, v, k_scale, v_scale, pooled) a snapshot of `upto` tokens holds: no state read.
+bool conversation_kv_part_sizes(const QsaState& state, const ModelGeometry& g, int64_t upto, bool include_index,
+                                std::array<uint64_t, 5>& sizes, std::string& error);
+// Disk sessions: the read limits this session can ever restore - its geometry and layer range, at most
+// min(max_tokens, its cells) tokens, `max_checkpoints` checkpoints, the exact running-state sizes and the K/V part
+// sizes at that many tokens - so session_file_read refuses an oversized or foreign file before it allocates.
+bool conversation_session_read_limits(SessionReadLimits& limits, const SessionState& session, const ModelGeometry& g,
+                                      const QsaState& draft, uint64_t max_tokens, uint64_t max_checkpoints,
+                                      std::string& error);
 
 struct ConversationStateSizes {
     size_t gdn = 0, ple = 0, tail = 0, dead = 0, block_pos = 0;

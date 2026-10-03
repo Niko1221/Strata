@@ -3,6 +3,7 @@
 #include "strata/core/conversation_file.hpp"
 
 #include <array>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -11,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <utility>
 #include <vector>
 #ifndef _WIN32
 #include <sys/stat.h>
@@ -395,7 +397,8 @@ int main() {
         l = {};
         uint64_t asked = 0;
         l.admit = [&](uint64_t n, std::string& why) { asked = n; why = "no room for it"; return false; };
-        check(rejects(good, id, "no room", l) && asked == image.size(), "admission sees the file size and can refuse");
+        check(rejects(good, id, "no room", l) && asked == session_read_peak_bytes(image.size()) &&
+              asked > image.size(), "admission sees the parse's peak (more than the file) and can refuse");
         l = {};
         bool admitted = false;
         l.admit = [&](uint64_t, std::string&) { admitted = true; return true; };
@@ -435,6 +438,144 @@ int main() {
         check(!session_file_write(p.string(), meta, broken, id, written, error), "keep: failing write fails");
         check(slurp(p) == image, "keep: the previous session survives a failed write");
         check(slurp(planted) == std::vector<char>(5, 'p') && no_temp(dir), "keep: no other file touched");
+    }
+    // R1: the input list carries every expert file the loader resolved, per (layer, role) - a GGUF that only
+    // native_experts.txt names changes the fingerprint when it changes; one file in two roles is two entries
+    {
+        const fs::path g1 = dir / "ext-a.gguf", g2 = dir / "ext-b.gguf";
+        spit(g1, std::vector<char>(4096, 'g'));
+        spit(g2, std::vector<char>(4096, 'h'));
+        SessionInputs in;
+        in.native_shards = {g1.string()};
+        in.experts = {{"expert blk.0.ffn_gate", g1.string()}, {"expert blk.0.ffn_up", g2.string()},
+                      {"expert blk.0.ffn_down", g2.string()}};
+        const auto list = session_model_inputs(in);
+        check(list.size() == 4, "inputs: shard plus three expert roles, none merged");
+        uint64_t a = 0, b = 0, c = 0;
+        check(session_model_fingerprint(list, a, error), "inputs: fingerprint");
+        auto d = slurp(g2); d[0] = 'X'; spit(g2, d);   // the expert-only file changes; the CLI shard does not
+        check(session_model_fingerprint(list, b, error) && a != b, "inputs: an expert-only GGUF enters the fingerprint");
+        SessionInputs swapped = in;
+        std::swap(swapped.experts[0].second, swapped.experts[1].second);
+        check(session_model_fingerprint(session_model_inputs(swapped), c, error) && c != b,
+              "inputs: the role each expert file plays enters the fingerprint");
+    }
+    // R2: runtime limits bound every array before it is allocated, and the file size follows from them
+    {
+        auto exact = [&] {
+            SessionReadLimits l;
+            l.max_tokens = 1000; l.max_checkpoints = 2; l.max_kv_layers = 3;
+            l.geometry = original.geometry;
+            l.layer_range = std::make_pair(original.layer_lo, original.layer_hi);
+            l.max_state_bytes = {4099, 77, 301, 64, 8};
+            for (const auto& k : original.kv)
+                l.max_kv_bytes.push_back({k.k.size(), k.v.size(), k.k_scale.size(), k.v_scale.size(), k.pooled.size()});
+            return l;
+        };
+        SavedConversation back;
+        size_t n = 0;
+        check(session_file_read(good.string(), id, back, n, error, exact()) && same(back, original),
+              "limits: a file within the exact runtime limits reads");
+        check(session_read_max_file_bytes(exact()) >= image.size() &&
+              session_read_max_file_bytes(exact()) < UINT64_MAX, "limits: the runtime limits bound the file size");
+        check(session_read_max_file_bytes(SessionReadLimits{}) == UINT64_MAX, "limits: open limits leave it open");
+        auto l = exact(); l.max_state_bytes[0] = 4098;
+        check(rejects(good, id, "limit", l), "limits: a GDN state over the runtime size refused");
+        l = exact(); l.max_state_bytes[4] = 7;
+        check(rejects(good, id, "limit", l), "limits: block_pos over the runtime size refused");
+        l = exact(); l.max_kv_bytes[0][0] = original.kv[0].k.size() - 1;
+        check(rejects(good, id, "limit", l), "limits: a K buffer over the runtime size refused");
+        l = exact(); l.max_kv_bytes[2][1] = original.kv[2].v.size() - 1;
+        check(rejects(good, id, "limit", l), "limits: the draft's V over the runtime size refused");
+        l = exact(); (*l.geometry)[3] ^= 1;
+        check(rejects(good, id, "geometry", l), "limits: another geometry refused before the state is read");
+        l = exact(); l.layer_range = std::make_pair(int64_t(0), int64_t(24));
+        check(rejects(good, id, "layer", l), "limits: another layer range refused");
+        // a huge count in a state array with a recomputed hash: refused by the bound, nothing allocated
+        auto d = image;
+        // live: ids count (8) + 1000*4, imgs count (8) + 1*16, then the gdn byte count
+        const size_t at = 64 + 21 * 8 + 8 + 1000 * 4 + 8 + 16;
+        uint64_t was = 0; std::memcpy(&was, d.data() + at, 8);
+        check(was == 4099, "limits: test offset finds the GDN count");
+        uint64_t huge = 3ull << 30; std::memcpy(d.data() + at, &huge, 8);
+        uint64_t payload = 0; std::memcpy(&payload, d.data() + 32, 8);
+        const uint64_t h = session_hash64(d.data() + 64, payload, 0);
+        std::memcpy(d.data() + 64 + payload, &h, 8);
+        const fs::path p = dir / "bigstate.bin"; spit(p, d);
+        check(rejects(p, id, nullptr, exact()), "limits: an oversized state count refused before allocation");
+        // status kinds of a read
+        SessionStatus st;
+        check(!session_file_read(p.string(), id, back, n, error, exact(), &st) && st.error == SessionError::invalid,
+              "status: a bad file is 'invalid'");
+        l = exact();
+        l.admit = [](uint64_t, std::string& why) { why = "no RAM"; return false; };
+        check(!session_file_read(good.string(), id, back, n, error, l, &st) && st.error == SessionError::memory,
+              "status: the RAM preflight is 'memory'");
+    }
+    // R3/R5: injected failures at each write step - kind, publication and the old file
+    {
+        const fs::path p = dir / "fault.bin";
+        const std::vector<char> old(10, 'q');
+        struct Case { const char* step; int err; SessionError kind; bool published; };
+        for (const Case c : {Case{"write", ENOSPC, SessionError::storage, false},
+#ifdef EDQUOT
+                             Case{"write", EDQUOT, SessionError::storage, false},
+#endif
+                             Case{"write", EIO, SessionError::io, false},
+                             Case{"file_flush", EIO, SessionError::io, false},
+                             Case{"rename", EACCES, SessionError::io, false},
+                             Case{"dir_flush", EIO, SessionError::io, true}}) {
+            spit(p, old);
+            SessionWriteOptions opt;
+            const std::string want = c.step;
+            const int code = c.err;
+            opt.fault = [want, code](const char* step) { return want == step ? code : 0; };
+            SessionStatus st;
+            const bool ok = session_file_write(p.string(), original, id, written, error, opt, &st);
+            check(!ok && st.error == c.kind, "fault: the failure has its kind");
+            check(st.published == c.published, "fault: publication reported exactly");
+            if (c.published) {
+                check(slurp(p) == image && error.find("replaced") != std::string::npos,
+                      "fault: after a published failure the new file is there and the error says so");
+            } else {
+                check(slurp(p) == old, "fault: a failure before the rename keeps the old file");
+            }
+            check(no_temp(dir), "fault: no temporary left behind");
+        }
+#ifndef _WIN32
+        // a filesystem that cannot flush a folder: saved, and said
+        spit(p, old);
+        SessionWriteOptions opt;
+        opt.fault = [](const char* step) { return std::string(step) == "dir_flush" ? EINVAL : 0; };
+        SessionStatus st;
+        check(session_file_write(p.string(), original, id, written, error, opt, &st) && st.dir_flush_unsupported &&
+              slurp(p) == image, "fault: EINVAL on the folder flush is not a failure, and is reported");
+#endif
+        // the free-space preflight is 'storage'
+        SessionWriteOptions big;
+        big.min_free_bytes = UINT64_MAX / 2;
+        SessionStatus st2;
+        check(!session_file_write(p.string(), original, id, written, error, big, &st2) &&
+              st2.error == SessionError::storage, "status: the free-space preflight is 'storage'");
+        check(std::string(session_error_name(SessionError::storage)) == "storage" &&
+              std::string(session_error_name(SessionError::memory)) == "memory" &&
+              std::string(session_error_name(SessionError::invalid)) == "invalid" &&
+              std::string(session_error_name(SessionError::io)) == "io", "status: protocol names");
+    }
+    // R6: the folder the free-space query is asked about
+    {
+        check(session_free_space_dir("\\\\server\\share\\sessions\\chat.bin", true) == "\\\\server\\share\\sessions\\",
+              "free space: UNC subfolder keeps its trailing backslash");
+        check(session_free_space_dir("\\\\server\\share\\chat.bin", true) == "\\\\server\\share\\",
+              "free space: UNC share root keeps its trailing backslash");
+        check(session_free_space_dir("//server/share/s/chat.bin", true) == "\\\\server\\share\\s\\",
+              "free space: forward slashes become backslashes");
+        check(session_free_space_dir("C:\\chat.bin", true) == "C:\\", "free space: drive root");
+        check(session_free_space_dir("C:chat.bin", true) == "C:\\", "free space: drive-relative name");
+        check(session_free_space_dir("chat.bin", true).empty(), "free space: bare name is the current folder");
+        check(session_free_space_dir("/a/b/chat.bin", false) == "/a/b", "free space: POSIX folder");
+        check(session_free_space_dir("/chat.bin", false) == "/", "free space: POSIX root");
+        check(session_free_space_dir("chat.bin", false) == ".", "free space: POSIX bare name");
     }
 #ifndef _WIN32
     // what restore will not open: a symbolic link, a hard-linked file, a FIFO, a directory

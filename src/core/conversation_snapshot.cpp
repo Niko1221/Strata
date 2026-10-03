@@ -222,6 +222,14 @@ bool conversation_kv_restore(const ConversationKv& image, const QsaState& st, co
     return false;
 }
 
+bool conversation_kv_part_sizes(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index,
+                                std::array<uint64_t, 5>& sizes, std::string& error) {
+    Layout l{};
+    if (!layout(st, g, upto, index, l, error)) return false;
+    sizes = {l.data, l.value_data, l.scales, l.value_scales, l.pooled};
+    return true;
+}
+
 bool conversation_kv_source(SessionKvSource& out, const QsaState& st, const ModelGeometry& g,
                             int64_t upto, bool index, std::string& error) {
     Layout l{};
@@ -232,11 +240,12 @@ bool conversation_kv_source(SessionKvSource& out, const QsaState& st, const Mode
     s.sizes = {l.data, l.value_data, l.scales, l.value_scales, l.pooled};
     const auto src = pools(st);
     const auto sizes = s.sizes;
-    s.read = [src, sizes](size_t part, size_t offset, void* dst, size_t n) {
-        if (part >= 5 || offset > sizes[part] || n > sizes[part] - offset) return false;
-        std::string ignored;
-        return transfer(dst, src[part] ? static_cast<const uint8_t*>(src[part]) + offset : nullptr, n, ignored);
+    auto why = std::make_shared<std::string>();
+    s.read = [src, sizes, why](size_t part, size_t offset, void* dst, size_t n) {
+        if (part >= 5 || offset > sizes[part] || n > sizes[part] - offset) { *why = "K/V read out of range"; return false; }
+        return transfer(dst, src[part] ? static_cast<const uint8_t*>(src[part]) + offset : nullptr, n, *why);
     };
+    s.error = [why] { return *why; };
     out = std::move(s);
     return true;
 }
