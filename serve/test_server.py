@@ -847,6 +847,25 @@ class LearnedProfile(unittest.TestCase):
         self.assertEqual(engine_args(cfg), ["--native", "x", "--expert-profile-save", "learned.bin"])
 
 
+class PeerDevice(unittest.TestCase):
+    """Several GPUs in the config are a layer split, but --peer-device uses the second card as an expert-cache tier,
+    and the engine refuses it beside --layer-split: the server must not add one then."""
+
+    def test_split_added_for_several_gpus(self):
+        self.assertEqual(engine_args({"args": ["--native", "x"], "gpu": [0, 1]}),
+                         ["--native", "x", "--layer-split", "auto"])
+
+    def test_no_split_with_a_peer(self):
+        args = ["--native", "x", "--peer-device", "1"]
+        self.assertEqual(engine_args({"args": list(args), "gpu": [0, 1]}), args)
+        self.assertEqual(engine_args({"args": list(args), "gpu": [0, 1], "split_skip_if_fits": True}), args)
+
+    def test_both_cards_visible(self):
+        from serve.server import child_env
+        env = child_env({"args": ["--peer-device", "1"], "gpu": [0, 1]})
+        self.assertEqual(env["CUDA_VISIBLE_DEVICES"], "0,1")
+
+
 class DraftHeadHint(unittest.TestCase):
     """#474: a start that stopped at "the draft head does not fit" says what to change, from this start's log lines."""
 
