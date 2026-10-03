@@ -132,6 +132,10 @@ public:
     /// stays valid for the layer it was asked in and the next one or two; a consumer that keeps a blob longer (the
     /// prompt path's stager queues a whole chunk) copies it with `copy_blob` instead.
     virtual bool transient(int64_t layer, int64_t expert) const { (void) layer; (void) expert; return false; }
+    /// Disk sessions: the files this source read its experts from, as (role, path), resolved by the loader itself
+    /// - the pack's experts.bin, or every GGUF tensor native_experts.txt named, per layer and role
+    /// ("expert blk.L.ffn_up").  Filled by open(); empty before.
+    const std::vector<std::pair<std::string, std::string>>& model_inputs() const { return inputs_; }
     /// The blob's bytes into `dst` (blob_bytes(layer) of them).  Safe from several threads for a source whose
     /// `transient` can be true.
     virtual bool copy_blob(int64_t layer, int64_t expert, uint8_t* dst);
@@ -143,6 +147,11 @@ public:
     virtual void warm(int64_t layer, const int64_t* experts, int64_t n) { (void) layer; (void) experts; (void) n; }
     /// Whether `warm` does anything (the predictor is not run otherwise).
     virtual bool warms() const { return false; }
+protected:
+    /// What model_inputs() returns; set by a source's open().
+    void record_inputs(const std::string& pack_experts, const std::string& gguf,
+                       const strata::kernels::cpu::ExpertLayout& lay, bool from_gguf);
+    std::vector<std::pair<std::string, std::string>> inputs_;
 };
 
 /// CS-T, routing-aware prefetch of the file tier: when the CPU pool starts layer `l`, a worker thread applies layer

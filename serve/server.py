@@ -28,6 +28,7 @@ import hmac
 import codecs
 import ctypes
 import json
+import math
 import os
 import queue
 import re
@@ -71,6 +72,9 @@ RATE_MIN_SPAN_S = 0.25      # younger than this there is no rate yet: the mean s
 # server (the engine's main thread waits, untimed, for its next command): the engine is ended and the request fails;
 # the next request starts it again.  The config's "engine_silence_s" sets it (0: wait forever, as before).
 ENGINE_SILENCE_S = 300.0
+# Disk sessions: the longest allowance an engine may announce (`SWAIT <phase> <s>`) for one step that blocks in a
+# single call (a file flush, the host->device transfer); the engine's own bound is the same (session_phase_limit_s).
+SESSION_WAIT_MAX_S = 3600
 # ... except while a prompt is read: a PP line comes once per chunk (up to 32768 tokens with --prefill auto, issue
 # #282), and the slowest PCs read ~100 tok/s, so a first chunk can take minutes before the first line.  Until the first
 # PP the wait adds the chunk's tokens at PP_FLOOR_TOK_S; after one, a chunk may take PP_SLACK x the last one's time.
@@ -128,6 +132,23 @@ class EngineSilent(EngineDied):
     """#481: the engine said nothing for too long during a request (or never acknowledged a STOP): the two sides lost
     step - the engine waiting for its next command, the server for this request's end - and the server ended it.  An
     EngineDied, so the request ends with an error and the next one starts the engine again."""
+
+
+class SessionRefused(ValueError):
+    """Disk sessions: the engine refused or failed a SAVE / RESTORE and is still in step (`SERR <kind> <published>
+    <reason>`).  `kind` is the engine's category - invalid (400), storage (507), memory (503), io (500); `published`:
+    a save whose new file already replaced the old one before a later step (the folder flush) failed."""
+
+    STATUS = {"invalid": 400, "storage": 507, "memory": 503, "io": 500}
+
+    def __init__(self, kind: str, message: str, published: bool = False):
+        super().__init__(message)
+        self.kind = kind if kind in self.STATUS else "io"
+        self.published = published
+
+    @property
+    def status(self) -> int:
+        return self.STATUS[self.kind]
 
 
 class EngineStuck(RuntimeError):
@@ -612,6 +633,105 @@ class StrataEngine:
             pass
         return EngineSilent(f"{what}; the server ended the engine")
 
+    def session_file(self, action: str, path: str) -> dict:
+        """Disk sessions: `SAVE <path>` / `RESTORE <path>` between requests (the caller holds the service FIFO).
+        -> {"tokens", "bytes", "ms"}.  SessionRefused (kind, published) when the engine refused or failed the file and
+        is still in step (`SERR <kind> <0|1> <reason>`).  Any line this exchange does not allow - an unknown or
+        malformed one, a bare ERR, an answer with negative counts or a non-finite time - means the two sides lost
+        step: the engine is ended (EngineDied) and the next request starts it again.  EngineDied also when it ended
+        by itself (a restore transfer that failed after the device state changed ends it on purpose: FATAL), and
+        EngineSilent (#481) when it printed nothing valid for engine_silence_s - a SESSION progress line (one per
+        block of the file moved, at most 16 MiB) counts only when its numbers are.  `SWAIT <phase> <seconds>` announces
+        a step that blocks in one call (a flush, the device transfer): until the next line the wait is that step's
+        explicit allowance (at most SESSION_WAIT_MAX_S) when it is longer than engine_silence_s - no more, so a step
+        that never ends is still ended."""
+        if action not in ("save", "restore") or any(c in path for c in "\r\n\0"):
+            raise ValueError("invalid session command")
+        try:
+            self.proc.stdin.write(f"{'SAVE' if action == 'save' else 'RESTORE'} {path}\n")
+            self.proc.stdin.flush()
+        except OSError:
+            raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
+        silence = float(self.silence_s or 0)
+        heard = time.monotonic()
+        want = "SAVED" if action == "save" else "RESTORED"
+
+        def out_of_step(line: str) -> EngineDied:
+            self.ended = True                               # not alive from now: the next request restarts it
+            try:
+                self.proc.kill()
+                self.proc.wait(timeout=20)
+            except (OSError, AttributeError, subprocess.TimeoutExpired):
+                pass
+            return EngineDied(f"the engine answered a session {action} with {line.strip()[:200]!r}; "
+                              "the server ended the engine")
+
+        def count(s: str) -> int:
+            if not s.isdigit():                             # no sign, no blank, no fraction
+                raise ValueError
+            return int(s)
+
+        last_done = -1
+        allow = 0.0                                         # the announced blocking step's allowance, seconds
+        while True:
+            limit = max(silence, allow)
+            left = limit - (time.monotonic() - heard) if silence > 0 else None
+            try:
+                if left is not None and left <= 0:
+                    raise queue.Empty
+                line = self.lines.get(timeout=left)
+            except queue.Empty:
+                raise self._silent(f"the engine said nothing for {limit:.0f} s during a session {action}"
+                                   + (f" (in a blocking step allowed {allow:.0f} s)" if allow > silence else "")) from None
+            if line is None:
+                raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
+            f = line.split()
+            head = f[0] if f else ""
+            if head == "SESSION":                          # a large file moving: progress, and a heartbeat
+                try:
+                    if len(f) != 3:
+                        raise ValueError
+                    done, total = count(f[1]), count(f[2])
+                    if done > total or done < last_done:
+                        raise ValueError
+                except ValueError:
+                    raise out_of_step(line) from None
+                last_done = done
+                heard, allow = time.monotonic(), 0.0
+                continue
+            if head == "SWAIT":                            # a blocking step starts: its bounded allowance
+                try:
+                    if len(f) != 3 or not f[1].isalpha() or not f[1].isascii():
+                        raise ValueError
+                    seconds = count(f[2])
+                    if not 0 < seconds <= SESSION_WAIT_MAX_S:
+                        raise ValueError
+                except ValueError:
+                    raise out_of_step(line) from None
+                heard, allow = time.monotonic(), float(seconds)
+                continue
+            if head == "FATAL":
+                raise EngineDied(line[6:].strip() or "the engine ended during a session restore")
+            if head == "SERR":
+                parts = line.rstrip("\r\n").split(" ", 3)
+                if len(parts) != 4 or parts[1] not in SessionRefused.STATUS or parts[2] not in ("0", "1"):
+                    raise out_of_step(line)
+                raise SessionRefused(parts[1], parts[3].strip(), parts[2] == "1")
+            if head == want:
+                try:
+                    if len(f) != 4:
+                        raise ValueError
+                    tokens, size, ms = count(f[1]), count(f[2]), float(f[3])
+                    if not math.isfinite(ms) or ms < 0:
+                        raise ValueError
+                except ValueError:
+                    raise out_of_step(line) from None
+                return {"tokens": tokens, "bytes": size, "ms": ms}
+            if head == "INFO" or head == "WARN":          # engine log lines may interleave; they are not answers
+                heard = time.monotonic()
+                continue
+            raise out_of_step(line)
+
     def close(self):
         """End the engine process: QUIT first (the engine frees its memory itself - unpinning tens of GB can take
         a while), then terminate, then kill, each given 20 s.  Raises EngineStuck when it still runs after all three."""
@@ -942,6 +1062,50 @@ class Detokenizer:
         return delta
 
 
+
+# Windows names that open a device whatever their extension or folder (Microsoft, "Naming Files, Paths, and Namespaces")
+_WIN_DEVICES = {"con", "prn", "aux", "nul", "conin$", "conout$", *(f"com{i}" for i in "123456789\u00b9\u00b2\u00b3"),
+                *(f"lpt{i}" for i in "123456789\u00b9\u00b2\u00b3")}
+
+
+def slot_filename_problem(name) -> str | None:
+    """/slots/0 {"filename": NAME}: why NAME is not one plain file name inside the slot save path, on Linux and on
+    Windows alike (None when it is).  No separator or drive (`D:x`), no stream (`a:b`), no device (`NUL.txt`), no
+    trailing dot or space (Windows drops them), no control character, no leading dot (temporary files use it)."""
+    if not isinstance(name, str) or not name:
+        return "must be a non-empty string"
+    if len(name.encode("utf-8", "surrogatepass")) > 200:
+        return "is too long (at most 200 bytes)"
+    if any(ord(c) < 32 or ord(c) == 127 for c in name):
+        return "must not contain control characters"
+    if any(c in name for c in '/\\:*?"<>|'):
+        return "must be a plain file name (no / \\ : * ? \" < > |)"
+    if name.startswith("."):
+        return "must not start with a dot"
+    if name.endswith((".", " ")):
+        return "must not end with a dot or a space"
+    if name.split(".")[0].rstrip(" ").lower() in _WIN_DEVICES:
+        return "names a Windows device"
+    try:
+        name.encode("utf-8")
+    except UnicodeEncodeError:
+        return "is not valid Unicode"
+    return None
+
+
+def slot_save_dir(value, base: str | None = None) -> str:
+    """The slot save path as one absolute, normalized directory (relative to `base`, else the server's working
+    directory), created private to this user when missing.  ValueError for anything else."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("slot_save_path must be a directory path (a string)")
+    if any(ord(c) < 32 for c in value):
+        raise ValueError("slot_save_path must not contain control characters")
+    path = os.path.abspath(os.path.join(base, value) if base and not os.path.isabs(value) else value)
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    if not os.path.isdir(path):
+        raise ValueError(f"slot_save_path {path} is not a directory")
+    return path
+
 class Service:
     def __init__(self, engine: Engine, tokenizer, template: ChatTemplate, model_name: str = "qwen3.8-flash-next",
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
@@ -953,6 +1117,7 @@ class Service:
         self.shared = {}                              # the web app's Chat settings for every client (POST /settings)
         self.shared_path = None                       # where they are kept between starts (next to the config)
         self.fifo = threading.Lock()
+        self.slot_save_path = None                    # --slot-save-path: /slots/0?action=save|restore (off when None)
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
         self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
         # #321: browser pages of these origins may call /v1/* (CORS; "*" = any page - only with an api_key that
@@ -995,6 +1160,66 @@ class Service:
 
     def loaded(self) -> bool:
         return not hasattr(self.engine, "alive") or self.engine.alive()
+
+    def slot_action(self, slot: str, action: str, filename) -> tuple[int, dict]:
+        """llama-server's POST /slots/{id}?action=save|restore {"filename": ...}: the conversation the engine holds,
+        to or from a file in slot_save_path.  -> (HTTP status, body)."""
+        def error(code, message):
+            return code, {"error": {"code": code, "message": message,
+                                    "type": "invalid_request_error" if code < 500 else "server_error"}}
+        if not self.slot_save_path or not hasattr(self.engine, "session_file"):
+            return error(501, "slot save/restore is disabled (start the server with --slot-save-path DIR)")
+        if slot != "0":
+            return error(400, "this server has one slot: 0")
+        if action not in ("save", "restore"):
+            return error(400, "action must be save or restore")
+        why = slot_filename_problem(filename)
+        if why:
+            return error(400, f"filename {why}")
+        path = os.path.join(self.slot_save_path, filename)
+        if action == "restore":
+            try:
+                os.lstat(path)                              # the engine opens it without following a link
+            except OSError:
+                return error(404, f"no saved session named {filename}")
+        self.last_request_at = time.time()                  # the idle unload counts this as activity
+        with self.status_lock:
+            self.status["queued"] += 1
+        waiting = True
+        try:
+            with self.fifo:
+                with self.status_lock:
+                    self.status["queued"] -= 1
+                waiting = False
+                if not self.loaded():
+                    return error(503, "the model is not loaded")
+                with self.status_lock:
+                    self.status.update(busy=True, phase="saving the session" if action == "save"
+                                       else "restoring a session", started=time.time(), first_token=None,
+                                       prompt_tokens=None, generated=None, max_tokens=None)
+                try:
+                    r = self.engine.session_file(action, path)
+                except SessionRefused as e:
+                    body = error(e.status, str(e))
+                    body[1]["error"]["kind"] = e.kind
+                    if e.published:
+                        body[1]["error"]["published"] = True
+                    return body
+                except ValueError as e:                     # the request itself (an invalid command)
+                    return error(400, str(e))
+                finally:
+                    with self.status_lock:
+                        self.status["busy"] = False
+                    self.last_request_at = time.time()
+        finally:
+            if waiting:                                     # never reached the FIFO (an exception while waiting)
+                with self.status_lock:
+                    self.status["queued"] -= 1
+        if action == "save":
+            return 200, {"id_slot": 0, "filename": filename, "n_saved": r["tokens"], "n_written": r["bytes"],
+                         "timings": {"save_ms": r["ms"]}}
+        return 200, {"id_slot": 0, "filename": filename, "n_restored": r["tokens"], "n_read": r["bytes"],
+                     "timings": {"restore_ms": r["ms"]}}
 
     def set_aliases(self, aliases) -> None:
         """#297: the config's `aliases` - a list of names (or one comma-separated string), like llama-server's --alias.
@@ -2229,6 +2454,9 @@ def make_handler(svc: Service):
             # JSON from Strata's own page only, as /settings: else a plain form POST from any site unloads the model
             if path in ("/unload", "/load") and not self._own_page("the model can be loaded or unloaded"):
                 return
+            # the same for the slot files: else any site could overwrite a saved conversation or replace the live one
+            if path.startswith("/slots/") and not self._own_page("conversations can be saved or restored"):
+                return
             if path == "/unload":                            # give the GPU back now (between requests)
                 try:
                     r = svc.unload()
@@ -2274,7 +2502,16 @@ def make_handler(svc: Service):
                     return
                 if path in ("/v1/chat/completions", "/v1/messages"):
                     self.record = svc.begin_request(path, req)
-                if path == "/v1/chat/completions":
+                if path.startswith("/slots/"):
+                    query = parse_qs(self.path.partition("?")[2])
+                    try:
+                        code, body = svc.slot_action(path[len("/slots/"):], (query.get("action") or [""])[0],
+                                                     req.get("filename"))
+                    except EngineDied as e:                  # EngineSilent included: the engine was ended
+                        code, body = 500, {"error": {"code": 500, "message": str(e) + "; the next request starts "
+                                                     "the engine again", "type": "server_error"}}
+                    self._json(code, body)
+                elif path == "/v1/chat/completions":
                     self._openai(req)
                 elif path == "/v1/messages":
                     self._anthropic(req)
@@ -2865,6 +3102,9 @@ def main() -> int:
                          "\"min_free_vram_mib\" in the config; default: always load)")
     ap.add_argument("--before-load", help="a command run before the model is loaded again (e.g. to unload another "
                                           "server's model; also \"before_load\" in the config, a string or a list)")
+    ap.add_argument("--slot-save-path", default=None, metavar="DIR",
+                    help="enable POST /slots/0?action=save|restore {\"filename\": NAME} (llama-server's API): the "
+                         "conversation the engine holds, to or from DIR/NAME (also \"slot_save_path\" in the config)")
     a = ap.parse_args()
     cfg = json.loads(Path(a.config).read_text(encoding="utf-8-sig")) if a.config else {}   # Notepad adds a BOM
     if a.gpu is not None:
@@ -2973,6 +3213,16 @@ def main() -> int:
     svc.min_free_vram_mib = a.min_free_vram_mib if a.min_free_vram_mib is not None else \
         int(cfg.get("min_free_vram_mib") or 0)
     svc.before_load = a.before_load or cfg.get("before_load") or None
+    # --slot-save-path is relative to the working directory the server was started in; the config's slot_save_path
+    # to the config's "cwd" (the engine's folder) when it has one.  Either way the engine gets an absolute path.
+    if a.slot_save_path or cfg.get("slot_save_path"):
+        try:
+            svc.slot_save_path = slot_save_dir(a.slot_save_path) if a.slot_save_path else \
+                slot_save_dir(cfg["slot_save_path"], cfg.get("cwd"))
+        except (ValueError, OSError) as e:
+            raise SystemExit(f"[strata] {e}")
+        print(f"[strata] slot save/restore on: {svc.slot_save_path} (session files are kept until deleted: "
+              "about 1.2 GB per 63K-token conversation; restore only files this server wrote)", flush=True)
     mode = str(cfg.get("anthropic_thinking") or "model")   # #278: "on_request" = only when the request asks
     if mode not in ("model", "on_request"):
         raise SystemExit(f"[strata] config anthropic_thinking must be \"model\" or \"on_request\", not {mode!r}")
