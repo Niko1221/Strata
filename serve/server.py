@@ -1183,7 +1183,8 @@ class Detokenizer:
 class Service:
     def __init__(self, engine: Engine, tokenizer, template: ChatTemplate, model_name: str = "qwen3.8-flash-next",
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
-                 fit_max_tokens: bool = False, preempt: bool = False):
+                 fit_max_tokens: bool = False, preempt: bool = False,
+                 preempt_max_wait_s: float = 30.0):
         self.engine, self.tok, self.template, self.model, self.vision = engine, tokenizer, template, model_name, vision
         self.fit_max_tokens = fit_max_tokens          # --fit-max-tokens: clamp the output cap instead of 400
         self.aliases: list[str] = []                  # #297: other names of the model (the config's `aliases`)
@@ -1235,6 +1236,7 @@ class Service:
         # The engine must offer it (INFO preempt=1); a layer split is refused engine-side, and image requests
         # never park - they just never get an id.
         self.preempt = bool(preempt) and bool(getattr(engine, "can_preempt", False))
+        self.preempt_max_wait_s = float(preempt_max_wait_s)
         self.preempt_rid = iter(range(1, 1 << 62))       # engine-side request ids (SUSPENDED/RESUME demux)
 
     def loaded(self) -> bool:
@@ -2076,10 +2078,18 @@ class Service:
                 # turn: it is still counted in `queued` until ITS period starts, so wait for the queue to drain -
                 # outside the lock, with keep-alives for the client's watchdog.
                 last_ping = time.time()
+                wait_deadline = (time.time() + self.preempt_max_wait_s
+                                 if self.preempt_max_wait_s > 0 else None)
                 while not cancel.is_set():
                     with self.status_lock:
                         waiting = self.status.get("queued", 0)
                     if waiting < 1:
+                        break
+                    if wait_deadline is not None and time.time() >= wait_deadline:
+                        # T19: the postponement bound.  The queued requests keep their periods; this request
+                        # simply stops waiting for a FULL drain and takes its turn between them.
+                        print("[strata] the parked request hit its wait limit and resumes between queued "
+                              "periods", flush=True)
                         break
                     if time.time() - last_ping >= 2.0:
                         last_ping = time.time()
@@ -3351,6 +3361,9 @@ def main() -> int:
     ap.add_argument("--fit-max-tokens", action="store_true",
                     help="clamp max_tokens to the remaining context instead of rejecting the request "
                          "(default: reject with 400, like llama.cpp; also \"fit_max_tokens\": true in the config)")
+    ap.add_argument("--prefill-preempt-max-wait-s", type=float, default=30.0,
+                    help="how long a parked request waits for the WHOLE queue to drain before resuming anyway "
+                         "(the postponement bound for a continuous stream of arrivals; 0 = wait indefinitely)")
     ap.add_argument("--prefill-preempt", action="store_true",
                     help="a long prompt parks at a chunk boundary while another request is queued, and resumes "
                          "when the engine is free again (the engine needs --prefill-preempt too; one GPU; "
@@ -3449,7 +3462,8 @@ def main() -> int:
     svc = Service(engine, tok, ChatTemplate(tpl if tpl.exists() else ROOT / "serve/chat_template.jinja"),
                   model_name=cfg.get("model_name", "qwen3.8-flash-next"), vision=vision,
                   sampling_defaults=sampling_defaults,
-                  fit_max_tokens=a.fit_max_tokens or cfg.get("fit_max_tokens") is True, preempt=preempt)
+                  fit_max_tokens=a.fit_max_tokens or cfg.get("fit_max_tokens") is True, preempt=preempt,
+                  preempt_max_wait_s=a.prefill_preempt_max_wait_s)
     try:
         svc.set_aliases(cfg.get("aliases"))             # #297: other names the model answers to
     except ValueError as e:

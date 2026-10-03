@@ -427,6 +427,9 @@ struct Options {
     int64_t preempt_min_tokens = 8192;
     /// how often one request may be parked before it runs to the end unpreempted
     int64_t preempt_max = 16;
+    /// park-admission budget: refuse the park when the snapshot estimate exceeds this many MiB (0 = no cap).
+    /// Refusal happens BEFORE the big allocation - A keeps reading its prompt, B keeps waiting.
+    int64_t preempt_snapshot_mib = 4096;
     /// The suffix drafter (prompt lookup): when the text being written repeats an earlier stretch of the context (code
     /// edits, quoted input, tool-call JSON) by at least this many tokens, the window may be filled with what followed
     /// it there instead of the MTP's drafts, where the MTP's own first guess agrees and the draft policy expects it to
@@ -1503,6 +1506,8 @@ int main(int argc, char** argv) {
             o.preempt_min_tokens = std::max(0LL, std::atoll(next("--prefill-preempt-min-tokens")));
         else if (a == "--prefill-preempt-max")
             o.preempt_max = std::max(1LL, std::atoll(next("--prefill-preempt-max")));
+        else if (a == "--prefill-preempt-snapshot-mib")
+            o.preempt_snapshot_mib = std::max(0LL, std::atoll(next("--prefill-preempt-snapshot-mib")));
         else if (a == "--suffix-draft") o.suffix_draft = std::max(0, std::atoi(next("--suffix-draft")));
         else if (a == "--mtp-max-t") o.mtp_max_t = std::max(0, std::atoi(next("--mtp-max-t")));
         else if (a == "--control-vector") o.cvec_files.push_back({next("--control-vector"), 1.0f});
@@ -5081,12 +5086,53 @@ int main(int argc, char** argv) {
                 return false;
             }
         };
+        // park-admission: refuse BEFORE the big allocation when the snapshot estimate exceeds the budget
+        // (T18).  The estimate mirrors susp_save's copies: running half + dead/block + pooled rows + KV and
+        // drafter blocks through the position reached.
+        auto susp_estimate_bytes = [&](int64_t pos) -> uint64_t {
+            if (pos <= 0) return 0;
+            strata::kernels::QsaShapes qs = strata::kernels::qsa_real_shapes();
+            qs.n_head_kv = g.n_head_kv; qs.head_dim = g.head_dim; qs.idx_dim = g.idx_key_dim;
+            const ConvStateSizes z = conv_state_sizes(g, ss);
+            const int64_t blocks = (pos + qs.page_size - 1) / qs.page_size;
+            uint64_t est = z.gdn + z.ple +
+                           (z.tail + (uint64_t) qs.idx_dim * 4 * 2) * (size_t) ss.qsa_alloc;
+            est += (uint64_t) ((pos - 1) / qs.idx_block + 2) * ((uint64_t) qs.idx_dim * 4) *
+                   (size_t) ss.qsa_alloc;
+            for (int64_t j = 0; j < ss.qsa_alloc; ++j) {
+                const strata::core::QsaState& st = ss.qsa_states[ss.qsa_ord0 + j];
+                const SuspKvRuns r = susp_kv_runs(st, qs);
+                uint64_t per_block = 0;
+                for (int a = 0; a < r.n; ++a) per_block += (uint64_t) r.len[a];
+                est += per_block * (uint64_t) std::min<int64_t>(blocks, st.max_cells / qs.page_size);
+            }
+            const strata::core::QsaState& ms = mtp.kv_state();
+            const SuspKvRuns mr = susp_kv_runs(ms, qs);
+            uint64_t mper = 0;
+            for (int a = 0; a < mr.n; ++a) mper += (uint64_t) mr.len[a];
+            est += mper * (uint64_t) std::min<int64_t>(blocks, ms.max_cells / qs.page_size);
+            est += (uint64_t) pos * 8 + (1ull << 20);   // the prompt ids and slack
+            return est;
+        };
         sp.should_suspend = [&] {
             if (!cur_can_park || preempt_declined || preempt_pos < o.preempt_min_tokens ||
                 preempt_count >= o.preempt_max)
                 return false;
             const long long pr = parked_rid.load(std::memory_order_relaxed);
             if (pr >= 0 && pr != cur_rid) return false;   // the one slot holds another request
+            if (o.preempt_snapshot_mib > 0) {
+                const uint64_t budget = (uint64_t) o.preempt_snapshot_mib << 20;
+                const uint64_t est = susp_estimate_bytes(preempt_pos);
+                if (est > budget) {
+                    static std::atomic<bool> said{false};
+                    if (!said.exchange(true))
+                        std::fprintf(stderr, "strata serve: preemption skipped for request %lld at %lld tokens: "
+                                             "snapshot estimate %llu MiB > budget %lld MiB\n", cur_rid,
+                                     (long long) preempt_pos, (unsigned long long) (est >> 20),
+                                     (long long) o.preempt_snapshot_mib);
+                    return false;
+                }
+            }
             return yield_req.load(std::memory_order_relaxed);
         };
         sp.on_chunk = [&](const float* R_rows, int64_t T, int64_t p0, std::string& e) -> bool {
