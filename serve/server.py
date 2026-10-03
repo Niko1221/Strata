@@ -2828,9 +2828,39 @@ def make_handler(svc: Service):
 
         record = None                                       # #332: this request's monitor record, if kept
         watch_done = None                                   # #430 #431: stops this request's disconnect watcher
+        body_read = False                                   # whether a handler took this request's body
+        DRAIN_LIMIT = 1 << 20                               # the most an unread body is read and dropped
 
         def log_message(self, fmt, *args):
             pass
+
+        def handle_one_request(self):
+            super().handle_one_request()
+            self._drain_body()
+
+        def _body(self) -> bytes:
+            self.body_read = True
+            return self.rfile.read(int(self.headers.get("Content-Length", 0)))
+
+        def _drain_body(self):
+            """An answer sent before the body was read (a 401, a 403, /load, a method with no handler) must not close
+            the connection on unread bytes: the close then sends a reset, and a client that sends its body after the
+            headers (http.client, urllib, requests) gets a connection error instead of the answer.  So the body is
+            read and dropped here, once, after an answer.  A body over DRAIN_LIMIT is left unread."""
+            headers = getattr(self, "headers", None)
+            if self.body_read or headers is None:
+                return
+            try:
+                left = int(headers.get("Content-Length", 0))
+            except ValueError:
+                return
+            if not 0 < left <= self.DRAIN_LIMIT:
+                return
+            self.connection.settimeout(5)                    # a client that never sends what it announced
+            try:
+                self.rfile.read(left)
+            except OSError:
+                pass
 
         def parse_request(self):
             """Without an API key, every request (any method) first passes the Host check: DNS rebinding protection
@@ -3108,7 +3138,7 @@ def make_handler(svc: Service):
                     self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                 return
             try:
-                req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+                req = json.loads(self._body() or b"{}")
                 if not isinstance(req, dict):
                     raise ValueError("send a JSON object")
                 if path.startswith("/v1/responses/"):        # retrieve/delete/cancel/compact: nothing is stored
@@ -3297,7 +3327,7 @@ def make_handler(svc: Service):
 
         def _settings(self):
             # They change what every client gets, so only the app's own page may set them
-            body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            body = self._body()
             if not self._own_page("settings can be changed"):
                 return
             try:
