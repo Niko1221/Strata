@@ -1025,11 +1025,13 @@ bool susp_save(SuspReq& s, const strata::core::ModelGeometry& g, const strata::c
     s.pooled_rows = spare_rows;
     s.kv_blocks = (P + qs.page_size - 1) / qs.page_size;
     const size_t dead_bytes = (size_t) qs.idx_dim * 4, row_bytes = (size_t) qs.idx_dim * 4;
-    s.dead.resize(dead_bytes * (size_t) g.n_qsa_layers());
-    s.block_pos.assign((size_t) g.n_qsa_layers(), 0);
-    s.kv.assign((size_t) g.n_qsa_layers(), {});
+    const int64_t n_own = ss.qsa_alloc;   // this session's owned QSA ordinals (multi-session carve)
+    s.dead.resize(dead_bytes * (size_t) n_own);
+    s.block_pos.assign((size_t) n_own, 0);
+    s.kv.assign((size_t) n_own, {});
     s.pooled.clear();
-    for (int64_t i = 0; i < g.n_qsa_layers(); ++i) {
+    for (int64_t j = 0; j < n_own; ++j) {
+        const int64_t i = ss.qsa_ord0 + j;
         const strata::core::QsaState& st = ss.qsa_states[i];
         const size_t rows = (size_t) std::min<int64_t>(spare_rows, st.idx_pooled_rows);
         if (cudaMemcpy(s.dead.data() + (size_t) i * dead_bytes, st.idx_dead, dead_bytes, cudaMemcpyDeviceToHost) !=
@@ -1099,8 +1101,10 @@ bool susp_restore(const SuspReq& s, const strata::core::ModelGeometry& g, strata
     qs.n_head = g.n_head; qs.n_head_kv = g.n_head_kv; qs.head_dim = g.head_dim; qs.idx_n_head = g.idx_q_heads;
     qs.idx_dim = g.idx_key_dim;
     const size_t dead_bytes = (size_t) qs.idx_dim * 4, row_bytes = (size_t) qs.idx_dim * 4;
+    const int64_t n_own = ss.qsa_alloc;   // this session's owned QSA ordinals (multi-session carve)
     size_t pooled_off = 0;
-    for (int64_t i = 0; i < g.n_qsa_layers(); ++i) {
+    for (int64_t j = 0; j < n_own; ++j) {
+        const int64_t i = ss.qsa_ord0 + j;
         const strata::core::QsaState& st = ss.qsa_states[i];
         const size_t rows = (size_t) std::min<int64_t>(s.pooled_rows, st.idx_pooled_rows);
         if (cudaMemcpy(st.idx_dead, s.dead.data() + (size_t) i * dead_bytes, dead_bytes, cudaMemcpyHostToDevice) !=
@@ -5160,7 +5164,6 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata serve: the expert profile was not saved: %s\n", e.c_str());
             profile_saved_at = Clock::now();
         };
-        std::atomic<bool> stop_req{false};   // (in_mu/in_lines live above, with the preemption state)
         std::thread([&] {
             // read(2) on the descriptor, not std::cin: glibc's exit() flushes every stdio stream and waits for
             // stdin's lock, which getline holds while it waits for input - an engine ending on an error (every
@@ -6396,7 +6399,6 @@ if (o.prompt_cache > 0 && want_cvec == cvec_cached) {
                         std::fprintf(stderr, "strata serve: MTP_BLOCK %lld %016llx\n", (long long) (c0 / ps2),
                                      (unsigned long long) hb);
                     }
-                }
                 }
                 std::fprintf(stderr, "strata serve: STATE_HASH L=%lld gdn=%016llx ple=%016llx tail=%016llx pooled=%016llx "
                                      "kv=%016llx mtp=%016llx stale=%016llx dead=%016llx pooled_full=%016llx ple_prev=%d,%d\n", (long long) L,

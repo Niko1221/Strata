@@ -37,8 +37,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ENGINE = ROOT / "build" / "strata"
 CONFIG = ROOT / "strata-iq3_xxs.json"
+# the engine's fingerprint grew fields over time (dead/pooled_full arrived with the multi-session cache):
+# each optional component joins the dict, so the comparison covers whatever the engine reports
 HASH_RE = re.compile(r"STATE_HASH L=(\d+) gdn=([0-9a-f]+) ple=([0-9a-f]+) tail=([0-9a-f]+) pooled=([0-9a-f]+) "
-                     r"kv=([0-9a-f]+) mtp=([0-9a-f]+) stale=([0-9a-f]+) ple_prev=(-?\d+),(-?\d+)")
+                     r"kv=([0-9a-f]+) mtp=([0-9a-f]+) stale=([0-9a-f]+)(?: dead=([0-9a-f]+))?"
+                     r"(?: pooled_full=([0-9a-f]+))? ple_prev=(-?\d+),(-?\d+)")
 
 
 def deterministic_tokens(n: int, seed: int, lo=1000, hi=30000) -> list[int]:
@@ -137,8 +140,12 @@ class Engine:
             pass
         if m is None:
             raise RuntimeError("no STATE_HASH in the engine log (STRATA_STATE_HASH=1 and --prompt-cache > 0?)")
-        keys = ["L", "gdn", "ple", "tail", "pooled", "kv", "mtp", "stale", "ple_prev0", "ple_prev1"]
-        return dict(zip(keys, m.groups()))
+        groups = m.groups()
+        keys = ["L", "gdn", "ple", "tail", "pooled", "kv", "mtp", "stale"]
+        if groups[8] is not None:                       # the newer engine reports the spare key and the full
+            keys += ["dead", "pooled_full"]             # pooled row alongside the classic components
+        keys += ["ple_prev0", "ple_prev1"]
+        return dict(zip(keys, groups))
 
     def close(self):
         try:
