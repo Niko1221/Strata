@@ -76,4 +76,17 @@ ConversationRestore conversation_snapshot_restore(const SavedConversation& image
                                                    const ModelGeometry& g, const QsaState& draft,
                                                    std::string& error);
 
+// The same, for one stage of a layer split: `draft` is null for a stage that does not hold the draft layer (its
+// image then has no draft K/V).  The reference forms above are these with the draft.
+bool conversation_snapshot_bytes(const ConversationView& view, const SessionState& session,
+                                 const ModelGeometry& g, const QsaState* draft, size_t& bytes, std::string& error);
+bool conversation_snapshot_save(SavedConversation& image, const ConversationView& view,
+                                const SessionState& session, const ModelGeometry& g,
+                                const QsaState* draft, std::string& error);
+bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& session,
+                                    const ModelGeometry& g, const QsaState* draft, std::string& error);
+ConversationRestore conversation_snapshot_restore(const SavedConversation& image, SessionState& session,
+                                                   const ModelGeometry& g, const QsaState* draft,
+                                                   std::string& error);
+
 } // namespace strata::core

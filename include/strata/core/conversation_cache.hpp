@@ -67,14 +67,18 @@ struct SavedConversation {
     int64_t layer_lo = 0, layer_hi = 0;
     ConversationCheckpoint live;
     std::vector<ConversationCheckpoint> checkpoints;
-    std::vector<ConversationKv> kv; // main layers followed by the draft layer
+    std::vector<ConversationKv> kv; // main layers followed by the draft layer (when the session holds it)
     bool cvec = true;
+    // A layer split: the later stages' images, one per stage in order, each with its own carve's running state,
+    // checkpoint states and K/V (the draft layer's with the last stage).  Matching uses this image's token ids.
+    std::vector<SavedConversation> stage_parts;
 
     size_t bytes() const {
         size_t n = live.bytes() + checkpoints.capacity() * sizeof(ConversationCheckpoint) +
-                   kv.capacity() * sizeof(ConversationKv);
+                   kv.capacity() * sizeof(ConversationKv) + stage_parts.capacity() * sizeof(SavedConversation);
         for (const auto& c : checkpoints) n += c.bytes();
         for (const auto& k : kv) n += k.bytes();
+        for (const auto& part : stage_parts) n += part.bytes();
         return n;
     }
 };
