@@ -18,6 +18,7 @@
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/conversation_snapshot.hpp"
 #include "strata/core/conversation_memory.hpp"
+#include "strata/core/prefill_preempt_budget.hpp"
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/expert_source.hpp"
 #include "strata/core/pinned.hpp"
@@ -960,6 +961,19 @@ struct SuspReq {
     int64_t mtp_b0 = 0, mtp_blocks = 0;     ///< the drafter's ring blocks copied ([mtp_b0, mtp_b0 + mtp_blocks))
     std::vector<uint8_t> mtp_kv;
     uint64_t mtp_bytes = 0;
+    strata::core::PreemptByteCount bytes() const {
+        strata::core::PreemptByteCount n;
+        n.add(sizeof(*this));
+        n.product(ids.capacity(), sizeof(int64_t));
+        strata::core::preempt_checkpoint_bytes(n, run);
+        n.product(checkpoints.capacity(), sizeof(ConvCheckpoint));
+        for (const auto& c : checkpoints) strata::core::preempt_checkpoint_bytes(n, c);
+        n.add(dead.capacity()); n.add(pooled.capacity()); n.add(mtp_kv.capacity());
+        n.product(block_pos.capacity(), sizeof(int32_t));
+        n.product(kv.capacity(), sizeof(std::vector<uint8_t>));
+        for (const auto& k : kv) n.add(k.capacity());
+        return n;
+    }
 };
 
 /// One QSA state's KV pool runs (the kv_stream.cu `runs_of` layout): per pool, its block stride.  Branched on
@@ -1036,7 +1050,11 @@ bool susp_save(SuspReq& s, const strata::core::ModelGeometry& g, const strata::c
     s.dead.resize(dead_bytes * (size_t) n_own);
     s.block_pos.assign((size_t) n_own, 0);
     s.kv.assign((size_t) n_own, {});
-    s.pooled.clear();
+    size_t pooled_bytes = 0;
+    for (int64_t j = 0; j < n_own; ++j)
+        pooled_bytes += (size_t) std::min<int64_t>(spare_rows, ss.qsa_states[ss.qsa_ord0 + j].idx_pooled_rows) * row_bytes;
+    s.pooled.resize(pooled_bytes); // one allocation, not geometric growth at each layer
+    size_t pooled_off = 0;
     for (int64_t j = 0; j < n_own; ++j) {
         const int64_t i = ss.qsa_ord0 + j;
         const strata::core::QsaState& st = ss.qsa_states[i];
@@ -1044,11 +1062,10 @@ bool susp_save(SuspReq& s, const strata::core::ModelGeometry& g, const strata::c
         if (cudaMemcpy(s.dead.data() + (size_t) j * dead_bytes, st.idx_dead, dead_bytes, cudaMemcpyDeviceToHost) !=
             cudaSuccess)
             return false;
-        const size_t before = s.pooled.size();
-        s.pooled.resize(before + rows * row_bytes);
         if (rows &&
-            cudaMemcpy(s.pooled.data() + before, st.idx_pooled, rows * row_bytes, cudaMemcpyDeviceToHost) != cudaSuccess)
+            cudaMemcpy(s.pooled.data() + pooled_off, st.idx_pooled, rows * row_bytes, cudaMemcpyDeviceToHost) != cudaSuccess)
             return false;
+        pooled_off += rows * row_bytes;
         if (cudaMemcpy(&s.block_pos[(size_t) j], st.idx_block_pos, 4, cudaMemcpyDeviceToHost) != cudaSuccess)
             return false;
         const SuspKvRuns r = susp_kv_runs(st, qs);
@@ -1483,7 +1500,7 @@ int main(int argc, char** argv) {
         else if (a == "--serve") o.serve = true;
         else if (a == "--vision") o.vision = true;
         else if (a == "--prompt-cache") o.prompt_cache = std::max(0, std::atoi(next("--prompt-cache")));
-        else if (a == "--conversation-cache-mib" || a == "--conversation-cache-slots" ||
+        else if (a == "--prefill-preempt-snapshot-mib" || a == "--conversation-cache-mib" || a == "--conversation-cache-slots" ||
                  a == "--conversation-cache-min-free-mib") {
             const std::string value = next(a.c_str());
             int64_t number = 0;
@@ -1493,7 +1510,8 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "%s needs a nonnegative integer within range\n", a.c_str());
                 return 2;
             }
-            if (a == "--conversation-cache-mib") o.conversation_cache_mib = number;
+            if (a == "--prefill-preempt-snapshot-mib") o.preempt_snapshot_mib = number;
+            else if (a == "--conversation-cache-mib") o.conversation_cache_mib = number;
             else if (a == "--conversation-cache-min-free-mib") o.conversation_cache_min_free_mib = number;
             else o.conversation_cache_slots = (int) number;
         }
@@ -1506,8 +1524,6 @@ int main(int argc, char** argv) {
             o.preempt_min_tokens = std::max(0LL, std::atoll(next("--prefill-preempt-min-tokens")));
         else if (a == "--prefill-preempt-max")
             o.preempt_max = std::max(1LL, std::atoll(next("--prefill-preempt-max")));
-        else if (a == "--prefill-preempt-snapshot-mib")
-            o.preempt_snapshot_mib = std::max(0LL, std::atoll(next("--prefill-preempt-snapshot-mib")));
         else if (a == "--suffix-draft") o.suffix_draft = std::max(0, std::atoi(next("--suffix-draft")));
         else if (a == "--mtp-max-t") o.mtp_max_t = std::max(0, std::atoi(next("--mtp-max-t")));
         else if (a == "--control-vector") o.cvec_files.push_back({next("--control-vector"), 1.0f});
@@ -5089,51 +5105,56 @@ int main(int argc, char** argv) {
         // park-admission: refuse BEFORE the big allocation when the snapshot estimate exceeds the budget
         // (T18).  The estimate mirrors susp_save's copies: running half + dead/block + pooled rows + KV and
         // drafter blocks through the position reached.
-        auto susp_estimate_bytes = [&](int64_t pos) -> uint64_t {
-            if (pos <= 0) return 0;
+        auto susp_estimate_bytes = [&](int64_t pos) {
+            strata::core::PreemptByteCount est;
+            if (pos <= 0) { est.valid = false; return est; }
             strata::kernels::QsaShapes qs = strata::kernels::qsa_real_shapes();
             qs.n_head_kv = g.n_head_kv; qs.head_dim = g.head_dim; qs.idx_dim = g.idx_key_dim;
             const ConvStateSizes z = conv_state_sizes(g, ss);
             const int64_t blocks = (pos + qs.page_size - 1) / qs.page_size;
-            uint64_t est = z.gdn + z.ple +
-                           (z.tail + (uint64_t) qs.idx_dim * 4 * 2) * (size_t) ss.qsa_alloc;
-            est += (uint64_t) ((pos - 1) / qs.idx_block + 2) * ((uint64_t) qs.idx_dim * 4) *
-                   (size_t) ss.qsa_alloc;
+            est.add(sizeof(SuspReq));
+            strata::core::preempt_prompt_bytes(est, cur.size(), (size_t) pos, checks);
+            est.add(z.gdn); est.add(ss.ple_hist ? z.ple : 0);
+            // checkpoint_save and SuspReq both carry dead/block_pos.
+            est.product((size_t) ss.qsa_alloc, z.tail);
+            est.product((size_t) ss.qsa_alloc, z.dead); est.product((size_t) ss.qsa_alloc, z.dead);
+            est.product((size_t) ss.qsa_alloc, z.block_pos); est.product((size_t) ss.qsa_alloc, z.block_pos);
+            est.product((size_t) ss.qsa_alloc, sizeof(std::vector<uint8_t>));
             for (int64_t j = 0; j < ss.qsa_alloc; ++j) {
                 const strata::core::QsaState& st = ss.qsa_states[ss.qsa_ord0 + j];
                 const SuspKvRuns r = susp_kv_runs(st, qs);
-                uint64_t per_block = 0;
-                for (int a = 0; a < r.n; ++a) per_block += (uint64_t) r.len[a];
-                est += per_block * (uint64_t) std::min<int64_t>(blocks, st.max_cells / qs.page_size);
+                const size_t rows = (size_t) std::min<int64_t>((pos - 1) / qs.idx_block + 2, st.idx_pooled_rows);
+                est.product(rows, z.dead);
+                for (int a = 0; a < r.n; ++a)
+                    est.product((size_t) r.len[a], (size_t) std::min<int64_t>(blocks, st.max_cells / qs.page_size));
             }
             const strata::core::QsaState& ms = mtp.kv_state();
             const SuspKvRuns mr = susp_kv_runs(ms, qs);
-            uint64_t mper = 0;
-            for (int a = 0; a < mr.n; ++a) mper += (uint64_t) mr.len[a];
-            est += mper * (uint64_t) std::min<int64_t>(blocks, ms.max_cells / qs.page_size);
-            est += (uint64_t) pos * 8 + (1ull << 20);   // the prompt ids and slack
+            const int64_t all = std::min<int64_t>(blocks, ms.max_cells / qs.page_size);
+            const int64_t first = ms.kv_mode == 2 ? std::max<int64_t>(0, all - ms.n_slots) : 0;
+            for (int a = 0; a < mr.n; ++a) est.product((size_t) mr.len[a], (size_t) (all - first));
+            est.add(1ull << 20); // allocator slack; post-capture capacity is checked too
             return est;
         };
         sp.should_suspend = [&] {
             if (!cur_can_park || preempt_declined || preempt_pos < o.preempt_min_tokens ||
-                preempt_count >= o.preempt_max)
+                preempt_count >= o.preempt_max || !yield_req.load(std::memory_order_relaxed))
                 return false;
             const long long pr = parked_rid.load(std::memory_order_relaxed);
             if (pr >= 0 && pr != cur_rid) return false;   // the one slot holds another request
-            if (o.preempt_snapshot_mib > 0) {
-                const uint64_t budget = (uint64_t) o.preempt_snapshot_mib << 20;
-                const uint64_t est = susp_estimate_bytes(preempt_pos);
-                if (est > budget) {
-                    static std::atomic<bool> said{false};
-                    if (!said.exchange(true))
-                        std::fprintf(stderr, "strata serve: preemption skipped for request %lld at %lld tokens: "
-                                             "snapshot estimate %llu MiB > budget %lld MiB\n", cur_rid,
-                                     (long long) preempt_pos, (unsigned long long) (est >> 20),
-                                     (long long) o.preempt_snapshot_mib);
-                    return false;
-                }
+            const auto est = susp_estimate_bytes(preempt_pos);
+            const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib * 1024 * 1024;
+            if (!est.fits_mib((uint64_t) o.preempt_snapshot_mib) ||
+                !strata::core::conversation_memory_admit(strata::core::conversation_available_memory(), est.bytes, floor)) {
+                preempt_declined = true; // log once for this request, then keep reading
+                std::fprintf(stderr, "strata serve: preemption skipped for request %lld at %lld tokens: "
+                                     "snapshot estimate %zu MiB, budget %lld MiB; %s\n", cur_rid,
+                             (long long) preempt_pos, est.bytes >> 20, (long long) o.preempt_snapshot_mib,
+                             !est.fits_mib((uint64_t) o.preempt_snapshot_mib) ? "snapshot budget exceeded or overflow" :
+                             "physical RAM admission failed (or telemetry unavailable)");
+                return false;
             }
-            return yield_req.load(std::memory_order_relaxed);
+            return true;
         };
         sp.on_chunk = [&](const float* R_rows, int64_t T, int64_t p0, std::string& e) -> bool {
             std::vector<int32_t> nxt((size_t) T);
@@ -5792,6 +5813,12 @@ int main(int argc, char** argv) {
                     return 1;
                 }
                 if (state_trace && !trace_state("restore", resume)) return 1;
+                // The restored state is now live. Release the old image before another chunk
+                // or park can allocate a new one; keep only request/segment scalars below.
+                pr.run = {};
+                decltype(pr.kv){}.swap(pr.kv); decltype(pr.dead){}.swap(pr.dead);
+                decltype(pr.pooled){}.swap(pr.pooled); decltype(pr.block_pos){}.swap(pr.block_pos);
+                decltype(pr.mtp_kv){}.swap(pr.mtp_kv);
                 const double rms = std::chrono::duration<double, std::milli>(Clock::now() - tr0).count();
                 std::fprintf(stderr, "strata serve: restored request %lld in %.1f ms; resumed at prompt token %lld\n",
                              cur_rid, rms, (long long) resume);
@@ -6217,6 +6244,12 @@ if (o.prompt_cache > 0 && want_cvec == cvec_cached) {
                             rec.penalty_last_n = req_penalty_last_n; rec.cvec = req_cvec;
                             rec.pcie_frac = req_pcie_frac; rec.spec_min_p = req_spec_min_p;
                             saved = susp_save(rec, g, ss, mtp);
+                            const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib * 1024 * 1024;
+                            if (saved && (!rec.bytes().fits_mib((uint64_t) o.preempt_snapshot_mib) ||
+                                !strata::core::conversation_memory_admit(strata::core::conversation_available_memory(), 0, floor))) {
+                                saved = false;
+                                save_err = "snapshot capacity exceeds budget or physical RAM floor after capture";
+                            }
                             if (saved && state_trace && !trace_state("park", at)) return 1;
                             if (saved) {
                                 parked = std::move(rec);
@@ -6228,9 +6261,7 @@ if (o.prompt_cache > 0 && want_cvec == cvec_cached) {
                         if (saved) {
                             yield_req.store(false);
                             ++preempt_count;
-                            size_t snap = parked.run.gdn.size() + parked.run.ple.size() + parked.run.tails.size() +
-                                          parked.dead.size() + parked.pooled.size() + parked.mtp_kv.size();
-                            for (const auto& k : parked.kv) snap += k.size();
+                            const size_t snap = parked.bytes().bytes;
                             const double pms =
                                 std::chrono::duration<double, std::milli>(Clock::now() - tp0).count();
                             std::printf("SUSPENDED %lld %lld%s\n", (long long) at, (long long) n,

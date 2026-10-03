@@ -28,6 +28,7 @@ import hmac
 import codecs
 import ctypes
 import json
+import math
 import os
 import queue
 import re
@@ -54,6 +55,7 @@ from serve.frontend import (ChatTemplate, Event, OutputParser, anthropic_to_mess
                             images_of, openai_to_messages)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve.winjob import contain  # noqa: E402
+from serve.engine_gate import EngineGate  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
 
 IM_END = "<|im_end|>"
@@ -1237,6 +1239,10 @@ class Service:
         # never park - they just never get an id.
         self.preempt = bool(preempt) and bool(getattr(engine, "can_preempt", False))
         self.preempt_max_wait_s = float(preempt_max_wait_s)
+        if not math.isfinite(self.preempt_max_wait_s) or self.preempt_max_wait_s < 0:
+            raise ValueError("prefill-preempt-max-wait-s must be finite and nonnegative")
+        if self.preempt:
+            self.fifo = EngineGate()
         self.preempt_rid = iter(range(1, 1 << 62))       # engine-side request ids (SUSPENDED/RESUME demux)
 
     def loaded(self) -> bool:
@@ -1944,6 +1950,7 @@ class Service:
         with self.status_lock:
             self.status["queued"] += 1
         first = True
+        resume_due = False
         try:
             while True:
                 if req is not None and req.parked and cancel.is_set():
@@ -1960,7 +1967,8 @@ class Service:
                         self.status["parked_requests"] = max(0, self.status.get("parked_requests", 0) - 1)
                     finish = "cancel"
                     break
-                with self.fifo:
+                with self.fifo.period(priority=resume_due):
+                    resume_due = False
                     with self.status_lock:
                         if first:
                             self.status["queued"] -= 1
@@ -2078,18 +2086,19 @@ class Service:
                 # turn: it is still counted in `queued` until ITS period starts, so wait for the queue to drain -
                 # outside the lock, with keep-alives for the client's watchdog.
                 last_ping = time.time()
-                wait_deadline = (time.time() + self.preempt_max_wait_s
+                wait_deadline = (time.monotonic() + self.preempt_max_wait_s
                                  if self.preempt_max_wait_s > 0 else None)
                 while not cancel.is_set():
                     with self.status_lock:
                         waiting = self.status.get("queued", 0)
                     if waiting < 1:
                         break
-                    if wait_deadline is not None and time.time() >= wait_deadline:
+                    if wait_deadline is not None and time.monotonic() >= wait_deadline:
                         # T19: the postponement bound.  The queued requests keep their periods; this request
-                        # simply stops waiting for a FULL drain and takes its turn between them.
-                        print("[strata] the parked request hit its wait limit and resumes between queued "
-                              "periods", flush=True)
+                        # has priority for the next ownership period, after the active request completes.
+                        resume_due = True
+                        print("[strata] the parked request hit its wait limit and reserves the next "
+                              "engine period", flush=True)
                         break
                     if time.time() - last_ping >= 2.0:
                         last_ping = time.time()
@@ -3363,7 +3372,8 @@ def main() -> int:
                          "(default: reject with 400, like llama.cpp; also \"fit_max_tokens\": true in the config)")
     ap.add_argument("--prefill-preempt-max-wait-s", type=float, default=30.0,
                     help="how long a parked request waits for the WHOLE queue to drain before resuming anyway "
-                         "(the postponement bound for a continuous stream of arrivals; 0 = wait indefinitely)")
+                         "(priority for the next ownership period; active decode must finish first; "
+                         "0 = wait indefinitely)")
     ap.add_argument("--prefill-preempt", action="store_true",
                     help="a long prompt parks at a chunk boundary while another request is queued, and resumes "
                          "when the engine is free again (the engine needs --prefill-preempt too; one GPU; "

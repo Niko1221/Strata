@@ -24,10 +24,12 @@ Exit code 0 when every scenario passes.
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict, deque
 import json
 import os
 import queue
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -68,11 +70,19 @@ class Engine:
         env = dict(os.environ)
         env["STRATA_STATE_HASH"] = "1"
         self.log = open(log_path, "wb")
+        self.protocol = open(log_path.with_suffix(".protocol.jsonl"), "w", encoding="utf-8")
+        self.protocol_lock = threading.Lock()
+        self.pending = defaultdict(deque)
+        self.observed = defaultdict(dict)
+        self.eof_seen = False
         self.proc = subprocess.Popen([exe, "--serve", *args], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=self.log, text=True, encoding="utf-8", bufsize=1, env=env)
+        self._record("start", pid=self.proc.pid, args=[exe, "--serve", *args],
+                     env={k: v for k, v in env.items() if k.startswith("STRATA_")})
         self.lines: queue.Queue[str | None] = queue.Queue()
         self.info: dict[str, object] = {}
-        threading.Thread(target=self._pump, daemon=True).start()
+        self.pump = threading.Thread(target=self._pump, daemon=True)
+        self.pump.start()
         ready = self._next_line(lambda l: l.startswith("READY"), timeout=1800)
         if ready is None:
             raise RuntimeError(f"the engine did not become ready (log: {log_path})")
@@ -83,21 +93,52 @@ class Engine:
         # while the engine waits for the other end of a conversation, and lines stop flowing
         try:
             for line in iter(self.proc.stdout.readline, ""):
+                self._record("out", line=line.rstrip("\n"))
                 self.lines.put(line.rstrip("\n"))
         except (ValueError, OSError):
             pass
         self.lines.put(None)
 
+    def _record(self, event, **data):
+        with self.protocol_lock:
+            stamp = time.monotonic()
+            if event == "out":
+                line = data["line"]
+                rid = self._rid_of(line)
+                if rid is not None:
+                    timings = self.observed[rid]
+                    if line.startswith("RESUME "): timings.setdefault("started", stamp)
+                    elif line.startswith("T "): timings.setdefault("first_token", stamp)
+                    elif line.startswith("DONE "): timings["done"] = stamp
+            self.protocol.write(json.dumps({"time": stamp, "event": event, **data}) + "\n")
+            self.protocol.flush()
+
+    def _ended(self):
+        code = self.proc.poll()
+        if code is None:
+            try: code = self.proc.wait(timeout=1)
+            except subprocess.TimeoutExpired: pass
+        reason = f"exit={code}"
+        if code is not None and code < 0:
+            try: reason += f" signal={signal.Signals(-code).name}"
+            except ValueError: pass
+        self._record("unexpected_eof", returncode=code, reason=reason)
+        return RuntimeError(f"the engine ended ({reason}; stderr: {self.log.name}; "
+                            f"protocol: {self.protocol.name})")
+
     def _next_line(self, pred, timeout: float) -> str | None:
         """The next line satisfying `pred` (every other protocol line is swallowed; an ERR is never)."""
-        end = time.time() + timeout
-        while time.time() < end:
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            if self.eof_seen:
+                raise self._ended()
             try:
                 line = self.lines.get(timeout=1.0)
             except queue.Empty:
                 continue
             if line is None:
-                raise RuntimeError("the engine ended (see the scenario log)")
+                self.eof_seen = True
+                raise self._ended()
             if line.startswith("INFO "):
                 for kv in line.split()[1:]:
                     k, _, v = kv.partition("=")
@@ -109,6 +150,7 @@ class Engine:
         raise RuntimeError("timeout waiting for a protocol line")
 
     def send(self, line: str):
+        self._record("in", line=line)
         self.proc.stdin.write(line + "\n")
         self.proc.stdin.flush()
 
@@ -122,15 +164,26 @@ class Engine:
         `stop_on(line)` is true (-> adds 'stopped': True).  Lines of other requests pass through untouched."""
         tokens: list[int] = []
         while True:
-            line = self._next_line(lambda l: True, timeout=1200)
+            line = (self.pending[rid].popleft() if self.pending[rid] else
+                    self._next_line(lambda l: True, timeout=1200))
+            line_rid = self._rid_of(line)
+            if line_rid is not None and line_rid != rid:
+                self.pending[line_rid].append(line)
+                continue
             if stop_on is not None and stop_on(line):
                 return {"tokens": tokens, "stopped": True, "finish": None, "generated": len(tokens), "reused": 0}
             if line.startswith("T ") and (rid is None or self._rid_of(line) == rid):
                 tokens.append(int(line[2:].split(" id=")[0]))
             elif line.startswith("DONE") and (rid is None or self._rid_of(line) == rid):
                 f = line.split(" id=")[0].split()
-                return {"tokens": tokens, "finish": f[5], "generated": int(f[1]),
-                        "reused": int(f[8]) if len(f) > 8 else 0, "stopped": False}
+                result = {"tokens": tokens, "finish": f[5], "generated": int(f[1]),
+                          "reused": int(f[8]) if len(f) > 8 else 0, "stopped": False,
+                          "observed": dict(getattr(self, "observed", {}).get(rid, {}))}
+                if result["generated"] != len(tokens):
+                    raise RuntimeError(f"request {rid}: DONE generated={result['generated']} but "
+                                       f"received {len(tokens)} token lines")
+                self._record("collected", rid=rid, result=result)
+                return result
 
     def gen(self, rid: int | None, ids: list[int], max_new: int):
         head = f"GEN {max_new}" + (f" id={rid}" if rid is not None else "")
@@ -151,13 +204,26 @@ class Engine:
 
     def close(self):
         try:
+            if self.proc.poll() is not None:
+                raise self._ended()
             self.send("QUIT")
-            self.proc.wait(timeout=60)
-        except Exception:
+            code = self.proc.wait(timeout=60)
+            self._record("quit_exit", returncode=code)
+            if code != 0:
+                raise RuntimeError(f"engine exit={code} after QUIT; log: {self.log.name}")
+        except (BrokenPipeError, OSError) as ex:
+            raise self._ended() from ex
+        except subprocess.TimeoutExpired:
+            self._record("harness_kill", reason="QUIT timeout")
             self.proc.kill()
             self.proc.wait(timeout=10)
+            raise RuntimeError(f"engine failed to exit after QUIT; log: {self.log.name}")
         finally:
+            self.pump.join(timeout=2)
+            self.proc.stdout.close()
+            self.proc.stdin.close()
             self.log.close()
+            self.protocol.close()
 
 
 def strip_options(args: list[str], valued: set[str], flags: set[str]) -> list[str]:
@@ -182,11 +248,26 @@ def state_differences(ref: dict, got: dict) -> list[str]:
     return [k for k in dict.fromkeys([*ref, *got]) if k != "stale" and ref.get(k) != got.get(k)]
 
 
+def output_differences(ref: dict, got: dict, label: str) -> list[str]:
+    """max_new is a cap: matching early EOS passes; a different EOS/output remains a failure."""
+    failures = []
+    if got["tokens"] != ref["tokens"]:
+        a, b = ref["tokens"], got["tokens"]
+        first = next((i for i in range(min(len(a), len(b))) if a[i] != b[i]), min(len(a), len(b)))
+        expected = a[first] if first < len(a) else "<end>"
+        actual = b[first] if first < len(b) else "<end>"
+        failures.append(f"{label}: tokens differ at [{first}]: ref={expected}, got={actual}; "
+                        f"length {len(a)} vs {len(b)}, finish {ref['finish']} vs {got['finish']}")
+    elif got["finish"] != ref["finish"]:
+        failures.append(f"{label}: finish {got['finish']!r} != reference {ref['finish']!r}")
+    return failures
+
+
 def engine_args(cfg: dict, *, prefill: int, preempt: bool, max_context: int | None = None,
                 kv_resident: int | None = None, expert_slots: int | None = None) -> list[str]:
     valued = {"--max-context", "--kv-resident", "--prefill", "--adapt-swaps", "--adapt-every",
               "--pcie-frac", "--prompt-cache", "--prefill-preempt-min-tokens", "--prefill-preempt-max",
-              "--expert-cache", "--spec-min-p", "--suffix-draft"}
+              "--expert-cache", "--spec-min-p", "--suffix-draft", "--prefill-preempt-snapshot-mib"}
     out = strip_options(cfg["args"], valued, {"--prefill-preempt"})
     # suffix-draft 0: the lookup drafter's policy is learned over the whole process, so the two arms' window
     # shapes would drift apart and the state hash would differ in ULPs while the tokens still match.
@@ -202,7 +283,7 @@ def engine_args(cfg: dict, *, prefill: int, preempt: bool, max_context: int | No
     if kv_resident is not None:
         out += ["--kv-resident", str(kv_resident)]
     if preempt:
-        out += ["--prefill-preempt", "--prefill-preempt-min-tokens", "0"]
+        out += ["--prefill-preempt", "--prefill-preempt-min-tokens", "0", "--prefill-preempt-snapshot-mib", "4096"]
     if expert_slots:
         # pin the VRAM expert tier: auto sizing depends on how much VRAM happens to be free, and a different
         # resident set rounds differently (GPU-resident experts vs CPU misses) - every engine of one comparison
@@ -301,6 +382,8 @@ def main() -> int:
                 sc_ctrl.gen(None, a_ids, args.max_new)
                 sc_a = sc_ctrl.collect(None)
                 sc_refs = (sc_a, sc_b, sc_ctrl.state_hash())
+                (workdir / f"reference-{name}.json").write_text(json.dumps({
+                    "A": sc_a, "B": sc_b, "state": sc_refs[2]}, indent=2), encoding="utf-8")
             finally:
                 sc_ctrl.close()
             fails = []
@@ -336,6 +419,12 @@ def run_scenario(e: Engine, name: str, sc: dict, a_ids, b_ids, ref_a, ref_b, ref
     a_tokens: list[int] = []
     suspensions: list[int] = []
 
+    def record_suspend(line: str) -> bool:
+        if line.startswith("SUSPENDED"):
+            suspensions.append(int(line.split()[1]))
+            return True
+        return False
+
     def watch_b_trigger(sent: dict) -> object:
         """on_line for A's first leg: queues the first interim request once A's read passes the trigger."""
         def on_line(line: str) -> bool:
@@ -345,10 +434,7 @@ def run_scenario(e: Engine, name: str, sc: dict, a_ids, b_ids, ref_a, ref_b, ref
                         e.gen(sc["preempts"][0], b_ids, b_max_new)
                     e.send("YIELD")            # offer the boundary: the engine cannot see this server's queue
                     sent["b"] = True
-            if line.startswith("SUSPENDED"):
-                suspensions.append(int(line.split()[1]))
-                return True
-            return False
+            return record_suspend(line)
         return on_line
 
     sent = {"b": False}
@@ -373,6 +459,8 @@ def run_scenario(e: Engine, name: str, sc: dict, a_ids, b_ids, ref_a, ref_b, ref
             last = i == len(sc["preempts"]) - 1
             if sc["cancel"] and last:
                 e.send("CANCEL id=1")
+                b = e.collect(rid)
+                failures += output_differences(ref_b, b, f"{name}: interim request {rid} before cancel")
                 c = e.collect(1)
                 if c["finish"] != "cancel":
                     failures.append(f"{name}: the cancelled parked request finished with {c['finish']!r}")
@@ -385,9 +473,10 @@ def run_scenario(e: Engine, name: str, sc: dict, a_ids, b_ids, ref_a, ref_b, ref
                     failures.append(f"{name}: parks at non-chunk boundaries {bad}")
                 return failures                           # a cancelled A has no output parity to check
             b = e.collect(rid)
-            if b["tokens"] != ref_b["tokens"]:
-                failures.append(f"{name}: interim request {rid} tokens differ from the B reference "
-                                f"({len(b['tokens'])} vs {len(ref_b['tokens'])})")
+            b_diff = output_differences(ref_b, b, f"{name}: interim request {rid}")
+            if b_diff:
+                e._record("parity_failure", label=f"interim request {rid}", expected=ref_b, actual=b)
+                failures += b_diff
                 break
             e.send("RESUME id=1")
             if not last:
@@ -402,7 +491,7 @@ def run_scenario(e: Engine, name: str, sc: dict, a_ids, b_ids, ref_a, ref_b, ref
                 if done_a["finish"] != ref_a["finish"]:
                     failures.append(f"{name}: A finish {done_a['finish']!r} != reference {ref_a['finish']!r}")
             else:
-                leg = e.collect(1, stop_on=lambda l: l.startswith("SUSPENDED"))
+                leg = e.collect(1, stop_on=record_suspend)
                 a_tokens += leg["tokens"]
                 if not leg.get("stopped"):
                     failures.append(f"{name}: A did not park again for request {sc['preempts'][i + 1]}")
@@ -422,8 +511,7 @@ def run_scenario(e: Engine, name: str, sc: dict, a_ids, b_ids, ref_a, ref_b, ref
         if not sent["b"]:
             return [f"{name}: REUSED never arrived"]
         b = e.collect(sc["preempts"][0])
-        if b["tokens"] != ref_b["tokens"]:
-            failures.append(f"{name}: the queued request's tokens differ from the B reference")
+        failures += output_differences(ref_b, b, f"{name}: queued request")
         e.send("RESUME id=1")
         head = e._next_line(lambda l: l.startswith("ERR") or l.startswith("RESUME") or l.startswith("DONE"),
                             timeout=60)
@@ -438,6 +526,11 @@ def run_scenario(e: Engine, name: str, sc: dict, a_ids, b_ids, ref_a, ref_b, ref
         bad = [p for p in suspensions if p not in legal]
         if bad:
             failures.append(f"{name}: parks at non-chunk boundaries {bad} (legal: chunk multiples)")
+        if any(b < a + chunk for a, b in zip(suspensions, suspensions[1:])):
+            failures.append(f"{name}: resume did not advance a full chunk between parks: {suspensions}")
+        expected_parks = max(1, len(sc["preempts"]))
+        if len(suspensions) != expected_parks:
+            failures.append(f"{name}: {len(suspensions)} parks != expected {expected_parks}")
 
     if not failures and sc["trigger"] is None:
         return failures        # decode-nopark ends with the interim request as the engine's last: no A state
