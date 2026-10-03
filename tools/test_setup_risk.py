@@ -106,11 +106,23 @@ class Context(unittest.TestCase):
 
     def test_a_picked_256k_is_kept_and_the_menu_says_the_risk(self):
         code, out, cfg, asked = install(self.RAM64, self.GPU32, ["--family", "qwen", "--model", "IQ3_S", "--no-start"],
-                                        answers={"Context?": "5"})
+                                        answers={"Context?": "6"})
         self.assertEqual(code, 0, out)
         self.assertEqual(arg(cfg, "--max-context"), "262144")
         self.assertIn("256K tokens   (needs ~78 GB RAM, this PC has 64: may run out of memory)", out)
         self.assertIn("128K tokens   (recommended for your GPU)\n", out)
+        self.assertIn("Kept as you chose", out)
+
+    def test_a_200k_choice_is_kept(self):
+        """#406: 200K was added between the 128K rule and 256K - it is inside the trained 262144, so no rope scaling,
+        and a pick of it is kept with the note 256K gets instead of being capped to 128K."""
+        code, out, cfg, _ = install(self.RAM64, self.GPU32, ["--family", "qwen", "--model", "IQ3_S", "--no-start"],
+                                    answers={"Context?": "5"})
+        self.assertEqual(code, 0, out)
+        self.assertEqual(arg(cfg, "--max-context"), "204800")
+        self.assertNotIn("--rope-scaling", cfg["args"])
+        self.assertIn("200K tokens   (needs ~77 GB RAM, this PC has 64: may run out of memory)", out)
+        self.assertIn("200K with IQ3_S needs ~77 GB of RAM by setup's estimate", out)
         self.assertIn("Kept as you chose", out)
 
     def test_low_ram_mode_keeps_262k_without_a_ram_note(self):

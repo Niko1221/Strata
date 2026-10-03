@@ -148,7 +148,9 @@ UNSLOTH_RAM_LEFT_GB = 24        # RAM beside the budget: the OS, the engine, and
 # from the final context (final / 262144, at least 1) itself (below), keeps an explicit
 # --rope-scaling/--rope-scale, and refuses an explicit --rope-scaling none there - the stock angles past
 # the trained range are out of spec.
-CONTEXTS = [8192, 32768, 65536, 131072, 262144, 393216, 524288]
+# 204800 (200K) sits between 128K and 256K: it is inside the trained 262144, so it needs no rope scaling and
+# costs ~2.8 GB of 8-bit KV with IQ3_S (vs ~3.6 GB at 256K) - a middle step for PCs that cannot hold 256K.
+CONTEXTS = [8192, 32768, 65536, 131072, 204800, 262144, 393216, 524288]
 # The model families: the same architecture, weights in the same three GSQ-RCO sizes, different files.
 FAMILIES = {
     "qwen": {"title": "Qwen3.8-Flash-Next", "by": "Qwen; GSQ-RCO quants by ISTA-DASLab",

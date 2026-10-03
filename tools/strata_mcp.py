@@ -73,7 +73,7 @@ FALLBACK_FAMILIES = {
                                                                   "SSD: slow (7-8.5 tokens/s on a 64 GB PC)",
                 "tag": "unsloth-", "experimental": True, "vision": False},
 }
-FALLBACK_CONTEXTS = [8192, 32768, 65536, 131072, 262144, 393216, 524288]
+FALLBACK_CONTEXTS = [8192, 32768, 65536, 131072, 204800, 262144, 393216, 524288]
 BENCH_PROMPT = ("Write a short story (about 300 words) about a lighthouse keeper who finds a message in a bottle. "
                 "Plain prose, no title.")
 
