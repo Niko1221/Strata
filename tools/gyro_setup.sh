@@ -35,7 +35,8 @@ if [ "$BACKEND" = cuda ]; then
 elif [ "$BACKEND" = hip ]; then
   echo "note: AMD is experimental for Gyro (kernel parity validated on gfx1151, no end-to-end run yet)"
   cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_HIP=ON -DSTRATA_PREFILL_MMQ=ON \
-    -DCMAKE_HIP_ARCHITECTURES="$HIP_ARCH" -DSTRATA_GGML_DIR="$LLAMA"
+    -DCMAKE_HIP_ARCHITECTURES="$HIP_ARCH" -DSTRATA_GGML_DIR="$LLAMA" \
+    -DCMAKE_PREFIX_PATH="${ROCM_PATH:-/opt/rocm}"
 else echo "--backend must be cuda or hip"; exit 2; fi
 cmake --build build -j
 
