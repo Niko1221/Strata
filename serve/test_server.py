@@ -2160,6 +2160,151 @@ class ThinkingBudget(unittest.TestCase):
         self.assertEqual(self.engine.prompts, [])
 
 
+class CallingEngine(MockEngine):
+    """Thinks, then answers in text - unless its prompt already opens a call (a forced tool_choice): then it finishes
+    that call.  Records every prompt it is given."""
+    THOUGHT = "I could look this up. " * 8                  # 176 reasoning tokens (one per byte)
+    ANSWER = "The answer is 4."
+    ARGS = "<parameter=q>\n2+2\n</parameter>\n</function>\n</tool_call>"
+
+    def __init__(self, tok):
+        super().__init__(tok, "x", max_context=CTX)
+        self.prompts = []
+
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+        self.prompts.append(list(ids))
+        prompt = self.tok.decode(ids)
+        if prompt.endswith("<function="):
+            text = "search>\n" + self.ARGS
+        elif prompt.endswith("<function=search>\n"):
+            text = self.ARGS
+        elif prompt.endswith("</think>\n\n"):
+            text = self.ANSWER
+        else:
+            text = self.THOUGHT + "</think>\n\n" + self.ANSWER
+        for t in (self.tok.encode(text) + self.tok.encode("<|im_end|>", parse_special=True))[:max_new]:
+            if cancel.is_set():
+                return
+            yield t
+
+
+class ForcedToolChoice(unittest.TestCase):
+    """tool_choice "required" or a named function: the server writes the call's opening - after the thinking, or at
+    the end of the prompt without thinking - so the model can only go on with a call."""
+    TOOLS = [{"type": "function", "function": {"name": "search", "description": "search the web",
+                                               "parameters": {"type": "object",
+                                                              "properties": {"q": {"type": "string"}}}}},
+             {"type": "function", "function": {"name": "done", "parameters": {"type": "object", "properties": {}}}}]
+    NAMED = {"type": "function", "function": {"name": "search"}}
+    NO_THINKING = {"chat_template_kwargs": {"enable_thinking": False}}
+
+    def setUp(self):
+        self.tok = ByteTokenizer()
+        self.engine = CallingEngine(self.tok)
+        self.svc = Service(self.engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        self.httpd = serve(self.svc, port=0)
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+    def openai(self, **extra):
+        body = {"model": "m", "messages": [{"role": "user", "content": "2+2?"}], "max_tokens": 400,
+                "tools": self.TOOLS, **extra}
+        req = urllib.request.Request(self.base + "/v1/chat/completions", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                raw = r.read().decode()
+                return r.status, (json.loads(raw) if not body.get("stream") else raw)
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, json.loads(e.read())
+
+    def call_of(self, code, b, stream):
+        """-> (finish_reason, [(name, arguments)], reasoning) of a whole or a streamed reply."""
+        self.assertEqual(code, 200, b)
+        if not stream:
+            choice = b["choices"][0]
+            calls = [(c["function"]["name"], json.loads(c["function"]["arguments"]))
+                     for c in choice["message"].get("tool_calls") or []]
+            return choice["finish_reason"], calls, choice["message"].get("reasoning_content") or ""
+        chunks = [json.loads(line[6:]) for line in b.splitlines() if line.startswith("data: {")]
+        names, args, reasoning, finish = {}, {}, "", None
+        for c in chunks:
+            d = c["choices"][0]["delta"]
+            reasoning += d.get("reasoning_content") or ""
+            for tc in d.get("tool_calls") or []:
+                names.setdefault(tc["index"], tc["function"].get("name"))
+                args[tc["index"]] = args.get(tc["index"], "") + tc["function"].get("arguments", "")
+            finish = c["choices"][0]["finish_reason"] or finish
+        return finish, [(names[i], json.loads(args[i])) for i in sorted(names)], reasoning
+
+    def test_required_and_named_after_the_thinking(self):
+        for choice in ("required", self.NAMED):
+            for stream in (False, True):
+                with self.subTest(choice=choice, stream=stream):
+                    self.engine.prompts = []
+                    code, b = self.openai(tool_choice=choice, stream=stream)
+                    finish, calls, reasoning = self.call_of(code, b, stream)
+                    self.assertEqual((finish, calls), ("tool_calls", [("search", {"q": "2+2"})]))
+                    self.assertEqual(reasoning, CallingEngine.THOUGHT)
+                    first, second = self.engine.prompts
+                    opening = "<tool_call>\n<function=" + ("search>\n" if choice == self.NAMED else "")
+                    # where the thinking ended, after the blank line the template puts before a call
+                    self.assertEqual(second, first + self.tok.encode(CallingEngine.THOUGHT + "</think>\n\n" + opening))
+
+    def test_without_thinking_the_prompt_ends_with_the_opening(self):
+        for choice in ("required", self.NAMED):
+            for stream in (False, True):
+                with self.subTest(choice=choice, stream=stream):
+                    self.engine.prompts = []
+                    code, b = self.openai(tool_choice=choice, stream=stream, **self.NO_THINKING)
+                    finish, calls, reasoning = self.call_of(code, b, stream)
+                    self.assertEqual((finish, calls, reasoning), ("tool_calls", [("search", {"q": "2+2"})], ""))
+                    self.assertEqual(len(self.engine.prompts), 1)
+                    opening = "<tool_call>\n<function=" + ("search>\n" if choice == self.NAMED else "")
+                    self.assertTrue(self.tok.decode(self.engine.prompts[0]).endswith("</think>\n\n" + opening))
+
+    def test_the_budget_wrap_up_opens_the_call(self):
+        from serve.server import REASONING_WRAP_UP
+        code, b = self.openai(tool_choice="required", reasoning_budget_tokens=20)
+        finish, calls, reasoning = self.call_of(code, b, False)
+        self.assertEqual((finish, calls), ("tool_calls", [("search", {"q": "2+2"})]))
+        self.assertEqual(reasoning, CallingEngine.THOUGHT[:20] + REASONING_WRAP_UP.split("</think>")[0])
+        first, second = self.engine.prompts
+        extra = self.tok.encode(REASONING_WRAP_UP + "<tool_call>\n<function=", parse_special=True)
+        self.assertEqual(second, first + self.tok.encode(CallingEngine.THOUGHT[:20]) + extra)
+
+    def test_auto_absent_and_none_leave_the_tools_to_the_model(self):
+        for extra in ({}, {"tool_choice": "auto"}, {"tool_choice": "none"}):
+            with self.subTest(extra=extra):
+                self.engine.prompts = []
+                code, b = self.openai(**extra)
+                self.assertEqual(code, 200, b)
+                self.assertEqual(b["choices"][0]["message"]["content"], CallingEngine.ANSWER)
+                self.assertEqual(b["choices"][0]["finish_reason"], "stop")
+                self.assertEqual(len(self.engine.prompts), 1)
+                offered = "search the web" in self.tok.decode(self.engine.prompts[0])
+                self.assertEqual(offered, extra.get("tool_choice") != "none")   # "none": no tools in the prompt
+
+    def test_a_call_cut_by_max_tokens_is_not_a_tool_call(self):
+        code, b = self.openai(tool_choice="required", max_tokens=5, **self.NO_THINKING)
+        finish, calls, _ = self.call_of(code, b, False)
+        self.assertEqual((finish, calls), ("length", []))
+
+    def test_unsupported_values_are_a_400(self):
+        named = lambda n: {"type": "function", "function": {"name": n}}  # noqa: E731
+        for choice, tools in ((named("nope"), self.TOOLS), ({"type": "function"}, self.TOOLS),
+                              ("required", None), ({"type": "any"}, self.TOOLS), ("sometimes", self.TOOLS)):
+            with self.subTest(choice=choice, tools=bool(tools)):
+                code, b = self.openai(tool_choice=choice, tools=tools)
+                self.assertEqual(code, 400, b)
+                self.assertIn("tool_choice", b["error"]["message"])
+        self.assertEqual(self.engine.prompts, [])
+
+
 class StatusHandover(unittest.TestCase):
     """#266: a stream aborted mid-way and the next request, which was waiting for the fifo.  The aborted request's
     status/history block ran after the fifo was released, so the waiting request could start in that gap: the old

@@ -428,6 +428,27 @@ def call_end(text: str) -> int:
             return text.find(CALL_END, pos)
 
 
+def forced_call(tool_choice, tools: list[dict] | None) -> str | None:
+    """OpenAI's `tool_choice` -> the text that opens the call the reply must make, or None (the model decides).
+    There is no grammar here: the server writes this opening itself, so the model can only go on with a call.
+    "required": any of the tools; {"type": "function", "function": {"name": N}}: that one.  Other values
+    are refused (400) rather than silently ignored; "none" is handled by the caller (no tools offered)."""
+    if tool_choice in (None, "auto", "none"):
+        return None
+    names = {t.get("name") for t in tools or [] if isinstance(t, dict)}
+    if tool_choice == "required":
+        if not names:
+            raise ValueError('tool_choice "required" needs tools')
+        return CALL_START + "\n<function="
+    if isinstance(tool_choice, dict) and tool_choice.get("type") == "function":
+        name = (tool_choice.get("function") or {}).get("name")
+        if not name or name not in names:
+            raise ValueError(f"tool_choice names the function {name!r}, which is not one of the request's tools")
+        return CALL_START + f"\n<function={name}>\n"
+    raise ValueError(f"tool_choice {json.dumps(tool_choice)} is not supported here: \"auto\", \"required\" or "
+                     "{\"type\": \"function\", \"function\": {\"name\": ...}}")
+
+
 def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
     """`<function=NAME>\\n<parameter=P>\\nVALUE\\n</parameter>...</function>` -> ToolCall. Values are JSON-decoded
     when the tool's schema says the parameter is not a string (or, without a schema, when they parse as JSON
