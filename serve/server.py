@@ -757,6 +757,11 @@ class EngineRequest:
         self.engine, self.rid, self.ids = engine, rid, ids
         self.parked = False
         self._closed = False
+        self.last = None
+        self.process = getattr(engine, "proc", None)
+        self.silence = float(getattr(engine, "silence_s", ENGINE_SILENCE_S) or 0)
+        self.allow = self.silence + min(len(ids), PP_CHUNK_MAX) / PP_FLOOR_TOK_S if self.silence else 0
+        self.heard, self.read_to = time.monotonic(), 0
         keys = engine.sampling_keys(sampling or {})
         head = f"GENI {int(max_new)}{keys} {embeddings}" if embeddings else f"GEN {int(max_new)}{keys}"
         engine.write_line(f"{head} id={rid} {','.join(str(int(t)) for t in ids)}")
@@ -773,28 +778,45 @@ class EngineRequest:
         if self.parked or self._closed:
             raise StopIteration
         while True:
+            wait = min(10.0, self.allow - (time.monotonic() - self.heard)) if self.allow else 10.0
+            if wait <= 0:
+                self._closed = True
+                raise self.engine._silent("the preemptable request exceeded its silence deadline")
             try:
-                line = self.engine.lines.get(timeout=10)
+                line = self.engine.lines.get(timeout=wait)
             except queue.Empty:
                 return None                       # heartbeat: the consumer checks `cancel` and keeps reading
             if line is None:
+                self._closed = True
                 raise EngineDied(f"the engine stopped unexpectedly (exit code {self.engine.exit_code()})")
             if not self._mine(line, self.rid):
                 continue                          # not this request's line (see the class comment)
+            self.heard = time.monotonic()
             if line.startswith("T "):
+                self.allow = self.silence
                 return int(line[2:].split(" id=")[0])
             if line.startswith("PP "):
                 f = line.split()
                 if len(f) >= 3 and f[1].isdigit() and f[2].isdigit():
                     self.engine.progress = (int(f[1]), int(f[2]))
                     self.engine.prefill_tok_s_mean = float(f[4]) if len(f) >= 5 else None
+                    rate, chunk = self.engine.prefill_tok_s_mean or 0, int(f[1]) - self.read_to
+                    self.read_to = int(f[1])
+                    if self.silence and rate > 0 and chunk > 0:
+                        self.allow = max(self.silence, PP_SLACK * chunk / rate)
                 return None
+            if line.startswith("RESUME "):
+                try:
+                    self.read_to = int(line.split()[1])
+                except (ValueError, IndexError):
+                    pass
             if line.startswith("SUSPENDED"):
                 f = line.split(" id=")[0].split()
                 self.parked = True
                 return Parked(int(f[1]), int(f[2]))
             if line.startswith("DONE"):
                 self.engine._parse_done(line.split(" id=")[0])
+                self.last = dict(self.engine.last or {})
                 self._closed = True
                 raise StopIteration
             if line.startswith("ERR"):
@@ -804,6 +826,10 @@ class EngineRequest:
 
     def resume(self):
         """Continue the parked prompt (the caller holds the FIFO again)."""
+        if getattr(self.engine, "proc", None) is not self.process:
+            self.parked, self._closed = False, True
+            raise ValueError("the engine restarted while this request was parked; its snapshot is gone")
+        self.heard = time.monotonic()   # B's execution is not silence from A
         self.parked = False
         self.engine.write_line(f"RESUME id={self.rid}")
 
@@ -812,21 +838,38 @@ class EngineRequest:
         if not self.parked:
             return
         self.parked = False
+        if getattr(self.engine, "proc", None) is not self.process:
+            self._closed = True
+            return
         self.engine.write_line(f"CANCEL id={self.rid}")
         self.drain()
 
     def drain(self):
         """Consume lines until this request's DONE (STOP's drain, a cancel's answer).  A dead engine or an ERR
         ends the drain quietly: the caller is already unwinding with the real error."""
+        heard = time.monotonic()
         while True:
-            line = self.engine.lines.get()
-            if line is None or line.startswith("ERR"):
+            left = self.allow - (time.monotonic() - heard) if self.allow else None
+            try:
+                if left is not None and left <= 0:
+                    raise queue.Empty
+                line = self.engine.lines.get(timeout=left)
+            except queue.Empty:
+                self._closed = True
+                raise self.engine._silent("the engine did not acknowledge STOP/CANCEL before its deadline") from None
+            if line is None:
                 self._closed = True
                 return
             if not self._mine(line, self.rid):
                 continue
+            if line.startswith("ERR"):
+                self._closed = True
+                return
+            if not self.engine.can_stop:
+                heard = time.monotonic()
             if line.startswith("DONE"):
                 self.engine._parse_done(line.split(" id=")[0])
+                self.last = dict(self.engine.last or {})
                 self._closed = True
                 return
 
@@ -1330,7 +1373,7 @@ class Service:
             if not self.engine.alive():
                 return "not loaded"
             with self.status_lock:
-                if self.status.get("busy") or self.status.get("queued"):
+                if self.status.get("busy") or self.status.get("queued") or self.status.get("parked_requests"):
                     return "busy"
             if idle_for is not None and time.time() - (self.last_request_at or self.started_at) < idle_for:
                 return "busy"
@@ -1635,7 +1678,7 @@ class Service:
         if defaults:                   # the request's own fields win (explicit 0 stays greedy)
             req_values = {k: v for k, v in (sampling or {}).items() if v is not None}
             sampling = {**defaults, **req_values}
-        if self.preempt and not getattr(self.embeddings, "path", None) and hasattr(self.engine, "open_request"):
+        if self.preempt and not budget and not getattr(self.embeddings, "path", None) and hasattr(self.engine, "open_request"):
             yield from self.run_preemptable(ids, thinking, tools, max_new, sampling, cancel)
             return
         parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True)
@@ -1661,7 +1704,7 @@ class Service:
                     # issue #27: it died in an earlier request (or was unloaded) - start it again instead of failing
                     self.ensure_loaded()
                     with self.status_lock:
-                        self.status.update(busy=True, phase="reading the prompt", prompt_tokens=len(ids),
+                        self.status.update(busy=True, request_id=None, phase="reading the prompt", prompt_tokens=len(ids),
                                            generated=0, started=time.time(), first_token=None, tool=None, tail="",
                                            max_tokens=max_new)
                         self.last_request_at = time.time()
@@ -1814,7 +1857,7 @@ class Service:
                        "timings": timings}
 
     def _record_done(self, prompt_tokens, n, finish, sampling, raw_ids, before, engine_last0, cancel,
-                     record=None, parser_state=None):
+                     record=None, parser_state=None, request_last=None, started_at=None, rid=None):
         """The end-of-request bookkeeping both run paths share: the history entry, the totals, the last timings
         and the server-window line.  -> this request's timings (None when the engine kept no clock).  `record`
         gates the history/totals: the plain path keeps its old "only while busy" rule; the preemption path always
@@ -1825,9 +1868,8 @@ class Service:
         with self.status_lock:
             if record:
                 # only this request's DONE counts: same object means no DONE arrived (death, error, disconnect)
-                last = dict(getattr(self.engine, "last", {}) or {}) \
-                    if getattr(self.engine, "last", None) is not engine_last0 else {}
-                started = self.status.get("started", time.time())
+                last = dict(request_last or {})
+                started = started_at if started_at is not None else time.time()
                 cvec = (getattr(self.engine, "info", {}) or {}).get("cvec", 0)
                 loaded = str(cvec) not in ("0", "", "None")
                 hit_rate = round(last["hits"] / last["lookups"], 3) if last.get("lookups") else None
@@ -1857,8 +1899,7 @@ class Service:
                 t["decode_ms"] += last.get("decode_ms") or 0.0
                 t["drafts_offered"] += last.get("drafts_offered") or 0
                 t["drafts_accepted"] += last.get("drafts_accepted") or 0
-                fresh = getattr(self.engine, "last", None)
-                if fresh is not None and fresh is not before:      # the engine's clock for THIS request
+                if request_last is not None:      # the engine's clock for THIS request
                     timings = request_timings(seen, n, last)
                     self.last_timings = dict(timings, at=int(time.time())) if timings else None
                 self.last_request_at = time.time()
@@ -1877,10 +1918,11 @@ class Service:
                           "strata-<model>.json for every request) leaves room to answer", flush=True)
                 if os.environ.get("STRATA_DEBUG") and raw_ids:
                     print(f"[strata] raw: {self.tok.decode(raw_ids)!r}", flush=True)
-            self.status["busy"] = False
-            self.status.pop("tail", None)            # #212: the answer's end is not kept once it is done
-            self.status.pop("tool", None)
-            self.status.pop("parked", None)
+            if self.status.get("request_id") == rid:
+                self.status["busy"] = False
+                self.status.pop("tail", None)
+                self.status.pop("tool", None)
+                self.status.pop("parked", None)
         return timings
 
     def run_preemptable(self, ids, thinking, tools, max_new, sampling, cancel) -> Iterator[tuple[str, object]]:
@@ -1896,6 +1938,7 @@ class Service:
         rid = next(self.preempt_rid)
         req = None
         enqueued_at = time.time()
+        started_at = None
         with self.status_lock:
             self.status["queued"] += 1
         first = True
@@ -1922,31 +1965,32 @@ class Service:
                             first = False
                             wait_ms = (time.time() - enqueued_at) * 1000.0
                             self.totals["max_queue_wait_ms"] = max(self.totals["max_queue_wait_ms"], wait_ms)
-                    if hasattr(self.engine, "alive") and not self.engine.alive():
-                        # issue #27: it died in an earlier request - start it again instead of failing every
-                        # request.  A parked request's snapshot died with the old process: it fails cleanly
-                        # below (the new engine answers RESUME with ERR no parked request).
-                        code = self.engine.exit_code() if hasattr(self.engine, "exit_code") else None
-                        print(f"[strata] the engine had stopped (exit code {code}); starting it again "
-                              "(a minute or two) ...", flush=True)
-                        self.engine.restart()
-                        print("[strata] the engine is running again", flush=True)
+                    if cancel.is_set():
+                        finish = "cancel"
                         if req is not None and req.parked:
-                            raise ValueError("the engine died while this request was parked; its prompt "
-                                             "snapshot is gone and it cannot be resumed")
-                        req = None
+                            req.cancel_parked()
+                            with self.status_lock:
+                                self.status["parked_requests"] = max(0, self.status.get("parked_requests", 0) - 1)
+                        break
+                    if req is not None and req.parked and hasattr(self.engine, "alive") and not self.engine.alive():
+                        raise ValueError("the engine died while this request was parked; its snapshot is gone")
+                    self.ensure_loaded()
                     now = time.time()
+                    if started_at is None:
+                        started_at = now
                     with self.status_lock:
                         if req is None:
-                            self.status.update(busy=True, phase="reading the prompt", prompt_tokens=len(ids),
+                            self.status.update(busy=True, request_id=rid, phase="reading the prompt", prompt_tokens=len(ids),
                                                generated=0, started=now, first_token=None, tool=None, tail="",
                                                max_tokens=max_new, parked=False)
                             self.last_request_at = now
                             self.rate.clear()           # the previous request's samples must not leak into this one
                         else:
                             # tail/tool may have been cleaned by the interim request's end (they are per-answer)
-                            self.status.update(parked=False, phase="reading the prompt (resumed)", tail="",
-                                               tool=None,
+                            self.status.update(busy=True, request_id=rid, parked=False,
+                                               phase="reading the prompt (resumed)", tail="", tool=None,
+                                               started=started_at, first_token=None, generated=n,
+                                               prompt_tokens=len(ids), max_tokens=max_new,
                                                parked_requests=max(0, self.status.get("parked_requests", 0) - 1))
                     if req is None:
                         before = getattr(self.engine, "last", None)
@@ -1979,6 +2023,9 @@ class Service:
                                       "request runs first", flush=True)
                                 break
                             if t is None:                   # a heartbeat: PP lines during the prompt read
+                                if cancel.is_set():
+                                    finish = "cancel"
+                                    break
                                 # the engine cannot see this server's queue: while a request is waiting and we
                                 # are still reading the prompt, tell the engine to offer its next boundary
                                 # (YIELD is a flag like STOP; it acts at a chunk end or never)
@@ -1990,10 +2037,10 @@ class Service:
                                 last_print = self._progress(last_print)
                                 yield "ping", None
                                 continue
-                            n += 1
                             if cancel.is_set():
                                 finish = "cancel"
                                 break
+                            n += 1
                             if t in self.stop_ids:
                                 finish = "stop"
                                 raw_ids.append(t)
@@ -2038,6 +2085,9 @@ class Service:
                         last_ping = time.time()
                         yield "ping", None
                     time.sleep(0.02)
+        except (EngineDied, ValueError, GpuBusy):
+            finish = "error"
+            raise
         except GeneratorExit:                           # the client disconnected mid-stream
             finish = "disconnect"
             raise
@@ -2054,7 +2104,10 @@ class Service:
                 with self.status_lock:
                     self.status["parked_requests"] = max(0, self.status.get("parked_requests", 0) - 1)
             timings = self._record_done(len(ids), n, finish, sampling, raw_ids, before, engine_last0, cancel,
-                                        record=True, parser_state=parser.state)
+                                        record=True, parser_state=parser.state,
+                                        request_last=(getattr(req, "last", None) if req is not None else
+                                                      {"finish": finish, "prompt_read": 0, "reused": 0}),
+                                        started_at=started_at, rid=rid)
         for ev in parser.finish():
             yield "event", ev
         yield "done", {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),

@@ -41,7 +41,14 @@ CONFIG = ROOT / "strata-iq3_xxs.json"
 # each optional component joins the dict, so the comparison covers whatever the engine reports
 HASH_RE = re.compile(r"STATE_HASH L=(\d+) gdn=([0-9a-f]+) ple=([0-9a-f]+) tail=([0-9a-f]+) pooled=([0-9a-f]+) "
                      r"kv=([0-9a-f]+) mtp=([0-9a-f]+) stale=([0-9a-f]+)(?: dead=([0-9a-f]+))?"
-                     r"(?: pooled_full=([0-9a-f]+))? ple_prev=(-?\d+),(-?\d+)")
+                     r"(?: pooled_full=([0-9a-f]+))?(?: block=([0-9a-f]+))? ple_prev=(-?\d+),(-?\d+)")
+
+
+def parse_state_match(match) -> dict:
+    keys = ["L", "gdn", "ple", "tail", "pooled", "kv", "mtp", "stale", "dead", "pooled_full",
+            "block", "ple_prev0", "ple_prev1"]
+    # Optional regex groups still occupy positions. Never shorten keys before zipping!
+    return {k: v for k, v in zip(keys, match.groups()) if v is not None}
 
 
 def deterministic_tokens(n: int, seed: int, lo=1000, hi=30000) -> list[int]:
@@ -140,12 +147,7 @@ class Engine:
             pass
         if m is None:
             raise RuntimeError("no STATE_HASH in the engine log (STRATA_STATE_HASH=1 and --prompt-cache > 0?)")
-        groups = m.groups()
-        keys = ["L", "gdn", "ple", "tail", "pooled", "kv", "mtp", "stale"]
-        if groups[8] is not None:                       # the newer engine reports the spare key and the full
-            keys += ["dead", "pooled_full"]             # pooled row alongside the classic components
-        keys += ["ple_prev0", "ple_prev1"]
-        return dict(zip(keys, groups))
+        return parse_state_match(m)
 
     def close(self):
         try:
@@ -177,7 +179,7 @@ def strip_options(args: list[str], valued: set[str], flags: set[str]) -> list[st
 def state_differences(ref: dict, got: dict) -> list[str]:
     # Stale cells lie OUTSIDE the committed prefix; rejected drafts may legitimately differ.
     # Drafter KV is still gated: differences must be investigated, not silently retried away.
-    return [k for k in ref if k != "stale" and ref[k] != got.get(k)]
+    return [k for k in dict.fromkeys([*ref, *got]) if k != "stale" and ref.get(k) != got.get(k)]
 
 
 def engine_args(cfg: dict, *, prefill: int, preempt: bool, max_context: int | None = None,
@@ -224,7 +226,11 @@ def main() -> int:
     ap.add_argument("--interim-max-new", type=int, default=None,
                     help="B decode length: 0 isolates B prefill, 1 adds only its first verify/commit")
     ap.add_argument("--trace", action="store_true", help="expensive state and verify-window hashes")
+    ap.add_argument("--tail-tokens", type=int, default=491,
+                    help="prompt length after its full chunks; 33 tests a resumed 32-token batched tail")
     args = ap.parse_args()
+    if not 2 <= args.tail_tokens < 2048:
+        ap.error("--tail-tokens must be between 2 and 2047")
     if args.max_new < 1 or (args.interim_max_new is not None and args.interim_max_new < 0):
         ap.error("A needs at least one output token; B must be nonnegative")
     b_max_new = args.max_new if args.interim_max_new is None else args.interim_max_new
@@ -238,7 +244,7 @@ def main() -> int:
     workdir.mkdir(parents=True, exist_ok=True)
 
     chunk = 2048
-    n_a = (3 if args.quick else 6) * chunk + 491          # a final partial chunk, like the plan's 10,731 example
+    n_a = (3 if args.quick else 6) * chunk + args.tail_tokens          # a final partial chunk, like the plan's 10,731 example
     a_ids = deterministic_tokens(n_a, seed=7)
     b_ids = deterministic_tokens(220, seed=99)
     warm_ids = deterministic_tokens(120, seed=5)          # the first request on a virgin engine drafts (and so

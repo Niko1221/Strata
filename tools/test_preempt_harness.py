@@ -1,6 +1,6 @@
 """CPU-only guards against false passes and malformed parity-test configuration."""
 import unittest
-from tools.prefill_preempt_test import engine_args, state_differences
+from tools.prefill_preempt_test import engine_args, state_differences, HASH_RE, parse_state_match
 
 
 class HarnessChecks(unittest.TestCase):
@@ -24,6 +24,20 @@ class HarnessChecks(unittest.TestCase):
 
     def test_uncommitted_stale_cells_are_not_semantic_state(self):
         self.assertEqual(state_differences({'kv': 'a', 'stale': 'a'}, {'kv': 'a', 'stale': 'b'}), [])
+
+    def test_legacy_hash_keeps_ple_previous_tokens(self):
+        line = "STATE_HASH L=8 gdn=a ple=b tail=c pooled=d kv=e mtp=f stale=0 ple_prev=123,456"
+        state = parse_state_match(HASH_RE.search(line))
+        self.assertEqual(state["ple_prev0"], "123")
+        self.assertEqual(state["ple_prev1"], "456")
+        self.assertNotIn("dead", state)
+
+    def test_extended_hash_keeps_all_components(self):
+        line = ("STATE_HASH L=8 gdn=a ple=b tail=c pooled=d kv=e mtp=f stale=0 "
+                "dead=11 pooled_full=22 block=33 ple_prev=-1,456")
+        state = parse_state_match(HASH_RE.search(line))
+        self.assertEqual([state[k] for k in ("dead", "pooled_full", "block", "ple_prev0")],
+                         ["11", "22", "33", "-1"])
 
     def test_missing_state_cannot_pass(self):
         self.assertEqual(state_differences({'gdn': 'a'}, {}), ['gdn'])
