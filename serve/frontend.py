@@ -374,6 +374,7 @@ CALL_END = "</tool_call>"
 
 
 PARAM_END = "</parameter>"
+FUNC_START = "<function="
 FUNC_END = "</function>"
 
 
@@ -625,6 +626,22 @@ class OutputParser:
                     # Hold a partial tag AND the newlines before it: if a tool call follows, they are dropped,
                     # so emitting them early would make streamed and whole outputs differ.
                     j = len(self.buf) - self._hold(self.buf, (CALL_START,))
+                    while j > 0 and self.buf[j - 1] == "\n":
+                        j -= 1
+                    if j > 0:
+                        out.append(Event("content", self.buf[:j]))
+                        self.buf = self.buf[j:]
+                    return out
+                # A call is `<tool_call>` and then (after whitespace) `<function=`; the tag with anything else after
+                # it is prose that names the format ("I'll use a <tool_call> block") - content, not a malformed call
+                # that ends the request.  Until its follower has arrived it is held, like a partial tag.
+                after = self.buf[i + len(CALL_START):].lstrip()
+                if after and not after.startswith(FUNC_START) and not FUNC_START.startswith(after):
+                    out.append(Event("content", self.buf[:i + len(CALL_START)]))
+                    self.buf = self.buf[i + len(CALL_START):]
+                    continue
+                if not after.startswith(FUNC_START):
+                    j = i
                     while j > 0 and self.buf[j - 1] == "\n":
                         j -= 1
                     if j > 0:
