@@ -14,6 +14,7 @@
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include "pool_affinity_win.hpp"
 #else
 #include <pthread.h>
 #include <sched.h>
@@ -40,6 +41,7 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
         const WORD groups = GetActiveProcessorGroupCount();
         for (WORD group = 0; group < groups; ++group) {
             const DWORD count = GetActiveProcessorCount(group);
+            if (count == 0 || count == (DWORD) -1 || count > 64) continue;
             for (DWORD i = 0; i < count; ++i) topo.worker_cores.push_back((int) group * 64 + (int) i);
         }
         if (skip_first && !topo.worker_cores.empty()) {
@@ -274,16 +276,7 @@ namespace {
 bool pin_this_thread(int core, int worker = -1) {
     if (core < 0) return false;
 #if defined(_WIN32)
-    GROUP_AFFINITY target{};
-    target.Group = (WORD) (core / 64);
-    target.Mask = (KAFFINITY(1) << (core & 63));
-    const bool ok = SetThreadGroupAffinity(GetCurrentThread(), &target, nullptr) != 0;
-    if (!ok) {
-        std::fprintf(stderr, "strata cpu pool: SetThreadGroupAffinity for %s%d (group %u, mask 0x%llx) failed: %lu; thread remains unpinned\n",
-                     worker >= 0 ? "worker " : "host ", worker >= 0 ? worker : 0, (unsigned) target.Group,
-                     (unsigned long long) target.Mask, (unsigned long) GetLastError());
-    }
-    return ok;
+    return detail::set_thread_group_affinity(core, worker);
 #else
     cpu_set_t set;
     CPU_ZERO(&set);
@@ -297,15 +290,8 @@ bool pin_this_thread(int core, int worker = -1) {
 ThreadAffinity pin_current_thread(int core) {
     if (core < 0) return {};
 #if defined(_WIN32)
-    GROUP_AFFINITY target{};
-    target.Group = (WORD) (core / 64);
-    target.Mask = (KAFFINITY(1) << (core & 63));
     GROUP_AFFINITY previous{};
-    if (!SetThreadGroupAffinity(GetCurrentThread(), &target, &previous)) {
-        std::fprintf(stderr, "strata cpu pool: SetThreadGroupAffinity for host (group %u, mask 0x%llx) failed: %lu\n",
-                     (unsigned) target.Group, (unsigned long long) target.Mask, (unsigned long) GetLastError());
-        return {};
-    }
+    if (!detail::set_thread_group_affinity(core, -1, &previous)) return {};
     return {(uint64_t) previous.Mask, previous.Group, true};
 #else
     cpu_set_t prev;
