@@ -60,6 +60,14 @@ public:
     /// The main model's embedding and head, and the verify window's final residuals (T rows, hc*n_embd each).
     bool bind(const WeightTable& wt, const NativeHead* head, const float* window_R, std::string& err);
 
+    /// SPECULATIVE BATCH: a drafter for one batch slot.  It shares `base`'s weights, experts and draft head (base must
+    /// be loaded and bound, and outlive it) and has its own K/V, buffers, stream and graphs.  Its window residuals are
+    /// its own buffer (own_window_R, max_t rows): the caller copies the slot's rows there before draft().
+    bool clone_from(const MtpDrafter& base, std::string& err);
+    float* own_window_R() { return own_R_; }
+    /// Copy `upto` cells of `from`'s K/V into this drafter's (a slot taking over a request's prompt).
+    bool copy_kv_from(const MtpDrafter& from, int64_t upto, std::string& err);
+
     /// Prompt cells [cell0, cell0 + n): residual rows `R_rows` (device, hc*n_embd each) and `next_tokens` (host,
     /// the token at position cell+1).  Runs in batches of up to max_t rows.
     bool prefill(const float* R_rows, const int32_t* next_tokens, int64_t n, int64_t cell0, std::string& err);
@@ -102,6 +110,10 @@ public:
 
 private:
     bool record_forward(int T, int step_row0, cudaStream_t cs, std::string& err);
+    bool alloc_state(const ModelGeometry& g, SessionState& ss, int64_t window, std::string& err);
+    bool weights_shared_ = false; ///< clone_from: the weights, experts and draft head belong to the base
+    float* own_R_ = nullptr;      ///< clone_from: this drafter's copy of its slot's window residuals
+    int64_t window_arg_ = 0;      ///< load's `window`
     bool capture_prefill(int T, std::string& err);
     bool capture_prefill_dev(int T, std::string& err);   ///< E-4: without the mapped staging (inputs copied on device)
     bool capture_round(int T, bool coupled, std::string& err);

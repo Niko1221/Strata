@@ -1,5 +1,6 @@
 // src/core/mtp.cpp - see include/strata/core/mtp.hpp.
 #include "strata/core/mtp.hpp"
+#include "strata/core/conversation_snapshot.hpp"
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/on_device.hpp"
 
@@ -117,13 +118,14 @@ MtpDrafter::~MtpDrafter() {
     if (h_cparams_) cudaFreeHost(h_cparams_);
     if (h_chist_) cudaFreeHost(h_chist_);
     if (cs_) cudaStreamDestroy(cs_);
-    if (dense_) cudaFree(dense_);
-    if (experts_) cudaFree(experts_);
+    if (dense_ && !weights_shared_) cudaFree(dense_);
+    if (experts_ && !weights_shared_) cudaFree(experts_);
+    if (own_R_) cudaFree(own_R_);
     if (state_arena_) cudaFree(state_arena_);
     if (arena_) cudaFree(arena_);
     if (head_logits_) cudaFree(head_logits_);
-    if (dhead_) cudaFree(dhead_);
-    if (dvocab_) cudaFree(dvocab_);
+    if (dhead_ && !weights_shared_) cudaFree(dhead_);
+    if (dvocab_ && !weights_shared_) cudaFree(dvocab_);
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_row_, h_out_, h_prob_};
     for (void* h : hosts) if (h) cudaFreeHost(h);
 }
@@ -204,7 +206,20 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
                               "self_attn.v_proj.weight", "self_attn.o_proj.weight", "mlp.shared_expert.gate_proj.weight",
                               "mlp.shared_expert.up_proj.weight", "mlp.shared_expert.down_proj.weight"};
     for (const char* n : required) if (!q8(n)) { err = std::string("mtp: ") + n + " is missing (q8_0)"; return false; }
+    window_arg_ = window;
+    if (!alloc_state(g, ss, window, err)) return false;
+    const double files_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_files).count();
+    std::fprintf(stderr, "strata mtp: draft layer loaded, %.0f MiB of VRAM (experts %.0f, dense %.0f), files read in %.2f s (%.0f MiB/s)\n",
+                 (double) vram_ / 1048576.0, (double) g.n_expert * strata::kernels::cpu::BLOB / 1048576.0,
+                 (double) tensors_.back().off / 1048576.0, files_s,
+                 files_s > 0 ? ((double) g.n_expert * strata::kernels::cpu::BLOB + (double) tensors_.back().off) /
+                                   1048576.0 / files_s : 0.0);
+    return true;
+}
 
+// The drafter's own state: its K/V, buffers, staging and stream (load and clone_from).
+bool MtpDrafter::alloc_state(const ModelGeometry& g, SessionState& ss, int64_t window, std::string& err) {
+    const int max_t = max_t_;
     // ---- the layer's own K/V (dense attention: no indexer state is read)
     const strata::kernels::QsaShapes s = shapes_of(g);
     const int64_t max_cells = ss.qsa_states[ss.qsa_primary()].max_cells;
@@ -294,12 +309,53 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         cudaMemcpy(ident_, id.data(), id.size() * 4, cudaMemcpyHostToDevice);
     }
     if (cudaStreamCreateWithFlags(&cs_, cudaStreamNonBlocking) != cudaSuccess) { err = "mtp: stream"; return false; }
-    const double files_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_files).count();
-    std::fprintf(stderr, "strata mtp: draft layer loaded, %.0f MiB of VRAM (experts %.0f, dense %.0f), files read in %.2f s (%.0f MiB/s)\n",
-                 (double) vram_ / 1048576.0, (double) g.n_expert * strata::kernels::cpu::BLOB / 1048576.0,
-                 (double) tensors_.back().off / 1048576.0, files_s,
-                 files_s > 0 ? ((double) g.n_expert * strata::kernels::cpu::BLOB + (double) tensors_.back().off) /
-                                   1048576.0 / files_s : 0.0);
+    return true;
+}
+
+bool MtpDrafter::clone_from(const MtpDrafter& base, std::string& err) {
+    if (base.dense_ == nullptr || base.head_ == nullptr) { err = "mtp clone: the base drafter is not loaded and bound"; return false; }
+    device_ = base.device_;
+    const OnDevice on_device(device_);
+    g_ = base.g_;
+    ss_ = base.ss_;
+    max_t_ = base.max_t_;
+    max_drafts_ = base.max_drafts_;
+    rt_dir_ = base.rt_dir_;
+    tensors_ = base.tensors_;
+    dense_ = base.dense_;
+    experts_ = base.experts_;
+    weights_shared_ = true;
+    window_arg_ = base.window_arg_;
+    if (!alloc_state(*g_, *ss_, window_arg_, err)) return false;
+    // bind: the base's head and draft head; its own logits and window residuals
+    wt_ = base.wt_;
+    head_ = base.head_;
+    n_vocab_ = base.n_vocab_;
+    dhead_ = base.dhead_;
+    dvocab_ = base.dvocab_;
+    n_dvocab_ = base.n_dvocab_;
+    const size_t rbytes = (size_t) max_t_ * (size_t) g_->hc * (size_t) g_->n_embd * sizeof(float);
+    if (cudaMalloc((void**) &head_logits_, (size_t) max_t_ * (size_t) n_vocab_ * sizeof(float)) != cudaSuccess ||
+        cudaMalloc((void**) &own_R_, rbytes) != cudaSuccess) {
+        err = "mtp clone: the draft logits / window rows do not fit";
+        return false;
+    }
+    cudaMemset(own_R_, 0, rbytes);
+    vram_ += (uint64_t) max_t_ * (uint64_t) n_vocab_ * sizeof(float) + rbytes;
+    window_R_ = own_R_;
+    return true;
+}
+
+bool MtpDrafter::copy_kv_from(const MtpDrafter& from, int64_t upto, std::string& err) {
+    const OnDevice on_device(device_);
+    if (upto <= 0) return true;
+    if (cudaDeviceSynchronize() != cudaSuccess) { err = "mtp clone: device sync failed"; return false; }
+    ConversationKv img;
+    if (!conversation_kv_save(img, from.st_, *g_, upto, false, err)) return false;
+    if (cudaDeviceSynchronize() != cudaSuccess) { err = "mtp clone: device sync failed"; return false; }
+    if (!conversation_kv_restore(img, st_, *g_, upto, false, err)) return false;
+    if (cudaDeviceSynchronize() != cudaSuccess) { err = "mtp clone: device sync failed"; return false; }
+    prompt_len_ = upto;
     return true;
 }
 
