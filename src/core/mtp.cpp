@@ -5,6 +5,7 @@
 
 #include "strata/core/native_head.hpp"
 #include "strata/core/peer_experts.hpp"
+#include "strata/platform/memory.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/elementwise.hpp"
@@ -95,6 +96,9 @@ bool read_file(const std::string& path, std::vector<uint8_t>& out) {
     if (STRATA_FILE_SEEK64(f, 0, SEEK_END) != 0) return false;
     const long long n = (long long) STRATA_FILE_TELL64(f);
     if (n < 0 || STRATA_FILE_SEEK64(f, 0, SEEK_SET) != 0) return false;
+#if !defined(_WIN32)
+    strata::platform::advise_willneed(fileno(f), 0, (uint64_t) n);
+#endif
     out.resize((size_t) n);
     return n == 0 || std::fread(out.data(), 1, (size_t) n, f) == (size_t) n;
 }
@@ -191,6 +195,9 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
             ~Closer() { if (f != nullptr) std::fclose(f); }
         } closer{f};
         if (cudaMalloc((void**) &experts_, bytes) != cudaSuccess) { err = "mtp: the 512 experts do not fit in VRAM"; return false; }
+#if !defined(_WIN32)
+        strata::platform::advise_willneed(fileno(f), 0, bytes);
+#endif
         std::vector<uint8_t> chunk(64u << 20);
         for (uint64_t off = 0; off < bytes;) {
             const uint64_t n = std::min<uint64_t>(chunk.size(), bytes - off);

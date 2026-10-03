@@ -2,6 +2,7 @@
 #include "strata/core/weights.hpp"
 
 #include "strata/kernels/f16_bits.hpp"
+#include "strata/platform/memory.hpp"
 
 #include <cuda_runtime.h>
 
@@ -279,6 +280,12 @@ bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t a
             cur = std::fopen(p.c_str(), "rb");
             if (!cur) { err = "cannot open " + p; cudaFreeHost(stage_in); cudaFreeHost(stage_out); return false; }
             cur_file = r.file;
+#if !defined(_WIN32)
+            // ask for this file's remaining rows up front so their reads overlap
+            for (size_t j = row_i; j < rows.size(); ++j)
+                if (rows[j].file == r.file && !skipped[j])
+                    strata::platform::advise_willneed(fileno(cur), rows[j].src_off, rows[j].src_bytes);
+#endif
         }
 
         // ---- the segment list: what this tensor's bytes are, plane by plane, in both forms
