@@ -1,15 +1,18 @@
 // src/kernels/ple_parity.cpp - P2.S4's test: the n-gram hash, the IQ4_NL table read, and the PLE block.
 //
-// THREE PARTS, THREE DIFFERENT ORACLES, and none of them is this project's own code:
+// THREE PARTS, THREE DIFFERENT ORACLES; A and B use none of this project's own code, C a reference written
+// independently of the kernel, from the formulas in `ple.hpp`:
 //
 //   A. THE HASH against `ref/ngram.py::ngram_rows`, via `ple_oracle_vectors.inc` (generated).  The properties
 //      are asserted OBSERVABLE first - XOR vs sum, `%` vs `&`, the cut DIRECTION, the NULL sentinel - because
 //      each rival reading produces a perfectly valid index in range.
 //   B. THE TABLE against numpy reading the ORIGINAL GGUF at the offset the validated `gguf_reader` reports.
-//   C. THE BLOCK against ggml's own graph, captured in `bench/micro/ple_in.bin` / `ple_out.bin` by
-//      `ple_layer_xcheck.cpp`.  That file records EVERY intermediate (key, value, gate, gated, normalized,
-//      conv_out, result), so a mismatch can be attributed to a stage instead of guessed at - and the weights
-//      in it were checked to be the artifact's real ones before this test was written.
+//   C. THE BLOCK against a host reference computed here, in double precision, from the formulas in `ple.hpp`
+//      and on the artifact's real weights (`ple_key`, `ple_value`, the three norms and the conv kernel, read from
+//      the pack at the offsets its own `index.txt` gives) and real gathered n-gram rows.  Only `hidden` and the
+//      conv history are synthetic (a fixed-seed generator), because they are the residual stream and the state,
+//      which no file holds.  The reference records EVERY intermediate (key, value, gate, gated, normalized,
+//      conv_out, result), so a mismatch can be attributed to a stage instead of guessed at.
 #include "strata/kernels/ple.hpp"
 #include "strata/kernels/ngram.hpp"
 #include "strata/kernels/f16_bits.hpp"
@@ -23,6 +26,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <random>
+#include <sstream>
 #include <string>
 #include <stdexcept>
 #include <vector>
@@ -62,7 +68,8 @@ long long nonfinite(const float* a, size_t n) {
 ///
 /// Returns NaN if EITHER side has a non-finite entry, so a caller that forgets `le`/`gt` still cannot read a
 /// finite-looking number out of a broken fixture.
-double rel_l1(const float* a, const float* b, size_t n, double* mag_out = nullptr,
+template <class Ref, class Got>
+double rel_l1(const Ref* a, const Got* b, size_t n, double* mag_out = nullptr,
               long long* nf_out = nullptr) {
     double d = 0, m = 0;
     long long nf = 0;
@@ -113,13 +120,6 @@ std::vector<uint8_t> read_at(const char* path, long long off, size_t n) {
     return v;
 }
 
-/// Only used for the pack, which is 5.4 GB rather than 28.8 GB - and even then the caller says which region.
-std::vector<uint8_t> read_path(const char* path) {
-    const long long n = file_size(path);
-    if (n <= 0) return {};
-    return read_at(path, 0, (size_t) n);
-}
-
 /// Dequantize one IQ4_NL row with an INTERLEAVED nibble order, to show the correct split-half order is
 /// observable.  Deliberately shares nothing with the kernel's decoder.
 void deq_interleaved(const uint8_t* row, float* out160) {
@@ -135,54 +135,217 @@ void deq_interleaved(const uint8_t* row, float* out160) {
     }
 }
 
-struct PleCapture {
-    int n_embd = 0, hc = 0, nt = 0, kern = 0, dil = 0;
-    float eps = 0.0f;
-    std::vector<float> emb, hidden, w_key, w_value, w_nk, w_nq, w_nc, w_conv, hist;
-    // oracle outputs
-    std::vector<float> key, value, gate, gated, normalized, conv_out, result;
+/// Three tokens, so the conv history slides twice and the native-key loop (which runs two) has two inputs.
+constexpr int kBlockTokens = 3;
+
+/// Per-stage bound on the normalized L1 distance between the kernel and the reference, which applies the same
+/// activation contract.  What is left is f32 against double arithmetic and summation order: the GEMVs add 2560
+/// products in f32 lanes, whose error with mixed-sign terms is about sqrt(2560) * 6e-8 = 3e-6 (the all-same-sign
+/// worst case, n * eps, is 1.5e-4), and the norms and the gate round through f32 once.  The bound sits above
+/// that typical error and far below both the activation contract (see the visibility check, which requires the
+/// contract to be at least ten times the bound) and any structural error - a transposed conv kernel, a
+/// channel-slow history, a head-fastest gather, a wrong tap order - which is O(1).
+constexpr double kStageTolerance = 1e-5;
+
+/// The six PLE tensors as the pack stores them, plus the views the kernel and the reference each want.
+struct PleHostWeights {
+    std::vector<uint8_t> key_codes, raw_scales;   // ple_key: 2-bit codes, then the fp16 group scales as stored
+    std::vector<float> key_scales;                // the same scales widened to f32, which every S-form kernel takes
+    std::vector<uint16_t> value_bf16;             // ple_value BF16 bits
+    std::vector<uint16_t> conv1d_f16;             // ple_conv1d F16 bits, ggml order k + kern*c
+    std::vector<float> norm_key, norm_query, norm_conv;
 };
 
-bool load_capture(const char* in_path, const char* out_path, PleCapture& c) {
-    std::FILE* fi = std::fopen(in_path, "rb");
-    if (!fi) return false;
-    int32_t h[5] = {0};
-    if (std::fread(h, 4, 5, fi) != 5) { std::fclose(fi); return false; }
-    c.n_embd = h[0]; c.hc = h[1]; c.nt = h[2]; c.kern = h[3]; c.dil = h[4];
-    if (std::fread(&c.eps, 4, 1, fi) != 1) { std::fclose(fi); return false; }
-    // Validate before deriving sizes or allocating. This bounded diagnostic
-    // format is for this model's geometry and at most 64 captured tokens.
-    if (c.n_embd != k::NG_N_EMBD || c.hc != k::NG_HC || c.nt <= 0 || c.nt > 64 ||
-        c.kern != k::PLE_CONV_KERNEL || c.dil != k::NGRAM_SIZE || c.eps != k::NG_RMS_EPS) {
-        std::fclose(fi); return false;
+/// Offset and size in `dense.bin` of a tensor's source bytes, from the pack's own index: the rows of
+/// `<pack>/index.txt` are `name file kind src_off src_bytes ...`, and file 0 is `dense.bin`.
+bool pack_tensor_span(const std::string& pack, const std::string& name, uint64_t& off, uint64_t& bytes) {
+    std::ifstream index(pack + "/index.txt");
+    std::string line;
+    while (std::getline(index, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        std::istringstream row(line);
+        std::string n;
+        int file = -1, kind = -1;
+        uint64_t src_off = 0, src_bytes = 0;
+        if (!(row >> n >> file >> kind >> src_off >> src_bytes) || n != name || file != 0) continue;
+        off = src_off;
+        bytes = src_bytes;
+        return true;
     }
-    const long long nd = c.n_embd, hcd = (long long) c.hc * c.n_embd, nt = c.nt,
-                    hist = (long long) (c.kern - 1) * c.dil;
-    const long long in_bytes = 24 + 4 * (nt * nd + nt * hcd + hcd * nd + nd * nd +
-                                        3 * hcd + hcd * c.kern + hist * hcd);
-    const long long out_bytes = 12 + 4 * nt * (5 * hcd + nd + c.hc);
-    if (file_size(in_path) != in_bytes || file_size(out_path) != out_bytes) {
-        std::fclose(fi); return false;
-    }
-    auto rd = [](std::FILE* file, std::vector<float>& v, long long n) {
-        v.resize((size_t) n);
-        return n == 0 || std::fread(v.data(), 4, (size_t) n, file) == (size_t) n;
-    };
-    bool ok = rd(fi, c.emb, nt * nd) && rd(fi, c.hidden, nt * hcd) && rd(fi, c.w_key, hcd * nd) &&
-              rd(fi, c.w_value, nd * nd) && rd(fi, c.w_nk, hcd) && rd(fi, c.w_nq, hcd) && rd(fi, c.w_nc, hcd) &&
-              rd(fi, c.w_conv, hcd * c.kern) && rd(fi, c.hist, hist * hcd);
-    std::fclose(fi);
-    if (!ok) return false;
+    return false;
+}
 
-    std::FILE* fo = std::fopen(out_path, "rb");
-    if (!fo) return false;
-    int32_t oh[3] = {0};
-    if (std::fread(oh, 4, 3, fo) != 3) { std::fclose(fo); return false; }
-    if (oh[0] != c.n_embd || oh[1] != hcd || oh[2] != c.nt) { std::fclose(fo); return false; }
-    ok = rd(fo, c.key, nt * hcd) && rd(fo, c.value, nt * nd) && rd(fo, c.gate, nt * c.hc) && rd(fo, c.gated, nt * hcd) &&
-         rd(fo, c.normalized, nt * hcd) && rd(fo, c.conv_out, nt * hcd) && rd(fo, c.result, nt * hcd);
-    std::fclose(fo);
-    return ok;
+/// Reads the PLE tensors of layer 1 from `<pack>/dense.bin` at the spans the pack's index gives.  The spans of
+/// `ple_key` and `ple_value` are also required to equal the generated offsets, so those two cannot drift apart
+/// silently.  Returns false, with `err` set, when an entry is missing or its size is not the expected one.
+bool load_ple_weights(const std::string& pack, PleHostWeights& w, std::string& err) {
+    static_assert(o::kKeyScalesOffset == o::kKeyCodesOffset + o::kKeyCodesBytes,
+                  "the fp16 key scales follow the key codes in the pack");
+    const uint64_t hcd = (uint64_t) k::NG_HC_DIM;
+    auto tensor = [&](const char* name, uint64_t want_bytes, uint64_t want_off) -> std::vector<uint8_t> {
+        uint64_t off = 0, bytes = 0;
+        if (!pack_tensor_span(pack, name, off, bytes) || bytes != want_bytes || (want_off && off != want_off)) {
+            err = std::string("the pack index has no ") + name + " span of " + std::to_string(want_bytes) +
+                  " bytes at the expected offset";
+            return {};
+        }
+        std::vector<uint8_t> v = read_at((pack + "/dense.bin").c_str(), (long long) off, (size_t) bytes);
+        if (v.empty()) err = std::string("cannot read ") + name + " from " + pack + "/dense.bin";
+        return v;
+    };
+    const std::vector<uint8_t> key = tensor("blk.1.ple_key.weight", o::kKeyCodesBytes + o::kKeyScalesBytes,
+                                            o::kKeyCodesOffset);
+    const std::vector<uint8_t> value = tensor("blk.1.ple_value.weight", o::kValueBytes, o::kValueOffset);
+    const std::vector<uint8_t> conv = tensor("blk.1.ple_conv1d.weight", (uint64_t) k::PLE_CONV_KERNEL * hcd * 2, 0);
+    const std::vector<uint8_t> nk = tensor("blk.1.ple_norm_key.weight", hcd * 4, 0);
+    const std::vector<uint8_t> nq = tensor("blk.1.ple_norm_query.weight", hcd * 4, 0);
+    const std::vector<uint8_t> nc = tensor("blk.1.ple_norm_conv.weight", hcd * 4, 0);
+    if (!err.empty()) return false;
+
+    w.key_codes.assign(key.begin(), key.begin() + (long long) o::kKeyCodesBytes);
+    w.raw_scales.assign(key.begin() + (long long) o::kKeyCodesBytes, key.end());
+    // fp16 -> f32 for the scales, which is what every S-form kernel in this project expects
+    w.key_scales.resize(w.raw_scales.size() / 2);
+    for (size_t i = 0; i < w.key_scales.size(); ++i) {
+        uint16_t h;
+        std::memcpy(&h, w.raw_scales.data() + i * 2, 2);
+        w.key_scales[i] = k::f32_from_f16(h);
+    }
+    // ple_value is BF16 promoted to 32 bits in the pack; take the high half, which is exact
+    w.value_bf16.resize(value.size() / 4);
+    for (size_t i = 0; i < w.value_bf16.size(); ++i) {
+        uint32_t u;
+        std::memcpy(&u, value.data() + i * 4, 4);
+        w.value_bf16[i] = (uint16_t) (u >> 16);
+    }
+    w.conv1d_f16.resize(conv.size() / 2);
+    std::memcpy(w.conv1d_f16.data(), conv.data(), conv.size());
+    for (auto* norm : {&nk, &nq, &nc}) {
+        std::vector<float>& dst = norm == &nk ? w.norm_key : norm == &nq ? w.norm_query : w.norm_conv;
+        dst.resize(norm->size() / 4);
+        std::memcpy(dst.data(), norm->data(), norm->size());
+    }
+    return true;
+}
+
+/// Fixed-seed uniform values in [-amp, amp), built from the raw generator bits so the fixture is the same on
+/// every standard library (`std::uniform_real_distribution` is not).
+void fill_uniform(float* v, size_t n, float amp, std::mt19937& rng) {
+    for (size_t i = 0; i < n; ++i) v[i] = amp * ((float) (rng() >> 8) * (2.0f / 16777216.0f) - 1.0f);
+}
+
+/// What one token of the block produces, in double, stage by stage.
+struct BlockRef {
+    std::vector<double> key, value, gate, gated, normalized, conv, result;
+};
+
+/// The Q8_0 activation the `ple_key` GEMV multiplies by, as `quantize_q8_0` builds it: per 32-element block,
+/// `d = amax / 127` in f32 and stored as fp16, then `q = rint(x / d)` in double clamped to int8.
+std::vector<double> q8_0_activation(const float* x, size_t n) {
+    std::vector<double> out(n, 0.0);
+    for (size_t b = 0; b < n; b += 32) {
+        float amax = 0.0f;
+        for (size_t i = 0; i < 32; ++i) amax = std::fmax(amax, std::fabs(x[b + i]));
+        if (amax == 0.0f) continue;
+        const float d32 = amax / 127.0f;
+        const double dx = (double) k::f32_from_f16(k::f16_from_f32(d32));
+        for (size_t i = 0; i < 32; ++i)
+            out[b + i] = std::fmin(127.0, std::fmax(-128.0, std::rint((double) x[b + i] / (double) d32))) * dx;
+    }
+    return out;
+}
+
+/// `f` rounded to BF16 (round to nearest even, on the bits), which is the activation contract of a BF16 weight.
+double bf16_round(float f) {
+    uint32_t i;
+    std::memcpy(&i, &f, 4);
+    i = (i + ((i >> 16) & 1u) + 0x7FFFu) & 0xFFFF0000u;
+    std::memcpy(&f, &i, 4);
+    return (double) f;
+}
+
+/// `rms_norm` per stream of `n_embd`, then the `[hc_dim]` gamma: `x * gamma / sqrt(mean(x^2) + eps)`.
+std::vector<double> grouped_norm(const std::vector<double>& x, const float* gamma) {
+    std::vector<double> y(x.size());
+    for (size_t c = 0; c < (size_t) k::NG_HC; ++c) {
+        const size_t base = c * (size_t) k::NG_N_EMBD;
+        double sum = 0.0;
+        for (size_t d = 0; d < (size_t) k::NG_N_EMBD; ++d) sum += x[base + d] * x[base + d];
+        const double scale = 1.0 / std::sqrt(sum / (double) k::NG_N_EMBD + (double) k::NG_RMS_EPS);
+        for (size_t d = 0; d < (size_t) k::NG_N_EMBD; ++d) y[base + d] = x[base + d] * scale * (double) gamma[base + d];
+    }
+    return y;
+}
+
+/// The PLE block for ONE token, on the host, in double precision, from the formulas at the top of `ple.hpp`.
+///
+/// `contract` selects the activation the two projections multiply by.  True is what the kernel does and what
+/// ggml does for these weight types: the embedding is rounded to Q8_0 for the Q2_0 `ple_key` and to BF16 for the
+/// BF16 `ple_value`.  False multiplies the exact embedding, which is what lets the test show the contract is
+/// visible to it.  Everything after the two projections is exact either way.  `hist` is row-fastest,
+/// `hist[row + NG_HIST * channel]`, and oldest row first.
+BlockRef ple_block_reference(const float* emb, const float* hidden, const float* hist, const PleHostWeights& w,
+                             bool contract) {
+    const size_t nd = (size_t) k::NG_N_EMBD, hcd = (size_t) k::NG_HC_DIM, hc = (size_t) k::NG_HC;
+    std::vector<double> act_key(emb, emb + nd), act_value(emb, emb + nd);
+    if (contract) {
+        act_key = q8_0_activation(emb, nd);
+        for (size_t i = 0; i < nd; ++i) act_value[i] = bf16_round(emb[i]);
+    }
+    BlockRef r;
+    // key = grouped_norm(ple_key @ emb): weight (row, i) is code (row*nd + i) of the row-major [hc_dim, n_embd]
+    // tensor, four 2-bit codes per byte, code bias -1, one scale per 64 weights
+    std::vector<double> projected(hcd);
+    for (size_t row = 0; row < hcd; ++row) {
+        double acc = 0.0;
+        for (size_t i = 0; i < nd; ++i) {
+            const size_t flat = row * nd + i;
+            const int code = (w.key_codes[flat >> 2] >> ((flat & 3) * 2)) & 3;
+            acc += (double) (code - 1) * (double) w.key_scales[flat >> 6] * act_key[i];
+        }
+        projected[row] = acc;
+    }
+    r.key = grouped_norm(projected, w.norm_key.data());
+    const std::vector<double> query = grouped_norm(std::vector<double>(hidden, hidden + hcd), w.norm_query.data());
+    // value = ple_value @ emb, BF16 weights
+    r.value.resize(nd);
+    for (size_t row = 0; row < nd; ++row) {
+        double acc = 0.0;
+        for (size_t i = 0; i < nd; ++i) {
+            const uint32_t bits = (uint32_t) w.value_bf16[row * nd + i] << 16;
+            float weight;
+            std::memcpy(&weight, &bits, 4);
+            acc += (double) weight * act_value[i];
+        }
+        r.value[row] = acc;
+    }
+    // gate[c] = sigmoid(sign(s) * sqrt(max(|s|, 1e-6))), s = sum_d key*query / sqrt(n_embd)
+    r.gate.resize(hc);
+    for (size_t c = 0; c < hc; ++c) {
+        double dot = 0.0;
+        for (size_t d = 0; d < nd; ++d) dot += r.key[c * nd + d] * query[c * nd + d];
+        const double s = dot / std::sqrt((double) nd);
+        const double signed_root = (s > 0 ? 1.0 : s < 0 ? -1.0 : 0.0) * std::sqrt(std::fmax(std::fabs(s), 1e-6));
+        r.gate[c] = 1.0 / (1.0 + std::exp(-signed_root));
+    }
+    r.gated.resize(hcd);
+    for (size_t i = 0; i < hcd; ++i) r.gated[i] = r.value[i % nd] * r.gate[i / nd];
+    r.normalized = grouped_norm(r.gated, w.norm_conv.data());
+    // conv[c] = silu(sum_k kW[k + kern*c] * padded[row_k][c]); tap k reads row NG_HIST - (kern-1-k)*dil of
+    // [history | this token's normalized row], so tap 0 is the oldest and the last tap is the new row.
+    r.conv.resize(hcd);
+    r.result.resize(hcd);
+    for (size_t c = 0; c < hcd; ++c) {
+        double acc = 0.0;
+        for (int kk = 0; kk < k::PLE_CONV_KERNEL; ++kk) {
+            const int row = k::NG_HIST - (k::PLE_CONV_KERNEL - 1 - kk) * k::NGRAM_SIZE;
+            const double v = row == k::NG_HIST ? r.normalized[c] : (double) hist[(size_t) row + (size_t) k::NG_HIST * c];
+            acc += (double) k::f32_from_f16(w.conv1d_f16[(size_t) kk + (size_t) k::PLE_CONV_KERNEL * c]) * v;
+        }
+        r.conv[c] = acc / (1.0 + std::exp(-acc));
+        r.result[c] = (double) hidden[c] + r.gated[c] + r.conv[c];
+    }
+    return r;
 }
 
 int history_advance_regression() {
@@ -199,6 +362,8 @@ int history_advance_regression() {
     float* history = history_storage + guard;
     float* norm = norm_storage + guard;
     ck(cudaMemcpy(history, expected.data(), count * sizeof(float), cudaMemcpyHostToDevice), "history initial values");
+    // the guard memsets and this upload run on the legacy stream, which the non-blocking `stream` does not wait for
+    ck(cudaDeviceSynchronize(), "history setup");
     cudaStream_t stream;
     cudaGraph_t graph;
     cudaGraphExec_t executable;
@@ -249,55 +414,35 @@ int history_advance_regression() {
 
 int main(int argc, char** argv) {
     bool selftest = false;
-    bool check_fixtures = false;
     std::string pack = "pack/full";
     // --gguf, else $STRATA_PLE_GGUF, else the development layout (run from the engine root)
     std::string gguf = std::getenv("STRATA_PLE_GGUF") ? std::getenv("STRATA_PLE_GGUF")
                                                       : "../../Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf";
-    std::string in_bin = "bench/micro/ple_in.bin", out_bin = "bench/micro/ple_out.bin";
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--selftest") selftest = true;
-        else if (a == "--check-fixtures") check_fixtures = true;
         else if (a == "--pack" && i + 1 < argc) pack = argv[++i];
         else if (a == "--gguf" && i + 1 < argc) gguf = argv[++i];
-        else if (a == "--in" && i + 1 < argc) in_bin = argv[++i];
-        else if (a == "--out" && i + 1 < argc) out_bin = argv[++i];
-        else { std::fprintf(stderr, "usage: ple_parity [--selftest] [--check-fixtures] [--pack D] [--gguf F] [--in F] [--out F]\n");
+        else { std::fprintf(stderr, "usage: ple_parity [--selftest] [--pack D] [--gguf F]\n");
                return 2; }
     }
-    if (selftest && check_fixtures) {
-        std::fprintf(stderr, "ple_parity: --check-fixtures is CPU-only; use it separately from --selftest\n");
-        return 2;
-    }
-    // Required self-test fixtures are checked before the first CUDA call, so
+    // The required inputs (the PLE table and the pack's PLE tensors) are checked before the first CUDA call, so
     // missing files cannot become an apparent pass or a misleading GPU error.
     k::PleTable table;
     std::string err;
-    PleCapture cap;
+    PleHostWeights weights;
     bool preflight_done = false;
-    if (selftest || check_fixtures) {
+    if (selftest) {
         if (!table.open(gguf, err) || table.rows() != o::kTableRows ||
             file_size(gguf.c_str()) != (long long) o::kTableDataStart + (long long) o::kTableRows * k::PLE_ROW_BYTES) {
             std::fprintf(stderr, "ple_parity: required PLE table is missing or incompatible: %s (%s)\n", gguf.c_str(), err.c_str());
             return 2;
         }
-        const uint64_t pack_needed = std::max({o::kKeyCodesOffset + o::kKeyCodesBytes,
-            o::kKeyScalesOffset + o::kKeyScalesBytes, o::kValueOffset + o::kValueBytes});
-        const long long pack_size = file_size((pack + "/dense.bin").c_str());
-        if (pack_size < 0 || (uint64_t) pack_size < pack_needed) {
-            std::fprintf(stderr, "ple_parity: required dense pack is missing or truncated: %s/dense.bin\n", pack.c_str());
-            return 2;
-        }
-        if (!load_capture(in_bin.c_str(), out_bin.c_str(), cap)) {
-            std::fprintf(stderr, "ple_parity: required block fixtures are missing, truncated or incompatible: %s / %s\n", in_bin.c_str(), out_bin.c_str());
+        if (!load_ple_weights(pack, weights, err)) {
+            std::fprintf(stderr, "ple_parity: required PLE weights are missing or incompatible: %s\n", err.c_str());
             return 2;
         }
         preflight_done = true;
-        if (check_fixtures) {
-            std::puts("PASS required PLE fixture structure on CPU; no GPU numerical checks were run");
-            return 0;
-        }
         if (!k::ple_block_available()) {
             std::fprintf(stderr, "ple_parity: --selftest requires a CUDA device for block checks\n");
             return 2;
@@ -571,19 +716,14 @@ int main(int argc, char** argv) {
     }
 
     // ============================ C. THE BLOCK ============================
-    std::printf("\nC. the PLE block, against ggml's own graph (ple_in.bin / ple_out.bin)\n");
-    if (!preflight_done && !load_capture(in_bin.c_str(), out_bin.c_str(), cap)) {
-        std::printf("  cannot load %s / %s\n", in_bin.c_str(), out_bin.c_str());
+    std::printf("\nC. the PLE block, against a host reference in double precision\n");
+    if (!preflight_done && !load_ple_weights(pack, weights, err)) {
+        std::printf("  cannot load the PLE weights: %s\n", err.c_str());
         std::printf("\nple_parity: %d failures, BLOCK SKIPPED; partial diagnostic only\n", bad);
         return selftest || bad ? 1 : 0;
     }
-    std::printf("  capture: n_embd %d, hc %d, nt %d, kern %d, dil %d, eps %g\n", cap.n_embd, cap.hc, cap.nt,
-                cap.kern, cap.dil, (double) cap.eps);
-    if (cap.n_embd != k::NG_N_EMBD || cap.hc != k::NG_HC || cap.kern != k::PLE_CONV_KERNEL ||
-        cap.dil != k::NGRAM_SIZE) {
-        std::printf("  *** the capture's geometry is not the artifact's ***\n");
-        return 1;
-    }
+    std::printf("  weights: ple_key, ple_value, the three norms and the conv kernel, from %s/dense.bin\n",
+                pack.c_str());
 
     if (!k::ple_block_available()) {
         std::printf("  no CUDA device; the block SKIPPED, not passed.\n");
@@ -591,65 +731,75 @@ int main(int argc, char** argv) {
         return selftest || bad ? 1 : 0;
     }
 
-    // ---- the two quantized weights, from the PACK, not from the capture.
-    //      The capture holds `w_key` already dequantized to f32; the kernel needs the CODES AND SCALES, and
-    //      re-quantizing the f32 would be a different tensor.  Reading the pack is right and it was checked:
-    //      the pack's decode of row 0 reproduces the capture's w_key row 0 exactly (see the round entry).
-    //      Only the two regions are read, not all 5.4 GB of `dense.bin`.
-    std::vector<uint8_t> key_codes =
-        read_at((pack + "/dense.bin").c_str(), (long long) o::kKeyCodesOffset, (size_t) o::kKeyCodesBytes);
-    const std::vector<uint8_t> raw_scales =
-        read_at((pack + "/dense.bin").c_str(), (long long) o::kKeyScalesOffset, (size_t) o::kKeyScalesBytes);
-    const std::vector<uint8_t> raw_value =
-        read_at((pack + "/dense.bin").c_str(), (long long) o::kValueOffset, (size_t) o::kValueBytes);
-    if (key_codes.empty() || raw_scales.empty() || raw_value.empty()) {
-        std::printf("  cannot read the ple_key/ple_value regions from %s/dense.bin\n", pack.c_str());
-        return 2;
-    }
-    // fp16 -> f32 for the scales, which is what every S-form kernel in this project expects
-    const size_t n_scales = raw_scales.size() / 2;
-    std::vector<float> key_scales(n_scales);
-    for (size_t i = 0; i < n_scales; ++i) {
-        uint16_t h;
-        std::memcpy(&h, raw_scales.data() + i * 2, 2);
-        key_scales[i] = k::f32_from_f16(h);
-    }
-    // ple_value is BF16 promoted to 32 bits in the pack; take the high half, which is exact
-    std::vector<uint16_t> value_bf16(raw_value.size() / 4);
-    for (size_t i = 0; i < value_bf16.size(); ++i) {
-        uint32_t u;
-        std::memcpy(&u, raw_value.data() + i * 4, 4);
-        value_bf16[i] = (uint16_t) (u >> 16);
-    }
-    // ple_conv1d is F16 in the pack; the capture holds it as f32 in ggml order, and the kernel wants F16
-    std::vector<uint16_t> conv1d_f16(cap.w_conv.size());
-    for (size_t i = 0; i < conv1d_f16.size(); ++i) conv1d_f16[i] = k::f16_from_f32(cap.w_conv[i]);
+    // The kernel takes the two quantized weights as CODES AND SCALES and the rest in the pack's own forms, which
+    // is exactly what `load_ple_weights` returns.
+    const std::vector<uint8_t>& key_codes = weights.key_codes;
+    const std::vector<uint8_t>& raw_scales = weights.raw_scales;
+    const std::vector<float>& key_scales = weights.key_scales;
+    const std::vector<uint16_t>& value_bf16 = weights.value_bf16;
+    const std::vector<uint16_t>& conv1d_f16 = weights.conv1d_f16;
+    const size_t n_scales = key_scales.size();
 
-    // ---- the check that the two sources describe the SAME weights ---------------------------------
-    {
-        // dequantize key row 0 with the canonical rule and compare to the capture's w_key row 0.
-        // NOT `fmax`, for the reason above: it discards NaN, so a NaN would leave `worst` at 0 and report a
-        // perfect match.
-        double worst = 0;
-        bool first = true;
-        long long nf = 0;
-        for (int d = 0; d < k::NG_N_EMBD; ++d) {
-            const uint8_t byte = key_codes[d / 4];
-            const int code = (byte >> ((d % 4) * 2)) & 3;
-            const float v = (float) (code + (-1)) * key_scales[d / 64];
-            if (!std::isfinite(v) || !std::isfinite(cap.w_key[d])) { ++nf; continue; }
-            const double diff = std::fabs((double) v - (double) cap.w_key[d]);
-            if (first) { worst = diff; first = false; }
-            else worst = (diff > worst) ? diff : worst;
-        }
-        std::printf("  %-46s %s (worst |d| %.3e, non-finite %lld)\n",
-                    "pack ple_key row 0 == the capture's w_key row 0",
-                    (le(worst, 0.0) && nf == 0) ? "yes" : "*** NO ***", worst, nf);
-        if (!le(worst, 0.0) || nf) ++bad;
-    }
-
-    // ---- run the block for both tokens of the capture ---------------------------------------------
+    // ---- the inputs: real gathered n-gram rows (the "real vocabulary ids" hash case, whose rows section A has
+    //      just verified) for `emb`; a fixed-seed generator for the residual stream and the conv history, which
+    //      no file holds.  Amplitudes are O(1) for the stream and O(0.7) mean |.| for the history, the size of a
+    //      grouped-normalized row.
     const size_t hcd = (size_t) k::NG_HC_DIM, nd = (size_t) k::NG_N_EMBD;
+    const o::HashCase& rows_case = o::kHashCases[5];
+    if (rows_case.n_tokens < kBlockTokens) {
+        std::printf("  *** the hash case has %d tokens, the block check needs %d ***\n", rows_case.n_tokens, kBlockTokens);
+        return 1;
+    }
+    std::vector<float> emb((size_t) kBlockTokens * nd), hidden((size_t) kBlockTokens * hcd),
+        hist0((size_t) k::NG_HIST * hcd);
+    for (int t = 0; t < kBlockTokens; ++t)
+        table.gather(rows_case.rows + (size_t) t * k::PLE_N_HEADS, emb.data() + (size_t) t * nd);
+    std::mt19937 rng(20261001);
+    fill_uniform(hidden.data(), hidden.size(), 1.0f, rng);
+    fill_uniform(hist0.data(), hist0.size(), 1.5f, rng);
+
+    // ---- the reference, token by token.
+    //
+    // THE CONV HISTORY ADVANCES BETWEEN TOKENS.  Token t's window is the history `[hist(9) | normalized(0..t)]`
+    // read at rows `t+0, t+3, t+6, t+9`, so the state slides by one NORMALIZED row per token.  Feeding every
+    // token the original history would make the kernel and any reference written with the same slip agree with
+    // each other, so the state each token sees is built once, here, and both sides read it.  It is the
+    // reference's own normalized row, rounded to f32, that enters the state: a kernel error in one token then
+    // cannot leak into the next token's comparison.
+    //
+    // The state is row-fastest, `hist[row + NG_HIST * channel]`, because it is ggml's
+    // `reshape_3d(state, d_conv - 1, conv_channels, n_seqs)` with the row as ne0.
+    std::vector<std::vector<float>> hist_at;
+    std::vector<BlockRef> ref;
+    {
+        std::vector<float> state = hist0;
+        for (int t = 0; t < kBlockTokens; ++t) {
+            hist_at.push_back(state);
+            ref.push_back(ple_block_reference(emb.data() + (size_t) t * nd, hidden.data() + (size_t) t * hcd,
+                                              state.data(), weights, true));
+            for (size_t c = 0; c < hcd; ++c) {
+                for (size_t r = 0; r + 1 < (size_t) k::NG_HIST; ++r)
+                    state[r + (size_t) k::NG_HIST * c] = state[(r + 1) + (size_t) k::NG_HIST * c];
+                state[((size_t) k::NG_HIST - 1) + (size_t) k::NG_HIST * c] = (float) ref.back().normalized[c];
+            }
+        }
+    }
+
+    // ---- the activation contract must be visible to this test: the exact-embedding reference and the
+    //      contract reference differ by at least ten times the stage tolerance, on both projections.  Without
+    //      this line a tolerance that swallowed the contract, or a kernel that dropped it, would look the same
+    //      as one that honoured it.
+    {
+        const BlockRef exact = ple_block_reference(emb.data(), hidden.data(), hist_at[0].data(), weights, false);
+        const double rel_key = rel_l1(exact.key.data(), ref[0].key.data(), hcd);
+        const double rel_value = rel_l1(exact.value.data(), ref[0].value.data(), nd);
+        const bool ok = gt(rel_key, 10 * kStageTolerance) && gt(rel_value, 10 * kStageTolerance);
+        std::printf("  %-46s %s (key %.3e, value %.3e)\n", "Q8_0 / BF16 activation contract observable",
+                    ok ? "yes" : "*** NO ***", rel_key, rel_value);
+        if (!ok) ++bad;
+    }
+
+    // ---- run the block for every token ---------------------------------------------------------------
     std::vector<float> dev_key(hcd), dev_value(nd), dev_gate(k::NG_HC), dev_gated(hcd), dev_norm(hcd),
         dev_conv(hcd), dev_res(hcd);
     float *d_emb = nullptr, *d_hid = nullptr, *d_hist = nullptr, *d_nk = nullptr, *d_nq = nullptr,
@@ -675,9 +825,9 @@ int main(int argc, char** argv) {
     ck(cudaMalloc(&d_cv, nd * 4), "cv");
     ck(cudaMalloc(&d_cn, hcd * 4), "cn");
     ck(cudaMalloc(&d_cr, hcd * 4), "cr");
-    ck(cudaMemcpy(d_nk, cap.w_nk.data(), hcd * 4, cudaMemcpyHostToDevice), "cnk");
-    ck(cudaMemcpy(d_nq, cap.w_nq.data(), hcd * 4, cudaMemcpyHostToDevice), "cnq");
-    ck(cudaMemcpy(d_nc, cap.w_nc.data(), hcd * 4, cudaMemcpyHostToDevice), "cnc");
+    ck(cudaMemcpy(d_nk, weights.norm_key.data(), hcd * 4, cudaMemcpyHostToDevice), "cnk");
+    ck(cudaMemcpy(d_nq, weights.norm_query.data(), hcd * 4, cudaMemcpyHostToDevice), "cnq");
+    ck(cudaMemcpy(d_nc, weights.norm_conv.data(), hcd * 4, cudaMemcpyHostToDevice), "cnc");
     ck(cudaMemcpy(d_kc, key_codes.data(), key_codes.size(), cudaMemcpyHostToDevice), "ckc");
     ck(cudaMemcpy(d_vb, value_bf16.data(), value_bf16.size() * 2, cudaMemcpyHostToDevice), "cvb");
     ck(cudaMemcpy(d_c1, conv1d_f16.data(), conv1d_f16.size() * 2, cudaMemcpyHostToDevice), "cc1");
@@ -695,28 +845,15 @@ int main(int argc, char** argv) {
     ck(cudaMemcpy(d_ks, key_scales.data(), key_scales.size() * 4, cudaMemcpyHostToDevice), "cks");
     w.key_scales = d_ks;
 
-    // Per-stage comparison.  Each stage the oracle records is a separate line, so a mismatch says WHICH part
-    // of the block is wrong rather than only that the sum is.  The oracle writes each array token-major, so
-    // every slice is an explicit (offset, count) pair - deriving the offset from the stage's NAME, which the
-    // first version of this did, is a fixture that breaks the moment a name changes.
-    struct Stage { const char* name; const std::vector<float>* got; const std::vector<float>* all;
-                   size_t offset; size_t n; };
+    // Per-stage comparison.  Each stage the reference records is a separate line, so a mismatch says WHICH part
+    // of the block is wrong rather than only that the sum is.
+    struct Stage { const char* name; const std::vector<float>* got; const std::vector<double>* want; };
     double worst_all = 0;
 
-    // THE CONV HISTORY ADVANCES BETWEEN TOKENS, and getting this wrong is why token 1 compared badly at
-    // first.  The capture is a TWO-TOKEN ubatch: ggml pads `[hist(9) | normalized(0..nt-1)]` ONCE and the conv
-    // reads rows `t+0, t+3, t+6, t+9` for output position t.  So token 1's window is rows 1,4,7 of the SAME
-    // history plus row 10 - which is token 1's own normalized - i.e. the state slides by one NORMALIZED row
-    // per token.  Feeding both tokens the original history compares my block's t=0 against ggml's t=1, and
-    // both my kernel and my host reference made the same mistake, so they agreed with each other and only the
-    // oracle could see it.
-    //
-    // ggml layout for the state is `ne=(hist, hc_dim)`: flat = row + NG_HIST*channel.
-    std::vector<float> hist_state = cap.hist;
-    for (int t = 0; t < cap.nt; ++t) {
-        ck(cudaMemcpy(d_emb, cap.emb.data() + (size_t) t * nd, nd * 4, cudaMemcpyHostToDevice), "cemb");
-        ck(cudaMemcpy(d_hid, cap.hidden.data() + (size_t) t * hcd, hcd * 4, cudaMemcpyHostToDevice), "chid");
-        ck(cudaMemcpy(d_hist, hist_state.data(), (size_t) k::NG_HIST * hcd * 4, cudaMemcpyHostToDevice),
+    for (int t = 0; t < kBlockTokens; ++t) {
+        ck(cudaMemcpy(d_emb, emb.data() + (size_t) t * nd, nd * 4, cudaMemcpyHostToDevice), "cemb");
+        ck(cudaMemcpy(d_hid, hidden.data() + (size_t) t * hcd, hcd * 4, cudaMemcpyHostToDevice), "chid");
+        ck(cudaMemcpy(d_hist, hist_at[(size_t) t].data(), (size_t) k::NG_HIST * hcd * 4, cudaMemcpyHostToDevice),
            "chist");
         k::PleOut out{};
         out.key = d_ck; out.value = d_cv; out.gate = d_g; out.gated = d_gd;
@@ -759,39 +896,28 @@ int main(int argc, char** argv) {
         ck(cudaMemcpy(dev_conv.data(), d_co, hcd * 4, cudaMemcpyDeviceToHost), "rco");
         ck(cudaMemcpy(dev_res.data(), d_cr, hcd * 4, cudaMemcpyDeviceToHost), "rcr");
 
-        const size_t ok_ = (size_t) t * hcd, ov = (size_t) t * nd, og = (size_t) t * (size_t) k::NG_HC;
+        const BlockRef& want = ref[(size_t) t];
         const Stage stages[] = {
-            {"key        (grouped_norm of ple_key @ emb)", &dev_key, &cap.key, ok_, hcd},
-            {"value      (ple_value @ emb, BF16)", &dev_value, &cap.value, ov, nd},
-            {"gate       (signed sqrt, sigmoid)", &dev_gate, &cap.gate, og, (size_t) k::NG_HC},
-            {"gated      (value broadcast * gate)", &dev_gated, &cap.gated, ok_, hcd},
-            {"normalized (grouped_norm(gated, ple_norm_conv))", &dev_norm, &cap.normalized, ok_, hcd},
-            {"conv_out   (dilated conv, then SiLU)", &dev_conv, &cap.conv_out, ok_, hcd},
-            {"result     (hidden + gated + conv)", &dev_res, &cap.result, ok_, hcd},
+            {"key        (grouped_norm of ple_key @ emb)", &dev_key, &want.key},
+            {"value      (ple_value @ emb, BF16)", &dev_value, &want.value},
+            {"gate       (signed sqrt, sigmoid)", &dev_gate, &want.gate},
+            {"gated      (value broadcast * gate)", &dev_gated, &want.gated},
+            {"normalized (grouped_norm(gated, ple_norm_conv))", &dev_norm, &want.normalized},
+            {"conv_out   (dilated conv, then SiLU)", &dev_conv, &want.conv},
+            {"result     (hidden + gated + conv)", &dev_res, &want.result},
         };
         for (const Stage& s : stages) {
-            std::vector<float> want(s.all->begin() + (long long) s.offset,
-                                    s.all->begin() + (long long) (s.offset + s.n));
             double mag = 0;
             long long nf = 0;
-            const double rel = rel_l1(want.data(), s.got->data(), s.n, &mag, &nf);
+            const double rel = rel_l1(s.want->data(), s.got->data(), s.want->size(), &mag, &nf);
             // NaN-SAFE: `rel > worst_all` is false for NaN, so `fmax` here would silently report a perfect
             // score for a fixture full of NaNs - round 197's exact failure.
             worst_all = (rel > worst_all) ? rel : worst_all;
             if (nf) worst_all = std::nan("");
-            const bool last = (std::strncmp(s.name, "result", 6) == 0);
+            const bool ok = le(rel, kStageTolerance) && nf == 0;
             std::printf("  token %d %-46s rel %.3e   (mean |ref| %.4f, non-finite %lld)%s\n", t, s.name, rel,
-                        mag, nf, last && !le(rel, 1e-2) ? "   *** over 1e-2 ***" : "");
-            // TOLERANCE, and what sets it: this comparison is the GPU against a capture whose weights are
-            // F32, so ggml performed NO activation conversion while the kernel applies the CONTRACT (Q8_0
-            // for the Q2_0 weight, BF16 for the BF16 one).  The contract's per-element cost is 2^-9 = 1.95e-3
-            // for BF16 and ~0.4% for Q8_0, so the OUTPUT difference is ~2e-3 wherever there is no
-            // cancellation and larger where there is - `conv_out` cancels by ~77x and is the one stage that
-            // exceeds it.  `result` is the quantity that matters and 1e-2 is five times the contract's own
-            // per-element size, so it is a bound on "the contract and nothing else", not a judgement call.
-            // The HOST reference below uses the capture's own F32 weights and is asserted at 1e-4, which is
-            // what proves the difference here IS the contract.
-            if (last && !le(rel, 1e-2)) ++bad;
+                        mag, nf, ok ? "" : "   *** FAIL ***");
+            if (!ok) ++bad;
         }
 
         if (t == 0) {
@@ -844,7 +970,7 @@ int main(int argc, char** argv) {
             ck(cudaGraphExecDestroy(executable), "native PLE graph exec destroy");
             ck(cudaGraphDestroy(graph), "native PLE graph destroy");
             ck(cudaStreamDestroy(stream), "native PLE stream destroy");
-            ck(cudaMemcpy(d_emb, cap.emb.data(), nd * sizeof(float), cudaMemcpyHostToDevice), "restore PLE embedding");
+            ck(cudaMemcpy(d_emb, emb.data(), nd * sizeof(float), cudaMemcpyHostToDevice), "restore PLE embedding");
             k::ple_block(d_emb, d_hid, d_hist, w, out, ple_ws, nullptr);
             ck(cudaDeviceSynchronize(), "restored PLE sync");
             ck(cudaMemcpy(replay.data(), d_cr, hcd * sizeof(float), cudaMemcpyDeviceToHost), "restored PLE result");
@@ -855,7 +981,7 @@ int main(int argc, char** argv) {
 
         if (t == 0) {
             // This checks native-projection wiring and graph lifetime, independently
-            // of the legacy CPU/F32 structural capture. Actual Q2_0 arithmetic is
+            // of the legacy Q8_0-contract reference above. Actual Q2_0 arithmetic is
             // checked separately by native_mmvq_parity against the pinned CUDA DLL.
             const size_t blocks = n_scales, native_bytes = blocks * 18, guard = 64;
             const size_t qbytes = k::native_q8_1_bytes(k::NG_N_EMBD);
@@ -880,6 +1006,9 @@ int main(int argc, char** argv) {
             ck(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), "native PLE key stream");
             const size_t workspace_bytes = (size_t) k::ple_block_scratch_bytes();
             ck(cudaMemset(ple_ws, 0xa5, workspace_bytes), "native PLE no-launch sentinel");
+            // the guards, the weight upload and the sentinel run on the legacy stream, which the non-blocking
+            // `stream` does not wait for
+            ck(cudaDeviceSynchronize(), "native PLE key setup");
             int refused = 0;
             for (int c = 0; c < 9; ++c) {
                 auto invalid = nw;
@@ -903,8 +1032,9 @@ int main(int argc, char** argv) {
             if (refused != 9 || !untouched) ++bad;
             cudaGraph_t graph = nullptr; cudaGraphExec_t executable = nullptr;
             std::vector<float> projected(hcd), normalized(hcd), actual_key(hcd), actual_result(hcd), replay(hcd);
-            for (int p = 0; p < std::min(cap.nt, 2); ++p) {
-                ck(cudaMemcpy(d_emb, cap.emb.data() + (size_t) p * nd, nd * 4, cudaMemcpyHostToDevice), "native PLE key input");
+            for (int p = 0; p < std::min(kBlockTokens, 2); ++p) {
+                ck(cudaMemcpy(d_emb, emb.data() + (size_t) p * nd, nd * 4, cudaMemcpyHostToDevice), "native PLE key input");
+                ck(cudaDeviceSynchronize(), "native PLE key input sync");
                 k::native_q2_0_f32(native_data, d_emb, native_q, raw_projection, k::NG_N_EMBD, k::NG_HC_DIM, 1, stream);
                 ck(cudaStreamSynchronize(stream), "native PLE raw key sync");
                 ck(cudaMemcpy(projected.data(), raw_projection, hcd * 4, cudaMemcpyDeviceToHost), "native PLE raw key read");
@@ -912,7 +1042,7 @@ int main(int argc, char** argv) {
                     double sum = 0;
                     for (size_t j = 0; j < nd; ++j) { const float v = projected[(size_t) c * nd + j]; sum += double(v * v); }
                     const float scale = 1.0f / std::sqrt(float(sum / double(nd)) + k::NG_RMS_EPS);
-                    for (size_t j = 0; j < nd; ++j) { const size_t i = (size_t) c * nd + j; normalized[i] = projected[i] * scale * cap.w_nk[i]; }
+                    for (size_t j = 0; j < nd; ++j) { const size_t i = (size_t) c * nd + j; normalized[i] = projected[i] * scale * weights.norm_key[i]; }
                 }
                 k::ple_block(d_emb, d_hid, d_hist, nw, out, ple_ws, stream);
                 ck(cudaStreamSynchronize(stream), "native PLE key direct sync");
@@ -949,7 +1079,7 @@ int main(int argc, char** argv) {
             }
             ck(cudaStreamDestroy(stream), "native PLE key stream destroy");
             cudaFree(raw_projection); cudaFree(q_storage); cudaFree(native_storage);
-            ck(cudaMemcpy(d_emb, cap.emb.data(), nd * 4, cudaMemcpyHostToDevice), "native PLE restore input");
+            ck(cudaMemcpy(d_emb, emb.data(), nd * 4, cudaMemcpyHostToDevice), "native PLE restore input");
             k::ple_block(d_emb, d_hid, d_hist, w, out, ple_ws, nullptr);
             ck(cudaDeviceSynchronize(), "native PLE default restore sync");
             ck(cudaMemcpy(replay.data(), d_cr, hcd * 4, cudaMemcpyDeviceToHost), "native PLE default restore read");
@@ -976,16 +1106,10 @@ int main(int argc, char** argv) {
                                std::memcmp(compact_result.data(), dev_res.data(), hcd * sizeof(float)) == 0;
             std::printf("  PLE separate exports and in-place hidden result: %s\n", equal ? "byte-identical" : "FAIL");
             if (!equal) ++bad;
-            ck(cudaMemcpy(d_hid, cap.hidden.data(), hcd * sizeof(float), cudaMemcpyHostToDevice), "restore PLE hidden input");
+            ck(cudaMemcpy(d_hid, hidden.data(), hcd * sizeof(float), cudaMemcpyHostToDevice), "restore PLE hidden input");
             cudaFree(compact_workspace);
         }
 
-        // slide the conv state by one NORMALIZED row, which is what the next token's window needs
-        for (size_t c = 0; c < hcd; ++c)
-            for (size_t r = 0; r + 1 < (size_t) k::NG_HIST; ++r)
-                hist_state[r + (size_t) k::NG_HIST * c] = hist_state[(r + 1) + (size_t) k::NG_HIST * c];
-        for (size_t c = 0; c < hcd; ++c)
-            hist_state[((size_t) k::NG_HIST - 1) + (size_t) k::NG_HIST * c] = dev_norm[c];
         cudaFree(ple_ws);
     }
 
@@ -994,7 +1118,7 @@ int main(int argc, char** argv) {
     // Feeding the conv the gated values instead is a one-word change with every shape intact, so it is
     // computed here and required to differ.
     {
-        const double rel_norm_gated = rel_l1(cap.gated.data(), cap.normalized.data(), hcd);
+        const double rel_norm_gated = rel_l1(ref[0].gated.data(), ref[0].normalized.data(), hcd);
         std::printf("  %-52s %s (%.2f%% apart)\n", "normalized vs gated as the conv input is observable",
                     rel_norm_gated > 0.05 ? "yes" : "*** NO ***", rel_norm_gated * 100);
         if (!(rel_norm_gated > 0.05)) ++bad;
@@ -1002,12 +1126,11 @@ int main(int argc, char** argv) {
 
     // ---- the conv TAP ORDER: tap 0 reads the furthest back, not the current row ---------------------
     {
-        // Recompute the conv on the host with the taps reversed, from the ORACLE's own `normalized`, and
-        // require the result to differ from the oracle's conv_out.
-        const size_t hcd2 = hcd;
-        std::vector<float> rev(hcd2, 0.0f);
-        for (size_t c = 0; c < hcd2; ++c) {
-            float acc = 0;
+        // Recompute the conv on the host with the taps reversed, from the reference's own `normalized`, and
+        // require the result to differ from the reference's conv_out.
+        std::vector<double> rev(hcd, 0.0);
+        for (size_t c = 0; c < hcd; ++c) {
+            double acc = 0;
             for (int kk = 0; kk < k::PLE_CONV_KERNEL; ++kk) {
                 // THE RIVAL READING OF THE TAP CONVENTION.  ggml's is `t - (K-1-k)*d`, i.e. tap 0 reads the
                 // FURTHEST back; the natural misreading is `t - k*d`, i.e. tap 0 reads the CURRENT row.
@@ -1018,163 +1141,18 @@ int main(int argc, char** argv) {
                 // The rival has to REVERSE the row order: `(K-1-kk)*dil` gives 9,6,3,0 against the correct
                 // 0,3,6,9, so tap 0 pairs the kernel's first weight with the NEWEST row instead of the oldest.
                 const int row = (k::PLE_CONV_KERNEL - 1 - kk) * k::NGRAM_SIZE;
-                // ROW-FASTEST: the capture's history is ggml's `ne=(hist, hc_dim)`, flat = row + hist*channel
-                const float v = (row == k::NG_HIST) ? cap.normalized[c]
-                                                    : cap.hist[(size_t) row + (size_t) k::NG_HIST * c];
-                // GGML-NATIVE: `w_conv[k + kern*c]`, because the capture's tensor is ne=(kern, hc_dim) with
-                // ne0 = kern fast.  `w_conv[kk*hc_dim + c]` is the TRANSPOSE and is what this reference had
-                // first - it reported 115% on conv_out while the GPU kernel, which carries the layout note,
-                // was within 4.6e-02.  The oracle caught the reference, not the kernel, which is the whole
-                // reason for having one.
-                acc += cap.w_conv[(size_t) kk + (size_t) k::PLE_CONV_KERNEL * c] * v;
+                // ROW-FASTEST: the history is ggml's `ne=(hist, hc_dim)`, flat = row + hist*channel
+                const double v = (row == k::NG_HIST) ? ref[0].normalized[c]
+                                                     : (double) hist_at[0][(size_t) row + (size_t) k::NG_HIST * c];
+                // GGML-NATIVE: `kW[k + kern*c]`, because the tensor is ne=(kern, hc_dim) with ne0 = kern fast.
+                acc += (double) k::f32_from_f16(conv1d_f16[(size_t) kk + (size_t) k::PLE_CONV_KERNEL * c]) * v;
             }
-            rev[c] = acc / (1.0f + std::exp(-acc));
+            rev[c] = acc / (1.0 + std::exp(-acc));
         }
-        const double rel = rel_l1(cap.conv_out.data(), rev.data(), hcd2);
+        const double rel = rel_l1(ref[0].conv.data(), rev.data(), hcd);
         std::printf("  %-52s %s (%.2f%% apart)\n", "reversed conv tap order is observable",
                     gt(rel, 0.05) ? "yes" : "*** NO ***", rel * 100);
         if (!gt(rel, 0.05)) ++bad;
-    }
-
-    // ---- THE HOST f32 REFERENCE, which is what makes the gaps above ATTRIBUTABLE rather than mysterious.
-    //
-    // `ple_layer_xcheck.cpp` builds ggml's graph with the weights as **F32 tensors** (`ggml_new_tensor_2d(...,
-    // GGML_TYPE_F32, ...)`).  `ggml_mul_mat` converts src1 to src0's `vec_dot_type`, so with an F32 weight
-    // ggml performs NO activation conversion at all - while the real `ple_key` is Q2_0 (contract Q8_0) and the
-    // real `ple_value` is BF16 (contract BF16).
-    //
-    // **The capture is therefore a valid oracle for the STRUCTURE and not for the ACTIVATION CONTRACT.**  This
-    // reference reproduces it exactly, in f32, using the capture's own weights - which proves every LAYOUT in
-    // the block (the conv kernel's `k + kern*c`, the row-fastest history, per-stream grouped norms, the
-    // head-slowest gather) independently of the GPU.  Whatever gap remains between the GPU and the capture is
-    // then exactly the contract, and nothing else.
-    // Hoisted out of the reference block below: the term-magnitude metric needs the state the LAST token
-    // used, and that block has already closed by the time it runs.
-    std::vector<float> hist_last;
-    {
-        const size_t H = hcd, N = nd;
-        std::vector<float> k_ref(H), q_ref(H), v_ref(N), gt_ref(k::NG_HC), gd_ref(H), nm_ref(H), cv_ref(H),
-            rs_ref(H);
-        auto gnorm = [&](const float* x, const float* w, float* y, int n) {
-            for (int c = 0; c < k::NG_HC; ++c) {
-                double sum = 0.0;
-                for (int d = 0; d < k::NG_N_EMBD; ++d) {
-                    const float xv = x[c * k::NG_N_EMBD + d];
-                    sum += (double) (xv * xv);                 // f32 product, widened - as ggml does
-                }
-                const float mean = (float) (sum / k::NG_N_EMBD);
-                const float scale = 1.0f / std::sqrt(mean + cap.eps);
-                for (int d = 0; d < k::NG_N_EMBD; ++d)
-                    y[c * k::NG_N_EMBD + d] = x[c * k::NG_N_EMBD + d] * scale * w[c * k::NG_N_EMBD + d];
-            }
-            (void) n;
-        };
-        // The SAME history advance as the GPU loop, so the two are compared on identical inputs.
-        std::vector<float> hist_ref = cap.hist;
-        for (int t = 0; t < cap.nt; ++t) {
-            const float* emb = cap.emb.data() + (size_t) t * N;
-            const float* hid = cap.hidden.data() + (size_t) t * H;
-            // key = w_key @ emb, with the capture's F32 weight and NO activation conversion
-            for (size_t o = 0; o < H; ++o) {
-                double a = 0;
-                for (size_t i = 0; i < N; ++i) a += (double) cap.w_key[o * N + i] * (double) emb[i];
-                k_ref[o] = (float) a;
-            }
-            gnorm(k_ref.data(), cap.w_nk.data(), k_ref.data(), k::NG_N_EMBD);
-            gnorm(hid, cap.w_nq.data(), q_ref.data(), k::NG_N_EMBD);
-            for (size_t o = 0; o < N; ++o) {
-                double a = 0;
-                for (size_t i = 0; i < N; ++i) a += (double) cap.w_value[o * N + i] * (double) emb[i];
-                v_ref[o] = (float) a;
-            }
-            for (int c = 0; c < k::NG_HC; ++c) {
-                double a = 0;
-                for (int d = 0; d < k::NG_N_EMBD; ++d)
-                    a += (double) k_ref[c * k::NG_N_EMBD + d] * (double) q_ref[c * k::NG_N_EMBD + d];
-                const float s = (float) (a / (double) 1.0) / std::sqrt((float) k::NG_N_EMBD);
-                const float mag = std::sqrt(std::fmax(std::fabs(s), 1e-6f));
-                const float sgn = (s > 0) ? 1.0f : ((s < 0) ? -1.0f : 0.0f);
-                gt_ref[c] = 1.0f / (1.0f + std::exp(-(sgn * mag)));
-            }
-            for (size_t i = 0; i < H; ++i)
-                gd_ref[i] = v_ref[i % N] * gt_ref[i / N];
-            gnorm(gd_ref.data(), cap.w_nc.data(), nm_ref.data(), k::NG_N_EMBD);
-            for (size_t c = 0; c < H; ++c) {
-                float acc = 0;
-                for (int kk = 0; kk < k::PLE_CONV_KERNEL; ++kk) {
-                    const int row = k::NG_HIST - (k::PLE_CONV_KERNEL - 1 - kk) * k::NGRAM_SIZE;
-                    // capture history is ggml `ne=(hist, hc_dim)`: flat = row + hist*channel.  `hist_ref` is
-                    // the ADVANCED state, so this reference sees exactly what the GPU call saw.
-                    const float vv = (row == k::NG_HIST) ? nm_ref[c]
-                                                        : hist_ref[(size_t) row + (size_t) k::NG_HIST * c];
-                    acc += cap.w_conv[(size_t) kk + (size_t) k::PLE_CONV_KERNEL * c] * vv;
-                }
-                cv_ref[c] = acc / (1.0f + std::exp(-acc));
-            }
-            for (size_t i = 0; i < H; ++i) rs_ref[i] = hid[i] + gd_ref[i] + cv_ref[i];
-
-            const size_t ok_ = (size_t) t * H, ov = (size_t) t * N, og = (size_t) t * (size_t) k::NG_HC;
-            struct HCmp { const char* name; const std::vector<float>* got; const std::vector<float>* all;
-                          size_t off; size_t n; };
-            const HCmp cmps[] = {
-                {"key", &k_ref, &cap.key, ok_, H},          {"value", &v_ref, &cap.value, ov, N},
-                {"gate", &gt_ref, &cap.gate, og, (size_t) k::NG_HC},
-                {"gated", &gd_ref, &cap.gated, ok_, H},     {"normalized", &nm_ref, &cap.normalized, ok_, H},
-                {"conv_out", &cv_ref, &cap.conv_out, ok_, H},
-                {"result", &rs_ref, &cap.result, ok_, H},
-            };
-            for (const HCmp& s : cmps) {
-                std::vector<float> want(s.all->begin() + (long long) s.off,
-                                        s.all->begin() + (long long) (s.off + s.n));
-                long long nf = 0;
-                const double rel = rel_l1(want.data(), s.got->data(), s.n, nullptr, &nf);
-                const bool ok = le(rel, 1e-4) && nf == 0;
-                std::printf("  host f32 reference, token %d %-12s rel %.3e (non-finite %lld)%s\n", t, s.name,
-                            rel, nf, ok ? "" : "   *** FAIL ***");
-                if (!ok) ++bad;
-            }
-
-            // save the state this token used, then slide it - identical to the GPU-side advance
-            if (t == cap.nt - 1) hist_last = hist_ref;
-            for (size_t c = 0; c < hcd; ++c)
-                for (size_t r = 0; r + 1 < (size_t) k::NG_HIST; ++r)
-                    hist_ref[r + (size_t) k::NG_HIST * c] = hist_ref[(r + 1) + (size_t) k::NG_HIST * c];
-            for (size_t c = 0; c < hcd; ++c)
-                hist_ref[((size_t) k::NG_HIST - 1) + (size_t) k::NG_HIST * c] = nm_ref[c];
-        }
-        // TOLERANCE: 1e-4.  Both sides are f32 (or f64-accumulated) sums of 2560 products, so the only
-        // difference is summation ORDER, which is ~n*eps = 2560*6e-8 = 1.5e-4 worst case and far less in
-        // practice.  A STRUCTURAL error - a transposed conv kernel, a channel-slow history, a head-fastest
-        // gather - is O(1), so the two are three orders apart and the bound is not a judgement call.
-    }
-
-    // ---- `conv_out`'s error must be measured against the TERMS, not the result ----------------------
-    //
-    // The dilated conv sums four terms and the sum CANCELS: `normalized` has mean |.| around 0.70 and the
-    // result's is around 0.009, a factor of ~77.  Dividing by the result therefore reports the CONDITION
-    // NUMBER and not the arithmetic - the same metric mistake this project has made four times (rounds 169,
-    // 189, 194, 196), and it is what made `conv_out` look like the worst stage at 4.55e-02.
-    {
-        // `dev_conv` holds the LAST token after the loop above, and the capture is token-major.
-        const float* oc = cap.conv_out.data() + (size_t) (cap.nt - 1) * hcd;
-        double num = 0, terms = 0, res = 0;
-        for (size_t c = 0; c < hcd; ++c) {
-            double t_sum = 0;
-            for (int kk = 0; kk < k::PLE_CONV_KERNEL; ++kk) {
-                const int row = k::NG_HIST - (k::PLE_CONV_KERNEL - 1 - kk) * k::NGRAM_SIZE;
-                const float v = (row == k::NG_HIST)
-                                    ? cap.normalized[(size_t) (cap.nt - 1) * hcd + c]
-                                    : hist_last[(size_t) row + (size_t) k::NG_HIST * c];
-                t_sum += std::fabs((double) cap.w_conv[(size_t) kk + (size_t) k::PLE_CONV_KERNEL * c] *
-                                   (double) v);
-            }
-            terms += t_sum;
-            res += std::fabs((double) oc[c]);
-            num += std::fabs((double) oc[c] - (double) dev_conv[c]);
-        }
-        std::printf("\n  conv_out (token %d) against the TERM magnitude, not the result: rel %.3e"
-                    "   (|result|/|terms| = %.4f)\n",
-                    cap.nt - 1, num / terms, res / terms);
     }
 
     std::printf("\nple_parity: %d failures (worst stage rel %.3e)\n", bad, worst_all);

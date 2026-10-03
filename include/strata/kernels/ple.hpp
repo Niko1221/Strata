@@ -72,7 +72,7 @@ struct PleWeights {
     const uint16_t* key_bf16 = nullptr;
 };
 
-/// Everything the block produces, in the order `ple_layer_xcheck`'s oracle writes it.  Any pointer may be
+/// Everything the block produces, in the order `ple_parity`'s host reference lists it.  Any pointer may be
 /// null; the caller that only wants the result passes nothing else.  Having the intermediates is what makes
 /// the parity test able to say WHICH stage diverged instead of only that the sum did.
 /// Every nonnull output region, including result, must be disjoint from the block's entire scratch region.

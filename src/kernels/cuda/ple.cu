@@ -2,8 +2,8 @@
 //
 // See include/strata/kernels/ple.hpp for the structure and for the `normalized`-is-the-conv-input finding.
 //
-// The legacy arithmetic below follows the captured CPU ggml graph
-// (`bench/micro/ple_in.bin` / `ple_out.bin`, produced by `ple_layer_xcheck.cpp`):
+// The legacy arithmetic below follows ggml's CPU graph for the block (`ple_parity` compares it to a host
+// reference in double precision):
 //
 //   * `rms_norm` accumulates `(double)(x*x)` with the PRODUCT rounded in f32 first - that is literally what
 //     `ggml_compute_forward_rms_norm_f32` does (`sum += (ggml_float)(x[i00]*x[i00])` with `ggml_float` =
