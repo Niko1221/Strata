@@ -86,11 +86,17 @@ public:
     /// first and hands the ring what the chunk leaves over, so it needs the chunk priced on its own.
     static uint64_t bytes_needed_no_ring(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk);
 
-    /// The streamed ring's byte budget as a slot count for this pack (the measured slot count x Q2_0's blob, over
-    /// max_blob, never past ring_cap()):
-    /// what the auto chunk scan treats as a full ring.  A slot is one whole blob, so a pack with bigger blobs than
-    /// Q2_0's gets fewer of them for the same bytes - 384 on Q2_0, 199 on a 2.54 MiB-blob IQ3_S pack.
-    static int64_t ring_max_slots();
+    /// The slot count the auto chunk scan treats as a full ring: the streamed ring's byte budget as this pack's
+    /// slots (the measured slot count x Q2_0's blob, over max_blob), never past ring_cap() - and never below
+    /// RING_FLOOR.  A slot is one whole blob, so a pack with bigger blobs than Q2_0's gets fewer of them for the
+    /// same bytes (384 on Q2_0, 199 on a 2.54 MiB-blob IQ3_S pack); the floor is what stops a big-blob pack from
+    /// being handed a ring too small for the layer batch it exists to cover.
+    static int64_t ring_target_slots();
+
+    /// The most slots the ring may hold on this pack.  The scan caps the room it leaves a chunk here, not at
+    /// ring_target_slots(), so a chunk that cannot grow (a ceiling, a pinned chunk, a small card) hands its spare
+    /// room to the ring instead of stranding it.
+    static int64_t ring_cap_slots();
 
     /// What the ring actually resolves to for a chunk of `chunk` tokens, after the override, STRATA_PREFILL_RING
     /// and the pinned-share rule - the slot count `init` lays out.  The engine reports it on its INFO line so the

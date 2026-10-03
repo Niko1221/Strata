@@ -161,6 +161,24 @@ inline int ring_budget_slots() {
     const int cap = ring_cap();
     return (int) (n <= 0 ? 0 : (n > cap ? cap : n));
 }
+// ...and the least the ring may aim for.  The budget above is in BYTES, and a byte budget only holds a slot count
+// if the blob is Q2_0's: 506 MiB is 384 slots there and 133 on a 3.99 MiB-blob pack, against the fixed 384 slots
+// every pack got before the budget.  What the ring buys is experts in flight - the fused path's whole layer batch -
+// and that is a COUNT, so a big-blob pack was handed a ring too small for the thing it exists to cover.  Measured
+// on this rig (4-way IQ3_S and one RTX 3060, 120K prompt): ring 16 is -12% against 199 on both, 64 -7%, so the
+// loss below ~128 is steep; 199 -> 256 is +1.8% on the 4-way MMQ; the fused path is flat from 256 to 512 and
+// already gets 512 here (its budget caps at ring_cap()).  So the budget becomes a floor, not a ceiling - where it
+// already lands at or above this (Q2_0: 384 unfused, 1024 fused) nothing moves.
+constexpr int RING_FLOOR = 256;
+inline int ring_target() {
+    const int budget = ring_budget_slots();
+    // The unpinned arm is the measured 96-slot ring that ring_slots() returns, not the budget; reserving a floor
+    // there would shrink the chunk to fund a ring the run never lays out.
+    if (g_pinned_share < 0.9) return budget;
+    const int cap = ring_cap();
+    const int want = budget >= RING_FLOOR ? budget : RING_FLOOR;
+    return want > cap ? cap : want;
+}
 inline int ring_slots(size_t T) {
     const char* v = std::getenv("STRATA_PREFILL_RING");
 #if defined(STRATA_USE_HIP)
@@ -1229,7 +1247,9 @@ uint64_t Prefill::bytes_needed_no_ring(const core::ModelGeometry& g, const core:
     return bytes_needed(g, ss, chunk) - (uint64_t) ring_slots((size_t) chunk) * (uint64_t) MAXBLOB();
 }
 
-int64_t Prefill::ring_max_slots() { return (int64_t) ring_budget_slots(); }
+int64_t Prefill::ring_target_slots() { return (int64_t) ring_target(); }
+
+int64_t Prefill::ring_cap_slots() { return (int64_t) ring_cap(); }
 
 int64_t Prefill::ring_slots_for(int64_t chunk) { return ring_slots((size_t) chunk); }
 

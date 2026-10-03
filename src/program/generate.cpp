@@ -4043,11 +4043,17 @@ int main(int argc, char** argv) {
             // its 199-slot byte budget at 1,000, and 5632/199 at 915.  A ring slot is worth ~0.53 tok/s there and
             // a chunk token ~0.05, so the 69 slots between a full ring and 8192's 130 are worth more than the
             // 512 chunk tokens they cost - and once the ring IS full, shrinking the chunk further buys nothing.
-            // So: the largest chunk that still leaves the ring full.  Only a rig where no chunk at all can afford
-            // one falls back to the old rule, which takes the largest chunk whose ring clears kRingMin (the
-            // value at or below which ring_slots() returns STAGE and streaming is off).
+            // So: the largest chunk that still leaves the ring full.  `full` is ring_target_slots() - the pack's
+            // byte budget and never below RING_FLOOR, which is what a big-blob pack needs and its byte budget
+            // alone does not give it.  The room is capped at ring_cap_slots() rather than at the target, so a
+            // chunk that stops growing for another reason (the ceiling, a small card) hands its spare room to the
+            // ring instead of stranding it: measured on one RTX 3060 at chunk 2048, ring 199 390.9 tok/s against
+            // ring 512 400.5.  Below the target the scan steps down to kRingCliff and then to kRingMin, the value
+            // at or below which ring_slots() returns STAGE and streaming is off.
             constexpr int64_t kRingMin = 16;
-            const int64_t ring_max = strata::prefill::Prefill::ring_max_slots();
+            constexpr int64_t kRingCliff = 128;   // measured: 16 slots is -12% against 199, 64 -7%, 128 -3%
+            const int64_t ring_target = strata::prefill::Prefill::ring_target_slots();
+            const int64_t ring_cap = strata::prefill::Prefill::ring_cap_slots();
             const int64_t budget = std::min(xcache.slots() - 128, kAutoLendPct * xcache.slots() / 100);
             // The room is a BYTE budget.  A ring slot is max_blob bytes (`carve` lays out one whole blob each),
             // while these cache slots hold their own layer's blob, which is smaller than max_blob unless the cache
@@ -4059,10 +4065,10 @@ int main(int argc, char** argv) {
             const uint64_t avail = bytes_from_slots(budget);
             auto room_of = [&](int64_t t) -> int64_t {
                 const uint64_t nonring = strata::prefill::Prefill::bytes_needed_no_ring(g, ss, t);
-                return std::min((int64_t) ((avail - std::min(avail, nonring)) / (uint64_t) blob), ring_max);
+                return std::min((int64_t) ((avail - std::min(avail, nonring)) / (uint64_t) blob), ring_cap);
             };
-            // `room_of` is capped at ring_max, so "the ring is full" is exactly room == ring_max, and both that
-            // test and the ones below it only get harder as t grows - the bisection stays valid.
+            // `room_of` is capped at ring_cap, so the test below is `room >= floor` and only gets harder as t
+            // grows - the bisection stays valid.
             auto scan = [&](int64_t floor) -> int64_t {
                 return biggest_chunk(auto_ceiling, [&](int64_t t) -> bool {
                     const int64_t room = room_of(t);
@@ -4074,7 +4080,8 @@ int main(int argc, char** argv) {
                     return k + 128 <= xcache.slots() && k * 100 <= kAutoLendPct * xcache.slots();
                 });
             };
-            int64_t c = scan(ring_max);
+            int64_t c = scan(ring_target);
+            if (c == 0) c = scan(kRingCliff);
             if (c == 0) c = scan(kRingMin);
             if (c > 0) {
                 // the probe left the override on its last trial; put it back on the chunk that won
@@ -4254,13 +4261,14 @@ int main(int argc, char** argv) {
             // no chunk can afford a full ring; ring_slots() returns STAGE at or below it, which turns streaming
             // off.
             constexpr int64_t kRingMin = 16;
+            constexpr int64_t kRingCliff = 128;
             // The room is a BYTE budget, as in plan_lend: a ring slot is max_blob bytes, but a cache slot holds
             // its own layer's blob, which on this rig averages 0.85 of it.  In slots the ring looked 18% cheaper
             // than it is, and a chunk whose ring only fitted after that discount was refused outright - the scan
             // stopped one step short while the chunk it did take had room to spare for the cap-sized ring.
             const int64_t kBlob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
             auto ring_room = [&](int64_t c, const PfPart* only) -> int64_t {
-                int64_t room = strata::prefill::Prefill::ring_max_slots();
+                int64_t room = strata::prefill::Prefill::ring_cap_slots();
                 for (const PfPart& p : pf_parts) {
                     if (only != nullptr && &p != only) continue;
                     // clamped at 0: a cache under 128 slots has a negative lend budget, and `slots - budget` is
@@ -4275,9 +4283,11 @@ int main(int argc, char** argv) {
                 return room;
             };
             // The largest chunk on the 256-token grid that `only` - or, with null, every stage - can lend with the
-            // ring still at its full byte budget (ring_room is capped at ring_max, so that is room == ring_max),
-            // under the operator's ceiling (auto_ceiling keeps a bare `auto` at 8192, #282).  Failing that, the
-            // largest chunk whose ring clears kRingMin.
+            // ring still reaching its target, under the operator's ceiling (auto_ceiling keeps a bare `auto` at
+            // 8192, #282).  The target is ring_target_slots(): the pack's byte budget and never below RING_FLOOR.
+            // The room is capped at ring_cap_slots(), so a chunk the ceiling stops hands its spare room to the
+            // ring rather than stranding it.  Failing the target, the largest chunk whose ring clears kRingCliff,
+            // then kRingMin.
             auto scan = [&](const PfPart* only) -> int64_t {
                 if (!o.prefill_auto) {   // an explicit --prefill is the operator's number, and a loan of it only has to fit
                     for (int64_t c = o.prefill_chunk; c >= 256; c /= 2)
@@ -4294,7 +4304,8 @@ int main(int argc, char** argv) {
                         return fits(t, true, only);
                     });
                 };
-                int64_t c = probe(strata::prefill::Prefill::ring_max_slots());
+                int64_t c = probe(strata::prefill::Prefill::ring_target_slots());
+                if (c == 0) c = probe(kRingCliff);
                 if (c == 0) c = probe(kRingMin);
                 return c;
             };
