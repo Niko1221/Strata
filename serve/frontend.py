@@ -182,8 +182,19 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
                 calls.append({"function": {"name": fn.get("name"), "arguments": args or {}}})
             out["tool_calls"] = calls
         messages.append(out)
-    tools = [t.get("function", t) if isinstance(t, dict) and t.get("type") == "function" else t
-             for t in req.get("tools") or []] or None
+    tools = []
+    for t in _object_list(req.get("tools"), "tools"):
+        if isinstance(t, dict) and t.get("type") == "function":
+            fn = t.get("function")
+            if not isinstance(fn, dict) or not isinstance(fn.get("name"), str) or not fn["name"]:
+                raise ValueError("a \"tools\" entry of type \"function\" needs a \"function\" object with a \"name\"")
+            tools.append(fn)
+        elif isinstance(t, dict) and isinstance(t.get("name"), str) and t["name"]:
+            tools.append(t)
+        else:
+            raise ValueError("\"tools\" entries must be tool objects (openai: {\"type\": \"function\", "
+                             "\"function\": {\"name\": ...}}, or {\"name\": ...})")
+    tools = tools or None
     kwargs = {}
     # OpenAI Chat Completions: "reasoning_effort"; Responses style: "reasoning": {"effort": ...}
     reasoning = req.get("reasoning") if isinstance(req.get("reasoning"), dict) else {}
@@ -232,8 +243,12 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
             if calls:
                 out["tool_calls"] = calls
             messages.append(out)
-    tools = [{"name": t["name"], "description": t.get("description", ""), "parameters": t.get("input_schema", {})}
-             for t in req.get("tools") or []] or None
+    tools = []
+    for t in _object_list(req.get("tools"), "tools"):
+        if not isinstance(t.get("name"), str) or not t["name"]:
+            raise ValueError("\"tools\" entries must be objects with a \"name\" (an Anthropic tool definition)")
+        tools.append({"name": t["name"], "description": t.get("description", ""), "parameters": t.get("input_schema", {})})
+    tools = tools or None
     kwargs = {}
     # Anthropic: "thinking": {"type": "disabled"} or {"type": "enabled", "budget_tokens": N};
     # "output_config": {"effort": "low" | "medium" | "high"}

@@ -550,6 +550,32 @@ class ClientShapes(unittest.TestCase):
             with self.subTest(calls=calls), self.assertRaisesRegex(ValueError, "tool_calls must be a list of objects"):
                 openai_to_messages({"messages": [{"role": "assistant", "content": "", "tool_calls": calls}]})
 
+    def test_tools_must_be_an_object_list(self):
+        # #592: a malformed "tools" value took the request thread down with an AttributeError (a 502 behind a proxy);
+        # as with messages (#460), what is not a list of object-shaped tools is a ValueError, the server's 400
+        from serve.frontend import anthropic_to_messages, openai_to_messages
+        for bad in ("auto", "not json", ["get_weather"], [5], {"name": "get_weather"}, 3):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "tools must be a list of objects"):
+                openai_to_messages({"messages": [{"role": "user", "content": "hi"}], "tools": bad})
+                anthropic_to_messages({"messages": [{"role": "user", "content": "hi"}], "tools": bad})
+        for bad in ([{"type": "function"}], [{"type": "function", "function": {"x": 1}}],
+                    [{"name": ""}], [{"description": "no name"}], [{"name": 5}]):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                openai_to_messages({"messages": [{"role": "user", "content": "hi"}], "tools": bad})
+        with self.assertRaisesRegex(ValueError, "objects with a \"name\""):
+            anthropic_to_messages({"messages": [{"role": "user", "content": "hi"}], "tools": [{"description": "x"}]})
+        # double-encoded tools like #460's clients: a JSON string of a list is decoded, not crashed on
+        tools = [{"type": "function", "function": {"name": "f", "parameters": {"type": "object"}}}]
+        self.assertEqual(openai_to_messages({"messages": [], "tools": json.dumps(tools)})[1], [tools[0]["function"]])
+        # the valid shapes still map as before
+        self.assertEqual(openai_to_messages({"messages": [], "tools": tools})[1], [tools[0]["function"]])
+        self.assertEqual(openai_to_messages({"messages": [], "tools": [{"name": "w"}]})[1], [{"name": "w"}])
+        self.assertEqual(anthropic_to_messages({"messages": [], "tools": [{"name": "w", "input_schema": {"a": 1}}]})[1],
+                         [{"name": "w", "description": "", "parameters": {"a": 1}}])
+        self.assertIsNone(openai_to_messages({"messages": []})[1])          # no field: no tools, as before
+        self.assertIsNone(openai_to_messages({"messages": [], "tools": []})[1])
+        self.assertIsNone(anthropic_to_messages({"messages": []})[1])
+
 
 class SamplingKeys(unittest.TestCase):
     """The GEN line's sampling keys: top_k 0 ("off") or wider than the engine's 64 get the widest list, 64 (they used
