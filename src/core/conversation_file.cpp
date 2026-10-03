@@ -1076,7 +1076,9 @@ bool write_impl(const std::string& path, const SavedConversation& image, const s
     header_bytes(h, id, payload);
     bool ok = f.write(h, kHeader);
     SessionHasher hash(0);
-    Out out{&f, &hash};
+    Out out;
+    out.f = &f;
+    out.hash = &hash;
     if (ok) put_payload(out, image, sources);
     ok = ok && out.ok && out.n == payload;
     if (ok) {

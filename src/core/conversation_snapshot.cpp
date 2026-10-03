@@ -6,6 +6,7 @@
 #include <array>
 #include <cstring>
 #include <limits>
+#include <memory>
 
 namespace strata::core {
 namespace {
