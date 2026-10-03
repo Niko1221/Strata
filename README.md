@@ -28,6 +28,7 @@ word, so 60 tokens per second is faster than you can read.
 | **IQ3_XXS** | 62 tokens/s | 1,750 tokens/s |
 | **IQ3_S** | 53 tokens/s | 1,620 tokens/s |
 | **Coder** | 55 tokens/s | 2,180 tokens/s |
+| **IQ3_S** (AMD RX 7900 XTX) | 59 tokens/s | 1,565 tokens/s |
 
 </td><td>
 
