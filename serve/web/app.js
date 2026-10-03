@@ -1101,14 +1101,20 @@ function renderUpdateState(s) {
   const list = $("update-steps");
   list.innerHTML = (s.steps || []).map((st) => {
     const secs = st.seconds != null ? `${st.seconds.toFixed(1)}s` : "";
-    const note = [st.note, secs].filter(Boolean).join(" · ");
+    // The note goes on its own row under the label, not in a third column. A failure's note is a full
+    // sentence or three ("this engine needs a CUDA library this PC does not have..."); in a 1fr column
+    // that squeezed the label to one word per line and made the whole list unreadable.
     return `<li data-state="${esc(st.status)}"><span class="mark">${esc(updateUI.mark(st.status))}</span>` +
-           `<span>${esc(st.label)}</span><span class="note">${esc(note)}</span></li>`;
+           `<span class="label">${esc(st.label)}</span>` +
+           `<span class="time">${esc(secs)}</span>` +
+           (st.note ? `<span class="note">${esc(st.note)}</span>` : "") + `</li>`;
   }).join("");
 
   const note = $("update-note");
   if (s.state === "failed") {
-    note.textContent = d.error || "the update failed";
+    // The failing step already shows the full message; this line is what was DONE about it, which is the
+    // part a reader needs first and the only part that says whether their engine still works.
+    note.textContent = d.action || d.error || "the update failed";
     note.setAttribute("data-tone", "error");
   } else if (s.state === "done") {
     note.textContent = `The engine is now v${updateUI.bare(d.installed) || updateUI.bare(d.verified_version) || "?"}. ` +
@@ -1185,7 +1191,10 @@ function wireUpdate() {
     .then((r) => r.json())
     .then((s) => {
       updateUI.latest = updateUI.bare(s.detail && s.detail.latest);
-      updateUI.installed = updateUI.bare(s.detail && s.detail.installed) || null;
+      // `|| updateUI.installed`, never `|| null`: before the first check /api/update/state carries no
+      // detail, and writing null there would overwrite the version renderAbout already took from
+      // /metrics - so a freshly loaded page showed "Installed: unknown" next to "Engine v0.1.31".
+      updateUI.installed = updateUI.bare(s.detail && s.detail.installed) || updateUI.installed;
       if (s.state === "running" || s.state === "checking") {
         renderUpdateState(s);
         updateUI.timer = setTimeout(pollUpdate, UPDATE_POLL_MS);

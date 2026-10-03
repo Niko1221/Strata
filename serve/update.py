@@ -455,8 +455,6 @@ class Updater:
         except Exception as e:
             note = str(e)
             failed = next((s for s in self.steps if s.status == "active"), None)
-            if failed:
-                self._step(failed.key, failed.label, "failed", note)
             if self._changed:
                 try:
                     restored = self.rollback(backup)
@@ -464,9 +462,20 @@ class Updater:
                 except Exception as rb:
                     note += (f" ROLLBACK FAILED: {rb}. The engine is left as it is; restore "
                              f"{backup} by hand if it will not start.")
+            # The step is marked failed AFTER the rollback above, so its note is the whole outcome and
+            # not just the error. The panel shows that note on the step; detail["error"] is the same
+            # text for anything reading the state as JSON, and detail["action"] is the short version.
+            if failed:
+                self._step(failed.key, failed.label, "failed", note)
             self.state = "failed"
             self.detail["error"] = note
             self.detail["rolled_back"] = bool(self._changed and "Restored" in note)
+            # A short, separate line for the panel: what was DONE about the failure. The full `error`
+            # belongs to the step that failed and is shown there, so repeating it here would print the
+            # same 300-character paragraph twice on one screen.
+            self.detail["action"] = (f"Restored the previous engine from {backup.name}."
+                                     if self._changed and backup and "Restored" in note
+                                     else "Nothing on this PC was changed.")
             # A failed run keeps the backup too, and also the archive: it is what a user would re-run
             # the install from, and it is already downloaded. `keep_zip` only says whether to KEEP it -
             # so it is False in both cases, and the argument is what says whether the backup survives.

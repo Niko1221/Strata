@@ -324,6 +324,9 @@ def t_truncated_download_over_http():
             check(U.installed_version(eng) == VERSION_OLD, "the installed engine is untouched")
             check("early" in (final.get("detail", {}).get("error", "")), "the message explains why",
                   final.get("detail", {}).get("error", "")[:52])
+            check(final.get("detail", {}).get("action", "").startswith("Nothing on this PC"),
+                  "and the short action line says nothing was changed",
+                  final.get("detail", {}).get("action", "")[:44])
         finally:
             httpd.shutdown()
             httpd.server_close()

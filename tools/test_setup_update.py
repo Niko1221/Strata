@@ -427,6 +427,12 @@ def t_rollback_after_apply():
 
         check(state["state"] == "failed", "the update reported failure")
         check(state["detail"].get("rolled_back") is True, "and reported that it rolled back")
+        check(state["detail"].get("action", "").startswith("Restored"),
+              "and a short action line for the panel", state["detail"].get("action", "")[:48])
+        failed_step = [s for s in state["steps"] if s["status"] == "failed"]
+        check(failed_step and "Restored" in failed_step[0]["note"],
+              "the failing step carries the full message, so the panel need not repeat it",
+              (failed_step[0]["note"] if failed_step else "")[:40])
         check((eng / "BUILD.json").read_text(encoding="utf-8") == original,
               "BUILD.json is back to the old version")
         check(U.installed_version(eng) == "0.1.31", "the engine reports the old version again")

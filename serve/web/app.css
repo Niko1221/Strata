@@ -176,17 +176,19 @@ main { flex: 1; min-height: 0; display: flex; }
    it looks like every other progress bar in the app. */
 .update-actions { display: flex; gap: var(--st-s-2); flex-wrap: wrap; margin-top: var(--st-s-3); }
 .update-progress { margin-top: var(--st-s-4); display: grid; gap: var(--st-s-3); }
-.update-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--st-s-1); }
-.update-steps li { display: grid; grid-template-columns: 16px 1fr auto; gap: var(--st-s-2); align-items: baseline;
-  font-size: var(--st-fs-sm); color: var(--st-ink-muted); }
+.update-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--st-s-2); }
+.update-steps li { display: grid; grid-template-columns: 16px 1fr auto; gap: 2px var(--st-s-2);
+  align-items: baseline; font-size: var(--st-fs-sm); color: var(--st-ink-muted); }
 .update-steps li[data-state="active"] { color: var(--st-ink); font-weight: 500; }
 .update-steps li[data-state="done"] { color: var(--st-ink-soft); }
 .update-steps li[data-state="failed"] { color: var(--st-danger-text); }
 .update-steps li[data-state="skipped"] { opacity: .6; }
-.update-steps .mark { text-align: center; font-size: var(--st-fs-xs); }
-.update-steps .note { font-weight: 400; font-size: var(--st-fs-xs); color: var(--st-ink-muted); text-align: right;
-  max-width: 55%; }
+.update-steps .mark { grid-column: 1; text-align: center; font-size: var(--st-fs-xs); }
+.update-steps .label { grid-column: 2; }
+/* the note spans under the label, so a long one wraps instead of squeezing the label column */
+.update-steps .note { grid-column: 2 / -1; font-weight: 400; font-size: var(--st-fs-xs); color: var(--st-ink-muted); }
 .update-steps li[data-state="failed"] .note { color: var(--st-danger-text); }
+.update-steps .time { grid-column: 3; font-size: var(--st-fs-xs); font-variant-numeric: tabular-nums; }
 #update-note { margin: 0; }
 #update-note[data-tone="error"] { color: var(--st-danger-text); }
 #update-note[data-tone="warn"] { color: var(--st-warn-text); }
