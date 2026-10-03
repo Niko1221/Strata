@@ -386,5 +386,26 @@ class DesktopReserveTip(unittest.TestCase):
         self.assertIn("desktop", tip)
 
 
+class ApiKey(unittest.TestCase):
+    """#213: an empty --api-key is refused (it would be dropped at setup, or written to the config on a start)."""
+
+    def install(self, *extra):
+        from test_setup_golden import PROFILES, install
+        ram, found = PROFILES["64GB-1x32GB"]
+        return install(ram, found, ["--family", "qwen", "--model", "Q2_0", "--no-start", *extra])
+
+    def test_an_empty_key_is_refused(self):
+        for value in ("", "  "):
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                code, out, cfg, _ = self.install("--api-key", value)
+            self.assertEqual(code, 2)
+            self.assertIn("--api-key is empty", err.getvalue())
+
+    def test_a_key_is_saved(self):
+        code, out, cfg, _ = self.install("--api-key", "secret")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(cfg["api_key"], "secret")
+
+
 if __name__ == "__main__":
     unittest.main()

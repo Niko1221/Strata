@@ -2867,6 +2867,10 @@ def main() -> int:
                                           "server's model; also \"before_load\" in the config, a string or a list)")
     a = ap.parse_args()
     cfg = json.loads(Path(a.config).read_text(encoding="utf-8-sig")) if a.config else {}   # Notepad adds a BOM
+    if "api_key" in cfg and not (isinstance(cfg["api_key"], str) and cfg["api_key"].strip()):
+        # #213, as for --api-key / $STRATA_API_KEY below, but before the minutes of loading
+        print("[strata] the config's \"api_key\" is empty: set a key, or leave it out", file=sys.stderr)
+        return 2
     if a.gpu is not None:
         cfg["gpu"] = int(a.gpu) if a.gpu.strip().isdigit() else a.gpu
     a.host = a.host or cfg.get("host") or "127.0.0.1"   # issue #26: the run scripts pass no --host, the config can
