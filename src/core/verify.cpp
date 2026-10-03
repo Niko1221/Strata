@@ -1202,6 +1202,29 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             }
         }
     }
+    static const bool preempt_trace = std::getenv("STRATA_PREEMPT_TRACE") != nullptr;
+    if (preempt_trace) {
+        auto hash_device = [&](const float* data, size_t count, uint64_t& hash) {
+            std::vector<float> values(count);
+            if (cudaMemcpy(values.data(), data, count * sizeof(float), cudaMemcpyDeviceToHost) != cudaSuccess)
+                return false;
+            hash = 1469598103934665603ull;
+            const auto* bytes = reinterpret_cast<const uint8_t*>(values.data());
+            for (size_t i = 0; i < count * sizeof(float); ++i) hash = (hash ^ bytes[i]) * 1099511628211ull;
+            return true;
+        };
+        for (int t = 0; t < T; ++t) {
+            uint64_t residual = 0, logits = 0;
+            if (!hash_device(R_ + (size_t) t * g.hc * g.n_embd, (size_t) g.hc * g.n_embd, residual) ||
+                !hash_device(head_logits_ + (size_t) t * n_vocab_, (size_t) n_vocab_, logits)) {
+                err = "verify: trace copy failed";
+                return false;
+            }
+            std::fprintf(stderr, "strata verify: VERIFY_POINT p=%lld T=%d row=%d residual=%016llx logits=%016llx\n",
+                         (long long) pos0, T, t, (unsigned long long) residual, (unsigned long long) logits);
+        }
+        std::fflush(stderr);
+    }
     VDBG("window done\n");
     ++windows;
     progress_at("decode");

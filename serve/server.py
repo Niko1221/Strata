@@ -1796,7 +1796,7 @@ class Service:
                             hit_msg = f", expert cache {hit_rate*100:.1f}% hit" if hit_rate is not None else ""
                             print(f"[strata] done: {n} tokens in {el:.0f} s ({rate:.1f} tok/s) "
                                   f"({finish}, cancel={cancel.is_set()}){hit_msg}", flush=True)
-                            if finish == "length" and parser_state == "reasoning":   # #530
+                            if finish == "length" and parser.state == "reasoning":   # #530
                                 print("[strata] the reply reached max tokens while still thinking, so it has no "
                                       "answer: a thinking budget (reasoning_budget_tokens, in the request or in "
                                       "strata-<model>.json for every request) leaves room to answer", flush=True)
@@ -1808,6 +1808,11 @@ class Service:
         finally:
             if emb:
                 Path(emb).unlink(missing_ok=True)
+        for ev in parser.finish():
+            yield "event", ev
+        yield "done", {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),
+                       "timings": timings}
+
     def _record_done(self, prompt_tokens, n, finish, sampling, raw_ids, before, engine_last0, cancel,
                      record=None, parser_state=None):
         """The end-of-request bookkeeping both run paths share: the history entry, the totals, the last timings

@@ -10,7 +10,7 @@ three things the feature must prove:
   3. MECHANICS: parks land on chunk boundaries; a cancelled parked request releases its snapshot and the next
      request is healthy; repeated preemptions do not drift; decode is never preempted.
 
-Deterministic configuration: greedy (no temperature key), --adapt-swaps 0 (fixed VRAM expert set), --pcie-frac 0,
+Controlled configuration: greedy, --adapt-every 100000 (no swaps before that round), --pcie-frac 0,
 no turn token in the prompts (no checkpoint-mount differences between the arms), prompts that share no prefix.
 STRATA_STATE_HASH=1 makes the engine print the fingerprint after every request that leaves live state behind;
 the engine needs --prompt-cache > 0 for it (the harness passes 6).
@@ -60,7 +60,7 @@ class Engine:
     def __init__(self, exe: str, args: list[str], log_path: Path):
         env = dict(os.environ)
         env["STRATA_STATE_HASH"] = "1"
-        self.log = open(log_path, "ab")
+        self.log = open(log_path, "wb")
         self.proc = subprocess.Popen([exe, "--serve", *args], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=self.log, text=True, encoding="utf-8", bufsize=1, env=env)
         self.lines: queue.Queue[str | None] = queue.Queue()
@@ -153,22 +153,39 @@ class Engine:
             self.proc.wait(timeout=60)
         except Exception:
             self.proc.kill()
+            self.proc.wait(timeout=10)
+        finally:
+            self.log.close()
+
+
+def strip_options(args: list[str], valued: set[str], flags: set[str]) -> list[str]:
+    """Remove switches without swallowing the argument following a valueless flag."""
+    out, i = [], 0
+    while i < len(args):
+        if args[i] in valued:
+            if i + 1 >= len(args):
+                raise ValueError(f"missing value for {args[i]}")
+            i += 2
+        elif args[i] in flags:
+            i += 1
+        else:
+            out.append(args[i])
+            i += 1
+    return out
+
+
+def state_differences(ref: dict, got: dict) -> list[str]:
+    # Stale cells lie OUTSIDE the committed prefix; rejected drafts may legitimately differ.
+    # Drafter KV is still gated: differences must be investigated, not silently retried away.
+    return [k for k in ref if k != "stale" and ref[k] != got.get(k)]
 
 
 def engine_args(cfg: dict, *, prefill: int, preempt: bool, max_context: int | None = None,
                 kv_resident: int | None = None, expert_slots: int | None = None) -> list[str]:
-    drop = {"--max-context", "--kv-resident", "--prefill", "--adapt-swaps", "--pcie-frac", "--prompt-cache",
-            "--prefill-preempt", "--prefill-preempt-min-tokens", "--prefill-preempt-max", "--expert-cache",
-            "--spec-min-p"}
-    out, skip = [], False
-    for a in cfg["args"]:
-        if skip:
-            skip = False
-            continue
-        if a in drop:
-            skip = True        # the flag and its value
-            continue
-        out.append(a)
+    valued = {"--max-context", "--kv-resident", "--prefill", "--adapt-swaps", "--adapt-every",
+              "--pcie-frac", "--prompt-cache", "--prefill-preempt-min-tokens", "--prefill-preempt-max",
+              "--expert-cache", "--spec-min-p", "--suffix-draft"}
+    out = strip_options(cfg["args"], valued, {"--prefill-preempt"})
     # suffix-draft 0: the lookup drafter's policy is learned over the whole process, so the two arms' window
     # shapes would drift apart and the state hash would differ in ULPs while the tokens still match.
     # spec-min-p 0 for the same reason one level down: the verify window's T is otherwise gated by the DRAFTER's
@@ -204,7 +221,17 @@ def main() -> int:
     ap.add_argument("-k", dest="only", help="run the scenarios whose name contains this")
     ap.add_argument("--quick", action="store_true", help="a short A, one boundary, mode-0 KV")
     ap.add_argument("--max-new", type=int, default=32)
+    ap.add_argument("--interim-max-new", type=int, default=None,
+                    help="B decode length: 0 isolates B prefill, 1 adds only its first verify/commit")
+    ap.add_argument("--trace", action="store_true", help="expensive state and verify-window hashes")
     args = ap.parse_args()
+    if args.max_new < 1 or (args.interim_max_new is not None and args.interim_max_new < 0):
+        ap.error("A needs at least one output token; B must be nonnegative")
+    b_max_new = args.max_new if args.interim_max_new is None else args.interim_max_new
+    if b_max_new == 0 and not args.trace:
+        ap.error("--interim-max-new 0 requires --trace (debug-only engine command)")
+    if args.trace:
+        os.environ["STRATA_PREEMPT_TRACE"] = "1"
 
     cfg = json.loads(Path(args.config).read_text(encoding="utf-8-sig"))
     workdir = Path(args.workdir)
@@ -246,32 +273,13 @@ def main() -> int:
     expert_slots = int(probe.info.get("expert_slots", 0) or 0)
     probe.close()
     print(f"[harness] expert-cache pinned to {expert_slots} slots for every engine of this run", flush=True)
-    print(f"[harness] control engine (references): A={len(a_ids)} tokens, B={len(b_ids)} tokens", flush=True)
-    t0 = time.time()
-    control = start_engine("control", args.engine,
-                           engine_args(cfg, prefill=chunk, preempt=False, expert_slots=expert_slots), workdir)
-    try:
-        control.gen(None, warm_ids, 8)                    # the virgin engine's first request decodes differently
-        control.collect(None)
-        control.gen(None, b_ids, args.max_new)            # B first: both engines then end with 'A complete, B
-        ref_b = control.collect(None)                     # somewhere earlier', so the hashes are comparable
-        control.gen(None, a_ids, args.max_new)
-        ref_a = control.collect(None)
-        ref_hash = control.state_hash()
-    finally:
-        control.close()
-    print(f"[harness] references in {time.time() - t0:.0f} s: A {len(ref_a['tokens'])} tokens "
-          f"({ref_a['finish']}), B {len(ref_b['tokens'])} tokens ({ref_b['finish']})", flush=True)
-
     failures: list[str] = []
     for name, sc in scenarios:
         print(f"[harness] scenario {name}: trigger after {sc['trigger']} tokens, interim {sc['preempts']}, "
               f"cancel={sc['cancel']}, ctx={sc.get('max_context')}, kv_resident={sc.get('kv_resident')}", flush=True)
         t0 = time.time()
         try:
-            # every scenario carries a PAIRED control: this machine's arithmetic mode drifts over minutes
-            # (plain engines land in discrete hash modes), so a control from the run's start is not a reference
-            # for a scenario that runs minutes later - same args, started right before, every time
+            # Paired controls are useful, but failures are never reclassified as machine noise.
             sc_ctrl = start_engine(f"control-{name}", args.engine,
                                    engine_args(cfg, prefill=chunk, preempt=False,
                                                max_context=sc.get("max_context"),
@@ -280,34 +288,27 @@ def main() -> int:
             try:
                 sc_ctrl.gen(None, warm_ids, 8)
                 sc_ctrl.collect(None)
-                sc_ctrl.gen(None, b_ids, args.max_new)
-                sc_b = sc_ctrl.collect(None)
+                sc_b = {"tokens": [], "finish": "length"}
+                if sc["preempts"]:
+                    sc_ctrl.gen(None, b_ids, b_max_new)
+                    sc_b = sc_ctrl.collect(None)
                 sc_ctrl.gen(None, a_ids, args.max_new)
                 sc_a = sc_ctrl.collect(None)
                 sc_refs = (sc_a, sc_b, sc_ctrl.state_hash())
             finally:
                 sc_ctrl.close()
             fails = []
-            for attempt in (0, 1):
-                e = start_engine(f"preempt-{name}", args.engine,
-                                 engine_args(cfg, prefill=chunk, preempt=True, max_context=sc.get("max_context"),
-                                             kv_resident=sc.get("kv_resident"), expert_slots=expert_slots),
-                                 workdir)
-                try:
-                    e.gen(None, warm_ids, 8)
-                    e.collect(None)
-                    fails = run_scenario(e, name, sc, a_ids, b_ids, sc_refs[0], sc_refs[1], sc_refs[2],
-                                         args.max_new, chunk)
-                finally:
-                    e.close()
-                if not fails:
-                    break
-                if attempt == 0:
-                    # this engine shows rare ULP-level prefill nondeterminism (identical prompts, different PLE
-                    # hashes - pre-existing, seen between plain control engines too).  One fresh-engine retry
-                    # separates machine noise from a real park defect: a defect reproduces, noise does not.
-                    print(f"[harness] scenario {name}: failed once ({fails}); retrying on fresh engines",
-                          flush=True)
+            e = start_engine(f"preempt-{name}", args.engine,
+                             engine_args(cfg, prefill=chunk, preempt=True, max_context=sc.get("max_context"),
+                                         kv_resident=sc.get("kv_resident"), expert_slots=expert_slots),
+                             workdir)
+            try:
+                e.gen(None, warm_ids, 8)
+                e.collect(None)
+                fails = run_scenario(e, name, sc, a_ids, b_ids, sc_refs[0], sc_refs[1], sc_refs[2],
+                                     args.max_new, chunk, b_max_new)
+            finally:
+                e.close()
             failures += fails
             print(f"[harness] scenario {name}: {'PASS' if not fails else 'FAIL'} ({time.time() - t0:.0f} s)",
                   flush=True)
@@ -321,9 +322,10 @@ def main() -> int:
     return 0 if not failures else 1
 
 
-def run_scenario(e: Engine, name: str, sc: dict, a_ids, b_ids, ref_a, ref_b, ref_hash, max_new, chunk) -> list[str]:
+def run_scenario(e: Engine, name: str, sc: dict, a_ids, b_ids, ref_a, ref_b, ref_hash, max_new, chunk, b_max_new=None) -> list[str]:
     """One preempt engine: A parks at the boundary, the interim request(s) run, A resumes; outputs and the final
     state hash must match the references.  Returns a list of failure descriptions (empty = pass)."""
+    b_max_new = max_new if b_max_new is None else b_max_new
     failures: list[str] = []
     a_tokens: list[int] = []
     suspensions: list[int] = []
@@ -334,7 +336,7 @@ def run_scenario(e: Engine, name: str, sc: dict, a_ids, b_ids, ref_a, ref_b, ref
             if line.startswith("PP ") and sc["trigger"] is not None and not sent["b"]:
                 if int(line.split()[1]) >= sc["trigger"]:
                     if sc["preempts"]:
-                        e.gen(sc["preempts"][0], b_ids, max_new)
+                        e.gen(sc["preempts"][0], b_ids, b_max_new)
                     e.send("YIELD")            # offer the boundary: the engine cannot see this server's queue
                     sent["b"] = True
             if line.startswith("SUSPENDED"):
@@ -368,9 +370,9 @@ def run_scenario(e: Engine, name: str, sc: dict, a_ids, b_ids, ref_a, ref_b, ref
                 c = e.collect(1)
                 if c["finish"] != "cancel":
                     failures.append(f"{name}: the cancelled parked request finished with {c['finish']!r}")
-                e.gen(None, b_ids, 8)                     # the engine must be healthy afterwards
+                e.gen(None, b_ids, min(8, b_max_new))                     # the engine must be healthy afterwards
                 h = e.collect(None)
-                if h["tokens"] != ref_b["tokens"][:8]:
+                if h["tokens"] != ref_b["tokens"][:min(8, b_max_new)]:
                     failures.append(f"{name}: the request after a cancel does not match the B reference")
                 bad = [p for p in suspensions if p % chunk != 0 or p >= len(a_ids)]
                 if bad:
@@ -386,7 +388,7 @@ def run_scenario(e: Engine, name: str, sc: dict, a_ids, b_ids, ref_a, ref_b, ref
                 # wait for the engine's RESUME echo (the restore is done) before offering the next boundary:
                 # a YIELD that lands while the resume is still being processed would be wiped by it
                 e._next_line(lambda l: l.startswith("RESUME"), timeout=120)
-                e.gen(sc["preempts"][i + 1], b_ids, max_new)   # A reads one chunk, parks again for the next one
+                e.gen(sc["preempts"][i + 1], b_ids, b_max_new)   # A reads one chunk, parks again for the next one
                 e.send("YIELD")
             if last:
                 done_a = e.collect(1)
@@ -403,7 +405,7 @@ def run_scenario(e: Engine, name: str, sc: dict, a_ids, b_ids, ref_a, ref_b, ref
         # decode-nopark: B is queued once the prompt is read (REUSED) - decode must never yield
         def on_reused(line: str) -> bool:
             if line.startswith("REUSED"):
-                e.gen(sc["preempts"][0], b_ids, max_new)   # no YIELD: decode is never preempted
+                e.gen(sc["preempts"][0], b_ids, b_max_new)   # no YIELD: decode is never preempted
                 sent["b"] = True
             return line.startswith("SUSPENDED")
 
@@ -441,19 +443,9 @@ def run_scenario(e: Engine, name: str, sc: dict, a_ids, b_ids, ref_a, ref_b, ref
                             f"({len(a_tokens)} vs {len(ref_a['tokens'])} tokens)")
         else:
             got = e.state_hash()
-            if got != ref_hash:
-                diff = [k for k in ref_hash if ref_hash[k] != got.get(k)]
-                # The drafter's KV (mtp) is draft-quality state: the project's own E-9 contract (prefill.hpp)
-                # declares the batched draft path "not bit-identical to that pass - the drafts may differ, never
-                # the target's tokens' logits".  With B in between, isolated 4-cell strides of the drafter's
-                # prompt cells differ while every target component and every token match; that is reported, not
-                # failed.  Everything the TARGET model reads must match bit for bit.
-                hard = [k for k in diff if k != "mtp"]
-                if hard:
-                    failures.append(f"{name}: state hash differs ({', '.join(hard)}): ref {ref_hash} got {got}")
-                elif diff:
-                    print(f"[harness] {name}: note: the drafter's KV hash differs (draft-quality state, "
-                          f"see prefill.hpp E-9): ref mtp {ref_hash['mtp']} got {got.get('mtp')}", flush=True)
+            diff = state_differences(ref_hash, got)
+            if diff:
+                failures.append(f"{name}: state hash differs ({', '.join(diff)}): ref {ref_hash} got {got}")
     return failures
 
 

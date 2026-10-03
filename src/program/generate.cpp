@@ -98,6 +98,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <stdexcept>
 #include <set>
 #include <vector>
 
@@ -931,6 +932,7 @@ struct SuspReq {
     std::vector<int64_t> ids;      ///< the whole prompt (the tail is re-read on the resume)
     int64_t done = 0;              ///< prompt tokens whose state the snapshot holds
     int64_t max_new = 0;
+    int64_t segment_end = 0;      ///< end of the batched segment interrupted by the park
     int64_t preempt_count = 0;     ///< how often this request has been parked (the --prefill-preempt-max budget)
     // the request's sampling keys, parsed once and kept for the resume
     float temperature = 0.0f, top_p = 1.0f, min_p = 0.0f;
@@ -4961,6 +4963,118 @@ int main(int argc, char** argv) {
         long long cur_rid = -1;                  // the running request's id (suffixed onto its output lines)
         bool cur_can_park = false;               // it is a text request with an id (images never park)
         auto rid_suffix = [&] { return cur_rid >= 0 ? " id=" + std::to_string(cur_rid) : std::string(); };
+        // Expensive opt-in diagnostics: compare restore, prefill completion, then decode separately.
+        const bool state_trace = std::getenv("STRATA_PREEMPT_TRACE") != nullptr;
+        const bool state_hash = std::getenv("STRATA_STATE_HASH") != nullptr;
+        auto trace_state = [&](const char* phase, int64_t L) -> bool {
+            try {
+                // DEBUG: a fingerprint of every part of the session over the positions it holds ([0, L)), and
+                // separately of what lies past them in the last KV page (stale cells, fine unless something reads them)
+                if (cudaDeviceSynchronize() != cudaSuccess) return false;
+                const strata::kernels::QsaShapes qs = [&] {
+                    strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
+                    s.n_head_kv = g.n_head_kv; s.head_dim = g.head_dim; s.idx_dim = g.idx_key_dim;
+                    return s;
+                }();
+                auto hash_dev = [&](const void* p, size_t bytes, uint64_t h) {
+                    std::vector<uint8_t> b(bytes);
+                    if (bytes && cudaMemcpy(b.data(), p, bytes, cudaMemcpyDefault) != cudaSuccess)
+                        throw std::runtime_error("state trace copy failed");   // VRAM or a streamed host copy
+                    return fnv1a(b.data(), b.size(), h);
+                };
+                const uint64_t rh = fnv1a(host_res.data(), host_res.size() * sizeof(int32_t));
+                std::fprintf(stderr, "strata serve: STATE_POINT phase=%s id=%lld L=%lld residency=%016llx\n",
+                             phase, cur_rid, (long long) L, (unsigned long long) rh);
+                // the cells [c0, c1) of one int8 K or V pool ([page][kv_head][page_size][head_dim]), bytes per value `w`
+                auto hash_cells = [&](const void* pool, int64_t per_cell, int64_t c0, int64_t c1, uint64_t h) {
+                    const int64_t ps = qs.page_size;
+                    for (int64_t pg = c0 / ps; pg * ps < c1; ++pg)
+                        for (int64_t hd = 0; hd < qs.n_head_kv; ++hd) {
+                            const int64_t a = std::max(c0, pg * ps) - pg * ps, e = std::min(c1, (pg + 1) * ps) - pg * ps;
+                            const size_t off = (size_t) (((pg * qs.n_head_kv + hd) * ps + a) * per_cell);
+                            h = hash_dev((const uint8_t*) pool + off, (size_t) ((e - a) * per_cell), h);
+                        }
+                    return h;
+                };
+                const ConvStateSizes z = conv_state_sizes(g, ss);
+                uint64_t h_gdn = hash_dev(ss.gdn_state, z.gdn, 1469598103934665603ull);
+                if (std::getenv("STRATA_STATE_HASH_GDN") != nullptr) {   // per GDN layer: which one differs first
+                    const size_t per = z.gdn / (size_t) ss.gdn_alloc;
+                    std::string s;
+                    char b[8];
+                    for (int64_t i = 0; i < g.n_gdn_layers(); ++i) {
+                        std::snprintf(b, sizeof(b), "%04llx ", (unsigned long long) (hash_dev((const uint8_t*) ss.gdn_state + i * per, per, 1469598103934665603ull) & 0xffff));
+                        s += b;
+                    }
+                    std::fprintf(stderr, "strata serve: STATE_HASH_GDN %s\n", s.c_str());
+                }
+                uint64_t h_ple = hash_dev(ss.ple_hist, ss.ple_hist ? z.ple : 0, 1469598103934665603ull);
+                uint64_t h_tail = 1469598103934665603ull, h_pool = h_tail, h_kv = h_tail, h_stale = h_tail;
+                uint64_t h_dead = h_tail, h_block = h_tail;
+                const int64_t kvb = qs.head_dim, scb = (qs.head_dim / 64) * 2;
+                // a state's K/V arrays and their bytes per (cell, head) row: the host copy when it has one
+                auto kv_arrays = [&](const strata::core::QsaState& st) {
+                    const bool h = st.kv_mode != 0;
+                    std::vector<std::pair<const void*, int64_t>> a;
+                    if (st.kv_q4) {
+                        const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qs.head_dim);
+                        a = {{h ? st.host.k_q4 : st.k_q4, q4b}, {h ? st.host.v_q4 : st.v_q4, q4b}};
+                    } else if (st.kv_hybrid) {
+                        const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qs.head_dim);
+                        a = {{h ? st.host.k_q : st.k_q, kvb}, {h ? st.host.v_q4 : st.v_q4, q4b},
+                             {h ? st.host.k_scale : st.k_scale, scb}};
+                    } else if (!st.kv_int8) {
+                        a = {{h ? st.host.k_pool : st.k_pool, qs.head_dim * 2},
+                             {h ? st.host.v_pool : st.v_pool, qs.head_dim * 2}};
+                    } else {
+                        a = {{h ? st.host.k_q : st.k_q, kvb}, {h ? st.host.v_q : st.v_q, kvb},
+                             {h ? st.host.k_scale : st.k_scale, scb}, {h ? st.host.v_scale : st.v_scale, scb}};
+                    }
+                    return a;
+                };
+                const int64_t end_cell = std::min<int64_t>(((L + qs.page_size - 1) / qs.page_size) * qs.page_size,
+                                                           ss.qsa_states[0].max_cells);
+                for (int64_t i = 0; i < g.n_qsa_layers(); ++i) {
+                    const strata::core::QsaState& st = ss.qsa_states[i];
+                    h_dead = hash_dev(st.idx_dead, (size_t) qs.idx_dim * 4, h_dead);
+                    h_block = hash_dev(st.idx_block_pos, sizeof(int32_t), h_block);
+                    h_tail = hash_dev(st.idx_tail, z.tail, h_tail);
+                    h_pool = hash_dev(st.idx_pooled, (size_t) (L / qs.idx_block) * qs.idx_dim * 4, h_pool);
+                    // KV streaming: the host copy is the identity layout and holds every cell
+                    for (const auto& [pool, w] : kv_arrays(st)) {
+                        h_kv = hash_cells(pool, w, 0, L, h_kv);
+                        h_stale = hash_cells(pool, w, L, end_cell, h_stale);
+                    }
+                }
+                const strata::core::QsaState& ms = mtp.kv_state();
+                uint64_t h_mtp = 1469598103934665603ull;
+                const int64_t mL = std::min<int64_t>(L, ms.max_cells);
+                for (const auto& [pool, w] : kv_arrays(ms))
+                    if (pool != nullptr) h_mtp = hash_cells(pool, w, 0, mL, h_mtp);
+                if (std::getenv("STRATA_STATE_HASH_MTP_BLOCKS") != nullptr) {   // DEBUG: which 256-cell chunk of
+                    const int64_t ps2 = qs.page_size;                           // the drafter's KV diverges first
+                    for (int64_t c0 = 0; c0 < mL; c0 += 256) {
+                        uint64_t hb = 1469598103934665603ull;
+                        for (const auto& [pool, w] : kv_arrays(ms))
+                            if (pool != nullptr) hb = hash_cells(pool, w, c0, std::min(mL, c0 + 256), hb);
+                        std::fprintf(stderr, "strata serve: MTP_BLOCK %lld %016llx\n", (long long) (c0 / ps2),
+                                     (unsigned long long) hb);
+                    }
+                }
+                std::fprintf(stderr, "strata serve: STATE_HASH L=%lld gdn=%016llx ple=%016llx tail=%016llx pooled=%016llx "
+                                     "kv=%016llx mtp=%016llx stale=%016llx ple_prev=%d,%d\n", (long long) L,
+                             (unsigned long long) h_gdn, (unsigned long long) h_ple, (unsigned long long) h_tail,
+                             (unsigned long long) h_pool, (unsigned long long) h_kv, (unsigned long long) h_mtp,
+                             (unsigned long long) h_stale, ss.ple_prev[0], ss.ple_prev[1]);
+                std::fprintf(stderr, "strata serve: STATE_EXTRA dead=%016llx block=%016llx\n",
+                             (unsigned long long) h_dead, (unsigned long long) h_block);
+                std::fflush(stderr);
+                return true;
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "strata serve: state trace failed: %s\n", e.what());
+                return false;
+            }
+        };
         sp.should_suspend = [&] {
             if (!cur_can_park || preempt_declined || preempt_pos < o.preempt_min_tokens ||
                 preempt_count >= o.preempt_max)
@@ -5456,7 +5570,7 @@ int main(int argc, char** argv) {
             }
             std::string pe;
             if (!resuming &&
-                (max_new < 1 || endp == nullptr || (geni && emb_path.empty()) || !parse_i64_list(endp, ids, pe))) {
+                (max_new < (state_trace ? 0 : 1) || endp == nullptr || (geni && emb_path.empty()) || !parse_i64_list(endp, ids, pe))) {
                 std::printf("ERR bad request: %s\n", pe.empty() ? "max_new" : pe.c_str());
                 continue;
             }
@@ -5624,6 +5738,7 @@ int main(int argc, char** argv) {
                     std::fflush(stdout);
                     return 1;
                 }
+                if (state_trace && !trace_state("restore", resume)) return 1;
                 const double rms = std::chrono::duration<double, std::milli>(Clock::now() - tr0).count();
                 std::fprintf(stderr, "strata serve: restored request %lld in %.1f ms; resumed at prompt token %lld\n",
                              cur_rid, rms, (long long) resume);
@@ -5992,7 +6107,10 @@ if (o.prompt_cache > 0 && want_cvec == cvec_cached) {
                 if (to <= at) continue;
                 for (;;) {
                     err.clear();
-                    const bool win = windows_ok(at, to);
+                    // Resume the same batched segment even if its remaining tail now fits short_read.
+                    // The uninterrupted arm processes that tail in Prefill::run, not verify windows.
+                    const bool continuing_batch = resuming && at < pr.segment_end;
+                    const bool win = !continuing_batch && windows_ok(at, to);
                     if (win && !refill(err)) {
                         std::printf("ERR refilling a lent slot failed%s: %s\n", rid_suffix().c_str(), err.c_str());
                         return 1;
@@ -6035,14 +6153,16 @@ if (o.prompt_cache > 0 && want_cvec == cvec_cached) {
                             rec.rid = cur_rid;
                             rec.ids = ids;
                             rec.done = at;
+                            rec.segment_end = to;
                             rec.max_new = max_new;
-                            rec.preempt_count = preempt_count;
+                            rec.preempt_count = preempt_count + 1;   // persist this successful park across RESUME
                             rec.temperature = req_temperature; rec.top_p = req_top_p; rec.top_k = req_top_k;
                             rec.seed = req_seed; rec.min_p = req_min_p; rec.penalty_repeat = req_penalty_repeat;
                             rec.penalty_freq = req_penalty_freq; rec.penalty_present = req_penalty_present;
                             rec.penalty_last_n = req_penalty_last_n; rec.cvec = req_cvec;
                             rec.pcie_frac = req_pcie_frac; rec.spec_min_p = req_spec_min_p;
                             saved = susp_save(rec, g, ss, mtp);
+                            if (saved && state_trace && !trace_state("park", at)) return 1;
                             if (saved) {
                                 parked = std::move(rec);
                                 parked_rid.store(cur_rid);
@@ -6109,6 +6229,7 @@ if (o.prompt_cache > 0 && want_cvec == cvec_cached) {
                 return 1;
             }
             tr("prompt done (slots refilled)");
+            if (state_trace && !trace_state("prefill_done", n - 1)) return 1;
             const double prompt_ms = std::chrono::duration<double, std::milli>(Clock::now() - r0).count();
             std::printf("REUSED %lld%s\n", (long long) resume, rid_suffix().c_str());   // the prompt is read; the
                                                                                         // first window comes next
@@ -6203,6 +6324,13 @@ if (o.prompt_cache > 0 && want_cvec == cvec_cached) {
                 }
                 int a = 0;
                 while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
+                if (state_trace) {
+                    std::fprintf(stderr, "strata serve: WINDOW id=%lld p=%lld T=%d keep=%d input=%016llx output=%016llx\n",
+                                 cur_rid, (long long) p, T, a + 1,
+                                 (unsigned long long) fnv1a(window.data(), (size_t) T * sizeof(int32_t)),
+                                 (unsigned long long) fnv1a(outv.data(), (size_t) T * sizeof(int32_t)));
+                    std::fflush(stderr);
+                }
                 if (from_sfx) { ++sfx_windows; sfx_drafts += T - 1; sfx_ok += a; }
                 const Clock::time_point tw1 = Clock::now();
                 std::thread adapt_thr;   // the adaptive tier beside the commit and the draft (as in generate)
@@ -6287,126 +6415,7 @@ if (o.prompt_cache > 0 && want_cvec == cvec_cached) {
                 live_imgs = imgs_below(req_imgs, (int64_t) live.size());
                 live_ok = o.prompt_cache > 0;
             }
-            static const bool state_hash = std::getenv("STRATA_STATE_HASH") != nullptr;
-            if (state_hash && live_ok) {
-                // DEBUG: a fingerprint of every part of the session over the positions it holds ([0, L)), and
-                // separately of what lies past them in the last KV page (stale cells, fine unless something reads them)
-                if (cudaDeviceSynchronize() != cudaSuccess) {
-                    std::printf("ERR synchronizing state fingerprint\n");
-                    return 1;
-                }
-                const int64_t L = (int64_t) live.size();
-                const strata::kernels::QsaShapes qs = [&] {
-                    strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
-                    s.n_head_kv = g.n_head_kv; s.head_dim = g.head_dim; s.idx_dim = g.idx_key_dim;
-                    return s;
-                }();
-                bool hash_ok = true;
-                std::array<uint8_t, 65536> hash_buffer;
-                auto hash_dev = [&](const void* p, size_t bytes, uint64_t h) {
-                    for (size_t offset = 0; hash_ok && offset < bytes;) {
-                        const size_t n = std::min(hash_buffer.size(), bytes - offset);
-                        // VRAM or a streamed host copy, with fixed diagnostic workspace.
-                        if (cudaMemcpy(hash_buffer.data(), static_cast<const uint8_t*>(p) + offset, n, cudaMemcpyDefault) != cudaSuccess) {
-                            hash_ok = false;
-                            break;
-                        }
-                        h = fnv1a(hash_buffer.data(), n, h);
-                        offset += n;
-                    }
-                    return h;
-                };
-                // the cells [c0, c1) of one int8 K or V pool ([page][kv_head][page_size][head_dim]), bytes per value `w`
-                auto hash_cells = [&](const void* pool, int64_t per_cell, int64_t c0, int64_t c1, uint64_t h) {
-                    const int64_t ps = qs.page_size;
-                    for (int64_t pg = c0 / ps; pg * ps < c1; ++pg)
-                        for (int64_t hd = 0; hd < qs.n_head_kv; ++hd) {
-                            const int64_t a = std::max(c0, pg * ps) - pg * ps, e = std::min(c1, (pg + 1) * ps) - pg * ps;
-                            const size_t off = (size_t) (((pg * qs.n_head_kv + hd) * ps + a) * per_cell);
-                            h = hash_dev((const uint8_t*) pool + off, (size_t) ((e - a) * per_cell), h);
-                        }
-                    return h;
-                };
-                const ConvStateSizes z = conv_state_sizes(g, ss);
-                uint64_t h_gdn = hash_dev(ss.gdn_state, z.gdn, 1469598103934665603ull);
-                if (std::getenv("STRATA_STATE_HASH_GDN") != nullptr && ss.gdn_alloc > 0) {   // per GDN layer: which one differs first
-                    const size_t per = z.gdn / (size_t) ss.gdn_alloc;
-                    std::string s;
-                    char b[8];
-                    for (int64_t i = 0; i < ss.gdn_alloc; ++i) {
-                        std::snprintf(b, sizeof(b), "%04llx ", (unsigned long long) (hash_dev((const uint8_t*) ss.gdn_state + i * per, per, 1469598103934665603ull) & 0xffff));
-                        s += b;
-                    }
-                    std::fprintf(stderr, "strata serve: STATE_HASH_GDN %s\n", s.c_str());
-                }
-                uint64_t h_ple = hash_dev(ss.ple_hist, ss.ple_hist ? z.ple : 0, 1469598103934665603ull);
-                uint64_t h_tail = 1469598103934665603ull, h_pool = h_tail, h_kv = h_tail, h_stale = h_tail;
-                // pooled= keeps its 0.1.29 meaning: the completed rows [0, L / idx_block) only.  pooled_full= adds the
-                // spare row at L / idx_block (the `dead` key the next block completion overwrites), which a
-                // conversation restore writes back; dead= is the spare key itself
-                uint64_t h_dead = h_tail, h_pool_full = h_tail;
-                const int64_t kvb = qs.head_dim, scb = (qs.head_dim / 64) * 2;
-                // a state's K/V arrays and their bytes per (cell, head) row: the host copy when it has one
-                auto kv_arrays = [&](const strata::core::QsaState& st) {
-                    const bool h = st.kv_mode != 0;
-                    std::vector<std::pair<const void*, int64_t>> a;
-                    if (st.kv_q4) {
-                        const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qs.head_dim);
-                        a = {{h ? st.host.k_q4 : st.k_q4, q4b}, {h ? st.host.v_q4 : st.v_q4, q4b}};
-                    } else if (st.kv_hybrid) {
-                        const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qs.head_dim);
-                        a = {{h ? st.host.k_q : st.k_q, kvb}, {h ? st.host.v_q4 : st.v_q4, q4b},
-                             {h ? st.host.k_scale : st.k_scale, scb}};
-                    } else if (st.kv_int8) {
-                        a = {{h ? st.host.k_q : st.k_q, kvb}, {h ? st.host.v_q : st.v_q, kvb},
-                             {h ? st.host.k_scale : st.k_scale, scb}, {h ? st.host.v_scale : st.v_scale, scb}};
-                    } else {
-                        a = {{h ? st.host.k_pool : st.k_pool, qs.head_dim * 2},
-                             {h ? st.host.v_pool : st.v_pool, qs.head_dim * 2}};
-                    }
-                    return a;
-                };
-                const int64_t end_cell = std::min<int64_t>(((L + qs.page_size - 1) / qs.page_size) * qs.page_size,
-                                                           ss.max_cells);   // = the primary state's max_cells
-                for (int64_t j = 0; j < ss.qsa_alloc; ++j) {   // this session's owned QSA ordinals only
-                    const strata::core::QsaState& st = ss.qsa_states[ss.qsa_ord0 + j];
-                    h_tail = hash_dev(st.idx_tail, z.tail, h_tail);
-                    h_dead = hash_dev(st.idx_dead, z.dead, h_dead);
-                    h_pool = hash_dev(st.idx_pooled, (size_t) (L / qs.idx_block) * qs.idx_dim * 4, h_pool);
-                    h_pool_full = hash_dev(st.idx_pooled, (size_t) (L > 0 ? L / qs.idx_block + 1 : 0) * qs.idx_dim * 4,
-                                           h_pool_full);
-                    // KV streaming: the host copy is the identity layout and holds every cell
-                    for (const auto& [pool, w] : kv_arrays(st)) {
-                        h_kv = hash_cells(pool, w, 0, L, h_kv);
-                        h_stale = hash_cells(pool, w, L, end_cell, h_stale);
-                    }
-                }
-                const strata::core::QsaState& ms = mtp.kv_state();
-                uint64_t h_mtp = 1469598103934665603ull;
-                const int64_t mL = std::min<int64_t>(L, ms.max_cells);
-                for (const auto& [pool, w] : kv_arrays(ms))
-                    if (pool != nullptr) h_mtp = hash_cells(pool, w, 0, mL, h_mtp);
-                if (!hash_ok) {
-                    std::printf("ERR reading state fingerprint\n");
-                    return 1;
-                }
-                if (std::getenv("STRATA_STATE_HASH_MTP_BLOCKS") != nullptr) {   // DEBUG: which 256-cell chunk of
-                    const int64_t ps2 = qs.page_size;                           // the drafter's KV diverges first
-                    for (int64_t c0 = 0; c0 < mL; c0 += 256) {
-                        uint64_t hb = 1469598103934665603ull;
-                        for (const auto& [pool, w] : kv_arrays(ms))
-                            if (pool != nullptr) hb = hash_cells(pool, w, c0, std::min(mL, c0 + 256), hb);
-                        std::fprintf(stderr, "strata serve: MTP_BLOCK %lld %016llx\n", (long long) (c0 / ps2),
-                                     (unsigned long long) hb);
-                    }
-                }
-                std::fprintf(stderr, "strata serve: STATE_HASH L=%lld gdn=%016llx ple=%016llx tail=%016llx pooled=%016llx "
-                                     "kv=%016llx mtp=%016llx stale=%016llx dead=%016llx pooled_full=%016llx ple_prev=%d,%d\n", (long long) L,
-                             (unsigned long long) h_gdn, (unsigned long long) h_ple, (unsigned long long) h_tail,
-                             (unsigned long long) h_pool, (unsigned long long) h_kv, (unsigned long long) h_mtp,
-                             (unsigned long long) h_stale, (unsigned long long) h_dead,
-                             (unsigned long long) h_pool_full, ss.ple_prev[0], ss.ple_prev[1]);
-            }
+            if (state_hash && live_ok && !trace_state("done", (int64_t) live.size())) return 1;
             const int64_t req_hits = drive.d.cache_hits - decode_hits0;
             const int64_t req_look = (drive.d.cache_hits + drive.d.cache_admitted + drive.d.cache_refused) - decode_look0;
             // #471: the prompt tokens this request read - all the fresh ones, or as far as the prompt pass got when a
