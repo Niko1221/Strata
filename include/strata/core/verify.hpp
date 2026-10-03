@@ -157,6 +157,11 @@ public:
     /// 1 = this stage's window and commit are done (the last stage's picks are in batch_out), 0 = still running,
     /// -1 = an error (err).  Serves every layer that has rung so far.
     int batch_poll(PoolMultiFn pool, void* user, std::string& err);
+    /// SPECULATIVE BATCH, pipelined: with rows per slot, batch_launch runs only the window; once the last stage's
+    /// picks are known the caller launches the group's commit on every stage with this (asynchronously, on the
+    /// stage's stream, behind whatever runs there): slot base + t keeps n_keep[t] of its rows, whose tokens are
+    /// tokens[t * rows ..] at positions pos[t] ...  Continues into the next stage.
+    bool batch_commit(int base, int S, const int* n_keep, const int32_t* tokens, const int64_t* pos, std::string& err);
     bool batch_busy() const { return b_running_; }
     /// A slot's sampling (temperature / top_p / top_k / min_p / seed; penalties are not applied in batch windows):
     /// its row is drawn again on the last stage with Philox(seed, position), as a solo window draws it.  Greedy by

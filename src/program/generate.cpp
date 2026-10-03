@@ -4640,8 +4640,8 @@ int main(int argc, char** argv) {
             }
         }
         if (o.batch > 0 && o.batch_spec > 1) {
-            if (o.mtp.empty() || o.batch_groups > 1) {
-                std::fprintf(stderr, "strata serve: --batch-spec needs --mtp and --batch-groups 1; batch windows stay one row per slot\n");
+            if (o.mtp.empty()) {
+                std::fprintf(stderr, "strata serve: --batch-spec needs --mtp; batch windows stay one row per slot\n");
                 o.batch_spec = 1;
             } else {
                 for (int b = 0; b < o.batch; ++b) {
@@ -5422,6 +5422,14 @@ int main(int argc, char** argv) {
             return 1;
         }
         const int GS = piped ? o.batch / o.batch_groups : o.batch;
+        // --batch-spec with the pipeline: every group window holds TBP rows per slot (all groups' rows fit the window)
+        const int TBP = (piped && o.batch_spec > 1 && !bdraft.empty())
+                            ? std::max(1, std::min({o.batch_spec, strata::kernels::kVerifyMaxT / o.batch, std::max(o.spec, 1)}))
+                            : 1;
+        if (piped) {
+            ver.set_batch_rows(TBP);
+            if (TBP > 1) std::fprintf(stderr, "strata serve: pipelined batch with %d rows per slot (MTP drafts)\n", TBP);
+        }
         struct PGroup {
             bool inflight = false;
             int stage = 0;                  ///< the stage it runs on or waits for
@@ -5456,25 +5464,57 @@ int main(int argc, char** argv) {
                 stage_group[(size_t) k] = -1;
                 PGroup& G = pg[(size_t) gi];
                 if (k + 1 < n_pipe) { G.stage = k + 1; G.since = pipe_tick; continue; }
-                // the last stage: the group's picks
+                // the last stage: the group's picks (TBP rows per slot)
                 const int32_t* outb = vk.batch_out();
+                int nk[strata::kernels::kVerifyMaxT];
+                for (int t = 0; t < GS; ++t) {
+                    int a = 0;
+                    if (bs[(size_t) (gi * GS + t)].active)
+                        while (a < TBP - 1 && G.tok[t * TBP + a + 1] == outb[t * TBP + a]) ++a;
+                    nk[t] = a + 1;
+                }
+                if (TBP > 1 && !ver.batch_commit(gi * GS, GS, nk, G.tok, G.pos, err)) {   // every stage, queued
+                    std::printf("ERR %s\n", err.c_str());
+                    return false;
+                }
+                const size_t hcn = (size_t) g.hc * (size_t) g.n_embd;
                 for (int t = 0; t < GS; ++t) {
                     BSlot& sl = bs[(size_t) (gi * GS + t)];
                     if (!sl.active) continue;
-                    const int32_t y = outb[t];
-                    std::printf("BT %d %d\n", gi * GS + t, (int) y);
-                    ++sl.produced;
-                    ++bt_rows;
-                    const bool eos = std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) y) != o.eos_ids.end();
-                    const char* fin = eos ? "stop" : sl.stop ? "cancel" : sl.produced >= sl.max_new ? "length"
-                                    : sl.p + 2 > o.max_context ? "length" : nullptr;
+                    const int a = nk[t] - 1;
+                    const char* fin = nullptr;
+                    for (int i = 0; i <= a && fin == nullptr; ++i) {
+                        const int32_t y = outb[t * TBP + i];
+                        std::printf("BT %d %d\n", gi * GS + t, (int) y);
+                        ++sl.produced;
+                        ++bt_rows;
+                        const bool eos = std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) y) != o.eos_ids.end();
+                        fin = eos ? "stop" : sl.stop ? "cancel" : sl.produced >= sl.max_new ? "length"
+                            : sl.p + i + TBP + 1 > o.max_context ? "length" : nullptr;
+                    }
+                    if (TBP > 1) { sl.offered += TBP - 1; sl.accepted += a; }
                     if (fin != nullptr) {
                         const double ms = std::chrono::duration<double, std::milli>(Clock::now() - sl.t0).count();
                         std::printf("BDONE %d %lld %s %.1f\n", gi * GS + t, (long long) sl.produced, fin, ms);
+                        if (sl.offered > 0)
+                            std::fprintf(stderr, "strata batch: slot %d drafts accepted %lld of %lld\n", gi * GS + t,
+                                         (long long) sl.accepted, (long long) sl.offered);
                         sl.active = false;
-                    } else {
-                        sl.x = y;
-                        sl.p += 1;
+                        continue;
+                    }
+                    const int64_t p_old = sl.p;
+                    sl.x = outb[t * TBP + a];
+                    sl.p += a + 1;
+                    const int b = gi * GS + t;
+                    if (TBP > 1 && b < (int) bdraft.size()) {
+                        // before the last stage runs another window: the slot's rows of this one, then its drafts
+                        strata::core::MtpDrafter& d = *bdraft[(size_t) b];
+                        bool dok = cudaMemcpy(d.own_window_R(), ver.final_R_all() + (size_t) t * TBP * hcn,
+                                              (size_t) TBP * hcn * sizeof(float), cudaMemcpyDeviceToDevice) == cudaSuccess;
+                        std::string de;
+                        dok = dok && d.draft(TBP, &outb[t * TBP], p_old, a, sl.drafts, de, sl.dprob, (float) o.spec_min_p);
+                        if (!dok && sl.have_drafts) std::fprintf(stderr, "strata batch: slot %d drafting failed (%s)\n", b, de.c_str());
+                        sl.have_drafts = dok;
                     }
                 }
                 std::fflush(stdout);
@@ -5502,8 +5542,9 @@ int main(int argc, char** argv) {
                     PGroup& G = pg[(size_t) pick];
                     for (int t = 0; t < GS; ++t) {
                         const BSlot& sl = bs[(size_t) (pick * GS + t)];
-                        G.tok[t] = sl.active ? sl.x : 0;
                         G.pos[t] = sl.active ? sl.p : 0;
+                        for (int k = 0; k < TBP; ++k)
+                            G.tok[t * TBP + k] = !sl.active ? 0 : k == 0 ? sl.x : sl.have_drafts ? sl.drafts[k - 1] : sl.x;
                     }
                     G.inflight = true;
                     G.stage = 0;
