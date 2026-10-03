@@ -169,6 +169,14 @@ available. The existing `--mmap-experts` path avoids allocating the full pinned
 expert arena; it still depends on OS file-cache residency and may stall on
 storage reads. It does not make SSD access equivalent to RAM.
 
+On native Windows, if whole-arena registration is refused, Strata registers
+the arena in layer-sized slices. The slices are capped automatically from the
+GPU's WDDM shared-memory budget, leaving the rest working-set locked. This
+avoids a successful-looking 40+ GB host registration consuming the budget and
+causing later VRAM allocations or verify windows to page through system RAM.
+`STRATA_ARENA_PIN_GIB=N` sets an explicit cap in GiB, `auto` requests the same
+budget calculation explicitly, and `0` restores the uncapped legacy behavior.
+
 Starting args for the original GSQ-RCO IQ3_XXS model (replace the paths):
 
 ```sh
