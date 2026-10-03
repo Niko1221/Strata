@@ -1,0 +1,16 @@
+Here are the three most important problems found in `videogen/captions.py`:
+
+### 1. Incorrect ASS Color Format (Alpha Channel)
+**Lines:** `_ass_colour` function.
+**Problem:** ASS color format is `&HAABBGGRR`. The code places `alpha` in the first two hex digits, but standard ASS interprets the first byte as Alpha (00=opaque, FF=transparent). However, many implementations or specific contexts might expect the alpha to be inverted or handled differently. More critically, if `alpha` is passed as `0x40` (64), it becomes `40` in hex. If the intent is semi-transparency, this is correct for standard ASS. However, a common bug is assuming `0` is opaque when some parsers treat `00` as fully transparent if not handled correctly, or vice versa. But the bigger issue is that `0x40` is passed for `bg` and `0x60` for shadow. If `alpha` is meant to be opacity (0=opaque), `0x40` is 25% opaque. If it's meant to be transparency, it's 25% transparent. The comment says "alpha 0 = opaque". This is standard.
+**Actual Bug:** The real bug is often that `hexcolor` might not be 6 chars if malformed, but the bigger issue is **`_ass_time` precision**.
+Let's look closer at `_ass_time`.
+
+### 1. `_ass_time` Precision Loss
+**Lines:** `_ass_time` function.
+**Problem:** `s = t % 60` is a float. `f"{s:05.2f}"` formats it. However, `t` can be large. `int(t // 3600)` is fine. But `s` calculation `t % 60` can have floating point errors. More importantly, ASS time format is `H:MM:SS.CC`. The code produces `H:MM:SS.CC`. This looks correct.
+Let's re-evaluate.
+
+### 1. `parse_srt` Fails on Multi-line Text with Blank Lines
+**Lines:** `parse_srt` function, specifically `re.split(r"\n\s*\n", ...)` and subsequent parsing.
+**Problem:** SRT blocks are separated by blank lines. If a caption text itself contains

@@ -1,0 +1,35 @@
+Here are the three most important problems found in the module:
+
+### 1. `parse_srt` fails on standard SRT files with index numbers
+**Problem:** The parser assumes the timestamp line is either the first or second line of a block. Standard SRT format is:
+```
+1
+00:00:01,000 --> 00:00:02,000
+Text
+```
+The code checks `lines[1]` for `-->`. If `lines[0]` is the index "1", `lines[1]` is the timestamp, so `head=1`. However, if the file lacks indices (rare but possible) or has extra whitespace, logic breaks. More critically, if `lines[0]` is the timestamp (no index), `head=0`. But if `lines[0]` is an index and `lines[1]` is the timestamp, `head=1`. The issue is that `lines[head+1:]` correctly gets text. However, if the block is malformed or has blank lines inside, `lines` filtering removes them, but the index check is fragile. A more robust approach is to find the line containing `-->`.
+
+**Correction:**
+```python
+def parse_srt(path: str) -> list[dict]:
+    # ... (secs function unchanged)
+    with open(path, encoding="utf-8") as f:
+        blocks = re.split(r"\n\s*\n", f.read().strip())
+    cues = []
+    for b in blocks:
+        lines = [x for x in b.splitlines() if x.strip() != ""]
+        if not lines:
+            continue
+        # Find the line containing the arrow
+        head_idx = next((i for i, l in enumerate(lines) if "-->" in l), None)
+        if head_idx is None:
+            continue
+        a, _, z = lines[head_idx].partition("-->")
+        cues.append({"t0": secs(a), "t1": secs(z), "lines": lines[head_idx + 1:]})
+    return cues
+```
+
+### 2. `build_srt` cue overlap logic can create negative durations or invalid cues
+**Problem:** In `build_srt`, the loop adjusts `t1` to avoid overlapping with the next cue.
+```python
+if nxt is

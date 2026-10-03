@@ -1,0 +1,137 @@
+```python
+"""
+jobqueue.py - Persistent, priority-aware job queue for a single machine.
+
+Provides a SQLite-backed job queue with priority scheduling, fair-share
+round-robin among submitters at equal priority, automatic retry with
+exponential backoff, and a multi-threaded worker pool with lease-based
+heartbeat recovery.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sqlite3
+import threading
+import time
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Callable, Optional
+
+
+# ---------------------------------------------------------------------------
+# Job dataclass
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Job:
+    """Represents a single job in the queue."""
+
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    kind: str = ""
+    priority: int = 100
+    payload: dict = field(default_factory=dict)
+    state: str = "queued"  # queued | running | done | failed | cancelled
+    attempts: int = 0
+    max_attempts: int = 3
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    error: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "kind": self.kind,
+            "priority": self.priority,
+            "payload": self.payload,
+            "state": self.state,
+            "attempts": self.attempts,
+            "max_attempts": self.max_attempts,
+            "created_at": self.created_at,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "error": self.error,
+        }
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> Job:
+        return cls(
+            id=row["id"],
+            kind=row["kind"],
+            priority=row["priority"],
+            payload=json.loads(row["payload"]) if row["payload"] else {},
+            state=row["state"],
+            attempts=row["attempts"],
+            max_attempts=row["max_attempts"],
+            created_at=row["created_at"],
+            started_at=row["started_at"],
+            finished_at=row["finished_at"],
+            error=row["error"],
+        )
+
+
+# ---------------------------------------------------------------------------
+# JobQueue
+# ---------------------------------------------------------------------------
+
+class JobQueue:
+    """
+    Persistent, thread-safe job queue backed by SQLite (WAL mode).
+
+    Supports priority scheduling, fair-share round-robin among submitters
+    at equal priority, automatic retry with exponential backoff, and
+    lease-based heartbeat recovery for crashed workers.
+    """
+
+    def __init__(self, path: str) -> None:
+        self._path = path
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(path, check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA busy_timeout=5000")
+        self._init_schema()
+
+    def _init_schema(self) -> None:
+        with self._lock:
+            self._conn.executescript("""
+                CREATE TABLE IF NOT EXISTS jobs (
+                    id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    priority INTEGER NOT NULL DEFAULT 100,
+                    payload TEXT NOT NULL DEFAULT '{}',
+                    state TEXT NOT NULL DEFAULT 'queued',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    max_attempts INTEGER NOT NULL DEFAULT 3,
+                    created_at TEXT NOT NULL,
+                    started_at TEXT,
+                    finished_at TEXT,
+                    error TEXT,
+                    lease_expires_at TEXT,
+                    submitter TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_jobs_state_priority ON jobs(state, priority, created_at);
+                CREATE INDEX IF NOT EXISTS idx_jobs_kind ON jobs(kind);
+                CREATE INDEX IF NOT EXISTS idx_jobs_lease ON jobs(state, lease_expires_at);
+            """)
+            self._conn.commit()
+
+    def _now_iso(self) -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    def _get_submitter(self, payload: dict) -> str:
+        return str(payload.get("by", "__default__"))
+
+    def submit(
+        self,
+        kind: str,
+        payload: dict,
+        priority: int = 100,
+        max_attempts: int = 3,
+    ) -> Job:
+        """Submit a new job to the queue."""
+        job = Job(
+            kind=

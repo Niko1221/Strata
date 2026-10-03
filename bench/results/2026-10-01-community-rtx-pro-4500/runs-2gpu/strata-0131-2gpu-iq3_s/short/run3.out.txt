@@ -1,0 +1,34 @@
+Here are the three most important problems found in the module:
+
+### 1. `parse_srt` fails on standard SRT files with index numbers
+**Problem:** The parser assumes the timestamp line is either the first or second line of a block. Standard SRT format is:
+```
+1
+00:00:01,000 --> 00:00:02,000
+Text
+```
+The code checks `lines[1]` for `-->`. If `lines[0]` is the index "1", `lines[1]` is the timestamp, so it works. However, if there are blank lines or formatting variations, or if the index is missing, it breaks. More critically, `lines[head + 1:]` assumes text starts immediately after the timestamp. If `head` is 0 (timestamp is first line), text is `lines[1:]`. If `head` is 1 (timestamp is second line), text is `lines[2:]`. This logic is fragile. A more robust approach is to find the line containing `-->`.
+
+**Correction:**
+```python
+def parse_srt(path: str) -> list[dict]:
+    # ... (secs function unchanged)
+    with open(path, encoding="utf-8") as f:
+        blocks = re.split(r"\n\s*\n", f.read().strip())
+    cues = []
+    for b in blocks:
+        lines = [x for x in b.splitlines() if x.strip() != ""]
+        if not lines:
+            continue
+        # Find the line with the timestamp
+        ts_idx = next((i for i, l in enumerate(lines) if "-->" in l), None)
+        if ts_idx is None:
+            continue
+        a, _, z = lines[ts_idx].partition("-->")
+        text_lines = lines[ts_idx + 1:]
+        cues.append({"t0": secs(a), "t1": secs(z), "lines": text_lines})
+    return cues
+```
+
+### 2. `build_srt` cue timing logic can create negative durations or overlaps
+**Problem:** In the loop adjusting `t1`, `t1 = max(t0 + 0.4, nxt - GAP)` can result in `t1 < t0` if `nxt - GAP < t0 + 0.

@@ -1,0 +1,9 @@
+Here are the three most important problems found in the code:
+
+### 1. Incorrect ASS Color Alpha Channel
+**Problem:** In `_ass_colour`, the alpha channel is inverted. In ASS format, `00` is opaque and `FF` is transparent. The docstring claims `0 = opaque`, but the code passes `0x40` and `0x60` for backgrounds, which results in semi-transparent backgrounds instead of opaque ones. More critically, if `alpha=0` is passed (as in the default call for `fg`), it produces `&H00...` which is correct, but the logic for `bg` and `shadow` assumes higher values mean more opaque, which is wrong. The standard convention is often to use `00` for opaque. If the intent was "0 = opaque", the code is fine, but typically ASS uses `00` for opaque. However, looking at `BackColour` and `Shadow`, they use `0x40` and `0x60`. If the intent is semi-transparency, this is fine. But a common bug is assuming `0` is transparent. Let's look closer: `&HAABBGGRR`. `AA` is alpha. `00` is opaque. `FF` is transparent. The code uses `0x40` (64) and `0x60` (96). This creates semi-transparent backgrounds. This might be intentional.
+
+Let's look for a more definitive bug.
+
+### 1. `parse_srt` fails on standard SRT files with blank lines inside blocks or missing indices
+**Problem:** `parse_srt` splits by `\n\s*\n`. If an SRT file has a trailing newline or extra whitespace, `blocks` might contain empty strings or malformed blocks. More importantly, `lines[head].partition("-->")` assumes the timestamp line is exactly at `head`. If `head` is 0, `lines[0]` is the timestamp. If `head` is 1, `lines[1]` is the timestamp. This logic is fragile. A bigger issue: `secs` parsing. `ts.split(":")` expects `HH:MM:SS,ms`. If the file uses `HH:MM:SS.ms` (dot instead of comma), `replace(",", ".")` handles it. But if the file has `HH:MM:SS` without milliseconds,

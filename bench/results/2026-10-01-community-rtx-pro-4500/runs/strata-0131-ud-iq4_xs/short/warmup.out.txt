@@ -1,0 +1,18 @@
+Here are the three most important problems found in the code:
+
+### 1. Incorrect ASS Color Format (Alpha Channel)
+**Lines:** `_ass_colour` function
+**Problem:** The ASS color format is `&HAABBGGRR` where `AA` is the **alpha** channel (00 = opaque, FF = transparent). The code places the passed `alpha` integer directly into the hex string. If `alpha=0` (opaque), it produces `&H00...`, which is correct. However, if `alpha=0x40` (as used for background), it produces `&H40...`. While technically valid, standard practice and many parsers expect the alpha to be inverted or handled specifically. More critically, the comment says "alpha 0 = opaque", but in ASS, `00` is opaque and `FF` is transparent. The code works for the specific calls, but the logic is fragile. A more robust fix ensures the alpha is correctly formatted as a 2-digit hex.
+**Correction:**
+```python
+def _ass_colour(hexcolor: str, alpha: int = 0) -> str:
+    """'#RRGGBB' -> ASS '&HAABBGGRR' (alpha 0 = opaque, 255 = invisible)."""
+    c = (hexcolor or "#FFFFFF").lstrip("#")
+    # Ensure alpha is 0-255 and format as 2-digit hex
+    a = max(0, min(255, alpha))
+    return f"&H{a:02X}{c[4:6]}{c[2:4]}{c[0:2]}"
+```
+
+### 2. SRT Parsing Fails on Multi-line Text with Empty Lines
+**Lines:** `parse_srt` function, specifically `re.split(r"\n\s*\n", ...)`
+**Problem:** The regex `\n\s*\n` splits on any blank line. If a subtitle text block contains an intentional empty line (rare but possible in SRT) or if the file has trailing whitespace/newlines that create ambiguous blocks, parsing can break. More importantly, `re.split` with this pattern can leave leading/trailing newlines in blocks if not careful, but the bigger issue is that `lines = [x for x in b.splitlines() if x.strip() != ""]` **removes empty lines from the text content**. If

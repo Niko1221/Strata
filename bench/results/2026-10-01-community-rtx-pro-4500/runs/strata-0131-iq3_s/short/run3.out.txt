@@ -1,0 +1,27 @@
+Here are the three most important problems found in the module:
+
+### 1. `parse_srt` fails on standard SRT files (IndexError)
+**Problem:** The parser assumes the timestamp line is always at index 0 or 1. Standard SRT files have the index number on line 0, timestamp on line 1, and text on line 2+. If the file has extra blank lines or different formatting, `lines[head]` may raise an `IndexError` or `ValueError` if `-->` is missing. More critically, if `head` is calculated as `1` (standard case), `lines[head+1:]` correctly gets text, but if the block structure varies slightly, the logic is fragile. A robust parser should find the line containing `-->`.
+
+**Fix:**
+```python
+def parse_srt(path: str) -> list[dict]:
+    # ... (secs function unchanged)
+    with open(path, encoding="utf-8") as f:
+        blocks = re.split(r"\n\s*\n", f.read().strip())
+    cues = []
+    for b in blocks:
+        lines = [x for x in b.splitlines() if x.strip() != ""]
+        if not lines:
+            continue
+        # Find the line with the timestamp
+        ts_idx = next((i for i, l in enumerate(lines) if "-->" in l), None)
+        if ts_idx is None:
+            continue
+        a, _, z = lines[ts_idx].partition("-->")
+        cues.append({"t0": secs(a), "t1": secs(z), "lines": lines[ts_idx + 1:]})
+    return cues
+```
+
+### 2. `build_srt` ignores `GAP` when adjusting `t1` for the last cue or overlapping cues incorrectly
+**Problem:** In the loop adjusting `t1`, if `nxt` is `None` (last cue), `t1` is not clamped by `GAP`. More importantly, if `t1 > nxt - GAP`, it sets `t1 = max(t0 + 0.4, nxt - GAP)`. If `nxt - GAP` is less than `t0 + 0.4`, the cue might still overlap with the next one if `nxt` is very close to `t0`. The logic should ensure `t

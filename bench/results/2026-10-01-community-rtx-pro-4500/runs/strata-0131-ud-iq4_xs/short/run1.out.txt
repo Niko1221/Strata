@@ -1,0 +1,20 @@
+Here are the three most important problems found in the module:
+
+### 1. Incorrect ASS Color Format (Alpha Channel)
+**Lines:** `_ass_colour` function
+**Problem:** The ASS color format is `&HAABBGGRR` where `AA` is the **alpha** channel (0=opaque, 255=transparent). The code places the passed `alpha` integer directly into the hex string. However, standard ASS usage often expects the alpha to be inverted or handled specifically for transparency. More critically, if `alpha` is passed as `0x40` (64), it becomes `&H40...`, which is semi-transparent. If the intent is opaque, `alpha` should be `0`. The bigger bug is that `st['bg']` is passed with `0x40` (semi-transparent) but `st['fg']` with default `0` (opaque). While not strictly a "bug" if intended, the `BackColour` (shadow) uses `0x60` (96), which is very transparent. The primary issue is that `hexcolor` might be invalid or missing, causing a crash if `lstrip` results in a short string.
+**Correction:** Ensure robust parsing and correct alpha handling.
+```python
+def _ass_colour(hexcolor: str, alpha: int = 0) -> str:
+    c = (hexcolor or "#FFFFFF").lstrip("#")
+    if len(c) != 6:
+        c = "FFFFFF"
+    # ASS Alpha: 00=opaque, FF=transparent. 
+    # Ensure alpha is 0-255.
+    a = max(0, min(255, alpha))
+    return f"&H{a:02X}{c[4:6]}{c[2:4]}{c[0:2]}"
+```
+
+### 2. `parse_srt` Fails on Standard SRT Files with Index Numbers
+**Lines:** `parse_srt` function, specifically the `head` detection logic.
+**Problem:** Standard SRT files have a structure: `Index\nTimestamp\nText`. The code checks if `-->` is in `lines[1]` or `lines[0]`. If the file has an index line (e.g., "1"), `lines[0]` is "1", `lines[1]`

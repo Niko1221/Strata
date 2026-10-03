@@ -1,0 +1,10 @@
+Here are the three most important problems found in the module:
+
+### 1. Incorrect ASS Color Format (Alpha Channel)
+**Lines:** `_ass_colour` function definition.
+**Problem:** The ASS color format is `&HAABBGGRR`. The code places the `alpha` value in the first two hex digits (`AA`), but in ASS, `00` is opaque and `FF` is transparent. The docstring claims `alpha 0 = opaque`, but the code produces `&H00...` which is indeed opaque, however, standard ASS usage often expects the alpha to be inverted or handled differently depending on the renderer. More critically, the `BackColour` in `ass_header` uses `0x40` (64) for alpha, which is semi-transparent, but the logic `f"&H{alpha:02X}..."` is correct for the format. The real bug is that `BackColour` in the style definition uses `_ass_colour(st['bg'], 0x40)`. If `st['bg']` is `#000000`, this becomes `&H40000000`. This is valid. However, a common bug is assuming `alpha` is 0-255 where 0 is opaque. The code is technically correct for the format, but a more subtle bug exists in `srt_to_ass`: it does not escape newlines in the text properly for ASS if `lines` contains empty strings or if the join logic fails.
+
+Actually, looking closer at `_ass_colour`:
+`return f"&H{alpha:02X}{c[4:6]}{c[2:4]}{c[0:2]}"`
+If `alpha` is 0, it produces `&H00...`. In ASS, `&H00` is opaque. This is correct.
+However, in `ass_header`, `BackColour` is set to `_ass_colour(st['bg'], 0x40)`. If `st['bg']` is missing, it defaults to `#FFFFFF` in `_ass_colour`? No, `_ass_colour` defaults to `#FFFFFF` if `hexcolor` is falsy. But `st['bg']` might be `None`. `st.update(style or {})` might leave `bg` as `None` if not in `DEFAULT_STYLE`. If `st['

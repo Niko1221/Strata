@@ -1,0 +1,17 @@
+Here are the three most important problems found in the module:
+
+### 1. Incorrect ASS Color Format (Bug)
+**Lines:** `_ass_colour` function
+**Problem:** The function returns a string starting with `&H`, but the ASS format requires the color value to be prefixed with `&H` *only* if it's a hex literal, but standard ASS color codes are just `&HAABBGGRR` (without the `H` inside the hex part if using `&H` prefix, or just `AABBGGRR` if using `&H` as the prefix marker). More critically, the format string `f"&H{alpha:02X}..."` produces `&H00FFFFFF`. While some parsers accept this, the standard is `&H00FFFFFF` is actually correct for `&H` prefix. However, the real bug is that `lstrip("#")` fails if the input is `None` or empty string handled by default, but if `hexcolor` is `#FFF` (3-digit), it breaks. More importantly, the `&H` prefix is correct, but the logic assumes 6-digit hex. If `hexcolor` is `#FFF`, `c[4:6]` is empty.
+**Correction:** Ensure 6-digit hex and correct prefix handling.
+```python
+def _ass_colour(hexcolor: str, alpha: int = 0) -> str:
+    c = (hexcolor or "#FFFFFF").lstrip("#")
+    if len(c) == 3:
+        c = "".join([c[i]*2 for i in range(3)])
+    return f"&H{alpha:02X}{c[4:6]}{c[2:4]}{c[0:2]}"
+```
+
+### 2. SRT Parsing Fails on Multi-line Text (Bug)
+**Lines:** `parse_srt` function, specifically `lines = [x for x in b.splitlines() if x.strip() != ""]`
+**Problem:** SRT cues can contain empty lines within the text block (though rare, valid SRT allows blank lines in text if not separating blocks). More critically, `re.split(r"\n\s*\n", ...)` splits on blank lines. If a caption text itself contains a blank line (unlikely but possible in raw data) or if the file has trailing whitespace, the logic `if len

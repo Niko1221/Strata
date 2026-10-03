@@ -1,0 +1,17 @@
+Here are the three most important problems found in the module:
+
+### 1. Incorrect ASS Color Format (Bug)
+**Lines:** `_ass_colour` function
+**Problem:** The ASS color format is `&HAABBGGRR` (Alpha, Blue, Green, Red). The current code outputs `&H{alpha}{RR}{GG}{BB}`, which swaps Red and Blue channels, resulting in incorrect colors (e.g., red text appearing blue).
+**Fix:**
+```python
+def _ass_colour(hexcolor: str, alpha: int = 0) -> str:
+    """'#RRGGBB' -> ASS '&HAABBGGRR' (alpha 0 = opaque, 255 = invisible)."""
+    c = (hexcolor or "#FFFFFF").lstrip("#")
+    # Correct order: Alpha, Blue, Green, Red
+    return f"&H{alpha:02X}{c[4:6]}{c[2:4]}{c[0:2]}"
+```
+
+### 2. SRT Parsing Fails on Standard Files (Bug)
+**Lines:** `parse_srt` function, specifically the `head` detection logic.
+**Problem:** Standard SRT files have the index on line 1, timestamps on line 2, and text on line 3+. The code checks `lines[1]` for `-->` but assumes if it's not there, it checks `lines[0]`. If the file has an index (standard), `lines[0]` is the index (no `-->`), and `lines[1]` has `-->`. The logic `head = 1 if "-->" in lines[1] else ...` works for standard files, but fails if the index is missing or if there are blank lines within blocks that aren't stripped correctly before indexing. More critically, if `lines` has only 2 lines (index + timestamp, no text), `lines[head+1:]` is empty, which is fine, but if the format is non-standard or has extra whitespace, `head` might be `None` incorrectly. A more robust check is needed. However, the biggest issue is that `re.split(r"\n\s*\n", ...)` might leave trailing newlines or empty strings in `blocks` if not stripped properly, but the main bug is assuming `lines[1]` is always the timestamp if `lines[0]

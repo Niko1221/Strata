@@ -1,0 +1,25 @@
+Here are the three most important problems found in the code:
+
+### 1. Incorrect ASS Color Format (Alpha Channel)
+**Problem:** The `_ass_colour` function places the alpha channel at the *beginning* of the hex string (`&HAABBGGRR`). In ASS format, the alpha channel is the *last* two bytes (`&HBBGGRR00` for opaque, or `&HBBGGRRFF` for transparent). The current implementation produces invalid colors where the alpha value corrupts the Blue channel.
+**Lines:** 138-140
+**Fix:**
+```python
+def _ass_colour(hexcolor: str, alpha: int = 0) -> str:
+    """'#RRGGBB' -> ASS '&HBBGGRR00' (alpha 0 = opaque, 255 = invisible)."""
+    c = (hexcolor or "#FFFFFF").lstrip("#")
+    # ASS format is BBGGRR00 (or BBGGRRFF). Alpha is last.
+    return f"&H{c[4:6]}{c[2:4]}{c[0:2]}{alpha:02X}"
+```
+
+### 2. `parse_srt` Fails on Standard SRT Files
+**Problem:** The parser assumes the timestamp line is always at index 0 or 1. Standard SRT files often have a blank line between the index and the timestamp, or the index might be missing in some variants. More critically, `re.split(r"\n\s*\n", ...)` can fail if there are trailing newlines or inconsistent spacing, and the logic `head = 1 if "-->" in lines[1]...` is fragile. If the first line is the index (e.g., "1"), `lines[0]` is "1", `lines[1]` is the timestamp. This works. However, if the file starts with a BOM or has extra whitespace, it breaks. A more robust approach is to find the line containing `-->`.
+**Lines:** 168-172
+**Fix:**
+```python
+    for b in blocks:
+        lines = [x for x in b.splitlines() if x.strip() != ""]
+        if not lines:
+            continue
+        # Find the line containing the timestamp separator
+        head_idx = next((i for i, l

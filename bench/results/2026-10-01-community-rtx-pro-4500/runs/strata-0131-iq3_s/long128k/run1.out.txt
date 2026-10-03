@@ -1,0 +1,51 @@
+```python
+def silence_points(audio: np.ndarray, sr: int, min_silence_s: float = 0.25,
+                   merge_gap_s: float = 0.1) -> list[float]:
+    """Midpoints of the quiet stretches in `audio`, in seconds.
+
+    Silences shorter than `min_silence_s` are ignored. Silences separated by a
+    non-silent gap shorter than `merge_gap_s` are merged into one before their
+    midpoints are returned.
+    """
+    audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+    hop = max(1, sr // 100)
+    frames = len(audio) // hop
+    if frames < 3:
+        return []
+    rms = np.sqrt(np.maximum(1e-12, np.mean(
+        audio[:frames * hop].reshape(frames, hop) ** 2, axis=1)))
+    db = 20.0 * np.log10(rms / max(float(np.max(rms)), 1e-9) + 1e-12)
+    quiet = db < SILENCE_DB
+
+    # Collect raw silence spans as (start_frame, end_frame)
+    spans: list[tuple[int, int]] = []
+    i = 0
+    while i < frames:
+        if not quiet[i]:
+            i += 1
+            continue
+        j = i
+        while j < frames and quiet[j]:
+            j += 1
+        spans.append((i, j))
+        i = j
+
+    if not spans:
+        return []
+
+    # Merge spans separated by less than merge_gap_s
+    merged: list[tuple[int, int]] = []
+    cur_start, cur_end = spans[0]
+    for start, end in spans[1:]:
+        gap_frames = start - cur_end
+        if gap_frames * hop / sr < merge_gap_s:
+            cur_end = end
+        else:
+            merged.append((cur_start, cur_end))
+            cur_start, cur_end = start, end
+    merged.append((cur_start, cur_end))
+
+    # Filter by min_silence_s and compute midpoints
+    out: list[float] = []
+    for start, end in merged:
+        if (end - start) *
