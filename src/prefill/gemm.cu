@@ -16,11 +16,17 @@
 #undef __ballot_sync
 #endif
 
+#include <algorithm>
+#include <atomic>
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+
+#if !defined(__HIPCC__)
+#include <cuda_fp16.h>
+#endif
 
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
 #include "hipblaslt_tuning.hpp"
@@ -41,6 +47,56 @@ void ck(cublasStatus_t s, const char* what) {
         std::exit(1);
     }
 }
+
+#if !defined(__HIPCC__)
+// Volta (sm_70) and Turing (sm_75) have no BF16 tensor cores: cuBLAS runs a BF16 GEMM there as a CUDA-core FP32 kernel
+// (magma_sgemmEx, about 10% of a prompt's GPU time on a V100, 32% of the GPU kernel time of a 3.7K prompt on an RTX
+// 4000).  Gemm::bf16 converts both operands into the dequantization scratch and
+// takes the FP16 tensor-core path instead.  What changes, exactly:
+//  - a BF16 value converts without error while its magnitude is at least 2^-17 and below 65504: FP16 has more mantissa
+//    bits than BF16 there.  Smaller magnitudes lose mantissa bits (FP16 subnormals step by 2^-24) and below 2^-25 become
+//    zero, so tiny weights and activations are rounded; larger ones are clamped (+-Inf and NaN pass through unchanged);
+//  - the products are exact either way, but the sums are not the same: the order differs and FP16 tensor-core
+//    accumulation does not round like cuBLAS's FP32 FMA kernel.
+// The BF16 remainder GEMMs of STRATA_PREFILL_BF16X2 (beta = 1, an activation about 2^-9 of the original) would fall
+// into the subnormal band, so they keep the cuBLAS path.
+__global__ void bf16_to_f16_kernel(const uint16_t* __restrict__ in, uint16_t* __restrict__ out, int64_t n) {
+    for (int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x; i < n; i += (int64_t) gridDim.x * blockDim.x) {
+        float f = __uint_as_float((uint32_t) in[i] << 16);
+        if (f > 65504.0f) { if (!isinf(f)) f = 65504.0f; }
+        else if (f < -65504.0f) { if (!isinf(f)) f = -65504.0f; }
+        out[i] = __half_as_ushort(__float2half_rn(f));
+    }
+}
+
+// The current device's compute capability as 10 * major + minor, per call (a layer split can mix cards).
+int current_cc() {
+    static std::atomic<int> cc[64] = {};
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return 0; }
+    int v = cc[dev].load(std::memory_order_relaxed);
+    if (v == 0) {
+        int major = 0, minor = 0;
+        if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess ||
+            cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev) != cudaSuccess) {
+            cudaGetLastError();
+            return 0;
+        }
+        v = 10 * major + minor;
+        cc[dev].store(v, std::memory_order_relaxed);
+    }
+    return v;
+}
+
+// STRATA_BF16_VIA_F16=0 turns the Volta/Turing path off (the A/B arm: the same engine with cuBLAS's own BF16 kernel).
+bool bf16_via_f16() {
+    static const bool off = [] {
+        const char* e = std::getenv("STRATA_BF16_VIA_F16");
+        return e != nullptr && e[0] == '0';
+    }();
+    return !off && (current_cc() == 70 || current_cc() == 75);
+}
+#endif
 
 // #247/#325: on Windows (seen on gfx1201), hipBLAS can return success with the correct BF16/FP16 product for some
 // shapes (hc up once T >= 96, the router) and still leave hipErrorInvalidValue set, which the next kernel's error
@@ -382,6 +438,30 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
                       beta, stream_)) {
         STRATA_ABSORB_HIPBLAS_STICKY("hipBLASLt bf16");
         return;
+    }
+#endif
+#if !defined(__HIPCC__)
+    if (scratch_ != nullptr && K > 0 && beta == 0.0f && bf16_via_f16()) {   // beta != 0: the BF16X2 remainder, see above
+        // W then a tile of X, both as FP16, in the scratch (X's tile starts 16-byte aligned).  Tokens go in tiles
+        // when the scratch cannot hold all of X at once; a weight too large for the scratch keeps the BF16 path.
+        const int64_t w_elems = (N * K + 7) & ~(int64_t) 7;
+        const int64_t tile = w_elems < scratch_elems_ ? std::min<int64_t>(T, (scratch_elems_ - w_elems) / K) : 0;
+        if (tile > 0) {
+            uint16_t* const w16 = scratch_;
+            uint16_t* const x16 = scratch_ + w_elems;
+            const auto convert = [&](const uint16_t* in, uint16_t* out, int64_t n) {
+                constexpr int kThreads = 256;
+                const int64_t want = (n + kThreads - 1) / kThreads;
+                bf16_to_f16_kernel<<<(int) std::min<int64_t>(want, 4096), kThreads, 0, (cudaStream_t) stream_>>>(in, out, n);
+            };
+            convert(W, w16, N * K);
+            for (int64_t t0 = 0; t0 < T; t0 += tile) {
+                const int64_t n = std::min<int64_t>(tile, T - t0);
+                convert(X + t0 * K, x16, n * K);
+                f16(x16, w16, Y + t0 * ldy, n, N, K, ldy, beta);
+            }
+            return;
+        }
     }
 #endif
     // Column-major view: Y^T[N, T] = W[N, K] (stored K x N col-major, transposed) . X^T[K, T].
