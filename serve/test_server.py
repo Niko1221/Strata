@@ -241,6 +241,33 @@ class ImageMarkers(unittest.TestCase):
             svc.embeddings.path.unlink(missing_ok=True)
 
 
+class PromptChunkFacts(unittest.TestCase):
+    """The auto scan settles on a chunk and a ring for the run, and the engine reports both on its INFO line
+    (`prefill_chunk`, `prefill_ring`).  The Monitor's GPU panel reads them from there, so they only have to survive
+    the line - `engine` in /metrics spreads `info` as it is."""
+
+    class FakeProc:
+        def __init__(self, lines):
+            self.stdout = iter(lines)
+            self.stdin = io.StringIO()
+
+        def poll(self):
+            return None
+
+    def engine_with(self, info_line):
+        import serve.server as S
+        saved = S.subprocess.Popen, S.contain
+        S.subprocess.Popen = lambda *a, **k: self.FakeProc([info_line, "READY 4096 stop\n"])
+        S.contain = lambda p: None
+        self.addCleanup(lambda: (setattr(S.subprocess, "Popen", saved[0]), setattr(S, "contain", saved[1])))
+        return StrataEngine("engine/strata", ["--native", "x"])
+
+    def test_the_prompt_chunk_and_the_ring_reach_the_monitor_facts(self):
+        eng = self.engine_with("INFO context=262144 prefill_chunk=6144 prefill_ring=65 engine=0.1.38\n")
+        self.assertEqual(eng.info["prefill_chunk"], 6144)
+        self.assertEqual(eng.info["prefill_ring"], 65)
+
+
 class StatusNeedsTheKey(unittest.TestCase):
     """#212: /status shows the end of the answer being written, so it needs the key like /v1/*."""
 

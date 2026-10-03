@@ -106,6 +106,8 @@
           </div>
           <div class="bar-row"><span>Experts in VRAM</span><span class="muted" id="slots-text">&ndash;</span></div>
           <div class="st-progress"><div class="st-progress__bar" id="slots-bar" style="width:0%"></div></div>
+          <div class="bar-row" title="The prompt path reads this many tokens per pass through the layers, and the streamed ring it stages their experts through. The engine picks both when it starts, from each card's free VRAM and how much of the model its expert cache already holds.">
+            <span>Prompt chunk</span><span class="muted" id="chunk-text">&ndash;</span></div>
           <div class="bar-row"><span>System RAM</span><span class="muted" id="ram-text">&ndash;</span></div>
           <div class="st-progress" id="ram-progress"><div class="st-progress__bar" id="ram-bar" style="width:0%"></div></div>
           <div class="bar-row"><span>GPU temperature</span><span class="muted" id="temp-text">&ndash;</span></div>
