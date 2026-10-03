@@ -4401,6 +4401,19 @@ int main(int argc, char** argv) {
                 err.clear();
             }
         }
+        // a layer split: a one-chunk prompt runs the stages one after the other, so each stage's prompt path gets the
+        // next stage's GPU (the last one the first's) to stream and compute a share of its experts meanwhile
+        if (multi_gpu && !stages.empty()) {
+            std::vector<std::pair<strata::prefill::Prefill*, int>> paths{{&sp, 0}};
+            for (const auto& st : stages) paths.emplace_back(&st->sp, st->dev);
+            for (size_t i = 0; i < paths.size(); ++i) {
+                const strata::core::OnDevice on(paths[i].second);
+                if (!paths[i].first->set_stage_helper(paths[(i + 1) % paths.size()].first, err)) {
+                    std::fprintf(stderr, "strata serve: %s - stage %zu reads its prompts alone\n", err.c_str(), i);
+                    err.clear();
+                }
+            }
+        }
         mem_mark("the head and the prompt path");
         // #340: STRATA_SPLIT_SMALL_OWN=S (tokens): on a layer split, every stage that borrows keeps the slots for an
         // S-token chunk's buffers for the whole session (0.1.29's own buffers, carved from the tail of its cache):

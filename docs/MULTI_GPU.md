@@ -71,6 +71,20 @@ VRAM keep its own prompt buffers - the same output as 0.1.31, measured on an R97
 differs from the default's (stable and coherent); `STRATA_SPLIT_OWN=auto` does that only where the buffers are at
 most 12% of each card's VRAM.
 
+**The idle card helps one-chunk prompts.** A prompt that fits one chunk runs the stages one after the other, so while
+one card reads its layers the other idles. Each stage now hands a share of its streamed experts to the idle card: it
+streams them over its own PCIe link into its own (lent) prompt buffers, computes their rows on the MMQ path and sends
+them back - `--peer-device`'s peer streaming, without P2P (the activations and the rows go through mapped host memory,
+read by copy kernels, so they do not queue behind the expert blobs on either card's copy engine). The share falls with
+the prompt (0.41 of the streamed experts at 1.5K tokens, 0.32 at 3K) and is off from ~3.3K tokens, where the stages
+overlap anyway and no share paid. Measured on 2x RTX 3090 (UD-Q4_K_XL, no P2P), prompt tok/s without / with: 1.1K 496 /
+723, 1.5K 674 / 833, 2K 878 / 1,128, 2.5K 1,017 / 1,296, 3K 1,260 / 1,440; 4K and 8K unchanged, decode unchanged. It
+costs no VRAM (the idle card's own prompt buffers) and ~110 KB of mapped host memory per token of the largest chunk it
+helped (~360 MB at 3.3K tokens). The rows it computes round like a different MMQ grouping, so the output is not
+bit-identical to `STRATA_PREFILL_HELP=0`'s (it is repeatable: same prompt, same output). Native packs on the MMQ prompt
+path only (not with the fused prompt kernels, `STRATA_PF_FUSED=1`, nor with `--peer-device`). `STRATA_PREFILL_HELP=0`
+turns it off, `STRATA_PREFILL_HELP_FRAC=f` fixes the share.
+
 The engine flags behind it: `--layer-split K1[,K2..]|auto` and `--split-device D1[,D2..]` (the later stages'
 devices; default the next visible ones). `--layer-split K --split-device 0` runs both stages on one card sharing
 everything - the bit-exact check of the hand-off, not a speed mode.
