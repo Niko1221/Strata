@@ -53,7 +53,6 @@
 #include "strata/core/native_dense.hpp"
 #include "strata/program/logits_selection.hpp"
 #include "strata/program/conv_cache.hpp"
-#include "strata/program/pool_workers.hpp"
 #include "strata/spec/draft_policy.hpp"
 #include "strata/spec/suffix_drafter.hpp"
 #include "strata/kernels/cvec.hpp"
@@ -258,7 +257,7 @@ struct Options {
     /// stage events include every gap where the GPU waited for the host.
     bool graph_only = false;
     bool gpu_only_full = false;   ///< R0.3: pre + post + head, the true per-token GPU floor
-    int pool_workers = 0;         ///< 0 = hardware default (usually physical cores minus the host's); >0 overrides
+    int pool_workers = 0;         ///< R2.2: 0 = "all physical cores minus the host's"; >0 overrides
     /// #272: the pool's core layout; `all` (the default) is the layout it always had, auto / p-cores are opt-in
     strata::kernels::cpu::PoolAffinity pool_affinity = strata::kernels::cpu::PoolAffinity::All;
     /// R2.2's first half, as an A/B arm.  **ON by default**, because the measurement that justifies it is the
@@ -584,11 +583,10 @@ void usage() {
                  "  --no-host-worker     R2.2: the A/B arm.  By default the HOST THREAD joins the drain, so the\n"
                  "                       pool is six threads on six cores instead of five plus an idle core;\n"
                  "                       this flag restores the five-worker form for comparison on `pool phases`.\n"
-                 "  --pool-workers N     CPU expert pool worker count. Default 0 = every physical core\n"
+                 "  --pool-workers N     R2.2: CPU expert pool worker count.  Default 0 = every physical core\n"
                  "                       except the one the host loop spins on (with --pool-affinity auto or\n"
-                 "                       p-cores on a hybrid CPU: P-cores minus 1). Windows HIP with a\n"
-                 "                       Threadripper 3990X and one gfx1030 GPU caps auto at 31 workers.\n"
-                 "                       A positive N overrides the hardware default.\n"
+                 "                       p-cores on a hybrid CPU: P-cores minus 1).  A sweep is how the pool's\n"
+                 "                       deviation from `cpu_s2` is attributed.\n"
                  "  --pool-affinity MODE Worker CPU affinity: all (default: one worker per physical core, as\n"
                  "                       always), auto (hybrid CPUs: P-cores first, then their SMT siblings,\n"
                  "                       then E-cores) or p-cores (P-cores and their siblings only).\n"
@@ -2699,7 +2697,6 @@ int main(int argc, char** argv) {
     // CUDA error left set by the failed `cudaHostRegister` and read later by `gr_read`'s launch check.  See the
     // note in `pinned.cu`.
     strata::core::FileExpertSource src;
-    int pool_workers = o.pool_workers;
     {   // the card, and whether this build has code for it (a binary built for other GPUs fails at its first kernel
         // otherwise, after the whole expert arena has loaded) - before the arena starts loading
         int dev = 0;
@@ -2710,16 +2707,6 @@ int main(int argc, char** argv) {
 #if defined(STRATA_USE_HIP)
         std::fprintf(stderr, "strata generate: GPU %d: %s (%s)\n", dev, name, named ? p.gcnArchName : "?");
 #if defined(_WIN32)
-        const bool single_gpu = !multi_gpu && std::none_of(o.expert_cache_remote.begin(), o.expert_cache_remote.end(),
-                                                          [](int count) { return count > 0; });
-        if (named && pool_workers == 0 && single_gpu) {
-            const auto topology = strata::kernels::cpu::detect_cpu_topology(true, o.pool_affinity);
-            pool_workers = strata::program::select_pool_workers(pool_workers, (int) topology.worker_cores.size(),
-                strata::kernels::cpu::cpu_name(), p.gcnArchName, /*windows_hip=*/true, single_gpu);
-            if (pool_workers != 0)
-                std::fprintf(stderr, "strata generate: CPU expert pool: auto -> %d workers "
-                             "(Windows HIP, Threadripper 3990X + gfx1030; --pool-workers N overrides)\n", pool_workers);
-        }
         // #468 #461: which HIP runtime was loaded - the bundled one beside the exe, or an AMD driver's System32 copy
         if (HMODULE h = GetModuleHandleA("amdhip64_7.dll")) {
             char path[MAX_PATH] = {};
@@ -2819,7 +2806,7 @@ int main(int argc, char** argv) {
 #endif
         srcp = &arena_src;
     }
-    strata::kernels::cpu::ExpertPool pool(pool_workers, /*pin=*/true, /*host_works=*/!o.no_host_worker, o.pool_affinity);
+    strata::kernels::cpu::ExpertPool pool(o.pool_workers, /*pin=*/true, /*host_works=*/!o.no_host_worker, o.pool_affinity);
     if (pool.is_hybrid() && pool.affinity() != strata::kernels::cpu::PoolAffinity::All) {
         const char* aff_str = pool.affinity() == strata::kernels::cpu::PoolAffinity::PCores ? "p-cores" :
                               pool.affinity() == strata::kernels::cpu::PoolAffinity::All ? "all" : "auto";

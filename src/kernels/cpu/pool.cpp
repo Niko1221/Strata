@@ -273,7 +273,7 @@ std::vector<int> physical_cores(bool skip_first, PoolAffinity affinity) {
 
 namespace {
 
-bool pin_this_thread(int core, int worker = -1) {
+bool pin_this_thread(int core, [[maybe_unused]] int worker = -1) {
     if (core < 0) return false;
 #if defined(_WIN32)
     return detail::set_thread_group_affinity(core, worker);

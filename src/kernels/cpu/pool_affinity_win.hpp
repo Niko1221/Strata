@@ -19,7 +19,7 @@ inline bool set_thread_group_affinity(int core, int worker = -1, GROUP_AFFINITY*
     target.Mask = KAFFINITY(1) << (core & 63);
     if (SetThreadGroupAffinity(GetCurrentThread(), &target, previous)) return true;
     if (worker >= 0) {
-        std::fprintf(stderr, "strata cpu pool: SetThreadGroupAffinity for worker %d (group %u, mask 0x%llx) failed: %lu; thread remains unpinned\n",
+        std::fprintf(stderr, "strata cpu pool: SetThreadGroupAffinity for worker %d (group %u, mask 0x%llx) failed: %lu; previous affinity kept\n",
                      worker, (unsigned) target.Group, (unsigned long long) target.Mask, (unsigned long) GetLastError());
     } else {
         std::fprintf(stderr, "strata cpu pool: SetThreadGroupAffinity for host (group %u, mask 0x%llx) failed: %lu\n",
