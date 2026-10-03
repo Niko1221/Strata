@@ -15,6 +15,7 @@
 #define GGML_COMMON_IMPL_CUDA
 #include "ggml-common.h"
 #include "ggml-common-tq.h"   // APR trellis types (agention llama.cpp fork)
+#include "tq_lut_i8.cuh"       // int8 copy of the trellis codebook (one global scale) for the dp4a dot
 
 #include <cmath>
 #include <cstdio>
@@ -539,7 +540,11 @@ __device__ __forceinline__ void tq_states4(const uint8_t* qs, int l, uint32_t s[
 // two, like the IQ types' decode-once kernels below: tq_load decodes the lane's 16 codebook values (weight side only),
 // tq_apply does the activation side.  vec_dot_tq_q8_1 is apply(load()), so the per-entry and the decode-once kernels
 // do the same float operations in the same order: bitwise equal.
-struct TqLane { float v[16]; float d; };
+// The lane's 16 codebook values as 4 ints of packed int8 (the int8 codebook tq_lut_i8, one global scale
+// TQ_LUT_I8_SCALE; relative RMS error 0.85% of the codebook std, far below the trellis error): a trellis step's
+// 4 weights are two 2-byte entries = one int, so the apply side is 4 dp4a instead of 16 int8->float + 16 FMAs, and
+// a decoded lane takes 5 registers instead of 17.  load/apply split as before: bitwise equal by construction.
+struct TqLane { int q[4]; float d; };
 template<int TY>
 __device__ __forceinline__ TqLane tq_load(const void* __restrict__ vbq, int kbx, int iqs) {
     const auto* b = (const typename TqInfo<TY>::block_t*) vbq + kbx;
@@ -548,12 +553,8 @@ __device__ __forceinline__ TqLane tq_load(const void* __restrict__ vbq, int kbx,
     TqLane r;
 #pragma unroll
     for (int i = 0; i < 4; ++i) {
-        float2 p0, p1;
-        tq_step(s[i], p0, p1);
-        r.v[4 * i + 0] = p0.x;
-        r.v[4 * i + 1] = p0.y;
-        r.v[4 * i + 2] = p1.x;
-        r.v[4 * i + 3] = p1.y;
+        const uint32_t x = (s[i] & TQ_STATE_MASK) * 0x9e3779b1u;
+        r.q[i] = (int) ((uint32_t) tq_lut_i8[x >> 21] | ((uint32_t) tq_lut_i8[(x >> 10) & 2047u] << 16));
     }
     r.d = tq_h2f(b->d);
     return r;
@@ -562,14 +563,10 @@ __device__ __forceinline__ float tq_apply(const TqLane& r, const block_q8_1* __r
     const int l = iqs / 4;
     const block_q8_1* b8 = bq8_1 + l / 2;
     const int* q8 = (const int*) b8->qs + 4 * (l & 1);
-    float sum = 0.0f;
+    int sumi = 0;
 #pragma unroll
-    for (int i = 0; i < 4; ++i) {
-        const int v = q8[i];
-        sum += r.v[4 * i + 0] * (float) (int8_t) (v) + r.v[4 * i + 1] * (float) (int8_t) (v >> 8) +
-               r.v[4 * i + 2] * (float) (int8_t) (v >> 16) + r.v[4 * i + 3] * (float) (int8_t) (v >> 24);
-    }
-    return r.d * __low2float(b8->ds) * sum;
+    for (int i = 0; i < 4; ++i) sumi = ggml_cuda_dp4a(r.q[i], q8[i], sumi);
+    return r.d * (__low2float(b8->ds) * TQ_LUT_I8_SCALE) * (float) sumi;
 }
 template<int TY>
 __device__ __forceinline__ float vec_dot_tq_q8_1(const void* __restrict__ vbq, const block_q8_1* __restrict__ bq8_1,
