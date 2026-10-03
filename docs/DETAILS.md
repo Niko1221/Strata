@@ -748,6 +748,12 @@ helper (`strata-vision`, from llama.cpp's `mtmd` library) and adds it to your st
 A picture becomes up to 1,024 tokens of the context (a 640x480 photo: 300). The same picture sent again, as chat apps
 do on every turn, is encoded only once.
 
+**The CPU encoder runs without flash attention:** on the CPU `strata-vision` left it at `auto`, which turns it on, and
+ggml's CPU kernel for it is the slow path. A 2000x1331 photo on a Ryzen 7 7700X (8 threads, an F16 mmproj) took 4.2 s
+at 294 image tokens and 44 s at 1,014 with it, 1.8 s and 14-15 s without. The attention is then FP32, the form #288
+measured close to the reference; the outputs of the two differ by 6% at 294 tokens and 19% at 1,014.
+`strata-vision --flash-attn on` (or `auto`) gives the old behaviour. The table's 10-30 s predate this change.
+
 **A spare GPU for the encoder (0.1.33, #408):** with a card the engine doesn't use, add `"cuda_device": 2` (numbered
 like `nvidia-smi`) to the `"vision"` section of `strata-<model>.json`: the encoder then runs on that card alone. Lower
 `--vram-reserve-mib` in `"args"` to 700 as well, so the engine's cards keep that VRAM for the expert cache. The
