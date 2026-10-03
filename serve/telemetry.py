@@ -18,7 +18,7 @@ import sys
 import threading
 import time
 
-HISTORY = 60
+HISTORY = 180
 
 
 # ------------------------------------------------------------------------------------------------ NVML
@@ -324,9 +324,12 @@ class Telemetry:
                 g["util"] = sum(u) / len(u) if u else None
                 t = vals("temp")
                 g["temp"] = max(t) if t else None
-                s["gpus"] = [{"index": i, "util": r.get("util"), "mem_used": r.get("mem_used"),
-                              "mem_total": r.get("mem_total"), "temp": r.get("temp"), "power": r.get("power")}
-                             for i, r in reads]
+            s["gpus"] = [{"index": i, "util": r.get("util"), "mem_used": r.get("mem_used"),
+                          "mem_total": r.get("mem_total"), "temp": r.get("temp"), "power": r.get("power"),
+                          "power_limit": r.get("power_limit"), "pcie_gen": r.get("pcie_gen"),
+                          "pcie_gen_max": r.get("pcie_gen_max"), "pcie_width": r.get("pcie_width"),
+                          "pcie_rx_mb": r.get("pcie_rx_mb"), "pcie_tx_mb": r.get("pcie_tx_mb")}
+                         for i, r in reads]
             s.update({f"gpu_{k}": v for k, v in g.items()})
         if self.ps:
             try:
@@ -351,10 +354,18 @@ class Telemetry:
             s = self.sample()
             with self.lock:
                 self.now = s
-                for k in ("gpu_util", "gpu_mem_used", "gpu_temp", "gpu_power", "gpu_pcie_rx_mb", "cpu", "ram_used",
-                          "disk_read_mb", "tok_s", "prefill_tok_s_mean"):
+                for k in ("gpu_util", "gpu_mem_used", "gpu_mem_total", "gpu_temp", "gpu_power", "gpu_power_limit",
+                          "gpu_pcie_rx_mb", "gpu_pcie_tx_mb", "cpu", "ram_used", "ram_total", "disk_read_mb",
+                          "disk_write_mb", "tok_s", "tok_s_mean", "prefill_tok_s_mean",
+                          # the engine's own disk I/O, only when the L3 conversation store is on (else None)
+                          "l3_read_mb", "l3_write_mb"):
                     v = s.get(k)
                     self.hist[k].append(round(v, 2) if isinstance(v, float) else v)
+                for gpu in s.get("gpus") or []:
+                    i = gpu.get("index")
+                    for k in ("util", "mem_used", "mem_total", "temp", "power", "pcie_rx_mb", "pcie_tx_mb"):
+                        v = gpu.get(k)
+                        self.hist[f"gpu{i}_{k}"].append(round(v, 2) if isinstance(v, float) else v)
             time.sleep(1.0)
 
     def snapshot(self):

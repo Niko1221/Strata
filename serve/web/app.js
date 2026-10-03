@@ -108,49 +108,206 @@ async function loadHealth() {
 }
 
 // ------------------------------------------------------------------ Monitor
-const METRICS = [
-  {key: "speed", label: "Speed", icon: "gauge", unit: "t/s", series: "tok_s"},
-  {key: "gpu", label: "GPU load", icon: "gpu", unit: "%", series: "gpu_util", max: 100},
-  {key: "vram", label: "VRAM", icon: "layers", unit: "GB", series: "gpu_mem_used"},
-  {key: "temp", label: "GPU temp", icon: "thermometer", unit: "°C", series: "gpu_temp", tone: "warn"},
-  {key: "power", label: "Power", icon: "bolt", unit: "W", series: "gpu_power"},
-  {key: "pcie", label: "PCIe", icon: "link", unit: "", series: "gpu_pcie_rx_mb", tone: "info"},
-  {key: "cpu", label: "CPU", icon: "cpu", unit: "%", series: "cpu", max: 100},
-  {key: "disk", label: "Disk read", icon: "disk", unit: "MB/s", series: "disk_read_mb", tone: "info"},
-];
-$("metrics").innerHTML = METRICS.map((m) => `
-  <div class="st-card metric-card"><div class="st-metric">
-    <span class="st-metric__label">${icon(m.icon, "st-icon st-icon--sm")}${esc(m.label)}</span>
-    ${m.key === "speed" ? `<div class="speed-values">
-      <div><span class="st-metric__value" id="mv-speed">-</span><span class="st-metric__sub" id="ms-speed">Decode</span></div>
-      <div class="speed-prefill"><span class="st-metric__value" id="mv-prefill">-</span><span class="st-metric__sub" id="ms-prefill">Prefill</span></div>
-    </div>` : `<span class="st-metric__value" id="mv-${m.key}">–</span>
-    <span class="st-metric__sub" id="ms-${m.key}"></span>`}
-    <svg class="st-metric__spark" id="sp-${m.key}" viewBox="0 0 100 32" preserveAspectRatio="none"${m.tone ? ` data-tone="${m.tone}"` : ""}>
-      <path class="area" fill="currentColor" opacity=".12"/><path class="line" fill="none" stroke="currentColor"
-      stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
-      ${m.key === "speed" ? `<g id="sp-prefill" class="speed-prefill"><path class="area" fill="currentColor" opacity=".12"/>
-        <path class="line" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"
-        stroke-linecap="round" vector-effect="non-scaling-stroke"/></g>` : ""}</svg>
-  </div></div>`).join("");
+// The Monitor tab, rendered from GET /metrics: the engine's own numbers, the hardware sampler's one-second series
+// (each card and the total), and the finished requests.  A reading that is absent stays "–"; nothing here may throw.
 
-function spark(id, values, max) {
-  const svg = $(id);
+let lastMetrics = null, metricsFailures = 0, keyWarned = false, mcpTick = 0;
+let reqShowAll = false;   // the request log: the last 12, or every one the server keeps (issue #35)
+
+const setText = (id, value) => { const el = $(id); if (el && el.textContent !== String(value)) el.textContent = value; };
+const mean = (values) => {
+  const v = values.filter((x) => typeof x === "number" && !Number.isNaN(x));
+  return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+};
+function median(values) {
+  const v = values.filter((x) => typeof x === "number" && !Number.isNaN(x)).sort((a, b) => a - b);
+  if (!v.length) return null;
+  const m = v.length >> 1;
+  return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+}
+const dur = (v, d = 2) => (v == null ? "–" : v >= 1000 ? `${fmt(v / 1000, d)} s` : `${fmt(v, 0)} ms`);
+const rate = (v, d = 1) => (v == null ? "–" : `${fmt(v, d)} t/s`);
+const pctText = (v, d = 0) => (v == null ? "–" : `${fmt(v, d)}%`);
+// the prompt reading speed of one finished request: the tokens it read, the cached prefix excluded
+const reqPrefill = (r) => (r && r.prompt_ms > 0 ? Math.max(0, (r.prompt_tokens || 0) - (r.reused || 0)) / (r.prompt_ms / 1000) : null);
+
+function sparkPaths(values, max) {
   const v = (values || []).map((x) => (x == null ? 0 : x));
-  if (v.length < 2) { svg.querySelector(".line").setAttribute("d", ""); svg.querySelector(".area").setAttribute("d", ""); return; }
+  if (v.length < 2) return {line: "", area: ""};
   const top = Math.max(max || 0, ...v, 1e-9);
   const pts = v.map((x, i) => [(i / (v.length - 1)) * 100, 30 - (x / top) * 26]);
   const line = pts.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(2)},${p[1].toFixed(2)}`).join("");
-  svg.querySelector(".line").setAttribute("d", line);
-  svg.querySelector(".area").setAttribute("d", `${line}L100,32L0,32Z`);
+  return {line, area: `${line}L100,32L0,32Z`};
 }
-function setMetric(key, value, unit, sub) {
-  $(`mv-${key}`).innerHTML = value == null ? "–" : `${esc(value)}${unit ? `<small>${esc(unit)}</small>` : ""}`;
-  $(`ms-${key}`).textContent = sub || "";
+function sparkSvg(cls, path, tone) {
+  return `<svg class="${cls}" viewBox="0 0 100 32" preserveAspectRatio="none" aria-hidden="true"${tone ? ` data-tone="${tone}"` : ""}>` +
+    `<path class="area" fill="currentColor" opacity=".12" d="${path.area}"/>` +
+    `<path class="line" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"` +
+    ` vector-effect="non-scaling-stroke" d="${path.line}"/></svg>`;
+}
+function spark(id, values, max) {
+  const svg = $(id);
+  if (!svg) return;
+  const p = sparkPaths(values, max);
+  svg.querySelector(".line").setAttribute("d", p.line);
+  svg.querySelector(".area").setAttribute("d", p.area);
 }
 
-let lastMetrics = null, metricsFailures = 0, keyWarned = false, mcpTick = 0;
-let reqShowAll = false;   // the Monitor's request table: the last 12, or every one the server keeps (issue #35)
+// ---- the throughput chart: a line chart sized to its element, so the axis text stays crisp
+function axisAge(seconds) {
+  if (seconds < 1) return "now";
+  if (seconds < 90) return `-${Math.round(seconds)}s`;
+  return `-${fmt(seconds / 60, seconds < 300 ? 1 : 0)}m`;
+}
+function chart(svg, series, max) {
+  const W = Math.max(260, Math.round(svg.clientWidth || 720));
+  const H = Math.max(90, Math.round(svg.clientHeight || 190));
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  const padL = 46, padR = 10, padT = 8, padB = 18;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const n = Math.max(0, ...series.map((s) => s.values.length));
+  const flat = series.flatMap((s) => s.values).filter((v) => typeof v === "number");
+  const top = Math.max(max || 0, ...flat, 1e-9) * 1.06;
+  const px = (i) => padL + (n <= 1 ? plotW : (i / (n - 1)) * plotW);
+  const py = (v) => padT + plotH - (Math.max(0, Math.min(v, top)) / top) * plotH;
+  const base = (padT + plotH).toFixed(1);
+  let out = "";
+  for (let t = 0; t <= 4; t++) {
+    const yy = py((top / 4) * t);
+    out += `<line class="grid" x1="${padL}" y1="${yy.toFixed(1)}" x2="${(W - padR).toFixed(1)}" y2="${yy.toFixed(1)}"/>` +
+           `<text class="axis" x="${padL - 7}" y="${(yy + 4).toFixed(1)}" text-anchor="end">${fmt((top / 4) * t, top >= 100 ? 0 : 1)}</text>`;
+  }
+  series.forEach((s, si) => {
+    const pts = s.values.map((v, i) => (typeof v === "number" ? [px(i), py(v)] : null)).filter(Boolean);
+    if (pts.length < 2) return;
+    const d = pts.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join("");
+    if (si === 0) {
+      out += `<path class="chart-area" d="${d}L${pts[pts.length - 1][0].toFixed(1)},${base}L${pts[0][0].toFixed(1)},${base}Z"/>`;
+    }
+    out += `<path class="chart-line" style="stroke:${s.color}" d="${d}"/>`;
+  });
+  for (const f of [0, 0.25, 0.5, 0.75, 1]) {
+    const i = f * (n - 1);
+    out += `<text class="axis" x="${px(i).toFixed(1)}" y="${H - 4}" text-anchor="${f === 0 ? "start" : f === 1 ? "end" : "middle"}">` +
+           `${axisAge(n - 1 - i)}</text>`;
+  }
+  svg.innerHTML = out;
+}
+
+// ---- the KPI tiles: session averages, with the recent window beside them
+const KPIS = [
+  {key: "decode", label: "Decode", icon: "gauge", spark: true},
+  {key: "prefill", label: "Prefill", icon: "download", spark: true},
+  {key: "ttft", label: "Time to first token", icon: "clock", spark: true},
+  {key: "duration", label: "Request time", icon: "activity"},
+  {key: "requests", label: "Requests", icon: "layers"},
+  {key: "tokens", label: "Tokens written", icon: "memory"},
+  {key: "hit", label: "Expert cache hit", icon: "experts"},
+  {key: "spec", label: "Draft acceptance", icon: "bolt"},
+];
+$("kpis").innerHTML = KPIS.map((k) => `
+  <div class="kpi">
+    <span class="kpi__label">${icon(k.icon, "st-icon st-icon--sm")}${esc(k.label)}</span>
+    <span class="kpi__value" id="kpi-${k.key}">–</span>
+    <span class="kpi__sub" id="kpisub-${k.key}"></span>
+    ${k.spark ? `<svg class="kpi__spark" id="kpispark-${k.key}" viewBox="0 0 100 32" preserveAspectRatio="none" aria-hidden="true">
+      <path class="area" fill="currentColor" opacity=".12"/><path class="line" fill="none" stroke="currentColor"
+      stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg>` : ""}
+  </div>`).join("");
+function setKpi(key, value, sub) {
+  const el = $(`kpi-${key}`);
+  if (el.innerHTML !== value) el.innerHTML = value;
+  setText(`kpisub-${key}`, sub || "");
+}
+const kpiValue = (text, unit) => (text === "–" ? "–" : `${esc(text)}${unit ? `<small>${esc(unit)}</small>` : ""}`);
+
+// ---- the per-GPU breakout: one card per card of the run, each with its own series
+function gpuCards(hw, h, st) {
+  const cards = hw.gpus || [];
+  const names = String(st.gpu_name || "").split(" + ");
+  const block = (label, value, note, path, bar, tone) => `<div class="gpu-block">
+    <div class="gpu-block__top"><span>${esc(label)}</span><span><b>${value}</b>${note ? ` <em>${esc(note)}</em>` : ""}</span></div>
+    ${bar == null ? "" : `<div class="st-progress"${tone ? ` data-tone="${tone}"` : ""}><div class="st-progress__bar" style="width:${Math.max(0, Math.min(100, bar)).toFixed(1)}%"></div></div>`}
+    ${sparkSvg("gpu-spark", path, tone)}
+  </div>`;
+  return cards.map((g) => {
+    const i = g.index;
+    const memPct = g.mem_used != null && g.mem_total ? (100 * g.mem_used) / g.mem_total : null;
+    const pwPct = g.power != null && g.power_limit ? (100 * g.power) / g.power_limit : null;
+    const gen = g.pcie_gen_max || g.pcie_gen;
+    const link = gen ? `Gen${gen}${g.pcie_width ? ` x${g.pcie_width}` : ""}${g.pcie_gen && g.pcie_gen < gen ? ` · idle Gen${g.pcie_gen}` : ""}` : "–";
+    const mb = (v) => (v == null ? "–" : `${fmt(v, v < 10 ? 1 : 0)} MB/s`);
+    return `<div class="st-card gpu-card">
+      <div class="gpu-card__head"><span class="gpu-card__index">GPU ${esc(i)}</span>
+        <span class="gpu-card__name" title="${esc(names[i] || st.gpu_name || "")}">${esc(names[i] || st.gpu_name || "")}</span></div>
+      ${block("Load", pctText(g.util), "", sparkPaths(h[`gpu${i}_util`], 100), g.util, "warn")}
+      ${block("VRAM", g.mem_used == null ? "–" : `${gb(g.mem_used)} GB`, g.mem_total ? `of ${gb(g.mem_total, 0)} GB` : "",
+              sparkPaths(h[`gpu${i}_mem_used`], g.mem_total), memPct, null)}
+      ${block("Temperature", g.temp == null ? "–" : `${fmt(g.temp)} °C`, "",
+              sparkPaths(h[`gpu${i}_temp`], 90), g.temp == null ? null : Math.min(100, g.temp), "warn")}
+      ${block("Power", g.power == null ? "–" : `${fmt(g.power)} W`, g.power_limit ? `of ${fmt(g.power_limit)} W` : "",
+              sparkPaths(h[`gpu${i}_power`], g.power_limit), pwPct, null)}
+      <div class="gpu-pcie"><span>PCIe <b>${esc(link)}</b></span>
+        <span>rx <b>${mb(g.pcie_rx_mb)}</b> · tx <b>${mb(g.pcie_tx_mb)}</b></span></div>
+    </div>`;
+  }).join("");
+}
+
+// ---- the machine card and the L3 card share one tile: label, value, a sub-line, an optional bar and series
+const lastOf = (series) => {
+  const v = (series || []).filter((x) => typeof x === "number");
+  return v.length ? v[v.length - 1] : null;
+};
+const mbRate = (v) => (v == null ? "–" : v >= 1000 ? `${fmt(v / 1024, 2)}<small>GB/s</small>`
+                                                  : `${fmt(v, v < 1 ? 2 : v < 10 ? 1 : 0)}<small>MB/s</small>`);
+const plural = (n, word) => `${fmt(n)} ${word}${n === 1 ? "" : "s"}`;
+function metricTile(label, iconName, value, sub, bar, tone, path) {
+  return `<div class="sys-metric">
+    <span class="sys-metric__label">${icon(iconName, "st-icon st-icon--sm")}${esc(label)}</span>
+    <span class="sys-metric__value">${value}</span>
+    <span class="sys-metric__sub">${esc(sub || "")}</span>
+    ${bar == null ? "" : `<div class="st-progress"${tone ? ` data-tone="${tone}"` : ""}><div class="st-progress__bar" style="width:${Math.max(0, Math.min(100, bar)).toFixed(1)}%"></div></div>`}
+    ${path ? sparkSvg("sys-metric__spark", path) : ""}
+  </div>`;
+}
+
+function sysMetrics(hw, st, h) {
+  const ramPct = hw.ram_total ? (100 * hw.ram_used) / hw.ram_total : null;
+  return [
+    metricTile("CPU load", "cpu", hw.cpu == null ? "–" : `${fmt(hw.cpu)}<small>%</small>`,
+               `${st.cores ? `${fmt(st.cores)} cores · ` : ""}${st.threads ? `${fmt(st.threads)} threads` : ""}`,
+               hw.cpu, hw.cpu != null && hw.cpu > 90 ? "danger" : null, sparkPaths(h.cpu, 100)),
+    metricTile("System RAM", "memory", hw.ram_used == null ? "–" : `${gb(hw.ram_used)}<small>GB</small>`,
+               hw.ram_total ? `of ${gb(hw.ram_total, 0)} GB` : "", ramPct,
+               ramPct != null && ramPct > 92 ? "danger" : null, sparkPaths(h.ram_used, hw.ram_total)),
+    metricTile("Disk read", "disk", mbRate(hw.disk_read_mb), "", null, null, sparkPaths(h.disk_read_mb)),
+    metricTile("Disk write", "disk", mbRate(hw.disk_write_mb), "", null, null, sparkPaths(h.disk_write_mb)),
+  ].join("");
+}
+
+// ---- the L3 conversation disk cache: parked conversations kept as records on disk, resumed by a later request
+function l3Metrics(l3, h) {
+  const hits = l3.hits || 0, misses = l3.misses || 0;
+  const hitPct = hits + misses ? (100 * hits) / (hits + misses) : null;
+  const used = l3.budget_bytes ? (100 * (l3.bytes || 0)) / l3.budget_bytes : null;
+  const avg = (total, n) => (n ? (total || 0) / n : null);
+  return [
+    metricTile("Store", "layers", l3.bytes == null ? "–" : `${gb(l3.bytes)}<small>GB</small>`,
+               `${plural(l3.records || 0, "record")}${l3.budget_bytes ? ` of ${gb(l3.budget_bytes, 0)} GB` : ""}`,
+               used, used != null && used > 90 ? "warn" : null, null),
+    metricTile("Reuse", "experts", pctText(hitPct, 1), `${plural(hits, "hit")} · ${plural(misses, "miss")}`,
+               null, null, null),
+    metricTile("Parked", "download", `${gb(l3.parked_bytes)}<small>GB</small>`,
+               `${plural(l3.parks, "park")} · ${dur(avg(l3.park_ms, l3.parks))} each`, null, null, null),
+    metricTile("Restored", "refresh", kfmt(l3.restored_tokens || 0),
+               `${plural(l3.restores, "restore")} · ${dur(avg(l3.restore_ms, l3.restores))} each`, null, null, null),
+    metricTile("Disk read", "disk", mbRate(lastOf(h.l3_read_mb)),
+               `last record read in ${dur(l3.last_read_ms)}`, null, null, sparkPaths(h.l3_read_mb)),
+    metricTile("Disk write", "disk", mbRate(lastOf(h.l3_write_mb)),
+               `last park in ${dur(l3.last_park_ms)}`, null, null, sparkPaths(h.l3_write_mb)),
+  ].join("");
+}
+
 async function poll() {
   try {
     const r = await fetch(reqShowAll ? "metrics?requests=all" : "metrics", {headers: headers()});
@@ -177,8 +334,7 @@ function setPill(state, text) {
 }
 
 function render(m) {
-  const live = m.live || {}, hw = m.hardware || {}, st = m.hardware_static || {}, eng = m.engine || {}, h = m.history || {};
-  const last = (m.requests || [])[0];
+  const live = m.live || {}, hw = m.hardware || {}, st = m.hardware_static || {}, eng = m.engine || {};
   // the header pill
   if (live.state === "reading") {
     const pct = live.prompt_total ? Math.round((100 * live.prompt_read) / live.prompt_total) : null;
@@ -189,20 +345,30 @@ function render(m) {
     setPill("idle", "Idle");
   }
   if (live.queued > 0) setPill("queued", `${live.queued} queued`);
-  if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
+  if (tab === "monitor") renderMonitor(m);
   if (tab === "about") renderAbout(eng, hw, st);
 }
+// the chart is sized from its element: a window resize redraws it before the next poll
+window.addEventListener("resize", () => { if (lastMetrics && tab === "monitor") render(lastMetrics); });
 
 function renderTotals(t) {
   if (!t || !t.requests) return "";
   const since = new Date(t.since * 1000).toLocaleString([], {weekday: "short", hour: "2-digit", minute: "2-digit"});
-  const read = t.prompt_tokens - t.reused;
+  const read = Math.max(0, (t.prompt_tokens || 0) - (t.reused || 0));
   const pSpeed = t.prompt_ms > 0 && read > 0 ? ` at ${fmt(read / (t.prompt_ms / 1000))} tok/s` : "";
   const oSpeed = t.decode_ms > 0 && t.output_tokens > 0 ? ` at ${fmt(t.output_tokens / (t.decode_ms / 1000), 1)} tok/s` : "";
+  const ttft = t.ttft_ms > 0 ? ` · first token after ${dur(t.ttft_ms / t.requests)} on average` : "";
   return `Since ${since}: ${fmt(t.requests)} requests · ${fmt(read)} prompt tokens read${pSpeed} (${fmt(t.reused)} reused) · ` +
-         `${fmt(t.output_tokens)} written${oSpeed}`;
+         `${fmt(t.output_tokens)} written${oSpeed}${ttft}`;
 }
-function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
+
+function renderMonitor(m) {
+  const live = m.live || {}, hw = m.hardware || {}, st = m.hardware_static || {}, eng = m.engine || {};
+  const h = m.history || {}, requests = m.requests || [], totals = m.totals || {};
+  const keptCount = m.requests_kept == null ? requests.length : m.requests_kept;
+  const last = requests[0];
+  const win = requests.slice(0, 20);        // the recent window the tiles and the TTFT outliers are measured over
+
   // model state
   const on = live.queued > 0 ? "queued" : live.state;
   for (const b of document.querySelectorAll("#state-badges .st-badge")) b.classList.toggle("on", b.dataset.s === on || b.dataset.s === live.state);
@@ -226,50 +392,77 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
     delete prog.dataset.tone;
     detail = `last: ${fmt(last.output_tokens)} tokens${last.decode_tok_s ? ` at ${fmt(last.decode_tok_s, 1)} tok/s` : ""}`;
   }
-  $("state-label").textContent = label;
-  $("state-detail").textContent = detail;
+  setText("state-label", label);
+  setText("state-detail", detail);
   $("state-bar").style.width = `${pct}%`;
 
-  // the eight cards
-  const speed = live.state === "generating" ? live.tok_s : last ? last.decode_tok_s : null;
-  setMetric("speed", speed == null ? null : fmt(speed, 1), "t/s",
-            live.state === "generating" ? "Decode now" : last ? "Decode last request" : "Decode");
-  const prefill = live.state !== "idle" ? live.prefill_tok_s_mean
-                : last && last.prompt_ms > 0 ? Math.max(0, last.prompt_tokens - (last.reused || 0)) / (last.prompt_ms / 1000) : null;
-  setMetric("prefill", prefill == null ? null : fmt(prefill), "t/s",
-            live.state === "reading" ? "Prefill now" : live.state === "generating" ? "Prefill this request" : last ? "Prefill last request" : "Prefill");
-  spark("sp-speed", h.tok_s);
-  spark("sp-prefill", h.prefill_tok_s_mean);
-  // a model split across several cards (issue #112): the cards show their total / mean / hottest, and each card's own
-  const per = (f) => (hw.gpus || []).map((g) => `GPU ${g.index} ${f(g)}`).join(" · ");
-  const multi = (hw.gpus || []).length > 1;
-  setMetric("gpu", hw.gpu_util == null ? null : fmt(hw.gpu_util), "%",
-            multi ? per((g) => (g.util == null ? "–" : `${fmt(g.util)}%`)) : st.gpu_name || "");
-  spark("sp-gpu", h.gpu_util, 100);
-  setMetric("vram", hw.gpu_mem_used == null ? null : gb(hw.gpu_mem_used), hw.gpu_mem_total ? `/ ${gb(hw.gpu_mem_total, 0)} GB` : "GB",
-            multi ? per((g) => (g.mem_used == null ? "–" : `${gb(g.mem_used)} GB`))
-                  : eng.expert_slots ? `${fmt(eng.expert_slots)} experts cached` : "");
-  spark("sp-vram", h.gpu_mem_used, hw.gpu_mem_total);
-  setMetric("temp", hw.gpu_temp == null ? null : fmt(hw.gpu_temp), "°C",
-            multi ? per((g) => (g.temp == null ? "–" : `${fmt(g.temp)}°`)) : "");
-  spark("sp-temp", h.gpu_temp, 90);
-  setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W", hw.gpu_power_limit ? `of ${fmt(hw.gpu_power_limit)} W limit` : "");
-  spark("sp-power", h.gpu_power, hw.gpu_power_limit);
-  const gen = hw.gpu_pcie_gen_max || hw.gpu_pcie_gen;
-  setMetric("pcie", gen ? `Gen${gen}` : null, hw.gpu_pcie_width ? `x${hw.gpu_pcie_width}` : "",
-            hw.gpu_pcie_rx_mb == null ? "" : `to GPU ${fmt(hw.gpu_pcie_rx_mb, hw.gpu_pcie_rx_mb < 10 ? 1 : 0)} MB/s` +
-            (hw.gpu_pcie_gen && gen && hw.gpu_pcie_gen < gen ? ` · idle Gen${hw.gpu_pcie_gen}` : ""));
-  spark("sp-pcie", h.gpu_pcie_rx_mb);
-  setMetric("cpu", hw.cpu == null ? null : fmt(hw.cpu), "%", st.threads ? `${st.cores ? `${st.cores} cores · ` : ""}${st.threads} threads` : "");
-  spark("sp-cpu", h.cpu, 100);
-  if (hw.disk_read_mb == null) {
-    setMetric("disk", null, "", st.psutil ? "" : "needs psutil (setup installs it)");
-  } else {
-    const big = hw.disk_read_mb >= 1000;
-    setMetric("disk", big ? fmt(hw.disk_read_mb / 1024, 2) : fmt(hw.disk_read_mb, hw.disk_read_mb < 10 ? 1 : 0), big ? "GB/s" : "MB/s",
-              hw.disk_write_mb == null ? "" : `write ${fmt(hw.disk_write_mb, 1)} MB/s`);
+  // live chips: only what the running request actually has
+  const chips = [];
+  if (live.state !== "idle") {
+    if (live.tok_s != null) chips.push(["Decode", rate(live.tok_s)]);
+    if (live.prefill_tok_s_mean != null) chips.push(["Prefill", rate(live.prefill_tok_s_mean)]);
+    if (live.generated != null) chips.push(["Written", `${fmt(live.generated)}${live.max_tokens ? ` / ${fmt(live.max_tokens)}` : ""}`]);
+    if (live.elapsed_s != null) chips.push(["Elapsed", `${fmt(live.elapsed_s, 1)} s`]);
   }
-  spark("sp-disk", h.disk_read_mb);
+  if (live.queued) chips.push(["Queued", fmt(live.queued)]);
+  $("state-live").innerHTML = chips.map(([k, v]) => `<span class="live-chip">${esc(k)} <b>${esc(v)}</b></span>`).join("");
+
+  // the tiles: the session's averages, the recent window beside them
+  const readTokens = Math.max(0, (totals.prompt_tokens || 0) - (totals.reused || 0));
+  const sessionDecode = totals.decode_ms > 0 && totals.output_tokens ? totals.output_tokens / (totals.decode_ms / 1000) : null;
+  const sessionPrefill = totals.prompt_ms > 0 && readTokens ? readTokens / (totals.prompt_ms / 1000) : null;
+  const sessionTtft = totals.ttft_ms > 0 && totals.requests ? totals.ttft_ms / totals.requests : null;
+  const winDecode = mean(win.map((r) => r.decode_tok_s));
+  const winPrefill = mean(win.map(reqPrefill));
+  const winTtft = mean(win.map((r) => r.ttft_ms));
+  const winDuration = mean(win.map((r) => r.duration_s));
+  const winHit = mean(win.map((r) => (r.hit_rate == null ? null : r.hit_rate * 100)));
+  const winSpec = mean(win.map((r) => (r.drafts_offered ? (100 * (r.drafts_accepted || 0)) / r.drafts_offered : null)));
+  const errors = requests.filter((r) => r.finish === "error").length;
+  setKpi("decode", kpiValue(fmt(sessionDecode ?? winDecode, 1), "t/s"),
+         `now ${rate(live.state === "generating" ? live.tok_s : last ? last.decode_tok_s : null)} · recent ${rate(winDecode)}`);
+  setKpi("prefill", kpiValue(fmt(sessionPrefill ?? winPrefill, 1), "t/s"),
+         `now ${rate(live.state === "idle" ? null : live.prefill_tok_s_mean)} · recent ${rate(winPrefill)}`);
+  setKpi("ttft", kpiValue(dur(sessionTtft), ""),
+         `recent ${dur(winTtft)} · last ${dur(last ? last.ttft_ms : null)}`);
+  setKpi("duration", kpiValue(winDuration == null ? "–" : fmt(winDuration, 1), "s"), `${fmt(win.length)} recent requests`);
+  setKpi("requests", kpiValue(fmt(totals.requests || 0), ""),
+         `${fmt(keptCount)} kept · ${fmt(errors)} error${errors === 1 ? "" : "s"}`);
+  setKpi("tokens", kpiValue(kfmt(totals.output_tokens || 0), ""),
+         `${kfmt(readTokens)} prompt read · ${kfmt(totals.reused || 0)} reused`);
+  setKpi("hit", kpiValue(pctText(winHit, 1), ""), `last ${pctText(last && last.hit_rate != null ? last.hit_rate * 100 : null, 1)}`);
+  setKpi("spec", kpiValue(pctText(winSpec, 1), ""),
+         `${fmt(totals.drafts_accepted || 0)} of ${fmt(totals.drafts_offered || 0)} drafts accepted`);
+  spark("kpispark-decode", h.tok_s);
+  spark("kpispark-prefill", h.prefill_tok_s_mean);
+  spark("kpispark-ttft", win.map((r) => r.ttft_ms).reverse());
+
+  // throughput over the sampler's window
+  const samples = (h.tok_s || []).length;
+  chart($("chart-speed"), [{values: h.tok_s || [], color: "var(--st-accent)"},
+                           {values: h.prefill_tok_s_mean || [], color: "var(--st-info)"}]);
+  $("legend-speed").innerHTML =
+    `<span style="color:var(--st-accent)"><i></i>Decode <b>${rate(live.state === "generating" ? live.tok_s : last ? last.decode_tok_s : null)}</b></span>` +
+    `<span style="color:var(--st-info)"><i></i>Prefill <b>${rate(live.state === "idle" ? null : live.prefill_tok_s_mean)}</b></span>`;
+  setText("chart-note", samples ? `${fmt(samples)} s of history, one sample a second` : "waiting for the sampler");
+
+  // each card of the run on its own
+  $("gpu-grid").innerHTML = gpuCards(hw, h, st);
+
+  // the L3 store: only a run started with --conversation-cache-disk has one, and only once its store opened
+  const l3 = m.l3;
+  $("l3-card").hidden = !(l3 && l3.on);
+  if (l3 && l3.on) {
+    setText("l3-sub", l3.path || "");
+    $("l3-metrics").innerHTML = l3Metrics(l3, h);
+    const skipped = l3.skips ? ` ${fmt(l3.skips)} parks were skipped.` : "";
+    setText("l3-note", (l3.evictions || l3.corruptions || l3.write_failures)
+      ? `${fmt(l3.evictions || 0)} evictions · ${fmt(l3.corruptions || 0)} corrupt records · ` +
+        `${fmt(l3.write_failures || 0)} failed writes.${skipped}`
+      : `Parked conversations are records in this folder. A request resumes one when its prompt starts with that ` +
+        `record's tokens; the engine keeps the longest matching prefix. Disk read and write are the engine's own ` +
+        `traffic, so a record the operating system still has cached counts as almost nothing.${skipped}`);
+  }
 
   // context fill: the running request, else the last one
   const ctx = eng.max_context || 0;
@@ -279,40 +472,52 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   const frac = ctx ? Math.min(1, used / ctx) : 0;
   $("ctx-fill").setAttribute("stroke-dasharray", `${(235.6 * frac).toFixed(1)} 314.2`);
   $("ctx-fill").style.opacity = 235.6 * frac >= 3 ? "1" : "0";         // a near-zero arc would draw just its round cap
-  $("ctx-pct").textContent = `${Math.round(frac * 100)}%`;
-  $("ctx-sub").textContent = ctx ? `${kfmt(used)} / ${ctxfmt(ctx)}` : "–";
+  setText("ctx-pct", `${Math.round(frac * 100)}%`);
+  setText("ctx-sub", ctx ? `${kfmt(used)} / ${ctxfmt(ctx)}` : "–");
   const cacheBytes = (eng.expert_cache_mib || 0) * 1048576;
-  $("slots-text").textContent = eng.expert_slots ? `${fmt(eng.expert_slots)} · ${gb(cacheBytes)} GB` : "–";
+  setText("slots-text", eng.expert_slots ? `${fmt(eng.expert_slots)} · ${gb(cacheBytes)} GB` : "–");
   $("slots-bar").style.width = hw.gpu_mem_total ? `${Math.min(100, (100 * cacheBytes) / hw.gpu_mem_total)}%` : "0%";
-  $("ram-text").textContent = hw.ram_total ? `${gb(hw.ram_used)} / ${gb(hw.ram_total, 0)} GB` : "–";
-  const ramPct = hw.ram_total ? (100 * hw.ram_used) / hw.ram_total : 0;
-  $("ram-bar").style.width = `${ramPct}%`;
-  if (ramPct > 92) $("ram-progress").dataset.tone = "danger"; else delete $("ram-progress").dataset.tone;
-  $("temp-text").textContent = hw.gpu_temp == null ? "–" : `${fmt(hw.gpu_temp)} °C`;
-  $("temp-bar").style.width = hw.gpu_temp == null ? "0%" : `${Math.min(100, hw.gpu_temp)}%`;
+  const kv = {int8: "8-bit", q4_0: "4-bit (Hadamard-rotated)", fp16: "16-bit"}[eng.kv] || eng.kv;
+  setText("kv-text", kv ? `${kv}${eng.kv_resident ? `, ${fmt(eng.kv_resident)} positions streamed` : ", all in VRAM"}` : "–");
+  setText("spec-text", eng.spec ? `MTP, up to ${Math.max(0, (eng.mtp_max || eng.spec) - 1)} drafts${eng.lookup ? " + lookup" : ""}` : "off");
+  setText("kept-text", `${fmt(requests.length)} of ${fmt(keptCount)}`);
 
-  // recent requests
+  // this machine
+  setText("sys-sub", st.cpu_name || "");
+  $("sys-metrics").innerHTML = sysMetrics(hw, st, h);
+
+  // the request log
   const body = $("req-body");
-  if (!requests.length) {
-    body.innerHTML = `<tr><td colspan="8" class="muted">No requests yet</td></tr>`;
+  const shown = requests.slice(0, reqShowAll ? requests.length : 12);
+  const medTtft = median(win.map((r) => r.ttft_ms));
+  const ttftCls = (v) => (v == null || !medTtft ? "" : v > 3 * medTtft ? " slower" : v > 1.5 * medTtft ? " slow" : "");
+  if (!shown.length) {
+    body.innerHTML = `<tr><td colspan="10" class="muted">No requests yet</td></tr>`;
   } else {
     const badge = {stop: ["", "Done"], length: ["", "Max tokens"], cancel: ["st-badge--queued", "Stopped"],
                    disconnect: ["st-badge--queued", "Closed"], error: ["st-badge--error", "Error"]};
-    body.innerHTML = requests.slice(0, reqShowAll ? requests.length : 12).map((r) => {
+    body.innerHTML = shown.map((r) => {
       const [cls, text] = badge[r.finish] || ["", r.finish || "–"];
       const t = new Date(r.time * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"});
       const proj = r.projection == null ? "" : ` <span class="st-badge${r.projection ? " st-badge--reading" : ""}" title="experimental speed projection ${r.projection ? "on" : "off"}">${r.projection ? "ESP" : "stock"}</span>`;
       const hit = r.hit_rate == null ? "–" : `${(r.hit_rate * 100).toFixed(1)}%`;
-      return `<tr><td>${esc(t)}</td><td><span class="st-badge ${cls}">${esc(text)}</span>${proj}</td><td class="num">${fmt(r.prompt_tokens)}</td>
-        <td class="num">${fmt(r.reused)}</td><td class="num">${fmt(r.output_tokens)}</td><td class="num">${fmt(r.decode_tok_s, 1)}</td>
-        <td class="num">${hit}</td><td class="num">${fmt(r.duration_s, 1)} s</td></tr>`;
+      const drafts = r.drafts_offered ? `${fmt(r.drafts_accepted || 0)} of ${fmt(r.drafts_offered)} drafts accepted` : "";
+      return `<tr><td>${esc(t)}</td><td><span class="st-badge ${cls}">${esc(text)}</span>${proj}</td>
+        <td class="num${ttftCls(r.ttft_ms)}" title="Time to first token${medTtft ? `; recent median ${dur(medTtft)}` : ""}">${dur(r.ttft_ms)}</td>
+        <td class="num">${fmt(r.prompt_tokens)}</td>
+        <td class="num">${fmt(r.reused)}</td>
+        <td class="num">${fmt(reqPrefill(r), 0)}</td>
+        <td class="num">${fmt(r.output_tokens)}</td>
+        <td class="num">${fmt(r.decode_tok_s, 1)}</td>
+        <td class="num" title="Expert cache hit rate${drafts ? `; ${drafts}` : ""}">${hit}</td>
+        <td class="num">${fmt(r.duration_s, 1)} s</td></tr>`;
     }).join("");
   }
   const all = $("req-all");
-  kept = kept == null ? requests.length : kept;
-  all.hidden = kept <= 12;
-  all.textContent = reqShowAll ? "Show fewer" : `Show all (${kept})`;
+  all.hidden = keptCount <= 12;
+  all.textContent = reqShowAll ? "Show fewer" : `Show all (${keptCount})`;
   $("req-wrap").classList.toggle("all", reqShowAll);
+  setText("req-sum", `${fmt(requests.length)} of ${fmt(keptCount)} kept`);
   $("req-totals").textContent = renderTotals(totals);
 }
 

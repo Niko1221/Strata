@@ -83,13 +83,27 @@
             <span class="st-badge st-badge--queued" data-s="queued">Queued</span>
             <span class="st-badge st-badge--error" data-s="error">Error</span>
           </span>
+          <span class="state-card__live" id="state-live"></span>
         </div>
         <div class="state-card__row"><span id="state-label">Waiting for a request</span><span class="muted" id="state-detail"></span></div>
         <div class="st-progress" id="state-progress"><div class="st-progress__bar" id="state-bar" style="width:0%"></div></div>
       </div>
 
-      <div class="metrics" id="metrics">
-        <!-- filled by app.js: Speed, GPU load, VRAM, GPU temp, Power, PCIe, CPU, Disk read -->
+      <div class="kpis" id="kpis"><!-- averages and session totals, filled by app.js --></div>
+
+      <div class="st-card chart-card">
+        <div class="req-head"><span class="card-title">Throughput</span><span class="muted small" id="chart-note"></span></div>
+        <svg class="chart" id="chart-speed" role="img" aria-label="Decode and prefill speed over the recent past"></svg>
+        <div class="legend" id="legend-speed"></div>
+      </div>
+
+      <div class="gpu-grid" id="gpu-grid"><!-- one card per GPU, filled by app.js --></div>
+
+      <div class="st-card l3-card" id="l3-card" hidden>
+        <div class="req-head"><span class="card-title">Conversation disk cache (L3)</span>
+          <span class="muted small" id="l3-sub"></span></div>
+        <div class="l3-grid" id="l3-metrics"><!-- the store's own numbers, filled by app.js --></div>
+        <p class="muted small l3-note" id="l3-note"></p>
       </div>
 
       <div class="monitor-row">
@@ -106,23 +120,35 @@
           </div>
           <div class="bar-row"><span>Experts in VRAM</span><span class="muted" id="slots-text">&ndash;</span></div>
           <div class="st-progress"><div class="st-progress__bar" id="slots-bar" style="width:0%"></div></div>
-          <div class="bar-row"><span>System RAM</span><span class="muted" id="ram-text">&ndash;</span></div>
-          <div class="st-progress" id="ram-progress"><div class="st-progress__bar" id="ram-bar" style="width:0%"></div></div>
-          <div class="bar-row"><span>GPU temperature</span><span class="muted" id="temp-text">&ndash;</span></div>
-          <div class="st-progress" data-tone="warn"><div class="st-progress__bar" id="temp-bar" style="width:0%"></div></div>
+          <div class="bar-row"><span>KV cache</span><span class="muted" id="kv-text">&ndash;</span></div>
+          <div class="bar-row"><span>Speculation</span><span class="muted" id="spec-text">&ndash;</span></div>
+          <div class="bar-row"><span>Requests kept</span><span class="muted" id="kept-text">&ndash;</span></div>
         </div>
-        <div class="st-card req-card">
-          <div class="req-head"><span class="card-title">Recent requests</span>
-            <button class="st-btn st-btn--secondary" id="req-all" hidden>Show all</button></div>
-          <div class="table-wrap" id="req-wrap">
-            <table class="st-table">
-              <thead><tr><th>Time</th><th>Status</th><th class="num">Prompt</th><th class="num">Reused</th><th class="num">Output</th>
-                <th class="num">Tok/s</th><th class="num" title="While writing the answer: the share of the experts looked up that were already in VRAM (experts copied over PCIe are not counted)">Hit rate</th><th class="num">Duration</th></tr></thead>
-              <tbody id="req-body"><tr><td colspan="8" class="muted">No requests yet</td></tr></tbody>
-            </table>
-          </div>
-          <p class="muted req-totals" id="req-totals"></p>
+        <div class="st-card sys-card">
+          <div class="req-head"><span class="card-title">This machine</span><span class="muted small" id="sys-sub"></span></div>
+          <div class="sys-grid" id="sys-metrics"><!-- CPU, RAM and disk, filled by app.js --></div>
         </div>
+      </div>
+
+      <div class="st-card req-card">
+        <div class="req-head"><span class="card-title">Request log</span>
+          <span class="req-head__tools"><span class="muted small" id="req-sum"></span>
+          <button class="st-btn st-btn--secondary" id="req-all" hidden>Show all</button></span></div>
+        <div class="table-wrap" id="req-wrap">
+          <table class="st-table">
+            <thead><tr><th>Time</th><th>Status</th>
+              <th class="num" title="Time to first token: from the start of the request to its first output token">TTFT</th>
+              <th class="num">Prompt</th>
+              <th class="num" title="Prompt tokens the conversation cache already held, so the engine did not read them again">Reused</th>
+              <th class="num" title="Prompt reading speed over the tokens this request actually read, the cached prefix excluded">Prefill</th>
+              <th class="num">Output</th>
+              <th class="num" title="Answer writing speed, from the engine's own clock">Decode</th>
+              <th class="num" title="While writing the answer: the share of the experts looked up that were already in VRAM (experts copied over PCIe are not counted)">Hit rate</th>
+              <th class="num">Duration</th></tr></thead>
+            <tbody id="req-body"><tr><td colspan="10" class="muted">No requests yet</td></tr></tbody>
+          </table>
+        </div>
+        <p class="muted req-totals" id="req-totals"></p>
       </div>
 
       <div class="st-card mcp-card" id="mcp-card" hidden>
