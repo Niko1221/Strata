@@ -120,9 +120,21 @@ public:
         stage_lb_ = layer_begin; stage_le_ = layer_end; next_ = next;
     }
 
+    /// LAYER SPLIT: `helper` is another stage's prompt path (another GPU).  A prompt of one chunk runs the stages one
+    /// after the other, so while this stage reads it the helper's GPU idles: it then streams a share of this stage's
+    /// non-resident experts over its own PCIe link into its own (lent) prompt buffers, computes their rows, and sends
+    /// them back - the --peer-device peer's streaming, without P2P (activations and rows through mapped host memory,
+    /// read by copy kernels).  Only on the MMQ prompt path, only for chunks of stream_all_min() tokens and more, up to
+    /// the size where the measured share stops paying.  STRATA_PREFILL_HELP=0 turns it off.  Both stages must have
+    /// run `init`.
+    bool set_stage_helper(Prefill* helper, std::string& err);
+
 private:
     int64_t stage_lb_ = 0, stage_le_ = -1;
     Prefill* next_ = nullptr;
+    Prefill* helper_ = nullptr;         ///< set_stage_helper
+    bool single_chunk_ = false;         ///< a later stage: the prompt is one chunk (set by the stage before)
+    bool bind_stage_helper(int64_t T);  // binds the helper's buffers for a one-chunk prompt of T tokens
     const float* hand_in_ = nullptr;    ///< the previous stage's rows of the chunk being read (host, pinned)
     bool carve(std::size_t T, void* alloc);   // the device buffers of a chunk (prefill.cpp's Alloc)
     void release();                          // the destructor's cleanup (also `reset`'s)
