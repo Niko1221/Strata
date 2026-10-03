@@ -10,6 +10,10 @@ as the parity harness.  The point is the RATIO, not the absolute numbers.
 from __future__ import annotations
 
 import argparse
+import faulthandler
+import signal
+
+faulthandler.register(signal.SIGUSR1)   # DEBUG: kill -USR1 <pid> dumps every thread's stack
 import json
 import sys
 import time
@@ -23,8 +27,9 @@ CONFIG = ROOT / "strata-iq3_xxs.json"
 
 
 def one_pass(exe: str, cfg: dict, workdir: Path, name: str, a_ids, b_ids, warm_ids, max_new: int,
-             preempt: bool, chunk: int) -> dict:
-    e = Engine(exe, engine_args(cfg, prefill=chunk, preempt=preempt), workdir / f"bench-{name}.log")
+             preempt: bool, chunk: int, args_max_context: int) -> dict:
+    ctx = args_max_context
+    e = Engine(exe, engine_args(cfg, prefill=chunk, preempt=preempt, max_context=ctx), workdir / f"bench-{name}.log")
     try:
         e.gen(None, warm_ids, 8)
         e.collect(None)
@@ -35,6 +40,7 @@ def one_pass(exe: str, cfg: dict, workdir: Path, name: str, a_ids, b_ids, warm_i
 
         def on_line(line: str) -> bool:
             if line.startswith("PP ") and not b_queued["sent"]:
+                print(f"[bench]   A at {line.split()[1]} tokens ({time.time() - t_a0:.0f} s)", flush=True)
                 if int(line.split()[1]) >= 3 * chunk:      # A is three chunks into its prefill: queue B
                     out["a_at_b"] = time.time() - t_a0
                     e.gen(2, b_ids, max_new)
@@ -52,13 +58,13 @@ def one_pass(exe: str, cfg: dict, workdir: Path, name: str, a_ids, b_ids, warm_i
             if not a_first.get("stopped"):
                 raise RuntimeError("A never parked for B")
         else:
-            # no preemption: A runs its whole prefill and decode first; B's lines follow
-            a_done = e.collect(1)
+            # no preemption: the first collect ran A to its DONE; B's lines follow
             out["a_total_s"] = time.time() - t_a0
-        t_b0 = time.time()
+        print("[bench]   collecting B", flush=True)
         b = e.collect(2)
-        out["b_ttft_s"] = None          # filled below from the first T's arrival
-        out["b_total_s"] = time.time() - t_b0
+        print("[bench]   B collected", flush=True)
+        # B's latency: from the moment it was queued (mid-A's prefill) to its DONE - the wait is the point
+        out["b_total_s"] = time.time() - out["b_queued_at"]
         out["b_tokens"] = len(b["tokens"])
         if preempt:
             out["a_total_s"] = None
@@ -96,7 +102,8 @@ def main() -> int:
         name = "on" if preempt else "off"
         print(f"[bench] pass {name}: A={args.tokens} tokens, B=220 tokens, max_new={args.max_new}", flush=True)
         t0 = time.time()
-        r = one_pass(args.engine, cfg, workdir, name, a_ids, b_ids, warm_ids, args.max_new, preempt, args.chunk)
+        r = one_pass(args.engine, cfg, workdir, name, a_ids, b_ids, warm_ids, args.max_new, preempt, args.chunk,
+                     args.tokens + 2 * args.max_new + 4096)
         r["pass_s"] = time.time() - t0
         results.append(r)
         print(f"[bench]   {r}", flush=True)
