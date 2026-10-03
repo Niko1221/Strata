@@ -515,14 +515,22 @@ class OutputParser:
             if c >= 0:
                 self.reasoning_tail = text[c:]
 
-    def _rescue_unclosed_call(self) -> list[Event]:
+    def _rescue_unclosed_call(self, finish_reason: str = "stop") -> list[Event]:
         """End of generation inside a thinking span that never closed.  A complete <tool_call> in such a
         span was the model ACTING, not quoting - a template that renders a call after the reasoning block
         never emits </think> before it, so without this the whole call streams out as reasoning and a
         client that runs tools from the content channel ends its turn with nothing to execute.  Only a
         tail made of complete, well-formed calls is rescued; anything else stays what it already streamed
         as.  A </think> after the opener clears the tail (a mention inside genuine reasoning), so a valid
-        quoted example is never acted on."""
+        quoted example is never acted on.
+
+        Only a turn that ended BY ITSELF (`finish_reason == "stop"`) is rescued: a reply cut by
+        max tokens ("length") most often leaves the span open mid-thought, and a complete call
+        quoted inside that reasoning was something the model CONSIDERED, not did - the review's
+        case (a quoted destructive command rescued into a real tool_use)."""
+        if finish_reason != "stop":
+            self.reasoning_tail = None
+            return []
         tail, self.reasoning_tail = self.reasoning_tail, None
         if not tail:
             return []
@@ -608,9 +616,10 @@ class OutputParser:
                 self._reset_scan()
                 self.state, self.lead = "content", True
 
-    def finish(self) -> list[Event]:
+    def finish(self, finish_reason: str = "stop") -> list[Event]:
         """End of generation: flush whatever is held (an unterminated tool call is returned as content; one that was
-        already announced stays unfinished: its JSON is not closed and no "tool_call" follows it, #211)."""
+        already announced stays unfinished: its JSON is not closed and no "tool_call" follows it, #211).
+        `finish_reason` gates the unclosed-thinking rescue (see _rescue_unclosed_call)."""
         out = []
         if self.state == "call" and self.stream_tools and self.scall is not None:
             out += self._scan()                 # the output ended inside a call that was already announced
@@ -626,4 +635,4 @@ class OutputParser:
             if self.state == "reasoning":
                 self._track_reasoning(text)
             self.buf = ""
-        return out + self._rescue_unclosed_call()
+        return out + self._rescue_unclosed_call(finish_reason)

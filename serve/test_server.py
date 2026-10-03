@@ -2339,13 +2339,13 @@ class ReasoningToolCall(unittest.TestCase):
     SCHEMA = [{"name": "Read", "parameters": {"properties": {"file_path": {"type": "string"},
                                                              "offset": {"type": "integer"}}}}]
 
-    def run_parser(self, text, stream_tools, step):
+    def run_parser(self, text, stream_tools, step, finish_reason="stop"):
         from serve.frontend import OutputParser
         p = OutputParser(thinking=True, tools=self.SCHEMA, stream_tools=stream_tools)
         evs = []
         for i in range(0, len(text), step):
             evs += p.feed(text[i:i + step])
-        evs += p.finish()
+        evs += p.finish(finish_reason)
         return evs
 
     def test_call_stranded_in_unclosed_thinking_is_rescued(self):
@@ -2391,6 +2391,27 @@ class ReasoningToolCall(unittest.TestCase):
         self.assertEqual([(c.name, c.arguments) for c in calls], [("Read", {"file_path": "/a"})])
         thought = "".join(e.text for e in evs if e.kind == "reasoning")
         self.assertIn("let me see what comes back", thought)
+
+    def test_quoted_call_in_a_max_tokens_cut_is_not_rescued(self):
+        # The review's case: a reply cut by max tokens most often leaves the thinking span
+        # open mid-thought - a complete call quoted inside that reasoning was something the
+        # model CONSIDERED ("but first let me check..."), not did.  A turn that did not end
+        # by itself never rescues.
+        text = ("I could run <tool_call>\n<function=Bash>\n<parameter=command>\nrm -rf build\n"
+                "</parameter>\n</function>\n</tool_call>\nbut first let me check what build holds...")
+        evs = self.run_parser(text, False, 7, finish_reason="length")
+        self.assertFalse([e for e in evs if e.kind == "tool_call"])
+        thought = "".join(e.text for e in evs if e.kind == "reasoning")
+        self.assertIn("rm -rf build", thought)          # it all stays reasoning
+
+    def test_a_natural_stop_still_rescues_the_same_shape(self):
+        # The same text ending BY ITSELF is the live bug's shape - the model went from
+        # thought to call with no </think> and stopped.  The gate must not lose it.
+        text = ("planning <tool_call>\n<function=Read>\n<parameter=file_path>\n/a\n</parameter>\n"
+                "</function>\n</tool_call>")
+        evs = self.run_parser(text, False, 7, finish_reason="stop")
+        calls = [e.call for e in evs if e.kind == "tool_call"]
+        self.assertEqual([(c.name, c.arguments) for c in calls], [("Read", {"file_path": "/a"})])
 
     def test_two_stranded_calls_are_both_rescued(self):
         text = ("a<tool_call>\n<function=Read>\n<parameter=file_path>\n/a\n</parameter>\n</function>\n"
