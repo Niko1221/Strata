@@ -15,6 +15,9 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](../bench/results/2026-09-30-community-rtx-5090/README.md):
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
   each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.
+- [2026-10-02: RX 9070 XT 16 GB, Threadripper 3960X, 128 GB RAM, Windows 11](../bench/results/2026-10-02-community-rx9070xt-windows/README.md):
+  Strata 0.1.35 with the ready-made Windows AMD engine, original Flash-Next IQ3_S, 65,536-token context; three runs
+  each of a 256-token answer and of 3,927- and 31,059-token prompts.
 
 ## What to record
 
