@@ -127,7 +127,7 @@ void spit(const fs::path& p, const std::vector<char>& d) {
 bool no_temp(const fs::path& dir) {
     for (const auto& e : fs::directory_iterator(dir)) {
         const std::string n = e.path().filename().string();
-        if (n.size() > 4 && n.compare(n.size() - 4, 4, ".tmp") == 0 && n != "planted.bin.tmp") return false;
+        if (n.size() > 4 && n.compare(n.size() - 4, 4, ".tmp") == 0 && n != "keep.bin.tmp") return false;
     }
     return true;
 }
@@ -424,10 +424,10 @@ int main() {
         check(session_file_write(p.string(), original, id, written, error, opt) && slurp(p) == image,
               "write with a small reserve succeeds");
     }
-    // a failed write over an existing session keeps it, and touches no other file (a planted name of the old
+    // a failed write over an existing session keeps it, and touches no other file (a planted "<name>.tmp", the old
     // fixed temporary pattern included)
     {
-        const fs::path p = dir / "keep.bin", planted = dir / "planted.bin.tmp";
+        const fs::path p = dir / "keep.bin", planted = dir / "keep.bin.tmp";
         check(session_file_write(p.string(), original, id, written, error), "keep: first write");
         spit(planted, std::vector<char>(5, 'p'));
         SavedConversation meta = original;
