@@ -14,6 +14,7 @@
 //     fallback is the common case and not an error path.
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -51,6 +52,14 @@ struct PinnedArena {
     /// existing allocation path.  Population/coordination and backing-file lifetime remain the caller's job.
     PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds, uint64_t max_pinned_bytes = 0,
                 const std::string& shared_file = {}, uint64_t shared_pack_hash = 0);
+    /// #285: reserve only; the caller registers the slices with register_slices(), on a thread, while its readers
+    /// fill the ones already registered (one registration of the whole arena cost ~2.5 s at 33 GiB of 4 KB pages).
+    struct Deferred {};
+    PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds, Deferred);
+    /// Registers the deferred slices in order, publishing how many are done in `ready`, and INT_MAX once it
+    /// returns (a slice CUDA refuses ends the registration, and the rest is kept resident by the working-set lock).
+    void register_slices(std::atomic<int>& ready);
+    std::vector<uint64_t> bounds_;
     std::vector<uint64_t> slice_starts;
     void* mapping_base = nullptr;     ///< actual mapping start; differs from base when a shared-file header exists
     uint64_t mapping_bytes = 0;       ///< bytes to release from mapping_base
@@ -101,14 +110,19 @@ struct LoadStats {
 LoadStats load_experts(const std::string& path, uint8_t* dst, uint64_t blob_bytes, uint64_t blobs_per_layer,
                        uint64_t layers, int threads, uint64_t chunk);
 /// Plan v0.3 P6: the same with one byte range per layer (`layer_off[L]`, `layer_bytes[L]`).
+/// `ready` (optional): layer L is written only once *ready > L + 1 - its slice and the next one registered (a
+/// PinnedArena registering its slices meanwhile: writing a page while cudaHostRegister runs on it corrupted the
+/// arena under WDDM, even on large pages; a layer boundary inside a page puts that page in both registrations).
 LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::vector<uint64_t>& layer_off,
-                              const std::vector<uint64_t>& layer_bytes, int threads, uint64_t chunk);
+                              const std::vector<uint64_t>& layer_bytes, int threads, uint64_t chunk,
+                              const std::atomic<int>* ready = nullptr);
 
 /// The same ranges read UNBUFFERED straight into `dst` (Windows): no staging buffer and no file-cache copy - the
 /// drive's DMA lands where the experts live. Every range, `dst` and `chunk` must be 4 KiB aligned; returns ok =
 /// false with an empty `error` when they are not (or off Windows), and the caller falls back to load_experts_ranges.
 LoadStats load_experts_direct(const std::string& path, uint8_t* dst, const std::vector<uint64_t>& layer_off,
-                              const std::vector<uint64_t>& layer_bytes, int threads, uint64_t chunk);
+                              const std::vector<uint64_t>& layer_bytes, int threads, uint64_t chunk,
+                              const std::atomic<int>* ready = nullptr);
 
 /// Whether the expert files are better read unbuffered (Windows; false elsewhere): a timed probe of random 64 KiB
 /// reads says they are not in the OS file cache (a cached read takes ~10 us, the drive ~80), and the RAM left
