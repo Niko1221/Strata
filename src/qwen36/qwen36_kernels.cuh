@@ -27,32 +27,32 @@ void gdn_out_norm_silu(float* dst, const float* o, const float* z, const float* 
 void attn_prep_q(float* q_out, float* gate_out, const float* q2, const float* qnorm, int n_head, int hd, int rot,
                  float theta, int pos, float eps, void* stream);
 // k = rope(rmsnorm(k)); writes K and V for `pos` into the F16 cache [n_kv][max_ctx][hd].
-void attn_prep_kv(__half* kcache, __half* vcache, const float* k, const float* v, const float* knorm, int n_kv, int hd,
-                  int rot, float theta, int pos, int max_ctx, float eps, void* stream);
+void attn_prep_kv(void* kcache, void* vcache, const float* k, const float* v, const float* knorm, int n_kv, int hd,
+                  int rot, float theta, int pos, int max_ctx, float eps, int kv8, void* stream);
+// KV cache layout: kv8 = 0 F16 [n_kv][max_ctx][hd]; kv8 = 1 int8 codes + F16 scale per 32 values (see qwen36_kernels.cu).
 // out[h*hd+d] = softmax(q.K^T * scale) V * sigmoid(gate), over positions 0..n_ctx-1.  hd must be 128 or 256.
-void attn_decode(float* out, const float* q, const float* gate, const __half* kcache, const __half* vcache,
-                 int n_head, int n_kv, int hd, int n_ctx, int max_ctx, void* stream);
+void attn_decode(float* out, const float* q, const float* gate, const void* kcache, const void* vcache,
+                 int n_head, int n_kv, int hd, int n_ctx, int max_ctx, int kv8, void* stream);
 
 
 // ------------------------------------------------------------------------------------------------------------------
 // Batched variants for block prefill.  Layouts: activations [B][width] row-major (token-major).
 // Y[col*n_out + row] = dot(W[row,:], X[col*n_in : (col+1)*n_in]) for W in F32 / F16 / BF16.
 void gemv_float_cols(int ggml_type, const void* W, const float* X, float* Y, int n_in, int n_out, int ncols, void* stream);
-// F32 activations -> F16 bits, for the tensor-core GEMMs (strata::prefill::Gemm takes F16/BF16 inputs).  The
-// conversion is Strata's own round-to-nearest-even `f16_from_f32`, not `__float2half` (see f16_bits.hpp).
-void to_f16(const float* x, uint16_t* out, int n, void* stream);
 // Like router_topk for `rows` independent rows: logits [rows][n_expert], ids/wts [rows][k].
 void router_topk_rows(const float* logits, int rows, int n_expert, int k, int* ids, float* wts, void* stream);
 // Causal conv (k=4) + SiLU over B consecutive tokens, same history layout as Strata's native op (hist[c*3 + tap]).
-void gdn_conv_silu_b(float* hist, const float* X, const float* w, float* out, int channels, int B, void* stream);
+// ckpt (nullable): [B][channels*3], the history after each token, for rolling back a verified draft window.
+void gdn_conv_silu_b(float* hist, const float* X, const float* w, float* out, int channels, int B, float* ckpt, void* stream);
 // L2-normalise the first `rows_per_token` rows of S floats of every token (q heads then k heads), exactly as Strata's.
 void gdn_l2norm_qk_b(float* qkv, int channels, int rows_per_token, int S, int B, float eps, void* stream);
 // gate = softplus(alpha + dt) * ssm_a ; beta = sigmoid(beta)  (in place), for B tokens x hv heads.
 void gdn_gate_beta_b(const float* alpha, const float* dt, const float* ssm_a, float* gate, float* beta, int hv, int B,
                      void* stream);
 // The delta-rule recurrence over B tokens, same state layout and arithmetic as native_gdn_step (S = 128).
+// ckpt (nullable): [B][128*hv*128], the state after each token (same layout as `state`).
 void gdn_step_b(float* state, const float* qkv, const float* gate, const float* beta, float* out, int hk, int hv,
-                int channels, int B, void* stream);
+                int channels, int B, float* ckpt, void* stream);
 void gather_rows(float* dst, const float* src, const int* idx, int n_rows, int n, void* stream);   // dst[r] = src[idx[r]]
 // x[b] += sum_j wts[b*k+j] * D[pos[b*k+j]] + sigmoid(sg[b]) * shexp[b]       (rows of n floats)
 void moe_combine_b(float* x, const float* D, const float* wts, const int* pos, const float* shexp, const float* sg, int B,
@@ -60,10 +60,23 @@ void moe_combine_b(float* x, const float* D, const float* wts, const int* pos, c
 void dot_rows(float* out, const float* w, const float* X, int rows, int n, void* stream);          // out[r] = w . X[r]
 void attn_prep_q_b(float* q_out, float* gate_out, const float* q2, const float* qnorm, int n_head, int hd, int rot,
                    float theta, int pos0, int B, float eps, void* stream);
-void attn_prep_kv_b(__half* kcache, __half* vcache, const float* k, const float* v, const float* knorm, int n_kv, int hd,
-                    int rot, float theta, int pos0, int B, int max_ctx, float eps, void* stream);
+void attn_prep_kv_b(void* kcache, void* vcache, const float* k, const float* v, const float* knorm, int n_kv, int hd,
+                    int rot, float theta, int pos0, int B, int max_ctx, float eps, int kv8, void* stream);
 // Token b attends to positions 0 .. pos0+b (K/V of the whole batch must already be in the cache).
-void attn_decode_b(float* out, const float* q, const float* gate, const __half* kcache, const __half* vcache, int n_head,
-                   int n_kv, int hd, int pos0, int B, int max_ctx, void* stream);
+void attn_decode_b(float* out, const float* q, const float* gate, const void* kcache, const void* vcache, int n_head,
+                   int n_kv, int hd, int pos0, int B, int max_ctx, int kv8, void* stream);
+
+// ------------------------------------------------------------------------------------------------------------------
+// Grouped experts without a host round trip.  ids [B*k] (router output, device) are sanitised in place; the outputs are the
+// arguments of strata::kernels::native_expert_grouped:  grp_ptr [min(ne,B*k)], grp_start [min(ne,B*k)+1], n_groups [1],
+// ent_tok [B*k] (token of each sorted entry), ent_dst [B*k] (= its own index) and pos [B*k] (sorted position of pair
+// (b, j): where moe_combine_b reads that expert's output).  *err is set to 1 if an id was out of range.
+void moe_group_dev(int* ids, int B, int k, int n_expert, unsigned long long blob_base, unsigned long long blob_stride,
+                   unsigned long long* grp_ptr, int* grp_start, int* n_groups, int* ent_tok, int* ent_dst, int* pos,
+                   int* err, void* stream);
+
+// dst[b] = [ rmsnorm(a[b]) * wa | rmsnorm(c[b]) * wc ]: rows of n floats -> rows of 2n (MTP head input).
+void cat_norm2(float* dst, const float* a, const float* wa, const float* c, const float* wc, int rows, int n, float eps,
+               void* stream);
 
 }  // namespace q36

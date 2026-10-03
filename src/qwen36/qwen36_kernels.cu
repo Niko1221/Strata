@@ -1,13 +1,12 @@
 // qwen36_kernels.cu - see qwen36_kernels.cuh.  Plain, readable kernels: correctness first (Phase 1).
 #include "qwen36_kernels.cuh"
+#include "moe_group.hpp"
 
 #include <cuda_runtime.h>
 
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
-
-#include "strata/kernels/f16_bits.hpp"
 
 namespace q36 {
 namespace {
@@ -196,8 +195,35 @@ __global__ void k_prep_q(float* q_out, float* gate_out, const float* q2, const f
     for (int i = threadIdx.x; i < (rot >> 1); i += blockDim.x) rope_pair(qo, i, rot, theta, pos);
 }
 
-__global__ void k_prep_kv(__half* kc, __half* vc, const float* k, const float* v, const float* knorm, int hd, int rot,
-                          float theta, int pos, int max_ctx, float eps, float* scratch) {
+// KV cache cells.  kv8 = 0: F16 [n_kv][max_ctx][hd].  kv8 = 1: per kv head a block of max_ctx*hd int8 codes followed by
+// max_ctx*(hd/32) F16 scales (one per 32 values, max|x|/127): 1.0625 bytes/value instead of 2.
+__device__ __forceinline__ size_t kv8_head_bytes(int hd, int max_ctx) { return (size_t)max_ctx * hd + (size_t)max_ctx * (hd / 32) * 2; }
+
+// All threads of the block call it (no __syncthreads inside, whole warps stay active).  src: hd floats.
+__device__ void kv_write(void* base, int kv8, int hd, int max_ctx, int h, int pos, const float* src) {
+    if (!kv8) {
+        __half* p = static_cast<__half*>(base) + ((size_t)h * max_ctx + pos) * hd;
+        for (int i = threadIdx.x; i < hd; i += blockDim.x) p[i] = __float2half(src[i]);
+        return;
+    }
+    uint8_t* hb = static_cast<uint8_t*>(base) + (size_t)h * kv8_head_bytes(hd, max_ctx);
+    int8_t* codes = reinterpret_cast<int8_t*>(hb) + (size_t)pos * hd;
+    __half* sc = reinterpret_cast<__half*>(hb + (size_t)max_ctx * hd) + (size_t)pos * (hd / 32);
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    for (int g = warp; g < hd / 32; g += blockDim.x >> 5) {
+        const float x = src[g * 32 + lane];
+        float mx = fabsf(x);
+#pragma unroll
+        for (int o = 16; o > 0; o >>= 1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffffu, mx, o));
+        const __half sh = __float2half(mx / 127.f);
+        const float s = __half2float(sh);
+        codes[g * 32 + lane] = (int8_t)(s > 0.f ? __float2int_rn(x / s) : 0);
+        if (lane == 0) sc[g] = sh;
+    }
+}
+
+__global__ void k_prep_kv(void* kc, void* vc, const float* k, const float* v, const float* knorm, int hd, int rot,
+                          float theta, int pos, int max_ctx, float eps, float* scratch, int kv8) {
     const int h = blockIdx.x;
     const float* kin = k + (size_t)h * hd;
     float* ks = scratch + (size_t)h * hd;  // per-head F32 staging so rope can pair elements across threads
@@ -209,11 +235,8 @@ __global__ void k_prep_kv(__half* kc, __half* vc, const float* k, const float* v
     __syncthreads();
     for (int i = threadIdx.x; i < (rot >> 1); i += blockDim.x) rope_pair(ks, i, rot, theta, pos);
     __syncthreads();
-    const size_t base = ((size_t)h * max_ctx + pos) * hd;
-    for (int i = threadIdx.x; i < hd; i += blockDim.x) {
-        kc[base + i] = __float2half(ks[i]);
-        vc[base + i] = __float2half(v[(size_t)h * hd + i]);
-    }
+    kv_write(kc, kv8, hd, max_ctx, h, pos, ks);
+    kv_write(vc, kv8, hd, max_ctx, h, pos, v + (size_t)h * hd);
 }
 
 template <int DPL>
@@ -240,11 +263,34 @@ __device__ __forceinline__ void load_half(const __half* p, float* out) {
     }
 }
 
+// DPL consecutive values of cell (kvh, t) starting at lane*DPL (never crosses a 32-value scale group: DPL is 4 or 8).
+template <int DPL>
+__device__ __forceinline__ void kv_load(const void* base, int kv8, int HD, int max_ctx, int kvh, int t, int lane, float* out) {
+    if (!kv8) {
+        load_half<DPL>(static_cast<const __half*>(base) + ((size_t)kvh * max_ctx + t) * HD + lane * DPL, out);
+        return;
+    }
+    const uint8_t* hb = static_cast<const uint8_t*>(base) + (size_t)kvh * kv8_head_bytes(HD, max_ctx);
+    const int8_t* c = reinterpret_cast<const int8_t*>(hb) + (size_t)t * HD + lane * DPL;
+    const float s = __half2float(reinterpret_cast<const __half*>(hb + (size_t)max_ctx * HD)[(size_t)t * (HD / 32) + (lane * DPL) / 32]);
+    if (DPL == 8) {
+        const uint2 raw = *reinterpret_cast<const uint2*>(c);
+        const int8_t* b = reinterpret_cast<const int8_t*>(&raw);
+#pragma unroll
+        for (int j = 0; j < 8; ++j) out[j] = s * (float)b[j];
+    } else {
+        const uint32_t raw = *reinterpret_cast<const uint32_t*>(c);
+        const int8_t* b = reinterpret_cast<const int8_t*>(&raw);
+#pragma unroll
+        for (int j = 0; j < 4; ++j) out[j] = s * (float)b[j];
+    }
+}
+
 // grid = n_head, block = 256 (8 warps). Each warp walks positions t = warp, warp+8, ... with an online softmax;
 // the 8 partial (m, l, o) are merged at the end.
 template <int HD>
-__global__ void k_attn(float* out, const float* q, const float* gate, const __half* kc, const __half* vc, int n_head,
-                       int n_kv, int n_ctx, int max_ctx) {
+__global__ void k_attn(float* out, const float* q, const float* gate, const void* kc, const void* vc, int n_head,
+                       int n_kv, int n_ctx, int max_ctx, int kv8) {
     constexpr int DPL = HD / 32;
     __shared__ float sm[8], sl[8];
     __shared__ float so[8][HD];
@@ -258,11 +304,9 @@ __global__ void k_attn(float* out, const float* q, const float* gate, const __ha
         o[j] = 0.f;
     }
     float m = -INFINITY, l = 0.f;
-    const __half* kb = kc + (size_t)kvh * max_ctx * HD;
-    const __half* vb = vc + (size_t)kvh * max_ctx * HD;
     for (int t = warp; t < n_ctx; t += 8) {
         float kf[DPL], vf[DPL];
-        load_half<DPL>(kb + (size_t)t * HD + lane * DPL, kf);
+        kv_load<DPL>(kc, kv8, HD, max_ctx, kvh, t, lane, kf);
         float d = 0.f;
 #pragma unroll
         for (int j = 0; j < DPL; ++j) d += qv[j] * kf[j];
@@ -270,7 +314,7 @@ __global__ void k_attn(float* out, const float* q, const float* gate, const __ha
         const float mn = fmaxf(m, d);
         const float a = expf(m - mn), p = expf(d - mn);
         l = l * a + p;
-        load_half<DPL>(vb + (size_t)t * HD + lane * DPL, vf);
+        kv_load<DPL>(vc, kv8, HD, max_ctx, kvh, t, lane, vf);
 #pragma unroll
         for (int j = 0; j < DPL; ++j) o[j] = o[j] * a + p * vf[j];
         m = mn;
@@ -309,7 +353,7 @@ __global__ void k_gemv_cols(const void* W, const float* X, float* Y, int n_in, i
 }
 
 // One thread per channel, sequential over the B tokens (the recurrence of a causal depthwise conv).
-__global__ void k_conv_b(float* hist, const float* X, const float* w, float* out, int C, int B) {
+__global__ void k_conv_b(float* hist, const float* X, const float* w, float* out, int C, int B, float* ckpt) {
     const int c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= C) return;
     float h0 = hist[c * 3], h1 = hist[c * 3 + 1], h2 = hist[c * 3 + 2];
@@ -320,6 +364,10 @@ __global__ void k_conv_b(float* hist, const float* X, const float* w, float* out
         sum += h0 * w0; sum += h1 * w1; sum += h2 * w2; sum += x * w3;       // same order as the native kernel
         out[(size_t)t * C + c] = sum / (1.0f + expf(-sum));
         h0 = h1; h1 = h2; h2 = x;
+        if (ckpt) {                                                       // history after token t (rollback)
+            float* q = ckpt + ((size_t)t * C + c) * 3;
+            q[0] = h0; q[1] = h1; q[2] = h2;
+        }
     }
     hist[c * 3] = h0; hist[c * 3 + 1] = h1; hist[c * 3 + 2] = h2;
 }
@@ -350,7 +398,7 @@ __global__ void k_gate_beta_b(const float* alpha, const float* dt, const float* 
 // grid = (hv, 32), block = 128 = 4 warps; a warp owns ONE state column `col`, each lane 4 rows (i = r*32 + lane).
 // state[(i*hv + head)*128 + col]: i = key index.
 __global__ void __launch_bounds__(128) k_gdn_step_b(float* state, const float* qkv, const float* gate, const float* beta,
-                                                     float* out, int hk, int hv, int C, int B) {
+                                                     float* out, int hk, int hv, int C, int B, float* ckpt) {
     const int head = blockIdx.x, lane = threadIdx.x & 31, col = blockIdx.y * 4 + (threadIdx.x >> 5);
     const int qh = head % hk;
     const float scale = 1.0f / sqrtf(128.0f);
@@ -382,6 +430,11 @@ __global__ void __launch_bounds__(128) k_gdn_step_b(float* state, const float* q
         }
         const float attn_col = warp_sum(ap);
         if (lane == 0) out[(size_t)t * hv * 128 + (size_t)head * 128 + col] = attn_col * scale;
+        if (ckpt) {                                                       // state after token t (rollback), same layout
+#pragma unroll
+            for (int r = 0; r < 4; ++r)
+                ckpt[(size_t)t * 128 * hv * 128 + ((size_t)(r * 32 + lane) * hv + head) * 128 + col] = s[r];
+        }
     }
 #pragma unroll
     for (int r = 0; r < 4; ++r) state[((size_t)(r * 32 + lane) * hv + head) * 128 + col] = s[r];
@@ -429,8 +482,8 @@ __global__ void k_prep_q_b(float* q_out, float* gate_out, const float* q2, const
     for (int i = threadIdx.x; i < (rot >> 1); i += blockDim.x) rope_pair(qo, i, rot, theta, pos0 + b);
 }
 
-__global__ void k_prep_kv_b(__half* kc, __half* vc, const float* k, const float* v, const float* knorm, int n_kv, int hd,
-                            int rot, float theta, int pos0, int max_ctx, float eps) {
+__global__ void k_prep_kv_b(void* kc, void* vc, const float* k, const float* v, const float* knorm, int n_kv, int hd,
+                            int rot, float theta, int pos0, int max_ctx, float eps, int kv8) {
     extern __shared__ float ks[];                      // hd floats
     const int h = blockIdx.x, b = blockIdx.y, pos = pos0 + b;
     const float* kin = k + (size_t)b * n_kv * hd + (size_t)h * hd;
@@ -442,17 +495,14 @@ __global__ void k_prep_kv_b(__half* kc, __half* vc, const float* k, const float*
     __syncthreads();
     for (int i = threadIdx.x; i < (rot >> 1); i += blockDim.x) rope_pair(ks, i, rot, theta, pos);
     __syncthreads();
-    const size_t base = ((size_t)h * max_ctx + pos) * hd;
-    for (int i = threadIdx.x; i < hd; i += blockDim.x) {
-        kc[base + i] = __float2half(ks[i]);
-        vc[base + i] = __float2half(v[(size_t)b * n_kv * hd + (size_t)h * hd + i]);
-    }
+    kv_write(kc, kv8, hd, max_ctx, h, pos, ks);
+    kv_write(vc, kv8, hd, max_ctx, h, pos, v + (size_t)b * n_kv * hd + (size_t)h * hd);
 }
 
 // Same algorithm as k_attn; grid = (n_head, B), token b sees pos0 + b + 1 positions.
 template <int HD>
-__global__ void k_attn_b(float* out, const float* q, const float* gate, const __half* kc, const __half* vc, int n_head,
-                         int n_kv, int pos0, int max_ctx) {
+__global__ void k_attn_b(float* out, const float* q, const float* gate, const void* kc, const void* vc, int n_head,
+                         int n_kv, int pos0, int max_ctx, int kv8) {
     constexpr int DPL = HD / 32;
     __shared__ float sm[8], sl[8];
     __shared__ float so[8][HD];
@@ -467,11 +517,9 @@ __global__ void k_attn_b(float* out, const float* q, const float* gate, const __
         o[j] = 0.f;
     }
     float m = -INFINITY, l = 0.f;
-    const __half* kb = kc + (size_t)kvh * max_ctx * HD;
-    const __half* vb = vc + (size_t)kvh * max_ctx * HD;
     for (int t = warp; t < n_ctx; t += 8) {
         float kf[DPL], vf[DPL];
-        load_half<DPL>(kb + (size_t)t * HD + lane * DPL, kf);
+        kv_load<DPL>(kc, kv8, HD, max_ctx, kvh, t, lane, kf);
         float d = 0.f;
 #pragma unroll
         for (int j = 0; j < DPL; ++j) d += qv[j] * kf[j];
@@ -479,7 +527,7 @@ __global__ void k_attn_b(float* out, const float* q, const float* gate, const __
         const float mn = fmaxf(m, d);
         const float a = expf(m - mn), p = expf(d - mn);
         l = l * a + p;
-        load_half<DPL>(vb + (size_t)t * HD + lane * DPL, vf);
+        kv_load<DPL>(vc, kv8, HD, max_ctx, kvh, t, lane, vf);
 #pragma unroll
         for (int j = 0; j < DPL; ++j) o[j] = o[j] * a + p * vf[j];
         m = mn;
@@ -503,7 +551,59 @@ __global__ void k_attn_b(float* out, const float* q, const float* gate, const __
     }
 }
 
+// ================================================================================================ grouped experts (no host sync)
+// One block: groups the B*k routed (token, slot) pairs by expert ON THE DEVICE for strata::kernels::native_expert_grouped,
+// using the phases of moe_group.hpp (tested on a CPU).  Invalid ids (NaN logits make the router return 0x7fffffff) are
+// replaced by expert 0 and flagged in *err; the host checks the flag after the next synchronisation.
+// Dynamic shared memory: 2 * ne ints.
+__global__ void k_moe_group(int* ids, int np, int k, int ne, unsigned long long base, unsigned long long stride,
+                            unsigned long long* grp_ptr, int* grp_start, int* n_groups, int* ent_tok, int* ent_dst,
+                            int* pos, int* err) {
+    extern __shared__ int sm_[];
+    int* cnt = sm_;
+    int* off = sm_ + ne;
+    const int t = threadIdx.x, nt = blockDim.x;
+    for (int e = t; e < ne; e += nt) cnt[e] = 0;
+    __syncthreads();
+    for (int p = t; p < np; p += nt) {
+        int id = ids[p];
+        if (id < 0 || id >= ne) { id = 0; ids[p] = 0; atomicOr(err, 1); }
+        atomicAdd(&cnt[id], 1);
+    }
+    __syncthreads();
+    if (t == 0) group_offsets(cnt, ne, base, stride, grp_ptr, grp_start, n_groups, off);
+    __syncthreads();
+    for (int e = t; e < ne; e += nt)
+        if (cnt[e] > 0) group_scatter(e, ids, np, k, off[e], ent_tok, ent_dst, pos);
+}
+
+// dst[b] = [ rmsnorm(a[b]) * wa | rmsnorm(c[b]) * wc ]  (rows of n floats -> rows of 2n): the input of the MTP head's eh_proj.
+__global__ void k_cat_norm2(float* dst, const float* a, const float* wa, const float* c, const float* wc, int n, float eps) {
+    const size_t b = blockIdx.x;
+    float s1 = 0.f, s2 = 0.f;
+    for (int i = threadIdx.x; i < n; i += blockDim.x) { s1 += a[b * n + i] * a[b * n + i]; s2 += c[b * n + i] * c[b * n + i]; }
+    s1 = block_sum(s1);
+    s2 = block_sum(s2);
+    const float i1 = rsqrtf(s1 / (float)n + eps), i2 = rsqrtf(s2 / (float)n + eps);
+    for (int i = threadIdx.x; i < n; i += blockDim.x) {
+        dst[b * 2 * n + i] = a[b * n + i] * i1 * wa[i];
+        dst[b * 2 * n + n + i] = c[b * n + i] * i2 * wc[i];
+    }
+}
+
 }  // namespace
+
+void cat_norm2(float* dst, const float* a, const float* wa, const float* c, const float* wc, int rows, int n, float eps,
+               void* st) {
+    k_cat_norm2<<<rows, 256, 0, S(st)>>>(dst, a, wa, c, wc, n, eps);
+}
+
+void moe_group_dev(int* ids, int B, int k, int ne, unsigned long long blob_base, unsigned long long blob_stride,
+                   unsigned long long* grp_ptr, int* grp_start, int* n_groups, int* ent_tok, int* ent_dst, int* pos,
+                   int* err, void* st) {
+    k_moe_group<<<1, 256, (size_t)2 * ne * sizeof(int), S(st)>>>(ids, B * k, k, ne, blob_base, blob_stride, grp_ptr,
+                                                                  grp_start, n_groups, ent_tok, ent_dst, pos, err);
+}
 
 void rmsnorm(float* y, const float* x, const float* w, int rows, int n, float eps, void* st) {
     k_rmsnorm<<<rows, 256, 0, S(st)>>>(y, x, w, n, eps);
@@ -550,8 +650,8 @@ void attn_prep_q(float* q_out, float* gate_out, const float* q2, const float* qn
     k_prep_q<<<n_head, 256, 0, S(st)>>>(q_out, gate_out, q2, qnorm, hd, rot, theta, pos, eps);
 }
 
-void attn_prep_kv(__half* kc, __half* vc, const float* k, const float* v, const float* knorm, int n_kv, int hd, int rot,
-                  float theta, int pos, int max_ctx, float eps, void* st) {
+void attn_prep_kv(void* kc, void* vc, const float* k, const float* v, const float* knorm, int n_kv, int hd, int rot,
+                  float theta, int pos, int max_ctx, float eps, int kv8, void* st) {
     // staging for the normalised k: n_kv*hd floats (tiny); allocated once per process.
     static float* scratch = nullptr;
     static size_t cap = 0;
@@ -561,13 +661,13 @@ void attn_prep_kv(__half* kc, __half* vc, const float* k, const float* v, const 
         cudaMalloc(&scratch, need * sizeof(float));
         cap = need;
     }
-    k_prep_kv<<<n_kv, 256, 0, S(st)>>>(kc, vc, k, v, knorm, hd, rot, theta, pos, max_ctx, eps, scratch);
+    k_prep_kv<<<n_kv, 256, 0, S(st)>>>(kc, vc, k, v, knorm, hd, rot, theta, pos, max_ctx, eps, scratch, kv8);
 }
 
-void attn_decode(float* out, const float* q, const float* gate, const __half* kc, const __half* vc, int n_head, int n_kv,
-                 int hd, int n_ctx, int max_ctx, void* st) {
-    if (hd == 256) k_attn<256><<<n_head, 256, 0, S(st)>>>(out, q, gate, kc, vc, n_head, n_kv, n_ctx, max_ctx);
-    else if (hd == 128) k_attn<128><<<n_head, 256, 0, S(st)>>>(out, q, gate, kc, vc, n_head, n_kv, n_ctx, max_ctx);
+void attn_decode(float* out, const float* q, const float* gate, const void* kc, const void* vc, int n_head, int n_kv,
+                 int hd, int n_ctx, int max_ctx, int kv8, void* st) {
+    if (hd == 256) k_attn<256><<<n_head, 256, 0, S(st)>>>(out, q, gate, kc, vc, n_head, n_kv, n_ctx, max_ctx, kv8);
+    else if (hd == 128) k_attn<128><<<n_head, 256, 0, S(st)>>>(out, q, gate, kc, vc, n_head, n_kv, n_ctx, max_ctx, kv8);
     else { std::fprintf(stderr, "attn_decode: head_dim %d unsupported (128 or 256)\n", hd); std::abort(); }
 }
 
@@ -579,19 +679,8 @@ void gemv_float_cols(int type, const void* W, const float* X, float* Y, int n_in
     else { std::fprintf(stderr, "gemv_float_cols: unsupported type %d\n", type); std::abort(); }
 }
 
-// F32 -> F16 bits for the tensor-core GEMMs.  Strata's own converter (f16_bits.hpp), not `__float2half`,
-// whose wrong bits are documented there.
-__global__ void k_to_f16(const float* x, uint16_t* out, int n) {
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) out[i] = strata::kernels::f16_from_f32(x[i]);
-}
-
-void to_f16(const float* x, uint16_t* out, int n, void* st) {
-    if (n > 0) k_to_f16<<<(n + 255) / 256, 256, 0, S(st)>>>(x, out, n);
-}
-
-void gdn_conv_silu_b(float* hist, const float* X, const float* w, float* out, int C, int B, void* st) {
-    k_conv_b<<<(C + 255) / 256, 256, 0, S(st)>>>(hist, X, w, out, C, B);
+void gdn_conv_silu_b(float* hist, const float* X, const float* w, float* out, int C, int B, float* ckpt, void* st) {
+    k_conv_b<<<(C + 255) / 256, 256, 0, S(st)>>>(hist, X, w, out, C, B, ckpt);
 }
 
 void gdn_l2norm_qk_b(float* qkv, int C, int rows_per_token, int Sz, int B, float eps, void* st) {
@@ -606,8 +695,8 @@ void gdn_gate_beta_b(const float* alpha, const float* dt, const float* ssm_a, fl
 }
 
 void gdn_step_b(float* state, const float* qkv, const float* gate, const float* beta, float* out, int hk, int hv, int C,
-                int B, void* st) {
-    k_gdn_step_b<<<dim3(hv, 32), 128, 0, S(st)>>>(state, qkv, gate, beta, out, hk, hv, C, B);
+                int B, float* ckpt, void* st) {
+    k_gdn_step_b<<<dim3(hv, 32), 128, 0, S(st)>>>(state, qkv, gate, beta, out, hk, hv, C, B, ckpt);
 }
 
 void gather_rows(float* dst, const float* src, const int* idx, int n_rows, int n, void* st) {
@@ -628,17 +717,17 @@ void attn_prep_q_b(float* q_out, float* gate_out, const float* q2, const float* 
     k_prep_q_b<<<dim3(n_head, B), 256, 0, S(st)>>>(q_out, gate_out, q2, qnorm, n_head, hd, rot, theta, pos0, eps);
 }
 
-void attn_prep_kv_b(__half* kc, __half* vc, const float* k, const float* v, const float* knorm, int n_kv, int hd, int rot,
-                    float theta, int pos0, int B, int max_ctx, float eps, void* st) {
+void attn_prep_kv_b(void* kc, void* vc, const float* k, const float* v, const float* knorm, int n_kv, int hd, int rot,
+                    float theta, int pos0, int B, int max_ctx, float eps, int kv8, void* st) {
     k_prep_kv_b<<<dim3(n_kv, B), 256, (size_t)hd * sizeof(float), S(st)>>>(kc, vc, k, v, knorm, n_kv, hd, rot, theta, pos0,
-                                                                          max_ctx, eps);
+                                                                          max_ctx, eps, kv8);
 }
 
-void attn_decode_b(float* out, const float* q, const float* gate, const __half* kc, const __half* vc, int n_head, int n_kv,
-                   int hd, int pos0, int B, int max_ctx, void* st) {
+void attn_decode_b(float* out, const float* q, const float* gate, const void* kc, const void* vc, int n_head, int n_kv,
+                   int hd, int pos0, int B, int max_ctx, int kv8, void* st) {
     const dim3 grid(n_head, B);
-    if (hd == 256) k_attn_b<256><<<grid, 256, 0, S(st)>>>(out, q, gate, kc, vc, n_head, n_kv, pos0, max_ctx);
-    else if (hd == 128) k_attn_b<128><<<grid, 256, 0, S(st)>>>(out, q, gate, kc, vc, n_head, n_kv, pos0, max_ctx);
+    if (hd == 256) k_attn_b<256><<<grid, 256, 0, S(st)>>>(out, q, gate, kc, vc, n_head, n_kv, pos0, max_ctx, kv8);
+    else if (hd == 128) k_attn_b<128><<<grid, 256, 0, S(st)>>>(out, q, gate, kc, vc, n_head, n_kv, pos0, max_ctx, kv8);
     else { std::fprintf(stderr, "attn_decode_b: head_dim %d unsupported (128 or 256)\n", hd); std::abort(); }
 }
 
