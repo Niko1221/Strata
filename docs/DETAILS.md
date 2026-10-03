@@ -307,7 +307,10 @@ Then it downloads and prepares everything (the model is 66-76 GB, so the first s
 download continues where it stopped) and **starts the model**: your browser opens `http://127.0.0.1:8080`, the Strata
 app. It has three tabs:
 - **Chat:** streaming answers, the model's thinking (folded away once it answers), code with a copy button, pictures when
-  images are on, and sampling and thinking-level settings. Chats stay in your browser.
+  images are on, and sampling and thinking-level settings. A context gauge by the input shows the window in use, and
+  the compact button summarizes the older turns - the newest turns stay verbatim up to a ~5k-token
+  budget, and only the newest summary can be put back (the page keeps every message; the API sees the
+  summary instead of the turns it replaces). Chats stay in your browser.
 - **Monitor:** what the model is doing (reading the prompt, with progress, or writing, at how many tokens/s); GPU load,
   VRAM, temperature, power and PCIe traffic; CPU, RAM and disk; the context in use; the last requests.
 - **About:** the model and engine settings, and the addresses to connect other apps.
