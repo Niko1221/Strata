@@ -76,4 +76,31 @@ ConversationRestore conversation_snapshot_restore(const SavedConversation& image
                                                    const ModelGeometry& g, const QsaState& draft,
                                                    std::string& error);
 
+// Layer split (--layer-split): the same operations over the first stage's `session` plus the later stages, each a
+// session on its own device. Every stage saves and restores only the state it owns (its carve's running state and
+// the K/V of its QSA layers); `draft` lives on the last stage's device. An empty `stages` is exactly the one-GPU
+// functions above. Retained K/V reuse is single-GPU only: with stages, `reuse` is ignored (a full capture).
+struct ConversationStage {
+    SessionState* session = nullptr;
+    int device = -1;
+};
+using ConversationStages = std::vector<ConversationStage>;
+bool conversation_snapshot_bytes(const ConversationView& view, const SessionState& session,
+                                 const ConversationStages& stages, const ModelGeometry& g, const QsaState& draft,
+                                 size_t& bytes, std::string& error);
+bool conversation_snapshot_capture_bytes(const ConversationKvReuse& reuse, const ConversationView& view,
+                                         const SessionState& session, const ConversationStages& stages,
+                                         const ModelGeometry& g, const QsaState& draft, size_t& bytes,
+                                         std::string& error);
+bool conversation_snapshot_save(SavedConversation& image, const ConversationView& view,
+                                const SessionState& session, const ConversationStages& stages,
+                                const ModelGeometry& g, const QsaState& draft, std::string& error,
+                                ConversationKvReuse reuse = {}, size_t* reused_bytes = nullptr);
+bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& session,
+                                    const ConversationStages& stages, const ModelGeometry& g, const QsaState& draft,
+                                    std::string& error);
+ConversationRestore conversation_snapshot_restore(const SavedConversation& image, SessionState& session,
+                                                   const ConversationStages& stages, const ModelGeometry& g,
+                                                   const QsaState& draft, std::string& error);
+
 } // namespace strata::core

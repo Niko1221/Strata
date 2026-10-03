@@ -195,6 +195,80 @@ void full_session(int fmt, int mode, int experts) {
 }
 }
 
+// Layer split: stage 0 (the caller's session) owns the first layers and no QSA layer, stage 1 owns the rest and
+// the QSA layer; the draft lives with the last stage. Both stages sit on device 0 here - the device switching is
+// OnDevice's, the per-stage capture/restore and its validation are what this checks.
+void split_session(int fmt, int mode) {
+    Fixture first(fmt,mode), second(fmt,mode), draft(fmt==3?kKvInt8:fmt,2);
+    auto& g=first.g;
+    g.n_layers=4; g.n_expert=8; g.ssm_state_size=2; g.ssm_v_heads=2; g.ssm_conv_channels=8;
+    second.g=g;
+    check(g.n_qsa_layers()==1 && g.n_gdn_layers()>=2,"split fixture geometry: one QSA layer, two or more GDN layers");
+    std::string err;
+    ConversationStateSizes whole;
+    check(conversation_state_sizes(g,whole,err),"split geometry sizes");
+    const size_t gdn_row = whole.gdn / (size_t) g.n_gdn_layers();
+    SessionState s0, s1;
+    s0.max_cells=96; s0.layer_lo=0; s0.layer_hi=2; s0.gdn_alloc=1; s0.qsa_ord0=0; s0.qsa_alloc=0;
+    s1.max_cells=96; s1.layer_lo=2; s1.layer_hi=g.n_layers; s1.gdn_alloc=g.n_gdn_layers()-1;
+    s1.qsa_ord0=0; s1.qsa_alloc=1; s1.qsa_states=&second.state;
+    first.alloc(s0.gdn_state,gdn_row*(size_t)s0.gdn_alloc); first.alloc(s0.ple_hist,whole.ple);
+    second.alloc(s1.gdn_state,gdn_row*(size_t)s1.gdn_alloc);
+    second.alloc(second.state.idx_tail,whole.tail); second.alloc(second.state.idx_dead,whole.dead);
+    second.alloc(second.state.idx_block_pos,whole.block_pos);
+    const ConversationStages stages{{&s1,0}};
+    std::vector<int32_t> ids(65);
+    for (size_t i=0;i<ids.size();++i) ids[i]=(int32_t)i+1;
+    std::vector<ConversationImageKey> images;
+    auto fill=[&](uint8_t salt) {
+        second.fill(salt); draft.fill(salt);
+        for (const auto& [p,n] : std::vector<std::pair<void*,size_t>>{
+                 {s0.gdn_state,gdn_row*(size_t)s0.gdn_alloc},{s0.ple_hist,whole.ple},
+                 {s1.gdn_state,gdn_row*(size_t)s1.gdn_alloc},{second.state.idx_tail,whole.tail},
+                 {second.state.idx_dead,whole.dead},{second.state.idx_block_pos,whole.block_pos}})
+            cuda_check(cudaMemset(p,salt,n));
+        cuda_check(cudaMemcpy(second.state.idx_pooled+(ids.size()/4)*g.idx_key_dim,
+                              second.state.idx_dead,whole.dead,cudaMemcpyDeviceToDevice));
+        cuda_check(cudaDeviceSynchronize());
+    };
+    fill(21);
+    // a split checkpoint: the first stage's running state plus one part per later stage
+    ConversationCheckpoint c;
+    c.ids.assign(ids.begin(),ids.begin()+3);
+    ConversationCheckpoint part; part.ids=c.ids;
+    check(conversation_checkpoint_save(c,s0,g,err) && conversation_checkpoint_save(part,s1,g,err),"save split checkpoint");
+    c.stage_parts.push_back(std::move(part));
+    std::vector<ConversationCheckpoint> checkpoints{c};
+    const ConversationView view{ids,images,checkpoints,true};
+    size_t estimate=0;
+    check(conversation_snapshot_bytes(view,s0,stages,g,draft.state,estimate,err),"split snapshot estimate");
+    size_t refused=0;
+    check(!conversation_snapshot_bytes(view,s0,g,draft.state,refused,err),"a split checkpoint is refused by the one-GPU view");
+    SavedConversation a,b,restored;
+    check(conversation_snapshot_save(a,view,s0,stages,g,draft.state,err),"capture split A");
+    check(a.stages.size()==1 && a.stages[0].kv.size()==1 && a.kv.size()==1,"A: stage 0 keeps the draft only, stage 1 its QSA layer");
+    check(a.bytes()<=estimate,"split capture stays within its estimate");
+    fill(203);
+    check(conversation_snapshot_save(b,view,s0,stages,g,draft.state,err),"capture split B");
+    check(a.stages[0].live.gdn!=b.stages[0].live.gdn && !equal(a.stages[0].kv[0],b.stages[0].kv[0]),"fixture changes stage 1");
+    check(conversation_snapshot_restore(a,s0,g,draft.state,err)==ConversationRestore::invalid,"one-GPU restore refuses a split image");
+    auto other=a; other.stages[0].layer_lo=1;
+    check(conversation_snapshot_restore(other,s0,stages,g,draft.state,err)==ConversationRestore::invalid,"refuse another layer range");
+    auto broken=a; broken.stages[0].kv[0].k.pop_back();
+    check(conversation_snapshot_restore(broken,s0,stages,g,draft.state,err)==ConversationRestore::invalid,"refuse a damaged stage before any write");
+    check(conversation_snapshot_save(restored,view,s0,stages,g,draft.state,err) &&
+          restored.stages[0].live.gdn==b.stages[0].live.gdn && equal(restored.stages[0].kv[0],b.stages[0].kv[0]),
+          "refusals leave every stage untouched");
+    check(conversation_snapshot_restore(a,s0,stages,g,draft.state,err)==ConversationRestore::restored,"restore split A");
+    check(conversation_snapshot_save(restored,view,s0,stages,g,draft.state,err),"capture restored split A");
+    check(restored.live.gdn==a.live.gdn && restored.live.ple==a.live.ple && equal(restored.kv[0],a.kv[0]) &&
+          restored.stages[0].live.gdn==a.stages[0].live.gdn && restored.stages[0].live.tails==a.stages[0].live.tails &&
+          restored.stages[0].live.dead==a.stages[0].live.dead && restored.stages[0].live.block_pos==a.stages[0].live.block_pos &&
+          equal(restored.stages[0].kv[0],a.stages[0].kv[0]),"split A/B/A exactness on every stage and the draft");
+    check(s0.ple_prev[1]==65 && s1.ple_prev[1]==65,"every stage's PLE token window reconstructed");
+    check(restored.checkpoints.size()==1 && restored.checkpoints[0].stage_parts.size()==1,"split checkpoints survive parking");
+}
+
 int main() {
     int devices=0;
     if (cudaGetDeviceCount(&devices)!=cudaSuccess || !devices) return 77;
@@ -279,5 +353,6 @@ int main() {
     for (int fmt : {kKvF16,kKvInt8,kKvQ4}) for (int mode : {0,1}) for (int experts : {256,512})
         full_session(fmt,mode,experts);
     for (int experts : {256,512}) full_session(3,0,experts);
+    for (int fmt : std::array<int,3>{kKvF16,kKvInt8,kKvQ4}) for (int mode : {0,1}) split_session(fmt,mode);
     std::printf("conversation_snapshot_test: %d checks passed\n",checks);
 }

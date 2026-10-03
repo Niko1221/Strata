@@ -104,6 +104,8 @@ into the card that owns the layer.
   - KV streaming (`--kv-resident`): each card streams the KV of its own session;
   - mid-prompt checkpoints (`--prompt-cache-every`): each card saves its part of a checkpoint when it has read that
     chunk;
+  - conversation parking (`--conversation-cache-mib`, docs/DETAILS.md): each card parks and restores its own share
+    of a conversation (always a full capture with a split);
   - the older helper-GPU caches (`--expert-cache-remote`, docs/SECOND_GPU.md): they take the visible GPUs no stage
     runs on, and hold only experts no stage's cache holds. On the test rig, a 2080 Ti helper made decoding slower,
     as it did without a split: its per-layer round trip costs more than the CPU pool needs for those experts.

@@ -25,8 +25,8 @@ struct ConversationCheckpoint {
     std::vector<ConversationImageKey> imgs;
     std::vector<uint8_t> gdn, ple, tails, dead, block_pos;
     uint64_t used = 0; // upstream root-pinned/LRU checkpoint retention
-    // Ordinary layer-split checkpoints retain each device's running state.
-    // Whole-session parking is currently single-GPU and rejects these parts.
+    // Layer-split checkpoints retain each later device's running state here,
+    // one part per stage in stage order (parked conversations keep them too).
     std::vector<ConversationCheckpoint> stage_parts;
 
     size_t bytes() const {
@@ -60,6 +60,20 @@ struct ConversationKvReuse {
     }
 };
 
+// A layer split's later stage (the GPUs after the first): its own carve's running state and the K/V of the QSA
+// layers it owns. The first stage's state is SavedConversation::live/kv; the draft layer stays the last `kv` there.
+struct SavedConversationStage {
+    int64_t layer_lo = 0, layer_hi = 0;
+    ConversationCheckpoint live;
+    std::vector<ConversationKv> kv;
+
+    size_t bytes() const {
+        size_t n = live.bytes() + kv.capacity() * sizeof(ConversationKv);
+        for (const auto& k : kv) n += k.bytes();
+        return n;
+    }
+};
+
 struct SavedConversation {
     // Runtime compatibility only; NOT a model/weights identity or disk schema.
     std::array<int64_t, 18> geometry{};
@@ -68,13 +82,15 @@ struct SavedConversation {
     ConversationCheckpoint live;
     std::vector<ConversationCheckpoint> checkpoints;
     std::vector<ConversationKv> kv; // main layers followed by the draft layer
+    std::vector<SavedConversationStage> stages; // a layer split's later stages, in order (empty on one GPU)
     bool cvec = true;
 
     size_t bytes() const {
         size_t n = live.bytes() + checkpoints.capacity() * sizeof(ConversationCheckpoint) +
-                   kv.capacity() * sizeof(ConversationKv);
+                   kv.capacity() * sizeof(ConversationKv) + stages.capacity() * sizeof(SavedConversationStage);
         for (const auto& c : checkpoints) n += c.bytes();
         for (const auto& k : kv) n += k.bytes();
+        for (const auto& s : stages) n += s.bytes();
         return n;
     }
 };

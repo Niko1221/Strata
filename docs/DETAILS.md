@@ -581,12 +581,20 @@ in a bounded 8 GiB host-RAM cache. This preserves controller/worker histories wh
 their requests alternate; it does not execute requests concurrently. No client session
 ID is required: only exact token/image prefixes with matching steering mode are reused.
 The default budget is 0 (disabled); `--prompt-cache 0` also disables parking.
-The initial shared-core integration supports a single session GPU: combining
-enabled parking with `--layer-split` is rejected before model loading. Ordinary
-upstream layer-split checkpoints remain available with parking disabled. FP16,
-INT8, Q4_0 and identity-layout K8V4 snapshots are supported; the K8V4 draft ring
-remains INT8, as in upstream. Windows/HIP and multi-GPU runtime coverage must be
-reported separately from Linux/CUDA evidence.
+With `--layer-split`, each card parks its own share: its layers' running state and
+the K/V of the QSA layers it owns, captured and restored on that card; the draft
+layer's K/V is copied on the last card. A split always captures in full (the retained
+K/V reuse described below is single-GPU). FP16, INT8, Q4_0 and identity-layout K8V4
+snapshots are supported; the K8V4 draft ring remains INT8, as in upstream.
+Windows/HIP coverage must be reported separately from Linux/CUDA evidence.
+
+Measured with a split on two RTX 3060 12 GB (x16 + x8, PCIe 3.0), Xeon E5-2696 v4, 121 GiB
+DDR4-2400, Linux, Unsloth UD-Q4_K_XL at `--max-context 262144 --kv int8 --kv-resident 20480`,
+`--conversation-cache-mib 16384`: two chats of 55,448 and 47,473 tokens asked in turn
+(A, B, A, B, greedy, thinking off). Parking took 0.6-0.9 s (1.2-1.6 GB per chat), restoring
+0.47-0.49 s; the time to the first token of the follow-ups fell from 59.4 s / 52.2 s
+(reading the whole chat again) to 1.98 s / 1.85 s, with the same answers.
+`STRATA_SNAPSHOT_VERIFY=1` checked the restored draft K/V on both.
 
 Snapshots contain running state, checkpoints, used K/V pages, and draft-layer K/V.
 They add host RAM, not another model or VRAM allocation. The byte budget also counts
