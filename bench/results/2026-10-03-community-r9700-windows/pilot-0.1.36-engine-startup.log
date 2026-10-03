@@ -1,0 +1,15 @@
+# Pilot engine start-up lines (engine 0.1.36, before the upgrade; extracted from the machine's rolling log)
+strata generate: expert arena: cudaHostRegister PORTABLE ok; large pages refused for 35456548864 B (GetLargePageMinimum=2097152, VirtualAlloc error 1314); using 4 KB pages
+strata generate: loaded 33.02 GiB at 3.98 GiB/s
+strata generate: expert cache auto: 26.90 GiB free, 700 MiB reserved (+143 MiB for the draft head) -> 18534 slots
+strata generate: expert cache 19403 slots, 26.07 GiB of VRAM; policy is
+strata generate: 15 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.36)
+strata generate: PCIe probe: 8794.0 GB/s host->device -> pcie_frac 0.55 (default 0.55)
+strata generate: KV streaming: 32768 of 131072 cells per QSA layer in VRAM, the K/V in 1.55 GiB of pinned RAM
+strata generate: expert arena: cudaHostRegister PORTABLE ok; large pages refused for 35456548864 B (GetLargePageMinimum=2097152, VirtualAlloc error 1314); using 4 KB pages
+strata generate: loaded 33.02 GiB at 4.18 GiB/s
+strata generate: expert cache auto: 26.90 GiB free, 700 MiB reserved (+143 MiB for the draft head) -> 18534 slots
+strata generate: expert cache 19403 slots, 26.07 GiB of VRAM; policy is
+strata generate: 15 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.36)
