@@ -39,6 +39,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import threading
 import tempfile
 import threading
 import time
@@ -203,13 +204,12 @@ class Step:
 
 @dataclass
 class Updater:
-    """Runs the update.  `progress` is called with the state after every step change."""
+    """Runs the update.  Read with state_dict() from another thread; see _put() for the locking."""
 
     engine_exe: Path
     backend: str = "cuda"
     repo: str = "Niko1221/Strata"
     gpu_cc: float | None = None          # the card's compute capability, if the caller knows it
-    progress: object = None                        # a callable taking (dict), set by the server
     fetch: object = None                           # url -> bytes iterator; injectable for tests
     head: object = None                            # url -> (status, headers); injectable for tests
 
@@ -224,47 +224,53 @@ class Updater:
         self.engine_exe = Path(self.engine_exe)
         self.engine_dir = self.engine_exe.parent
         self.root = self.engine_dir.parent / ".strata-update"
+        self._lock = threading.RLock()   # state_dict() is read from HTTP threads while a run writes
 
     # ---- plumbing ---------------------------------------------------------------------------------
 
-    def _emit(self):
-        if callable(self.progress):
-            try:
-                self.progress(self.state_dict())
-            except Exception:
-                pass    # a broken UI must not take the update down with it
+    def _put(self, **fields):
+        """Set `detail` fields under the lock (see state_dict() for why the lock is needed)."""
+        with self._lock:
+            self.detail.update(fields)
 
     def state_dict(self) -> dict:
-        done = sum(1 for s in self.steps if s.status == "done")
-        active = next((s for s in self.steps if s.status == "active"), None)
+        # The web app POLLS this every 700 ms on an HTTP thread while run() mutates the state on its own
+        # thread. `dict(d)` while another thread inserts a key can raise "dictionary changed size during
+        # iteration", so the snapshot is taken under the lock - see _put() for the writes.
+        with self._lock:
+            done = sum(1 for s in self.steps if s.status == "done")
+            active = next((s for s in self.steps if s.status == "active"), None)
+            steps = [s.as_dict() for s in self.steps]
+            detail = dict(self.detail)
+            state, backup = self.state, self.backup_dir
         # percent is only meaningful DURING a run.  The check phase has one step, so reporting
         # done/total there gives 100% the instant a release is found, and the UI would then snap back
         # to 0% when run() builds the real nine-step list.  Reporting None outside a run avoids that.
         percent = None
-        if self.state == "running" and self.steps:
-            percent = round(100.0 * done / len(self.steps))
+        if state == "running" and steps:
+            percent = round(100.0 * done / len(steps))
         return {
-            "state": self.state,
-            "detail": dict(self.detail),
-            "steps": [s.as_dict() for s in self.steps],
+            "state": state,
+            "detail": detail,
+            "steps": steps,
             "done": done,
-            "total": len(self.steps),
+            "total": len(steps),
             "percent": percent,
             "active": active.label if active else None,
-            "backup": str(self.backup_dir) if self.backup_dir else None,
+            "backup": str(backup) if backup else None,
         }
 
     def _step(self, key: str, label: str, status: str, note: str = ""):
-        for s in self.steps:
-            if s.key == key:
-                s.status, s.note = status, note
-                if status == "active":
-                    s.started = time.time()
-                if status in ("done", "failed", "skipped"):
-                    s.ended = time.time()
-                self._emit()
-                return s
-        raise UpdateError(f"internal: unknown step {key!r}")
+        with self._lock:
+            for s in self.steps:
+                if s.key == key:
+                    s.status, s.note = status, note
+                    if status == "active":
+                        s.started = time.time()
+                    if status in ("done", "failed", "skipped"):
+                        s.ended = time.time()
+                    return s
+            raise UpdateError(f"internal: unknown step {key!r}")
 
     # ---- network ----------------------------------------------------------------------------------
 
@@ -313,10 +319,9 @@ class Updater:
                 if now - last > 0.2:
                     last = now
                     pct = round(100.0 * got / total) if total else 0
-                    self.detail["percent"] = pct
-                    self.detail["downloaded_mb"] = round(got / 1e6, 1)
-                    self.detail["total_mb"] = round(total / 1e6, 1) if total else None
-                    self._emit()
+                    self._put(percent=pct,
+                              downloaded_mb=round(got / 1e6, 1),
+                              total_mb=round(total / 1e6, 1) if total else None)
         if total and got != total:
             raise UpdateError(
                 f"the download stopped early ({got:,} of {total:,} bytes); nothing on disk was changed")
@@ -339,9 +344,7 @@ class Updater:
             self._step("plan", "Check the release", "failed",
                        f"{tag} publishes no {self.backend} build for this platform")
             self.state = "failed"
-            self.detail["latest"] = tag
-            self.detail["installed"] = have
-            self._emit()
+            self._put(latest=tag, installed=have)
             return self.state_dict()
         newer = bool(want) and (not parse_version(have) or want > parse_version(have))
         self._step("plan", "Check the release", "done",
@@ -350,17 +353,14 @@ class Updater:
         # asset_url and asset_size are what run() downloads against; the expected size is the only
         # integrity check the release gives us, so it is carried through from the API rather than
         # re-derived from a HEAD request that could disagree with the listing.
-        self.detail.update({
-            "latest": tag,
-            "installed": have,
-            "newer": newer,
-            "asset": asset.get("name"),
-            "asset_url": asset.get("browser_download_url"),
-            "asset_size": asset.get("size"),
-            "asset_mb": round((asset.get("size") or 0) / 1e6, 1),
-            "release_url": release.get("html_url"),
-        })
-        self._emit()
+        self._put(latest=tag,
+                installed=have,
+                newer=newer,
+                asset=asset.get("name"),
+                asset_url=asset.get("browser_download_url"),
+                asset_size=asset.get("size"),
+                asset_mb=round((asset.get("size") or 0) / 1e6, 1),
+                release_url=release.get("html_url"))
         return self.state_dict()
 
     def run(self, allow_downgrade: bool = False) -> dict:
@@ -379,14 +379,12 @@ class Updater:
             self.steps = [Step("plan", "Refuse a downgrade", "failed",
                                f"the latest release is {tag}, older than the installed {have}")]
             self.state = "failed"
-            self.detail["error"] = f"{tag} is older than the installed {have}; refusing to downgrade"
-            self._emit()
+            self._put(error=f"{tag} is older than the installed {have}; refusing to downgrade")
             return self.state_dict()
 
         if not self.detail.get("newer") and not allow_downgrade:
             self.steps = [Step("plan", "Nothing to do", "skipped", "already on the latest release")]
             self.state = "ready"
-            self._emit()
             return self.state_dict()
 
         self.steps = [Step(k, lbl) for k, lbl in (
@@ -401,7 +399,6 @@ class Updater:
             ("verify", "Start it and check the version"),
         )]
         self.state = "running"
-        self._emit()
 
         staging = backup = None
         try:
@@ -448,10 +445,9 @@ class Updater:
             # A successful run keeps the backup (that is the point of it) but not the 124 MB archive it
             # came from, and never the staging copy: those are what fill the disk when setup.py and the
             # updater both run on a machine nobody prunes.
-            self.detail["installed"] = tag
+            self._put(installed=tag)
             self._clean_workspace(keep_zip=False)
             self.state = "done"
-            self._emit()
         except Exception as e:
             note = str(e)
             failed = next((s for s in self.steps if s.status == "active"), None)
@@ -468,19 +464,17 @@ class Updater:
             if failed:
                 self._step(failed.key, failed.label, "failed", note)
             self.state = "failed"
-            self.detail["error"] = note
-            self.detail["rolled_back"] = bool(self._changed and "Restored" in note)
+            self._put(error=note, rolled_back=bool(self._changed and "Restored" in note))
             # A short, separate line for the panel: what was DONE about the failure. The full `error`
             # belongs to the step that failed and is shown there, so repeating it here would print the
             # same 300-character paragraph twice on one screen.
-            self.detail["action"] = (f"Restored the previous engine from {backup.name}."
-                                     if self._changed and backup and "Restored" in note
-                                     else "Nothing on this PC was changed.")
+            self._put(action=(f"Restored the previous engine from {backup.name}."
+                            if self._changed and backup and "Restored" in note
+                            else "Nothing on this PC was changed."))
             # A failed run keeps the backup too, and also the archive: it is what a user would re-run
             # the install from, and it is already downloaded. `keep_zip` only says whether to KEEP it -
             # so it is False in both cases, and the argument is what says whether the backup survives.
             self._clean_workspace(keep_zip=False)
-            self._emit()
         finally:
             if staging and staging.exists():
                 shutil.rmtree(staging, ignore_errors=True)
@@ -540,7 +534,7 @@ class Updater:
 
     def _check_room(self):
         free = shutil.disk_usage(self.root if self.root.exists() else self.engine_dir).free
-        self.detail["free_gb"] = round(free / 1e9, 1)
+        self._put(free_gb=round(free / 1e9, 1))
         need = (self.detail.get("asset_size") or 0) * 3      # zip + staging + backup, roughly
         if free < need:
             raise UpdateError(
@@ -568,7 +562,7 @@ class Updater:
         if parse_version(got) != parse_version(self.detail["latest"]):
             raise UpdateError(
                 f"the archive is v{got} but the release is {self.detail['latest']}; refusing to install it")
-        self.detail["members"] = len(safe)
+        self._put(members=len(safe))
 
     def _extract(self, staging: Path):
         path = self.root / f"download-{self.detail['latest']}.zip"
@@ -684,7 +678,7 @@ class Updater:
             raise UpdateError(f"after installing, the engine still reports {got or 'nothing'}")
         if not self.engine_exe.exists():
             raise UpdateError(f"after installing, {self.engine_exe} is missing")
-        self.detail["verified_version"] = got
+        self._put(verified_version=got)
 
     def rollback(self, backup: Path | None) -> Path:
         if not backup or not backup.exists():

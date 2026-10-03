@@ -1,8 +1,8 @@
 """The update routes over real HTTP, with no GitHub and no real engine.
 
-Run:  python tools/test_setup_update_http.py
+Run:  python serve/test_update_http.py
 
-tools/test_setup_update.py covers the updater on its own.  This one drives it through the actual
+serve/test_update.py covers the updater on its own.  This one drives it through the actual
 server: the routes, the same-origin guard every mutating route uses, the refusal while a request is in
 flight, and the JSON the web app polls.
 
@@ -23,7 +23,6 @@ import json
 import os
 import sys
 import tempfile
-import threading
 import time
 import urllib.error
 import urllib.request
@@ -31,7 +30,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "tools"))     # how the other test_setup_* files import each other
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # the fixtures live beside this file
 
 FAILS: list[str] = []
 CHECKS = [0]
@@ -51,7 +50,7 @@ VERSION_OLD = "0.1.31"
 
 
 def build_zip_bytes(version: str = VERSION_NEW) -> bytes:
-    from test_setup_update import engine_files, make_zip   # reuse the fixture builder
+    from serve.test_update import engine_files, make_zip   # reuse the fixture builder
     return make_zip(engine_files(version), version)
 
 
@@ -164,7 +163,7 @@ def wait_for(base: str, states=("done", "failed"), limit=180):
 
 
 def build_engine(root: Path, version: str = VERSION_OLD) -> Path:
-    from test_setup_update import install_fake
+    from serve.test_update import install_fake
     return install_fake(root / "engine", version)
 
 
