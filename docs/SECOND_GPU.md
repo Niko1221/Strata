@@ -83,3 +83,42 @@ short decode requests.
 The existing warning about the CUDA0 expert-cache GPU hit path still applies:
 its outputs diverge from cache-off runs. Treat performance as experimental
 until the generated tokens have been validated.
+
+## Peer tier (`--peer-device`)
+
+`--peer-device N` puts a second adaptive expert cache on CUDA device N. It
+takes the ranked pairs CUDA0's cache does not hold, as many as fit. The peer
+computes the rows of its own experts, for decode windows and for prompt
+chunks; the activations and the results cross NVLink or another P2P path. The
+tier adapts while the server runs, like the primary cache. It is an
+alternative to the CUDA1-3 caches above, not a third tier beside them.
+
+- `--peer-device N` (default off): enable the tier on CUDA device N (N >= 1).
+- `--peer-reserve-mib M` (default 600): leave M MiB free on the peer card; the
+  cache takes what remains. The prompt-path buffers need this headroom.
+- `--peer-slots N` (default 0): cap the tier at N experts; 0 = as many as fit.
+- `--peer-adapt-swaps N` (default -1): swaps per adaptive round on the peer;
+  -1 uses the primary's `--adapt-swaps`.
+- `--peer-prefill-rows N` (default -1): the share of each prompt chunk's rows
+  the peer computes; -1 is half of chunk x top-k, 0 keeps prompt rows on the
+  primary.
+
+`--peer-device` requires `--expert-profile` and an enabled expert cache, and
+the device must be visible; it refuses otherwise. It also refuses
+`--layer-split` (a different second-GPU mode: use one or the other) and
+`--expert-cache-device1..3` (the peer tier already caches experts on that card):
+
+    strata generate: --peer-device cannot be combined with --layer-split (use one or the other)
+    strata generate: --peer-device cannot be combined with --expert-cache-device1..3 (the peer tier already caches experts there)
+
+Without `--peer-device` the binary is unchanged; its output is byte-identical
+to the release. With `--peer-device` and the same expert set split across the
+two cards, the generated tokens are byte-identical to the single-GPU run under
+the exactness gate.
+
+With a peer the prompt path keeps the MMQ path; the fused int8 prompt path is
+not yet combined with the peer's rows. Mapped host buffers gain
+`cudaHostAllocPortable` only with a peer, since only then does a second
+context write them. The tier size is manual for now (`--peer-reserve-mib`,
+`--peer-slots`); automatic sizing on small cards wants the buffer lending of
+#216 and is a follow-up.

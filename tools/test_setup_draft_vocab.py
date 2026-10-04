@@ -49,5 +49,29 @@ class Refresh(unittest.TestCase):
             self.assertEqual(hashlib.sha256((rt / "draft_vocab.bin").read_bytes()).hexdigest(), want)
 
 
+class SmallCardNote(unittest.TestCase):
+    """#474: a card under 14 GB is told about a smaller draft subset - a note only, and not when one was chosen."""
+
+    def test_note_on_a_small_card_only(self):
+        note = setup.draft_vocab_note(12.0, None)
+        self.assertTrue(note)
+        self.assertIn("--draft-vocab en", " ".join(note))
+        self.assertIn("the draft head does not fit", " ".join(note))
+        for vram, chosen in ((16.0, None), (24.0, None), (12.0, "en"), (12.0, "cyrillic"), (12.0, "cjk"), (0.0, None)):
+            self.assertEqual(setup.draft_vocab_note(vram, chosen), [], (vram, chosen))
+
+    def test_sizes_follow_the_shipped_subsets(self):
+        # the MiB the note gives scale with the subsets' token counts (4 bytes per token id in data/)
+        sizes = {}
+        for choice, name in setup.DRAFT_VOCABS.items():
+            p = ROOT / "data" / name
+            if not p.exists():
+                self.skipTest(f"data/{name} is not in this checkout")
+            sizes[choice] = p.stat().st_size // 4
+        for choice in ("en", "cyrillic"):
+            want = setup.DRAFT_VOCAB_MIB["cjk"] * sizes[choice] / sizes["cjk"]
+            self.assertAlmostEqual(setup.DRAFT_VOCAB_MIB[choice], want, delta=3)
+
+
 if __name__ == "__main__":
     unittest.main()

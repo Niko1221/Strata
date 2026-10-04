@@ -23,7 +23,7 @@ word, so 60 tokens per second is faster than you can read.
 
 | Size | Writes answers | Reads your prompt |
 | --- | ---: | ---: |
-| **Q2_0** | 93 tokens/s | 2,170 tokens/s |
+| **Q2_0** | 94 tokens/s | 2,650 tokens/s |
 | **IQ2_XS** | 79 tokens/s | 2,090 tokens/s |
 | **IQ3_XXS** | 62 tokens/s | 1,750 tokens/s |
 | **IQ3_S** | 53 tokens/s | 1,620 tokens/s |
@@ -87,7 +87,8 @@ it left off) and starts it. Your browser opens the Strata app at `http://127.0.0
 > window. The window tells you what it is doing.
 
 **Next time**, run `START-HERE.bat` (or `./setup.sh`) again: it starts right away, nothing is downloaded twice. Close
-its window to stop the model. Updating, Docker, several cards, where the files go and every option:
+its window to stop the model. `UPDATE.bat` (`./update.sh`) updates Strata without starting it. Updating, Docker,
+several cards, where the files go and every option:
 [docs/INSTALL.md](docs/INSTALL.md).
 
 ## Which model should I pick?
@@ -103,7 +104,8 @@ is faster, larger is a bit smarter.
 | **96 GB or more** | **IQ3_S**, or Unsloth's 4-bit (experimental) | room for the largest sizes with everything else open |
 
 - **[Coder](docs/MODELS.md#coder)** - a coding version with half of the experts removed: 91% of the full model's
-  SWE-bench Verified score (by its authors), fits 32 GB of RAM. Weaker outside coding.
+  SWE-bench Verified score (by its authors), fits 32 GB of RAM. Weaker outside code, including Chinese and other
+  CJK text (#438): for those, take Q2_0, IQ2_XS or IQ3_S, which keep every expert.
 - **[Swift 1.5](docs/MODELS.md#swift-15)** - a fine-tune that thinks much shorter before it answers, so you get the
   answer sooner, at about the same quality.
 - **[Unsloth UD-Q4_K_XL](docs/MODELS.md#unsloth-ud-q4_k_xl-experimental)** (experimental) - the closest to the full

@@ -34,6 +34,7 @@ import re
 import select
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -60,11 +61,22 @@ IMAGE_PAD = "<|image_pad|>"
 VISION_START = "<|vision_start|>"
 # #123: what closes the thinking when it reaches reasoning_budget_tokens (the model's own end-of-thinking tag after it)
 REASONING_WRAP_UP = "\n\nI have thought about this long enough; time to give my answer.\n</think>\n\n"
+LOOPBACK_NAMES = ("localhost", "127.0.0.1", "::1")
 CTX_SLACK = 8               # `strata --serve` rejects prompt + max_new + 8 > context: keep the same margin here
 # The live tok/s is a rate over a window, not a mean since the first token: a mean reads ~1/elapsed at the first
 # token (the Monitor showed five-digit numbers) and then undershoots for the first second of every answer.
 RATE_WINDOW_S = 2.0
 RATE_MIN_SPAN_S = 0.25      # younger than this there is no rate yet: the mean so far, with the span floored here
+# #481: a running request whose engine prints nothing (no T, PP or any other line) for this long has lost step with the
+# server (the engine's main thread waits, untimed, for its next command): the engine is ended and the request fails;
+# the next request starts it again.  The config's "engine_silence_s" sets it (0: wait forever, as before).
+ENGINE_SILENCE_S = 300.0
+# ... except while a prompt is read: a PP line comes once per chunk (up to 32768 tokens with --prefill auto, issue
+# #282), and the slowest PCs read ~100 tok/s, so a first chunk can take minutes before the first line.  Until the first
+# PP the wait adds the chunk's tokens at PP_FLOOR_TOK_S; after one, a chunk may take PP_SLACK x the last one's time.
+PP_CHUNK_MAX = 32768
+PP_FLOOR_TOK_S = 50.0
+PP_SLACK = 3.0
 
 
 # ------------------------------------------------------------------------------------------------ engines
@@ -112,6 +124,12 @@ class ModelBusy(RuntimeError):
     """Explicit model controls must not interrupt active or queued requests."""
 
 
+class EngineSilent(EngineDied):
+    """#481: the engine said nothing for too long during a request (or never acknowledged a STOP): the two sides lost
+    step - the engine waiting for its next command, the server for this request's end - and the server ended it.  An
+    EngineDied, so the request ends with an error and the next one starts the engine again."""
+
+
 class EngineStuck(RuntimeError):
     """The engine process did not end after QUIT, terminate and kill: the server keeps it (and says so) rather than
     reporting its GPU and RAM as given back."""
@@ -123,11 +141,59 @@ class GpuBusy(RuntimeError):
 
 
 ENGINE_REQUEST = re.compile(
-    r"prompt (?P<prompt>\d+) tokens = (?P<reused>\d+) reused \+ \d+ read in (?P<read>[\d.]+) ms \((?P<pp>[\d.]+) tok/s\), "
+    # "+ 12288 of 98179 read": a request cancelled while its prompt was read (#471)
+    r"prompt (?P<prompt>\d+) tokens = (?P<reused>\d+) reused \+ \d+(?: of \d+)? read in (?P<read>[\d.]+) ms "
+    r"\((?P<pp>[\d.]+) tok/s\), "
     r"(?P<gen>\d+) generated in (?P<gen_ms>[\d.]+) ms \((?P<tg>[\d.]+) tok/s\)")
 
 
 _echoing: set[str] = set()      # the logs echo_requests already follows (restart() runs StrataEngine.__init__ again)
+
+DRAFT_HEAD_FAIL = "the draft head does not fit"
+DRAFT_HEAD_HINT = ("a smaller draft vocabulary needs less VRAM: --draft-vocab cyrillic (English, code and the Cyrillic "
+                   "script) or --draft-vocab en (English and code, ~215 MiB less than the default). Start once with "
+                   "it - START-HERE.bat --draft-vocab en (Windows) or ./setup.sh --draft-vocab en - and the model "
+                   "keeps it; or a smaller --context in setup.")
+
+
+def start_failure_hint(log: str | None, offset: int) -> str:
+    """#474: what to change when the engine stopped at the start because the MTP draft head did not fit the VRAM
+    left: the engine's own `strata mtp:` lines after that failure (0.1.36+: what it needs, what is free, the smaller
+    subsets), else the same advice in words for an older engine.  "" for any other failure: the log says why."""
+    if not log:
+        return ""
+    try:
+        with open(log, "rb") as f:
+            f.seek(offset)
+            text = f.read().decode("utf-8", "replace")
+    except (OSError, ValueError):
+        return ""
+    if DRAFT_HEAD_FAIL not in text:
+        return ""
+    said = [x.strip()[len("strata mtp: "):] for x in text.splitlines()
+            if x.strip().startswith("strata mtp: ") and ("draft head over" in x or "hint:" in x)]
+    return ". mtp: " + DRAFT_HEAD_FAIL + ". " + (" ".join(said) if said else "Hint: " + DRAFT_HEAD_HINT)
+
+
+def start_log_tail(log: str | None, offset: int, n: int = 20) -> str:
+    """#496: the last n lines this start wrote to the engine log, for the error when the engine ended before READY -
+    whatever the failure, the engine's own reason is in them (people posted the traceback without the log).  "" when
+    there is no log or nothing in it from this start."""
+    if not log:
+        return ""
+    try:
+        with open(log, "rb") as f:
+            f.seek(0, 2)
+            start = max(offset, f.tell() - 64 * 1024)   # enough for 20 lines, never an earlier start's
+            f.seek(start)
+            text = f.read().decode("utf-8", "replace")
+    except (OSError, ValueError):
+        return ""
+    lines = text.splitlines()[1 if start > offset else 0:]   # not a line cut in half
+    lines = [x.rstrip() for x in lines if x.strip()][-n:]
+    if not lines:
+        return ""
+    return "\nthe engine log's last lines:\n" + "\n".join("  " + x for x in lines)
 
 
 def echo_requests(log_path: str, offset: int) -> None:
@@ -153,6 +219,27 @@ def echo_requests(log_path: str, offset: int) -> None:
                                                  m["tg"]), flush=True)
 
 
+def experts_loading_words(args: list, size: str) -> str:
+    """#505: what the start does with the experts, by the engine's flags (generate.cpp's option parsing): a RAM budget
+    copies the hottest N GiB into RAM (--resident-budget-gib), the resident low-RAM mode the ones the GPU does not hold
+    (--resident-experts), plain --mmap-experts reads them from the model files through the OS file cache (nothing is
+    loaded into RAM up front); otherwise all of them go into RAM."""
+    if "--resident-budget-gib" in args:
+        try:
+            n = f"up to {float(args[args.index('--resident-budget-gib') + 1]):g} GiB"
+        except (IndexError, ValueError):
+            n = "a RAM budget"
+        return (f"loading the most-used experts into RAM ({n}; the rest are read from the model files as needed) "
+                "and locking part of them for the GPU.")
+    if "--resident-experts" in args:
+        return (f"loading the experts the GPU does not hold into RAM (of {size}) and locking part of them for the "
+                "GPU.")
+    if "--mmap-experts" in args:
+        return (f"mapping the experts from the model files ({size}, --mmap-experts): they are not loaded into RAM - "
+                "the OS file cache reads them as the GPU's expert cache fills and as requests need them.")
+    return f"loading the experts into RAM ({size}) and locking part of them for the GPU."
+
+
 def narrate_start(log_path: str, offset: int, args: list, done: threading.Event, heartbeat=20.0) -> None:
     """While the engine starts, say in the server window what it is doing, from its log: the start reads tens of GB
     into RAM and locks part of it for the GPU, and on many PCs everything is slow or frozen for a minute or more -
@@ -164,6 +251,7 @@ def narrate_start(log_path: str, offset: int, args: list, done: threading.Event,
         except (OSError, IndexError):
             pass
     size = f"about {gb:.0f} GB" if gb >= 1 else "tens of GB"
+    loading = experts_loading_words(args, size)
     t0 = last = time.time()
     said = set()
 
@@ -187,8 +275,8 @@ def narrate_start(log_path: str, offset: int, args: list, done: threading.Event,
             cut = chunk.rfind(b"\n") + 1
             pos += cut
             for line in chunk[:cut].decode("utf-8", "replace").splitlines():
-                if "PLE on" in line or "expert arena:" in line:
-                    say("arena", f"[strata] loading the experts into RAM ({size}) and locking part of them for the GPU.\n"
+                if "PLE on" in line or "expert arena:" in line or "experts via mmap" in line:   # #505: mapped
+                    say("arena", f"[strata] {loading}\n"
                                  "         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.\n"
                                  "         Please wait and don't close this window; the browser opens when it is ready.")
                 elif " loaded " in line and "GiB at" in line:
@@ -212,6 +300,8 @@ class StrataEngine:
     (`temperature=F top_p=F top_k=N seed=N`, the engine's own spelling).  An absent temperature keeps the
     engine's default, which is greedy; `temperature=0` means the same thing, so it is not forwarded.
     """
+    silence_s = ENGINE_SILENCE_S         # #481: main() sets the config's engine_silence_s (survives restart())
+    silent_note = None                   # #481: why the server ended a silent engine (death_note says it)
 
     def __init__(self, exe: str, args: list[str], cwd: str | None = None, log: str | None = None,
                  env: dict | None = None, lazy: bool = False):
@@ -227,7 +317,8 @@ class StrataEngine:
         self.info = {}                   # INFO key=value facts (engine 0.1.8+): kv, expert slots, ... (Monitor tab)
         self.prefill_tok_s_mean = None
         self.progress = None             # (read, total) prompt tokens while a prompt is read, from PP lines
-        try:                             # a ready-made engine's BUILD.json says its version
+        self.silent_note = None
+        try:                            # a ready-made engine's BUILD.json says its version
             self.info["version"] = json.loads((Path(exe).parent / "BUILD.json").read_text()).get("version")
         except (OSError, ValueError):
             self.info["version"] = None
@@ -236,6 +327,7 @@ class StrataEngine:
         self.unloaded = False            # `ended` stays True until READY (below): not alive while starting (#344)
         self.log = open(log, "a", encoding="utf-8") if log else subprocess.DEVNULL
         loading = threading.Event()                     # set once READY: the narrator below stops
+        log_start = os.path.getsize(log) if log else 0  # where this start's lines begin (start_failure_hint)
         if log:
             threading.Thread(target=narrate_start, args=(log, os.path.getsize(log), args, loading),
                              daemon=True).start()
@@ -259,7 +351,16 @@ class StrataEngine:
                 break
         loading.set()
         if self.max_context <= 0:
-            raise RuntimeError("the engine exited before it was ready" + (f" (see {log})" if log else ""))
+            try:                                        # its pipes and our handle on its log (the log stays)
+                self.proc.wait(timeout=5)
+                self.proc.stdin.close()
+                self.proc.stdout.close()
+                if log:
+                    self.log.close()
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            raise RuntimeError("the engine exited before it was ready" + (f" (see {log})" if log else "") +
+                               start_failure_hint(log, log_start) + start_log_tail(log, log_start))
         # (from PR #41, midhatn) a locally built engine can sit next to another release's BUILD.json: engines that
         # report their own version (INFO engine=, 0.1.8+) win, the manifest stays the fallback for older ones
         if self.info.get("engine"):
@@ -280,6 +381,8 @@ class StrataEngine:
 
     def death_note(self) -> str:
         """Why the engine most likely ended, from the end of its log: its own watchdog (issue #29), else RAM."""
+        if getattr(self, "silent_note", None):          # #481: the server ended it, not the OS or the engine itself
+            return self.silent_note
         tail = ""
         try:
             with open(self.log_path, "rb") as f:
@@ -338,6 +441,8 @@ class StrataEngine:
             self.last.update(hits=int(f[9]), lookups=int(f[10]))
         if len(f) >= 14:                                  # the expert tiers (engine 0.1.31+): RAM / file blobs, file MB
             self.last.update(ram_blobs=int(f[11]), file_blobs=int(f[12]), file_mb=float(f[13]))
+        if len(f) >= 15:                                  # #471 (engine 0.1.36+): the prompt tokens actually read
+            self.last.update(prompt_read=int(f[14]))
 
     @staticmethod
     def sampling_keys(sampling: dict) -> str:
@@ -408,19 +513,34 @@ class StrataEngine:
         except OSError:                                  # the pipe is gone: the engine died (not the client)
             raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
         done = False
+        # #481: how long the engine may stay silent from here.  Until the first line: the request's first prompt
+        # chunk at the slowest prompt reading on top of silence_s; a PP line resets it to its own chunk's time.
+        silence = float(self.silence_s or 0)
+        allow = silence + min(len(ids), PP_CHUNK_MAX) / PP_FLOOR_TOK_S if silence > 0 else 0.0
+        heard, read_to = time.monotonic(), 0
         try:
             while True:
+                wait = 10.0
+                if allow > 0:
+                    wait = min(wait, allow - (time.monotonic() - heard))
+                    if wait <= 0:
+                        done = True                       # no STOP and no drain: nothing is listening
+                        raise self._silent(f"the engine said nothing for {time.monotonic() - heard:.0f} s during "
+                                           "the request")
                 try:
-                    line = self.lines.get(timeout=10)
+                    line = self.lines.get(timeout=wait)
                 except queue.Empty:
                     if cancel.is_set():
                         return
-                    yield None
+                    if wait >= 10.0:
+                        yield None                        # the 10 s heartbeat (the deadline's short waits are not)
                     continue
                 if line is None:
                     done = True
                     raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
+                heard = time.monotonic()                  # any line is output: T, PP, RESUME, INFO ...
                 if line.startswith("T "):
+                    allow = silence
                     if cancel.is_set():
                         return
                     yield int(line[2:])
@@ -429,9 +549,18 @@ class StrataEngine:
                     if len(f) >= 3 and f[1].isdigit() and f[2].isdigit():
                         self.progress = (int(f[1]), int(f[2]))             # prompt progress, one per chunk: also a heartbeat (the
                         self.prefill_tok_s_mean = float(f[4]) if len(f) >= 5 else None
+                        rate, chunk = self.prefill_tok_s_mean or 0.0, int(f[1]) - read_to
+                        read_to = int(f[1])
+                        if silence > 0 and rate > 0 and chunk > 0:   # #481: the next chunk, as long as this one
+                            allow = max(silence, PP_SLACK * chunk / rate)
                     if cancel.is_set():                   # lines reset the 10 s wait, so without this a long prompt
                         return                            # would send no keep-alives at all)
                     yield None
+                elif line.startswith("RESUME "):          # the reused tokens: the first chunk starts after them
+                    try:
+                        read_to = int(line.split()[1])
+                    except (IndexError, ValueError):
+                        pass
                 elif line.startswith("DONE"):
                     self._parse_done(line)
                     done = True
@@ -447,13 +576,41 @@ class StrataEngine:
                         self.proc.stdin.flush()
                     except OSError:
                         pass
+                # #481: never an untimed wait here - it holds the request FIFO, and an engine that lost step never
+                # answers.  An engine that honours STOP gets the current allowance in all (a STOP during a prompt
+                # chunk is seen after it); an older one runs on to max_new, so each line only has to come in time.
+                heard = time.monotonic()
                 while True:
-                    line = self.lines.get()
+                    left = allow - (time.monotonic() - heard) if allow > 0 else None
+                    try:
+                        if left is not None and left <= 0:
+                            raise queue.Empty
+                        line = self.lines.get(timeout=left)
+                    except queue.Empty:
+                        raise self._silent("the engine did not finish the request after it was stopped (STOP) "
+                                           f"within {allow:.0f} s") from None
                     if line is None or line.startswith("ERR"):
                         break
                     if line.startswith("DONE"):
                         self._parse_done(line)
                         break
+                    if not self.can_stop:
+                        heard = time.monotonic()
+
+    def _silent(self, what: str) -> EngineSilent:
+        """#481: end an engine that lost step with the server (its main thread waits for a command the server never
+        sends), so the next request starts it again: killed now, its GPU and RAM go back with the process."""
+        self.silent_note = ("The engine and the server lost step (issue #481; a very slow PC can raise "
+                            "\"engine_silence_s\" in the config, 0 = wait forever). If it happens again, please add "
+                            "the end of the engine log to github.com/Niko1221/Strata/issues/481.")
+        self.ended = True                               # not alive from now: the next request restarts it
+        proc = self.proc
+        try:
+            proc.kill()
+            proc.wait(timeout=20)                       # restart() -> close() handles one that is still exiting
+        except (OSError, AttributeError, subprocess.TimeoutExpired):
+            pass
+        return EngineSilent(f"{what}; the server ended the engine")
 
     def close(self):
         """End the engine process: QUIT first (the engine frees its memory itself - unpinning tens of GB can take
@@ -621,6 +778,17 @@ def gpu_list(cfg: dict) -> list[int]:
     return [int(str(x).strip()) for x in items if str(x).strip() != ""]
 
 
+def engine_silence_s(cfg: dict) -> float:
+    """#481: the config's "engine_silence_s" - seconds an engine may print nothing during a request before the server
+    ends it (default ENGINE_SILENCE_S; 0 = wait forever).  ValueError for anything but a number >= 0."""
+    v = cfg.get("engine_silence_s")
+    if v is None:
+        return ENGINE_SILENCE_S
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
+        raise ValueError(f'"engine_silence_s" must be a number of seconds >= 0 (0 = no limit), not {v!r}')
+    return float(v)
+
+
 def engine_args(cfg: dict) -> list[str]:
     """The engine's arguments: the config's, and with several GPUs the layer split across them ("layer_split" in the
     config: "auto" by default, or the first layer of each later GPU's share, e.g. "18" or "16,32")."""
@@ -630,6 +798,44 @@ def engine_args(cfg: dict) -> list[str]:
     # opt-in: an auto split runs on the first card alone when it holds every profiled expert and the KV
     if len(gpu_list(cfg)) > 1 and cfg.get("split_skip_if_fits") and "--split-skip-if-fits" not in args:
         args.append("--split-skip-if-fits")
+    return learned_profile_args(cfg, args)
+
+
+def profile_shape(path: str) -> tuple[int, int] | None:
+    """An expert profile's (layers, experts per layer), from its header (tools/make_profile.py's format), or None
+    when the file is missing, is not one or is shorter than the pairs its header promises."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(24)
+            size = os.fstat(f.fileno()).st_size
+    except OSError:
+        return None
+    if len(head) < 24 or head[:4] != b"STRP":
+        return None
+    _, nl, ne, _, n = struct.unpack("<5I", head[4:])
+    return (nl, ne) if size >= 24 + 4 * n else None
+
+
+def learned_profile_args(cfg: dict, args: list[str]) -> list[str]:
+    """#477 (opt-in): "expert_profile_save": "<path>" in the config has the engine (0.1.36+) save what its adaptive
+    tier learned there - on QUIT and every "expert_profile_save_every" minutes (10 by default, 0 = at QUIT only) -
+    and the next start begins from it instead of the config's --expert-profile, when it is a profile of the same
+    model (its header's layers and experts match); otherwise from the config's own, as before.  A relative path is
+    the engine's (the config's "cwd").  Without the key, the arguments are the config's, unchanged."""
+    save = cfg.get("expert_profile_save")
+    if not isinstance(save, str) or not save.strip() or "--expert-profile-save" in args:
+        return args
+    args = args + ["--expert-profile-save", save]
+    every = cfg.get("expert_profile_save_every")
+    if isinstance(every, (int, float)) and not isinstance(every, bool) and every >= 0:
+        args += ["--expert-profile-save-every", str(every)]
+    if "--expert-profile" in args[:-1]:
+        i = args.index("--expert-profile") + 1
+        here = cfg.get("cwd") or "."
+        learned = profile_shape(save if os.path.isabs(save) else os.path.join(here, save))
+        base = profile_shape(args[i] if os.path.isabs(args[i]) else os.path.join(here, args[i]))
+        if learned is not None and learned == base:
+            args[i] = save
     return args
 
 
@@ -755,6 +961,10 @@ class Service:
         # #321: origins that count as Strata's own page for /settings and MCP tools, e.g. the web app reached through a
         # reverse proxy or tunnel whose Host differs ("https://strata.example.com"); never a wildcard
         self.trusted_origins: list[str] = []
+        # DNS rebinding: extra Host names this server answers to (the config's allowed_hosts, $STRATA_ALLOWED_HOSTS;
+        # "*" = any), and every name it answers to, which serve() works out from the address it listens on
+        self.allowed_hosts: list[str] = []
+        self.host_names: set[str] = set(LOOPBACK_NAMES)
         self.status = {"busy": False, "queued": 0}      # GET /status: what the model is doing right now
         self.rate = collections.deque(maxlen=32)        # (time, generated) samples for the live tok/s window
         # #332: the API request monitor (/api-monitor) keeps the last 100 requests' prompts and answers in memory,
@@ -765,7 +975,8 @@ class Service:
         self.history = collections.deque(maxlen=500)    # the last finished requests, newest last (GET /metrics)
         # since the server started (the Monitor's totals, issue #35)
         self.totals = {"since": time.time(), "requests": 0, "prompt_tokens": 0, "reused": 0, "output_tokens": 0,
-                       "prompt_ms": 0.0, "decode_ms": 0.0}
+                       "prompt_ms": 0.0, "decode_ms": 0.0,
+                       "drafts_offered": 0, "drafts_accepted": 0}   # #457: the MTP drafts, summed where reported
         self.last_timings = None                         # the last finished request's, llama.cpp's names (/v1/status)
         self.last_request_at = None                      # when a request last started or finished
         self.started_at = time.time()
@@ -877,6 +1088,13 @@ class Service:
                   "(a minute or two) ...", flush=True)
         self.engine.restart()
         print("[strata] the engine is running again", flush=True)
+
+    def _say_died(self, e: Exception) -> None:
+        """The server window's line for an engine that died (or was ended, #481) in the middle of a request."""
+        note = self.engine.death_note() if hasattr(self.engine, "death_note") else ""
+        log = getattr(self.engine, "log_path", None)
+        print(f"[strata] {e}. {note} The next request starts the engine again."
+              f"{' Its log: ' + log if log else ''}", flush=True)
 
     def load(self):
         """POST /load and every generation request: start the engine now if it is unloaded (raises GpuBusy)."""
@@ -1167,7 +1385,9 @@ class Service:
         elif max_new > room:
             if not self.fit_max_tokens:
                 raise ValueError(f"prompt ({len(ids)} tokens) + max tokens ({max_new}) exceeds the context "
-                                 f"({self.engine.max_context}); requests are never truncated")
+                                 f"({self.engine.max_context}); requests are never truncated. Send a smaller "
+                                 f"max_tokens (at most {max(0, room)} here), or add \"fit_max_tokens\": true to the "
+                                 "model's strata-<model>.json to shorten it to the room left (#545)")
             max_new = max(1, room)          # --fit-max-tokens: a shorter completion beats a 400
         return ids, kwargs.get("enable_thinking", True) is not False, max_new
 
@@ -1248,7 +1468,7 @@ class Service:
                     while True:
                         gen = self.engine.generate(prompt, max_new - n, sampling, cancel, embeddings=emb) if emb \
                             else self.engine.generate(prompt, max_new - n, sampling, cancel)
-                        seg, wrap = [], False           # this pass's tokens; the budget is reached
+                        seg, wrap, leaving = [], False, False   # this pass's tokens; the budget is reached; closed
                         try:
                             for t in gen:
                                 if t is None:               # heartbeat while the engine is quiet
@@ -1278,19 +1498,25 @@ class Service:
                                         break
                         except EngineDied as e:
                             finish = "error"
-                            note = self.engine.death_note() if hasattr(self.engine, "death_note") else ""
-                            log = getattr(self.engine, "log_path", None)
-                            print(f"[strata] {e}. {note} The next request starts the engine again."
-                                  f"{' Its log: ' + log if log else ''}", flush=True)
+                            self._say_died(e)
                             raise
                         except ValueError as e:             # the engine's ERR line (it may have ended after it)
                             finish = "error"
                             print(f"[strata] the engine reported an error: {e}", flush=True)
                             raise
+                        except GeneratorExit:               # the client went away: an engine that never acknowledges
+                            leaving = True                  # the STOP below is ended, but no error replaces this
+                            raise
                         finally:
-                            gen.close()                 # STOP+drain to THIS request's DONE while still holding the
-                            #                             fifo, so a stop-token break can't leave the shared engine
-                            #                             queue mid-drain for the next request to read as its own DONE
+                            try:
+                                gen.close()             # STOP+drain to THIS request's DONE while still holding the
+                                #                         fifo, so a stop-token break can't leave the shared engine
+                                #                         queue mid-drain for the next request to read as its own DONE
+                            except EngineSilent as e:   # #481: the STOP was never acknowledged: the engine is ended
+                                finish = "error"
+                                self._say_died(e)
+                                if not leaving and not cancel.is_set():
+                                    raise
                         if not wrap or cancel.is_set():
                             break
                         # #123: the thinking reached reasoning_budget_tokens.  Close it the way the model would (a
@@ -1328,27 +1554,35 @@ class Service:
                             cvec = (getattr(self.engine, "info", {}) or {}).get("cvec", 0)
                             loaded = str(cvec) not in ("0", "", "None")
                             hit_rate = round(last["hits"] / last["lookups"], 3) if last.get("lookups") else None
+                            seen = prompt_tokens_seen(len(ids), last)   # #471: < len(ids) when cancelled mid-read
                             self.history.append({
                                 "projection": (sampling or {}).get("experimental_speed_projection") is not False
                                 if loaded else None,
                                 "time": started, "duration_s": round(time.time() - started, 1), "finish": finish,
-                                "prompt_tokens": len(ids), "reused": last.get("reused"), "output_tokens": n,
+                                "prompt_tokens": seen, "reused": last.get("reused"), "output_tokens": n,
+                                # the request's whole prompt, and the tokens read of it (None: an older engine)
+                                "prompt_total": len(ids), "prompt_read": last.get("prompt_read"),
                                 "engine_generated": last.get("generated"),
                                 "prompt_ms": last.get("prompt_ms"), "decode_ms": last.get("decode_ms"),
                                 "decode_tok_s": round(last["generated"] / (last["decode_ms"] / 1000), 1)
                                 if n and last.get("generated") and last.get("decode_ms") else None,
                                 "hit_rate": hit_rate, "ram_blobs": last.get("ram_blobs"),
-                                "file_blobs": last.get("file_blobs"), "file_mb": last.get("file_mb")})
+                                "file_blobs": last.get("file_blobs"), "file_mb": last.get("file_mb"),
+                                # #457: the speculative drafts from the DONE line (None: the engine did not say)
+                                "drafts_offered": last.get("drafts_offered"),
+                                "drafts_accepted": last.get("drafts_accepted")})
                             t = self.totals
                             t["requests"] += 1
-                            t["prompt_tokens"] += len(ids)
+                            t["prompt_tokens"] += seen
                             t["reused"] += last.get("reused") or 0
                             t["output_tokens"] += n
                             t["prompt_ms"] += last.get("prompt_ms") or 0.0
                             t["decode_ms"] += last.get("decode_ms") or 0.0
+                            t["drafts_offered"] += last.get("drafts_offered") or 0
+                            t["drafts_accepted"] += last.get("drafts_accepted") or 0
                             fresh = getattr(self.engine, "last", None)
                             if fresh is not None and fresh is not before:      # the engine's clock for THIS request
-                                timings = request_timings(len(ids), n, last)
+                                timings = request_timings(seen, n, last)
                                 self.last_timings = dict(timings, at=int(time.time())) if timings else None
                             self.last_request_at = time.time()
                             now = time.time()
@@ -1358,6 +1592,10 @@ class Service:
                             hit_msg = f", expert cache {hit_rate*100:.1f}% hit" if hit_rate is not None else ""
                             print(f"[strata] done: {n} tokens in {el:.0f} s ({rate:.1f} tok/s) "
                                   f"({finish}, cancel={cancel.is_set()}){hit_msg}", flush=True)
+                            if finish == "length" and parser.state == "reasoning":   # #530
+                                print("[strata] the reply reached max tokens while still thinking, so it has no "
+                                      "answer: a thinking budget (reasoning_budget_tokens, in the request or in "
+                                      "strata-<model>.json for every request) leaves room to answer", flush=True)
                             if os.environ.get("STRATA_DEBUG") and raw_ids:
                                 print(f"[strata] raw: {self.tok.decode(raw_ids)!r}", flush=True)
                         self.status["busy"] = False
@@ -1370,6 +1608,17 @@ class Service:
             yield "event", ev
         yield "done", {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),
                        "timings": timings}
+
+
+def prompt_tokens_seen(prompt_tokens: int, last: dict) -> int:
+    """#471: the prompt tokens a request got through - all of them, unless the engine's DONE line says a cancel stopped
+    its prompt read part-way (then the reused ones plus those read).  /metrics' history and totals count these, so a
+    cancelled read is neither recorded as the whole prompt nor given a rate from tokens it never read.  An engine
+    before 0.1.36 does not say (no `prompt_read`): the whole prompt, as before."""
+    read = last.get("prompt_read")
+    if read is None or last.get("finish") != "cancel":
+        return prompt_tokens
+    return min(prompt_tokens, int(last.get("reused") or 0) + int(read))
 
 
 def request_timings(prompt_tokens: int, generated: int, last: dict) -> dict | None:
@@ -1729,6 +1978,46 @@ def make_handler(svc: Service):
         def log_message(self, fmt, *args):
             pass
 
+        def parse_request(self):
+            """Without an API key, every request (any method) first passes the Host check: DNS rebinding protection
+            (host_allowed).  With a key a rebinding page cannot authenticate, so the check is skipped: tunnels and
+            proxies that pass their own name on keep working."""
+            if not super().parse_request():
+                return False
+            host = self.headers.get("Host")
+            if svc.api_key or host_allowed(host, svc.host_names, "*" in svc.allowed_hosts):
+                return True
+            print(f"[strata] refused a request for Host {host!r} from {self.client_address[0]}: not a name this server "
+                  f"answers to (add it to \"allowed_hosts\" in the config or STRATA_ALLOWED_HOSTS, or set an API key)",
+                  flush=True)
+            self._json(403, {"error": {"type": "forbidden", "message":
+                             f"Host {host!r} is not allowed (DNS rebinding protection). Reaching Strata under this "
+                             f"name on purpose? Add it to \"allowed_hosts\" in the config (strata-<model>.json) or to "
+                             f"the STRATA_ALLOWED_HOSTS environment variable, or set an API key (\"api_key\"), which "
+                             f"turns this check off"}})
+            return False
+
+        def _foreign_page(self) -> bool:
+            """Without an API key, a /v1 POST from a browser page of another site (any site can POST text/plain
+            there without a CORS preflight) would burn GPU time: an Origin header must name an allowed page, and
+            then the body must be JSON.  No Origin (curl, the SDKs, other servers): any content type, as before."""
+            origin = self.headers.get("Origin")
+            if svc.api_key or not origin:
+                return False
+            if not origin_allowed(origin, self.headers.get("Host"), svc.host_names,
+                                  [*svc.trusted_origins, *svc.cors_origins]):
+                print(f"[strata] refused an API request from the web page {origin!r} (no API key; add its host to "
+                      f"\"allowed_hosts\" or its origin to \"cors_origins\" in the config)", flush=True)
+                self._json(403, {"error": {"type": "forbidden", "message":
+                                 f"web pages of {origin} may not use this server without an API key; set \"api_key\", "
+                                 f"or add the page's host to \"allowed_hosts\" (or its origin to \"cors_origins\") "
+                                 f"in the config"}})
+                return True
+            if not self.headers.get("Content-Type", "").startswith("application/json"):
+                self._json(415, {"error": {"message": "send application/json"}})
+                return True
+            return False
+
         def _watch_client(self, cancel: threading.Event) -> None:
             """#430 #431: cancel the request as soon as its client hangs up.  A non-streamed request writes nothing
             until it ends, and a streamed one only a keep-alive per prompt chunk (and the first write after a hang-up
@@ -1932,8 +2221,13 @@ def make_handler(svc: Service):
             if not self._authorized():
                 return
             path = self.path.split("?")[0].rstrip("/")   # issue #55: Claude Code posts /v1/messages?beta=true
+            if path.startswith("/v1/") and self._foreign_page():
+                return
             if path == "/settings":
                 self._settings()
+                return
+            # JSON from Strata's own page only, as /settings: else a plain form POST from any site unloads the model
+            if path in ("/unload", "/load") and not self._own_page("the model can be loaded or unloaded"):
                 return
             if path == "/unload":                            # give the GPU back now (between requests)
                 try:
@@ -2250,6 +2544,36 @@ def warn_tight_ram(arena_mib) -> None:
               + "Close other programs, or run START-HERE --setup and pick a smaller size (Q2_0 / IQ2_XS).", flush=True)
 
 
+DESKTOP_FREE_MIB = 2048          # #560 #516: below this, an AMD card that also drives a Linux desktop can run out
+DESKTOP_RESERVE_MIB = 3072       # what kept KDE/Wayland alive beside a full expert cache in both reports
+
+
+def linux_desktop(env=None) -> bool:
+    """A graphical session on Linux (Wayland or X): its compositor, browser and apps take VRAM after the model has."""
+    env = os.environ if env is None else env
+    return os.name != "nt" and sys.platform != "darwin" and bool(env.get("WAYLAND_DISPLAY") or env.get("DISPLAY"))
+
+
+def desktop_vram_note(backend, vram_free_mib, args: list, desktop: bool) -> str:
+    """#560 #516: on Linux, when the desktop needs VRAM the AMD card does not have, amdgpu moves GPU memory (the expert
+    cache, ~24 GB) to system RAM, which the experts already fill - the OOM killer then ends the compositor.  The
+    default reserve (700 MiB) is sized for a card without a desktop.  A recommendation, nothing changes: "" when it
+    does not apply."""
+    if backend != "hip" or not desktop or not isinstance(vram_free_mib, int) or vram_free_mib >= DESKTOP_FREE_MIB:
+        return ""
+    try:
+        reserve = int(args[args.index("--vram-reserve-mib") + 1]) if "--vram-reserve-mib" in args else 700
+    except (ValueError, IndexError):
+        reserve = 700
+    if reserve >= DESKTOP_RESERVE_MIB:
+        return ""
+    return (f"[strata] note: {vram_free_mib} MiB of VRAM free with the model loaded. If this AMD card also drives your "
+            "desktop and the desktop or apps crash after the start (the driver moves the expert cache to RAM and "
+            "the OOM killer ends the session), keep more VRAM free: ./setup.sh --vram-reserve-mib "
+            f"{DESKTOP_RESERVE_MIB} (remembered; the expert cache gets "
+            f"{(DESKTOP_RESERVE_MIB - reserve) / 1024:.1f} GB less, a few % of speed)")
+
+
 def lan_addresses() -> list[str]:
     """This PC's IPv4 addresses on its networks (what another device types in), without loopback/link-local."""
     import socket
@@ -2269,7 +2593,114 @@ def lan_addresses() -> list[str]:
     return ([first] if ok(first) else []) + sorted(ip for ip in ips if ok(ip) and ip != first)
 
 
+def host_name(value) -> str:
+    """The name in a Host header (or an origin's host[:port]): "Example.com:8080" -> "example.com",
+    "[::1]:8095" -> "::1"; "" when it is malformed."""
+    v = (value or "").strip().lower()
+    if v.startswith("["):
+        name, sep, rest = v[1:].partition("]")
+        return name if sep and (not rest or (rest[:1] == ":" and rest[1:].isdigit())) else ""
+    if v.count(":") == 1:
+        v, port = v.split(":")
+        if not port.isdigit():
+            return ""
+    elif ":" in v:                                       # a bare IPv6 address (a config entry)
+        return v
+    v = v.rstrip(".")
+    return v if v and all(c.isalnum() or c in "-._" for c in v) else ""
+
+
+def _is_ip(name: str) -> bool:
+    import ipaddress
+    try:
+        ipaddress.ip_address(name)
+        return True
+    except ValueError:
+        return False
+
+
+def _name_in(name: str, names) -> bool:
+    """`name` is one of `names`, or below an entry that starts with a dot (".example.com")."""
+    return name in names or any(n.startswith(".") and (name.endswith(n) or name == n[1:]) for n in names)
+
+
+def allowed_hosts_of(value, env: str = "") -> list[str]:
+    """The config's allowed_hosts (a name or a list) plus $STRATA_ALLOWED_HOSTS (comma-separated): host names, "*" or
+    ".example.com" (it and every name below it).  A scheme, port or path is dropped ("https://a.example.com:8443/"
+    -> "a.example.com"); a wrong entry stops the start (ValueError)."""
+    items = [] if value in (None, "") else [value] if isinstance(value, str) else value
+    if not isinstance(items, list) or not all(isinstance(x, str) for x in items):
+        raise ValueError("allowed_hosts: expected a host name or a list of them")
+    out = []
+    for raw in items + [x for x in env.split(",") if x.strip()]:
+        x = raw.strip().lower()
+        if x == "*":
+            out.append(x)
+            continue
+        x = x.split("://", 1)[-1].split("/", 1)[0]
+        dot = x.startswith(".")
+        name = host_name(x[1:] if dot else x)
+        if not name:
+            raise ValueError(f"allowed_hosts: {raw!r} is not a host name like strata.example.com")
+        out.append("." + name if dot else name)
+    return list(dict.fromkeys(out))
+
+
+def host_names_for(bind_host: str, allowed_hosts=(), trusted_origins=()) -> set[str]:
+    """Every name this server answers to besides an IP address: localhost, the address it listens on, the config's
+    allowed_hosts and trusted_origins' hosts, and - listening beyond this PC (0.0.0.0 or a LAN address) - this PC's
+    name and LAN addresses (the LAN addresses matter for the Origin check, which takes no IP on trust)."""
+    names = set(LOOPBACK_NAMES)
+    bind = host_name(bind_host)
+    if bind and bind not in ("0.0.0.0", "::"):
+        names.add(bind)
+    if bind not in LOOPBACK_NAMES:
+        try:
+            pc = socket.gethostname().lower()
+            names.update((pc, pc + ".local"))
+        except OSError:
+            pass
+        names.update(("host.docker.internal", *lan_addresses()))
+    names.update(x for x in allowed_hosts if x != "*")
+    names.update(filter(None, (host_name(o.split("://", 1)[-1]) for o in trusted_origins)))
+    return names
+
+
+def host_allowed(host, names, any_host=False) -> bool:
+    """DNS rebinding: a web page of another site whose name its DNS points at 127.0.0.1 reaches this server as the
+    same origin, so the browser lets it read every answer.  Its requests carry that site's name in Host, so only
+    the names this server answers to pass.  An IP address passes (a page served from an IP is that IP's own page;
+    rebinding needs a name), as does "*.localhost" (browsers never ask DNS for it) and a request without a Host
+    header (HTTP/1.0 clients; browsers always send one)."""
+    if any_host or not (host or "").strip():
+        return True
+    name = host_name(host)
+    return bool(name) and (_is_ip(name) or name == "localhost" or name.endswith(".localhost")
+                           or _name_in(name, names))
+
+
+def origin_allowed(origin: str, host, names, origins=()) -> bool:
+    """A browser page's Origin that may use the model without an API key: this server's own page (the Origin is the
+    request's own Host), a page on one of the names this server answers to (any port), or an origin the config lists
+    (trusted_origins, cors_origins).  Unlike the Host check no IP passes on trust: a page served from any other IP is
+    another site.  "null" (a sandboxed frame, a file:// page) does not pass: any site can send it.  An origin of another
+    scheme (chrome-extension://, moz-extension://, an Electron app's app://) does: no web site can send one."""
+    origin = (origin or "").strip().rstrip("/")
+    if origin in origins or "*" in origins:             # cors_origins ["*"]: the config lets every page in
+        return True
+    scheme, sep, rest = origin.lower().partition("://")
+    if not sep or not scheme:
+        return False
+    if scheme not in ("http", "https"):
+        return True
+    if host and rest == host.strip().lower():
+        return True
+    name = host_name(rest)
+    return bool(name) and (name in LOOPBACK_NAMES or name.endswith(".localhost") or _name_in(name, names))
+
+
 def serve(svc: Service, host="127.0.0.1", port=8095) -> ThreadingHTTPServer:
+    svc.host_names = host_names_for(host, svc.allowed_hosts, svc.trusted_origins)
     svc.start_telemetry()
     httpd = Server((host, port), make_handler(svc))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
@@ -2487,8 +2918,17 @@ def main() -> int:
         # a relative "exe" is the config's cwd's: Windows' CreateProcess resolves "engine/strata.exe" against nothing
         # it is told about (WinError 2), so it is made absolute here
         exe = cfg["exe"] if os.path.isabs(cfg["exe"]) else os.path.abspath(os.path.join(cfg.get("cwd") or ".", cfg["exe"]))
+        try:
+            silence = engine_silence_s(cfg)             # #481: checked before the (minutes-long) start
+        except ValueError as e:
+            raise SystemExit(f"[strata] config {e}")
         engine = StrataEngine(exe, engine_args(cfg), cwd=cfg.get("cwd"), log=cfg.get("log"), env=env, lazy=lazy)
+        engine.silence_s = silence                      # an attribute of its own: restart() keeps it
         warn_tight_ram(engine.info.get("arena_mib"))
+        note = desktop_vram_note(cfg.get("backend"), engine.info.get("vram_free_mib"), engine.spawn[1],
+                                 linux_desktop())
+        if note:                                        # #560 #516: before --open starts a browser on that card
+            print(note, flush=True)
     else:
         engine, vision, sampling_defaults = MockEngine(tok, a.script or [
             "Thinking about it.</think>\n\nHello from the mock engine."]), None, {}
@@ -2513,6 +2953,13 @@ def main() -> int:
     svc.api_key = a.api_key or cfg.get("api_key", "")
     svc.cors_origins = origins_of(cfg.get("cors_origins"), "cors_origins", wildcard=True)
     svc.trusted_origins = origins_of(cfg.get("trusted_origins"), "trusted_origins", wildcard=False)
+    try:
+        svc.allowed_hosts = allowed_hosts_of(cfg.get("allowed_hosts"), os.environ.get("STRATA_ALLOWED_HOSTS", ""))
+    except ValueError as e:
+        raise SystemExit(f"[strata] config {e}")
+    if svc.allowed_hosts:
+        print("[strata] Host check off: any name reaches this server (allowed_hosts \"*\")" if "*" in svc.allowed_hosts
+              else f"[strata] also answers to the host names {', '.join(svc.allowed_hosts)} (allowed_hosts)", flush=True)
     svc.api_monitor = a.api_monitor or cfg.get("api_monitor") is True
     if svc.api_monitor:
         print("[strata] API request monitor on (/api-monitor): the last 100 requests' prompts and answers are kept in "

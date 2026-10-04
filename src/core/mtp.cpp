@@ -4,6 +4,7 @@
 #include "strata/core/on_device.hpp"
 
 #include "strata/core/native_head.hpp"
+#include "strata/core/peer_experts.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/elementwise.hpp"
@@ -30,6 +31,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <fstream>
@@ -55,7 +57,7 @@ struct Bump {
 };
 
 bool mapped(size_t bytes, void** h, void** d) {
-    if (cudaHostAlloc(h, bytes, cudaHostAllocMapped) != cudaSuccess) return false;
+    if (cudaHostAlloc(h, bytes, cudaHostAllocMapped | (peer_portable() ? cudaHostAllocPortable : 0)) != cudaSuccess) return false;
     std::memset(*h, 0, bytes);
     return cudaHostGetDevicePointer(d, *h, 0) == cudaSuccess;
 }
@@ -372,6 +374,45 @@ void MtpDrafter::set_draft_history(const int32_t* tail, int64_t n_tail, int32_t 
     coupled_hist_base(tail, n_tail, next, h, h_chist_ + (kCoupledHistCap - h));
 }
 
+namespace {
+// #474: what to change when the draft head's token subset does not fit the VRAM left - a smaller subset that setup
+// ships (data/draft_vocab_*.bin; their token counts below), and how to pick it.  The start used to stop at "the draft
+// head does not fit" with no hint.  Text only, after the failure: nothing changes for a start that fits.
+void draft_head_hint(int64_t n_tokens, int64_t row_bytes) {
+    size_t free_b = 0, total_b = 0;
+    const bool have_free = cudaMemGetInfo(&free_b, &total_b) == cudaSuccess;
+    auto mib = [&](int64_t n) { return (double) (n * row_bytes) / 1048576.0; };
+    std::string free_s;
+    if (have_free) {
+        char b[64];
+        std::snprintf(b, sizeof(b), " and %.0f MiB is free", (double) free_b / 1048576.0);
+        free_s = b;
+    }
+    std::fprintf(stderr, "strata mtp: the draft head over %lld tokens needs %.0f MiB of VRAM%s.\n",
+                 (long long) n_tokens, mib(n_tokens), free_s.c_str());
+    struct Subset { const char* name; int64_t tokens; const char* what; };
+    static const Subset smaller[] = {{"cyrillic", 58963, "English, code and the Cyrillic script"},
+                                     {"en", 40525, "English and code"}};
+    std::string opts;
+    for (const Subset& s : smaller)
+        if (s.tokens < n_tokens) {
+            char b[160];
+            std::snprintf(b, sizeof(b), "%s--draft-vocab %s (%s, ~%.0f MiB)", opts.empty() ? "" : " or ", s.name,
+                          s.what, mib(s.tokens));
+            opts += b;
+        }
+    if (!opts.empty())
+        std::fprintf(stderr, "strata mtp: hint: a smaller draft vocabulary needs less VRAM: %s. Start once with it - "
+                             "START-HERE.bat --draft-vocab en (Windows) or ./setup.sh --draft-vocab en - and the model "
+                             "keeps it (\"draft_vocab\" in its strata-*.json config); or a smaller --context in "
+                             "setup.\n",
+                     opts.c_str());
+    else
+        std::fprintf(stderr, "strata mtp: hint: this is already the smallest shipped draft vocabulary: a smaller "
+                             "--context (or closing what else uses the GPU) leaves it room.\n");
+}
+}  // namespace
+
 bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float* window_R, std::string& err) {
     const OnDevice on_device(device_);
     wt_ = &wt;
@@ -395,6 +436,7 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
             if (cudaMalloc((void**) &dvocab_, raw.size()) != cudaSuccess ||
                 cudaMalloc((void**) &dhead_, (size_t) (n_dvocab_ * row_bytes)) != cudaSuccess) {
                 err = "mtp: the draft head does not fit";
+                draft_head_hint(n_dvocab_, row_bytes);
                 return false;
             }
             cudaMemcpy(dvocab_, raw.data(), raw.size(), cudaMemcpyHostToDevice);
@@ -688,8 +730,21 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
     // E-4: every group's token / step / position records uploaded at once; each group is then device copies and a
     // graph on the one stream, with a single sync at the end (a group of <= max_t rows used to be staged in mapped
     // memory and synced before the next: ~5,500 host round trips on a 32K prompt).  The same work in the same
-    // order.  STRATA_MTP_PREFILL_SYNC=1 keeps the old loop.
-    static const bool per_group_sync = std::getenv("STRATA_MTP_PREFILL_SYNC") != nullptr;
+    // order.  STRATA_MTP_PREFILL_SYNC=1 keeps the old loop, =0 forces E-4.
+    // HIP defaults to the old loop.  This pass runs whenever E-9 (Prefill::draft_kv) declines, which it does for the
+    // drafter's ring (KV streaming, --kv-resident), and on gfx1201 / ROCm 7.2.4 the E-4 queue (a graph launch and four
+    // device copies per group, ~2,000 groups per 8192-token chunk, no sync) sometimes never completes: the prompt hangs
+    // in hipGraphLaunch or the final sync until the watchdog ends the engine.  R9700, full IQ3_XXS, --kv-resident
+    // 32768, mixed load (chats, 32K and 7K prompts, deep follow-ups): E-4 hung in the first round on 2 of 2 tries,
+    // the old loop ran 30 of 30 rounds clean, prompt speed unchanged.
+    static const bool per_group_sync = [] {
+        if (const char* v = std::getenv("STRATA_MTP_PREFILL_SYNC")) return std::atoi(v) != 0;
+#if defined(STRATA_USE_HIP)
+        return true;
+#else
+        return false;
+#endif
+    }();
     const int64_t NHp = g_->n_head, per_row = 1 + 4 + NHp;
     if (!per_group_sync && n > 0) {
         if (pf_cap_ < n * per_row) {

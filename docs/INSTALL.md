@@ -123,11 +123,20 @@ The same idea, in a container (NVIDIA cards).
 
 ## Updating
 
-Download the new version and unzip it anywhere (or `git pull`), then run `START-HERE.bat` (Linux: `./setup.sh`) in
-it. The model files are kept in a `Strata-data` folder next to your Strata folder, so a new copy finds them and sets
-itself up the same way - nothing big is downloaded again. On Linux after a `git pull`, setup compiles the engine
-again when its source changed (a minute or two for the changed files); if that compile fails, it says so and starts
-the engine you had.
+**`UPDATE.bat`** (Linux: `./update.sh`) updates Strata without starting the model - for when the GPU is busy with
+something else, or you just want the new version ready. In a `git clone` it runs `git pull`, then does what
+`START-HERE.bat` does before a start: the engine (a new ready-made one when the new version needs it; on Linux a
+compiled engine is compiled again when its source changed), the Python packages, and each installed model's settings
+and draft subset. The model files are not touched (at most a new engine is downloaded) and no question is asked.
+Close the model's window first (a running engine cannot be replaced); start the model later with `START-HERE.bat` as
+usual. In a copy that was downloaded as a zip it says to download the new zip (below): it cannot fetch new files
+itself.
+
+Or by hand: download the new version and unzip it anywhere (or `git pull`), then run `START-HERE.bat` (Linux:
+`./setup.sh`) in it. The model files are kept in a `Strata-data` folder next to your Strata folder, so a new copy
+finds them and sets itself up the same way - nothing big is downloaded again. On Linux after a `git pull`, setup
+compiles the engine again when its source changed (a minute or two for the changed files); if that compile fails, it
+says so and starts the engine you had.
 
 ## Where things are stored
 
@@ -177,11 +186,37 @@ START-HERE.bat --data-dir E:\Strata-data         keep the model files somewhere 
 START-HERE.bat --port 8081                      another port
 START-HERE.bat --gpu 1                          another GPU (setup picks the one with the most VRAM)
 START-HERE.bat --gpus 0,2                       several GPUs sharing the model
+START-HERE.bat --vram-reserve-mib 2048          leave 2 GB of VRAM free for other programs (remembered)
 START-HERE.bat --setup --backend hip            the AMD engine on a PC that also has an NVIDIA card
 START-HERE.bat --setup --host 0.0.0.0 --api-key <secret>     reachable from other devices, with a key
 START-HERE.bat --calibrate                      tune the engine for this PC (about 5-10 minutes), then start
 START-HERE.bat --check                          only check this PC
 ```
+
+**Leaving VRAM for other programs (#493):** Strata fills the graphics card's free VRAM with experts (the expert cache)
+and leaves `--vram-reserve-mib` MiB free: 700 by default. For a game, a 3D program or another model beside it, leave
+more: `START-HERE.bat --vram-reserve-mib 2048` (Linux: `./setup.sh --vram-reserve-mib 2048`) writes it into the
+model's `strata-<model>.json` and starts it; at setup (`--setup --vram-reserve-mib 2048`) it goes into the new config.
+By hand: add `"--vram-reserve-mib", "2048"` to the config's `"args"` list and restart. The expert cache is then that
+much smaller, so answers can be a little slower. The engine sizes its cache from the VRAM free when it starts: what
+another program already holds then is left alone anyway; the reserve is room for what it takes later.
+
+**An AMD card that also drives a Linux desktop (#560 #516):** with the default reserve the expert cache fills the
+card, and when the desktop (the compositor, a browser, a new app) needs more VRAM, the amdgpu driver moves GPU memory
+to system RAM, which the model's experts already fill: the OOM killer then ends the desktop session (KWin, plasmashell)
+or the compositor fails ("Failed to pin framebuffer"). `./setup.sh --vram-reserve-mib 3072` fixed it in both reports
+(about 2.3 GB fewer experts in VRAM, a few % of speed). Setup and the server window say so on such a PC.
+
+**A card under 8 GB (#496):** when the default reserve leaves the expert cache too little room, the engine lowers the
+reserve (down to 300 MiB) until it fits, and warns if the card then ends nearly full. If the start stops with "no VRAM
+is left for the expert cache", that log line says how much is short; an 8K context and `--draft-vocab en` at setup
+free the most.
+
+**Model files downloaded by hand, or from a mirror (#495):** setup's step 5 prints the folder it expects them in
+(`Strata-data\models\<SIZE>\`, e.g. `Strata-data\models\IQ3_XXS\`): put them there with their original names, or
+point setup at them with `--gguf-dir`. To let setup download from a Hugging Face mirror itself, set `HF_ENDPOINT`
+first (Windows: `set HF_ENDPOINT=https://hf-mirror.com`, Linux: `export HF_ENDPOINT=https://hf-mirror.com`): the same
+pinned revisions and checks apply, and the MTP draft layer comes from there too.
 
 On Linux the same options go to `./setup.sh`. `START-HERE.bat --help` lists them all. The server's own settings
 (sharing the GPU with games, MCP tools, CORS, API keys, the API itself) are in the [details](DETAILS.md#using-it).

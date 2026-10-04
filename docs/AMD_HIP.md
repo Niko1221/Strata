@@ -68,6 +68,11 @@ On a PC with no NVIDIA card Strata can use, the AMD card is chosen by itself; wi
   amd_comgr and the Microsoft C++ runtime; ROCm 10.2.0a20260930 from AMD's TheRock builds, licenses in
   `engine\rocm\licenses`). The HIP runtime works through the AMD driver's own components, so the driver is the one
   thing it needs from the PC.
+- **The HIP runtime next to `strata.exe` (0.1.35, #468 #461):** `amdhip64_7.dll` and `amd_comgr.dll` are also put in
+  `engine\` (setup copies them there on every start). Windows looks in the program's folder before System32, where
+  some AMD drivers install their own `amdhip64_7.dll`; with that one, the bundled libraries crashed on the first
+  prompt (an access violation, or `hipErrorInvalidDeviceFunction`). The engine's log names the runtime it loaded
+  (`strata generate: HIP runtime ...`).
 - **Before the ~60 GB model download** setup runs `engine\strata-device.exe --list-devices` (with `engine\rocm\bin` on
   the PATH): if the HIP runtime does not see the card, setup stops there and points to the driver. It also gives the
   card's HIP number: with an integrated Radeon that is device 1, not 0 (#325). From then on setup lists the AMD cards
@@ -79,6 +84,13 @@ On a PC with no NVIDIA card Strata can use, the AMD card is chosen by itself; wi
   succeeded, on Windows only. `hipHostGetDevicePointer` returns the host pointer itself on Windows: kernels read
   mapped memory through it correctly, but a device-to-device copy into it does not land, which is why
   `tests/hip/handoff` times out there (the engine does not use that copy; `tests/hip/mapped_alias` reports it).
+- Two more (#380, #377, by BlueKingMuch, measured on an RX 6800 that drives the desktop): `hipMemGetInfo` on Windows
+  does not subtract what the desktop and other programs hold on the card, so `--expert-cache auto` filled the card
+  past what Windows keeps in VRAM and decode fell from 41 to 30 tok/s. The engine now lowers that free figure by
+  what Windows' video memory budget for the process withholds (logged once: `strata: Windows budgets N of this
+  card's M MiB ...`; `STRATA_WDDM_BUDGET=0` turns it off). And the PCIe probe times its copies on the host clock
+  there, since HIP's events read impossible speeds (3,300-26,000 GB/s), so a slow link now gets a smaller
+  `pcie_frac` as on NVIDIA.
 
 **What is validated (0.1.34):** #325's author ran the engine of this port on an RX 9070 XT (Windows 11, ROCm
 10.2.0a20260930 in `.venv`, compiled on the PC): Coder IQ1_M at 32K, 29.2 tok/s decode, ~181 tok/s prefill,
@@ -178,6 +190,11 @@ The worker count above was used on a 16-core CPU; measure it for your CPU.
 The 4K context is a smoke-test starting point, not a model limit. The expert cache
 sizes itself automatically and leaves 1 GiB of VRAM headroom.
 
+**The card also drives a Linux desktop (#560 #516):** keep more VRAM free than the default 700 MiB, e.g.
+`./setup.sh --vram-reserve-mib 3072`. With the cache filling the card, the desktop's next VRAM need makes amdgpu move
+GPU memory to system RAM (GTT), the OOM killer then ends KWin/plasmashell or `systemd-oomd` ends apps, or the
+compositor fails with "Failed to pin framebuffer with error -12".
+
 The installer supports this backend (see "Install with setup" above). Images run through the CPU encoder for now (`--vision cpu`).
 Setup installs one AMD card, or several with `--gpus` (the engine's layer split; see RDNA4 below).
 
@@ -217,6 +234,10 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
   so none was shipped for it: there the plain hipBLAS path is already close. For hipBLASLt 1.5.0 (ROCm
   10.2.0a nightly) `tools/hip/gfx1201-hipblaslt-100500.txt` is shipped (see "Tuning table" below); on one R9700 it
   measured +3.9% prompt speed on 4,210-token prompts (1,590 vs 1,531 tok/s), a modest gain.
+  With the hipBLASLt 1.2.2 of a system ROCm 7.2.4 the plain path is far off, and `tools/hip/gfx1201-hipblaslt-100202.txt`
+  is shipped for it (24 of the gfx1100 table's 26 shapes; setup uses it only with that exact version): on an R9700
+  with the full IQ3_XXS, `--kv int8 --kv-resident 32768`, a fresh 32K prompt read at 638 -> 1,177 tok/s and a 7K one
+  at 656 -> 1,164 tok/s with it, decode unchanged.  `hip_prefill_hipblaslt_gemm` passes with it.
 - **Both cards in one run (layer split, engine 0.1.30):** the config's `"backend": "hip", "gpu": [1, 0]` (R9700
   first) runs through `serve/server.py` (setup writes it with `--gpus 1,0` since 0.1.31). Auto split put layers 0-27 on the R9700 and
   28-47 on the 9070 XT. With every expert on the GPUs the split gives exactly the tokens of the R9700 alone (4K and
@@ -262,8 +283,9 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
 
 ## Community-validated cards
 
-Run by their owners, not on the maintainers' machines; setup accepts them like gfx1100 / gfx1201. No hipBLASLt table
-is shipped for them (make one with [Tuning table](#tuning-table) and compare the prompt speed with and without it).
+Run by their owners, not on the maintainers' machines; setup accepts them like gfx1100 / gfx1201. setup ships a
+hipBLASLt table for gfx1200 (the numbers below); gfx1101 has none (make one with [Tuning table](#tuning-table)
+and compare the prompt speed with and without it).
 
 - **gfx1101, RX 7800 XT 16 GB** (jhohertz, #254; engine 0.1.29, Ryzen 9 5950X, 121 GiB RAM, system ROCm with
   hipBLASLt 1.4.1): `./setup.sh --backend hip` detected the card and compiled the engine; `strata-device --selftest`
@@ -282,6 +304,17 @@ is shipped for them (make one with [Tuning table](#tuning-table) and compare the
 
   Greedy output was the same across runs. For comparison, llama.cpp's HIP build measured 20 tok/s decode and
   450 tok/s prompt on that card.
+
+  Since 0.1.38 setup ships that table (`tools/hip/gfx1200-hipblaslt-100202.txt`). On engine 0.1.31, one binary (ctest
+  37/37, without `ple_parity` and `platform_memory_test`), prompts of repeated code blocks, prefill 2560 for
+  the short prompt and 16384 with `--kv int8 --kv-resident 65536` otherwise, two runs each - prompt speed
+  with the table vs plain hipBLAS (no table):
+
+  | prompt | with the table | plain hipBLAS | gain |
+  |---|---|---|---|
+  | 2,374 tokens | 597-599 tok/s | 396-398 tok/s | 1.50x |
+  | 65,045 tokens | 754-757 tok/s | 380 tok/s | 1.99x |
+  | 130,091 tokens (the same flags) | 719 tok/s | 363-370 tok/s | 1.98x |
 
 ## RDNA2 (gfx1030)
 

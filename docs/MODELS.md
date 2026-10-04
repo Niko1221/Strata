@@ -11,12 +11,14 @@ The installer recommends one for your PC; this page explains the choice. Back to
 
 | Your RAM | Take | Why |
 | --- | --- | --- |
-| **32 GB** | **Coder** | it fits 32 GB, and it is made for code (with a 24 GB card, Q2_0 and IQ2_XS run too: [low-RAM mode](#a-big-graphics-card-and-little-ram)) |
+| **32 GB** | **Coder** | it fits 32 GB; best at code, weaker at everything else ([why](#coder)). With a 24 GB card, Q2_0 and IQ2_XS run too ([low-RAM mode](#a-big-graphics-card-and-little-ram)) and are the better pick for general use |
 | **48 GB** | **IQ2_XS** (or Q2_0, the fastest) | the larger sizes do not fit |
 | **64 GB** | **IQ2_XS** (recommended), or IQ3_XXS / IQ3_S | every size fits (IQ3_S with little else open) |
 | **96 GB or more** | **IQ3_S**, or [Unsloth's 4-bit](#unsloth-ud-q4_k_xl-experimental) (experimental) | room for the largest sizes |
 
-Not sure? Take **IQ2_XS** - or the **Coder** if you mainly write code, or have 32-48 GB of RAM.
+Not sure? Take **IQ2_XS**. The **Coder** is the one that fits a 32 GB PC, but it keeps only 256 of the 512 experts,
+chosen on code data, so it is weaker outside code and in languages other than English. For general use, or whenever
+your RAM allows, take a full model (Q2_0, IQ2_XS or IQ3_S).
 
 ## How fast is each size
 
@@ -24,7 +26,7 @@ Measured on an RTX 5070 (12 GB), a Ryzen 5 7600 and 64 GB of RAM:
 
 | Size | Writes answers (short chat) | Writes answers (128K context) | Reads your prompt |
 | --- | ---: | ---: | ---: |
-| **Q2_0** | 93 tokens/s | 74 tokens/s | 2,170 tokens/s |
+| **Q2_0** | 94 tokens/s | 76 tokens/s | 2,650 tokens/s |
 | **IQ2_XS** | 79 tokens/s | 63 tokens/s | 2,090 tokens/s |
 | **IQ3_XXS** | 62 tokens/s | 49 tokens/s | 1,750 tokens/s |
 | **IQ3_S** | 53 tokens/s | 46 tokens/s | 1,620 tokens/s |
@@ -91,10 +93,13 @@ The original, in all four sizes. With images, and with the
 ### Coder
 
 **[Coder](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF)** - ISTA-DASLab's coding version:
-half of the experts removed, keeping the ones that code, tool use and images need (91% of the full model's SWE-bench
-Verified score, 99% of LiveCodeBench, by its authors). One size (IQ1_M: its experts stored like IQ3_S): shard 1 is
-**29.6 GB**, so it fits a PC with **32 GB of RAM**, runs 262K context on 64 GB, and reads long prompts the fastest of
-all. Weaker outside coding. More: [details](DETAILS.md#or-the-coder-half-the-experts-for-code).
+it keeps 256 of each layer's 512 experts, chosen on code (with agentic and image) data, and drops the rest (91% of
+the full model's SWE-bench Verified score, 99% of LiveCodeBench, by its authors). One size (IQ1_M: its experts stored
+like IQ3_S): shard 1 is **29.6 GB**, so it fits a PC with **32 GB of RAM**, runs 262K context on 64 GB, and reads long
+prompts the fastest of all. With half the experts gone it is weaker outside code and in languages other than
+English, Chinese and other CJK text included (#438: Chinese answers came out wrong or looping where English was
+fine). For general use, or whenever your RAM allows, take a size that keeps every expert: Q2_0, IQ2_XS or IQ3_S.
+More: [details](DETAILS.md#or-the-coder-half-the-experts-for-code).
 
 ```
 START-HERE.bat --setup --family coder

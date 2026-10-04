@@ -143,10 +143,27 @@ def _late_system_to_user(messages: list[dict]) -> list[dict]:
     return [dict(m, role="user") if m.get("role") == "system" and i > 0 else m for i, m in enumerate(messages)]
 
 
+def _object_list(value, name: str) -> list[dict]:
+    """#460: a request's "messages" (or a message's "tool_calls") as a list of objects.  Some clients send the array
+    double-encoded, as a JSON string, which used to be iterated character by character and crashed on m.get: such a
+    string is decoded.  Anything that is still not a list of objects is a ValueError, which the server answers with
+    a 400 naming the field.  None (or no field) is an empty list, as a missing field always was."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            raise ValueError(f"{name} must be a list of objects (a string was sent that is not JSON)") from None
+    if not isinstance(value, list) or not all(isinstance(m, dict) for m in value):
+        raise ValueError(f"{name} must be a list of objects")
+    return value
+
+
 def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
     """OpenAI Chat Completions -> (template messages, template tools, template kwargs)."""
     messages = []
-    for m in req.get("messages", []):
+    for m in _object_list(req.get("messages"), "messages"):
         role = m.get("role")
         if role == "developer":
             role = "system"
@@ -155,8 +172,10 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
             out["reasoning_content"] = m["reasoning_content"]
         if m.get("tool_calls"):
             calls = []
-            for c in m["tool_calls"]:
+            for c in _object_list(m["tool_calls"], "tool_calls"):
                 fn = c.get("function", c)
+                if not isinstance(fn, dict):
+                    raise ValueError("tool_calls must be a list of objects (each with a \"function\" object)")
                 args = fn.get("arguments")
                 if isinstance(args, str):               # the template requires a mapping, not a JSON string
                     args = json.loads(args) if args.strip() else {}
@@ -186,7 +205,7 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
     system = req.get("system")
     if system:
         messages.append({"role": "system", "content": _text_of(system)})
-    for m in req.get("messages", []):
+    for m in _object_list(req.get("messages"), "messages"):
         content = m.get("content")
         if isinstance(content, str):
             messages.append({"role": m["role"], "content": content})

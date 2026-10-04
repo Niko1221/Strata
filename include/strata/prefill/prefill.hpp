@@ -21,6 +21,8 @@
 #include <memory>
 #include <string>
 
+namespace strata::core { class PeerExperts; }
+
 namespace strata::prefill {
 
 struct PrefillStats {
@@ -85,6 +87,11 @@ public:
     bool run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err);
 
     const PrefillStats& stats() const { return stats_; }
+
+    /// multi-GPU: the experts the peer GPU holds are computed THERE for every prompt chunk (up to `cap_rows` routed
+    /// rows per layer; the rest of the peer's experts are read by this GPU over P2P).  Allocates the peer's buffers for
+    /// chunks of up to init's `chunk` tokens.  Needs P2P between the two cards.
+    bool set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& err);
 
     /// Plan v0.3 P6: called after every chunk with the chunk's final multi-stream residual rows (device,
     /// T x hc*n_embd, valid until the next chunk) and the chunk's first position; the MTP draft layer builds its

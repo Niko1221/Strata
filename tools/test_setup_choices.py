@@ -92,6 +92,64 @@ class GgufDirShards(unittest.TestCase):
         self.assertEqual(self.shards(["a-00001-of-00002.gguf", "b-00001-of-00002.gguf"]), want)   # ambiguous
 
 
+class GgufDirUnsupported(unittest.TestCase):
+    """#444: --gguf-dir with GGUFs Strata cannot run (Unsloth's UD-IQ3_XXS, UD-Q2_K_XL) says so, names the files it
+    runs (ISTA-DASLab's GSQ-RCO, the Coder's, Unsloth's UD-Q4_K_XL) and the --family/--model of the usable ones."""
+    UD = ["Qwen3.8-Flash-Next-UD-IQ3_XXS-%05d-of-00003.gguf" % i for i in range(1, 4)] + \
+         ["Qwen3.8-Flash-Next-UD-Q2_K_XL-%05d-of-00003.gguf" % i for i in range(1, 4)]
+
+    def problem(self, names, family="qwen", model="IQ3_XXS"):
+        with tempfile.TemporaryDirectory() as d:
+            for n in names:
+                (Path(d) / n).write_bytes(b"")
+            fam = setup.FAMILIES[family]
+            first = setup.gguf_dir_shards(Path(d), fam, model)[0]
+            p = setup.gguf_dir_problem(Path(d), first, fam, model)
+            return p and (p[0].replace(d, "<D>"), p[1])
+
+    def test_quant_names(self):
+        for name, want in (("Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf", "UD-IQ3_XXS"),
+                           ("Qwen3.8-Flash-Next-UD-Q2_K_XL-00001-of-00003.gguf", "UD-Q2_K_XL"),
+                           ("model-Q4_K_M.gguf", "Q4_K_M"),
+                           ("Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf", None),
+                           ("Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf", None),
+                           ("my-IQ3_XXS-00001-of-00003.gguf", None), ("mmproj-F16.gguf", None),
+                           ("a-00001-of-00002.gguf", None)):
+            self.assertEqual(setup.gguf_unsupported(name), want, name)
+
+    def test_an_unsloth_ud_file_is_not_taken_for_a_gsq_rco_size(self):
+        msg, hint = self.problem(self.UD)                   # IQ3_XXS: UD-IQ3_XXS has the size in its name
+        self.assertEqual(msg, "Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf is UD-IQ3_XXS, a GGUF Strata "
+                              "cannot run")
+        self.assertIn("ISTA-DASLab's GSQ-RCO files", hint)
+        self.assertIn("Unsloth's UD-Q4_K_XL only", hint)
+
+    def test_a_folder_without_the_choice_names_what_is_there(self):
+        gsq = ["Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-%05d-of-00002.gguf" % i for i in (1, 2)]
+        msg, hint = self.problem(self.UD + gsq, "unsloth", "UD-Q4_K_XL")
+        self.assertEqual(msg, "<D> has no Qwen3.8-Flash-Next (Unsloth) UD-Q4_K_XL file")
+        self.assertIn("Not usable here: Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf, "
+                      "Qwen3.8-Flash-Next-UD-Q2_K_XL-00001-of-00003.gguf", hint)
+        self.assertIn("Usable here: --family coder --model IQ1_M", hint)
+
+    def test_usable_folders_are_left_alone(self):
+        good = ["Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-%05d-of-00002.gguf" % i for i in (1, 2)]
+        self.assertIsNone(self.problem(good + self.UD))
+        self.assertIsNone(self.problem(["my-IQ3_XXS-%05d-of-00003.gguf" % i for i in (1, 2, 3)]))
+        self.assertIsNone(self.problem([]))                 # nothing there: check_shards' "missing", as before
+
+    def test_the_size_of_another_family(self):
+        from test_setup_golden import PROFILES, install
+        ram, found = PROFILES["64GB-1x32GB"]
+        with tempfile.TemporaryDirectory() as d:
+            code, out, _, _ = install(ram, found, ["--gguf-dir", d, "--family", "unsloth", "--model", "IQ3_XXS"])
+        self.assertEqual(code, 1)
+        self.assertIn("has no IQ3_XXS model file", out)
+        self.assertIn("choose one of: UD-Q4_K_XL (or IQ3_XXS: --family qwen --model IQ3_XXS, --family swift --model "
+                      "IQ3_XXS)", out)
+        self.assertIn("Strata runs ISTA-DASLab's GSQ-RCO files", out)
+
+
 class ExperimentalSm60(unittest.TestCase):
     """#295: Pascal (6.x) and Volta (7.0) only with STRATA_EXPERIMENTAL_SM60=1, built with -DSTRATA_EXPERIMENTAL_SM60=ON
     and a CUDA 12.x toolkit; nothing changes without the variable."""
@@ -207,6 +265,125 @@ class HipVision(unittest.TestCase):
         built, meta, have = self.build({}, "none")
         self.assertEqual((built, have), ([], False))
         self.assertNotIn("vision_src", meta)
+
+
+class VramReserve(unittest.TestCase):
+    """#493: --vram-reserve-mib N - VRAM the engine leaves free for other programs - goes into the config only when
+    given (the default config is tools/test_setup_golden.py's, unchanged), at setup and on a start."""
+
+    def setUp(self):
+        from test_setup_golden import PROFILES
+        self.ram, self.found = PROFILES["64GB-1x32GB"]
+
+    def install(self, *extra):
+        from test_setup_golden import install
+        return install(self.ram, self.found, ["--family", "qwen", "--model", "Q2_0", "--no-start", *extra])
+
+    def test_given_at_setup(self):
+        code, out, cfg, _ = self.install("--vram-reserve-mib", "2048")
+        self.assertEqual(code, 0, out)
+        a = cfg["args"]
+        self.assertEqual(a.count("--vram-reserve-mib"), 1)
+        self.assertEqual(a[a.index("--vram-reserve-mib") + 1], "2048")
+        self.assertIn("VRAM kept free for other programs: 2048 MiB", out)
+        code, out, cfg, _ = self.install()
+        self.assertNotIn("--vram-reserve-mib", cfg["args"])          # not given: the engine's default, as before
+
+    def test_with_images_one_value(self):
+        code, out, cfg, _ = self.install("--vision", "cpu", "--vram-reserve-mib", "1500")
+        self.assertEqual(code, 0, out)
+        a = cfg["args"]
+        self.assertEqual(a.count("--vram-reserve-mib"), 1)
+        self.assertEqual(a[a.index("--vram-reserve-mib") + 1], "1500")
+
+    def test_a_negative_value_is_refused(self):
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            code, out, cfg, _ = self.install("--vram-reserve-mib", "-1")
+        self.assertEqual(code, 2)
+        self.assertIn("--vram-reserve-mib takes a number of MiB", err.getvalue())
+
+    def test_kept_from_an_earlier_install(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "strata-q2_0.json"
+            p.write_text(json.dumps({"args": ["--max-context", "8192", "--vram-reserve-mib", "2048"]}))
+            self.assertEqual(setup.choices_from_config(p)["vram_reserve_mib"], 2048)
+            p.write_text(json.dumps({"args": ["--vision", "--vram-reserve-mib", "700"], "vision": {"gpu": True}}))
+            self.assertIsNone(setup.choices_from_config(p)["vram_reserve_mib"])   # the images' own reserve
+            p.write_text(json.dumps({"args": ["--max-context", "8192"]}))
+            self.assertIsNone(setup.choices_from_config(p)["vram_reserve_mib"])
+
+    def test_given_on_a_start(self):
+        with tempfile.TemporaryDirectory() as d:
+            exe = Path(d) / "strata.exe"
+            exe.write_bytes(b"")
+            p = Path(d) / "strata-q2_0.json"
+            p.write_text(json.dumps({"exe": str(exe), "args": ["--kv", "int8"], "gpu": 0, "gpus_asked": True}))
+            call = mock.Mock(return_value=0)
+            with mock.patch.object(setup, "gpus", lambda: self.found), \
+                    mock.patch.object(setup, "is_wsl", lambda: False), \
+                    mock.patch.object(setup, "ensure_engine_for", lambda cards, path, cfg, yes: cfg), \
+                    mock.patch.object(setup.subprocess, "call", call):
+                for n in ("2048", "1024"):
+                    _, out = quiet(setup.start, p, None, None, False, True, None, {"vram_reserve_mib": int(n)})
+                    self.assertEqual(json.loads(p.read_text())["args"], ["--kv", "int8", "--vram-reserve-mib", n])
+        self.assertIn("1024 MiB of VRAM kept free", out)
+        self.assertTrue(call.called)
+
+
+class SmallCardTip(unittest.TestCase):
+    """#496: a card under 8 GB (a 6 GB laptop RTX 3060) gets a tip for when the start has no room for the expert cache;
+    the engine chooses its own reserve there, so the config is the one any card gets.  An 8 GB card: no tip."""
+
+    def install(self, vram, *extra):
+        from test_setup_golden import card, install
+        return install(63.7, [card(0, "NVIDIA GeForce RTX 3060 Laptop GPU", vram, "86")],
+                       ["--family", "qwen", "--model", "Q2_0", "--no-start", *extra])
+
+    def test_a_6gb_card(self):
+        code, out, cfg, _ = self.install(6.0)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("--vram-reserve-mib", cfg["args"])          # the engine decides (no fixed reserve)
+        self.assertIn("no VRAM is left for the expert cache", out)
+        self.assertIn("--draft-vocab en", out)
+        self.assertIn("--mtp", cfg["args"])                          # the draft layer stays: the server needs it
+
+    def test_an_8gb_card_has_no_tip(self):
+        for vram in (8188 / 1024, 8.0):                               # nvidia-smi lists an 8 GB card as 8188 MiB
+            code, out, cfg, _ = self.install(vram)
+            self.assertEqual(code, 0, out)
+            self.assertNotIn("no VRAM is left for the expert cache", out)
+            self.assertNotIn("--vram-reserve-mib", cfg["args"])
+
+    def test_a_given_reserve_is_kept(self):
+        code, out, cfg, _ = self.install(6.0, "--vram-reserve-mib", "500")
+        self.assertEqual(code, 0, out)
+        a = cfg["args"]
+        self.assertEqual(a[a.index("--vram-reserve-mib") + 1], "500")
+
+    def test_the_tip(self):
+        self.assertIn("an 8K context", " ".join(setup.small_card_note(32768, None)))
+        self.assertIn("--draft-vocab en", " ".join(setup.small_card_note(32768, "cjk")))
+        tip = " ".join(setup.small_card_note(8192, "en"))
+        self.assertNotIn("--draft-vocab", tip)
+        self.assertIn("close other programs", tip)
+
+
+class DesktopReserveTip(unittest.TestCase):
+    """#560 #516: an AMD card on a Linux desktop gets a recommended reserve (3072 MiB) - a tip, the config is not
+    changed."""
+
+    def test_desktop_detection(self):
+        with mock.patch.object(setup.sys, "platform", "linux"):
+            self.assertTrue(setup.linux_desktop({"WAYLAND_DISPLAY": "wayland-0"}))
+            self.assertTrue(setup.linux_desktop({"DISPLAY": ":0"}))
+            self.assertFalse(setup.linux_desktop({}))                 # a headless box / ssh
+        with mock.patch.object(setup.sys, "platform", "win32"):
+            self.assertFalse(setup.linux_desktop({"DISPLAY": ":0"}))  # Windows counts the desktop itself (#497)
+
+    def test_the_tip(self):
+        tip = " ".join(setup.desktop_reserve_note())
+        self.assertIn("--vram-reserve-mib 3072", tip)
+        self.assertIn("desktop", tip)
 
 
 if __name__ == "__main__":

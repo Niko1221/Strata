@@ -8,7 +8,8 @@ speed comes from (decode then barely touches the CPU pool).
 
 This is pipeline (layer) parallelism, not tensor parallelism: a token crosses from one card to the next once per
 verify window (a few hundred KB through pinned RAM), not twice per layer. No NVLink or peer-to-peer access is
-needed; cards on x4 or x1 slots work, and the PCIe share of each card is probed on its own link.
+needed; cards on x4 or x1 slots work, and the PCIe share of each card is probed on its own link. A `--pcie-frac` you give
+is every card's share and skips those probes; there is no per-card setting yet.
 
 ## Using it
 

@@ -209,13 +209,9 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
         close();
         return false;
     }
-    // The direct reader has fixed 90-byte rows. Keep it for IQ4_NL; Q5_0's
-    // 110-byte rows use the mapped path until that reader supports variable rows.
-    if (impl_->q5_0 && io.mode == PleIo::Direct) {
-        err = "Q5_0 PLE requires --ple-io mmap";
-        close();
-        return false;
-    }
+    // PleReader's row_bytes has been a runtime parameter since the FP8 table (160 B rows) needed it; Q5_0's
+    // 110 B rows go through the exact same generic path (ple_reader_test --selftest covers both 90 and 110 B
+    // rows: straddling, caching, in-flight tickets, keep-alive). This refusal was stale.
     impl_->n_rows = t->shape[1];
     impl_->data = impl_->file->tensor_data(*t);
 
