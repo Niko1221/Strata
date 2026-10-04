@@ -12,6 +12,10 @@ and a 256-token output cap. They do not establish general answer quality.
 The six `tools/needle_bench.py` checks all returned the hidden code word
 exactly.
 
+A second start of the same engine and config, later the same evening, filled
+the 262,144-token window and sent two 128,000-token prompts at once. Those
+rows are in [Full window and two requests at once](#full-window-and-two-requests-at-once).
+
 ## Hardware and software
 
 - NVIDIA GeForce RTX 5090; 32,607 MiB reported VRAM. Power limit 402.50 W.
@@ -116,13 +120,70 @@ The needle wall times include prompt read and the short answer. The first 32k
 needle, which followed the 128k speed runs, had an 80.9% expert-cache hit rate.
 The later needles were 84.6–93.0%.
 
+## Full window and two requests at once
+
+Same machine, engine, and config, from a second server start after the runs
+above. Ready state again: 12,758 experts / 20.71 GiB, `batch_slots` 2, `spec`
+6, `mtp_max` 4, `lookup` 3. The unrelated shard download was still writing to
+the same NVMe (25.53 GB to 29.40 GB of the 54.82 GB shard). The script is
+[long/bench_long.py](long/bench_long.py). Per-request rows are
+[long/results.json](long/results.json).
+
+### One prompt at the top of the window
+
+The server keeps an 8-token margin and refuses a prompt that cannot also hold
+`max_tokens`. These prompts are 261,880 tokens, so a 256-token answer fits in
+262,144. Two fresh runs, 0 reused tokens, `finish_reason` `length`, solo path
+with MTP.
+
+| Run | Prompt tok/s | Decode tok/s | TTFT seconds | Expert-cache hit | Drafts accepted/offered |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 1 | 5861 | 127.6 | 45.06 | 0.957 | 147/220 |
+| 2 | 5739 | 156.0 | 46.01 | 0.984 | 148/213 |
+
+`prompt_ms` was 44,685 and 45,629. `decode_ms` was 2,006 and 1,641. PCIe share
+of routed experts was 0.021 and 0.006.
+
+### Two 128,000-token prompts at once
+
+Two waves, each posting both requests together under `"parallel": 2`. For
+about the first 20 seconds one prompt was read on the solo path and the other
+waited. The reader then moved into a slot and decoded while the second prompt
+was read. Samples in [long/wave-1-slots.json](long/wave-1-slots.json) and
+[long/wave-2-slots.json](long/wave-2-slots.json) show both slots busy across
+that overlap. The leading request finished its 256 tokens in the slot, with
+no drafts. The trailing request received its first token after that and then
+decoded alone.
+
+| Wave | Leading TTFT seconds | Leading decode tok/s | Trailing TTFT seconds | Trailing decode tok/s | Pair wall seconds |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 21.98 | 24.7 | 46.76 | 68.4 | 50.5 |
+| 2 | 21.06 | 24.7 | 45.83 | 70.3 | 49.5 |
+
+Decode tok/s here is 256 generated tokens divided by the client time from the
+first content token to the end of that stream (about 10.4 seconds for the
+leading request, about 3.7 seconds for the trailing one). The leading
+request's server completion line was 24.7 tok/s with no drafts. Expert-cache
+hit rates on the four completion lines were 0.996, 0.987, 0.998, and 0.985.
+
+`/metrics` `prompt_ms` and `reused` on these four rows do not describe the
+prefill. A request moved into a slot is recorded as having reused the prompt
+it just read, so one row shows `reused` 128000 and `prompt_ms` of about 2.
+The other row shows `reused` 128003, which is longer than its prompt. The
+table uses the client clock.
+
+The serial 128,000-token median above had a 21.24 second TTFT and 178.3 tok/s
+decode. The leading request's first token stayed near that TTFT. Its decode
+then ran at 24.7 tok/s while the second prompt was being read, on the slot
+path, which does not draft.
+
 ## Correctness and limitations
 
 All six needles matched the expected code word exactly. The speed prompts were
 stopped at 256 tokens, so their text is not a quality score. Thinking, sampled
-decoding, tool calls, images, and more than one request at a time were not
-measured. `"parallel": 2` only shows up here as reserved slot memory: the
-requests never shared a batch window.
+decoding, tool calls, and images were not measured. The nine serial runs never
+shared a batch window, so `"parallel": 2` only reserved slot memory for them.
+The later pair of 128,000-token prompts did share the slots.
 
 `STRATA_PF_FUSED=1` changes how long prompts round native IQ expert math.
 This report does not claim those tokens match a run with the flag unset.
