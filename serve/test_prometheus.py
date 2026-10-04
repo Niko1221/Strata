@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 import re
 import sys
+import threading
+import time
 import unittest
 import urllib.request
 from pathlib import Path
@@ -131,6 +133,48 @@ class Endpoint(unittest.TestCase):
         self.assertGreaterEqual(json.loads(text)["totals"]["requests"], 1)
         ctype, _ = self.get("/metrics?format=prometheus", "*/*")
         self.assertTrue(ctype.startswith("text/plain"))
+
+
+class BatchEngine(MockEngine):
+    """--batch as the server sees it: several requests generate at once, none waits for the control lines."""
+    batch, waiting = 4, 0
+
+
+class Batched(unittest.TestCase):
+    def test_every_concurrent_request_is_counted(self):
+        tok = ByteTokenizer()
+        svc = Service(BatchEngine(tok, "</think>\n\n" + "y" * 40, max_context=4096, delay_s=0.02), tok,
+                      ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        try:
+            body = json.dumps({"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                               "max_tokens": 64}).encode()
+
+            def ask():
+                req = urllib.request.Request(base + "/v1/chat/completions", data=body,
+                                             headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    r.read()
+
+            threads = [threading.Thread(target=ask) for _ in range(3)]
+            [t.start() for t in threads]
+            time.sleep(0.4)                              # the three are generating
+            req = urllib.request.Request(base + "/metrics", headers={"Accept": "text/plain"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                during = {k[0]: v for k, v in parse(r.read().decode()).items()}
+            [t.join() for t in threads]
+            with urllib.request.urlopen(req, timeout=30) as r:
+                after = {k[0]: v for k, v in parse(r.read().decode()).items()}
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+        self.assertEqual(during["vllm:num_requests_running"], 3)
+        self.assertEqual(after["vllm:num_requests_running"], 0)
+        self.assertEqual(after["vllm:request_success_total"], 3)      # each one, not only the last to finish
+        self.assertEqual(after["vllm:e2e_request_latency_seconds_count"], 3)
+        self.assertEqual(after["vllm:time_to_first_token_seconds_count"], 3)
+        self.assertEqual(svc.metrics()["totals"]["requests"], 3)          # the JSON agrees
 
 
 if __name__ == "__main__":

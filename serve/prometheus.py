@@ -73,8 +73,11 @@ def render(m: dict, lat: dict) -> str:
     busy = live.get("state") in ("reading", "generating")
     ctx = _num((m.get("engine") or {}).get("max_context"), 0)
     used = _num(live.get("prompt_tokens")) + _num(live.get("generated")) if busy else 0
-    metric("vllm:num_requests_running", "gauge", "Requests reading their prompt or generating.", int(busy))
-    metric("vllm:num_requests_waiting", "gauge", "Requests waiting for their turn.", _num(live.get("queued")))
+    # "parallel": live.running / live.waiting count the requests together (waiting: for a slot or the control lines)
+    metric("vllm:num_requests_running", "gauge", "Requests reading their prompt or generating.",
+           _num(live.get("running"), int(busy)))
+    metric("vllm:num_requests_waiting", "gauge", "Requests waiting for their turn.",
+           _num(live.get("queued")) + _num(live.get("waiting")))
     metric("vllm:kv_cache_usage_perc", "gauge", "The running request's share of the context (1 = full).",
            round(min(1.0, used / ctx), 4) if ctx else 0)
     metric("vllm:prompt_tokens_total", "counter", "Prompt tokens of the finished requests.",
@@ -127,6 +130,11 @@ def strata(m: dict, out: list, lab: str):
            live.get("prefill_tok_s_mean") or 0)
     metric("live_prompt_read", "gauge", "Prompt tokens read so far by the running request (live.prompt_read).",
            live.get("prompt_read") or 0)
+    for state in ("idle", "reading", "generating"):
+        slots = live.get("slots")
+        if isinstance(slots, list) and slots:
+            metric("live_slots", "gauge", "The batch slots in each state (live.slots).",
+                   sum(1 for x in slots if isinstance(x, dict) and x.get("state") == state), f',state="{state}"')
     metric("engine_max_context", "gauge", "The engine's context (engine.max_context).", eng.get("max_context"))
     metric("totals_prompt_seconds_total", "counter", "Time spent reading prompts (totals.prompt_ms).",
            round((totals.get("prompt_ms") or 0) / 1000, 3))
