@@ -836,8 +836,11 @@ class StrataEngine:
                     yield None
         finally:
             with self.slot_cv:
-                self.waiting -= 1
-                self.wait_lens.remove(entry)
+                # restart() runs __init__ again, which gives the engine new (empty) counters while this request
+                # waited: its entry may be gone, and the count must not go below zero
+                self.waiting = max(0, self.waiting - 1)
+                if any(e is entry for e in self.wait_lens):
+                    self.wait_lens = [e for e in self.wait_lens if e is not entry]
         with self.slot_cv:
             self.ctl_epoch += 1
             self.slot_cv.notify_all()
