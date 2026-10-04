@@ -1,0 +1,15 @@
+# Strata v0.1.39 engine log (excerpt) - long-context needle runs + the 4K/32K speed runs, 2026-10-04
+# source: <local engine log> (grep 'strata serve: prompt ' | tail -12)
+strata serve: prompt 24798 tokens = 0 reused + 24798 read in 20234 ms (1225.6 tok/s), 176 generated in 4032 ms (43.7 tok/s), drafts accepted 104 of 144, 2 checkpoints
+strata serve: prompt 3196 tokens = 0 reused + 3196 read in 5088 ms (628.2 tok/s), 217 generated in 4784 ms (45.4 tok/s), drafts accepted 141 of 188, 1 checkpoints
+strata serve: prompt 24797 tokens = 0 reused + 24797 read in 20312 ms (1220.8 tok/s), 150 generated in 3541 ms (42.4 tok/s), drafts accepted 95 of 132, 2 checkpoints
+strata serve: prompt 94755 tokens = 0 reused + 94755 read in 63961 ms (1481.4 tok/s), 9 generated in 342 ms (26.3 tok/s), drafts accepted 6 of 8, 5 checkpoints
+strata serve: prompt 94755 tokens = 0 reused + 94755 read in 63794 ms (1485.3 tok/s), 9 generated in 421 ms (21.4 tok/s), drafts accepted 7 of 10, 5 checkpoints
+strata serve: prompt 94756 tokens = 43008 reused + 51748 read in 39932 ms (1295.9 tok/s), 10 generated in 279 ms (35.9 tok/s), drafts accepted 6 of 6, 5 checkpoints
+strata serve: prompt 125451 tokens = 0 reused + 125451 read in 84423 ms (1486.0 tok/s), 10 generated in 299 ms (33.5 tok/s), drafts accepted 6 of 8, 6 checkpoints
+strata serve: prompt 125449 tokens = 0 reused + 125449 read in 85364 ms (1469.6 tok/s), 9 generated in 397 ms (22.7 tok/s), drafts accepted 4 of 11, 6 checkpoints
+strata serve: prompt 125449 tokens = 43008 reused + 82441 read in 60446 ms (1363.9 tok/s), 9 generated in 336 ms (26.8 tok/s), drafts accepted 7 of 9, 6 checkpoints
+strata serve: prompt 185355 tokens = 86016 reused + 99339 read in 75214 ms (1320.8 tok/s), 9 generated in 237 ms (37.9 tok/s), drafts accepted 5 of 6, 6 checkpoints
+strata serve: prompt 250574 tokens = 21504 reused + 229070 read in 166125 ms (1378.9 tok/s), 9 generated in 357 ms (25.2 tok/s), drafts accepted 4 of 11, 6 checkpoints
+strata serve: prompt 388137 tokens = 21504 reused + 366633 read in 287052 ms (1277.2 tok/s), 10 generated in 369 ms (27.1 tok/s), drafts accepted 5 of 11, 6 checkpoints
+strata serve: prompt 513792 tokens = 21504 reused + 492288 read in 403368 ms (1220.4 tok/s), 10 generated in 347 ms (28.8 tok/s), drafts accepted 5 of 10, 6 checkpoints

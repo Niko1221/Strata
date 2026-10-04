@@ -1,0 +1,4 @@
+目标 513,802 tok · haystack 1,611,283 字符 · 实际 prompt 1,611,445 字符
+请求体 1,649,551 字节
+✅ HTTP 200 · 406 s · prompt_tokens=513,792 · prompt_tok_s=1220.4
+   FOUND  answer='harbor-velvet-512'

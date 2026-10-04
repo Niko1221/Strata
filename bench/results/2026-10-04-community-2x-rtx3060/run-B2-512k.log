@@ -1,0 +1,4 @@
+目标 513,802 tok · haystack 1,644,166 字符 · 实际 prompt 1,644,328 字符
+请求体 1,683,235 字节
+❌ HTTP 400 · 2.2 s
+响应体: {"error": {"type": "invalid_request_error", "message": "prompt (524392 tokens) + max tokens (40) exceeds the context (524288); requests are never truncated. Send a smaller max_tokens (at most 0 here), or add \"fit_max_tokens\": true to the model's strata-<model>.json to shorten it to the room left (#545)"}}

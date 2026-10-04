@@ -192,9 +192,9 @@ faster because the prompt prefix was already cached.
 - Synthetic prompts: the same filler paragraph repeated, so token-level statistics may differ
   from natural text; no multi-turn, no tool calls, no images.
 - **One quantisation measured here.** Q2_0 exists only as the historical single run above.
-- **Long context was exercised only on Q2_0.** **IQ3_S was not run at 512K**, so the long-context
-  numbers quoted above must not be read as an IQ3_S result. The Q2_0 raw response for that run is
-  kept with our local notes rather than in this report, because it is not one of these measurements.
+- **Long context on IQ3_S has since been measured** — see [`long-context.md`](long-context.md)
+  (Strata 0.1.39, ~95K → ~514K prompt tokens, 10/10 needle tests found). The Q2_0 long-context
+  numbers quoted above remain historical and are still not an IQ3_S result.
 - **Warm cache, no cold-start arm**, and the engine was not restarted between runs.
 - PCIe link and GPU clocks were not pinned (idle Gen1 → Gen3 during generation, as measured).
 - TTFT comes from separate streaming runs rather than the timed non-streaming runs; the first
