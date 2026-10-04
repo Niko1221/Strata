@@ -130,9 +130,21 @@ Details: [UD-IQ4_XS](UNSLOTH_Q4.md#ud-iq4_xs-setup-from-0139-621).
 START-HERE.bat --setup --family unsloth --model UD-IQ4_XS
 ```
 
+### Unsloth UD-Q3_K_XL
+
+**Unsloth's UD-Q3_K_XL** (~3-bit) is the second size of the same family: a 90 GB download with 55.8 GB of experts
+(IQ3_XXS and IQ4_NL; no Q3_K, despite the name). In one measurement it was as close to the official model as IQ3_S,
+and slower than IQ3_S on the same PC, because its experts are larger. Strata sets it up like UD-IQ4_XS: your RAM minus
+24 GB of the experts in RAM, the rest read from the SSD while it answers. It needs 48 GB of RAM or more and engine
+0.1.38 or newer. Details and measurements: [UD-Q3_K_XL](UNSLOTH_Q4.md#ud-q3_k_xl).
+
+```
+START-HERE.bat --setup --family unsloth --model UD-Q3_K_XL
+```
+
 ### Unsloth UD-Q4_K_XL (experimental)
 
-**Unsloth's 4-bit UD-Q4_K_XL** (experimental) is the second size of the same family (`--family unsloth`): the closest
+**Unsloth's 4-bit UD-Q4_K_XL** (experimental) is the last size of the same family (`--family unsloth`): the closest
 to the full model, but a 111 GB download whose 77 GB of experts do not fit in RAM. Strata keeps your RAM minus 24 GB
 of them in RAM and reads the rest from the SSD while it answers: 7-8.5 tokens/s on a 64 GB PC with a 12 GB GPU, several
 times slower than the sizes above, and long prompts are slow. It needs 48 GB of RAM or more, an NVMe SSD and one

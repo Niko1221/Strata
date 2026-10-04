@@ -248,9 +248,44 @@ the pack rounds the file's Q8_0 hyper-connection projections to BF16, and on the
 perplexity 6-9% above llama.cpp's on the same file (teacher-forced, short context). Reading the Q8_0 values instead
 closes most of that gap; it is measured on AMD only and not in this release.
 
+## UD-Q3_K_XL
+
+Unsloth's `UD-Q3_K_XL` at the same revision is a regular choice too: `START-HERE.bat --setup --family unsloth --model
+UD-Q3_K_XL` (engine 0.1.38 or newer). Despite its name it has no Q3_K experts: their down rows are 640 values long,
+which K-quants' 256-value blocks do not divide. Its routed experts are IQ3_XXS gate/up (IQ4_XS in layer 2) with IQ4_NL
+downs (Q8_0 in layers 2, 4, 30, 46 and 47), 55.8 GB of them; the dense side is UD-IQ4_XS's (Q8_0 projections, the
+IQ4_NL PLE table, a Q6_K head). The engine runs every one of these formats already, so setup treats it exactly like
+UD-IQ4_XS: the same RAM budget (at most all 51 GiB of its experts), the pack with `--compat-bf16`, one GPU by default.
+Three shards, 90.0 GB:
+
+| File | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `Qwen3.8-Flash-Next-UD-Q3_K_XL-00001-of-00003.gguf` | 10,946,624 | `f2ef4328929d8b8c8930e2856eef52128dd4ce3425302f04bc3c657431cc4c49` |
+| `Qwen3.8-Flash-Next-UD-Q3_K_XL-00002-of-00003.gguf` | 49,983,253,824 | `7d230e7c9421d868b89eebaf23033af0ea1a4e046956df00fb156814fb62346e` |
+| `Qwen3.8-Flash-Next-UD-Q3_K_XL-00003-of-00003.gguf` | 39,992,153,376 | `21d4f90f9cd7b7c3a1582667c20cb22f7b03de895b88a23bb20aaeaa44f2c199` |
+
+Measured on one PC (2026-10-04) against the GSQ-RCO IQ3_S, with the same engine and settings for both: an RTX 3060
+12 GB + RTX 5070 Ti 16 GB (both PCIe 3.0 x8), Ryzen 9 5900XT, 64 GB DDR4-2933. The engine was a fork of 0.1.39
+(architectds/Strata, with two-GPU changes) and the file ran in the low-RAM mapped mode on a layer split
+(`iq_pack.py --compat-bf16 --experts-bin`, `--mmap-experts`), which setup does not offer for the Unsloth files:
+
+| | GSQ-RCO IQ3_S | UD-Q3_K_XL |
+| --- | ---: | ---: |
+| Same next token as the official Qwen 3.8 Flash API (31 answers, 14,960 tokens, read teacher-forced) | 93.0% | 93.0% |
+| 5-token KL against the API's top 5 | 0.0536 | 0.0519 |
+| Six trap and code questions, thinking on, two seeds each | 12 of 12, 11,048 tokens | 12 of 12, 10,620 tokens |
+| Writing, in an agent-like session (100K start, eight 1-5K turns) | 77.9 tokens/s | 56.6 tokens/s |
+| Reading that session's 100K-token start | 61.6 s | 81.8 s |
+
+- On these checks it is as close to the official model as IQ3_S, its KL a few percent lower.
+- It is slower on this PC: its experts are 11% larger, so fewer of them fit in VRAM (6,976 against 8,524 on the two
+  cards) and its prompt chunks are smaller.
+- Setup's own path for it (one GPU, a RAM budget, the GGUF read in place) is UD-IQ4_XS's and has not been run with
+  this file yet; please report what you see.
+
 ## Scope and validation
 
-- UD-Q4_K_XL and UD-IQ4_XS at revision `38bb39e` are targeted. Other Unsloth quantizations use formats this engine may
+- UD-Q4_K_XL, UD-IQ4_XS and UD-Q3_K_XL at revision `38bb39e` are targeted. Other Unsloth quantizations use formats this engine may
   not have kernels for; the engine checks every layer's formats at start and refuses an unsupported one by name.
 - Tests: the packer's synthetic 4-shard and conversion tests (`.venv/bin/python -m unittest discover -s tools -p
   test_iq_pack.py`); CTests `gguf_split_test`, `expert_layout_test`, `native_expert_parity_*` (the three real expert

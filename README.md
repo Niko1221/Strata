@@ -128,6 +128,8 @@ sizes are faster. Larger sizes are a bit smarter.
 - **[Unsloth UD-IQ4_XS](docs/MODELS.md#unsloth-ud-iq4_xs):** Unsloth's ~4-bit version, between IQ3_S and
   UD-Q4_K_XL in quality. A 94 GB download. With less than ~80 GB of RAM, Strata reads part of it from the SSD
   while it answers, so it is slower there (an NVMe SSD helps).
+- **[Unsloth UD-Q3_K_XL](docs/MODELS.md#unsloth-ud-q3_k_xl):** Unsloth's ~3-bit version. A 90 GB download. In one
+  measurement as close to the full model as IQ3_S, but slower than IQ3_S on the same PC.
 - **[Unsloth UD-Q4_K_XL](docs/MODELS.md#unsloth-ud-q4_k_xl-experimental)** (experimental): the closest to the full
   model. But Strata reads most of it from the SSD while it answers, so it writes only 7-8.5 tokens/s on a 64 GB PC.
 - **[OrcaRouter's Uncensored IQ3_XXS](docs/MODELS.md#orcarouter-uncensored-iq3_xxs):** you set it up by hand. It is

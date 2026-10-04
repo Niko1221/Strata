@@ -28,8 +28,8 @@ answers, no questions), --setup (install another model / change settings instead
 --host 0.0.0.0 --api-key KEY (reach it from other devices on your network), --experimental-speed-projection on|off
 (EXPERIMENTAL, off by default),
 --models-dir DIR, --gguf-dir DIR (use GGUF files you already have), --build (compile instead of the ready-made
-engine), --check (only check this PC), --resident-budget-gib N (UD-Q4_K_XL's or UD-IQ4_XS's experts in RAM),
---kv-streaming on|off|auto.
+engine), --check (only check this PC), --resident-budget-gib N (UD-Q4_K_XL's, UD-IQ4_XS's or UD-Q3_K_XL's experts
+in RAM), --kv-streaming on|off|auto.
 
 Setup recommends, it never forces: the recommended answers are the defaults (--yes, or Enter), and a bigger choice
 than it recommends - a longer context, more GPUs, a bigger RAM budget, a size it thinks will not fit - is kept, with
@@ -149,6 +149,16 @@ MODELS = {
                   "download_gb": 93.7, "ram_gb": 48, "arena_gb": 59.5, "families": ("unsloth",), "budget": True,
                   "shards": 3, "file": "Qwen3.8-Flash-Next-{q}-0000{i}-of-00003.gguf", "engine": (0, 1, 38),
                   "vision": True},
+    # Unsloth's UD-Q3_K_XL: despite its name no Q3_K experts (their 640-wide down rows rule K-quants out) - IQ3_XXS
+    # gate/up (IQ4_XS in layer 2) with IQ4_NL (43 layers) or Q8_0 (5) downs, the dense side as UD-IQ4_XS's; three
+    # shards, 55.8 GB of experts.  Every format is one the engine already runs, so it is set up as UD-IQ4_XS is (a RAM
+    # budget, one GPU by default).  Against the official API's answers it measured as close as IQ3_S, and slower than
+    # IQ3_S on the same PC (docs/UNSLOTH_Q4.md, UD-Q3_K_XL)
+    "UD-Q3_K_XL": {"about": "~3-bit i-quant (Unsloth Dynamic), as close to the full model as IQ3_S in one measurement, "
+                            "but slower; with less than ~80 GB of RAM part of its experts are read from the SSD",
+                   "download_gb": 90.0, "ram_gb": 48, "arena_gb": 55.8, "families": ("unsloth",), "budget": True,
+                   "shards": 3, "file": "Qwen3.8-Flash-Next-{q}-0000{i}-of-00003.gguf", "engine": (0, 1, 38),
+                   "vision": True},
 }
 # The experimental Unsloth file's four shards at the pinned revision: name -> (bytes, sha256), checked after the
 # download (setup trusts no other model file by name and size alone either: check_shards reads their directories).
@@ -170,6 +180,15 @@ UNSLOTH_IQ4_XS_SHARDS = {
         (49835229856, "577a38a2392b40ca2193cea502e1d92f60b8cd370675d308e0ec21885d9daaa7"),
     "Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00003.gguf":
         (43836407744, "d4634e6d84f0ebb0940be15c90d3790bf6464e3dea3a1cddc567dc0e83ad8833"),
+}
+# UD-Q3_K_XL's three shards at the same revision (sizes and SHA-256: the Hub's LFS pointers)
+UNSLOTH_Q3_K_XL_SHARDS = {
+    "Qwen3.8-Flash-Next-UD-Q3_K_XL-00001-of-00003.gguf":
+        (10946624, "f2ef4328929d8b8c8930e2856eef52128dd4ce3425302f04bc3c657431cc4c49"),
+    "Qwen3.8-Flash-Next-UD-Q3_K_XL-00002-of-00003.gguf":
+        (49983253824, "7d230e7c9421d868b89eebaf23033af0ea1a4e046956df00fb156814fb62346e"),
+    "Qwen3.8-Flash-Next-UD-Q3_K_XL-00003-of-00003.gguf":
+        (39992153376, "21d4f90f9cd7b7c3a1582667c20cb22f7b03de895b88a23bb20aaeaa44f2c199"),
 }
 UNSLOTH_ENGINE = (0, 1, 32)     # the first engine setup configures for UD-Q4_K_XL (0.1.31 ran it by hand)
 UNSLOTH_RAM_LEFT_GB = 24        # RAM beside the budget: the OS, the engine, and the file cache the rest is read through
@@ -203,17 +222,17 @@ FAMILIES = {
               "mmproj_hf": hf("ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF"),
               "mmproj": "mmproj-Qwen3.8-Flash-Next-BF16.gguf", "name": "qwen3.8-flash-next-coder",
               "profile": "expert-profile-coder.bin"},
-    # Unsloth's UD-IQ4_XS (three shards, #621; a regular choice from 0.1.39) and the EXPERIMENTAL UD-Q4_K_XL (four)
-    # of the original model (docs/UNSLOTH_Q4.md); "experimental" and "vision" are per model (MODELS)
-    "unsloth": {"title": "Qwen3.8-Flash-Next (Unsloth)", "by": "Unsloth's ~4-bit quantizations",
+    # Unsloth's UD-IQ4_XS (three shards, #621; a regular choice from 0.1.39), UD-Q3_K_XL (three) and the EXPERIMENTAL
+    # UD-Q4_K_XL (four) of the original model (docs/UNSLOTH_Q4.md); "experimental" and "vision" are per model (MODELS)
+    "unsloth": {"title": "Qwen3.8-Flash-Next (Unsloth)", "by": "Unsloth's 3- and 4-bit quantizations",
                 "about": "UD-IQ4_XS: a 94 GB download; with less than ~80 GB of RAM part of its experts are read from "
-                         "the SSD (UD-Q4_K_XL, 111 GB: experimental)",
+                         "the SSD (UD-Q3_K_XL: 90 GB; UD-Q4_K_XL, 111 GB: experimental)",
                 "hf": hf("unsloth/Qwen3.8-Flash-Next-GGUF") + "{q}/",
                 "file": "Qwen3.8-Flash-Next-{q}-0000{i}-of-00004.gguf", "shards": 4, "tag": "unsloth-",
                 "mmproj_hf": hf("ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF"),
                 "mmproj": "mmproj-Qwen3.8-Flash-Next-BF16.gguf", "name": "qwen3.8-flash-next-unsloth",
                 "vision": False, "pack_args": ["--compat-bf16"],
-                "sha256": {**UNSLOTH_SHARDS, **UNSLOTH_IQ4_XS_SHARDS}},
+                "sha256": {**UNSLOTH_SHARDS, **UNSLOTH_IQ4_XS_SHARDS, **UNSLOTH_Q3_K_XL_SHARDS}},
 }
 MMPROJ = "mmproj-Qwen3.8-Flash-Next-BF16.gguf"
 # EXPERIMENTAL, off by default (setup asks): a control vector shipped with the repository, see its README
@@ -1137,7 +1156,8 @@ def gguf_dir_shards(folder: Path, fam: dict, model: str) -> list[Path]:
 GGUF_QUANT = re.compile(r"(?<![A-Za-z0-9])((?:UD-)?(?:I?Q\d+(?:_[A-Za-z0-9]+)*|BF16|F16|F32))"
                         r"(?=-\d{5}-of-\d{5}\.gguf$|\.gguf$)", re.I)
 SUPPORTED_GGUFS = ("Strata runs ISTA-DASLab's GSQ-RCO files (Qwen3.8-Flash-Next Q2_0, IQ2_XS, IQ3_XXS, IQ3_S; Swift "
-                   "1.5's; the Coder's IQ1_M) and Unsloth's UD-Q4_K_XL and UD-IQ4_XS only: other GGUFs (Unsloth's "
+                   "1.5's; the Coder's IQ1_M) and Unsloth's UD-Q4_K_XL, UD-IQ4_XS and UD-Q3_K_XL only: other GGUFs "
+                   "(Unsloth's "
                    "UD-IQ3_XXS or "
                    "UD-Q2_K_XL, K-quants) cannot be used")
 
@@ -3605,8 +3625,8 @@ def main() -> int:
                          "this mode the experts the GPU does not hold are copied into RAM once when they fit (resident), "
                          "else read through the OS file cache (mmap); resident / mmap force one of the two")
     ap.add_argument("--resident-budget-gib", type=float, metavar="N",
-                    help="UD-Q4_K_XL, UD-IQ4_XS: the GiB of its experts kept in RAM (default: the RAM less 24 GB, 40 on 64 GB; "
-                         "more is kept as you choose, with a note)")
+                    help="UD-Q4_K_XL, UD-IQ4_XS, UD-Q3_K_XL: the GiB of its experts kept in RAM (default: the RAM "
+                         "less 24 GB, 40 on 64 GB; more is kept as you choose, with a note)")
     ap.add_argument("--vram-reserve-mib", type=int, metavar="N",
                     help="VRAM in MiB the engine leaves free for other programs (a game, another model; the engine's "
                          "default: 700); the expert cache takes that much less")
@@ -3923,8 +3943,8 @@ def main() -> int:
         if a.low_ram not in ("auto", "off"):
             warn(f"--low-ram {a.low_ram} does not apply to {model}: it always reads part of its experts from the files")
     elif a.resident_budget_gib is not None:
-        warn(f"--resident-budget-gib is for UD-Q4_K_XL and UD-IQ4_XS: {model} keeps all of its experts in RAM or in "
-             "the low-RAM mode")
+        warn(f"--resident-budget-gib is for UD-Q4_K_XL, UD-IQ4_XS and UD-Q3_K_XL: {model} keeps all of its experts in "
+             "RAM or in the low-RAM mode")
     low_ram = budget is None and (a.low_ram in ("on", "resident", "mmap") or
                                   (a.low_ram == "auto" and low_ram_needed(model, ram)))
     if low_ram and multi and not low_ram_together(a, model, ram, gpu, chosen):
