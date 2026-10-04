@@ -1327,6 +1327,58 @@ const uint8_t* FileExpertSource::mapped_blob(int64_t layer, int64_t expert) cons
     return base_ + (size_t) offset;
 }
 
+uint64_t FileExpertSource::release(int64_t layer, int64_t expert) {
+#if defined(_WIN32)
+    static const bool enabled = [] {
+        const char* v = std::getenv("STRATA_ARENA_RELEASE");
+        return v != nullptr && std::strcmp(v, "1") == 0;
+    }();
+    if (!enabled || base_ == nullptr || layer < 0 || expert < 0 || layer >= n_layers_ || expert >= n_expert_)
+        return 0;
+    static const uint64_t page = [] {
+        SYSTEM_INFO info{};
+        GetSystemInfo(&info);
+        return (uint64_t) info.dwPageSize;
+    }();
+    // These read-only file views are not CUDA-registered. blob() may instead return pinned RAM or an exchange
+    // buffer, so resolve the file spans directly. A shared boundary page stays for the neighboring expert.
+    auto trim = [&](const uint8_t* p, uint64_t bytes) -> uint64_t {
+        const uint64_t misalignment = (uintptr_t) p % page;
+        const uint64_t skip = misalignment == 0 ? 0 : page - misalignment;
+        if (bytes <= skip) return 0;
+        const uint64_t whole = (bytes - skip) / page * page;
+        if (whole == 0) return 0;
+        SetLastError(ERROR_SUCCESS);
+        if (!VirtualUnlock((LPVOID) (p + (size_t) skip), (SIZE_T) whole)) {
+            const DWORD error = GetLastError();
+            // VirtualUnlock trims an unlocked range and reports FALSE / ERROR_NOT_LOCKED for that success.
+            if (error != ERROR_NOT_LOCKED) {
+                std::fprintf(stderr, "FileExpertSource: cannot trim mapped pages for layer %lld expert %lld "
+                                     "(%llu bytes, Windows error %lu)\n",
+                             (long long) layer, (long long) expert, (unsigned long long) whole,
+                             (unsigned long) error);
+                std::fflush(stderr);
+                return 0;
+            }
+        }
+        return whole;   // bytes advised, not a measurement of physical RAM reclaimed
+    };
+    if (role_ptr_.empty()) {
+        const uint8_t* p = mapped_blob(layer, expert);
+        return p == nullptr ? 0 : trim(p, layer_blob_bytes_[(size_t) layer]);
+    }
+    uint64_t bytes = 0;
+    for (int r = 0; r < 3; ++r) {
+        const size_t i = (size_t) (3 * layer + r);
+        bytes += trim(role_ptr_[i] + (size_t) ((uint64_t) expert * role_bytes_[i]), role_bytes_[i]);
+    }
+    return bytes;
+#else
+    (void) layer; (void) expert;
+    return 0;
+#endif
+}
+
 bool FileExpertSource::pin_cache_complement(
     const ExpertCache& cache, std::string& err, bool pin,
     const std::vector<std::pair<int32_t, int32_t>>& additional_gpu_pairs, int64_t lend_from_slot,

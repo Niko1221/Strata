@@ -11,6 +11,8 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -20,6 +22,16 @@
 #include <system_error>
 #include <utility>
 #include <vector>
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#define PSAPI_VERSION 2
+#include <windows.h>
+#include <psapi.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -79,6 +91,45 @@ void check_file_size_rejection(strata::core::FileExpertSource& source, const fs:
     require(!source.mapped() && !err.empty(), "oversized-file rejection left the source mapped or unreported");
 }
 
+#if defined(_WIN32)
+void check_mapped_release(strata::core::FileExpertSource& source, int64_t layer, int64_t expert, uint64_t bytes) {
+    const uint8_t* p = source.blob(layer, expert);
+    require(p != nullptr, "release fixture has no mapped blob");
+    const std::vector<uint8_t> saved(p, p + (size_t) bytes);
+    SYSTEM_INFO info{};
+    GetSystemInfo(&info);
+    const uintptr_t page = info.dwPageSize;
+    const uintptr_t first = ((uintptr_t) p + page - 1) / page * page;
+    const uintptr_t end = ((uintptr_t) p + bytes) / page * page;
+    require(end > first, "release fixture has no full interior page");
+    auto resident = [&](uintptr_t address) {
+        PSAPI_WORKING_SET_EX_INFORMATION state{};
+        state.VirtualAddress = (void*) address;
+        require(QueryWorkingSetEx(GetCurrentProcess(), &state, sizeof state) != 0,
+                "QueryWorkingSetEx failed for the release fixture");
+        return state.VirtualAttributes.Valid != 0;
+    };
+    const char* setting = std::getenv("STRATA_ARENA_RELEASE");
+    const bool enabled = setting != nullptr && std::strcmp(setting, "1") == 0;
+    for (int round = 0; round < 3; ++round) {
+        require(std::memcmp(p, saved.data(), saved.size()) == 0, "release changed the mapped expert bytes");
+        require(resident(first), "reading the expert did not bring its interior page into the working set");
+        const uint64_t released = source.release(layer, expert);
+        require(released == (enabled ? end - first : 0), "release did not honor full pages or its opt-in switch");
+        require(resident(first) != enabled, "release did not honor the working-set contract");
+        if ((uintptr_t) p < first)
+            require(resident((uintptr_t) p), "release trimmed the expert's shared first page");
+        if (end < (uintptr_t) p + bytes)
+            require(resident(end), "release trimmed the expert's shared last page");
+    }
+    require(std::memcmp(p, saved.data(), saved.size()) == 0, "the expert changed after repeated release/read cycles");
+    require(source.release(-1, expert) == 0 && source.release(layer, -1) == 0 &&
+                source.release(std::numeric_limits<int64_t>::max(), expert) == 0 &&
+                source.release(layer, std::numeric_limits<int64_t>::max()) == 0,
+            "release accepted an invalid layer or expert");
+}
+#endif
+
 void test_canonical_layout() {
     using namespace strata::core;
     using namespace strata::kernels::cpu;
@@ -110,6 +161,10 @@ void test_canonical_layout() {
                 source.blob(layers, 0) == nullptr && source.blob(0, experts) == nullptr,
             "canonical bounds check accepted an invalid layer or expert");
     require(source.reads() == 3, "invalid canonical lookups changed the read count");
+#if defined(_WIN32)
+    check_mapped_release(source, 0, 0, BLOB);
+    check_mapped_release(source, 0, 1, BLOB);
+#endif
 
     check_file_size_rejection(source, dir.path, layers, experts, total);
     create_pack(dir.path, total, {{layer_bytes, 'c'}});
@@ -119,6 +174,7 @@ void test_canonical_layout() {
     const uint8_t* reopened = source.blob(1, 0);
     require(reopened && source.reads() == 1 && reopened[0] == 'c', "reopened canonical source kept stale state");
     source.close();
+    require(source.release(0, 0) == 0, "a closed file source released pages");
 }
 
 #if defined(STRATA_NATIVE_EXPERTS)
@@ -173,6 +229,10 @@ void test_native_variable_layout() {
                 source.blob(layers, 0) == nullptr && source.blob(0, experts) == nullptr,
             "native bounds check accepted an invalid layer or expert");
     require(source.reads() == 4, "invalid native lookups changed the read count");
+#if defined(_WIN32)
+    check_mapped_release(source, 0, 1, first_fmt.bytes);
+    check_mapped_release(source, 1, 1, second_fmt.bytes);
+#endif
 
     check_file_size_rejection(source, dir.path, layers, experts, total);
     create_pack(dir.path, total, {{layer0_bytes, 'c'}});

@@ -157,6 +157,15 @@ start writes `experts.bin` (when the drive has room for it), later starts map it
 are handed back to the OS. Run it with `--pcie-frac 0` (the GPUs get no mapped alias). Without the variable nothing
 changes.
 
+**Releasing mapped expert pages on Windows (opt-in):** `STRATA_ARENA_RELEASE=1` lets `FileExpertSource` trim the
+full file-backed pages of experts after their GPU uploads complete, including the slots lent to prefill and then
+refilled. It works with `experts.bin` and the direct GGUF views; shared boundary pages and private/pinned buffers
+are left alone. Unset or `0` keeps the previous behavior. On one 32 GB Windows 11 laptop with an RTX 4080 Laptop
+and a Thunderbolt RTX 3090, IQ2_XS with `--mmap-experts --layer-split 12 --trim-stage-weights` raised median available
+RAM from 0.51 to 12.19 GiB across 1K/4K/16K prompt trials, with 3.7-4.4% lower prefill throughput. It did not reduce
+committed memory or physical SSD reads. This is a working-set hint, not an unmap or a guarantee that the OS drops
+its file cache. See the [configuration, measurements and limits](../bench/results/2026-10-04-windows-mapped-release/README.md).
+
 **Low-RAM mode without `experts.bin` (engine 0.1.31):** for the native packs (IQ2_XS, IQ3_XXS, IQ3_S, the Coder, Swift,
 Q2_0 packed by `tools/iq_pack.py`; not the canonical Q2_0 pack setup makes for AVX-512 CPUs) the mapped mode no longer
 needs the pack's `experts.bin`: when the pack has none, the engine
