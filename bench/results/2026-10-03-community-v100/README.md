@@ -185,3 +185,36 @@ correctly with the same final values, at comparable token counts (both burn thro
 On these prompts no quality gap is visible - on this DDR3-bandwidth box the ~20% decode
 cost of S buys nothing measurable, so XXS stays the daily driver and S is the
 quality-first option.
+
+## Update (2026-10-07): v0.1.40, the Volta data point the release notes ask for
+
+Upgraded to the 0.1.40 ready-made CUDA 12 engine (`git fetch origin && git reset --hard
+origin/main` after the history cleanup, then SETUP; the config's vision block and the
+`--vision --vram-reserve-mib 700` args had to be re-added by hand, since SETUP without
+`--vision gpu` rewrites the config without them). Same model, same workload suite,
+server timings, seed 42.
+
+Re-calibrated (the 0.1.39 settings were `--pcie-frac 0.35 --spec-min-p 0.70`):
+
+- PCIe share 0.00 / 0.20 / **0.33** / 0.35 / 0.55 / 0.75: 77.2 / 78.3 / **80.1** /
+  79.2 / 79.0 / 78.2 tok/s - the curve stays flat, 0.33 is kept.
+- Draft floor 0.30 / 0.50 / **0.70**: 76.5 / 77.7 / **84.1** tok/s - 0.70 stays the
+  clear winner, as on 0.1.39.
+- CPU workers 9 / 17 / 18 / 23 / 35: 83.0 / 82.4 / 77.4 / 80.4 / 81.8 tok/s - flat
+  again (no setting written), like 0.1.39 and unlike 0.1.38.
+- **Calibrate bench: 76.9 -> 81.8 tok/s (+6.4%).**
+
+API workload suite, calibrated settings, images on:
+
+| Workload | 0.1.39 | 0.1.40 |
+|---|---|---|
+| Short prose, ~180-220 tok out | 54.6 tok/s | 59.4 tok/s |
+| Long-form, 3.3-4.1k tok out | 64.2 tok/s | 69.4 tok/s |
+| 4,340-tok doc, prompt processing | 1,127 tok/s | 1,175 tok/s |
+| Same doc, decode, ~670-920 tok out | 72.3 tok/s | 72.6 tok/s |
+| H1 (n! trailing zeros), thinking decode | ~78 tok/s | 78.6 tok/s |
+
+Decode +8%, prompt processing +4%, and the H1 math spot-check (smallest n with exactly
+2019 trailing zeros, thinking cap 4000) still answers n = 8090 with the minimality
+check at 5,394 tokens. This is the Volta (sm_70) result the 0.1.40 release notes ask
+for under "Testers wanted" ("we now have a P100 for sm_60, but not Volta").
