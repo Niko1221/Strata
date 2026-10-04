@@ -109,6 +109,19 @@ int main() {
     pin(all_verbatim, "1. empty hit list (no plan / STRATA_DEC_BATCH=0): every row copies verbatim");
     pin(sl_hit_ok, "1. device-plan reader (skip != ring): plan rows +0.0 on the device, host rows verbatim");
     pin(sl_zero_ok, "1. device-plan reader (skip == ring): the whole group's rows +0.0");
+    // Reduced helper sums have no hit-row list. They copy in full unless the primary
+    // GPU planned the entire group, in which case even an absent source must not be read.
+    ck(cudaMemcpy(d_skip, &no_plan, 4, cudaMemcpyHostToDevice), "helper skip 0 upload");
+    strata::kernels::copy_rows_or_zero_from_mapped(dst1, mdev, rows, width, d_skip, ring, nullptr, nullptr, s);
+    ck(cudaMemcpy(got1.data(), dst1, got1.size() * 4, cudaMemcpyDeviceToHost), "helper sum readback");
+    pin(std::memcmp(got1.data(), host, got1.size() * 4) == 0, "2. helper sums without a hit list copy every row bitwise");
+    ck(cudaMemcpy(d_skip, &ring, 4, cudaMemcpyHostToDevice), "helper skip ring upload");
+    strata::kernels::copy_rows_or_zero_from_mapped(dst4, nullptr, rows, width, d_skip, ring, nullptr, nullptr, s);
+    ck(cudaMemcpy(got4.data(), dst4, got4.size() * 4, cudaMemcpyDeviceToHost), "skipped helper readback");
+    bool helper_zero = true;
+    const float positive_zero = 0.0f;
+    for (float v : got4) helper_zero &= std::memcmp(&v, &positive_zero, sizeof v) == 0;
+    pin(helper_zero, "2. primary-only group zeros helper rows without reading a source or hit list");
     ck(cudaFreeHost(host), "host rows free");
     ck(cudaFree(dst1), "dst1 free");
     ck(cudaFree(dst2), "dst2 free");

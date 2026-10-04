@@ -1,0 +1,457 @@
+{
+  "responses_tool_loop": {
+    "call": {
+      "id": "resp_6863ab5b4c4d4608ae8901f08a62db13",
+      "object": "response",
+      "created_at": 1791125789,
+      "status": "completed",
+      "background": false,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "max_output_tokens": 256,
+      "model": "qwen",
+      "output": [
+        {
+          "id": "fc_8e631df0b022483eb13535ace482b8bb",
+          "type": "function_call",
+          "status": "completed",
+          "call_id": "call_1991f08ae00e4c8cb511cb23",
+          "name": "add_integers",
+          "arguments": "{\"a\":17,\"b\":25}"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "previous_response_id": null,
+      "reasoning": {
+        "effort": "minimal",
+        "summary": null
+      },
+      "store": false,
+      "temperature": 0,
+      "text": {
+        "format": {
+          "type": "text"
+        }
+      },
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "type": "function",
+          "name": "add_integers",
+          "description": "Add two integers. Use this tool to calculate sums.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "a": {
+                "type": "integer"
+              },
+              "b": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "a",
+              "b"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ],
+      "top_p": null,
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 308,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 39,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 347
+      },
+      "user": null,
+      "metadata": {},
+      "completed_at": 1791125792
+    },
+    "follow_up": {
+      "id": "resp_5029d7daab654d43b6db8457e6f5ac6f",
+      "object": "response",
+      "created_at": 1791125792,
+      "status": "completed",
+      "background": false,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "max_output_tokens": 128,
+      "model": "qwen",
+      "output": [
+        {
+          "id": "msg_83c1aabadc2c4df7b140cc545f4c8bb2",
+          "type": "message",
+          "status": "completed",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "17 + 25 = **42**",
+              "annotations": [],
+              "logprobs": []
+            }
+          ]
+        }
+      ],
+      "parallel_tool_calls": true,
+      "previous_response_id": null,
+      "reasoning": {
+        "effort": "minimal",
+        "summary": null
+      },
+      "store": false,
+      "temperature": 0,
+      "text": {
+        "format": {
+          "type": "text"
+        }
+      },
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "type": "function",
+          "name": "add_integers",
+          "description": "Add two integers. Use this tool to calculate sums.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "a": {
+                "type": "integer"
+              },
+              "b": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "a",
+              "b"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ],
+      "top_p": null,
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 366,
+        "input_tokens_details": {
+          "cached_tokens": 346
+        },
+        "output_tokens": 12,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 378
+      },
+      "user": null,
+      "metadata": {},
+      "completed_at": 1791125793
+    }
+  },
+  "responses_stream": [
+    {
+      "type": "response.created",
+      "sequence_number": 0,
+      "response": {
+        "id": "resp_71ff046d551448c89e4be92d87110c2f",
+        "object": "response",
+        "created_at": 1791125793,
+        "status": "in_progress",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 32,
+        "model": "qwen",
+        "output": [],
+        "parallel_tool_calls": true,
+        "previous_response_id": null,
+        "reasoning": {
+          "effort": "minimal",
+          "summary": null
+        },
+        "store": false,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": null,
+        "user": null,
+        "metadata": {}
+      }
+    },
+    {
+      "type": "response.in_progress",
+      "sequence_number": 1,
+      "response": {
+        "id": "resp_71ff046d551448c89e4be92d87110c2f",
+        "object": "response",
+        "created_at": 1791125793,
+        "status": "in_progress",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 32,
+        "model": "qwen",
+        "output": [],
+        "parallel_tool_calls": true,
+        "previous_response_id": null,
+        "reasoning": {
+          "effort": "minimal",
+          "summary": null
+        },
+        "store": false,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": null,
+        "user": null,
+        "metadata": {}
+      }
+    },
+    {
+      "type": "response.output_item.added",
+      "sequence_number": 2,
+      "output_index": 0,
+      "item": {
+        "id": "msg_0a50610347ce4fb897c15eecae81a62c",
+        "type": "message",
+        "status": "in_progress",
+        "role": "assistant",
+        "content": []
+      }
+    },
+    {
+      "type": "response.content_part.added",
+      "sequence_number": 3,
+      "item_id": "msg_0a50610347ce4fb897c15eecae81a62c",
+      "output_index": 0,
+      "content_index": 0,
+      "part": {
+        "type": "output_text",
+        "text": "",
+        "annotations": [],
+        "logprobs": []
+      }
+    },
+    {
+      "type": "response.output_text.delta",
+      "sequence_number": 4,
+      "item_id": "msg_0a50610347ce4fb897c15eecae81a62c",
+      "output_index": 0,
+      "content_index": 0,
+      "delta": "bron",
+      "logprobs": []
+    },
+    {
+      "type": "response.output_text.delta",
+      "sequence_number": 5,
+      "item_id": "msg_0a50610347ce4fb897c15eecae81a62c",
+      "output_index": 0,
+      "content_index": 0,
+      "delta": "ze",
+      "logprobs": []
+    },
+    {
+      "type": "response.output_text.done",
+      "sequence_number": 6,
+      "item_id": "msg_0a50610347ce4fb897c15eecae81a62c",
+      "output_index": 0,
+      "content_index": 0,
+      "text": "bronze",
+      "logprobs": []
+    },
+    {
+      "type": "response.content_part.done",
+      "sequence_number": 7,
+      "item_id": "msg_0a50610347ce4fb897c15eecae81a62c",
+      "output_index": 0,
+      "content_index": 0,
+      "part": {
+        "type": "output_text",
+        "text": "bronze",
+        "annotations": [],
+        "logprobs": []
+      }
+    },
+    {
+      "type": "response.output_item.done",
+      "sequence_number": 8,
+      "output_index": 0,
+      "item": {
+        "id": "msg_0a50610347ce4fb897c15eecae81a62c",
+        "type": "message",
+        "status": "completed",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "bronze",
+            "annotations": [],
+            "logprobs": []
+          }
+        ]
+      }
+    },
+    {
+      "type": "response.completed",
+      "sequence_number": 9,
+      "response": {
+        "id": "resp_71ff046d551448c89e4be92d87110c2f",
+        "object": "response",
+        "created_at": 1791125793,
+        "status": "completed",
+        "background": false,
+        "error": null,
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": 32,
+        "model": "qwen",
+        "output": [
+          {
+            "id": "msg_0a50610347ce4fb897c15eecae81a62c",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "bronze",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": null,
+        "reasoning": {
+          "effort": "minimal",
+          "summary": null
+        },
+        "store": false,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": null,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 18,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 3,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 21
+        },
+        "user": null,
+        "metadata": {},
+        "completed_at": 1791125793
+      }
+    }
+  ],
+  "json_schema": {
+    "id": "chatcmpl-7c93c1f850c2469582de8744",
+    "object": "chat.completion",
+    "created": 1791125793,
+    "model": "qwen",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "{\"ok\":true}"
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 119,
+      "completion_tokens": 6,
+      "total_tokens": 125,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 119,
+      "prompt_ms": 967.1,
+      "prompt_per_token_ms": 8.127,
+      "prompt_per_second": 123,
+      "predicted_n": 6,
+      "predicted_ms": 122.1,
+      "predicted_per_token_ms": 20.35,
+      "predicted_per_second": 49.1,
+      "draft_n": 7,
+      "draft_n_accepted": 7
+    }
+  },
+  "vision": {
+    "id": "chatcmpl-24e2222b8e0548f9878792f9",
+    "object": "chat.completion",
+    "created": 1791125794,
+    "model": "qwen",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "Red"
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 38,
+      "completion_tokens": 2,
+      "total_tokens": 40,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 38,
+      "prompt_ms": 811.2,
+      "prompt_per_token_ms": 21.347,
+      "prompt_per_second": 46.8,
+      "predicted_n": 2,
+      "predicted_ms": 96,
+      "predicted_per_token_ms": 48,
+      "predicted_per_second": 20.8,
+      "draft_n": 4,
+      "draft_n_accepted": 4
+    }
+  }
+}

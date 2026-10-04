@@ -8,7 +8,8 @@ speed comes from (decode then barely touches the CPU pool).
 
 This is pipeline (layer) parallelism, not tensor parallelism: a token crosses from one card to the next once per
 verify window (a few hundred KB through pinned RAM), not twice per layer. No NVLink or peer-to-peer access is
-needed; cards on x4 or x1 slots work, and the PCIe share of each card is probed on its own link.
+needed; cards on x4 or x1 slots work, and the PCIe share of each card is probed on its own link. A `--pcie-frac` you give
+is every card's share and skips those probes; there is no per-card setting yet.
 
 ## Using it
 
@@ -55,6 +56,11 @@ Or edit an existing config (`strata-*.json`), then restart:
 "layer_split": "auto"
 ```
 
+`"layer_split"` is `"auto"` (placed by each card's free VRAM) or the **first layer of each later card**: one rising
+number per card after the first, not a count of layers per card. With 4 cards and a 48-layer model, `"24,36,42"`
+(or `[24, 36, 42]`) puts layers 0-23 on the first card, 24-35 on the second, 36-41 on the third and 42-47 on the last.
+The server checks it before the start and says what is wrong (0.1.39, #644).
+
 **Skip the split when the first card holds everything** (opt-in, 0.1.31): `"split_skip_if_fits": true` in the config
 (engine flag `--split-skip-if-fits`, with `--layer-split auto`) runs on the first card alone when it holds every
 profiled expert plus the context's KV, the draft layer and the reserve, and says so in the log; otherwise the split
@@ -69,9 +75,28 @@ VRAM keep its own prompt buffers - the same output as 0.1.31, measured on an R97
 2K 1,450 and 16K 2,227 tok/s there, but a full card then keeps a different set of experts resident, so the output
 differs from the default's (stable and coherent); `STRATA_SPLIT_OWN=auto` does that only where the buffers are at
 most 12% of each card's VRAM.
+
+**The idle card can help one-chunk prompts (opt-in, `STRATA_PREFILL_HELP=1`).** A prompt that fits one chunk runs the stages one after the other, so while
+one card reads its layers the other idles. With it on, each stage hands a share of its streamed experts to the idle card: it
+streams them over its own PCIe link into its own (lent) prompt buffers, computes their rows on the MMQ path and sends
+them back - `--peer-device`'s peer streaming, without P2P (the activations and the rows go through mapped host memory,
+read by copy kernels, so they do not queue behind the expert blobs on either card's copy engine). The share falls with
+the prompt (0.41 of the streamed experts at 1.5K tokens, 0.32 at 3K) and is off from ~3.3K tokens, where the stages
+overlap anyway and no share paid. Measured on 2x RTX 3090 (UD-Q4_K_XL, no P2P), prompt tok/s without / with: 1.1K 496 /
+723, 1.5K 674 / 833, 2K 878 / 1,128, 2.5K 1,017 / 1,296, 3K 1,260 / 1,440; 4K and 8K unchanged, decode unchanged. It
+costs no VRAM (the idle card's own prompt buffers) and ~110 KB of mapped host memory per token of the largest chunk it
+helped (~360 MB at 3.3K tokens). The rows it computes round like a different MMQ grouping, so the output is not
+bit-identical to the default's (it is repeatable: same prompt, same output), which is why it is **opt-in**:
+`STRATA_PREFILL_HELP=1` turns it on. On this fork's two V100s the option measured no
+meaningful prefill gain, so it stays off there. Native packs on the MMQ prompt path only (not with the fused prompt kernels,
+`STRATA_PF_FUSED=1`, nor with `--peer-device`). With it on, `STRATA_PREFILL_HELP_FRAC=f` fixes the share.
 The engine flags behind it: `--layer-split K1[,K2..]|auto` and `--split-device D1[,D2..]` (the later stages'
 devices; default the next visible ones). `--layer-split K --split-device 0` runs both stages on one card sharing
 everything - the bit-exact check of the hand-off, not a speed mode.
+
+**Each card loads only its own layers' dense weights** with explicit split points (`--layer-split
+27`, not `auto`). This fork retains its existing stage-local weight loading. It releases VRAM for
+the expert cache. A different set of resident experts can change output rounding.
 
 **auto** tries every placement (all of them for two or three cards; beyond that the layers are shared in proportion
 to card speed) and keeps the one whose predicted decode-window time is lowest: each card's per-layer time (less on
@@ -226,6 +251,12 @@ The Coder on an RTX 5080 + RTX 3090 (Ryzen 9 9950X3D), 32K context; details in
 
 ### V100 runtime comparison
 
+**Historical (1 October 2026).** This comparison preceded the upstream v0.1.39
+integration and measured the fork's fused Volta GR / batched KV-append work
+against the v0.1.36-line runtime installed before it. It is kept with its
+original provenance; the v0.1.39 build is the subject of the prefill A/B in
+[DETAILS.md](DETAILS.md#upstream-v0139-in-the-v100-fork).
+
 The final comparison uses two V100 PCIe 16 GB cards. GPU0 has a Gen3 x2 link.
 GPU1 has a Gen3 x16 link. The model is Qwen3.8-Flash-Next Q2_0. The layer split
 is 20/28. Main KV is int8 with a 262,144-token capacity. Vision stays enabled.
@@ -271,3 +302,14 @@ directory options for the local installation.
 - Leave out a much slower card when two already hold the model. An RTX 2080 Ti as a third card made the 5080 +
   3090 pair slower (68 / 90 tok/s decode): every extra card costs its own round per window.
 - More cards pay off when the model's routed experts do not fit the faster ones.
+
+## Several conversations at once
+
+With a layer split, `--batch N --batch-groups G` decodes several conversations together and
+pipelines them through the cards: see [BATCHING.md](BATCHING.md). The slot sessions are
+carved after a stage's own session, the head and the MTP draft layer, so on a split the
+fit check sees the memory really left on every card - including the last stage, where the
+draft sits. A count that does not fit falls back to fewer slots, or to one request at a
+time, at startup, with the configuration untouched (observed on this rack's 20/28 split
+at the 524,288-token context; the final admission-time figures are in the benchmark
+report).

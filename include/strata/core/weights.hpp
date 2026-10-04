@@ -109,12 +109,9 @@ public:
     /// The arena size the index asks for, readable WITHOUT loading anything - so a caller can size its
     /// `DeviceArena` before committing to the load, and a plan that cannot fit is refused at startup rather
     /// than halfway through a 5 GB upload.
-    /// With `skip`, the size of the compacted arena that holds every tensor EXCEPT the named ones.  With an
-    /// owned layer range (layer_lo/layer_hi, hi < 0 = no bound), the tensors of the OUTSIDE `blk.N.*` layers
-    /// are compacted away too (the engine's stages need only their own layers' canonical GR).
+    /// With `skip`, the size of the compacted arena that holds every tensor EXCEPT the named ones.
     static bool pool_bytes(const std::string& pack_dir, uint64_t& out, std::string& err,
-                           const std::set<std::string>* skip = nullptr, int64_t layer_lo = 0,
-                           int64_t layer_hi = -1);
+                           const std::set<std::string>* skip = nullptr);
 
     /// The `code_bits` field of one row of `<pack_dir>/index.txt`, readable WITHOUT loading anything (0 = the
     /// pack stores the tensor unquantized, e.g. a --compat-bf16 key; -1 = no such row).  #326: the loader has
@@ -128,10 +125,8 @@ public:
     /// because the failure mode otherwise is a device write past the end of the arena.
     /// With `skip`, the named tensors are not read: their rows keep their metadata with `data == nullptr` and
     /// `resident == false`, and the other tensors are packed into the compacted arena `pool_bytes` sized.
-    /// With an owned layer range, the outside `blk.N.*` rows get the same metadata-only treatment (their
-    /// bytes are freed), so an explicit layer split's stages hold only their own layers' weights.
     bool load(const std::string& pack_dir, void* arena_base, uint64_t arena_bytes, std::string& err,
-              const std::set<std::string>* skip = nullptr, int64_t layer_lo = 0, int64_t layer_hi = -1);
+              const std::set<std::string>* skip = nullptr);
 
     const WeightRef* find(const std::string& name) const;
     const std::map<std::string, WeightRef>& all() const { return table_; }

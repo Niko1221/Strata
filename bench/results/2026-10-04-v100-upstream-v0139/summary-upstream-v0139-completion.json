@@ -1,0 +1,68 @@
+{
+  "2048": {
+    "repeats": 2,
+    "prompt_tokens": 2048,
+    "prompt_ms_all": [
+      2901.5,
+      2800.7
+    ],
+    "prompt_ms_median": 2851.1,
+    "prompt_tps_all": [
+      705.84,
+      731.25
+    ],
+    "prompt_tps_median": 718.5450000000001,
+    "output_first_ids": [
+      [
+        87
+      ],
+      [
+        9665
+      ]
+    ]
+  },
+  "8192": {
+    "repeats": 2,
+    "prompt_tokens": 8192,
+    "prompt_ms_all": [
+      5650.1,
+      5587.8
+    ],
+    "prompt_ms_median": 5618.950000000001,
+    "prompt_tps_all": [
+      1449.89,
+      1466.05
+    ],
+    "prompt_tps_median": 1457.97,
+    "output_first_ids": [
+      [
+        11
+      ],
+      [
+        15
+      ]
+    ]
+  },
+  "32768": {
+    "repeats": 2,
+    "prompt_tokens": 32768,
+    "prompt_ms_all": [
+      14349.4,
+      14347.5
+    ],
+    "prompt_ms_median": 14348.45,
+    "prompt_tps_all": [
+      2283.58,
+      2283.88
+    ],
+    "prompt_tps_median": 2283.73,
+    "output_first_ids": [
+      [
+        28
+      ],
+      [
+        19
+      ]
+    ]
+  }
+}

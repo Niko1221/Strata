@@ -58,6 +58,9 @@ template <typename T> struct Dev {
     ~Dev() { cudaFree(p); }
     void put(const std::vector<T>& h) {
         ck(cudaMemcpy(p, h.data(), h.size() * sizeof(T), cudaMemcpyHostToDevice), "up");
+        // #548 #536: a pageable cudaMemcpy can return before its DMA lands, and the graph replays and the timing
+        // cases run on a cudaStreamNonBlocking stream that does not wait for the legacy stream - so wait here
+        ck(cudaDeviceSynchronize(), "up landed");
     }
     std::vector<T> get() const {
         std::vector<T> h(n);

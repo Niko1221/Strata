@@ -150,6 +150,11 @@ struct PleTable::Impl {
     bool locked = false;
     uint32_t rows[PLE_N_HEADS] = {};
     uint8_t raw[PLE_N_HEADS * PLE_ROW_BYTES_MAX] = {};
+    static constexpr size_t kMaxPrefetch = 16;
+    size_t n_prefetch = 0;
+    strata::ngram::PleReader::Ticket prefetch_tickets[kMaxPrefetch] = {};
+    uint32_t prefetch_keys[kMaxPrefetch][PLE_N_HEADS] = {};
+    uint8_t prefetch_raw[kMaxPrefetch][PLE_N_HEADS * PLE_ROW_BYTES_MAX] = {};
     bool fp8 = false;                 // F8_E4M3 rows (tools/ple_fp8_pack.py); else IQ4_NL
     float scale = 1.0f;               // the FP8 table's one scale
     uint32_t rb = PLE_ROW_BYTES;      // bytes per row
@@ -209,13 +214,9 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
         close();
         return false;
     }
-    // The direct reader has fixed 90-byte rows. Keep it for IQ4_NL; Q5_0's
-    // 110-byte rows use the mapped path until that reader supports variable rows.
-    if (impl_->q5_0 && io.mode == PleIo::Direct) {
-        err = "Q5_0 PLE requires --ple-io mmap";
-        close();
-        return false;
-    }
+    // PleReader's row_bytes has been a runtime parameter since the FP8 table (160 B rows) needed it; Q5_0's
+    // 110 B rows go through the exact same generic path (ple_reader_test --selftest covers both 90 and 110 B
+    // rows: straddling, caching, in-flight tickets, keep-alive). This refusal was stale.
     impl_->n_rows = t->shape[1];
     impl_->data = impl_->file->tensor_data(*t);
 
@@ -279,7 +280,40 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
     return true;
 }
 
+void PleTable::wait_prefetches() {
+    if (impl_->n_prefetch == 0) return;
+    std::string dummy;
+    for (size_t i = 0; i < impl_->n_prefetch; ++i) (void) impl_->reader.collect(impl_->prefetch_tickets[i], dummy);
+    impl_->n_prefetch = 0;
+}
+
+void PleTable::prefetch_rows(const uint32_t* rows16) {
+    if (impl_->mode == PleIo::Direct && impl_->reader.is_open()) {
+        for (size_t i = 0; i < impl_->n_prefetch; ++i)
+            if (std::memcmp(impl_->prefetch_keys[i], rows16, sizeof(uint32_t) * PLE_N_HEADS) == 0) return;
+        if (impl_->n_prefetch >= Impl::kMaxPrefetch) wait_prefetches();
+        const size_t slot = impl_->n_prefetch++;
+        std::memcpy(impl_->prefetch_keys[slot], rows16, sizeof(uint32_t) * PLE_N_HEADS);
+        impl_->prefetch_tickets[slot] = impl_->reader.issue(impl_->prefetch_keys[slot], PLE_N_HEADS, impl_->prefetch_raw[slot]);
+        return;
+    }
+#if defined(_WIN32)
+    if (impl_->data != nullptr && g_ple_prefetch) {
+        WIN32_MEMORY_RANGE_ENTRY ranges[PLE_N_HEADS];
+        ULONG_PTR n = 0;
+        for (int h = 0; h < PLE_N_HEADS; ++h) {
+            if (rows16[h] >= impl_->n_rows) continue;
+            ranges[n].VirtualAddress = (PVOID) (impl_->data + (size_t) rows16[h] * impl_->rb);
+            ranges[n].NumberOfBytes = impl_->rb;
+            ++n;
+        }
+        if (n > 0) (void) PrefetchVirtualMemory(GetCurrentProcess(), n, ranges, 0);
+    }
+#endif
+}
+
 void PleTable::close() {
+    wait_prefetches();
     impl_->reader.close();
     impl_->pending = false;
     impl_->locked = false;   // the unmap below releases the lock
@@ -322,6 +356,7 @@ void PleTable::read_row(uint32_t row, float* out160) const {
 }
 
 bool PleTable::issue(const uint32_t* rows16) {
+    wait_prefetches();
     std::memcpy(impl_->rows, rows16, sizeof impl_->rows);
     if (impl_->mode == PleIo::Direct) {
         if (impl_->pending) return false;              // one token in flight per table
@@ -364,6 +399,35 @@ bool PleTable::gather_batch(const uint32_t* rows, size_t n_tokens, float* out, s
     if (impl_->pending) { err = "PleTable::gather_batch while a token is in flight"; return false; }
     const size_t n = n_tokens * (size_t) PLE_N_HEADS;
     if (impl_->mode == PleIo::Direct) {
+        // Fast path: if all requested tokens match our in-flight/completed prefetch slots, collect them directly
+        // without issuing a second PleReader ticket or copying through RowCache.
+        if (impl_->n_prefetch >= n_tokens && n_tokens <= Impl::kMaxPrefetch) {
+            bool exact_match = true;
+            for (size_t t = 0; t < n_tokens; ++t) {
+                if (std::memcmp(impl_->prefetch_keys[t], rows + t * PLE_N_HEADS, sizeof(uint32_t) * PLE_N_HEADS) != 0) {
+                    exact_match = false;
+                    break;
+                }
+            }
+            if (exact_match) {
+                for (size_t i = 0; i < impl_->n_prefetch; ++i) {
+                    if (!impl_->reader.collect(impl_->prefetch_tickets[i], err)) {
+                        impl_->n_prefetch = 0;
+                        return false;
+                    }
+                }
+                impl_->n_prefetch = 0;
+                for (size_t t = 0; t < n_tokens; ++t) {
+                    for (int h = 0; h < PLE_N_HEADS; ++h) {
+                        impl_->decode(impl_->prefetch_raw[t] + (size_t) h * impl_->rb,
+                                      out + (t * PLE_N_HEADS + (size_t) h) * PLE_HEAD_DIM);
+                    }
+                }
+                impl_->bytes_read += (uint64_t) n * impl_->rb;
+                return true;
+            }
+        }
+        wait_prefetches();
         std::vector<uint8_t> raw(n * impl_->rb);
         const auto ticket = impl_->reader.issue(rows, n, raw.data());
         if (!impl_->reader.collect(ticket, err)) return false;
@@ -371,6 +435,7 @@ bool PleTable::gather_batch(const uint32_t* rows, size_t n_tokens, float* out, s
         impl_->bytes_read += (uint64_t) n * impl_->rb;
         return true;
     }
+    wait_prefetches();
     for (size_t i = 0; i < n; ++i) read_row(rows[i], out + i * PLE_HEAD_DIM);
     return true;
 }

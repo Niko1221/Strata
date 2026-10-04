@@ -26,10 +26,11 @@ public:
                        std::string& err);
 
     /// Y[T, N] (fp32, row stride ldy) = X[T, K] . W[N, K]^T with BF16 X and W on BF16-native devices (sm_80+,
-    /// cuBLAS BF16 tensor cores).  On older devices (Volta: no native BF16 GEMM) the operands are FP16 bits
+    /// cuBLAS BF16 tensor cores).  On older devices (Volta/Turing: no native BF16 GEMM) the operands are FP16 bits
     /// instead: W is BF16 to FP16 here (the conversion is exact), and X MUST ALREADY be FP16 bits (the prompt
-    /// producers write FP16 images on such devices - `prefill::fp16_bits()`), so the product still runs on
-    /// FP16 tensor cores exactly as the BF16 one would.  `beta` = 1 adds.
+    /// producers write FP16 images on such devices - `prefill::fp16_bits()`, set by `init`), so the product still
+    /// runs on FP16 tensor cores exactly as the BF16 one would.  STRATA_BF16_TC=2 forces the FP16 path on an sm_80+
+    /// card (gemm_bf16_parity).  `beta` = 1 adds.
     void bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy = 0,
               float beta = 0.0f);
 
@@ -58,5 +59,10 @@ private:
     bool external_ = false;
     bool native_bf16_ = true;
     void* hipblaslt_state_ = nullptr;
+    // below sm_80: FP16 (Pascal: fp32) copies of a BF16 product's weight and activation slice (Gemm::bf16)
+    uint16_t* tc_w_ = nullptr;
+    int64_t tc_w_elems_ = 0;
+    uint16_t* tc_x_ = nullptr;
+    int64_t tc_x_elems_ = 0;
 };
 }  // namespace strata::prefill
