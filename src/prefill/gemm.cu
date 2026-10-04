@@ -20,6 +20,7 @@
 #undef __ballot_sync
 #endif
 
+#include <algorithm>
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
@@ -36,8 +37,36 @@
 #include <tuple>
 #endif
 
+#if defined(__HIPCC__)
+#include <hip/hip_fp16.h>
+#endif
+
 namespace strata::prefill {
 namespace {
+#if defined(__HIPCC__)
+// Y's rows, written by an FP16-out GEMM as FP16 at the start of each FP32 row (ldc = 2 ldy halves), widened in place.
+// Float c overwrites halves 2c and 2c+1, so a row is walked from its end in blocks: a block's halves are read into
+// registers, the block syncs, then writes its floats - which only cover halves of blocks already read.
+__global__ void widen_rows_f16(float* __restrict__ Y, int64_t n, int64_t ldy) {
+    float* y = Y + (int64_t) blockIdx.x * ldy;
+    const __half* h = reinterpret_cast<const __half*>(y);
+    const int64_t nb = (n + blockDim.x - 1) / blockDim.x;
+    for (int64_t b = nb - 1; b >= 0; --b) {
+        const int64_t c = b * blockDim.x + threadIdx.x;
+        const float v = c < n ? __half2float(h[c]) : 0.0f;
+        __syncthreads();
+        if (c < n) y[c] = v;
+        __syncthreads();
+    }
+}
+// BF16 weight rows -> FP16, saturated (bench/results/2026-10-04-rdna2-fp16-prompt: none leaves FP16's range)
+__global__ void bf16_to_f16_rows(const uint16_t* __restrict__ s, __half* __restrict__ d, int64_t n) {
+    for (int64_t i = blockIdx.x * (int64_t) blockDim.x + threadIdx.x; i < n; i += (int64_t) gridDim.x * blockDim.x) {
+        const float f = __uint_as_float((uint32_t) s[i] << 16);
+        d[i] = __float2half(isnan(f) ? f : fminf(fmaxf(f, -65504.0f), 65504.0f));   // as hf_sat: a NaN stays NaN
+    }
+}
+#endif
 
 void ck(cublasStatus_t s, const char* what) {
     if (s != CUBLAS_STATUS_SUCCESS) {
@@ -297,6 +326,30 @@ bool try_hipblaslt(void* opaque_state, strata::prefill::hipblaslt::InputType typ
 
 }  // namespace
 
+bool prompt_f16() {
+#if defined(__HIPCC__)
+    constexpr int kMaxDev = 64;
+    static std::atomic<int8_t> cached[kMaxDev] = {};   // 0 unknown, 1 off, 2 on
+    int dev = 0;
+    if (hipGetDevice(&dev) != hipSuccess || dev < 0 || dev >= kMaxDev) { (void) hipGetLastError(); return false; }
+    if (const int8_t c = cached[dev].load(std::memory_order_relaxed)) return c == 2;
+    bool on = false;
+    const char* e = std::getenv("STRATA_HIP_PROMPT_F16");
+    hipDeviceProp_t p{};
+    if (e && e[0] == '0') on = false;
+    else if (e && e[0] == '1') on = true;
+    else if (hipGetDeviceProperties(&p, dev) == hipSuccess) on = std::strncmp(p.gcnArchName, "gfx103", 6) == 0;
+    else (void) hipGetLastError();
+    if (on) std::fprintf(stderr, "strata prefill: HIP device %d%s%s - the prompt's 16-bit GEMMs run FP16 in and out (rocBLAS "
+                                 "is tuned only for that there; STRATA_HIP_PROMPT_F16=0 keeps BF16 in / FP32 out)\n",
+                         dev, p.gcnArchName[0] ? " " : "", p.gcnArchName);
+    cached[dev].store(on ? 2 : 1, std::memory_order_relaxed);
+    return on;
+#else
+    return false;
+#endif
+}
+
 Gemm::~Gemm() {
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
     delete static_cast<HipLtState*>(hipblaslt_state_);
@@ -465,6 +518,20 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
                 float beta) {
     if (T <= 0 || N <= 0) return;
     if (ldy <= 0) ldy = N;
+#if defined(__HIPCC__)
+    if (f16_io_) {   // X is the FP16 image (set_act_f16); W goes through the dequantization scratch as FP16
+        // the only accumulating BF16 product is the BF16X2 low part, which bf16x2_mode() turns off with this path
+        if (beta != 0.0f) { std::fprintf(stderr, "prefill gemm: an accumulating BF16 GEMM on the FP16 prompt path\n"); std::exit(1); }
+        const int64_t rows = std::min<int64_t>(N, scratch_elems_ / K);
+        if (rows <= 0) { std::fprintf(stderr, "prefill gemm: scratch too small for K=%lld\n", (long long) K); std::exit(1); }
+        for (int64_t r0 = 0; r0 < N; r0 += rows) {
+            const int64_t n = std::min(rows, N - r0);
+            bf16_to_f16_rows<<<1024, 256, 0, (cudaStream_t) stream_>>>(W + r0 * K, (__half*) scratch_, n * K);
+            f16_inplace(X, scratch_, Y + r0, T, n, K, ldy);
+        }
+        return;
+    }
+#endif
     const float alpha = 1.0f;
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
     if (try_hipblaslt(hipblaslt_state_, strata::prefill::hipblaslt::InputType::bf16, X, W, Y, T, N, K, ldy,
@@ -520,6 +587,9 @@ void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_
                float beta) {
     if (T <= 0 || N <= 0) return;
     if (ldy <= 0) ldy = N;
+#if defined(__HIPCC__)
+    if (f16_io_ && beta == 0.0f) { f16_inplace(X, W, Y, T, N, K, ldy); return; }
+#endif
     const float alpha = 1.0f;
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
     if (try_hipblaslt(hipblaslt_state_, strata::prefill::hipblaslt::InputType::f16, X, W, Y, T, N, K, ldy,
@@ -533,6 +603,19 @@ void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_
                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT),
        "cublasGemmEx f16");
     STRATA_ABSORB_HIPBLAS_STICKY("cublasGemmEx f16");
+}
+
+void Gemm::f16_inplace(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy) {
+#if defined(__HIPCC__)
+    const float one = 1.0f, zero = 0.0f;
+    ck(cublasGemmEx((cublasHandle_t) handle_, CUBLAS_OP_T, CUBLAS_OP_N, (int) N, (int) T, (int) K, &one, W, CUDA_R_16F,
+                    (int) K, X, CUDA_R_16F, (int) K, &zero, Y, CUDA_R_16F, (int) (2 * ldy), CUBLAS_COMPUTE_32F,
+                    CUBLAS_GEMM_DEFAULT),
+       "cublasGemmEx f16 out");
+    widen_rows_f16<<<(unsigned) T, 256, 0, (cudaStream_t) stream_>>>(Y, N, ldy);
+#else
+    (void) X; (void) W; (void) Y; (void) T; (void) N; (void) K; (void) ldy;
+#endif
 }
 
 void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float* Y, int64_t T, int64_t N, int64_t K,

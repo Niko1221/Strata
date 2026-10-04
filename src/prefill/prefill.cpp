@@ -209,6 +209,8 @@ inline int bf16x2_mode() {
         const char* e = std::getenv("STRATA_PREFILL_BF16X2");
         return e != nullptr ? std::atoi(e) : 0;
     }();
+    // FP16 activations carry 11 mantissa bits; the BF16 low part does not apply (per device: a split can mix cards)
+    if (v != 0 && prompt_f16()) return 0;
     return v;
 }
 inline bool bf16x2() { return bf16x2_mode() != 0; }
@@ -833,6 +835,9 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
         void* ws = o.take<uint8_t>(GEMM_WS, ok);
         if (!ok) { err = "prefill: GEMM scratch does not fit"; return false; }
         if (!m.gemm.init_external(stream, gs, GEMM_SCRATCH, ws, GEMM_WS, err)) return false;
+        const bool f16_io = prompt_f16();   // this device's gr_* kernels write the image its GEMMs read
+        m.gemm.set_f16_io(f16_io);
+        set_act_f16(f16_io);
     }
     if (!carve(T, &o)) {
         err = "prefill: device buffers for a chunk of " + std::to_string(chunk) + " tokens do not fit";

@@ -42,6 +42,10 @@ __device__ __forceinline__ uint16_t hf(float f) { return __half_as_ushort(__floa
 // NaN in the down projection (decode's q8_1 has room to ~8e6; FP16 ends at 65504).  A NaN stays NaN (fminf/fmaxf
 // would make it -65504 and hide where it came from); finite values below 65504 round exactly as before.
 __device__ __forceinline__ uint16_t hf_sat(float f) { return hf(isnan(f) ? f : fminf(fmaxf(f, -65504.0f), 65504.0f)); }
+// The prompt path's 16-bit activation image for the BF16-weight GEMMs: BF16, or FP16 where the GEMM library is fast
+// only in FP16 (prompt_f16() in gemm.cu: rocBLAS on gfx103x).  Set once per device before the first prompt.
+__device__ int g_act_f16 = 0;
+__device__ __forceinline__ uint16_t act16(float f) { return g_act_f16 ? hf_sat(f) : bf(f); }
 // block-wide sum for blockDim.x <= 1024, result broadcast
 __device__ float block_sum(float v, float* sh) {
     const int lane = threadIdx.x & 31, w = threadIdx.x >> 5;
@@ -75,7 +79,7 @@ __global__ void gr_norm_kernel(const float* __restrict__ R, const float* __restr
     for (int d = threadIdx.x; d < N; d += blockDim.x) {
         const float v = r[d] * rs * w[c * N + d];
         xn[row * N + d] = v;
-        const uint16_t h = bf(v);
+        const uint16_t h = act16(v);
         xn16[row * N + d] = h;
         if (xn16_lo) xn16_lo[row * N + d] = bf_lo(v, h);
     }
@@ -95,7 +99,7 @@ __global__ void gr_norm_rs_kernel(const float* __restrict__ R, const float* __re
     if (threadIdx.x == 0) rs_out[row] = rs;
     for (int d = threadIdx.x; d < N; d += blockDim.x) {
         const float v = r[d] * rs * w[c * N + d];
-        const uint16_t h = bf(v);
+        const uint16_t h = act16(v);
         xn16[row * N + d] = h;
         if (xn16_lo) xn16_lo[row * N + d] = bf_lo(v, h);
     }
@@ -116,7 +120,7 @@ __global__ void gr_mix_r_kernel(const float* __restrict__ R, const float* __rest
     s /= (float) HC;
     mixed[i] = s;
     if (mixed16) {
-        const uint16_t h = bf(s);
+        const uint16_t h = act16(s);
         mixed16[i] = h;
         if (mixed16_lo) mixed16_lo[i] = bf_lo(s, h);
     }
@@ -153,7 +157,7 @@ __global__ void __launch_bounds__(256) gr_write_norm_rs_kernel(float* __restrict
 #pragma unroll
     for (int d = threadIdx.x; d < N; d += 256, ++k) {
         const float x = v[k] * rs * w[c * N + d];
-        const uint16_t h = bf(x);
+        const uint16_t h = act16(x);
         xn16[row * N + d] = h;
         if (xn16_lo) xn16_lo[row * N + d] = bf_lo(x, h);
     }
@@ -164,7 +168,7 @@ __global__ void gr_silu_kernel(const float* __restrict__ lo, uint16_t* __restric
     if (i >= n) return;
     const float x = lo[i] / (float) HC;
     const float v = x / (1.0f + __expf(-x));
-    const uint16_t h = bf(v);
+    const uint16_t h = act16(v);
     lo16[i] = h;
     if (lo16_lo) lo16_lo[i] = bf_lo(v, h);
 }
@@ -183,7 +187,7 @@ __global__ void gr_mix_kernel(const float* __restrict__ xn, const float* __restr
     s /= (float) HC;
     mixed[i] = s;
     if (mixed16) {
-        const uint16_t h = bf(s);
+        const uint16_t h = act16(s);
         mixed16[i] = h;
         if (mixed16_lo) mixed16_lo[i] = bf_lo(s, h);
     }
@@ -817,7 +821,7 @@ __global__ void round_f16_kernel(const float* __restrict__ x, float* __restrict_
 __global__ void to_bf16_kernel(const float* __restrict__ x, uint16_t* __restrict__ y, uint16_t* __restrict__ ylo,
                                int64_t n) {
     for (int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x; i < n; i += (int64_t) gridDim.x * blockDim.x) {
-        const uint16_t h = bf(x[i]);
+        const uint16_t h = act16(x[i]);
         y[i] = h;
         if (ylo) ylo[i] = bf_lo(x[i], h);
     }
@@ -833,6 +837,13 @@ void kv_append(const float* K, const float* V, int64_t T, int64_t pos0, const in
         K, V, pos0, page_table, page_size, k_pool, v_pool, k_q, v_q, k_scale, v_scale,
         host ? *host : strata::kernels::KvHostPools{}, stage ? *stage : strata::kernels::KvHostPools{});
     check("kv_append");
+}
+void set_act_f16(bool on) {
+    const int v = on ? 1 : 0;
+    if (cudaMemcpyToSymbol(g_act_f16, &v, sizeof v) != cudaSuccess) {
+        std::fprintf(stderr, "prefill: setting the FP16 activation image failed: %s\n", cudaGetErrorString(cudaGetLastError()));
+        std::exit(1);
+    }
 }
 void to_f16(const float* x, uint16_t* y, int64_t n, void* stream) {
     if (n <= 0) return;
