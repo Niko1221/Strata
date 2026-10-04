@@ -25,6 +25,29 @@ Add the options to the `args` list of the model's config (`strata-<model>.json`)
 
 The server needs nothing else: it reads `--batch` / `--batch-groups` from the engine's arguments.
 
+### Choosing the settings: `tools/autoconfig.py`
+
+```
+python3 tools/autoconfig.py --config strata-<model>.json               # rules from the machine, writes .auto.json
+python3 tools/autoconfig.py --config strata-<model>.json --calibrate   # + starts the engine with each candidate
+```
+
+It reads the GPUs (count, VRAM, PCIe link), the RAM and the model's layer count, and writes a copy of the config:
+
+- **Split**: one card, none; several, an explicit split with each card's share of the layers proportional to its
+  VRAM, and `--trim-stage-weights`. A card whose link runs narrower than it can (x8 of x16) is named: every
+  hand-off crosses it.
+- **Slots**: `--batch 2 x cards` (at most 8) and one pipeline group per card; `--batch 4` on one card.
+- **Context**: with KV streaming every sequence (the solo session and each slot) holds its K/V in pinned host
+  memory, ~263 bytes per layer per token (int8). The largest context whose K/V for all sequences stays under a
+  quarter of the RAM; if even 32K does not fit, fewer slots.
+- **VRAM reserve**: 700 MiB, plus the slot drafters' K/V with `--batch-spec` (~175 MiB per slot at 262K).
+- **Parking**: `--conversation-cache-mib` at 8 % of the RAM, 8 GiB at most.
+
+The rules come from a few machines. `--calibrate` measures the candidates (the rules, the rules with
+`--batch-spec 2`, the rules without pipeline groups) at 1 request (solo path), 2, 4 and all slots, and keeps the
+one with the best mean relative rate; each candidate is an engine start, so it takes several minutes per candidate.
+
 ## How the server uses the slots
 
 - **One request alone** runs on the usual solo path (verify windows with MTP drafts): the fastest single stream.
