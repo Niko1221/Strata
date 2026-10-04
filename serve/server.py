@@ -768,14 +768,20 @@ class StrataEngine:
         if len(f) >= 16:                                  # #588 (engine 0.1.39+): routed experts read over PCIe
             self.last.update(offloaded=int(f[15]))
 
-    def vram(self, reserve_mib: int | None, timeout: float = 120.0) -> dict:
+    def vram(self, reserve_mib: int | list | None, timeout: float = 120.0) -> dict:
         """#533: `VRAM <reserve_mib>` between requests (the caller holds the service's FIFO): the engine shrinks its
         expert cache until that much VRAM is free, or grows it back when more is free; None: back to the reserve it
-        started with.  -> the engine's figures (expert_slots, expert_cache_mib, vram_free_mib, ...); raises ValueError
-        with the engine's reason (e.g. it was not started with --vram-elastic), EngineDied when it ended."""
+        started with.  A list sends one reserve per GPU (CUDA0's, then each stage's - a layer split's caches each
+        give their own back).  -> the engine's figures (expert_slots, expert_cache_mib, vram_free_mib, ...; each a
+        list with one value per GPU); raises ValueError with the engine's reason (e.g. it was not started with
+        --vram-elastic), EngineDied when it ended."""
         if not self.alive():
             raise EngineDied("the engine is not running")
-        self.proc.stdin.write("VRAM" + ("" if reserve_mib is None else f" {int(reserve_mib)}") + "\n")
+        if isinstance(reserve_mib, (list, tuple)):
+            cmd = "VRAM " + " ".join(str(int(x)) for x in reserve_mib)
+        else:
+            cmd = "VRAM" + ("" if reserve_mib is None else f" {int(reserve_mib)}")
+        self.proc.stdin.write(cmd + "\n")
         self.proc.stdin.flush()
         deadline = time.time() + timeout
         while True:
@@ -792,8 +798,16 @@ class StrataEngine:
                 out = {}
                 for kv in line.split()[1:]:
                     k, _, v = kv.partition("=")
-                    out[k] = int(v) if v.lstrip("-").isdigit() else v
-                self.info.update({k: out[k] for k in ("expert_slots", "vram_free_mib") if k in out})
+                    if "," in v:
+                        out[k] = [int(x) for x in v.split(",") if x.lstrip("-").isdigit()]
+                    else:
+                        out[k] = int(v) if v.lstrip("-").isdigit() else v
+                self.info.update({k: (sum(out[k]) if isinstance(out[k], list) else out[k])
+                                  for k in ("expert_slots", "expert_cache_mib") if k in out})
+                if isinstance(out.get("vram_free_mib"), list):      # the engine's own INFO line reports GPU0's free
+                    self.info["vram_free_mib"] = out["vram_free_mib"][0]
+                elif "vram_free_mib" in out:
+                    self.info["vram_free_mib"] = out["vram_free_mib"]
                 self.info["vram"] = out
                 return out
             if time.time() > deadline:
@@ -1423,9 +1437,14 @@ class Vision:
         self.dir = Path(tempfile.mkdtemp(prefix="strata-vision-"))
         self.spawn = (args, log, env)                   # to start it again after an unload
         self.stopped = False
-        self._start()
+        self.lazy = bool(cfg.get("lazy"))               # not resident: starts on the first image request
+        self.idle_s = float(cfg.get("idle_s") or 0)     # vision-only idle unload (with lazy; 0: keep it once up)
+        self.vram_mib = cfg.get("vram_mib")             # the per-GPU VRAM it needs while up (fills the VRAM reserves)
+        if not self.lazy:
+            self._start()
         self.lock = threading.Lock()
         self.cache: dict[str, tuple[Path, int]] = {}
+
 
     def _start(self):
         args, log, env = self.spawn
@@ -1438,7 +1457,7 @@ class Vision:
         self.stopped = False
 
     def alive(self) -> bool:
-        return not self.stopped and self.proc.poll() is None
+        return not self.stopped and getattr(self, "proc", None) is not None and self.proc.poll() is None
 
     def unload(self):
         """Stop the encoder process (its VRAM or RAM goes back); the encoded images stay cached on disk."""
@@ -1448,7 +1467,8 @@ class Vision:
     def restart(self):
         """Start the encoder again after an unload (or if it died); the cache of encoded images is kept."""
         try:
-            self.proc.kill()
+            if getattr(self, "proc", None) is not None:
+                self.proc.kill()
         except OSError:
             pass
         self._start()
@@ -1519,6 +1539,8 @@ class Vision:
             return self.cache[key]
 
     def close(self):
+        if getattr(self, "proc", None) is None:          # lazy: never started
+            return
         try:
             self.proc.stdin.write("QUIT\n")
             self.proc.stdin.flush()
@@ -1861,6 +1883,7 @@ class Service:
                        "drafts_offered": 0, "drafts_accepted": 0}   # #457: the MTP drafts, summed where reported
         self.last_timings = None                         # the last finished request's, llama.cpp's names (/v1/status)
         self.last_request_at = None                      # when a request last started or finished
+        self.last_image_at = None                        # when an image request last encoded (vision idle unload)
         self.started_at = time.time()
         self.status_lock = threading.Lock()
         self.mcp = None                                  # serve/mcp.py's McpHub when MCP servers are configured
@@ -1919,6 +1942,11 @@ class Service:
     def _vision_down(self) -> bool:
         return self.vision is not None and hasattr(self.vision, "alive") and not self.vision.alive()
 
+    def _vision_need_start(self) -> bool:
+        """The RESIDENT vision encoder is down and must start again.  Lazy vision starts on demand, in prepare(),
+        only for a request that actually has images - a text request must not give up the caches' VRAM for it."""
+        return self._vision_down() and not bool(getattr(self.vision, "lazy", False))
+
     def free_vram_mib(self) -> int | None:
         """Free VRAM on the engine's (first) GPU, from NVML (AMD backend: amdgpu's sysfs files, #301); None when it can't
         be read (then nothing is refused)."""
@@ -1940,7 +1968,7 @@ class Service:
     def ensure_loaded(self):
         """Start the engine if it is not running (unloaded, or it died - issue #27), after the before_load hook and
         the free-VRAM check.  The caller holds self.fifo."""
-        if self.loaded() and not self._vision_down():
+        if self.loaded() and not self._vision_need_start():
             return
         if self.before_load:
             cmd = self.before_load
@@ -1958,7 +1986,7 @@ class Service:
             if free is not None and free < self.min_free_vram_mib:
                 raise GpuBusy(f"the GPU is in use by another program: {free} MiB of VRAM free, the model needs "
                               f"{self.min_free_vram_mib} (min_free_vram_mib) - it stays unloaded until that is free")
-        if self._vision_down():                         # first, as at a start: a GPU encoder takes its VRAM before
+        if self._vision_need_start():                   # first, as at a start: a GPU encoder takes its VRAM before
             print("[strata] starting the vision encoder again ...", flush=True)   # the engine sizes its cache
             self.vision.restart()
         if self.loaded():
@@ -1979,11 +2007,12 @@ class Service:
 
     vram_wait_s = 300.0                                  # #533: how long POST /v1/vram waits for a running request
 
-    def vram(self, reserve_mib: int | None) -> dict:
-        """#533, POST /v1/vram: keep `reserve_mib` of VRAM free for other programs (None: the reserve the engine
-        started with), applied between requests - a request that is running finishes first (up to wait_s).  Only an
-        engine started with --vram-elastic (the config's "vram_elastic": true) can do it; it never resizes on its own.
-        An unloaded engine applies it when it loads.  -> {"status": ..., and the engine's figures}."""
+    def vram(self, reserve_mib: int | list | None) -> dict:
+        """#533, POST /v1/vram: keep `reserve_mib` of VRAM free for other programs - one number, or a list with one
+        per GPU for a layer split (None: the reserve the engine started with), applied between requests - a request
+        that is running finishes first (up to wait_s).  Only an engine started with --vram-elastic (the config's
+        "vram_elastic": true) can do it; it never resizes on its own.  An unloaded engine applies it when it loads.
+        -> {"status": ..., and the engine's figures}."""
         if not hasattr(self.engine, "vram"):
             raise ValueError("this engine cannot resize its VRAM use")
         if not self.fifo.acquire(timeout=self.vram_wait_s):
@@ -2020,7 +2049,7 @@ class Service:
         """POST /load and every generation request: start the engine now if it is unloaded (raises GpuBusy)."""
         # a request is on its way: the idle thread must not unload between this and the request's own start
         self.last_request_at = time.time()
-        if self.loaded() and not self._vision_down():
+        if self.loaded() and not self._vision_need_start():
             return
         trace = getattr(self.request_trace, "record", None)
         waiting = time.perf_counter()
@@ -2074,6 +2103,63 @@ class Service:
                     self.unload(idle_for=self.idle_unload_s)
                 except EngineStuck as e:                # tried again at the next turn; the thread keeps running
                     print(f"[strata] idle unload: {e}", flush=True)
+        threading.Thread(target=loop, daemon=True).start()
+
+    def _ensure_vision(self):
+        """The lazy vision encoder, between requests (the caller holds self.fifo, so no request is decoding): give
+        the GPUs' VRAM back - one `VRAM <reserve>` value per GPU, the encoder's footprint plus a margin - and start
+        it.  A resident encoder restarts in ensure_loaded instead, where it takes its VRAM before the engine sizes
+        its cache."""
+        if self.vision is None or not self._vision_down():
+            return
+        if not bool(getattr(self.vision, "lazy", False)):
+            self.vision.restart()
+            return
+        if getattr(self.engine, "batch", 0):
+            raise ValueError("the lazy vision encoder takes the engine's one-request-at-a-time mode: remove "
+                             '"parallel" from the config (or give the vision encoder its VRAM with POST /v1/vram)')
+        need = self.vision.vram_mib
+        if not isinstance(need, (list, tuple)):
+            need = [need] if isinstance(need, int) and not isinstance(need, bool) else []
+        base = self.vram_reserve
+        if isinstance(base, int) and not isinstance(base, bool):
+            base = [base]
+        elif not isinstance(base, (list, tuple)):
+            base = []
+        n = max(len(need), len(base), 1)
+        want = [max(int(base[i]) if i < len(base) else 0, int(need[i]) if i < len(need) else 0) for i in range(n)]
+        print("[strata] image request: giving " + ", ".join(f"{w} MiB" for w in want) +
+              " of VRAM back per GPU and starting the vision encoder ...", flush=True)
+        self.engine.vram(want)                            # the fifo is held; the engine is idle between requests
+        self.vision.restart()
+        print("[strata] the vision encoder is running", flush=True)
+
+
+    def start_vision_idle_unload(self):
+        """Lazy vision: unload the encoder after `vision.idle_s` seconds without an image request, and give its VRAM
+        back to the expert caches (a bare VRAM command, so they grow back to their full start-up size).  Resident
+        vision unloads with the engine (idle_unload_s)."""
+        if self.vision is None or not bool(getattr(self.vision, "lazy", False)) or not self.vision.idle_s:
+            return
+        print(f"[strata] the vision encoder unloads after {self.vision.idle_s:.0f} s without image requests",
+              flush=True)
+
+        def loop():
+            while True:
+                time.sleep(max(1.0, min(30.0, self.vision.idle_s / 4)))
+                try:
+                    last = self.last_image_at
+                    if self._vision_down() or last is None or time.time() - last <= self.vision.idle_s:
+                        continue
+                    with self.fifo:                       # between requests: nothing is decoding
+                        if not self._vision_down() and (self.last_image_at or 0) < last:
+                            continue
+                        self.vision.unload()
+                        self.engine.vram(self.vram_reserve)   # None: bare - the full start-up size
+                        print("[strata] the vision encoder unloaded (idle); its VRAM went back to the expert caches",
+                              flush=True)
+                except Exception as e:
+                    print(f"[strata] vision idle unload: {e}", flush=True)
         threading.Thread(target=loop, daemon=True).start()
 
     def set_shared(self, defaults) -> dict:
@@ -2359,7 +2445,9 @@ class Service:
             # "reading the prompt" with CPU and GPU busy, for good (reproduced).  So encoding takes its turn in the
             # same FIFO as the requests.
             with self.fifo:
+                self._ensure_vision()                     # lazy: hand the GPUs' VRAM back and start it, engine idle
                 encoded = [self.vision.encode(src) for src in images]
+                self.last_image_at = time.time()          # under the FIFO: the idle unload re-checks before acting
             # one <|image_pad|> per image -> one per image token.  Only the markers the template writes for an image
             # (right after <|vision_start|>) are images: the same text inside a message (an agent reading these docs,
             # #150) is kept as plain text, or it took an image's place and the counts no longer matched.
@@ -3346,8 +3434,13 @@ def make_handler(svc: Service):
                     if not self._own_page("the VRAM reserve can be changed"):
                         return
                     r = req.get("reserve_mib")
-                    if r is not None and (isinstance(r, bool) or not isinstance(r, int) or r < 0):
-                        raise ValueError("reserve_mib: a whole number of MiB (0 or more), or null for the start's")
+                    ok_r = r is None or (not isinstance(r, bool) and (
+                        isinstance(r, int) and r >= 0 or
+                        isinstance(r, list) and len(r) > 0 and
+                        all(isinstance(x, int) and not isinstance(x, bool) and x >= 0 for x in r)))
+                    if not ok_r:
+                        raise ValueError("reserve_mib: a whole number of MiB (0 or more), a list with one per GPU, "
+                                         "or null for the start's")
                     try:
                         self._json(200, svc.vram(r))
                     except EngineDied as e:
@@ -4175,13 +4268,21 @@ def main() -> int:
         if lazy and cfg.get("vision"):
             ap.error("lazy loading is text-only; disable vision in the config")
         if cfg.get("vision"):
-            print("loading the vision encoder ...", flush=True)
             # relative paths are the config's cwd's, as for the engine below
             vcfg = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))
                         if k in ("exe", "mmproj", "model") and isinstance(v, str) and not os.path.isabs(v) else v)
                     for k, v in cfg["vision"].items()}
+            if vcfg.get("lazy") and "vram_mib" not in vcfg:
+                # the encoder's per-GPU VRAM while it is up: handed back from the expert caches by the VRAM command
+                # (defaults measured with this mmproj: 1430 MiB on CUDA0 + 308 MiB on CUDA1, rounded to segments)
+                vcfg["vram_mib"] = [1700, 600] if len(gpu_list(cfg)) > 1 else [1800]
             vision = Vision(vcfg, log=open(cfg["log"], "a", encoding="utf-8") if cfg.get("log") else None,
                             env=vision_env(cfg, env))
+            if getattr(vision, "lazy", False):
+                print("[strata] the vision encoder starts on demand (lazy): its VRAM stays with the expert caches "
+                      "until an image request", flush=True)
+            else:
+                print("loading the vision encoder ...", flush=True)
         print("model unloaded; the first request loads it ..." if lazy else
               "loading the model (the first start takes a minute or two) ...", flush=True)
         if len(gpu_list(cfg)) > 1:
@@ -4295,6 +4396,7 @@ def main() -> int:
         atexit.register(hub.close)                      # the servers Strata started end with it
     httpd = serve(svc, host=a.host, port=a.port)
     svc.start_idle_unload()
+    svc.start_vision_idle_unload()
     here = "127.0.0.1" if a.host in ("0.0.0.0", "", "::") else a.host
     print(f"ready: http://{here}:{a.port}/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, "
           f"context {engine.max_context} tokens{', images on' if vision else ''}"

@@ -814,17 +814,16 @@ the OS file cache, so loading again takes seconds while that RAM is not needed e
 16 GB with Q2_0 in the low-RAM mode: unloading takes ~0.3 s, and a request to an unloaded model answered after
 4.6 s (text) or 14.7 s (a picture, image encoder on the CPU).
 
-**Giving part of the VRAM back while it keeps serving (#533, opt-in, one NVIDIA GPU).** With `"vram_elastic": true`
-in the config (the engine flag `--vram-elastic`), the expert cache is allocated in 512 MiB segments
-(`"vram_segment_mib"`), and `POST /v1/vram` with `{"reserve_mib": 8000}` shrinks it between requests until that much
-VRAM is free for another program; `{"reserve_mib": null}` grows it back towards its full size, keeping the reserve
-the engine started with (`--vram-reserve-mib`), and `{"reserve_mib": 0}` takes all of it back. A request that is
-running finishes first. The experts of the segments given back are computed on the CPU, like any expert outside the
-cache, so answers keep coming, slower; growing back puts the same experts in the same slots. Nothing resizes on its
-own. Not with a layer split, the helper caches, `--peer-device` or the resident low-RAM mode. Measured on an RTX 5070
+**Giving part of the VRAM back while it keeps serving (#533, opt-in, NVIDIA).** With `"vram_elastic": true`
+in the config (the engine flag `--vram-elastic`), the expert caches are allocated in 512 MiB segments
+(`"vram_segment_mib"`), and `POST /v1/vram` with `{"reserve_mib": 8000}` shrinks them between requests until that
+VRAM is free for another program; `{"reserve_mib": null}` grows them back to their full start-up size (the cache
+boots full: the reserve is only the sizing target), and `{"reserve_mib": 0}` takes all of it back.  A request
+answers keep coming, slower; growing back puts the same experts in the same slots.  Nothing resizes on its own.
+Not with the helper caches, `--peer-device` or the resident low-RAM mode.  Measured on an RTX 5070
 12 GB with Q2_0 (4.8 GiB cache): `{"reserve_mib": 6000}` took 78 ms and freed 4.3 GiB (the cache keeps 0.5 GiB for
 the prompt path), decode 44 -> 33 tok/s; growing back took 92 ms and the answers were token for token the ones before
-the shrink. Without the flag nothing changes (the same answers as without it).
+the shrink.  Without the flag nothing changes (the same answers as without it).
 
 **Keep what the expert cache learned across restarts (opt-in, engine 0.1.36, #477):** a start fills the GPU's expert
 cache from the shipped profile, and the adaptive tier (`--adapt-every`) then moves in the experts your requests use.
@@ -1328,6 +1327,15 @@ helper (`strata-vision`, from llama.cpp's `mtmd` library) and adds it to your st
 
 A picture becomes up to 1,024 tokens of the context (a 640x480 photo: 300). The same picture sent again, as chat apps
 do on every turn, is encoded only once.
+
+**Lazy vision (the encoder's VRAM goes to the expert caches until a picture arrives):** add `"lazy": true` to the
+`"vision"` section of `strata-<model>.json` (with `"vram_elastic": true` in the config, and without `"parallel"`).
+The encoder then does not start at startup: the ~1.4 GB of VRAM it would hold stays with the expert caches, so text
+runs without the small vision penalty.  The first image request gives that VRAM back - the engine's `VRAM` command
+takes one reserve per GPU - and starts the encoder; `"vram_mib"` sets how much per GPU (`[1700, 600]` for a layer
+split, or `[1800]` for one GPU; the defaults match this model's encoder).  After `"idle_s"` seconds without an image
+request the encoder stops and the VRAM goes back to the caches (its encoded pictures stay cached on disk).  The
+first picture after an idle gap answers a few seconds later, so the encoder can start again.
 
 **More image tokens (0.1.39, #625):** `--vision-tokens N` at setup (`START-HERE.bat --setup --vision cpu
 --vision-tokens 768`) sets the most tokens a picture becomes - `"max_tokens"` in the `"vision"` section of

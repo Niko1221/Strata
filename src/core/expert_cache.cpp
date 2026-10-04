@@ -353,6 +353,16 @@ bool ExpertCache::shrink(int64_t keep_bytes, std::string& err) {
 #endif
 }
 
+int64_t ExpertCache::keep_bytes_for_free(int64_t free_bytes) const {
+    if (segs_.empty()) return mapped_bytes();
+    int64_t b = mapped_bytes(), need = free_bytes;
+    for (int64_t i = mapped_segs_ - 1; i >= 0 && need > 0; --i) {
+        b -= seg_size_[(size_t) i];
+        need -= seg_size_[(size_t) i];
+    }
+    return need <= 0 ? b : 0;
+}
+
 bool ExpertCache::grow(int64_t want_bytes, std::string& err) {
     if (segs_.empty()) {
         err = "the expert cache is not segmented (the engine needs --vram-elastic)";

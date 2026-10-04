@@ -122,6 +122,10 @@ public:
     /// segment only when `want_bytes` covers the arena).  Stops at the first segment the driver cannot back (false,
     /// `err`: what was mapped by then stays).  The new slots are empty until the caller fills them.
     bool grow(int64_t want_bytes, std::string& err);
+    /// #533: the `keep_bytes` for `shrink` that frees at least `free_bytes` - shrink keeps whole segments, so a
+    /// request smaller than the tail segment's size would otherwise free nothing (it rounds up past the arena).
+    /// 0 when even releasing every segment frees less than `free_bytes`; `mapped_bytes()` when not segmented.
+    int64_t keep_bytes_for_free(int64_t free_bytes) const;
     /// The number of leading slots that fit wholly inside the first `bytes` bytes.
     int64_t slots_within(int64_t bytes) const;
     /// The bytes the first `n` slots span.
