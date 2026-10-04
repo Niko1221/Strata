@@ -30,7 +30,8 @@ from that dependency (`STRATA_GGUF_PY` can point to its `gguf-py` directory).
 Use this model's own tokenizer exported into the pack. Do not share another model's `dense.bin`,
 and do not rename the Orca files to impersonate one of setup's GSQ-RCO models.
 
-Strata's persistent server also requires the MTP runtime, prepared by the existing tools:
+Strata's persistent server also uses the MTP runtime (optional: without `--mtp` it drafts by lookup only), prepared by
+the existing tools:
 
 ```sh
 .venv/bin/python tools/mtp_fetch.py fetch --out mtp

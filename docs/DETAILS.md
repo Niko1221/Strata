@@ -112,6 +112,12 @@ ids): the shipped subsets hold 142 of the vocabulary's 18,580 Cyrillic tokens, s
 smaller subset fits, and the server's start error repeats it; setup suggests `--draft-vocab en` on cards under
 14 GB (only a suggestion: nothing changes unless you pass it).
 
+**Serving without the draft layer (`--mtp` is optional):** `serve` runs without `--mtp`. Drafts then come from the
+suffix/prompt-lookup drafter only (or one token per round), every token is still verified against the model, and the
+draft layer's VRAM (~0.7-1 GiB with its head) goes to the expert cache: 1,000 -> 1,678 slots in one A/B on an 8 GB
+card. The conversation cache (`--conversation-cache-mib`) is off without it, since a parked conversation carries the
+draft layer's KV; the live session still continues a conversation in place.
+
 **Low-RAM mode (engine 0.1.26, chosen by setup):** normally all of a model's experts are copied into RAM (23-50 GB,
 pinned) and the GPU holds a copy of the most-used ones. On a PC whose RAM cannot hold them beside the system (the
 experts plus ~10 GB), setup instead maps them from one file in the model's folder (`--mmap-experts`, the pack's
