@@ -164,6 +164,12 @@ if(STRATA_BUILD_TESTS)
   add_executable(gguf_split_test tests/core/gguf_split_test.cpp)
   target_link_libraries(gguf_split_test PRIVATE strata_artifact)
   add_test(NAME gguf_split_test COMMAND gguf_split_test)
+
+  # the hipBLASLt tuning header's architecture gate: RDNA4 siblings share solution IDs, RDNA3 siblings share
+  # theirs, cross-family pairs and version mismatches stay rejected (synthetic tables: no model, no GPU)
+  add_executable(tuning_header_arch_family_test tests/prefill/tuning_header_arch_family_test.cpp)
+  target_include_directories(tuning_header_arch_family_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/prefill")
+  add_test(NAME tuning_header_arch_family_test COMMAND tuning_header_arch_family_test)
 endif()
 
 # ---- strata_plan ----------------------------------------------------------
