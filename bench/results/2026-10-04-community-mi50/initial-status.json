@@ -13,12 +13,12 @@
     "stream_buffered": true
   },
   "engine": "0.1.38",
-  "started": 1791113450,
-  "uptime_s": 333,
-  "cache_max_tokens": 32768,
+  "started": 1791115048,
+  "uptime_s": 20,
+  "cache_max_tokens": 131072,
   "context": {
-    "native": 32768,
-    "max_positions": 32768
+    "native": 131072,
+    "max_positions": 131072
   },
   "concurrency": {
     "serving": 1,
@@ -34,29 +34,16 @@
     "error": null
   },
   "activity": {
-    "requests": 5,
+    "requests": 0,
     "in_flight": 0,
-    "last_request_at": 1791113783
+    "last_request_at": null
   },
-  "last_timings": {
-    "cache_n": 0,
-    "prompt_n": 4096,
-    "prompt_ms": 12437.9,
-    "prompt_per_token_ms": 3.037,
-    "prompt_per_second": 329.3,
-    "predicted_n": 256,
-    "predicted_ms": 7089.7,
-    "predicted_per_token_ms": 27.694,
-    "predicted_per_second": 36.1,
-    "draft_n": 125,
-    "draft_n_accepted": 116,
-    "at": 1791113663
-  },
+  "last_timings": null,
   "machine": {
-    "at": 1791113783,
+    "at": 1791115069,
     "gpu": null,
     "ram": {
-      "used_gib": 38.2,
+      "used_gib": 39.8,
       "total_gib": 61.6
     }
   }

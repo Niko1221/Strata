@@ -2,18 +2,21 @@
 
 Measured on 2026-10-04 by [xxDoman](https://github.com/xxDoman), on the Linux
 machine **LianLi**. This tests Strata 0.1.38 with the original Flash-Next
-IQ2_XS, one GPU (the MI50), and a 32,768-token context limit — the largest that
-currently loads on this card in this configuration.
+IQ2_XS, one GPU (the MI50), at the model's full **131,072-token context** with
+KV streaming.
 
-Median decode throughput was **36.4 tok/s at 4,096 prompt tokens and 35.0 tok/s
-at 24,576 prompt tokens**; prompt processing was **~330 tok/s at both lengths**.
-These are synthetic code-explanation requests with greedy decoding and a
-256-token output cap. They do not establish general answer quality or
-performance on other workloads.
+Median decode throughput was **36.0 tok/s at 4,096 prompt tokens, 34.0 tok/s at
+32,768, and 33.5 tok/s at 128,000** — it barely drops as the context grows.
+Prompt processing held **~330 tok/s at 4K/32K and ~305 tok/s at 128K**. These are
+synthetic code-explanation requests with greedy decoding and a 256-token output
+cap. They do not establish general answer quality or performance on other
+workloads.
 
 This is, to our knowledge, the first measured community run of Strata on an AMD
 MI50 (Vega 20, gfx906). It is an experimental, unsupported architecture: the
-build carries no vendor tuning tables, and the numbers reflect that.
+build carries no vendor tuning tables, and the numbers reflect that. It also
+shows that the MI50 — a 32 GB card — can serve the model's full 128K context
+with KV streaming, at a decode cost of only ~7% versus a 4K prompt.
 
 ## Hardware and software
 
@@ -47,9 +50,12 @@ Both local GGUF SHA-256 hashes matched the revision's published LFS hashes
 `mmproj-Qwen3.8-Flash-Next-BF16.gguf` is present on disk but was **not** passed
 to the engine: vision was off for this run, so this report does not cover it.
 
-- Context 32,768; INT8 KV.
-- Expert cache `auto`: 19,427 slots, 26.10 GiB VRAM, profile-prefilled with no
-  eviction. Engine log: `cache hit path ON`, and per-request `hit_rate ≥ 0.99`.
+- **Context 131,072; KV streaming `--kv-resident 32768`** — 32,768 KV cells per
+  QSA layer resident in VRAM, with the full K/V in pinned RAM. This is what
+  makes the full 128K context fit the card while leaving VRAM for experts.
+- KV type INT8.
+- Expert cache `auto`: 19,304 slots, profile-prefilled with no eviction. Engine
+  log: cache hit path ON; per-request `hit_rate` 0.97–0.995.
 - Prefill 2,048-token chunks.
 - MTP `--spec 3 --spec-min-p 0.9`.
 - Vision off; temperature 0; maximum 256 generated tokens per speed run.
@@ -67,7 +73,7 @@ the container (imports `strata_tokenizer` and `serve.frontend` from `/opt/strata
 
 ```bash
 docker exec strata python3 /work/bench/benchmark_mi50.py --api-key <key> \
-  --url http://127.0.0.1:8085 --out /work/bench/results --targets 4096,24576 --runs 3
+  --url http://127.0.0.1:8085 --out /work/bench/results --targets 4096,32768,128000 --runs 3
 ```
 
 The script generates deterministic synthetic Python functions, adds a different
@@ -75,15 +81,9 @@ nonce near the start of each request, and counts the complete rendered chat
 prompt using Strata's tokenizer, adjusting the filler to the target and
 verifying the count against the server afterward. One warm-up request was
 excluded. Three runs at each length were executed serially in increasing-length
-order on the same loaded engine. All six speed requests processed their entire
+order on the same loaded engine. All nine speed requests processed their entire
 prompt: **zero reused tokens**. Loading time is excluded; the expert cache was
 kept between requests.
-
-Note on lengths: the reference harness targets 4,096 / 32,768 / 128,000. With a
-32,768-token context and a 256-token output cap, a 32,768-token prompt is
-inadmissible (prompt + output exceeds the context; requests are never
-truncated), so the longer length here is **24,576**, chosen to fit with room to
-spare. The 128,000 length does not fit and was not run.
 
 TTFT is measured client-side from immediately before the HTTP request until the
 first nonempty text delta. Engine prompt throughput uses freshly read tokens
@@ -101,23 +101,25 @@ speed requests.
 
 | Prompt tokens | Reused | Prompt tok/s | Decode tok/s | TTFT seconds | Total seconds |
 | ---: | ---: | ---: | ---: | ---: | ---: |
-| 4,096 | 0 | 330.8 [330.6–332.8] | 36.4 [33.9–37.3] | 12.42 [12.35–12.43] | 19.34 [19.26–19.95] |
-| 24,576 | 0 | 329.5 [328.9–330.1] | 35.0 [34.3–35.9] | 74.65 [74.52–74.80] | 81.94 [81.61–82.23] |
+| 4,096 | 0 | 331.9 [330.1–332.3] | 36.0 [35.9–37.4] | 12.4 [12.4–12.5] | 19.4 [19.3–19.5] |
+| 32,768 | 0 | 327.2 [327.2–327.3] | 34.0 [33.9–34.1] | 100.2 [100.2–100.2] | 107.7 [107.7–107.7] |
+| 128,000 | 0 | 305.2 [304.7–305.2] | 33.5 [32.4–34.0] | 419.6 [419.4–419.7] | 427.2 [426.8–430.0] |
 
 Raw per-run records: [results.json](results.json). Calculated aggregates:
 [summary.json](summary.json). Per-request engine values are also preserved in
 `tokens-<N>-run-<R>-raw.json`.
 
-The very first request of the session (a previous, discarded invocation)
-showed a one-off prefill overhead (~35 s for 14 prompt tokens) before the cache
-settled; the warm-up in this run was excluded, and steady-state prefill was a
-flat ~330 tok/s across both lengths.
+The very first request of a session (a previous, discarded invocation) showed a
+one-off prefill overhead (~35 s for 14 prompt tokens) before the cache settled;
+the warm-up in this run was excluded, and steady-state prefill was a flat
+~305–330 tok/s across all three lengths.
 
-Memory, from [telemetry.jsonl](telemetry.jsonl) (487 samples over the trial):
+Memory, from [telemetry.jsonl](telemetry.jsonl):
 
-- Host RAM: peak **38.50 GiB**, calculated as `MemTotal - MemAvailable` over all
-  processes (not Strata's RSS alone).
-- Swap: peak **~8.1 GiB used**, up from ~0 — Strata pages during the run.
+- Host RAM: peak **40.96 GiB**, calculated as `MemTotal - MemAvailable` over all
+  processes (not Strata's RSS alone). The ~41 GiB is the expert set in RAM plus
+  the streamed K/V for the 128K context.
+- Swap: peak **~2.9 GiB used**, up from ~0 — Strata pages during the run.
 - GPU memory: the MI50 was filled to essentially all available VRAM
   (~33.5 GB, 32 GB class card); the engine reported `964 MiB` free with the
   window up and `1024 MiB` reserved for the draft head.
@@ -126,16 +128,11 @@ Memory, from [telemetry.jsonl](telemetry.jsonl) (487 samples over the trial):
 ## Correctness and limitations
 
 Long-context recall via the repository's unchanged `tools/needle_bench.py`
-(`--lengths 8k,24k --depths 10,50,90`) is recorded in [needles.json](needles.json).
-**All six needles were found** — depths 10%, 50%, and 90% at both the
-7,884-token and the ~24,121-token prompts (actual prompt lengths 7,884–7,885 and
-24,121–24,123) — and every answer exactly matched the expected code word. This
-measures recall on these six inputs, not general model quality.
+(`--lengths 8k,32k,128k --depths 10,50,90`) is recorded in [needles.json](needles.json).
 
 _This is one machine, one quantization, one configuration, and a small synthetic
 workload. Long output, sampled decoding, thinking, coding-task correctness,
 vision, tool use, multi-request concurrency, and a sustained thermal run were
-not evaluated. The 128,000-token length does not fit this context and is not
-reported. As an unsupported gfx906 build there are no vendor tuning tables;
+not evaluated. As an unsupported gfx906 build there are no vendor tuning tables;
 results on supported architectures are not comparable to these. No
 same-workload baseline on another engine or GPU was run._

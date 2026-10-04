@@ -34,15 +34,17 @@
     "pack": "/data/packs/iq2_xs",
     "expert_cache": "auto",
     "expert_slots": 19427,
-    "expert_cache_vram_gib": 26.10,
+    "expert_cache_vram_gib": 26.1,
     "prefill": 2048,
-    "max_context": 32768,
+    "max_context": 131072,
     "kv": "int8",
     "spec": 3,
     "spec_min_p": 0.9,
     "vram_reserve_mib": 1024,
     "mtp": "/data/mtp/rt",
-    "vision": "off"
+    "vision": "off",
+    "kv_resident_cells": 32768,
+    "context_note": "128K context with KV streaming (--kv-resident 32768): 32K cells per QSA layer resident in VRAM, the full K/V in pinned RAM."
   },
-  "note": "First measured community run of Strata on the AMD MI50 (gfx906). One GPU, IQ2_XS, 32K context. Fresh-prompt serial benchmark; see README for method and limits."
+  "note": "Measured community run of Strata on the AMD MI50 (gfx906). One GPU, IQ2_XS, 128K context. Fresh-prompt serial benchmark; see README for method and limits."
 }
