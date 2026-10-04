@@ -96,7 +96,11 @@ struct StartupVramInput {
     bool reserve_given = false;         ///< on the command line (#496: the auto adaptation may not shrink it)
     int64_t small_reserve_mib = 300;    ///< #496's floor for the adapted reserve
     uint64_t mtp_bytes = 0;             ///< the draft head/logits bound after the cache (mtp.bind_bytes)
-    uint64_t runtime_reserve_bytes = 0; ///< internal later allocations booked beside the reserve (a split's windows)
+    /// Internal later allocations booked beside the reserve - a layer split's per-stage verify windows, today.
+    /// On one GPU the hit-path scratch, the verify windows and the decode graphs are funded by the reserve BY
+    /// DESIGN (that is --vram-reserve-mib's documented job, #199): the planner does not claim to price them
+    /// individually, and the WDDM post-touch correction keeps an owned prefill from consuming their room.
+    uint64_t runtime_reserve_bytes = 0;
 
     int64_t max_blob = 0;
     bool sized_slots_wanted = false;    ///< native pack + profile + not --expert-cache-per-layer
@@ -138,6 +142,8 @@ struct VramPlan {
     int64_t lend_slots = 0;             ///< the planned loan
     LendOutcome lend;                   ///< the runtime ring budget it implies (informational at startup)
 
+    int64_t max_blob = 0;               ///< the uniform slot size the plan was priced with
+
     uint64_t expert_budget_bytes = 0;   ///< what the cache may take
     int64_t expert_slots = 0;
     std::vector<int64_t> sized_slots;   ///< the native pack's per-slot byte sizes, hottest pair first
@@ -146,6 +152,16 @@ struct VramPlan {
     int reserve_adapted_from_mib = 0;   ///< #496: the auto reserve was lowered to this, from the default
     std::vector<std::string> notes;     ///< every clamp and fallback, printed verbatim by the caller
 };
+
+/// The VRAM the plan's final cache layout actually takes: the sized layout's exact bytes when one is planned
+/// (native pack + profile), the uniform slot count times the blob otherwise. The final budget invariant and the
+/// tests price the cache with this - never expert_slots * max_blob for a sized plan.
+uint64_t actual_cache_bytes(const VramPlan& p);
+
+/// What must still fit after the cache is committed: the mandatory items (the user reserve, the draft head, the
+/// runtime reserve) plus an owned prompt path, booked exactly once. A borrowed prompt path lives inside the cache
+/// and is not part of this. The WDDM post-touch correction holds the cache to this figure.
+uint64_t post_cache_required_bytes(const VramPlan& p);
 
 /// Decide the startup plan: the prompt path's exact requirement participates before the expert cache is committed,
 /// borrowing is never booked twice, and an impossible configuration returns ok=false with the shortfall.

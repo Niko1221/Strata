@@ -124,6 +124,7 @@ VramPlan plan_startup_vram(const StartupVramInput& in) {
     p.prefill_borrow = in.prefill_borrow;
     p.prefill_auto = in.prefill_auto;
     p.requested_prefill = in.prefill_chunk;
+    p.max_blob = in.max_blob;
 
     const int64_t blob = in.max_blob > 0 ? in.max_blob : 1;
     const bool prefill_on = in.prefill_auto || in.prefill_chunk > 0;
@@ -143,23 +144,28 @@ VramPlan plan_startup_vram(const StartupVramInput& in) {
     int64_t slots = auto_cache ? 0 : in.explicit_cache_slots;
     std::vector<int64_t> sized;
 
-    // the planned cache under a byte budget: a uniform slot count, then the native pack's per-pair sizes inside it
-    // (the runtime's sized_slots: the profile's hottest pairs first, each slot one whole aligned blob)
-    auto build_cache = [&](uint64_t budget) {
-        int64_t n = (int64_t) (budget / (uint64_t) blob);
-        if (in.profile_pairs >= 0) n = std::min<int64_t>(n, in.profile_pairs);
-        std::vector<int64_t> sized2;
+    // the cache layout: at most `n` uniform slots under `cap` bytes; the native pack's per-pair sizes (the
+    // profile's hottest pairs first, each slot one whole aligned blob - the layout open_sized() will get) where
+    // they are wanted. One walk for the auto sizing and the explicit caches alike.
+    auto build_layout = [&](int64_t n, uint64_t cap) {
+        std::vector<int64_t> out;
         if (in.sized_slots_wanted && in.pair_slot_bytes != nullptr) {
-            const uint64_t cap = std::min<uint64_t>(budget, (uint64_t) n * (uint64_t) blob);
+            cap = std::min<uint64_t>(cap, (uint64_t) n * (uint64_t) blob);
             uint64_t used = 0;
             for (const int64_t b : *in.pair_slot_bytes) {
                 const uint64_t rb = (uint64_t) ((b + 255) / 256 * 256);
                 if (used + rb > cap) break;
                 used += rb;
-                sized2.push_back(b);
+                out.push_back(b);
             }
         }
-        return std::make_pair(sized2.empty() ? n : (int64_t) sized2.size(), std::move(sized2));
+        return std::make_pair(out.empty() ? n : (int64_t) out.size(), std::move(out));
+    };
+    // the planned cache under a byte budget: a uniform slot count, then the per-pair sizes inside it
+    auto build_cache = [&](uint64_t budget) {
+        int64_t n = (int64_t) (budget / (uint64_t) blob);
+        if (in.profile_pairs >= 0) n = std::min<int64_t>(n, in.profile_pairs);
+        return build_layout(n, budget);
     };
 
     // #496, at sizing time as before: a default reserve that leaves less than the minimum working cache - a
@@ -283,16 +289,40 @@ VramPlan plan_startup_vram(const StartupVramInput& in) {
             sized = std::move(sized1);
         }
     } else if (prefill_on && in.prefill_borrow) {
-        // an explicitly sized cache: validated, never resized. The uniform view prices its tail at max_blob a
-        // slot - conservative against the sized layout the cache may really open with, and the runtime stays the
-        // final word on lending.
-        CacheLendView v;
-        v.slots = slots;
-        v.bytes = slots * blob;
-        v.max_blob = blob;
-        if (!plan_lends(v, in.prefill_chunk)) {
+        // an explicitly sized cache: its EXACT layout - the per-pair slots open_sized() will get, under the cap
+        // the old sizing used (the uniform count and the free VRAM past the reserve) - is built FIRST, and the
+        // lend decision runs over that layout. The uniform view prices the tail at max_blob a slot, which
+        // OVERSTATES what the real suffix holds and approves loans the opened cache cannot serve.
+        {
+            const uint64_t room =
+                in.free_bytes > in.user_reserve_bytes ? in.free_bytes - in.user_reserve_bytes : 0;
+            auto [se, sizede] = build_layout(slots, room);
+            slots = se;
+            sized = std::move(sizede);
+        }
+        std::vector<uint64_t> offs;
+        const CacheLendView v = planned_view(slots, sized, blob, offs);
+        const uint64_t cache_bytes = (uint64_t) (v.bytes > 0 ? v.bytes : 0);
+        if (in.prefill_auto) {
+            // --prefill auto resolves with the same policy as the auto cache's: the bisection over the
+            // 256-token grid against this cache's real tail (one chunk-selection policy, startup and runtime)
+            int64_t ignored = 0;
+            p.lend = plan_lend_chunks(v, in.lend, in.costs, true, ignored);
+            if (p.lend.chunk > 0) {
+                p.lend_slots = p.lend.slots;
+                p.prefill_bytes = v.tail_bytes(p.lend.slots);
+                p.selected_prefill = p.lend.chunk;
+            } else {
+                // no chunk affords a loan from this cache: the prompt path gets its own buffers, as the auto
+                // cache's fallback does; the cache stays as the operator asked and the final invariant judges
+                const uint64_t own = book_owned(1024);
+                p.notes.push_back("prefill auto: the explicit cache cannot lend a chunk's buffers; the prompt "
+                                  "path plans its own for a 1024-token chunk (the cache stays as asked)");
+            }
+        } else if (plan_lends(v, in.prefill_chunk)) {
+            // lent from the explicit cache's real tail
+        } else {
             const uint64_t own = book_owned(in.prefill_chunk);
-            const uint64_t cache_bytes = (uint64_t) slots * (uint64_t) blob;
             p.notes.push_back("the expert cache (" + std::to_string(slots) +
                               " slots) cannot lend the prompt path's buffers; they are planned beside it");
             if (in.free_bytes < p.mandatory_bytes + own + cache_bytes) {
@@ -376,19 +406,19 @@ VramPlan plan_startup_vram(const StartupVramInput& in) {
                     return p;
                 }
             }
+            // the explicit cache's sized layout, under the same cap the old sizing used (the uniform count and
+            // the free VRAM past the reserve - the operator chose the slot count)
+            if (slots > 0 && in.sized_slots_wanted) {
+                const uint64_t room =
+                    in.free_bytes > in.user_reserve_bytes ? in.free_bytes - in.user_reserve_bytes : 0;
+                auto [se, sizede] = build_layout(slots, room);
+                slots = se;
+                sized = std::move(sizede);
+            }
         }
     }
 
-    // an explicit cache's sized layout, under the same cap the old sizing used (the uniform count and the free
-    // VRAM past the reserve - the operator chose the slot count)
-    if (!auto_cache && slots > 0 && in.sized_slots_wanted) {
-        const uint64_t room = in.free_bytes > in.user_reserve_bytes ? in.free_bytes - in.user_reserve_bytes : 0;
-        auto [se, sizede] = build_cache(std::min<uint64_t>((uint64_t) slots * (uint64_t) blob, room));
-        slots = se;
-        sized = std::move(sizede);
-    }
-
-    // the planned layouts (the planning views above borrowed p.sized_offsets as scratch; rebuilt from the final list)
+    // the planned layouts (the planning views above borrowed scratch vectors; rebuilt from the final list)
     p.expert_budget_bytes = cache_budget;
     p.expert_slots = slots < 0 ? 0 : slots;
     if (!sized.empty()) {
@@ -397,6 +427,21 @@ VramPlan plan_startup_vram(const StartupVramInput& in) {
         for (size_t i = 0; i < p.sized_slots.size(); ++i)
             p.sized_offsets[(size_t) i + 1] =
                 p.sized_offsets[i] + (uint64_t) ((p.sized_slots[i] + 255) / 256 * 256);
+    }
+
+    // THE invariant, in one place, over the layout that will actually be opened - whatever branch produced the
+    // configuration: the mandatory Strata allocations, an owned prompt path booked exactly once (a borrowed one
+    // lives inside the cache) and the final cache fit inside the VRAM the plan saw. A lend decision made against
+    // a layout that then grew, or an explicit cache that never fit beside the mandatory items, is caught here
+    // instead of at ExpertCache::open().
+    const uint64_t cache_bytes_final = actual_cache_bytes(p);
+    const uint64_t need_final = post_cache_required_bytes(p) + cache_bytes_final;
+    if (need_final > in.free_bytes) {
+        p.ok = false;
+        p.short_by_bytes = (int64_t) (need_final - in.free_bytes);
+        p.fail_why = "the " + std::to_string(p.expert_slots) + "-slot expert cache" +
+                     (p.prefill_owned ? ", the prompt path's own buffers" : "") + " and the reserve together";
+        return p;
     }
 
     // what the plan must still answer for: a prompt path with nowhere to go fails here instead of at the first
@@ -418,6 +463,15 @@ VramPlan plan_startup_vram(const StartupVramInput& in) {
     }
     p.ok = true;
     return p;
+}
+
+uint64_t actual_cache_bytes(const VramPlan& p) {
+    if (!p.sized_offsets.empty()) return p.sized_offsets.back();
+    return (uint64_t) (p.expert_slots > 0 ? p.expert_slots : 0) * (uint64_t) (p.max_blob > 0 ? p.max_blob : 0);
+}
+
+uint64_t post_cache_required_bytes(const VramPlan& p) {
+    return p.mandatory_bytes + (p.prefill_owned ? p.prefill_bytes : 0);
 }
 
 }  // namespace strata::prefill

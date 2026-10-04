@@ -66,11 +66,14 @@ strata::prefill::StartupVramInput plan_input(uint64_t free_bytes) {
     return in;
 }
 
-// the invariant every plan must keep: Strata's allocations plus the user's reserve never pass the free VRAM
+// the invariant every successful plan must keep - priced with the planner's own helpers, over the FINAL layout
+// (a sized cache's exact bytes, never expert_slots * max_blob)
 bool plan_fits(const strata::prefill::VramPlan& p, uint64_t free_bytes) {
-    const uint64_t cache_bytes =
-        p.expert_slots < 0 ? 0 : (uint64_t) p.expert_slots * BLOB;
-    return p.mandatory_bytes + (p.prefill_owned ? p.prefill_bytes : 0) + cache_bytes <= free_bytes;
+    return strata::prefill::post_cache_required_bytes(p) + strata::prefill::actual_cache_bytes(p) <= free_bytes;
+}
+void check_ok(const strata::prefill::VramPlan& p, uint64_t free_bytes, const char* what) {
+    check(p.ok, what);
+    if (p.ok) check(plan_fits(p, free_bytes), (std::string(what) + ": the final invariant").c_str());
 }
 }  // namespace
 
@@ -82,7 +85,7 @@ int main() {
         StartupVramInput in = plan_input(8 * GIB);
         in.prefill_chunk = 24576;              // own buffers: ~1.9 GiB of the fake pack's bytes
         const VramPlan p = plan_startup_vram(in);
-        check(p.ok, "A: the plan is valid");
+        check_ok(p, in.free_bytes, "A: the plan is valid");
         check(p.prefill_owned && p.selected_prefill == 24576, "A: the requested chunk is kept, on its own buffers");
         check(p.expert_budget_bytes == (uint64_t) 8 * GIB - p.mandatory_bytes - p.prefill_bytes,
               "A: the cache gets exactly what the mandatory items and the owned prefill leave");
@@ -91,7 +94,8 @@ int main() {
         StartupVramInput tight = plan_input(1200 * MIB);
         tight.prefill_chunk = 24576;
         const VramPlan t = plan_startup_vram(tight);
-        check(t.ok && t.selected_prefill > 0 && t.selected_prefill < 24576 && t.selected_prefill % 256 == 0,
+        check_ok(t, tight.free_bytes, "A: the tight plan is valid");
+        check(t.selected_prefill > 0 && t.selected_prefill < 24576 && t.selected_prefill % 256 == 0,
               "A: the chunk is reduced on the 256-token grid, not dropped");
         int64_t expect = 0;   // the largest chunk whose own buffers (with the page-rounding margin) fit
         for (int64_t c = 24576 / 256 * 256; c >= 256; c -= 256)
@@ -111,7 +115,7 @@ int main() {
         // 13824, a size no hardcoded list holds (its 631-slot loan leaves exactly the 128-slot minimum + 1)
         in.free_bytes = (uint64_t) 760 * BLOB + 700 * MIB;
         const VramPlan p = plan_startup_vram(in);
-        check(p.ok, "B: the plan is valid");
+        check_ok(p, in.free_bytes, "B: the plan is valid");
         check(p.selected_prefill == 13824, "B: the largest fitting chunk on the grid is selected");
         check(!p.prefill_owned && p.lend_slots == 631, "B: the chunk is lent, 631 slots");
         check(p.expert_slots >= p.lend_slots + 128, "B: the loan leaves the non-lendable minimum");
@@ -121,7 +125,8 @@ int main() {
         odd.prefill_auto = true;
         odd.lend.auto_ceiling = 24576;
         const VramPlan o = plan_startup_vram(odd);
-        check(o.ok && o.selected_prefill == 8704, "B: the non-round boundary lands on 8704");
+        check_ok(o, odd.free_bytes, "B: the non-round boundary lands on 8704");
+        check(o.selected_prefill == 8704, "B: 8704 selected");
     }
 
     // ---- Case C: no configuration fits - a deterministic failure with a positive shortfall
@@ -162,14 +167,18 @@ int main() {
         borrowed.prefill_borrow = true;
         borrowed.prefill_chunk = 4096;         // the same chunk, lent from the cache instead
         const VramPlan pb = plan_startup_vram(borrowed);
-        check(po.ok && pb.ok, "D: both plans are valid");
+        check_ok(po, owned.free_bytes, "D: the owned plan is valid");
+        check_ok(pb, borrowed.free_bytes, "D: the borrowed plan is valid");
         check(po.prefill_owned && po.prefill_bytes == fake_bytes(4096, -1) + ((uint64_t) 64 << 20),
               "D: the owned bytes are booked once, with the page-rounding margin");
         check(!pb.prefill_owned && pb.expert_budget_bytes == (uint64_t) 8 * GIB - pb.mandatory_bytes,
               "D: the borrowed plan deducts no prefill bytes from the cache's budget");
         check(pb.expert_budget_bytes - po.expert_budget_bytes >= po.prefill_bytes,
               "D: lending keeps the cache exactly the owned prefill's bytes larger");
-        check(plan_fits(po, owned.free_bytes) && plan_fits(pb, borrowed.free_bytes), "D: both plans fit");
+        check(strata::prefill::post_cache_required_bytes(pb) == pb.mandatory_bytes,
+              "R5: a borrowed plan's post-cache need is the mandatory items alone - no prefill deduction");
+        check(strata::prefill::post_cache_required_bytes(po) == po.mandatory_bytes + po.prefill_bytes,
+              "R6: an owned plan's post-cache need carries the prefill exactly once");
     }
 
     // ---- Case E: variable-size slots price the lend over their exact offsets, not max_blob * slots
@@ -200,12 +209,14 @@ int main() {
         const std::vector<int64_t> pairs = {1 * MIB, 1 * MIB, 1 * MIB};   // each aligned slot: 1 MiB, not 2
         in.pair_slot_bytes = &pairs;
         const VramPlan p = plan_startup_vram(in);
-        check(p.ok && !p.sized_slots.empty(), "E: the sized layout is planned");
+        check_ok(p, in.free_bytes, "E: the sized layout is planned");
         uint64_t sized_bytes = 0;
         for (const int64_t s : p.sized_slots) sized_bytes += (uint64_t) ((s + 255) / 256 * 256);
+        check(!p.sized_slots.empty() && actual_cache_bytes(p) == sized_bytes,
+              "E: actual_cache_bytes is the sized layout's exact total");
         check(sized_bytes < (uint64_t) p.expert_slots * BLOB,
               "E: the sized cache holds fewer bytes than its uniform count prices");
-        check(p.selected_prefill > 0 && plan_fits(p, in.free_bytes), "E: the sized plan still fits");
+        check(p.selected_prefill > 0, "E: the sized plan still runs the prompt path");
     }
 
     // ---- Case F: the reserve stays the user's knob - bigger reserve, smaller cache, nothing else moves
@@ -216,7 +227,8 @@ int main() {
         in.user_reserve_bytes = 1400 * MIB;
         in.reserve_given = true;
         const VramPlan b = plan_startup_vram(in);
-        check(a.ok && b.ok, "F: both reserves plan fine");
+        check_ok(a, in.free_bytes, "F: the smaller reserve plans fine");
+        check_ok(b, in.free_bytes, "F: the bigger reserve plans fine");
         check(b.expert_budget_bytes == a.expert_budget_bytes - 700 * MIB,
               "F: the extra 700 MiB of reserve comes out of the cache alone");
         check(b.mandatory_bytes == a.mandatory_bytes + 700 * MIB, "F: the mandatory side carries the reserve");
@@ -234,7 +246,8 @@ int main() {
               "first prompt");
         small_card.reserve_given = false;
         const VramPlan adapted = plan_startup_vram(small_card);
-        check(adapted.ok && adapted.reserve_adapted_from_mib == 700, "F: the default reserve is adapted");
+        check_ok(adapted, small_card.free_bytes, "F: the default reserve is adapted");
+        check(adapted.reserve_adapted_from_mib == 700, "F: adapted from 700");
         check(adapted.user_reserve_bytes == (uint64_t) 412 * MIB, "F: the adapted reserve leaves 144 slots");
         check(adapted.expert_slots >= 1 && adapted.user_reserve_bytes >= (uint64_t) 300 * MIB,
               "F: the adaptation leaves a working cache and stays above its floor");
@@ -274,6 +287,91 @@ int main() {
               "policy: the bisection holds the non-round boundary");
         check(biggest_lend_chunk(8192, [](int64_t t) { return t < 512; }) == 256,
               "policy: the bisection walks the 256-token grid");
+    }
+
+    // ---- review 1: an explicit cache that does not fit beside the mandatory items is refused before
+    // ExpertCache::open() - even though its prefill would lend fine
+    {
+        StartupVramInput in = plan_input(1600 * MIB);
+        in.prefill_borrow = true;
+        in.prefill_chunk = 512;                 // lendable from 500 slots: 24 + 128 <= 500
+        in.explicit_cache_slots = 500;          // 1000 MiB the 1600 MiB of free VRAM cannot cover
+        const VramPlan p = plan_startup_vram(in);
+        check(!p.ok && p.short_by_bytes > 0, "R1: the overflowing explicit cache is refused at planning");
+        check(p.lend_slots > 0, "R1: the lend itself was fine - the budget is what fails");
+    }
+
+    // ---- review 2: an explicit cache resolves --prefill auto with the ONE policy, plan_lend_chunks
+    {
+        StartupVramInput in = plan_input((uint64_t) 460 * BLOB + 700 * MIB);
+        in.prefill_borrow = true;
+        in.prefill_auto = true;
+        in.explicit_cache_slots = 460;          // 8192's loan does not fit; 4096's does
+        const VramPlan p = plan_startup_vram(in);
+        // the reference: the same view the planner builds, through the shared policy
+        CacheLendView v;
+        v.slots = 460;
+        v.bytes = 460 * BLOB;
+        v.max_blob = BLOB;
+        int64_t ignored = 0;
+        const LendOutcome ref = plan_lend_chunks(v, in.lend, in.costs, true, ignored);
+        check(ref.chunk == 4096, "R2: the policy picks 4096 for this budget");
+        check_ok(p, in.free_bytes, "R2: the explicit-cache auto plan is valid");
+        check(!p.prefill_owned && p.selected_prefill == ref.chunk && p.lend_slots == ref.slots,
+              "R2: startup equals plan_lend_chunks' decision, borrowed, not owned");
+        // a non-list boundary through the same path
+        StartupVramInput odd = in;
+        odd.free_bytes = (uint64_t) 600 * BLOB + 700 * MIB;
+        odd.explicit_cache_slots = 600;
+        odd.lend.auto_ceiling = 24576;
+        const VramPlan o2 = plan_startup_vram(odd);
+        check_ok(o2, odd.free_bytes, "R2: the boundary plan is valid");
+        check(!o2.prefill_owned && o2.selected_prefill == 8704,
+              "R2: the explicit cache's bisection lands on 8704 too");
+    }
+
+    // ---- review 3: a sized native cache lends over its exact suffix - the uniform view would approve a loan
+    // the real layout cannot hold
+    {
+        std::vector<int64_t> pairs;             // 300 hot pairs at 2 MiB, then 100 tail pairs at 0.25 MiB
+        for (int i = 0; i < 300; ++i) pairs.push_back(2 * MIB);
+        for (int i = 0; i < 100; ++i) pairs.push_back(256 * 1024);
+        StartupVramInput in = plan_input((uint64_t) 700 * MIB + 625 * MIB + fake_bytes(1024, -1) +
+                                         ((uint64_t) 64 << 20) + (uint64_t) 50 * MIB);
+        in.prefill_borrow = true;
+        in.prefill_chunk = 1024;
+        in.explicit_cache_slots = 400;
+        in.sized_slots_wanted = true;
+        in.pair_slot_bytes = &pairs;
+        in.profile_pairs = (int64_t) pairs.size();
+        const VramPlan p = plan_startup_vram(in);
+        check(p.ok && p.prefill_owned && p.selected_prefill == 1024,
+              "R3: the false loan is refused; the prompt plans its own buffers");
+        check(actual_cache_bytes(p) == (uint64_t) 625 * MIB, "R3: the cache is priced at its exact 625 MiB");
+        check(plan_fits(p, in.free_bytes), "R3: the final invariant holds");
+        // the uniform view WOULD have lent this chunk - the planner did not use it
+        CacheLendView u;
+        u.slots = 400;
+        u.bytes = 400 * BLOB;
+        u.max_blob = BLOB;
+        check(u.slots_for_bytes(fake_bytes(1024, -1)) + 128 <= 400,
+              "R3: the uniform view approves what the exact layout refuses");
+    }
+
+    // ---- review 7: the WDDM post-touch correction's figure - the reserve, the head and an owned prefill, a
+    // borrowed one nothing
+    {
+        VramPlan w;
+        w.user_reserve_bytes = (uint64_t) 700 * MIB;
+        w.mtp_bytes = (uint64_t) 200 * MIB;
+        w.mandatory_bytes = w.user_reserve_bytes + w.mtp_bytes;
+        w.prefill_owned = true;
+        w.prefill_bytes = (uint64_t) 1000 * MIB;
+        check(post_cache_required_bytes(w) == (uint64_t) 1900 * MIB,
+              "R7: the post-touch requirement is reserve + head + owned prefill (1900 MiB)");
+        w.prefill_owned = false;
+        check(post_cache_required_bytes(w) == (uint64_t) 900 * MIB,
+              "R7: a borrowed prompt adds nothing to the post-touch requirement");
     }
 
     if (fails == 0) std::fprintf(stderr, "vram_plan_test: all checks passed\n");

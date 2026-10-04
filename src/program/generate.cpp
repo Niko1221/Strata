@@ -3238,6 +3238,7 @@ int main(int argc, char** argv) {
     // The planner is pure (strata/prefill/vram_plan.hpp): the same `plan_lend_chunks` policy later drives the
     // runtime's loans, so the plan and the layout cannot disagree.
     std::vector<int64_t> sized_slots;
+    strata::prefill::VramPlan plan;   // outlives the block: the post-touch correction holds the cache to its figure
     {
         size_t free_b = 0, total_b = 0;
         cudaMemGetInfo(&free_b, &total_b);
@@ -3266,6 +3267,11 @@ int main(int argc, char** argv) {
         in.prefill_auto = o.prefill_auto;
         in.prefill_chunk = o.prefill_chunk;
         in.spec_needs_cache = o.spec > 0;
+        // the hit-path scratch, the verify windows and the decode graphs stay funded by the reserve by design
+        // (--vram-reserve-mib's documented job, #199): the planner does not price them individually, and the
+        // post-touch correction above keeps an owned prefill from consuming their room. A layer split books its
+        // per-stage windows itself (stage_room's kWindowMib).
+        in.runtime_reserve_bytes = 0;
         in.lend.min_keep_slots = 128;
         in.lend.lend_pct = kAutoLendPct;
         in.lend.auto_ceiling = auto_ceiling;
@@ -3281,7 +3287,7 @@ int main(int argc, char** argv) {
         in.costs.ring_cap_for = [](int64_t small) { return strata::prefill::Prefill::ring_cap_for(small); };
         in.costs.ring_default_slots = [] { return strata::prefill::Prefill::ring_default_slots(); };
         in.explicit_cache_slots = auto_cache ? -1 : o.expert_cache;
-        const strata::prefill::VramPlan plan = strata::prefill::plan_startup_vram(in);
+        plan = strata::prefill::plan_startup_vram(in);
         for (const std::string& note : plan.notes)
             std::fprintf(stderr, "strata generate: VRAM plan: %s\n", note.c_str());
         if (!plan.ok) {
@@ -3470,7 +3476,9 @@ int main(int argc, char** argv) {
             cudaDeviceSynchronize();
             size_t free_b = 0, total_b = 0;
             cudaMemGetInfo(&free_b, &total_b);
-            const int64_t want = (int64_t) o.vram_reserve_mib << 20;
+            // everything the plan books after the cache: the user reserve, the draft head, a split's windows and
+            // an owned prompt path - a borrowed one lives inside the cache and is not part of this
+            const int64_t want = (int64_t) strata::prefill::post_cache_required_bytes(plan);
             if ((int64_t) free_b >= want - (64ll << 20)) break;
             // short by (want - free); a figure of 0 only says "at least": the first two such reads give back 1 GiB
             // each (under WDDM the free figure read before the allocation runs ~0.7 GiB high), later ones a quarter
@@ -3478,8 +3486,10 @@ int main(int argc, char** argv) {
             if (free_b < ((size_t) 16 << 20))
                 give = std::max<int64_t>(give, ++zero_reads <= 2 ? 1ll << 30 : xcache.bytes() / 4);
             const int64_t keep_bytes = xcache.bytes() - give;
-            std::fprintf(stderr, "strata generate: only %lld MiB free once the slots are written (reserve %d MiB); "
-                                 "shrinking the expert cache\n", (long long) (free_b >> 20), o.vram_reserve_mib);
+            std::fprintf(stderr, "strata generate: only %lld MiB free once the slots are written (the plan needs "
+                                 "%lld MiB after the cache: the reserve, the draft head%s); shrinking the expert "
+                                 "cache\n", (long long) (free_b >> 20), (long long) (want >> 20),
+                         plan.prefill_owned ? ", the prompt path's own buffers" : "");
             xcache.close();
             if (!shrink_to(keep_bytes)) break;
         }

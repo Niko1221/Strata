@@ -940,10 +940,22 @@ bool Prefill::carve(size_t T, void* alloc) {
     // slot - ~0.5 GiB of VRAM the plain sum in `bytes_needed` never saw, and an owned chunk sized by it then
     // failed at its first `init`.  The borrowed path always carved these from one region.
     if (m.ring > 0) {
-        uint8_t* ring_base = o.take<uint8_t>((size_t) m.ring * (size_t) MAXBLOB(), ok);
-        for (int i = 0; i < m.ring; ++i) {
+        // STRATA_TEST_RING_FAIL=1: the ring's one allocation fails as an out-of-memory cudaMalloc does (tests the
+        // clean failure, as STRATA_TEST_CACHE_FAIL does for the cache's)
+        static const bool ring_fail = [] {
+            const char* v = std::getenv("STRATA_TEST_RING_FAIL");
+            return v != nullptr && v[0] == '1';
+        }();
+        uint8_t* ring_base = nullptr;
+        if (ring_fail) {
+            ok = false;
+            o.failed_bytes = (uint64_t) m.ring * (uint64_t) MAXBLOB();
+        } else {
+            ring_base = o.take<uint8_t>((size_t) m.ring * (size_t) MAXBLOB(), ok);
+        }
+        for (int i = 0; ok && i < m.ring; ++i) {   // no pointer arithmetic on a failed allocation
             m.stage_dev[i] = ring_base + (size_t) i * (size_t) MAXBLOB();
-            m.stage_live[i] = false;                        // a new buffer: nothing of an earlier layout to wait for
+            m.stage_live[i] = false;               // a new buffer: nothing of an earlier layout to wait for
             m.used_of[i] = i;
         }
     }
@@ -1433,7 +1445,7 @@ uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::Session
         o.take<uint8_t>(MMQ_GROUP * mp.d_max + MMQ_TAIL, ok);
     }
     const int n_ring = ring_budget < 0 ? ring_slots(T) : ring_slots_priced(T, ring_budget);
-    for (int i = 0; i < n_ring; ++i) o.take<uint8_t>((size_t) MAXBLOB(), ok);
+    if (n_ring > 0) o.take<uint8_t>((size_t) n_ring * (size_t) MAXBLOB(), ok);   // one allocation, as carve takes it
     f(T * N);
     f((size_t) strata::kernels::NG_HC_DIM);
     strata::kernels::KvHostPools stage;
