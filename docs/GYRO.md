@@ -1,13 +1,14 @@
 # Gyro (agentionai rotor quants) on Strata
 
-Validated on Linux with an RTX 5090 (32 GB), 16 CPU cores and 30 GB RAM on 2026-10-02 (CUDA 13.0, sm_120).
+Validated on Linux with an RTX 5090 (32 GB, CUDA 13.0, sm_120; 2026-10-02 and 2026-10-03) and an RTX 3090 (24 GB,
+sm_86; 2026-10-03). A short end-to-end run on AMD (Strix Halo, gfx1151, ROCm) passed on 2026-10-03.
 
 The targets are the published files of `agentionai/Qwen3.8-Flash-Next-Gyro-GGUF`, used unchanged:
 
 | File | Experts | GPU memory for the experts | Status |
 |---|---|---:|---|
-| `Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf` (54.5 GB) | TQK6 gate/up, TQK7 down, block-128 Hadamard | 24.0 GiB | validated end to end |
-| `Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf` (92.0 GB) | TQ2_T, block-128 Hadamard | 29.9 GiB | packs and passes `--load-check`; not run end to end |
+| `Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf` (58.5 GB) | TQK6 gate/up, TQK7 down, block-128 Hadamard | 24.0 GiB | validated end to end (RTX 5090, RTX 3090) |
+| `Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf` (92.0 GB) | TQ2_T, block-128 Hadamard | 29.9 GiB | validated end to end (RTX 5090, RTX 3090); the experts do not all fit a 32 GB card, `auto` streams the rest |
 
 Both files carry their own experts in the trellis types TQ2_T/TQK6/TQK7 and record the activation rotation in
 `prism.hadamard.*` metadata. Strata reads both natively (set `STRATA_APR=1`). About half of each file is the
@@ -43,7 +44,7 @@ git clone --depth 1 https://github.com/agentionai/llama.cpp ../agention-llama.cp
 # NVIDIA. RTX 50 series: use CUDA 13 (CUDA 12.8 crashes the prompt path on sm_120: issues #220, #224)
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON \
   -DCMAKE_CUDA_ARCHITECTURES=120 -DSTRATA_GGML_DIR=$PWD/../agention-llama.cpp
-# AMD (experimental: kernel parity validated on gfx1151, not run end to end)
+# AMD (experimental: kernel parity validated on gfx1151, plus a short end-to-end run there)
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_HIP=ON -DSTRATA_PREFILL_MMQ=ON \
   -DCMAKE_HIP_ARCHITECTURES=gfx1201 -DSTRATA_GGML_DIR=$PWD/../agention-llama.cpp
 cmake --build build -j
@@ -106,9 +107,51 @@ The web interface is at `http://127.0.0.1:8080`; API clients use `http://127.0.0
 128k context it holds 23,464 of 24,576 experts (22.9 GiB). On smaller cards it holds fewer and streams the rest
 from RAM; nothing else changes.
 
-## Measured (RTX 5090, CUDA 13.0, greedy, same prompt tokens as llama.cpp)
+## Measured
 
-Decode tokens/s, single prompts of 34-177 tokens, 384 new tokens, `--max-context 16384`:
+All runs: greedy or the stated sampling, same prompt tokens as llama.cpp, MTP draft `--spec 4 --spec-min-p 0.5`,
+int8 KV. "llama.cpp" is the agentionai fork with the CUDA trellis fixes (branch `cuda-tq-fixes`).
+
+### RTX 5090 (32 GB), Gyro-S, all experts on the GPU (2026-10-03)
+
+Decode tokens/s, single prompts of 34-177 tokens, 384 new tokens, `--max-context 16384` (all 24,576 experts cached):
+
+| | prose | JSON | code |
+|---|---:|---:|---:|
+| Strata | 139.9 | 221.3 | 209.0 |
+
+Server, `tools/gyro_setup.sh` config (128k context, 23,463 experts cached), thinking off, temperature 0.7,
+top-k 20, top-p 0.95, min-p 0.05, 512 new tokens, 3 repetitions:
+
+| | prose | JSON | code | copy |
+|---|---:|---:|---:|---:|
+| Strata | 131.7 | 200.1 | 195.2 | 201.8 |
+| llama.cpp, MTP draft | 116.8 | 213.0 | 179.0 | 220.7 |
+| llama.cpp, no draft | 121.8 | 123.2 | 122.5 | 121.2 |
+
+Long real-text prompts, prefill tokens/s: 4k tokens 3,456 (llama.cpp 2,520), 16k tokens 4,883 (llama.cpp 2,471).
+
+### RTX 5090, Gyro-M (2026-10-03)
+
+The experts (29.9 GiB) do not all fit next to the KV cache; `auto` caches 18,007 of 24,576. Same server protocol:
+prose 113.8, JSON 170.8, code 153.0, copy 175.7 tokens/s; prefill 4k 3,369, 16k 4,854 tokens/s. llama.cpp needs
+`-ncmoe 8` for this file on a 32 GB card and decodes at 70.8 tokens/s without a draft.
+
+### RTX 3090 (24 GB), 2026-10-03
+
+Same server protocol, 128k context, `auto` cache:
+
+| | experts cached | prose | JSON | code | copy | prefill 4k | prefill 16k |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Gyro-S | 15,756 | 31.8 | 45.2 | 42.2 | 45.1 | 1,402 | 1,863 |
+| Gyro-M | 11,811 | 27.8 | 39.4 | 34.4 | 37.7 | 1,363 | 1,910 |
+| llama.cpp, Gyro-S, `-ncmoe 10`, 32k context, no draft | (10 layers on the CPU) | 16.0 | 16.2 | 16.2 | 16.5 | 468 (`-ncmoe 11`) | 479 |
+
+On a 24 GB card, cache misses run on the CPU, so the CPU matters: this box had a Zen 2 EPYC (AVX2, no AVX-512).
+The llama.cpp row is the build before the CUDA trellis fixes; those added about 3 % at 24 GB, where the CPU layers
+dominate.
+
+### Smaller caches (RTX 5090, 2026-10-02, before the int8 decode kernels)
 
 | Expert cache | prose | JSON | code |
 |---|---:|---:|---:|
@@ -116,17 +159,17 @@ Decode tokens/s, single prompts of 34-177 tokens, 384 new tokens, `--max-context
 | 22,000 slots | 111.4 | 175.7 | 166.1 |
 | 9,000 slots (about a 16 GB card's room) | 81.4 | 74.0 | 96.8 |
 | 3,000 slots (about an 8 GB card's room) | 48.0 | 52.4 | 57.9 |
-| llama.cpp (agentionai main), best of no draft / cost-aware MTP | 106.0 | 172.9 | 142.2 |
 
 The smaller caches were emulated on the 5090 (fast GPU, PCIe 5.0 x16 at ~51 GB/s). A real 8 or 16 GB card is a
 slower GPU, often on a slower link: read those rows as "it stays usable", not as a prediction for a specific card.
-The decoded prose output was read and is fluent and correct; token-level parity against llama.cpp has not been
+The decoded output was read and is fluent and correct; token-level parity against llama.cpp has not been
 checked. A real chat at 128k context worked through the web interface.
 
 ## Known limits
 
-- **Not measured yet:** long-prompt prefill, token parity against llama.cpp, Gyro-M end to end.
+- **Not measured yet:** token parity against llama.cpp.
 - **Benchmark mode only:** `strata --tokens-file ... --max-new N` decodes N tokens past the end of the answer;
   compare speeds only up to the answer's end.
-- **AMD:** the trellis kernels pass parity on gfx1151 (ROCm 7.2.1); no end-to-end run on AMD yet.
+- **AMD:** the trellis kernels pass parity on gfx1151 (ROCm 7.2.1) and a short end-to-end run there generated
+  correctly (~28-31 tokens/s); no speed tuning or RDNA4 run yet.
 - **Gyro-M:** 29.9 GiB of experts do not all fit a 32 GB card next to the KV cache; `auto` streams the rest.
