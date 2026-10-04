@@ -127,8 +127,10 @@ Memory, from [telemetry.jsonl](telemetry.jsonl):
 
 ## Correctness and limitations
 
-Long-context recall via the repository's unchanged `tools/needle_bench.py`
-(`--lengths 8k,32k,128k --depths 10,50,90`) is recorded in [needles.json](needles.json).
+Long-context recall via the repository's unchanged `tools/needle_bench.py`:
+a single probe at the full context — `--lengths 128k --depths 50` — which
+**found the needle** in a 122,754-token prompt (426 s). Result in
+[needles.json](needles.json).
 
 _This is one machine, one quantization, one configuration, and a small synthetic
 workload. Long output, sampled decoding, thinking, coding-task correctness,
