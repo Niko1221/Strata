@@ -1,0 +1,71 @@
+# NVIDIA Tesla V100 / Titan V (Volta, sm_70): the community build
+
+Strata's ready-made engine and the support matrix start at compute capability 7.5 (RTX 20). A V100 (7.0) runs the same
+engine compiled for it, through the experimental build that issue #236 added. It is **community-tested, not part of the
+supported cards**: no ready-made engine is published for it and the numbers below come from one machine.
+
+## Build
+
+CUDA 13 dropped Volta, so the build needs a **CUDA 12.x** toolkit (12.8 was used) and a host GCC that toolkit accepts.
+
+```sh
+cmake -S . -B build -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_TESTS=OFF \
+      -DCMAKE_CUDA_ARCHITECTURES=70 -DSTRATA_EXPERIMENTAL_SM60=ON
+cmake --build build --target strata -j
+```
+
+Setup does the same by itself for a model on a V100 (the experimental CUDA 12 engine, in `engine-cuda12/`: ready-made
+on Windows, compiled with a CUDA 12.x toolkit on Linux; [OLDER_GPUS.md](OLDER_GPUS.md)). For a PC with a V100 and a newer card, a build for both architectures (`-DCMAKE_CUDA_ARCHITECTURES="70;86"`) is the
+natural choice (a community report in issue #509 ran an RTX 3080 beside a V100 that way; it was not repeated here). On the
+measuring PC a Quadro RTX 4000 (sm_75) sits beside the V100s and was hidden with `CUDA_VISIBLE_DEVICES` because the sm_70-only
+build has no code for it.
+
+## What runs on Volta
+
+The flag only lowers the floor (CMake and the runtime device check) and replaces two intrinsics Volta lacks. It does not
+select "old" kernels everywhere: which kernel runs is decided per architecture when the engine is built.
+
+| Part of the prompt path | On sm_70 |
+| --- | --- |
+| MoE experts (ggml MMQ) | `dp4a` kernels (Volta has no int8 tensor cores) |
+| Dense projections (dequantized weights) | FP16 tensor-core GEMMs (cuBLAS / CUTLASS `s884`) |
+| BF16 projections (hyper-connection, router, indexer, ...) | converted to FP16 and run on the FP16 tensor cores (#655, #540; `STRATA_BF16_TC=0`: cuBLAS BF16, an FP32 SIMT kernel on Volta) |
+| QSA attention for decode and verify windows (and prompts with `STRATA_PROMPT_ATTN_OLD=1`) | #540's kernel (fewer shuffles, bit-exact; `STRATA_ATTN_PRE75=0`: the one other cards run) |
+| QSA prompt attention, int8 / FP16 / K8V4 KV | `prompt_attn_v70_kernel` on `mma.m8n8k4` (`STRATA_PROMPT_ATTN_OLD=1`: the decode kernel, one query at a time) |
+| QSA prompt attention, Q4_0 KV | the decode kernel |
+| QSA block scores | the warp kernel (the tensor-core scorer needs sm_80) |
+
+## Measured
+
+One V100-PCIE-32GB, i9-7960X, Unsloth `UD-IQ4_XS` (not a setup model), int8 KV, MTP `--spec 2`; prompt read speed of random-word prompts, tokens/s,
+with and without the Volta attention kernel (`STRATA_PROMPT_ATTN_OLD=1`):
+
+| Prompt tokens | old attention path | `prompt_attn_v70_kernel` |
+| --- | ---: | ---: |
+| 7,194 | 1,010 | 1,164 |
+| 28,650 | 1,063 | 1,251 |
+| 114,338 | 973 | 1,123 |
+
+Decode was 38-51 tok/s in every run and is not affected. The profile, the parity numbers, the needle test and the limits are in
+[bench/results/2026-10-03-v100-prompt-attn](../bench/results/2026-10-03-v100-prompt-attn/README.md).
+
+What the kernel does and does not guarantee: against an FP64 reference its error is about 5e-6 (output scale 3.6; the FP32 kernel it replaces: 2e-6); 15 of 15
+needles were found; greedy output was identical on the 28,650- and 114,338-token prompts and differed late in the answer on the 7,194-token one (another
+summation order).
+
+## Checking and benchmarking the Volta kernels
+
+```sh
+cmake -S . -B build -DSTRATA_PARITY_PROMPT_ATTN=ON ... && cmake --build build --target qsa_prompt_attn_parity
+CUDA_VISIBLE_DEVICES=0 ./build/qsa_prompt_attn_parity 32768 2048 5     # synthetic, no model; exit 0 = PASS
+```
+
+It compares the tensor-core attention with the FP32 kernel and an FP64 host reference and times both. The Q4_0 cases are skipped below
+sm_80.
+
+## Limits
+
+- A layer split over two V100 was not measured with this kernel. The cards work in turn on a single request, so a split adds expert-cache room, not prompt speed.
+- sm_60 (Pascal) is covered by the same flag but was not measured here.
+- Volta's tensor cores take FP16 only: a model's BF16 weights are converted, and a weight outside FP16's range would saturate (none did in
+  the check above).

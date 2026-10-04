@@ -16,6 +16,7 @@
 // are set, small enough that the grouped path's SwiGLU output keeps a finite fp16 q8_1 scale.
 #include "strata/kernels/f16_bits.hpp"
 #include "strata/kernels/iq_kernels.hpp"
+#include "strata/kernels/native_mmvq.hpp"
 
 #include <cuda_runtime.h>
 
@@ -325,6 +326,71 @@ void bench(cudaStream_t s, std::mt19937& rng) {
     }
 }
 
+// #606: both q8_1 activation quantizers (quantize_q8_1_rows and native_quantize_q8_1) against a host transcription
+// of the 0.1.38 formula: every finite block bit for bit; a block whose sum (or scale) overflowed fp16 is now stored
+// finite (the largest half, its sign), with its values in the int8 range.
+void check_q8_1_finite(cudaStream_t s, std::mt19937& rng) {
+    const int n = 2560, rows = 3, nb = n / 32;
+    std::vector<float> x = random_x((size_t) rows * n, rng);
+    for (int i = 0; i < 32; ++i) x[(size_t) 5 * 32 + i] = 3000.0f;                  // sum 96,000: overflowed
+    for (int i = 0; i < 32; ++i) x[(size_t) 9 * 32 + i] = i == 3 ? -70000.0f : 0.5f;   // sum -69,984.5
+    for (int i = 0; i < 32; ++i) x[(size_t) 13 * 32 + i] = 2000.0f + i;            // sum 64,496: finite, kept
+    x[(size_t) n + 40] = 2.0e7f;                                                    // amax / 127 overflowed too
+    float* dx = dalloc<float>(x.size());
+    ck(cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice), "x");
+    uint8_t* dq = dalloc<uint8_t>((size_t) rows * nb * 36);
+    for (int path = 0; path < 2; ++path) {
+        if (path == 0) k::quantize_q8_1_rows(dx, rows, n, dq, s);
+        else k::native_quantize_q8_1(dx, dq, n, rows, s);
+        ck(cudaStreamSynchronize(s), "quantize");
+        std::vector<uint8_t> got((size_t) rows * nb * 36);
+        ck(cudaMemcpy(got.data(), dq, got.size(), cudaMemcpyDeviceToHost), "q");
+        int same = 0, clamped = 0, bad = 0;
+        for (int b = 0; b < rows * nb; ++b) {
+            const float* v = x.data() + (size_t) b * 32;
+            float lane[32], amax = 0.0f;
+            for (int i = 0; i < 32; ++i) { lane[i] = v[i]; amax = std::max(amax, std::fabs(v[i])); }
+            for (int o = 16; o > 0; o >>= 1) {   // the warp's butterfly: every lane ends with the same sum
+                float nx[32];
+                for (int i = 0; i < 32; ++i) nx[i] = lane[i] + lane[i ^ o];
+                std::memcpy(lane, nx, sizeof lane);
+            }
+            const float d = amax / 127.0f, sum = lane[0];
+            const uint8_t* g = got.data() + (size_t) b * 36;
+            uint16_t gd, gs;
+            std::memcpy(&gd, g, 2);
+            std::memcpy(&gs, g + 2, 2);
+            const uint16_t od = k::f16_from_f32(d), os = k::f16_from_f32(sum);
+            const bool finite_before = (od & 0x7c00) != 0x7c00 && (os & 0x7c00) != 0x7c00;
+            if (finite_before) {
+                uint8_t want[36];
+                std::memcpy(want, &od, 2);
+                std::memcpy(want + 2, &os, 2);
+                for (int i = 0; i < 32; ++i)   // CUDA's roundf: half away from zero, as std::round
+                    want[4 + i] = (uint8_t) (int8_t) (amax == 0.0f ? 0.0f : std::round(v[i] / d));
+                // native_mmvq.cu is built with --use_fast_math (its divisions are approximate): there the sum must be
+                // the same bits, the scale within one fp16 step and each value within one step
+                bool near = path == 1 && gs == os && std::abs((int) gd - (int) od) <= 1;
+                for (int i = 0; near && i < 32; ++i) near = std::abs((int) (int8_t) g[4 + i] - (int) (int8_t) want[4 + i]) <= 1;
+                if (std::memcmp(want, g, 36) == 0 || near) ++same;
+                else { ++bad; std::printf("  q8_1 path %d block %d: changed although it was finite\n", path, b); }
+            } else {
+                const float fd = k::f32_from_f16(gd), fs = k::f32_from_f16(gs);
+                bool ok = std::isfinite(fd) && std::isfinite(fs) && fd > 0.0f &&
+                          ((os & 0x7c00) != 0x7c00 ? gs == os : std::fabs(fs) == 65504.0f && (fs < 0) == (sum < 0));
+                for (int i = 0; i < 32; ++i) ok = ok && (int8_t) g[4 + i] >= -127 && (int8_t) g[4 + i] <= 127;
+                if (ok) ++clamped;
+                else { ++bad; std::printf("  q8_1 path %d block %d: d %g sum %g not finite and clamped\n", path, b, fd, fs); }
+            }
+        }
+        std::printf("q8_1 finite (%s): %d finite blocks as before, %d overflowed blocks clamped finite%s\n",
+                    path == 0 ? "quantize_q8_1_rows" : "native_quantize_q8_1", same, clamped, bad ? "  FAIL" : "");
+        g_fail += bad + (clamped != 3);
+    }
+    cudaFree(dx);
+    cudaFree(dq);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -340,6 +406,7 @@ int main(int argc, char** argv) {
         for (int dt : {20, 42}) check_grouped(gu, dt, 2560, 640, s, rng);   // the model's shape
         check_grouped(gu, 23, 1024, 512, s, rng);                           // IQ4_XS down needs n_ff % 256 == 0
     }
+    check_q8_1_finite(s, rng);
     if (do_bench) bench(s, rng);
     std::printf("iq_multi_parity: %d failures\n", g_fail);
     cudaStreamDestroy(s);

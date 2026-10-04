@@ -21,9 +21,26 @@ ExpertLayout g_layout;
 
 const ExpertLayout& expert_layout() { return g_layout; }
 
+int cpu_isa_cap() {
+    // STRATA_FORCE_ISA (tests, the experimental older-CPU builds): the engine's own dispatch acts as if this CPU
+    // stopped at that level.  ggml-cpu is not affected: it runs what the build compiled it for.
+    static const int cap = [] {
+        const char* f = std::getenv("STRATA_FORCE_ISA");
+        if (f == nullptr || f[0] == '\0') return 3;
+        const std::string v(f);
+        if (v == "avx2") return 2;
+        if (v == "avx") return 1;
+        if (v == "sse" || v == "sse4.2" || v == "none") return 0;
+        std::fprintf(stderr, "strata: STRATA_FORCE_ISA=%s is not avx2, avx or sse; ignored\n", f);
+        return 3;
+    }();
+    return cap;
+}
+
 bool cpu_avx512_ok() {
     static const bool ok = [] {
         if (const char* f = std::getenv("STRATA_FORCE_AVX2"); f != nullptr && f[0] == '1') return false;
+        if (cpu_isa_cap() < 3) return false;
         unsigned r[4] = {0, 0, 0, 0};
         auto cpuid = [&](unsigned leaf, unsigned sub) {
 #if defined(_MSC_VER)
@@ -53,8 +70,41 @@ bool cpu_avx512_ok() {
     return ok;
 }
 
+bool cpu_avx512bw_ok() {
+    static const bool ok = [] {
+        if (const char* f = std::getenv("STRATA_FORCE_AVX2"); f != nullptr && f[0] == '1') return false;
+        unsigned r[4] = {0, 0, 0, 0};
+        auto cpuid = [&](unsigned leaf, unsigned sub) {
+#if defined(_MSC_VER)
+            int x[4];
+            __cpuidex(x, (int) leaf, (int) sub);
+            for (int i = 0; i < 4; ++i) r[i] = (unsigned) x[i];
+#else
+            __cpuid_count(leaf, sub, r[0], r[1], r[2], r[3]);
+#endif
+        };
+        cpuid(0, 0);
+        if (r[0] < 7) return false;
+        cpuid(1, 0);
+        if (!((r[2] >> 27) & 1u)) return false;             // OSXSAVE
+#if defined(_MSC_VER)
+        const unsigned long long xcr0 = _xgetbv(0);
+#else
+        unsigned lo = 0, hi = 0;
+        __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+        const unsigned long long xcr0 = ((unsigned long long) hi << 32) | lo;
+#endif
+        if ((xcr0 & 0xE6) != 0xE6) return false;          // the OS saves the AVX-512 state
+        cpuid(7, 0);
+        const unsigned ebx = r[1];
+        return ((ebx >> 16) & 1u) && ((ebx >> 17) & 1u) && ((ebx >> 30) & 1u) && ((ebx >> 31) & 1u);
+    }();
+    return ok;
+}
+
 bool cpu_avx2_ok() {
     static const bool ok = [] {
+        if (cpu_isa_cap() < 2) return false;
         unsigned r[4] = {0, 0, 0, 0};
         auto cpuid = [&](unsigned leaf, unsigned sub) {
 #if defined(_MSC_VER)
@@ -83,6 +133,57 @@ bool cpu_avx2_ok() {
         return ((r[1] >> 5) & 1u) != 0;                    // AVX2
     }();
     return ok;
+}
+
+bool cpu_avx1_ok() {
+    // AVX (Sandy Bridge, 2011): AVX + OSXSAVE with the OS saving the YMM state; FMA, F16C and AVX2 not needed.
+    // From the Strata_Dirigo fork (rwkeyes).
+    static const bool ok = [] {
+        if (cpu_isa_cap() < 1) return false;
+        unsigned r[4] = {0, 0, 0, 0};
+#if defined(_MSC_VER)
+        int x[4];
+        __cpuidex(x, 1, 0);
+        for (int i = 0; i < 4; ++i) r[i] = (unsigned) x[i];
+#else
+        __cpuid_count(1, 0, r[0], r[1], r[2], r[3]);
+#endif
+        if (!((r[2] >> 27) & 1u) || !((r[2] >> 28) & 1u)) return false;   // OSXSAVE, AVX
+#if defined(_MSC_VER)
+        const unsigned long long xcr0 = _xgetbv(0);
+#else
+        unsigned lo = 0, hi = 0;
+        __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+        const unsigned long long xcr0 = ((unsigned long long) hi << 32) | lo;
+#endif
+        return (xcr0 & 0x6) == 0x6;
+    }();
+    return ok;
+}
+
+bool cpu_sse42_ok() {
+    static const bool ok = [] {
+        unsigned r[4] = {0, 0, 0, 0};
+#if defined(_MSC_VER)
+        int x[4];
+        __cpuidex(x, 1, 0);
+        for (int i = 0; i < 4; ++i) r[i] = (unsigned) x[i];
+#else
+        __cpuid_count(1, 0, r[0], r[1], r[2], r[3]);
+#endif
+        return ((r[2] >> 20) & 1u) && ((r[2] >> 23) & 1u);   // SSE4.2, POPCNT
+    }();
+    return ok;
+}
+
+const char* isa_floor_build() {
+#if defined(STRATA_ISA_FLOOR_AVX)
+    return "avx";
+#elif defined(STRATA_ISA_FLOOR_NONE)
+    return "sse4.2";
+#else
+    return "";
+#endif
 }
 
 std::string cpu_name() {
