@@ -116,6 +116,20 @@
             {%- set reasoning_content = message.reasoning_content %}
         {%- endif %}
         {%- set reasoning_content = reasoning_content|trim %}
+        {#- An earlier reply whose call stayed inside the thinking (<tool_call> with no </think> before it): close
+            the thinking before the call, so the history never shows the model a call inside <think>. #}
+        {%- set _call = '<tool_call>\n<function=' %}
+        {%- if content.startswith('<think>') and '</think>' not in content and ('\n' + _call) in content %}
+            {%- set _parts = content[7:].split('\n' + _call, 1) %}
+            {%- if not reasoning_content %}
+                {%- set reasoning_content = _parts[0]|trim %}
+            {%- endif %}
+            {%- set content = _call + _parts[1] %}
+        {%- elif not message.tool_calls and reasoning_content.endswith('</tool_call>') and ('\n' + _call) in ('\n' + reasoning_content) %}
+            {%- set _parts = ('\n' + reasoning_content).split('\n' + _call, 1) %}
+            {%- set reasoning_content = _parts[0]|trim %}
+            {%- set content = (content + '\n\n' if content else '') + _call + _parts[1] %}
+        {%- endif %}
         {%- if preserve_thinking is undefined or preserve_thinking is true or loop.index0 > ns.last_query_index %}
             {{- '<|im_start|>' + message.role + '\n<think>\n' + reasoning_content + '\n</think>\n\n' + content }}
         {%- else %}

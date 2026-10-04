@@ -122,6 +122,52 @@ class Controls(unittest.TestCase):
         self.assertEqual((reasoning, content, [c.name for c in calls], p.implicit_ends), ("", "Here:", ["execute_code"], 0))
 
 
+class TemplateHistory(unittest.TestCase):
+    """serve/chat_template.jinja: an earlier reply whose call stayed inside the thinking is rendered with </think>
+    before the call (defense in depth); everything else renders as before (serve/chat_golden.json)."""
+    TEMPLATE = ChatTemplate(ROOT / "serve/chat_template.jinja")
+    WEATHER = [{"type": "function", "function": {"name": "get_weather", "description": "Get the weather", "parameters": {
+        "type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}}]
+    KWARGS = {"tool call and response": {"tools": WEATHER}, "no generation prompt": {"add_generation_prompt": False},
+              "thinking disabled": {"enable_thinking": False}}     # what each golden case was rendered with
+
+    def render_turn(self, assistant):
+        out = self.TEMPLATE.render([{"role": "user", "content": "hi"}, assistant, {"role": "user", "content": "go"}])
+        return out[out.index("<|im_start|>assistant"):out.rindex("<|im_start|>user")]
+
+    def test_golden(self):
+        cases = json.loads((ROOT / "serve/chat_golden.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(cases), 10)
+        for c in cases:
+            with self.subTest(case=c["name"]):
+                self.assertEqual(self.TEMPLATE.render(c["messages"], **self.KWARGS.get(c["name"], {})), c["hf"])
+
+    def test_call_left_in_reasoning_content(self):
+        for case in CASES:
+            r = case["reasoning_content"]
+            with self.subTest(case=case["quando"]):
+                turn = self.render_turn({"role": "assistant", "content": "", "reasoning_content": r})
+                before, call = r[:r.index("<tool_call>")].strip(), r[r.index("<tool_call>"):]
+                self.assertEqual(turn, f"<|im_start|>assistant\n<think>\n{before}\n</think>\n\n{call}<|im_end|>\n")
+
+    def test_open_think_in_content(self):
+        r = CASES[1]["reasoning_content"]
+        turn = self.render_turn({"role": "assistant", "content": "<think>\n" + r})
+        before, call = r[:r.index("<tool_call>")].strip(), r[r.index("<tool_call>"):]
+        self.assertEqual(turn, f"<|im_start|>assistant\n<think>\n{before}\n</think>\n\n{call}<|im_end|>\n")
+
+    def test_mentions_render_as_before(self):
+        for name, text in CONTROLS.items():
+            with self.subTest(control=name):
+                turn = self.render_turn({"role": "assistant", "content": "ok", "reasoning_content": text})
+                self.assertEqual(turn, f"<|im_start|>assistant\n<think>\n{text.strip()}\n</think>\n\nok<|im_end|>\n")
+        # a reply whose call WAS extracted keeps its reasoning as it is, even when it ends with a quoted call
+        quoted = "The format is:\n" + CALL
+        turn = self.render_turn({"role": "assistant", "content": "", "reasoning_content": quoted, "tool_calls": [
+            {"type": "function", "function": {"name": "execute_code", "arguments": {"code": "print(1)"}}}]})
+        self.assertTrue(turn.startswith(f"<|im_start|>assistant\n<think>\n{quoted}\n</think>\n\n"))
+
+
 class ServerCountsAndLogs(unittest.TestCase):
     """The server logs each implicit end in servidor.log and counts it in GET /metrics (totals and the request)."""
 
