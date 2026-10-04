@@ -36,9 +36,15 @@ struct FusedGrArgs {
     float* rs = nullptr;               ///< workspace, hc floats
     float* inject_out = nullptr;       ///< hc floats (when w_inject)
     float* mixed = nullptr;            ///< n_embd
+    /// STRATA_HC_Q8: non-null when w_down / w_up hold int8 codes (same [row][col] layout) with one fp32 scale per
+    /// 32 contiguous values here ([row][col / 32]).  w_inject stays bf16.
+    const float* s_down = nullptr;
+    const float* s_up = nullptr;
 };
 
 bool fused_gr_supported(int64_t n_embd, int64_t hc, int64_t hc_lr);
+/// STRATA_HC_Q8: n int8 codes with one fp32 scale per 32 -> bf16 (the prompt path's GEMMs take bf16).
+void hc_q8_to_bf16(const void* codes, const float* scales, uint16_t* out, long long n, void* stream);
 void fused_gr_read(const FusedGrArgs& a, void* stream);
 
 /// Plan v0.3 P6: the same read for up to 8 tokens that share the weights (a verify window): the weights are read

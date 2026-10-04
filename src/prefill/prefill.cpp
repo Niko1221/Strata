@@ -1,4 +1,5 @@
 // src/prefill/prefill.cpp - see include/strata/prefill/prefill.hpp.
+#include "strata/kernels/fused_gr.hpp"
 #include "strata/prefill/prefill.hpp"
 #include "strata/core/mtp.hpp"
 #include "strata/core/progress.hpp"
@@ -1445,10 +1446,25 @@ bool native_proj(Gemm& gm, const core::WeightRef* w, const uint16_t* X, float* Y
     return true;
 }
 bool bf16_proj(Gemm& gm, const core::WeightRef* w, const uint16_t* X, float* Y, int64_t T, const std::string& name,
-               std::string& err, int64_t ldy = 0, const uint16_t* X_lo = nullptr) {
+               std::string& err, int64_t ldy = 0, const uint16_t* X_lo = nullptr, void* stream = nullptr) {
     if (w->kind != core::WeightKind::Bf16InF32 || !w->data) { err = "prefill: " + name + " is not a resident BF16 tensor"; return false; }
-    gm.bf16(X, (const uint16_t*) w->data, Y, T, w->ne1 > 0 ? w->ne1 : 1, w->ne0, ldy);
-    if (X_lo) gm.bf16(X_lo, (const uint16_t*) w->data, Y, T, w->ne1 > 0 ? w->ne1 : 1, w->ne0, ldy, 1.0f);
+    const uint16_t* wb = (const uint16_t*) w->data;
+    if (w->q8_scale != nullptr) {
+        // STRATA_HC_Q8: the GEMM takes bf16, so the Q8 codes are expanded into one reused scratch on this stream
+        static uint16_t* scratch = nullptr;
+        static int64_t cap = 0;
+        if (w->elements > cap) {
+            if (scratch) cudaFree(scratch);
+            if (cudaMalloc((void**) &scratch, (size_t) w->elements * 2) != cudaSuccess) {
+                scratch = nullptr; cap = 0; err = "prefill: the STRATA_HC_Q8 scratch"; return false;
+            }
+            cap = w->elements;
+        }
+        strata::kernels::hc_q8_to_bf16(w->data, w->q8_scale, scratch, (long long) w->elements, stream);
+        wb = scratch;
+    }
+    gm.bf16(X, wb, Y, T, w->ne1 > 0 ? w->ne1 : 1, w->ne0, ldy);
+    if (X_lo) gm.bf16(X_lo, wb, Y, T, w->ne1 > 0 ? w->ne1 : 1, w->ne0, ldy, 1.0f);
     return true;
 }
 
@@ -1985,10 +2001,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 if (gr_unfused()) gr_norm(m.R, (const float*) wn->data, EPS, m.xn, m.xn16, T, m.cs, m.xn16_lo);
                 else if (!normed) gr_norm_rs(m.R, (const float*) wn->data, EPS, m.grs, m.xn16, T, m.cs, m.xn16_lo);
                 normed = false;
-                if (!bf16_proj(m.gemm, wd, m.xn16, m.lo, T, sd, err, 0, m.xn16_lo)) return false;
+                if (!bf16_proj(m.gemm, wd, m.xn16, m.lo, T, sd, err, 0, m.xn16_lo, m.cs)) return false;
                 gr_silu(m.lo, m.lo16, T, m.cs, m.lo16_lo);
-                if (!bf16_proj(m.gemm, wu, m.lo16, m.gated, T, su, err, 0, m.lo16_lo)) return false;
-                if (!bf16_proj(m.gemm, wi, m.xn16, m.inj, T, si, err, 0, m.xn16_lo)) return false;
+                if (!bf16_proj(m.gemm, wu, m.lo16, m.gated, T, su, err, 0, m.lo16_lo, m.cs)) return false;
+                if (!bf16_proj(m.gemm, wi, m.xn16, m.inj, T, si, err, 0, m.xn16_lo, m.cs)) return false;
                 if (gr_unfused()) gr_mix(m.xn, m.gated, m.mixed, m.mixed_bf, T, m.cs, m.mixed_h, m.mixed_bf_lo);
                 else gr_mix_r(m.R, m.grs, (const float*) wn->data, m.gated, m.mixed, m.mixed_bf, T, m.cs, m.mixed_h,
                               m.mixed_bf_lo);
