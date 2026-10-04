@@ -69,6 +69,14 @@ if(STRATA_BUILD_CONVERSATION_TESTS)
 endif()
 
 if(STRATA_ENABLE_CUDA)
+  # #585: the CUDA language links the runtime per CMAKE_CUDA_RUNTIME_LIBRARY, whose default is "Static"
+  # (cudart_static.lib), while the targets below link the imported CUDA::cudart explicitly (the dynamic
+  # import library).  Both end up on the link line; MSVC rejects the duplicated runtime symbols
+  # (LNK2005/LNK1169) - seen on a Windows sm_70 source build - while GNU ld tolerates them, so Linux
+  # never noticed.  "Shared" makes the language rule agree with CUDA::cudart; an explicit -D keeps winning.
+  if(NOT DEFINED CMAKE_CUDA_RUNTIME_LIBRARY)
+    set(CMAKE_CUDA_RUNTIME_LIBRARY Shared)
+  endif()
   enable_language(CUDA)
   # `enable_language(CUDA)` gives the .cu compile rules but NOT the imported targets, so `CUDA::cudart` has to
   # be brought in explicitly for the host-side tests that call cudaMalloc themselves.
