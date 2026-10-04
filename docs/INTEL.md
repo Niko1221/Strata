@@ -12,6 +12,10 @@ outside.
 Written for and measured on an **Arc Pro B70 (32 GB)** running the Coder (IQ1_M) on Ubuntu 24.04, in a
 PCIe 3.0 x8 slot (the card trains at Gen3 x8 there; it can do Gen5 x16).
 
+For the later **Arc A770 16 GB** qualification of 0.1.39 plus fixes (17.8/16.6 tok/s decode, IQ2_XS),
+see [A770 measurements, required settings and limits](INTEL_ARC.md#a770-16-gb-qualification-2026-10-04).
+The B70 measurements below remain specific to that card and configuration.
+
 ## What you get (2026-10-01)
 
 | | NVIDIA (Strata engine) | Intel Arc, Strata SYCL port | Intel Arc, llama.cpp |
@@ -193,7 +197,8 @@ build-sycl/strata --pack <iq pack> --native <shard1> --ple-gguf <shard2> \
   RAM for this model; with the flag the engine runs on 23 GiB.
 - `STRATA_VERIFY_DEVICE_PLAN=1`: the GPU plans each layer itself (upstream's E-6; off by default there).
 - `STRATA_VERIFY_NO_HOST=1` (this port): the host waits for the whole window graph instead of per-layer
-  rings. Only valid with every expert resident, which is the case on a 32 GB card.
+  rings. It requires the device plan and every expert in VRAM or covered by the pinned host mirror.
+  The later [A770 configuration](INTEL_ARC.md#a770-16-gb-qualification-2026-10-04) exercises the mirror path.
 - `--no-prefill-borrow`: the prompt path must not lend expert slots (a lent expert is served from the host
   behind a flag the GPU does not see reliably here; long prompts hung without it).
 

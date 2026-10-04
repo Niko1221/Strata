@@ -1,0 +1,692 @@
+{
+  "schema": "strata-a770-qualification-v1",
+  "date": "2026-10-04",
+  "hardware": {
+    "gpu": "Intel Arc A770 16 GB",
+    "cpu": "AMD Ryzen 5 3600",
+    "ram_gib": 94.3,
+    "environment": "Linux VM"
+  },
+  "software": {
+    "base_commit": "6f32ec070f23ced9f50e704d854d775da52591ab",
+    "tested_source_commit": "37ea520e3390ec32ff49e753865c7d552c37befc",
+    "engine_sha256": "0f637d09e42c3e332a5a1b5612bea60a9434ba6cd2d8a725e0c3b4b7dbaab492",
+    "neo": "26.35.39758.10",
+    "dpcpp": "2026.1.1",
+    "onemkl": "2026.1",
+    "device_code": "SPIR-V/JIT"
+  },
+  "model": {
+    "repository": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+    "revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+    "files_sha256": {
+      "models/IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf": "92cee27ae5bbadcd732416a0f7a7f0acc092399dbbe8f5a5efa707c2ec0a49d7",
+      "models/IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113",
+      "mtp/rt/dense.bin": "c724dc0b0822ada5d2977bf5bde821605feabaa64ea2e0045b67ca656329070a",
+      "mtp/rt/dense.txt": "991456cf4eb266eb8a888c349e548d11bc640f5dbd9149439aa9786af0f732fd",
+      "mtp/rt/draft_vocab.bin": "b1e1d3a7a9e4bf862dcd5923ce661fb59bbd07907e594df5cf86a62ac235cb91",
+      "mtp/rt/experts.bin": "09398406be61f1f54c93861f449e48b8df0bfccbc9ec9b2b7636775a6ea9244f",
+      "packs/iq2_xs/conversions.json": "b0908ca2ee3712d3734aaf778c38f75f4a8a8753edae5fb9429ba6a04fbb2c07",
+      "packs/iq2_xs/dense.bin": "d2af3d8331e5c7a1985d1d589747230f9d56719a6d33c7cddc9ee6b81cde6b13",
+      "packs/iq2_xs/index.txt": "19e781af360ca3b83fd90fe09e757ac9aa2a9dcada26810ddc9e933bdb112091",
+      "packs/iq2_xs/native_experts.txt": "48df605acb89c7e8c3176a51cec777c2ed344ea439e8f3a37e5ce4f9dcb6946c",
+      "packs/iq2_xs/tokenizer/chat_template.jinja": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce",
+      "packs/iq2_xs/tokenizer/merges.txt": "4ba698529766c7a2f5052083ea10cdf2485577f5237a332ee291054eb11e3332",
+      "packs/iq2_xs/tokenizer/tokenizer.json": "c0bd435efbc6c3b28964b47999afe16c4ad268c7c7c4e8cb3af410796a6f30bf",
+      "packs/iq2_xs/tokenizer/token_type.json": "5088c8c298fc06af8382ddb3b76c888703ac2634e82263b97eedcc2ad202738b",
+      "packs/iq2_xs/tokenizer/vocab.json": "4ba64f0332abcfb0b600b7df1537d1e836e68009d5fb7cdb77339738dc6365c4",
+      "data/expert-profile.bin": "8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf"
+    },
+    "hash_note": "Inherited from prior qualification; model files were reused without a new full rehash."
+  },
+  "settings": {
+    "context_tokens": 32768,
+    "requested_expert_slots": 3000,
+    "effective_expert_slots": 3134,
+    "expert_cache_gib": 4.22,
+    "mirrored_experts": 21442,
+    "missing_experts": 21442,
+    "mirror_gib": 28.8,
+    "prefill": 4096,
+    "spec": 4,
+    "spec_min_p": 0.5,
+    "mtp": true,
+    "kv": "int8",
+    "prefill_borrow": false,
+    "prompt_cache": 0,
+    "environment_fp64_on": {
+      "ONEAPI_ROOT": "/opt/intel/oneapi",
+      "ONEAPI_DEVICE_SELECTOR": "level_zero:0",
+      "SYCL_CACHE_PERSISTENT": "0",
+      "STRATA_VERIFY_NO_HOST": "1",
+      "STRATA_VERIFY_DEVICE_PLAN": "1",
+      "STRATA_STAGER_THREADS": "12",
+      "STRATA_MIRROR_MIB": "40000",
+      "SYCL_PROGRAM_APPEND_COMPILE_OPTIONS": "-ze-intel-greater-than-4GB-buffer-required",
+      "NEO_FP64_EMULATION": "1"
+    }
+  },
+  "corpus": {
+    "protocol": "strata-compare-v1",
+    "tokenizer_files_sha256": {
+      "vocab.json": "4ba64f0332abcfb0b600b7df1537d1e836e68009d5fb7cdb77339738dc6365c4",
+      "chat_template.jinja": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce",
+      "merges.txt": "4ba698529766c7a2f5052083ea10cdf2485577f5237a332ee291054eb11e3332",
+      "token_type.json": "5088c8c298fc06af8382ddb3b76c888703ac2634e82263b97eedcc2ad202738b",
+      "tokenizer.json": "c0bd435efbc6c3b28964b47999afe16c4ad268c7c7c4e8cb3af410796a6f30bf"
+    },
+    "requests": [
+      {
+        "case": "warmup",
+        "trial": 0,
+        "target_tokens": null,
+        "request": {
+          "model": "qwen3.8-flash-next-iq2_xs",
+          "messages": [
+            {
+              "role": "user",
+              "content": "Explain how to validate a deterministic table of station readings in detail."
+            }
+          ],
+          "max_tokens": 256,
+          "temperature": 0,
+          "seed": 42,
+          "top_k": 1,
+          "top_p": 1,
+          "min_p": 0,
+          "reasoning_effort": "none",
+          "stream": false
+        },
+        "local_prompt_tokens": 26,
+        "request_sha256": "89936fb04c799c5b1f7979228684ece86c8e05ca2d3ef8b69832754e8714355b"
+      },
+      {
+        "case": "short",
+        "trial": 1,
+        "target_tokens": 512,
+        "request": {
+          "model": "qwen3.8-flash-next-iq2_xs",
+          "messages": [
+            {
+              "role": "user",
+              "content": "Comparison case short trial 1. Analyze this synthetic dataset:\nRecord 00000: station 00 measured 0000 units; validate the reading before aggregation.\nRecord 00001: station 17 measured 0031 units; validate the reading before aggregation.\nRecord 00002: station 34 measured 0062 units; validate the reading before aggregation.\nRecord 00003: station 51 measured 0093 units; validate the reading before aggregation.\nRecord 00004: station 68 measured 0124 units; validate the reading before aggregation.\nRecord 00005: station 85 measured 0155 units; validate the reading before aggregation.\nRecord 00006: station 05 measured 0186 units; validate the reading before aggregation.\nRecord 00007: station 22 measured 0217 units; validate the reading before aggregation.\nRecord 00008: station 39 measured 0248 units; validate the reading before aggregation.\nRecord 00009: station 56 measured 0279 units; validate the reading before aggregation.\nRecord 00010: station 73 measured 0310 units; validate the reading before aggregation.\nRecord 00011: station 90 measured 0341 units; validate the reading before aggregation.\nRecord 00012: station 10 measured 0372 units; validate the reading before aggregation.\nRecord 00013: station 27 measured 0403 units; validate the reading before aggregation.\nRecord 00014: station 44 measured 0434 units; validate the reading before aggregation.\nRecord 00015: station 61 measured 0465 units; validate the reading before aggregation.\nRecord 00016: station 78 measured 0496 units; validate the reading before aggregation.\n\nExplain the data validation, grouping, outlier detection, and testing approach in detail. Write at least 600 words."
+            }
+          ],
+          "max_tokens": 256,
+          "temperature": 0,
+          "seed": 42,
+          "top_k": 1,
+          "top_p": 1,
+          "min_p": 0,
+          "reasoning_effort": "none",
+          "stream": false
+        },
+        "local_prompt_tokens": 511,
+        "request_sha256": "1c2df44aa07806bcdd1eec980cb1c3367fa90013c184d9fef054a5f775876fdc"
+      },
+      {
+        "case": "short",
+        "trial": 2,
+        "target_tokens": 512,
+        "request": {
+          "model": "qwen3.8-flash-next-iq2_xs",
+          "messages": [
+            {
+              "role": "user",
+              "content": "Comparison case short trial 2. Analyze this synthetic dataset:\nRecord 00000: station 00 measured 0000 units; validate the reading before aggregation.\nRecord 00001: station 17 measured 0031 units; validate the reading before aggregation.\nRecord 00002: station 34 measured 0062 units; validate the reading before aggregation.\nRecord 00003: station 51 measured 0093 units; validate the reading before aggregation.\nRecord 00004: station 68 measured 0124 units; validate the reading before aggregation.\nRecord 00005: station 85 measured 0155 units; validate the reading before aggregation.\nRecord 00006: station 05 measured 0186 units; validate the reading before aggregation.\nRecord 00007: station 22 measured 0217 units; validate the reading before aggregation.\nRecord 00008: station 39 measured 0248 units; validate the reading before aggregation.\nRecord 00009: station 56 measured 0279 units; validate the reading before aggregation.\nRecord 00010: station 73 measured 0310 units; validate the reading before aggregation.\nRecord 00011: station 90 measured 0341 units; validate the reading before aggregation.\nRecord 00012: station 10 measured 0372 units; validate the reading before aggregation.\nRecord 00013: station 27 measured 0403 units; validate the reading before aggregation.\nRecord 00014: station 44 measured 0434 units; validate the reading before aggregation.\nRecord 00015: station 61 measured 0465 units; validate the reading before aggregation.\nRecord 00016: station 78 measured 0496 units; validate the reading before aggregation.\n\nExplain the data validation, grouping, outlier detection, and testing approach in detail. Write at least 600 words."
+            }
+          ],
+          "max_tokens": 256,
+          "temperature": 0,
+          "seed": 42,
+          "top_k": 1,
+          "top_p": 1,
+          "min_p": 0,
+          "reasoning_effort": "none",
+          "stream": false
+        },
+        "local_prompt_tokens": 511,
+        "request_sha256": "a430e53b29eb047ba412928ac3593c36e55d774a47fa9611eb6be2c76fca5b70"
+      },
+      {
+        "case": "short",
+        "trial": 3,
+        "target_tokens": 512,
+        "request": {
+          "model": "qwen3.8-flash-next-iq2_xs",
+          "messages": [
+            {
+              "role": "user",
+              "content": "Comparison case short trial 3. Analyze this synthetic dataset:\nRecord 00000: station 00 measured 0000 units; validate the reading before aggregation.\nRecord 00001: station 17 measured 0031 units; validate the reading before aggregation.\nRecord 00002: station 34 measured 0062 units; validate the reading before aggregation.\nRecord 00003: station 51 measured 0093 units; validate the reading before aggregation.\nRecord 00004: station 68 measured 0124 units; validate the reading before aggregation.\nRecord 00005: station 85 measured 0155 units; validate the reading before aggregation.\nRecord 00006: station 05 measured 0186 units; validate the reading before aggregation.\nRecord 00007: station 22 measured 0217 units; validate the reading before aggregation.\nRecord 00008: station 39 measured 0248 units; validate the reading before aggregation.\nRecord 00009: station 56 measured 0279 units; validate the reading before aggregation.\nRecord 00010: station 73 measured 0310 units; validate the reading before aggregation.\nRecord 00011: station 90 measured 0341 units; validate the reading before aggregation.\nRecord 00012: station 10 measured 0372 units; validate the reading before aggregation.\nRecord 00013: station 27 measured 0403 units; validate the reading before aggregation.\nRecord 00014: station 44 measured 0434 units; validate the reading before aggregation.\nRecord 00015: station 61 measured 0465 units; validate the reading before aggregation.\nRecord 00016: station 78 measured 0496 units; validate the reading before aggregation.\n\nExplain the data validation, grouping, outlier detection, and testing approach in detail. Write at least 600 words."
+            }
+          ],
+          "max_tokens": 256,
+          "temperature": 0,
+          "seed": 42,
+          "top_k": 1,
+          "top_p": 1,
+          "min_p": 0,
+          "reasoning_effort": "none",
+          "stream": false
+        },
+        "local_prompt_tokens": 511,
+        "request_sha256": "53a2f2a37d2ddad26ef91f00996aaa0a0b793880ee7f69e2a766105cdfa5afa6"
+      },
+      {
+        "case": "long",
+        "trial": 1,
+        "target_tokens": 4096,
+        "request": {
+          "model": "qwen3.8-flash-next-iq2_xs",
+          "messages": [
+            {
+              "role": "user",
+              "content": "Comparison case long trial 1. Analyze this synthetic dataset:\nRecord 00000: station 00 measured 0000 units; validate the reading before aggregation.\nRecord 00001: station 17 measured 0031 units; validate the reading before aggregation.\nRecord 00002: station 34 measured 0062 units; validate the reading before aggregation.\nRecord 00003: station 51 measured 0093 units; validate the reading before aggregation.\nRecord 00004: station 68 measured 0124 units; validate the reading before aggregation.\nRecord 00005: station 85 measured 0155 units; validate the reading before aggregation.\nRecord 00006: station 05 measured 0186 units; validate the reading before aggregation.\nRecord 00007: station 22 measured 0217 units; validate the reading before aggregation.\nRecord 00008: station 39 measured 0248 units; validate the reading before aggregation.\nRecord 00009: station 56 measured 0279 units; validate the reading before aggregation.\nRecord 00010: station 73 measured 0310 units; validate the reading before aggregation.\nRecord 00011: station 90 measured 0341 units; validate the reading before aggregation.\nRecord 00012: station 10 measured 0372 units; validate the reading before aggregation.\nRecord 00013: station 27 measured 0403 units; validate the reading before aggregation.\nRecord 00014: station 44 measured 0434 units; validate the reading before aggregation.\nRecord 00015: station 61 measured 0465 units; validate the reading before aggregation.\nRecord 00016: station 78 measured 0496 units; validate the reading before aggregation.\nRecord 00017: station 95 measured 0527 units; validate the reading before aggregation.\nRecord 00018: station 15 measured 0558 units; validate the reading before aggregation.\nRecord 00019: station 32 measured 0589 units; validate the reading before aggregation.\nRecord 00020: station 49 measured 0620 units; validate the reading before aggregation.\nRecord 00021: station 66 measured 0651 units; validate the reading before aggregation.\nRecord 00022: station 83 measured 0682 units; validate the reading before aggregation.\nRecord 00023: station 03 measured 0713 units; validate the reading before aggregation.\nRecord 00024: station 20 measured 0744 units; validate the reading before aggregation.\nRecord 00025: station 37 measured 0775 units; validate the reading before aggregation.\nRecord 00026: station 54 measured 0806 units; validate the reading before aggregation.\nRecord 00027: station 71 measured 0837 units; validate the reading before aggregation.\nRecord 00028: station 88 measured 0868 units; validate the reading before aggregation.\nRecord 00029: station 08 measured 0899 units; validate the reading before aggregation.\nRecord 00030: station 25 measured 0930 units; validate the reading before aggregation.\nRecord 00031: station 42 measured 0961 units; validate the reading before aggregation.\nRecord 00032: station 59 measured 0992 units; validate the reading before aggregation.\nRecord 00033: station 76 measured 0014 units; validate the reading before aggregation.\nRecord 00034: station 93 measured 0045 units; validate the reading before aggregation.\nRecord 00035: station 13 measured 0076 units; validate the reading before aggregation.\nRecord 00036: station 30 measured 0107 units; validate the reading before aggregation.\nRecord 00037: station 47 measured 0138 units; validate the reading before aggregation.\nRecord 00038: station 64 measured 0169 units; validate the reading before aggregation.\nRecord 00039: station 81 measured 0200 units; validate the reading before aggregation.\nRecord 00040: station 01 measured 0231 units; validate the reading before aggregation.\nRecord 00041: station 18 measured 0262 units; validate the reading before aggregation.\nRecord 00042: station 35 measured 0293 units; validate the reading before aggregation.\nRecord 00043: station 52 measured 0324 units; validate the reading before aggregation.\nRecord 00044: station 69 measured 0355 units; validate the reading before aggregation.\nRecord 00045: station 86 measured 0386 units; validate the reading before aggregation.\nRecord 00046: station 06 measured 0417 units; validate the reading before aggregation.\nRecord 00047: station 23 measured 0448 units; validate the reading before aggregation.\nRecord 00048: station 40 measured 0479 units; validate the reading before aggregation.\nRecord 00049: station 57 measured 0510 units; validate the reading before aggregation.\nRecord 00050: station 74 measured 0541 units; validate the reading before aggregation.\nRecord 00051: station 91 measured 0572 units; validate the reading before aggregation.\nRecord 00052: station 11 measured 0603 units; validate the reading before aggregation.\nRecord 00053: station 28 measured 0634 units; validate the reading before aggregation.\nRecord 00054: station 45 measured 0665 units; validate the reading before aggregation.\nRecord 00055: station 62 measured 0696 units; validate the reading before aggregation.\nRecord 00056: station 79 measured 0727 units; validate the reading before aggregation.\nRecord 00057: station 96 measured 0758 units; validate the reading before aggregation.\nRecord 00058: station 16 measured 0789 units; validate the reading before aggregation.\nRecord 00059: station 33 measured 0820 units; validate the reading before aggregation.\nRecord 00060: station 50 measured 0851 units; validate the reading before aggregation.\nRecord 00061: station 67 measured 0882 units; validate the reading before aggregation.\nRecord 00062: station 84 measured 0913 units; validate the reading before aggregation.\nRecord 00063: station 04 measured 0944 units; validate the reading before aggregation.\nRecord 00064: station 21 measured 0975 units; validate the reading before aggregation.\nRecord 00065: station 38 measured 1006 units; validate the reading before aggregation.\nRecord 00066: station 55 measured 0028 units; validate the reading before aggregation.\nRecord 00067: station 72 measured 0059 units; validate the reading before aggregation.\nRecord 00068: station 89 measured 0090 units; validate the reading before aggregation.\nRecord 00069: station 09 measured 0121 units; validate the reading before aggregation.\nRecord 00070: station 26 measured 0152 units; validate the reading before aggregation.\nRecord 00071: station 43 measured 0183 units; validate the reading before aggregation.\nRecord 00072: station 60 measured 0214 units; validate the reading before aggregation.\nRecord 00073: station 77 measured 0245 units; validate the reading before aggregation.\nRecord 00074: station 94 measured 0276 units; validate the reading before aggregation.\nRecord 00075: station 14 measured 0307 units; validate the reading before aggregation.\nRecord 00076: station 31 measured 0338 units; validate the reading before aggregation.\nRecord 00077: station 48 measured 0369 units; validate the reading before aggregation.\nRecord 00078: station 65 measured 0400 units; validate the reading before aggregation.\nRecord 00079: station 82 measured 0431 units; validate the reading before aggregation.\nRecord 00080: station 02 measured 0462 units; validate the reading before aggregation.\nRecord 00081: station 19 measured 0493 units; validate the reading before aggregation.\nRecord 00082: station 36 measured 0524 units; validate the reading before aggregation.\nRecord 00083: station 53 measured 0555 units; validate the reading before aggregation.\nRecord 00084: station 70 measured 0586 units; validate the reading before aggregation.\nRecord 00085: station 87 measured 0617 units; validate the reading before aggregation.\nRecord 00086: station 07 measured 0648 units; validate the reading before aggregation.\nRecord 00087: station 24 measured 0679 units; validate the reading before aggregation.\nRecord 00088: station 41 measured 0710 units; validate the reading before aggregation.\nRecord 00089: station 58 measured 0741 units; validate the reading before aggregation.\nRecord 00090: station 75 measured 0772 units; validate the reading before aggregation.\nRecord 00091: station 92 measured 0803 units; validate the reading before aggregation.\nRecord 00092: station 12 measured 0834 units; validate the reading before aggregation.\nRecord 00093: station 29 measured 0865 units; validate the reading before aggregation.\nRecord 00094: station 46 measured 0896 units; validate the reading before aggregation.\nRecord 00095: station 63 measured 0927 units; validate the reading before aggregation.\nRecord 00096: station 80 measured 0958 units; validate the reading before aggregation.\nRecord 00097: station 00 measured 0989 units; validate the reading before aggregation.\nRecord 00098: station 17 measured 0011 units; validate the reading before aggregation.\nRecord 00099: station 34 measured 0042 units; validate the reading before aggregation.\nRecord 00100: station 51 measured 0073 units; validate the reading before aggregation.\nRecord 00101: station 68 measured 0104 units; validate the reading before aggregation.\nRecord 00102: station 85 measured 0135 units; validate the reading before aggregation.\nRecord 00103: station 05 measured 0166 units; validate the reading before aggregation.\nRecord 00104: station 22 measured 0197 units; validate the reading before aggregation.\nRecord 00105: station 39 measured 0228 units; validate the reading before aggregation.\nRecord 00106: station 56 measured 0259 units; validate the reading before aggregation.\nRecord 00107: station 73 measured 0290 units; validate the reading before aggregation.\nRecord 00108: station 90 measured 0321 units; validate the reading before aggregation.\nRecord 00109: station 10 measured 0352 units; validate the reading before aggregation.\nRecord 00110: station 27 measured 0383 units; validate the reading before aggregation.\nRecord 00111: station 44 measured 0414 units; validate the reading before aggregation.\nRecord 00112: station 61 measured 0445 units; validate the reading before aggregation.\nRecord 00113: station 78 measured 0476 units; validate the reading before aggregation.\nRecord 00114: station 95 measured 0507 units; validate the reading before aggregation.\nRecord 00115: station 15 measured 0538 units; validate the reading before aggregation.\nRecord 00116: station 32 measured 0569 units; validate the reading before aggregation.\nRecord 00117: station 49 measured 0600 units; validate the reading before aggregation.\nRecord 00118: station 66 measured 0631 units; validate the reading before aggregation.\nRecord 00119: station 83 measured 0662 units; validate the reading before aggregation.\nRecord 00120: station 03 measured 0693 units; validate the reading before aggregation.\nRecord 00121: station 20 measured 0724 units; validate the reading before aggregation.\nRecord 00122: station 37 measured 0755 units; validate the reading before aggregation.\nRecord 00123: station 54 measured 0786 units; validate the reading before aggregation.\nRecord 00124: station 71 measured 0817 units; validate the reading before aggregation.\nRecord 00125: station 88 measured 0848 units; validate the reading before aggregation.\nRecord 00126: station 08 measured 0879 units; validate the reading before aggregation.\nRecord 00127: station 25 measured 0910 units; validate the reading before aggregation.\nRecord 00128: station 42 measured 0941 units; validate the reading before aggregation.\nRecord 00129: station 59 measured 0972 units; validate the reading before aggregation.\nRecord 00130: station 76 measured 1003 units; validate the reading before aggregation.\nRecord 00131: station 93 measured 0025 units; validate the reading before aggregation.\nRecord 00132: station 13 measured 0056 units; validate the reading before aggregation.\nRecord 00133: station 30 measured 0087 units; validate the reading before aggregation.\nRecord 00134: station 47 measured 0118 units; validate the reading before aggregation.\nRecord 00135: station 64 measured 0149 units; validate the reading before aggregation.\nRecord 00136: station 81 measured 0180 units; validate the reading before aggregation.\nRecord 00137: station 01 measured 0211 units; validate the reading before aggregation.\nRecord 00138: station 18 measured 0242 units; validate the reading before aggregation.\nRecord 00139: station 35 measured 0273 units; validate the reading before aggregation.\nRecord 00140: station 52 measured 0304 units; validate the reading before aggregation.\nRecord 00141: station 69 measured 0335 units; validate the reading before aggregation.\nRecord 00142: station 86 measured 0366 units; validate the reading before aggregation.\nRecord 00143: station 06 measured 0397 units; validate the reading before aggregation.\nRecord 00144: station 23 measured 0428 units; validate the reading before aggregation.\nRecord 00145: station 40 measured 0459 units; validate the reading before aggregation.\nRecord 00146: station 57 measured 0490 units; validate the reading before aggregation.\nRecord 00147: station 74 measured 0521 units; validate the reading before aggregation.\nRecord 00148: station 91 measured 0552 units; validate the reading before aggregation.\nRecord 00149: station 11 measured 0583 units; \nExplain the data validation, grouping, outlier detection, and testing approach in detail. Write at least 600 words."
+            }
+          ],
+          "max_tokens": 256,
+          "temperature": 0,
+          "seed": 42,
+          "top_k": 1,
+          "top_p": 1,
+          "min_p": 0,
+          "reasoning_effort": "none",
+          "stream": false
+        },
+        "local_prompt_tokens": 4096,
+        "request_sha256": "d5a6c27c4002cf746ae4b892335f2d63279bb4f08ae17976fdbbbcc67a1ac1b4"
+      },
+      {
+        "case": "long",
+        "trial": 2,
+        "target_tokens": 4096,
+        "request": {
+          "model": "qwen3.8-flash-next-iq2_xs",
+          "messages": [
+            {
+              "role": "user",
+              "content": "Comparison case long trial 2. Analyze this synthetic dataset:\nRecord 00000: station 00 measured 0000 units; validate the reading before aggregation.\nRecord 00001: station 17 measured 0031 units; validate the reading before aggregation.\nRecord 00002: station 34 measured 0062 units; validate the reading before aggregation.\nRecord 00003: station 51 measured 0093 units; validate the reading before aggregation.\nRecord 00004: station 68 measured 0124 units; validate the reading before aggregation.\nRecord 00005: station 85 measured 0155 units; validate the reading before aggregation.\nRecord 00006: station 05 measured 0186 units; validate the reading before aggregation.\nRecord 00007: station 22 measured 0217 units; validate the reading before aggregation.\nRecord 00008: station 39 measured 0248 units; validate the reading before aggregation.\nRecord 00009: station 56 measured 0279 units; validate the reading before aggregation.\nRecord 00010: station 73 measured 0310 units; validate the reading before aggregation.\nRecord 00011: station 90 measured 0341 units; validate the reading before aggregation.\nRecord 00012: station 10 measured 0372 units; validate the reading before aggregation.\nRecord 00013: station 27 measured 0403 units; validate the reading before aggregation.\nRecord 00014: station 44 measured 0434 units; validate the reading before aggregation.\nRecord 00015: station 61 measured 0465 units; validate the reading before aggregation.\nRecord 00016: station 78 measured 0496 units; validate the reading before aggregation.\nRecord 00017: station 95 measured 0527 units; validate the reading before aggregation.\nRecord 00018: station 15 measured 0558 units; validate the reading before aggregation.\nRecord 00019: station 32 measured 0589 units; validate the reading before aggregation.\nRecord 00020: station 49 measured 0620 units; validate the reading before aggregation.\nRecord 00021: station 66 measured 0651 units; validate the reading before aggregation.\nRecord 00022: station 83 measured 0682 units; validate the reading before aggregation.\nRecord 00023: station 03 measured 0713 units; validate the reading before aggregation.\nRecord 00024: station 20 measured 0744 units; validate the reading before aggregation.\nRecord 00025: station 37 measured 0775 units; validate the reading before aggregation.\nRecord 00026: station 54 measured 0806 units; validate the reading before aggregation.\nRecord 00027: station 71 measured 0837 units; validate the reading before aggregation.\nRecord 00028: station 88 measured 0868 units; validate the reading before aggregation.\nRecord 00029: station 08 measured 0899 units; validate the reading before aggregation.\nRecord 00030: station 25 measured 0930 units; validate the reading before aggregation.\nRecord 00031: station 42 measured 0961 units; validate the reading before aggregation.\nRecord 00032: station 59 measured 0992 units; validate the reading before aggregation.\nRecord 00033: station 76 measured 0014 units; validate the reading before aggregation.\nRecord 00034: station 93 measured 0045 units; validate the reading before aggregation.\nRecord 00035: station 13 measured 0076 units; validate the reading before aggregation.\nRecord 00036: station 30 measured 0107 units; validate the reading before aggregation.\nRecord 00037: station 47 measured 0138 units; validate the reading before aggregation.\nRecord 00038: station 64 measured 0169 units; validate the reading before aggregation.\nRecord 00039: station 81 measured 0200 units; validate the reading before aggregation.\nRecord 00040: station 01 measured 0231 units; validate the reading before aggregation.\nRecord 00041: station 18 measured 0262 units; validate the reading before aggregation.\nRecord 00042: station 35 measured 0293 units; validate the reading before aggregation.\nRecord 00043: station 52 measured 0324 units; validate the reading before aggregation.\nRecord 00044: station 69 measured 0355 units; validate the reading before aggregation.\nRecord 00045: station 86 measured 0386 units; validate the reading before aggregation.\nRecord 00046: station 06 measured 0417 units; validate the reading before aggregation.\nRecord 00047: station 23 measured 0448 units; validate the reading before aggregation.\nRecord 00048: station 40 measured 0479 units; validate the reading before aggregation.\nRecord 00049: station 57 measured 0510 units; validate the reading before aggregation.\nRecord 00050: station 74 measured 0541 units; validate the reading before aggregation.\nRecord 00051: station 91 measured 0572 units; validate the reading before aggregation.\nRecord 00052: station 11 measured 0603 units; validate the reading before aggregation.\nRecord 00053: station 28 measured 0634 units; validate the reading before aggregation.\nRecord 00054: station 45 measured 0665 units; validate the reading before aggregation.\nRecord 00055: station 62 measured 0696 units; validate the reading before aggregation.\nRecord 00056: station 79 measured 0727 units; validate the reading before aggregation.\nRecord 00057: station 96 measured 0758 units; validate the reading before aggregation.\nRecord 00058: station 16 measured 0789 units; validate the reading before aggregation.\nRecord 00059: station 33 measured 0820 units; validate the reading before aggregation.\nRecord 00060: station 50 measured 0851 units; validate the reading before aggregation.\nRecord 00061: station 67 measured 0882 units; validate the reading before aggregation.\nRecord 00062: station 84 measured 0913 units; validate the reading before aggregation.\nRecord 00063: station 04 measured 0944 units; validate the reading before aggregation.\nRecord 00064: station 21 measured 0975 units; validate the reading before aggregation.\nRecord 00065: station 38 measured 1006 units; validate the reading before aggregation.\nRecord 00066: station 55 measured 0028 units; validate the reading before aggregation.\nRecord 00067: station 72 measured 0059 units; validate the reading before aggregation.\nRecord 00068: station 89 measured 0090 units; validate the reading before aggregation.\nRecord 00069: station 09 measured 0121 units; validate the reading before aggregation.\nRecord 00070: station 26 measured 0152 units; validate the reading before aggregation.\nRecord 00071: station 43 measured 0183 units; validate the reading before aggregation.\nRecord 00072: station 60 measured 0214 units; validate the reading before aggregation.\nRecord 00073: station 77 measured 0245 units; validate the reading before aggregation.\nRecord 00074: station 94 measured 0276 units; validate the reading before aggregation.\nRecord 00075: station 14 measured 0307 units; validate the reading before aggregation.\nRecord 00076: station 31 measured 0338 units; validate the reading before aggregation.\nRecord 00077: station 48 measured 0369 units; validate the reading before aggregation.\nRecord 00078: station 65 measured 0400 units; validate the reading before aggregation.\nRecord 00079: station 82 measured 0431 units; validate the reading before aggregation.\nRecord 00080: station 02 measured 0462 units; validate the reading before aggregation.\nRecord 00081: station 19 measured 0493 units; validate the reading before aggregation.\nRecord 00082: station 36 measured 0524 units; validate the reading before aggregation.\nRecord 00083: station 53 measured 0555 units; validate the reading before aggregation.\nRecord 00084: station 70 measured 0586 units; validate the reading before aggregation.\nRecord 00085: station 87 measured 0617 units; validate the reading before aggregation.\nRecord 00086: station 07 measured 0648 units; validate the reading before aggregation.\nRecord 00087: station 24 measured 0679 units; validate the reading before aggregation.\nRecord 00088: station 41 measured 0710 units; validate the reading before aggregation.\nRecord 00089: station 58 measured 0741 units; validate the reading before aggregation.\nRecord 00090: station 75 measured 0772 units; validate the reading before aggregation.\nRecord 00091: station 92 measured 0803 units; validate the reading before aggregation.\nRecord 00092: station 12 measured 0834 units; validate the reading before aggregation.\nRecord 00093: station 29 measured 0865 units; validate the reading before aggregation.\nRecord 00094: station 46 measured 0896 units; validate the reading before aggregation.\nRecord 00095: station 63 measured 0927 units; validate the reading before aggregation.\nRecord 00096: station 80 measured 0958 units; validate the reading before aggregation.\nRecord 00097: station 00 measured 0989 units; validate the reading before aggregation.\nRecord 00098: station 17 measured 0011 units; validate the reading before aggregation.\nRecord 00099: station 34 measured 0042 units; validate the reading before aggregation.\nRecord 00100: station 51 measured 0073 units; validate the reading before aggregation.\nRecord 00101: station 68 measured 0104 units; validate the reading before aggregation.\nRecord 00102: station 85 measured 0135 units; validate the reading before aggregation.\nRecord 00103: station 05 measured 0166 units; validate the reading before aggregation.\nRecord 00104: station 22 measured 0197 units; validate the reading before aggregation.\nRecord 00105: station 39 measured 0228 units; validate the reading before aggregation.\nRecord 00106: station 56 measured 0259 units; validate the reading before aggregation.\nRecord 00107: station 73 measured 0290 units; validate the reading before aggregation.\nRecord 00108: station 90 measured 0321 units; validate the reading before aggregation.\nRecord 00109: station 10 measured 0352 units; validate the reading before aggregation.\nRecord 00110: station 27 measured 0383 units; validate the reading before aggregation.\nRecord 00111: station 44 measured 0414 units; validate the reading before aggregation.\nRecord 00112: station 61 measured 0445 units; validate the reading before aggregation.\nRecord 00113: station 78 measured 0476 units; validate the reading before aggregation.\nRecord 00114: station 95 measured 0507 units; validate the reading before aggregation.\nRecord 00115: station 15 measured 0538 units; validate the reading before aggregation.\nRecord 00116: station 32 measured 0569 units; validate the reading before aggregation.\nRecord 00117: station 49 measured 0600 units; validate the reading before aggregation.\nRecord 00118: station 66 measured 0631 units; validate the reading before aggregation.\nRecord 00119: station 83 measured 0662 units; validate the reading before aggregation.\nRecord 00120: station 03 measured 0693 units; validate the reading before aggregation.\nRecord 00121: station 20 measured 0724 units; validate the reading before aggregation.\nRecord 00122: station 37 measured 0755 units; validate the reading before aggregation.\nRecord 00123: station 54 measured 0786 units; validate the reading before aggregation.\nRecord 00124: station 71 measured 0817 units; validate the reading before aggregation.\nRecord 00125: station 88 measured 0848 units; validate the reading before aggregation.\nRecord 00126: station 08 measured 0879 units; validate the reading before aggregation.\nRecord 00127: station 25 measured 0910 units; validate the reading before aggregation.\nRecord 00128: station 42 measured 0941 units; validate the reading before aggregation.\nRecord 00129: station 59 measured 0972 units; validate the reading before aggregation.\nRecord 00130: station 76 measured 1003 units; validate the reading before aggregation.\nRecord 00131: station 93 measured 0025 units; validate the reading before aggregation.\nRecord 00132: station 13 measured 0056 units; validate the reading before aggregation.\nRecord 00133: station 30 measured 0087 units; validate the reading before aggregation.\nRecord 00134: station 47 measured 0118 units; validate the reading before aggregation.\nRecord 00135: station 64 measured 0149 units; validate the reading before aggregation.\nRecord 00136: station 81 measured 0180 units; validate the reading before aggregation.\nRecord 00137: station 01 measured 0211 units; validate the reading before aggregation.\nRecord 00138: station 18 measured 0242 units; validate the reading before aggregation.\nRecord 00139: station 35 measured 0273 units; validate the reading before aggregation.\nRecord 00140: station 52 measured 0304 units; validate the reading before aggregation.\nRecord 00141: station 69 measured 0335 units; validate the reading before aggregation.\nRecord 00142: station 86 measured 0366 units; validate the reading before aggregation.\nRecord 00143: station 06 measured 0397 units; validate the reading before aggregation.\nRecord 00144: station 23 measured 0428 units; validate the reading before aggregation.\nRecord 00145: station 40 measured 0459 units; validate the reading before aggregation.\nRecord 00146: station 57 measured 0490 units; validate the reading before aggregation.\nRecord 00147: station 74 measured 0521 units; validate the reading before aggregation.\nRecord 00148: station 91 measured 0552 units; validate the reading before aggregation.\nRecord 00149: station 11 measured 0583 units; \nExplain the data validation, grouping, outlier detection, and testing approach in detail. Write at least 600 words."
+            }
+          ],
+          "max_tokens": 256,
+          "temperature": 0,
+          "seed": 42,
+          "top_k": 1,
+          "top_p": 1,
+          "min_p": 0,
+          "reasoning_effort": "none",
+          "stream": false
+        },
+        "local_prompt_tokens": 4096,
+        "request_sha256": "3ff54d76fdf8606574fcba27f57379f576eabd059efc002f81d864ec78db8ae5"
+      },
+      {
+        "case": "long",
+        "trial": 3,
+        "target_tokens": 4096,
+        "request": {
+          "model": "qwen3.8-flash-next-iq2_xs",
+          "messages": [
+            {
+              "role": "user",
+              "content": "Comparison case long trial 3. Analyze this synthetic dataset:\nRecord 00000: station 00 measured 0000 units; validate the reading before aggregation.\nRecord 00001: station 17 measured 0031 units; validate the reading before aggregation.\nRecord 00002: station 34 measured 0062 units; validate the reading before aggregation.\nRecord 00003: station 51 measured 0093 units; validate the reading before aggregation.\nRecord 00004: station 68 measured 0124 units; validate the reading before aggregation.\nRecord 00005: station 85 measured 0155 units; validate the reading before aggregation.\nRecord 00006: station 05 measured 0186 units; validate the reading before aggregation.\nRecord 00007: station 22 measured 0217 units; validate the reading before aggregation.\nRecord 00008: station 39 measured 0248 units; validate the reading before aggregation.\nRecord 00009: station 56 measured 0279 units; validate the reading before aggregation.\nRecord 00010: station 73 measured 0310 units; validate the reading before aggregation.\nRecord 00011: station 90 measured 0341 units; validate the reading before aggregation.\nRecord 00012: station 10 measured 0372 units; validate the reading before aggregation.\nRecord 00013: station 27 measured 0403 units; validate the reading before aggregation.\nRecord 00014: station 44 measured 0434 units; validate the reading before aggregation.\nRecord 00015: station 61 measured 0465 units; validate the reading before aggregation.\nRecord 00016: station 78 measured 0496 units; validate the reading before aggregation.\nRecord 00017: station 95 measured 0527 units; validate the reading before aggregation.\nRecord 00018: station 15 measured 0558 units; validate the reading before aggregation.\nRecord 00019: station 32 measured 0589 units; validate the reading before aggregation.\nRecord 00020: station 49 measured 0620 units; validate the reading before aggregation.\nRecord 00021: station 66 measured 0651 units; validate the reading before aggregation.\nRecord 00022: station 83 measured 0682 units; validate the reading before aggregation.\nRecord 00023: station 03 measured 0713 units; validate the reading before aggregation.\nRecord 00024: station 20 measured 0744 units; validate the reading before aggregation.\nRecord 00025: station 37 measured 0775 units; validate the reading before aggregation.\nRecord 00026: station 54 measured 0806 units; validate the reading before aggregation.\nRecord 00027: station 71 measured 0837 units; validate the reading before aggregation.\nRecord 00028: station 88 measured 0868 units; validate the reading before aggregation.\nRecord 00029: station 08 measured 0899 units; validate the reading before aggregation.\nRecord 00030: station 25 measured 0930 units; validate the reading before aggregation.\nRecord 00031: station 42 measured 0961 units; validate the reading before aggregation.\nRecord 00032: station 59 measured 0992 units; validate the reading before aggregation.\nRecord 00033: station 76 measured 0014 units; validate the reading before aggregation.\nRecord 00034: station 93 measured 0045 units; validate the reading before aggregation.\nRecord 00035: station 13 measured 0076 units; validate the reading before aggregation.\nRecord 00036: station 30 measured 0107 units; validate the reading before aggregation.\nRecord 00037: station 47 measured 0138 units; validate the reading before aggregation.\nRecord 00038: station 64 measured 0169 units; validate the reading before aggregation.\nRecord 00039: station 81 measured 0200 units; validate the reading before aggregation.\nRecord 00040: station 01 measured 0231 units; validate the reading before aggregation.\nRecord 00041: station 18 measured 0262 units; validate the reading before aggregation.\nRecord 00042: station 35 measured 0293 units; validate the reading before aggregation.\nRecord 00043: station 52 measured 0324 units; validate the reading before aggregation.\nRecord 00044: station 69 measured 0355 units; validate the reading before aggregation.\nRecord 00045: station 86 measured 0386 units; validate the reading before aggregation.\nRecord 00046: station 06 measured 0417 units; validate the reading before aggregation.\nRecord 00047: station 23 measured 0448 units; validate the reading before aggregation.\nRecord 00048: station 40 measured 0479 units; validate the reading before aggregation.\nRecord 00049: station 57 measured 0510 units; validate the reading before aggregation.\nRecord 00050: station 74 measured 0541 units; validate the reading before aggregation.\nRecord 00051: station 91 measured 0572 units; validate the reading before aggregation.\nRecord 00052: station 11 measured 0603 units; validate the reading before aggregation.\nRecord 00053: station 28 measured 0634 units; validate the reading before aggregation.\nRecord 00054: station 45 measured 0665 units; validate the reading before aggregation.\nRecord 00055: station 62 measured 0696 units; validate the reading before aggregation.\nRecord 00056: station 79 measured 0727 units; validate the reading before aggregation.\nRecord 00057: station 96 measured 0758 units; validate the reading before aggregation.\nRecord 00058: station 16 measured 0789 units; validate the reading before aggregation.\nRecord 00059: station 33 measured 0820 units; validate the reading before aggregation.\nRecord 00060: station 50 measured 0851 units; validate the reading before aggregation.\nRecord 00061: station 67 measured 0882 units; validate the reading before aggregation.\nRecord 00062: station 84 measured 0913 units; validate the reading before aggregation.\nRecord 00063: station 04 measured 0944 units; validate the reading before aggregation.\nRecord 00064: station 21 measured 0975 units; validate the reading before aggregation.\nRecord 00065: station 38 measured 1006 units; validate the reading before aggregation.\nRecord 00066: station 55 measured 0028 units; validate the reading before aggregation.\nRecord 00067: station 72 measured 0059 units; validate the reading before aggregation.\nRecord 00068: station 89 measured 0090 units; validate the reading before aggregation.\nRecord 00069: station 09 measured 0121 units; validate the reading before aggregation.\nRecord 00070: station 26 measured 0152 units; validate the reading before aggregation.\nRecord 00071: station 43 measured 0183 units; validate the reading before aggregation.\nRecord 00072: station 60 measured 0214 units; validate the reading before aggregation.\nRecord 00073: station 77 measured 0245 units; validate the reading before aggregation.\nRecord 00074: station 94 measured 0276 units; validate the reading before aggregation.\nRecord 00075: station 14 measured 0307 units; validate the reading before aggregation.\nRecord 00076: station 31 measured 0338 units; validate the reading before aggregation.\nRecord 00077: station 48 measured 0369 units; validate the reading before aggregation.\nRecord 00078: station 65 measured 0400 units; validate the reading before aggregation.\nRecord 00079: station 82 measured 0431 units; validate the reading before aggregation.\nRecord 00080: station 02 measured 0462 units; validate the reading before aggregation.\nRecord 00081: station 19 measured 0493 units; validate the reading before aggregation.\nRecord 00082: station 36 measured 0524 units; validate the reading before aggregation.\nRecord 00083: station 53 measured 0555 units; validate the reading before aggregation.\nRecord 00084: station 70 measured 0586 units; validate the reading before aggregation.\nRecord 00085: station 87 measured 0617 units; validate the reading before aggregation.\nRecord 00086: station 07 measured 0648 units; validate the reading before aggregation.\nRecord 00087: station 24 measured 0679 units; validate the reading before aggregation.\nRecord 00088: station 41 measured 0710 units; validate the reading before aggregation.\nRecord 00089: station 58 measured 0741 units; validate the reading before aggregation.\nRecord 00090: station 75 measured 0772 units; validate the reading before aggregation.\nRecord 00091: station 92 measured 0803 units; validate the reading before aggregation.\nRecord 00092: station 12 measured 0834 units; validate the reading before aggregation.\nRecord 00093: station 29 measured 0865 units; validate the reading before aggregation.\nRecord 00094: station 46 measured 0896 units; validate the reading before aggregation.\nRecord 00095: station 63 measured 0927 units; validate the reading before aggregation.\nRecord 00096: station 80 measured 0958 units; validate the reading before aggregation.\nRecord 00097: station 00 measured 0989 units; validate the reading before aggregation.\nRecord 00098: station 17 measured 0011 units; validate the reading before aggregation.\nRecord 00099: station 34 measured 0042 units; validate the reading before aggregation.\nRecord 00100: station 51 measured 0073 units; validate the reading before aggregation.\nRecord 00101: station 68 measured 0104 units; validate the reading before aggregation.\nRecord 00102: station 85 measured 0135 units; validate the reading before aggregation.\nRecord 00103: station 05 measured 0166 units; validate the reading before aggregation.\nRecord 00104: station 22 measured 0197 units; validate the reading before aggregation.\nRecord 00105: station 39 measured 0228 units; validate the reading before aggregation.\nRecord 00106: station 56 measured 0259 units; validate the reading before aggregation.\nRecord 00107: station 73 measured 0290 units; validate the reading before aggregation.\nRecord 00108: station 90 measured 0321 units; validate the reading before aggregation.\nRecord 00109: station 10 measured 0352 units; validate the reading before aggregation.\nRecord 00110: station 27 measured 0383 units; validate the reading before aggregation.\nRecord 00111: station 44 measured 0414 units; validate the reading before aggregation.\nRecord 00112: station 61 measured 0445 units; validate the reading before aggregation.\nRecord 00113: station 78 measured 0476 units; validate the reading before aggregation.\nRecord 00114: station 95 measured 0507 units; validate the reading before aggregation.\nRecord 00115: station 15 measured 0538 units; validate the reading before aggregation.\nRecord 00116: station 32 measured 0569 units; validate the reading before aggregation.\nRecord 00117: station 49 measured 0600 units; validate the reading before aggregation.\nRecord 00118: station 66 measured 0631 units; validate the reading before aggregation.\nRecord 00119: station 83 measured 0662 units; validate the reading before aggregation.\nRecord 00120: station 03 measured 0693 units; validate the reading before aggregation.\nRecord 00121: station 20 measured 0724 units; validate the reading before aggregation.\nRecord 00122: station 37 measured 0755 units; validate the reading before aggregation.\nRecord 00123: station 54 measured 0786 units; validate the reading before aggregation.\nRecord 00124: station 71 measured 0817 units; validate the reading before aggregation.\nRecord 00125: station 88 measured 0848 units; validate the reading before aggregation.\nRecord 00126: station 08 measured 0879 units; validate the reading before aggregation.\nRecord 00127: station 25 measured 0910 units; validate the reading before aggregation.\nRecord 00128: station 42 measured 0941 units; validate the reading before aggregation.\nRecord 00129: station 59 measured 0972 units; validate the reading before aggregation.\nRecord 00130: station 76 measured 1003 units; validate the reading before aggregation.\nRecord 00131: station 93 measured 0025 units; validate the reading before aggregation.\nRecord 00132: station 13 measured 0056 units; validate the reading before aggregation.\nRecord 00133: station 30 measured 0087 units; validate the reading before aggregation.\nRecord 00134: station 47 measured 0118 units; validate the reading before aggregation.\nRecord 00135: station 64 measured 0149 units; validate the reading before aggregation.\nRecord 00136: station 81 measured 0180 units; validate the reading before aggregation.\nRecord 00137: station 01 measured 0211 units; validate the reading before aggregation.\nRecord 00138: station 18 measured 0242 units; validate the reading before aggregation.\nRecord 00139: station 35 measured 0273 units; validate the reading before aggregation.\nRecord 00140: station 52 measured 0304 units; validate the reading before aggregation.\nRecord 00141: station 69 measured 0335 units; validate the reading before aggregation.\nRecord 00142: station 86 measured 0366 units; validate the reading before aggregation.\nRecord 00143: station 06 measured 0397 units; validate the reading before aggregation.\nRecord 00144: station 23 measured 0428 units; validate the reading before aggregation.\nRecord 00145: station 40 measured 0459 units; validate the reading before aggregation.\nRecord 00146: station 57 measured 0490 units; validate the reading before aggregation.\nRecord 00147: station 74 measured 0521 units; validate the reading before aggregation.\nRecord 00148: station 91 measured 0552 units; validate the reading before aggregation.\nRecord 00149: station 11 measured 0583 units; \nExplain the data validation, grouping, outlier detection, and testing approach in detail. Write at least 600 words."
+            }
+          ],
+          "max_tokens": 256,
+          "temperature": 0,
+          "seed": 42,
+          "top_k": 1,
+          "top_p": 1,
+          "min_p": 0,
+          "reasoning_effort": "none",
+          "stream": false
+        },
+        "local_prompt_tokens": 4096,
+        "request_sha256": "044c8b6834d45e043a3bfea6c4ee85f1154f764f39059e12e96fcdbf7ff815fd"
+      }
+    ]
+  },
+  "records": [
+    {
+      "case": "warmup",
+      "trial": 0,
+      "request_sha256": "89936fb04c799c5b1f7979228684ece86c8e05ca2d3ef8b69832754e8714355b",
+      "fp64_on": {
+        "prompt_tokens": 26.0,
+        "reused": 0.0,
+        "fresh": 26.0,
+        "prefill_ms": 1022.0,
+        "prefill_tps": 25.5,
+        "generated": 256.0,
+        "decode_ms": 15311.0,
+        "decode_tps": 16.7
+      },
+      "fp64_off": {
+        "prompt_tokens": 26.0,
+        "reused": 0.0,
+        "fresh": 26.0,
+        "prefill_ms": 1020.0,
+        "prefill_tps": 25.5,
+        "generated": 256.0,
+        "decode_ms": 15328.0,
+        "decode_tps": 16.7
+      },
+      "fp64_on_text_sha256": "193f0d556f09b2d3de0ece8be0e246571892cc55ac1ed5a08e207a7cc3b4d5bf",
+      "fp64_off_text_sha256": "193f0d556f09b2d3de0ece8be0e246571892cc55ac1ed5a08e207a7cc3b4d5bf",
+      "response_text": "Validating a deterministic table of station readings requires a rigorous, multi-layered approach to ensure data integrity, accuracy, and consistency. Since the table is **deterministic** (meaning the same input always produces the same output, and there is no randomness or stochastic noise), validation focuses on **logical consistency, physical plausibility, and structural integrity**.\n\nBelow is a detailed, step-by-step methodology for validating such a table.\n\n---\n\n## 1. Structural & Schema Validation\n\nBefore checking the data values, ensure the table structure itself is correct.\n\n### 1.1. Column Definition Check\n- **Required Columns**: Ensure all mandatory fields exist (e.g., `station_id`, `timestamp`, `reading_value`, `unit`, `quality_flag`).\n- **Data Types**: Verify that each column adheres to its defined data type (e.g., `timestamp` is ISO 8601, `reading_value` is numeric, `station_id` is string/UUID).\n- **Nullability**: Define which fields can be null. For deterministic readings, `reading_value` should typically **not** be null unless explicitly marked as \"missing\" with a valid reason.\n\n### 1.2. Primary Key & Uniqu",
+      "completion_tokens": 256,
+      "both_http_status": 200
+    },
+    {
+      "case": "short",
+      "trial": 1,
+      "request_sha256": "1c2df44aa07806bcdd1eec980cb1c3367fa90013c184d9fef054a5f775876fdc",
+      "fp64_on": {
+        "prompt_tokens": 511.0,
+        "reused": 0.0,
+        "fresh": 511.0,
+        "prefill_ms": 4995.0,
+        "prefill_tps": 102.3,
+        "generated": 256.0,
+        "decode_ms": 14372.0,
+        "decode_tps": 17.8
+      },
+      "fp64_off": {
+        "prompt_tokens": 511.0,
+        "reused": 0.0,
+        "fresh": 511.0,
+        "prefill_ms": 5068.0,
+        "prefill_tps": 100.8,
+        "generated": 256.0,
+        "decode_ms": 14348.0,
+        "decode_tps": 17.8
+      },
+      "fp64_on_text_sha256": "04d9ca3c5624560a6db7d8b377e62c2ec8577de41702600cfb9b27c6c209f467",
+      "fp64_off_text_sha256": "04d9ca3c5624560a6db7d8b377e62c2ec8577de41702600cfb9b27c6c209f467",
+      "response_text": "# Data Validation, Grouping, Outlier Detection, and Testing Approach for Synthetic Dataset Analysis\n\n## 1. Data Validation\n\nThe first critical step in analyzing this synthetic dataset is rigorous data validation. Each record contains two primary fields: a station identifier and a measured value in units. Validation ensures that the data is clean, consistent, and suitable for downstream aggregation and analysis.\n\n### Field-Level Validation\n- **Station Identifier Validation**: Each station ID must conform to a predefined format (e.g., two-digit numeric codes from 00 to 99). Records such as \"station 00,\" \"station 17,\" etc., are checked for leading zeros and numeric integrity. Any non-numeric or out-of-range station IDs would be flagged as invalid.\n- **Measurement Value Validation**: The measured values (e.g., 0000, 0031, 0062) must be non-negative integers. Leading zeros are preserved for formatting consistency but parsed as numeric values for computation. Negative values, non-integer entries, or null values would trigger validation errors.\n\n### Cross-Field Consistency Checks\n- **Uniqueness of Records**: Each record ID (00000â€“00016",
+      "completion_tokens": 256,
+      "both_http_status": 200
+    },
+    {
+      "case": "short",
+      "trial": 2,
+      "request_sha256": "a430e53b29eb047ba412928ac3593c36e55d774a47fa9611eb6be2c76fca5b70",
+      "fp64_on": {
+        "prompt_tokens": 511.0,
+        "reused": 0.0,
+        "fresh": 511.0,
+        "prefill_ms": 4386.0,
+        "prefill_tps": 116.5,
+        "generated": 256.0,
+        "decode_ms": 14361.0,
+        "decode_tps": 17.8
+      },
+      "fp64_off": {
+        "prompt_tokens": 511.0,
+        "reused": 0.0,
+        "fresh": 511.0,
+        "prefill_ms": 4387.0,
+        "prefill_tps": 116.5,
+        "generated": 256.0,
+        "decode_ms": 14383.0,
+        "decode_tps": 17.8
+      },
+      "fp64_on_text_sha256": "2cc4e16c918bfcbc262d33c752e715409950cfdb97dec3b1780f90e8e55ffd07",
+      "fp64_off_text_sha256": "2cc4e16c918bfcbc262d33c752e715409950cfdb97dec3b1780f90e8e55ffd07",
+      "response_text": "# Data Validation, Grouping, Outlier Detection, and Testing Approach for Synthetic Dataset Analysis\n\n## 1. Data Validation\n\nThe first critical step in analyzing this synthetic dataset is rigorous data validation. Each record contains two primary fields: a station identifier and a measured value in units. Validation ensures that the data is clean, consistent, and suitable for downstream aggregation and analysis.\n\n### Field-Level Validation\n- **Station Identifier Validation**: Each station ID must conform to a predefined format (e.g., two-digit numeric codes from 00 to 99). In this dataset, all station IDs are valid two-digit numbers. Any non-numeric or out-of-range station IDs would be flagged as invalid.\n- **Measurement Value Validation**: Each measurement must be a non-negative integer within a plausible range. Here, all values are four-digit integers (padded with leading zeros), ranging from 0000 to 0496. Values outside expected bounds (e.g., negative numbers or values exceeding sensor capacity) would be rejected.\n\n### Cross-Field Consistency Checks\n- **Uniqueness of Records**: Each record must have a unique record ID (00000â€“00016). Duplicate record IDs would indicate data corruption",
+      "completion_tokens": 256,
+      "both_http_status": 200
+    },
+    {
+      "case": "short",
+      "trial": 3,
+      "request_sha256": "53a2f2a37d2ddad26ef91f00996aaa0a0b793880ee7f69e2a766105cdfa5afa6",
+      "fp64_on": {
+        "prompt_tokens": 511.0,
+        "reused": 0.0,
+        "fresh": 511.0,
+        "prefill_ms": 4384.0,
+        "prefill_tps": 116.6,
+        "generated": 256.0,
+        "decode_ms": 14676.0,
+        "decode_tps": 17.4
+      },
+      "fp64_off": {
+        "prompt_tokens": 511.0,
+        "reused": 0.0,
+        "fresh": 511.0,
+        "prefill_ms": 4384.0,
+        "prefill_tps": 116.6,
+        "generated": 256.0,
+        "decode_ms": 14672.0,
+        "decode_tps": 17.4
+      },
+      "fp64_on_text_sha256": "3c7dafb749cb63c422941fb03a409c75f0e4db3103fd44d0acb8ae862d0fd1fa",
+      "fp64_off_text_sha256": "3c7dafb749cb63c422941fb03a409c75f0e4db3103fd44d0acb8ae862d0fd1fa",
+      "response_text": "# Data Validation, Grouping, Outlier Detection, and Testing Approach for Synthetic Dataset Analysis\n\n## 1. Data Validation\n\nThe first critical step in analyzing this synthetic dataset is rigorous data validation. Each record contains two primary fields: a station identifier and a measured value in units. Validation ensures that the data is clean, consistent, and suitable for downstream aggregation and analysis.\n\n### Field-Level Validation\n- **Station Identifier Validation**: Each station ID must conform to a predefined format (e.g., two-digit numeric codes from 00 to 99). In this dataset, all station IDs are valid two-digit numbers. Any non-numeric or out-of-range station IDs would be flagged as invalid.\n- **Measurement Value Validation**: Each measurement must be a non-negative integer within a plausible range. All values in this dataset are positive integers, which satisfies basic sanity checks. Additionally, measurements should not exceed physical or operational limits defined for the sensor type. Since this is synthetic data, we assume a reasonable upper bound (e.g., 1000 units) and verify that no value exceeds it.\n\n### Cross-Field Consistency Checks\n- **Uniqueness of Record IDs**: Each record has a unique identifier (Record 00000",
+      "completion_tokens": 256,
+      "both_http_status": 200
+    },
+    {
+      "case": "long",
+      "trial": 1,
+      "request_sha256": "d5a6c27c4002cf746ae4b892335f2d63279bb4f08ae17976fdbbbcc67a1ac1b4",
+      "fp64_on": {
+        "prompt_tokens": 4096.0,
+        "reused": 0.0,
+        "fresh": 4096.0,
+        "prefill_ms": 12448.0,
+        "prefill_tps": 329.0,
+        "generated": 256.0,
+        "decode_ms": 15377.0,
+        "decode_tps": 16.6
+      },
+      "fp64_off": {
+        "prompt_tokens": 4096.0,
+        "reused": 0.0,
+        "fresh": 4096.0,
+        "prefill_ms": 12643.0,
+        "prefill_tps": 324.0,
+        "generated": 256.0,
+        "decode_ms": 15394.0,
+        "decode_tps": 16.6
+      },
+      "fp64_on_text_sha256": "0fdf11ff9429757a98a21e7207d064af5686fe3e7f821c6a7d3cb16e02d23465",
+      "fp64_off_text_sha256": "0fdf11ff9429757a98a21e7207d064af5686fe3e7f821c6a7d3cb16e02d23465",
+      "response_text": "# Comprehensive Analysis of Synthetic Sensor Dataset: Validation, Grouping, Outlier Detection, and Testing\n\nThe provided synthetic dataset represents a high-volume stream of sensor readings from a distributed network of monitoring stations. To ensure the integrity, reliability, and analytical utility of this data, a rigorous multi-stage pipeline must be implemented. This pipeline encompasses data validation, logical grouping, statistical outlier detection, and comprehensive testing protocols. Below is a detailed breakdown of each phase, tailored to the specific characteristics of the dataset provided.\n\n## 1. Data Validation Strategy\n\nData validation is the foundational step in any data processing pipeline. Its primary goal is to ensure that every record conforms to predefined schema constraints and business rules before it enters the aggregation phase. For this dataset, validation must be performed at the record level, as explicitly requested in the prompt (\"validate the reading before aggregation\").\n\n### Schema and Format Validation\nFirst, we must verify the structural integrity of each record. Each record follows a strict format: `Record [ID]: station [ID] measured [Value] units`. Validation logic must parse this string to extract three key components:\n1.  **Record ID:** Must be a sequential integer starting from 00000. Any gaps or duplicates in the Record ID sequence indicate",
+      "completion_tokens": 256,
+      "both_http_status": 200
+    },
+    {
+      "case": "long",
+      "trial": 2,
+      "request_sha256": "3ff54d76fdf8606574fcba27f57379f576eabd059efc002f81d864ec78db8ae5",
+      "fp64_on": {
+        "prompt_tokens": 4096.0,
+        "reused": 0.0,
+        "fresh": 4096.0,
+        "prefill_ms": 12127.0,
+        "prefill_tps": 337.7,
+        "generated": 256.0,
+        "decode_ms": 15379.0,
+        "decode_tps": 16.6
+      },
+      "fp64_off": {
+        "prompt_tokens": 4096.0,
+        "reused": 0.0,
+        "fresh": 4096.0,
+        "prefill_ms": 12133.0,
+        "prefill_tps": 337.6,
+        "generated": 256.0,
+        "decode_ms": 15381.0,
+        "decode_tps": 16.6
+      },
+      "fp64_on_text_sha256": "1951aa981bf9f3f467a14624e2c19d4e83b4f3ee85f3fc20df374ec40aed0d3e",
+      "fp64_off_text_sha256": "1951aa981bf9f3f467a14624e2c19d4e83b4f3ee85f3fc20df374ec40aed0d3e",
+      "response_text": "# Comprehensive Analysis of Synthetic Sensor Dataset: Validation, Grouping, Outlier Detection, and Testing\n\nThe provided synthetic dataset represents a high-volume stream of sensor readings from a distributed network, likely simulating an Internet of Things (IoT) environment or a large-scale industrial monitoring system. The dataset consists of 150 records, each containing a unique record ID, a station identifier, and a measured value in units. To ensure data integrity, analytical accuracy, and system reliability, a rigorous pipeline involving data validation, logical grouping, outlier detection, and statistical testing must be implemented. Below is a detailed breakdown of the approach for each stage.\n\n## 1. Data Validation Strategy\n\nData validation is the foundational step in any data pipeline. Its primary goal is to ensure that incoming data conforms to predefined schemas, formats, and business rules before it is stored or processed. In this dataset, validation focuses on three critical areas: format consistency, range constraints, and logical integrity.\n\n**Format and Schema Validation:**\nEach record follows a strict pattern: `Record [ID]: station [Station ID] measured [Value] units`. The validation engine must first parse this string to extract three distinct fields: `record_id`, `station_id`, and `measurement_value`. The `record",
+      "completion_tokens": 256,
+      "both_http_status": 200
+    },
+    {
+      "case": "long",
+      "trial": 3,
+      "request_sha256": "044c8b6834d45e043a3bfea6c4ee85f1154f764f39059e12e96fcdbf7ff815fd",
+      "fp64_on": {
+        "prompt_tokens": 4096.0,
+        "reused": 0.0,
+        "fresh": 4096.0,
+        "prefill_ms": 12120.0,
+        "prefill_tps": 337.9,
+        "generated": 256.0,
+        "decode_ms": 14321.0,
+        "decode_tps": 17.9
+      },
+      "fp64_off": {
+        "prompt_tokens": 4096.0,
+        "reused": 0.0,
+        "fresh": 4096.0,
+        "prefill_ms": 12134.0,
+        "prefill_tps": 337.6,
+        "generated": 256.0,
+        "decode_ms": 14361.0,
+        "decode_tps": 17.8
+      },
+      "fp64_on_text_sha256": "69f1e78ade7b2f567023fe0324bd55b93be5c277f44c563a3e65527230d928ed",
+      "fp64_off_text_sha256": "69f1e78ade7b2f567023fe0324bd55b93be5c277f44c563a3e65527230d928ed",
+      "response_text": "# Comprehensive Analysis of Synthetic Sensor Dataset: Validation, Grouping, Outlier Detection, and Testing\n\nThe provided synthetic dataset, consisting of 150 records (Record 00000 to Record 00149), represents a stream of sensor measurements from various stations. To ensure data integrity, reliability, and analytical utility, a rigorous pipeline involving validation, grouping, outlier detection, and statistical testing must be implemented. This analysis outlines the methodology for processing this dataset, focusing on the specific patterns observed in the station IDs and measurement values.\n\n## 1. Data Validation Strategy\n\nData validation is the first critical step in any data pipeline. For this dataset, validation involves checking for structural integrity, format consistency, and logical plausibility.\n\n**Structural and Format Validation:**\nEach record follows a strict format: `Record [ID]: station [ID] measured [Value] units`. Validation scripts must ensure that:\n1.  **Record IDs** are sequential and unique. In this dataset, IDs range from 00000 to 00149, indicating a complete sequence without gaps.\n2.  **Station IDs** are two-digit integers. The dataset contains stations ranging from 00 to 9",
+      "completion_tokens": 256,
+      "both_http_status": 200
+    }
+  ],
+  "comparisons": {
+    "a770_fp64_on": {
+      "cases": {
+        "short": {
+          "prefill_tps": {
+            "median": 116.5,
+            "min": 102.3,
+            "max": 116.6,
+            "values": [
+              102.3,
+              116.5,
+              116.6
+            ]
+          },
+          "decode_tps": {
+            "median": 17.8,
+            "min": 17.4,
+            "max": 17.8,
+            "values": [
+              17.8,
+              17.8,
+              17.4
+            ]
+          }
+        },
+        "long": {
+          "prefill_tps": {
+            "median": 337.7,
+            "min": 329.0,
+            "max": 337.9,
+            "values": [
+              329.0,
+              337.7,
+              337.9
+            ]
+          },
+          "decode_tps": {
+            "median": 16.6,
+            "min": 16.6,
+            "max": 17.9,
+            "values": [
+              16.6,
+              16.6,
+              17.9
+            ]
+          }
+        }
+      },
+      "raw_result_sha256": "7fde7c6441f246ed5d8eab1cc1448adf5c1869731cb63e954afc304c9cf0c9a7"
+    },
+    "a770_fp64_off": {
+      "cases": {
+        "short": {
+          "prefill_tps": {
+            "median": 116.5,
+            "min": 100.8,
+            "max": 116.6,
+            "values": [
+              100.8,
+              116.5,
+              116.6
+            ]
+          },
+          "decode_tps": {
+            "median": 17.8,
+            "min": 17.4,
+            "max": 17.8,
+            "values": [
+              17.8,
+              17.8,
+              17.4
+            ]
+          }
+        },
+        "long": {
+          "prefill_tps": {
+            "median": 337.6,
+            "min": 324.0,
+            "max": 337.6,
+            "values": [
+              324.0,
+              337.6,
+              337.6
+            ]
+          },
+          "decode_tps": {
+            "median": 16.6,
+            "min": 16.6,
+            "max": 17.8,
+            "values": [
+              16.6,
+              16.6,
+              17.8
+            ]
+          }
+        }
+      },
+      "raw_result_sha256": "a5bde5ef4639ac1a1da2ad8cb98ea0d637991ceec2e82ea0aa9742b6bc375098"
+    },
+    "a770_custom_v4": {
+      "cases": {
+        "short": {
+          "prefill_tps": {
+            "median": 45.7,
+            "min": 43.7,
+            "max": 45.7,
+            "values": [
+              43.7,
+              45.7,
+              45.7
+            ]
+          },
+          "decode_tps": {
+            "median": 2.7,
+            "min": 2.7,
+            "max": 3.0,
+            "values": [
+              2.7,
+              3.0,
+              2.7
+            ]
+          }
+        },
+        "long": {
+          "prefill_tps": {
+            "median": 75.5,
+            "min": 75.4,
+            "max": 75.5,
+            "values": [
+              75.4,
+              75.5,
+              75.5
+            ]
+          },
+          "decode_tps": {
+            "median": 2.7,
+            "min": 2.4,
+            "max": 2.8,
+            "values": [
+              2.4,
+              2.7,
+              2.8
+            ]
+          }
+        }
+      },
+      "raw_result_sha256": "b82564548569d031180470833cce89cb3a259031f7f44b0d4ee1745f0c2f3643"
+    },
+    "rtx5060ti_cuda_cache3000": {
+      "cases": {
+        "short": {
+          "prefill_tps": {
+            "median": 83.8,
+            "min": 80.4,
+            "max": 84.5,
+            "values": [
+              80.4,
+              83.8,
+              84.5
+            ]
+          },
+          "decode_tps": {
+            "median": 22.5,
+            "min": 21.9,
+            "max": 22.5,
+            "values": [
+              21.9,
+              22.5,
+              22.5
+            ]
+          }
+        },
+        "long": {
+          "prefill_tps": {
+            "median": 345.6,
+            "min": 343.8,
+            "max": 345.6,
+            "values": [
+              343.8,
+              345.6,
+              345.6
+            ]
+          },
+          "decode_tps": {
+            "median": 21.1,
+            "min": 19.7,
+            "max": 21.3,
+            "values": [
+              19.7,
+              21.3,
+              21.1
+            ]
+          }
+        }
+      },
+      "raw_result_sha256": "0bdd3b7adbeadf1ccee416dbd796c2f1b82f2881c4020265deef8e6f64152d3a"
+    }
+  },
+  "validation": {
+    "targeted_ctests": {
+      "passed": 5,
+      "total": 5,
+      "names": [
+        "gr_parity",
+        "quantize_act_parity",
+        "qsa_parity",
+        "native_grouped_parity",
+        "native_router_parity"
+      ]
+    },
+    "native_router_cases": 20,
+    "expert_layers": [
+      0,
+      1,
+      3,
+      47
+    ],
+    "strict_api": {
+      "passed": 4,
+      "total": 6,
+      "failure": "sum(i*i for i in range(4)) returns 30 rather than 14 on both repetitions; also recorded in prior CUDA/custom A770."
+    },
+    "full_suite_rerun": false
+  },
+  "limitations": [
+    "Sequential ON then OFF; no randomized/interleaved trials.",
+    "Archived comparisons span engine versions and execution policies; not a single-change ablation.",
+    "Strict API suite 4/6; wrong answer 30 instead of 14 also occurs in archived CUDA and A770.",
+    "Only targeted kernel tests repeated; earlier broad-suite failures remain unresolved.",
+    "Model hashes reused from prior provenance, not freshly recomputed."
+  ]
+}
