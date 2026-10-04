@@ -447,6 +447,9 @@ struct PeerPrefill {
     static constexpr size_t kHostBounds = 2 * (NE + NE / 16 + 2) + 64;
     int64_t back_at = 0, back_rows = 0;
     std::vector<int32_t> bounds_host;
+    // APR (prism.hadamard): per layer, this device's copy of the down projection's sign vector (nullptr: identity or
+    // not folded).  The gate/up input arrives already rotated (the primary sends its rotated copy, m.Xr).
+    std::vector<const float*> had_sh;
     std::vector<void*> owned;
     int64_t layers = 0, experts = 0, rows = 0, over_cap = 0;   // stats
     ~PeerPrefill() {
@@ -1157,14 +1160,24 @@ double split_help_frac(int64_t T) {
 }
 }  // namespace
 
+namespace {
+// APR: the down projections' sign vectors on the current device (the peer's or the helper's), one per layer, made at
+// setup (cudaMalloc) so a prompt chunk only looks them up.
+void peer_had_signs(PeerPrefill& P) {
+    const auto& lay = strata::kernels::cpu::expert_layout();
+    P.had_sh.assign(lay.native ? lay.fmt.size() : 0, nullptr);
+    for (size_t l = 0; l < P.had_sh.size(); ++l)
+        if (lay.fmt[l].had_d)
+            P.had_sh[l] = strata::kernels::hadamard_device_signs(lay.fmt[l].d_signs, (int) lay.fmt[l].n_ff);
+}
+}  // namespace
+
 bool Prefill::set_stage_helper(Prefill* helper, std::string& err) {
     Impl& m = *impl_;
     m.help_pp.reset();
     if (helper == nullptr || helper == this || !split_help_env()) return true;
     const Impl& h = *helper->impl_;
     if (m.device < 0 || h.device < 0 || h.device == m.device || !mmq_plan().any) return true;
-    // APR: the helper's MMQ share does not rotate the activations of Hadamard-folded experts; not used for those packs
-    if (strata::kernels::cpu::hadamard_spec().any()) return true;
     auto pp = std::make_unique<PeerPrefill>();
     pp->peer = nullptr;   // stream-only: it holds no experts, it streams a share of this stage's
     pp->compact = true;
@@ -1192,6 +1205,7 @@ bool Prefill::set_stage_helper(Prefill* helper, std::string& err) {
     for (int i = 0; ok && i < kSplitHelpRing; ++i)
         ok = cudaEventCreateWithFlags(&pp->pcopied[(size_t) i], cudaEventDisableTiming) == cudaSuccess &&
              cudaEventCreateWithFlags(&pp->pused[(size_t) i], cudaEventDisableTiming) == cudaSuccess;
+    if (ok) peer_had_signs(*pp);   // APR: on the helper's device
     cudaSetDevice(prev);
     if (!ok) { err = "prefill: the layer split's prompt help (streams and events)"; return false; }
     helper_ = helper;
@@ -1269,11 +1283,6 @@ bool Prefill::set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& e
     if (peer == nullptr || !peer->valid()) { m.pp.reset(); return true; }
     if (!peer->p2p()) { err = "prefill peer: the two GPUs cannot access each other (no P2P)"; return false; }
     if (!mmq_plan().any) { err = "prefill peer: needs the MMQ prompt path"; return false; }
-    if (strata::kernels::cpu::hadamard_spec().any()) {   // APR: the peer's MMQ share does not rotate; declined
-        std::fprintf(stderr, "strata: prefill peer: not used for a Hadamard-folded (APR) pack\n");
-        m.pp.reset();
-        return true;
-    }
     auto pp = std::make_unique<PeerPrefill>();
     pp->peer = peer;
     pp->T_max = m.T_max;
@@ -1353,6 +1362,7 @@ bool Prefill::set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& e
         pp->ctx = std::make_unique<mmq::Context>();
         pp->run_ctx = pp->ctx.get();
         mmq::iota(pp->ident, pp->cap_rows, pp->s);
+        peer_had_signs(*pp);   // APR: on the peer's device
         ok = cudaStreamSynchronize(pp->s) == cudaSuccess;
     }
     size_t fb = 0, tb = 0;
@@ -2281,8 +2291,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     // (moe_fused_iq.hpp) where they cover its two formats, else MMQ (or the FP16 path: IQ1_M).
                     const strata::kernels::cpu::ExpertLayout& lay = strata::kernels::cpu::expert_layout();
                     // APR (prism.hadamard): folded gate/up take H (s * x), folded down H (s * h), on the FP16 and MMQ
-                    // paths; the fused kernels do not rotate (and have no trellis types), and the multi-GPU prompt
-                    // paths are not set up for a folded pack (set_peer, set_stage_helper)
+                    // paths and on the multi-GPU prompt paths (the peer, the layer split's helper: MMQ); the fused
+                    // kernels do not rotate (and have no trellis types), so a folded layer takes MMQ instead
                     const bool had_gu = lay.native && lay.fmt[(size_t) l].had_gu;
                     const bool had_d = lay.native && lay.fmt[(size_t) l].had_d;
                     const bool use_mmq = mmq_plan().any && mmq_plan().layer[(size_t) l];
@@ -2441,10 +2451,11 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         const size_t mmq_gub = use_mmq ? mmq::matrix_bytes(mmq_gt, 1280, N) : 0;
                         const size_t mmq_db = use_mmq ? mmq::matrix_bytes(mmq_dt, N, 640) : 0;
                         pt.mark(kPfGather, cs);
+                        // the routed experts' input: `mixed`, or (APR) its rotated copy, which the peer / the layer
+                        // split's helper also take (one rotation for both cards; `mixed` itself feeds the shared expert)
+                        const float* xsrc = m.mixed;
                         if (use_mmq) {
                             // step 2b: the layer's activations as q8_1 rows in expert order, straight from `mixed`
-                            // (APR: from a rotated copy of `mixed`; `mixed` itself feeds the shared expert)
-                            const float* xsrc = m.mixed;
                             if (had_gu) {
                                 strata::kernels::hadamard_rows(m.mixed, m.Xr, T, N, had_block, had_sx, m.cs);
                                 xsrc = m.Xr;
@@ -2477,7 +2488,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         peer_now = use_mmq && !order_peer.empty();
                         if (peer_now) {
                             PeerPrefill& P = *m.pp;
-                            if (!P.p2p) cudaMemcpyAsync(P.host_x, m.mixed, (size_t) T * N * 4, cudaMemcpyDeviceToHost, m.cs);
+                            if (!P.p2p) cudaMemcpyAsync(P.host_x, xsrc, (size_t) T * N * 4, cudaMemcpyDeviceToHost, m.cs);
                             cudaEventRecord(P.ev_in, m.cs);
                             int prevd = 0;
                             cudaGetDevice(&prevd);
@@ -2486,7 +2497,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             cudaStreamWaitEvent(ps, P.ev_in, 0);
                             if (P.out_pending) { cudaStreamWaitEvent(ps, P.ev_done, 0); P.out_pending = false; }
                             pe.mark(kPeMoeIn, ps);
-                            if (P.p2p) cudaMemcpyPeerAsync(P.mixed, P.dev, m.mixed, prevd, (size_t) T * N * 4, ps);
+                            if (P.p2p) cudaMemcpyPeerAsync(P.mixed, P.dev, xsrc, prevd, (size_t) T * N * 4, ps);
                             else copy_f32_wide(P.mixed, P.host_x, T * N, ps);
                             P.back_at = rows_local;
                             P.back_rows = rows_peer;
@@ -2575,6 +2586,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                     gu.total_rows = nr; gu.max_rows = maxr; gu.dst = P.GU_g; gu.ld_dst = 1280;
                                     P.run_ctx->run(gu, ps);
                                     mmq::swiglu(P.GU_g, P.H_g, nr, 640, !lay.native, ps);
+                                    if (had_d)   // APR: folded down weights take H (s * h), on this card as on the primary
+                                        strata::kernels::hadamard_rows(P.H_g, P.H_g, nr, 640, had_block, P.had_sh[(size_t) l], ps);
                                     mmq::quantize(P.H_g, nullptr, P.Hq_g, mmq_dt, 640, 640, nr, ps);
                                     const int b = (int) (g2 & 1);
                                     if (P.dm_live[b]) cudaStreamWaitEvent(ps, P.ev_dm[b], 0);   // its last rows have left
@@ -2636,6 +2649,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                     gu.total_rows = rows_peer; gu.max_rows = maxr; gu.dst = P.GU; gu.ld_dst = 1280;
                                     P.run_ctx->run(gu, ps);
                                     mmq::swiglu(P.GU + r0 * 1280, P.H + r0 * 640, nr, 640, !lay.native, ps);
+                                    if (had_d)   // APR: as above
+                                        strata::kernels::hadamard_rows(P.H + r0 * 640, P.H + r0 * 640, nr, 640, had_block,
+                                                                       P.had_sh[(size_t) l], ps);
                                     mmq::quantize(P.H + r0 * 640, nullptr, P.Hq, mmq_dt, 640, 640, nr, ps);
                                     mmq::Product dn;
                                     dn.w = P.grp_d; dn.type = mmq_dt; dn.w_rows = N; dn.w_cols = 640; dn.expert_bytes = mmq_db;
