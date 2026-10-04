@@ -241,13 +241,16 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
 
 int main(int argc, char** argv) {
 #if defined(__HIP_PLATFORM_AMD__)
-    // S6: on AMD the kernel under test is the RDNA4 matrix-core one (opt-in in the engine); other cards skip
+    // S6: on AMD the kernel under test is the matrix-core one (opt-in in the engine); other cards skip.  The arch
+    // prefixes are checked at runtime on purpose: the host pass sees no arch macros, and HIP only loads the code
+    // object that matches the card.
     {
         int dev = 0;
         hipDeviceProp_t prop{};
         if (hipGetDevice(&dev) != hipSuccess || hipGetDeviceProperties(&prop, dev) != hipSuccess) return 2;
-        if (std::strncmp(prop.gcnArchName, "gfx12", 5) != 0) {
-            std::printf("SKIP: %s is not gfx12 (the matrix-core prompt attention is RDNA4 only)\n", prop.gcnArchName);
+        if (std::strncmp(prop.gcnArchName, "gfx12", 5) != 0 && std::strncmp(prop.gcnArchName, "gfx11", 5) != 0) {
+            std::printf("SKIP: %s has no matrix-core prompt attention compiled in (gfx12/gfx11 only)\n",
+                        prop.gcnArchName);
             return 77;
         }
 #if defined(_WIN32)
