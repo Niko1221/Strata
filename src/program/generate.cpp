@@ -4081,7 +4081,7 @@ int main(int argc, char** argv) {
                 });
             };
             int64_t c = scan(ring_target);
-            if (c == 0) c = scan(kRingCliff);
+            if (c == 0 && strata::prefill::Prefill::ring_floor_enabled()) c = scan(kRingCliff);
             if (c == 0) c = scan(kRingMin);
             if (c > 0) {
                 // the probe left the override on its last trial; put it back on the chunk that won
@@ -4305,7 +4305,7 @@ int main(int argc, char** argv) {
                     });
                 };
                 int64_t c = probe(strata::prefill::Prefill::ring_target_slots());
-                if (c == 0) c = probe(kRingCliff);
+                if (c == 0 && strata::prefill::Prefill::ring_floor_enabled()) c = probe(kRingCliff);
                 if (c == 0) c = probe(kRingMin);
                 return c;
             };

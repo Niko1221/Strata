@@ -98,6 +98,10 @@ public:
     /// room to the ring instead of stranding it.
     static int64_t ring_cap_slots();
 
+    /// Whether the floor is in force.  `STRATA_RING_FLOOR=0` turns it and the room cap above back into the byte
+    /// budget, so the old rule and this one are one binary apart (the A/B the PR's numbers come from).
+    static bool ring_floor_enabled();
+
     /// What the ring actually resolves to for a chunk of `chunk` tokens, after the override, STRATA_PREFILL_RING
     /// and the pinned-share rule - the slot count `init` lays out.  The engine reports it on its INFO line so the
     /// Monitor tab shows the pair the run really got, not what it asked for.

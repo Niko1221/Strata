@@ -166,12 +166,28 @@ inline int ring_budget_slots() {
 // every pack got before the budget.  What the ring buys is experts in flight - the fused path's whole layer batch -
 // and that is a COUNT, so a big-blob pack was handed a ring too small for the thing it exists to cover.  Measured
 // on this rig (4-way IQ3_S and one RTX 3060, 120K prompt): ring 16 is -12% against 199 on both, 64 -7%, so the
-// loss below ~128 is steep; 199 -> 256 is +1.8% on the 4-way MMQ; the fused path is flat from 256 to 512 and
-// already gets 512 here (its budget caps at ring_cap()).  So the budget becomes a floor, not a ceiling - where it
-// already lands at or above this (Q2_0: 384 unfused, 1024 fused) nothing moves.
+// loss below ~128 is steep.  End to end, one binary, STRATA_RING_FLOOR=0 against this rule on the same prompt:
+// 4-way IQ3_S 1082.8 -> 1103.0 tok/s (chunk 10496 -> 10240, ring 199 -> 264) and one RTX 3060 900.6 -> 907.2
+// (9472 -> 9216, 199 -> 259); the fused path is flat from 256 to 512 and already gets 512 here (its budget caps at
+// ring_cap()), so the floor does not move it.  Q8_0 is the pack the floor moves furthest - 5.22 MB blobs put its
+// budget at 101 slots and the floor at 256, +804 MiB - so it was swept with STRATA_PREFILL_RING on the binary
+// that can read its PLE table, chunk pinned at 5632 so the ring was the only variable: 96 451.4, 101 454.0,
+// 128 461.9, 199 457.6, 256 454.2, 384 448.1 tok/s.  Flat, and 256 costs it nothing against 101 (454.2 against
+// 454.0) - what the ring takes there is not worth the bytes on this pack either way.  So the budget becomes a
+// floor, not a ceiling - where it already lands at or above this (Q2_0: 384 unfused, 1024 fused) nothing moves.
 constexpr int RING_FLOOR = 256;
+// STRATA_RING_FLOOR=0 restores the rule this replaces: the byte budget as the ring's target AND its ceiling, with
+// no step between it and STAGE.  The two are then one binary apart, which is how the numbers in the PR were taken.
+inline bool ring_floor_on() {
+    static const bool on = [] {
+        const char* e = std::getenv("STRATA_RING_FLOOR");
+        return !(e != nullptr && e[0] == '0' && e[1] == '\0');
+    }();
+    return on;
+}
 inline int ring_target() {
     const int budget = ring_budget_slots();
+    if (!ring_floor_on()) return budget;
     // The unpinned arm is the measured 96-slot ring that ring_slots() returns, not the budget; reserving a floor
     // there would shrink the chunk to fund a ring the run never lays out.
     if (g_pinned_share < 0.9) return budget;
@@ -1249,7 +1265,11 @@ uint64_t Prefill::bytes_needed_no_ring(const core::ModelGeometry& g, const core:
 
 int64_t Prefill::ring_target_slots() { return (int64_t) ring_target(); }
 
-int64_t Prefill::ring_cap_slots() { return (int64_t) ring_cap(); }
+// With the floor off the room is capped at the budget as well, which is exactly what it replaced: the scan asked
+// the chunk for a full budget-sized ring and never handed it the excess.
+int64_t Prefill::ring_cap_slots() { return (int64_t) (ring_floor_on() ? ring_cap() : ring_budget_slots()); }
+
+bool Prefill::ring_floor_enabled() { return ring_floor_on(); }
 
 int64_t Prefill::ring_slots_for(int64_t chunk) { return ring_slots((size_t) chunk); }
 
