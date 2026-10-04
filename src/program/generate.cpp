@@ -6252,9 +6252,10 @@ int main(int argc, char** argv) {
             float req_min_p = 0.0f, req_penalty_repeat = 1.0f, req_penalty_freq = 0.0f, req_penalty_present = 0.0f;
             int req_penalty_last_n = 0;
             int req_cvec = 1;   // cvec=0|1: a loaded control vector for this request (on when absent)
-            // ckpt=0: a one-shot call whose turn no later request extends.  It reads its prompt in one part and saves
-            // no checkpoint at the last turn boundary (nor the periodic ones of a long prompt); it still resumes from
-            // a checkpoint it matches, and still saves the root of a long enough system prompt.  Absent = today's.
+            // ckpt=0: a one-shot call whose turn no later request extends.  No checkpoint at its last turn boundary
+            // (so no split there) nor every --prompt-cache-every tokens, and its session is neither continued nor
+            // parked after it.  It still resumes from a checkpoint it matches, and still saves the system-prompt root
+            // when that reaches --prompt-cache-root.  Absent = checkpointed as before.
             int req_ckpt = 1;
             // tuning keys (setup's calibration measures settings without restarting the engine): the PCIe share of
             // the missed experts and the draft-probability floor, for this request only
@@ -7223,7 +7224,7 @@ int main(int argc, char** argv) {
                 // (the checkpoints taken while reading it are still good)
                 live.swap(consumed);
                 live_imgs = imgs_below(req_imgs, (int64_t) live.size());
-                live_ok = o.prompt_cache > 0;
+                live_ok = o.prompt_cache > 0 && req_ckpt;   // ckpt=0: nothing to continue or park (#830)
             }
             static const bool state_hash = std::getenv("STRATA_STATE_HASH") != nullptr;
             if (state_hash && live_ok) {

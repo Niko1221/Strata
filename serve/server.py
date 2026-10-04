@@ -697,7 +697,7 @@ class StrataEngine:
                 if isinstance(v, (int, float)) and not isinstance(v, bool) and 0.0 <= float(v) <= 1.0:
                     keys += f" {k}={float(v)!r}"
         # "strata_checkpoint": false - a one-shot call (a classification, a probe) whose turn no later request
-        # extends: no conversation checkpoint at its end (#830).  It still reuses a cached prefix.  Absent = today's.
+        # extends: no conversation checkpoint for it (#830).  It still reuses a cached prefix.  Absent = as before.
         if sampling.get("strata_checkpoint") is False:
             keys += " ckpt=0"
         return keys + StrataEngine.projection_key(sampling)
