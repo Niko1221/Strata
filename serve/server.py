@@ -1224,6 +1224,7 @@ class Service:
         self.allowed_hosts: list[str] = []
         self.host_names: set[str] = set(LOOPBACK_NAMES)
         self.status = {"busy": False, "queued": 0}      # GET /status: what the model is doing right now
+        self.inflight = 0                                # requests past the queue (several at once with --batch)
         self.rate = collections.deque(maxlen=32)        # (time, generated) samples for the live tok/s window
         # #332: the API request monitor (/api-monitor) keeps the last 100 requests' prompts and answers in memory,
         # so it is off unless the config's "api_monitor" (or --api-monitor) turns it on
@@ -1527,6 +1528,7 @@ class Service:
             s = dict(self.status)
             hist = list(self.history)
             totals = dict(self.totals)
+            inflight = self.inflight
         now = time.time()
         progress = getattr(self.engine, "progress", None)
         if s.get("busy") and s.get("first_token") is None:
@@ -1537,7 +1539,10 @@ class Service:
             state = "unloaded"
         else:
             state = "idle"
-        live = {"state": state, "queued": s.get("queued", 0), "phase": s.get("phase") if s.get("busy") else None,
+        # --batch: the requests past the queue that wait for the engine's control lines or a slot are waiting too
+        waiting_engine = getattr(self.engine, "waiting", 0) if getattr(self.engine, "batch", 0) else 0
+        live = {"state": state, "queued": s.get("queued", 0) + waiting_engine,
+                "running": max(0, inflight - waiting_engine), "phase": s.get("phase") if s.get("busy") else None,
                 "prompt_tokens": s.get("prompt_tokens") if s.get("busy") else None,
                 "prompt_read": None, "prompt_total": None, "generated": s.get("generated") if s.get("busy") else None,
                 "max_tokens": s.get("max_tokens") if s.get("busy") else None,
@@ -1708,6 +1713,7 @@ class Service:
             self.status["queued"] += 1
         try:
             # --batch: the engine runs several requests at once (StrataEngine.generate_batched orders them)
+            req_started = req_first = None              # set once this request starts (below)
             with (contextlib.nullcontext() if getattr(self.engine, "batch", 0) else self.fifo):
                 try:
                     with self.status_lock:
@@ -1717,9 +1723,11 @@ class Service:
                         self.status["queued"] -= 1
                     # issue #27: it died in an earlier request (or was unloaded) - start it again instead of failing
                     self.ensure_loaded()
-                    with self.status_lock:
+                    req_started, req_first = time.time(), None   # this request's own clock (--batch: the status
+                    with self.status_lock:                          # is shared by the requests running together)
+                        self.inflight += 1
                         self.status.update(busy=True, phase="reading the prompt", prompt_tokens=len(ids),
-                                           generated=0, started=time.time(), first_token=None, tool=None, tail="",
+                                           generated=0, started=req_started, first_token=None, tool=None, tail="",
                                            max_tokens=max_new)
                         self.last_request_at = time.time()
                         self.rate.clear()               # the previous request's samples must not leak into this one
@@ -1737,6 +1745,7 @@ class Service:
                                     yield "ping", None
                                     continue
                                 n += 1
+                                req_first = req_first or time.time()
                                 if trace is not None and trace["first_token_s"] is None:
                                     with self.status_lock:
                                         trace["first_token_s"] = round(time.perf_counter() - trace["_clock"], 3)
@@ -1806,12 +1815,13 @@ class Service:
                     # #266: settle this request's status, history and totals while still holding the fifo: once
                     # it is released the next request sets its own status, which this must not record or clear
                     with self.status_lock:
-                        if self.status.get("busy"):
+                        batched = bool(getattr(self.engine, "batch", 0))
+                        if (self.status.get("busy") or batched) and req_started is not None:   # --batch: each one
                             # only this request's DONE counts: same object means no DONE arrived (death, error,
                             # disconnect)
                             last = dict(getattr(self.engine, "last", {}) or {}) \
                                 if getattr(self.engine, "last", None) is not engine_last0 else {}
-                            started = self.status.get("started", time.time())
+                            started = req_started
                             cvec = (getattr(self.engine, "info", {}) or {}).get("cvec", 0)
                             loaded = str(cvec) not in ("0", "", "None")
                             hit_rate = round(last["hits"] / last["lookups"], 3) if last.get("lookups") else None
@@ -1841,8 +1851,7 @@ class Service:
                             t["decode_ms"] += last.get("decode_ms") or 0.0
                             t["drafts_offered"] += last.get("drafts_offered") or 0
                             t["drafts_accepted"] += last.get("drafts_accepted") or 0
-                            ft0 = self.status.get("first_token")
-                            self.latencies.observe(ft0 - started if ft0 else None, n,
+                            self.latencies.observe(req_first - started if req_first else None, n,
                                                    (last.get("decode_ms") or 0.0) / 1000, time.time() - started)
                             fresh = getattr(self.engine, "last", None)
                             if fresh is not None and fresh is not before:      # the engine's clock for THIS request
@@ -1850,8 +1859,8 @@ class Service:
                                 self.last_timings = dict(timings, at=int(time.time())) if timings else None
                             self.last_request_at = time.time()
                             now = time.time()
-                            el = now - self.status.get("started", now)
-                            ft = self.status.get("first_token")
+                            el = now - started
+                            ft = req_first
                             rate = n / max(1e-6, now - ft) if ft else 0.0
                             hit_msg = f", expert cache {hit_rate*100:.1f}% hit" if hit_rate is not None else ""
                             print(f"[strata] done: {n} tokens in {el:.0f} s ({rate:.1f} tok/s) "
@@ -1862,7 +1871,10 @@ class Service:
                                       "strata-<model>.json for every request) leaves room to answer", flush=True)
                             if os.environ.get("STRATA_DEBUG") and raw_ids:
                                 print(f"[strata] raw: {self.tok.decode(raw_ids)!r}", flush=True)
-                        self.status["busy"] = False
+                        if req_started is not None:
+                            self.inflight -= 1
+                        if not self.inflight:               # --batch: busy until the last request running ends
+                            self.status["busy"] = False
                         self.status.pop("tail", None)            # #212: the answer's end is not kept once it is done
                         self.status.pop("tool", None)
         finally:

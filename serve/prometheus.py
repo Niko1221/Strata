@@ -73,7 +73,8 @@ def render(m: dict, lat: dict) -> str:
     busy = live.get("state") in ("reading", "generating")
     ctx = _num((m.get("engine") or {}).get("max_context"), 0)
     used = _num(live.get("prompt_tokens")) + _num(live.get("generated")) if busy else 0
-    metric("vllm:num_requests_running", "gauge", "Requests reading their prompt or generating.", int(busy))
+    running = live.get("running", int(busy))           # --batch: several at once
+    metric("vllm:num_requests_running", "gauge", "Requests reading their prompt or generating.", running)
     metric("vllm:num_requests_waiting", "gauge", "Requests waiting for their turn.", _num(live.get("queued")))
     metric("vllm:kv_cache_usage_perc", "gauge", "The running request's share of the context (1 = full).",
            round(min(1.0, used / ctx), 4) if ctx else 0)
