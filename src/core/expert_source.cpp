@@ -1657,7 +1657,9 @@ bool FileExpertSource::resize_live_resident(uint64_t target, uint64_t step, uint
             complement_pinned_ = complement_pin_limit_ != 0;
             live_blocks_.pop_back();
         }
-        done = complement_bytes_ == target;
+        // Whole-block release can round below the target. This shrink is complete; refilling
+        // that gap would turn a pressure release into a headroom-checked allocation.
+        done = complement_bytes_ <= target;
         return true;
     }
     if (target == complement_bytes_) { done = true; return true; }

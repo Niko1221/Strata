@@ -5003,7 +5003,7 @@ int main(int argc, char** argv) {
         std::deque<std::string> memory_lines;
         bool in_eof = false;
         std::optional<strata::core::LiveMemoryRequest> memory_request;
-        bool memory_gpu_growth = false, memory_gpu_capped = false;
+        bool memory_gpu_growth = false, memory_gpu_capped = false, memory_ram_done = false;
         Clock::time_point memory_step_at{};
         // Call only after readers and CUDA work have drained. Both startup admission and live control remove
         // authoritative residency before releasing mappings, preserving the captured base and offset table.
@@ -5064,6 +5064,7 @@ int main(int argc, char** argv) {
                 memory_gpu_growth = strata::core::live_memory_gpu_growth_allowed(
                     request, src.resident_bytes(), (uint64_t) o.vram_reserve_mib);
                 memory_gpu_capped = false;
+                memory_ram_done = false;
                 memory_request = request;
                 memory_step_at = Clock::time_point{};
             }
@@ -5082,10 +5083,14 @@ int main(int argc, char** argv) {
             if (!ver.wait_commit(why) || cudaDeviceSynchronize() != cudaSuccess) {
                 fail_memory("gpu_sync", why); return;
             }
-            bool ram_done = false;
+            auto resize_ram = [&] {
+                return strata::core::live_memory_ram_step(memory_ram_done, [&](bool& reached) {
+                    return src.resize_live_resident(request.resident_mib << 20, 32ull << 20,
+                        o.resident_headroom, host_res, profile, reached, why, live_borrow);
+                });
+            };
             const bool ram_shrinking = (request.resident_mib << 20) < src.resident_bytes();
-            if (ram_shrinking && !src.resize_live_resident(request.resident_mib << 20, 32ull << 20,
-                    o.resident_headroom, host_res, profile, ram_done, why, live_borrow)) {
+            if (ram_shrinking && !resize_ram()) {
                 fail_memory("ram_resize", why); return;
             }
             size_t free_b = 0, total_b = 0;
@@ -5174,8 +5179,7 @@ int main(int argc, char** argv) {
                     }
                 } while (false);
             }
-            if (!ram_shrinking && !src.resize_live_resident(request.resident_mib << 20, 32ull << 20, o.resident_headroom,
-                                           host_res, profile, ram_done, why, live_borrow)) {
+            if (!ram_shrinking && !resize_ram()) {
                 fail_memory("ram_resize", why); return;
             }
             size_t final_free = 0, final_total = 0;
@@ -5188,7 +5192,7 @@ int main(int argc, char** argv) {
             }
             // RAM pinning can change WDDM's free-memory report too. A terminal success must retain its reserve
             // after both tiers changed; otherwise the next bounded tick trims the remaining GPU cache.
-            const bool done = next_slots == target_slots && ram_done && (final_free >= reserve || unreachable);
+            const bool done = next_slots == target_slots && memory_ram_done && (final_free >= reserve || unreachable);
             o.vram_reserve_mib = (int) request.vram_reserve_mib;
             const char* result = "none";
             if (done && unreachable) result = live_borrow ? "prefill_cache_floor" : "reserve_unreachable";

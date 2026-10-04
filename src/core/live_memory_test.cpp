@@ -226,6 +226,33 @@ void ram_blocks(bool pin, bool mixed = false) {
     if (mixed)
         require(source.device_alias(1, 0) == nullptr && source.has_resident(1, 0),
                 "pageable fallback retains resident bytes without advertising a mapped alias");
+    // Non-block-aligned pressure target: 5,529,600 -> target 4,194,304 -> actual 2,764,800.
+    // The 1,429,504-byte gap fits another expert (1,382,400), so the old next tick tried to grow
+    // and failed its headroom guard. Exact block targets and headroom=0 do not expose this.
+    const uint64_t rounded_target = 4ull << 20;
+    require(block < rounded_target && rounded_target < block * 2 && rounded_target - block >= BLOB,
+            "rounding fixture leaves room for the old unintended allocation");
+    bool ram_done = false;
+    int ram_steps = 0;
+    auto pressure_step = [&] {
+        return live_memory_ram_step(ram_done, [&](bool& reached) {
+            ++ram_steps;
+            return source.resize_live_resident(rounded_target, block, UINT64_MAX, res, rank, reached, err);
+        });
+    };
+    require(pressure_step() && ram_done && source.resident_bytes() == block && source.blob(0, 1) == first,
+            "nonaligned shrink completes below target even with unavailable positive headroom");
+    for (int gpu_step = 0; gpu_step < 3; ++gpu_step)
+        require(pressure_step() && ram_done && ram_steps == 1 && source.resident_bytes() == block,
+                "later GPU steps retain RAM completion without refilling the rounded gap");
+    bool new_growth_done = false;
+    require(!live_memory_ram_step(new_growth_done, [&](bool& reached) {
+                return source.resize_live_resident(rounded_target, block, UINT64_MAX, res, rank, reached, err);
+            }) && !new_growth_done && source.resident_bytes() == block &&
+            err == "live RAM: physical memory headroom would be exceeded",
+            "separate genuine growth remains an error and preserves the rounded-down layout");
+    require(source.resize_live_resident(block * 2, block, 0, res, rank, done, err) && done,
+            "restore fixture after pressure rounding regression");
     require(source.resize_live_resident(0, 32ull << 20, 0, res, rank, done, err) && !done &&
             source.resident_bytes() == block && source.blob(0, 1) == first,
             "even small RAM blocks shrink by only one block per safe point");

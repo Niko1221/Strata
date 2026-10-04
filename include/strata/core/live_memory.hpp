@@ -11,6 +11,17 @@ struct LiveMemoryRequest {
     uint64_t id = 0, resident_mib = 0, vram_reserve_mib = 0;
 };
 
+// Completion belongs to the whole request. In particular, a shrink may finish below its
+// target after releasing a whole block; later GPU steps must not refill that rounded gap.
+template<class Resize>
+bool live_memory_ram_step(bool& done, Resize resize) {
+    if (done) return true;
+    bool reached = false;
+    if (!resize(reached)) return false;
+    done = reached;
+    return true;
+}
+
 // Capture once at admission. Releasing RAM can increase reported VRAM free space, but a pressure request
 // must not turn that new space into a GPU allocation on its next tick.
 inline bool live_memory_gpu_growth_allowed(const LiveMemoryRequest& request, uint64_t resident_bytes,

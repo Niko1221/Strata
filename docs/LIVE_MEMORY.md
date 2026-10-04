@@ -208,14 +208,14 @@ consumed tokens after the previously failing output-limited request; a separate 
 also reused its complete consumed prefix. Long borrowed prompts, queued controls, STOP, the reduced prefill
 floor and regrowth passed with the same native process and a 65,536-token context.
 
-The final binary passed all 251 live-memory checks and six relevant CTest targets, including the new
+The coverage/prefix binary passed all 251 live-memory checks and six relevant CTest targets, including the new
 serving-prefix regression and the existing conversation-cache/draft checks. It also passed all 12 real-model
 decode/idle resize cases again: output continued through every active change, the process/arguments stayed
 unchanged, and the following turn reused 1,911 KV tokens. The largest observed active token gap was 0.53 s;
 releasing 3 GiB of RAM completed over 29.91 s of bounded steps. This functional run used a 24 GiB RAM cap,
 synthetic policy time/capacity inputs and real native allocation guards, without artificial system pressure.
 
-The final binary ran one warmup and four fresh measured requests with the same prompt IDs, arguments and
+That binary ran one warmup and four fresh measured requests with the same prompt IDs, arguments and
 512-token output limits used above. Against the preceding eight guarded-borrowing samples, mean decode was
 47.75 versus 47.39 tokens/s, prefill 1,665.89 versus 1,452.96 tokens/s, first-token latency 3.74 versus 4.28 s,
 and whole-request time 14.45 versus 15.10 s. The observed prefill gain was 14.7% and first-token latency
@@ -223,3 +223,46 @@ decreased 12.7%. Decode differed by only 0.74%; a decode speedup is still not es
 had complete RAM coverage and zero additional refill file-blob reads. Final expert RAM/VRAM were
 41,025/4,894 MiB, with 1,587 MiB free VRAM after startup. These are sequential workstation measurements with
 eight baseline samples versus four final samples, not a controlled trial or a throughput guarantee.
+
+### Completing rounded RAM shrink requests
+
+Actual daily-policy observation exposed a live-control completion bug despite the isolated resize cases
+passing: a whole RAM block could take the allocation below an arbitrary MiB target. Exact-equality completion
+then left the request pending, and a later step attempted growth into the rounded gap. Under real pressure,
+the growth headroom guard correctly refused it, but the original shrink reported `ram_resize`.
+
+RAM shrink now finishes when actual capacity reaches or falls below the target. That completion stays
+latched for the whole MEMORY request while remaining VRAM steps finish, then resets for the next request.
+The acknowledgement still reports actual rounded capacity. Genuine growth continues to enforce headroom
+and can fail; no capacity, reserve or model-quality setting is relaxed.
+
+The native regression uses a non-aligned target with unavailable positive headroom, checks that subsequent
+VRAM-only steps cannot refill the undershoot, and requires a fresh genuine-growth request to remain an error.
+It runs with pageable, pinned and mixed RAM blocks. The live-memory target now passes 272 assertions and all
+six relevant CTest targets pass. Real-model and actual daily-policy verification remain required for deployment.
+
+The repaired binary repeated long prefill, queued controls, STOP, reduced floor/regrowth, complete 8,625-token
+continuation reuse and natural-EOS prefix reuse. The temporary pressure fixture reserved 768 MiB above
+observed initial free VRAM so later lazy decode-graph captures left room to exercise real cache regrowth;
+the production reserve/headroom and strict regrowth assertion were unchanged. An earlier 256 MiB fixture
+correctly hit the native pressure cap and was retained as a failed regrowth test.
+
+All 12 decode/idle resize cases then passed with the same process/arguments and 1,836-token continuation
+reuse. The largest token gap across the whole stream was 0.77 s; the largest gap measured within an active
+resize stage was 0.53 s. Releasing 3 GiB of RAM completed across 32.27 s of bounded steps. As before, this
+functional run used a 24 GiB RAM cap, synthetic policy time/capacity inputs and real native guards.
+
+The repaired binary's daily-settings benchmark repeated the same four fresh measured prompts: decode
+40.35 tokens/s, prefill 1,278.41 tokens/s and first-token latency 4.86 s. A fresh guarded-borrowing baseline
+then measured 44.30/1,226.10 tokens/s and 5.06 s, but obtained 38,568 MiB expert RAM versus 37,168 MiB for
+the repaired binary (expert VRAM 5,149 versus 5,183 MiB). These unequal allocations cannot isolate a code effect.
+
+A short comparison therefore fixed both versions to a temporary 32 GiB RAM cap and 1,900 GPU expert slots,
+with the same model/context/KV/spec/reserve/profile/MTP and prompt IDs. Both reported 32,767 MiB expert RAM
+and 4,221 MiB expert VRAM. One warmup preceded two fresh measured 512-output-token requests per version.
+Guarded-borrowing versus repaired means were decode 29.41 versus 29.46 tokens/s, prefill 856.44 versus
+946.60 tokens/s, first token 7.25 versus 6.56 s, and whole request 24.64 versus 23.97 s. Prefill increased
+10.5% while decode differed by only 0.17%; this supports a prompt-processing benefit, not a decode gain.
+Final loans had complete RAM backing versus 1,351/1,593 MiB fallback in the baseline's measured requests.
+Only two sequential samples per version were measured, so this is no general throughput guarantee. The
+temporary fixture differs from daily auto-cache/42 GiB settings and does not change the daily configuration.
