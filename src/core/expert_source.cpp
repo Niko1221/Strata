@@ -584,7 +584,8 @@ void FileExpertSource::close() {
     file_blob_bytes_.store(0);
     file_us_.store(0);
 #if defined(_WIN32)
-    if (base_ != nullptr) UnmapViewOfFile((LPCVOID) base_);
+    if (base_ != nullptr && !unmapped_) UnmapViewOfFile((LPCVOID) base_);
+    unmapped_ = false;
     if (mapping_ != nullptr) CloseHandle((HANDLE) mapping_);
     if (file_ != nullptr) CloseHandle((HANDLE) file_);
     mapping_ = nullptr;
@@ -609,6 +610,12 @@ bool ExpertSource::copy_blob(int64_t layer, int64_t expert, uint8_t* dst) {
     const uint8_t* b = blob(layer, expert);
     if (b == nullptr || dst == nullptr) return false;
     std::memcpy(dst, b, (size_t) strata::kernels::cpu::expert_layout().blob_bytes(layer));
+    return true;
+}
+
+bool ExpertSource::copy_blobs(const int32_t* layers, const int32_t* experts, uint8_t* const* dst, size_t n) {
+    for (size_t i = 0; i < n; ++i)
+        if (!copy_blob(layers[i], experts[i], dst[i])) return false;
     return true;
 }
 
@@ -1006,6 +1013,26 @@ bool FileExpertSource::recheck_unbuffered(std::string& why) {
 #endif
 }
 
+bool FileExpertSource::drop_mapping(std::string& why) {
+#if defined(_WIN32)
+    if (direct_.empty()) { why = "the reads are not unbuffered"; return false; }
+    if (!role_ptr_.empty() || !maps_.empty()) { why = "the GGUF in place keeps its maps (token embedding, PLE)"; return false; }
+    if (base_ == nullptr || unmapped_) { why = base_ == nullptr ? "not open" : "already closed"; return unmapped_; }
+    if (!UnmapViewOfFile((LPCVOID) base_)) { why = "UnmapViewOfFile failed"; return false; }
+    unmapped_ = true;
+    if (mapping_ != nullptr) CloseHandle((HANDLE) mapping_);
+    mapping_ = nullptr;
+    // the cached handle too: only the unbuffered handles (direct_) read the file from here on
+    if (file_ != nullptr) CloseHandle((HANDLE) file_);
+    file_ = nullptr;
+    why = "every expert outside RAM and VRAM is read unbuffered";
+    return true;
+#else
+    why = "not Windows";
+    return false;
+#endif
+}
+
 bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
 #if defined(_WIN32)
     // NTFS runs the unbuffered reads of a file one at a time while the file is mapped or cached anywhere (the engine
@@ -1312,8 +1339,42 @@ bool FileExpertSource::copy_blob(int64_t layer, int64_t expert, uint8_t* dst) {
     return true;
 }
 
+// pp-opt: the prompt path streams a chunk's experts in file order, so a stager thread's run of jobs is mostly
+// neighbouring blobs of experts.bin.  One read_direct batch merges them into requests of up to 32 MiB (kMerge) where
+// copy_blob made one ~2 MB request each - and NTFS serves the unbuffered reads of a mapped file one at a time, so the
+// request size is what sets the rate (see read_direct).  The blobs the RAM copy holds are copied as before.
+bool FileExpertSource::copy_blobs(const int32_t* layers, const int32_t* experts, uint8_t* const* dst, size_t n) {
+    if (direct_.empty() || n <= 1) return ExpertSource::copy_blobs(layers, experts, dst, n);
+    thread_local std::vector<Fill> fills;
+    fills.clear();
+    uint64_t bytes = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const int64_t l = layers[i], e = experts[i];
+        if (base_ == nullptr || dst[i] == nullptr || l < 0 || e < 0 || l >= n_layers_ || e >= n_expert_) return false;
+        const size_t index = (size_t) l * (size_t) n_expert_ + (size_t) e;
+        if (complement_ready_ &&
+            (detail::cache_complement_blob_or_fallback(index, complement_offsets_, complement_host_, nullptr) != nullptr ||
+             (!override_.empty() && override_[index] != nullptr))) {
+            if (!copy_blob(l, e, dst[i])) return false;
+            continue;
+        }
+        fills.push_back({0, l, e, dst[i]});
+        bytes += layer_blob_bytes_[(size_t) l];
+    }
+    if (fills.empty()) return true;
+    const auto t0 = std::chrono::steady_clock::now();
+    if (!read_direct(fills.data(), fills.size()))
+        for (const Fill& f : fills)   // a failed batch: each blob on its own (copy_from_files falls back to the mapping)
+            if (!copy_from_files(f.layer, f.e, f.dst)) return false;
+    file_us_.fetch_add((uint64_t) std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count(),
+                       std::memory_order_relaxed);
+    file_read_bytes_.fetch_add(bytes, std::memory_order_relaxed);
+    return true;
+}
+
 const uint8_t* FileExpertSource::mapped_blob(int64_t layer, int64_t expert) const {
     if (!role_ptr_.empty()) return nullptr;   // the GGUF in place: no contiguous blob in any file
+    if (unmapped_) return nullptr;            // pp-opt: drop_mapping closed the view; read_direct reads them
     if (base_ == nullptr || layer < 0 || expert < 0 || layer >= n_layers_ || expert >= n_expert_) return nullptr;
     const size_t i = (size_t) layer;
     if (i >= layer_offsets_.size() || i >= layer_blob_bytes_.size()) return nullptr;

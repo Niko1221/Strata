@@ -4604,6 +4604,14 @@ int main(int argc, char** argv) {
         }
 #endif
     }
+    // pp-opt: with the file tier unbuffered, the mapped view of experts.bin is only a fallback from here on - and while
+    // it exists NTFS serves the unbuffered reads one at a time (drop_mapping).  STRATA_KEEP_MAPPING=1 keeps it (A/B).
+    if (srcp == &src && src.unbuffered() && std::getenv("STRATA_KEEP_MAPPING") == nullptr) {
+        std::string why;
+        const bool dropped = src.drop_mapping(why);
+        std::fprintf(stderr, "strata generate: the mapped view of the experts %s (%s)\n",
+                     dropped ? "is closed" : "stays open", why.c_str());
+    }
     if (o.serve) {
         if (o.spec < 2 || o.mtp.empty() || o.prefill_chunk <= 0 ||
             (graph_hits && (thits.d_res == nullptr || host_res.empty()))) {
