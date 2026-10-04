@@ -4592,9 +4592,9 @@ int main(int argc, char** argv) {
         }
         // #577: the unbuffered choice above was made before the RAM copy existed, from the budget asked for; now the
         // copy is built, decide again from the RAM it really holds and the expert bytes outside it (on a 96 GB PC
-        // the file cache keeps those, and every refill after a prompt read the drive instead).  Windows only: the
-        // unbuffered reads exist there alone
-#if defined(_WIN32)
+        // the file cache keeps those, and every refill after a prompt read the drive instead).  Windows and Linux: the
+        // unbuffered reads exist there
+#if defined(_WIN32) || defined(__linux__)
         if (o.mmap_experts && o.resident_budget > 0) {
             std::string why;
             const bool was = src.unbuffered();

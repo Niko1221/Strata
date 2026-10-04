@@ -9,6 +9,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -32,9 +34,9 @@ void require(bool ok, const std::string& message) {
 struct TempDirectory {
     fs::path path;
 
-    TempDirectory() {
+    explicit TempDirectory(const fs::path& base = fs::temp_directory_path()) {
         const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-        path = fs::temp_directory_path() / ("strata-file-source-test-" + std::to_string(stamp));
+        path = base / ("strata-file-source-test-" + std::to_string(stamp));
         fs::create_directories(path);
     }
 
@@ -288,6 +290,76 @@ void test_cgroup_memory_budget() {
             "missing memory.stat counters did not fail closed");
 }
 
+void set_env(const char* name, const char* value) {
+#if defined(_WIN32)
+    _putenv_s(name, value != nullptr ? value : "");
+#else
+    if (value != nullptr) setenv(name, value, 1);
+    else unsetenv(name);
+#endif
+}
+
+// #286: the unbuffered file tier (Windows: FILE_FLAG_NO_BUFFERING; Linux: O_DIRECT + io_submit) hands out the same
+// bytes as the mapping - one blob at a time, a batch of adjacent experts (merged into one request), and copy_blob - and
+// never falls back to the mapping.  The pack lives in the working directory, not the temp directory: a tmpfs /tmp has
+// no O_DIRECT, and there the test says so and skips.
+void test_unbuffered_reads() {
+    using namespace strata::core;
+    using namespace strata::kernels::cpu;
+    constexpr int64_t layers = 2;
+    constexpr int64_t experts = 3;
+    const uint64_t layer_bytes = (uint64_t) experts * BLOB;
+    const uint64_t total = (uint64_t) layers * layer_bytes;
+    TempDirectory dir(fs::current_path());
+    std::string err;
+    require(expert_layout_load(dir.path.string(), layers, experts, err), "could not load canonical layout: " + err);
+    std::vector<uint8_t> bytes((size_t) total);
+    uint64_t x = 0x9E3779B97F4A7C15ull;
+    for (uint8_t& b : bytes) {
+        x = x * 6364136223846793005ull + 1442695040888963407ull;
+        b = (uint8_t) (x >> 56);
+    }
+    {
+        std::ofstream out(dir.path / "experts.bin", std::ios::binary | std::ios::trunc);
+        out.write((const char*) bytes.data(), (std::streamsize) bytes.size());
+        require((bool) out, "could not write the synthetic experts.bin");
+    }
+    FileExpertSource source;
+    require(source.open(dir.path.string(), layers, experts, err), "could not map the synthetic pack: " + err);
+    set_env("STRATA_UNBUFFERED_LOAD", "1");
+    std::string why;
+    const bool unbuffered = source.set_unbuffered(0, why);
+    set_env("STRATA_UNBUFFERED_LOAD", nullptr);
+#if defined(_WIN32) || defined(__linux__)
+    if (!unbuffered) {
+        std::cout << "file_expert_source_test: unbuffered reads skipped (" << why << ")\n";
+        source.close();
+        return;
+    }
+#else
+    require(!unbuffered, "unbuffered reads on a platform without them");
+    source.close();
+    return;
+#endif
+    require(source.unbuffered(), "set_unbuffered succeeded but the source is not unbuffered");
+    const int64_t batch[experts] = {0, 1, 2};
+    source.prefetch(1, batch, experts);   // layer 1 in one batch: three adjacent blobs
+    for (int64_t l = 0; l < layers; ++l)
+        for (int64_t e = 0; e < experts; ++e) {
+            const uint8_t* b = source.blob(l, e);
+            require(b != nullptr, "an unbuffered blob lookup failed");
+            require(std::memcmp(b, bytes.data() + (size_t) (l * (int64_t) layer_bytes + e * (int64_t) BLOB),
+                                (size_t) BLOB) == 0,
+                    "an unbuffered blob differs from the file");
+        }
+    std::vector<uint8_t> copy((size_t) BLOB);
+    require(source.copy_blob(0, 2, copy.data()) &&
+                std::memcmp(copy.data(), bytes.data() + (size_t) (2 * BLOB), (size_t) BLOB) == 0,
+            "an unbuffered copy_blob differs from the file");
+    require(source.direct_fallbacks() == 0, "an unbuffered read fell back to the mapping");
+    source.close();
+}
+
 // #633: the host RAM probe with fake /proc and cgroup trees: v2 (a limit, "max", a missing or malformed limit), v1
 // (a limit, unlimited), and no cgroup line at all.  Elsewhere than Linux it reads the machine's RAM.
 void test_host_memory() {
@@ -348,6 +420,7 @@ int main() {
         test_cgroup_memory_budget();
         test_host_memory();
         test_canonical_layout();
+        test_unbuffered_reads();
 #if defined(STRATA_NATIVE_EXPERTS)
         test_native_variable_layout();
 #endif

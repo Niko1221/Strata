@@ -44,6 +44,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
+#if defined(__linux__)
+#include <cerrno>
+#include <linux/aio_abi.h>   // the kernel's own asynchronous reads (io_submit): no library, allowed by Docker's seccomp
+#include <sys/syscall.h>
+#endif
 
 // a 64-bit seek (as in pinned.cu): the 32-bit `fseek` wraps past 4 GiB, and the spelling differs per platform
 #ifndef STRATA_FSEEK64
@@ -331,6 +336,49 @@ bool available_memory_bytes(uint64_t& bytes) {
     return bytes > 0;
 }
 
+/// #286: an unbuffered file handle - a HANDLE on Windows, an O_DIRECT descriptor (as a pointer-sized integer) on Linux.
+void close_direct(void* h) {
+#if defined(_WIN32)
+    CloseHandle((HANDLE) h);
+#else
+    ::close((int) (intptr_t) h);
+#endif
+}
+
+/// #286/#577: whether the file tier reads its `read_bytes` unbuffered, beside `arena_bytes` of RAM copy still to be
+/// taken.  Windows times probe reads too (experts_unbuffered); on Linux the same rule as its `cache_counts = false`
+/// arm decides: whether the file cache could keep those bytes at all, from MemAvailable and the tightest cgroup
+/// limit (host_available_memory).  STRATA_UNBUFFERED_LOAD=1 / 0 forces it either way, as on Windows.
+bool file_tier_unbuffered(const std::vector<std::string>& paths, uint64_t arena_bytes, uint64_t read_bytes,
+                          std::string& why) {
+#if defined(_WIN32)
+    return experts_unbuffered(paths, arena_bytes, why, /*cache_counts=*/false, read_bytes);
+#elif defined(__linux__)
+    (void) paths;
+    if (const char* env = std::getenv("STRATA_UNBUFFERED_LOAD"); env != nullptr && env[0] != '\0') {
+        why = std::string("STRATA_UNBUFFERED_LOAD=") + env;
+        return env[0] != '0';
+    }
+    uint64_t avail = 0;
+    if (!available_memory_bytes(avail)) {
+        why = "the available RAM is unknown";
+        return false;
+    }
+    const bool keepable = strata::platform::file_cache_keeps(avail, arena_bytes, read_bytes);
+    char msg[256];
+    std::snprintf(msg, sizeof msg, "%.1f GiB available, %.1f GiB of it still to be taken by the RAM copy, %.1f GiB "
+                  "of experts read from the files: the file cache %s keep them",
+                  (double) avail / (1ull << 30), (double) arena_bytes / (1ull << 30), (double) read_bytes / (1ull << 30),
+                  keepable ? "can" : "cannot");
+    why = msg;
+    return !keepable;
+#else
+    (void) paths; (void) arena_bytes; (void) read_bytes;
+    why = "through the file cache (no unbuffered reads on this platform)";
+    return false;
+#endif
+}
+
 }  // namespace
 
 // ================================ THE FILE-BACKED SOURCE ================================
@@ -496,6 +544,7 @@ bool FileExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64
     if (view == MAP_FAILED) { ::close(fd); err = "FileExpertSource: mmap failed on " + path; return false; }
     fd_ = fd;
     base_ = (const uint8_t*) view;
+    paths_.assign(1, path);   // #286: open_direct opens it again with O_DIRECT
 #endif
     blobs_ = (int64_t) blob_count;
     n_layers_ = n_layers;
@@ -558,9 +607,7 @@ void FileExpertSource::close() {
     role_bytes_.clear();
     role_file_.clear();
     paths_.clear();
-#if defined(_WIN32)
-    for (void* h : direct_) CloseHandle((HANDLE) h);
-#endif
+    for (void* h : direct_) close_direct(h);
     direct_.clear();
     {
         std::lock_guard<std::mutex> lk(stage_mu_);
@@ -702,6 +749,7 @@ bool FileExpertSource::copy_from_files(int64_t layer, int64_t expert, uint8_t* d
     if (!direct_.empty()) {   // #286: from the drive; a failed read falls back to the mapping below
         const Fill f{0, layer, expert, dst};
         if (read_direct(&f, 1)) return true;
+        direct_fallbacks_.fetch_add(1, std::memory_order_relaxed);
     }
     if (!role_ptr_.empty()) {
         uint64_t at = 0;
@@ -948,6 +996,23 @@ bool FileExpertSource::open_direct(std::string& why) {
         for (uint64_t b : layer_blob_bytes_) stage_blob_ = std::max(stage_blob_, b);
     }
     return true;
+#elif defined(__linux__)
+    // O_DIRECT: the reads bypass the page cache, as FILE_FLAG_NO_BUFFERING does (4 KiB-aligned windows, read_direct)
+    for (const std::string& path : paths_) {
+        const int fd = ::open(path.c_str(), O_RDONLY | O_DIRECT | O_CLOEXEC);
+        if (fd < 0) {
+            why += "; cannot open " + path + " with O_DIRECT (" + std::strerror(errno) + "), read through the file cache";
+            for (void* d : direct_) close_direct(d);
+            direct_.clear();
+            return false;
+        }
+        direct_.push_back((void*) (intptr_t) fd);
+    }
+    if (role_ptr_.empty()) {   // experts.bin: blob() now assembles into the stage buffers, sized for the largest blob
+        std::lock_guard<std::mutex> lk(stage_mu_);
+        for (uint64_t b : layer_blob_bytes_) stage_blob_ = std::max(stage_blob_, b);
+    }
+    return true;
 #else
     (void) why;
     return false;
@@ -955,7 +1020,7 @@ bool FileExpertSource::open_direct(std::string& why) {
 }
 
 bool FileExpertSource::set_unbuffered(uint64_t ram_bytes, std::string& why) {
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__linux__)
     if (base_ == nullptr || paths_.empty() || !direct_.empty()) {
         why = !direct_.empty() ? "already unbuffered" : "no expert files open";
         return !direct_.empty();
@@ -964,17 +1029,17 @@ bool FileExpertSource::set_unbuffered(uint64_t ram_bytes, std::string& why) {
     // PLE table), and the copy holds at most every expert - the budget asked for can be more than that
     const uint64_t experts = expert_bytes();
     const uint64_t arena = std::min(ram_bytes, experts);
-    if (!experts_unbuffered(paths_, arena, why, /*cache_counts=*/false, experts - arena)) return false;
+    if (!file_tier_unbuffered(paths_, arena, experts - arena, why)) return false;
     return open_direct(why);
 #else
     (void) ram_bytes;
-    why = "through the file cache (not Windows)";
+    why = "through the file cache (no unbuffered reads on this platform)";
     return false;
 #endif
 }
 
 bool FileExpertSource::recheck_unbuffered(std::string& why) {
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__linux__)
     if (const char* env = std::getenv("STRATA_UNBUFFERED_LOAD"); env != nullptr && env[0] != '\0') {
         why = std::string("STRATA_UNBUFFERED_LOAD=") + env;
         return !direct_.empty();
@@ -989,7 +1054,7 @@ bool FileExpertSource::recheck_unbuffered(std::string& why) {
     const uint64_t experts = expert_bytes();
     const uint64_t read = experts > complement_bytes_ ? experts - complement_bytes_ : 0;
     std::string w;
-    const bool ub = experts_unbuffered(paths_, 0, w, /*cache_counts=*/false, read);
+    const bool ub = file_tier_unbuffered(paths_, 0, read, w);
     char head[96];
     std::snprintf(head, sizeof head, "re-checked with the RAM copy built (%.2f GiB): ",
                   (double) complement_bytes_ / 1073741824.0);
@@ -997,11 +1062,11 @@ bool FileExpertSource::recheck_unbuffered(std::string& why) {
     if (ub == !direct_.empty()) return ub;
     if (ub) return open_direct(why);
     // through the file cache after all: the mapped reads take over (staged() stays true for the GGUF in place)
-    for (void* d : direct_) CloseHandle((HANDLE) d);
+    for (void* d : direct_) close_direct(d);
     direct_.clear();
     return false;
 #else
-    why = "through the file cache (not Windows)";
+    why = "through the file cache (no unbuffered reads on this platform)";
     return false;
 #endif
 }
@@ -1117,6 +1182,148 @@ bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
     for (const Window& x : sc.win) {
         // a request may run past the end of the file: only the role's own bytes have to arrive
         if ((uint64_t) got[x.req] < x.in_req + x.skip + x.n) return false;
+        std::memcpy(x.dst + x.at, sc.buf + sc.req[x.req].pos + x.in_req + x.skip, (size_t) x.n);
+    }
+    return true;
+#elif defined(__linux__)
+    // Linux: O_DIRECT descriptors (open_direct) and the kernel's asynchronous reads - every window of the batch is
+    // queued with one io_submit before the first wait, so the drive sees the batch as one queue, as the overlapped
+    // ReadFiles above do.  No NTFS here: windows are merged only where they touch (the 4 KiB rounding of adjacent
+    // slices, consecutive experts of a role), never across a gap that would be read for nothing.  Each thread has its
+    // own context and aligned buffer, kept for its next batch, so concurrent batches never see each other's events.
+    constexpr uint64_t kSector = 4096, kMerge = 32ull << 20;
+    constexpr long kDepth = 256;   // requests in flight per thread; a larger batch is read in waves of this many
+    struct Window { int file; uint64_t a0, size, skip, n, at; uint8_t* dst; size_t req; uint64_t in_req; };
+    struct Req { int fd; uint64_t a0, size, pos; };
+    struct Scratch {
+        uint8_t* buf = nullptr;
+        size_t cap = 0;
+        aio_context_t ctx = 0;
+        std::vector<Window> win;
+        std::vector<size_t> order;
+        std::vector<Req> req;
+        std::vector<int64_t> got;
+        std::vector<iocb> cb;
+        std::vector<iocb*> cbp;
+        std::vector<io_event> ev;
+        ~Scratch() {
+            std::free(buf);
+            if (ctx != 0) (void) syscall(SYS_io_destroy, ctx);
+        }
+    };
+    thread_local Scratch sc;
+    if (sc.ctx == 0 && syscall(SYS_io_setup, kDepth, &sc.ctx) != 0) {
+        sc.ctx = 0;
+        return false;   // no AIO (a seccomp profile, aio-max-nr): the caller falls back to the mapped copy
+    }
+    sc.win.clear();
+    for (size_t k = 0; k < n; ++k) {
+        const Fill& f = fills[k];
+        if (f.dst == nullptr || f.layer < 0 || f.e < 0 || f.layer >= n_layers_ || f.e >= n_expert_) return false;
+        if (role_ptr_.empty()) {   // experts.bin: the blob is one contiguous range
+            const uint64_t per = layer_blob_bytes_[(size_t) f.layer];
+            const uint64_t off = layer_offsets_[(size_t) f.layer] + (uint64_t) f.e * per;
+            const uint64_t a0 = off / kSector * kSector, a1 = (off + per + kSector - 1) / kSector * kSector;
+            sc.win.push_back({0, a0, a1 - a0, off - a0, per, 0, f.dst, 0, 0});
+            continue;
+        }
+        uint64_t at = 0;
+        for (int r = 0; r < 3; ++r) {
+            const size_t i = (size_t) (3 * f.layer + r);
+            const uint64_t per = role_bytes_[i];
+            const Map& m = maps_[(size_t) role_file_[i]];
+            const uint64_t off = (uint64_t) (role_ptr_[i] - m.base) + (uint64_t) f.e * per;
+            const uint64_t a0 = off / kSector * kSector, a1 = (off + per + kSector - 1) / kSector * kSector;
+            sc.win.push_back({role_file_[i], a0, a1 - a0, off - a0, per, at, f.dst, 0, 0});
+            at += per;
+        }
+    }
+    sc.order.resize(sc.win.size());
+    for (size_t w = 0; w < sc.win.size(); ++w) sc.order[w] = w;
+    std::sort(sc.order.begin(), sc.order.end(), [&](size_t a, size_t b) {
+        return sc.win[a].file != sc.win[b].file ? sc.win[a].file < sc.win[b].file : sc.win[a].a0 < sc.win[b].a0;
+    });
+    sc.req.clear();
+    uint64_t total = 0;
+    int last_file = -1;
+    for (size_t w : sc.order) {
+        Window& x = sc.win[w];
+        if (!sc.req.empty() && x.file == last_file) {
+            Req& q = sc.req.back();
+            const uint64_t end = q.a0 + q.size, xend = x.a0 + x.size;
+            if (x.a0 <= end && std::max(end, xend) - q.a0 <= kMerge) {
+                if (xend > end) {
+                    total += xend - end;
+                    q.size = xend - q.a0;
+                }
+                x.req = sc.req.size() - 1;
+                x.in_req = x.a0 - q.a0;
+                continue;
+            }
+        }
+        sc.req.push_back({(int) (intptr_t) direct_[(size_t) x.file], x.a0, x.size, total});
+        total += x.size;
+        last_file = x.file;
+        x.req = sc.req.size() - 1;
+        x.in_req = 0;
+    }
+    if (total > sc.cap) {
+        std::free(sc.buf);
+        sc.cap = (size_t) ((total + (1u << 20) - 1) >> 20 << 20);
+        void* p = nullptr;
+        sc.buf = posix_memalign(&p, (size_t) kSector, sc.cap) == 0 ? (uint8_t*) p : nullptr;
+        if (sc.buf == nullptr) { sc.cap = 0; return false; }
+    }
+    sc.got.assign(sc.req.size(), -1);
+    sc.cb.resize(std::min<size_t>(sc.req.size(), (size_t) kDepth));
+    sc.cbp.resize(sc.cb.size());
+    sc.ev.resize(sc.cb.size());
+    bool ok = true;
+    for (size_t w0 = 0; ok && w0 < sc.req.size(); w0 += (size_t) kDepth) {
+        const size_t wn = std::min<size_t>((size_t) kDepth, sc.req.size() - w0);
+        for (size_t j = 0; j < wn; ++j) {
+            const Req& r = sc.req[w0 + j];
+            iocb& c = sc.cb[j];
+            std::memset(&c, 0, sizeof c);
+            c.aio_lio_opcode = IOCB_CMD_PREAD;
+            c.aio_fildes = (uint32_t) r.fd;
+            c.aio_buf = (uint64_t) (uintptr_t) (sc.buf + r.pos);
+            c.aio_nbytes = r.size;
+            c.aio_offset = (int64_t) r.a0;
+            c.aio_data = (uint64_t) (w0 + j);
+            sc.cbp[j] = &c;
+        }
+        // every request of the wave queued; a refused submit ends the batch once what was queued has completed
+        // (the kernel still writes into the buffer until then)
+        size_t queued = 0;
+        while (queued < wn) {
+            const long r = syscall(SYS_io_submit, sc.ctx, (long) (wn - queued), sc.cbp.data() + queued);
+            if (r > 0) { queued += (size_t) r; continue; }
+            if (r < 0 && errno == EINTR) continue;
+            ok = false;
+            break;
+        }
+        for (size_t done = 0; done < queued;) {
+            const long r = syscall(SYS_io_getevents, sc.ctx, 1L, (long) (queued - done), sc.ev.data(), nullptr);
+            if (r < 0) {
+                if (errno == EINTR) continue;
+                // the context is in an unknown state: drop it (io_destroy waits for what is still in flight)
+                (void) syscall(SYS_io_destroy, sc.ctx);
+                sc.ctx = 0;
+                return false;
+            }
+            for (long j = 0; j < r; ++j) {
+                const io_event& e = sc.ev[(size_t) j];
+                sc.got[(size_t) e.data] = e.res;
+                if (e.res < 0) ok = false;
+            }
+            done += (size_t) r;
+        }
+    }
+    if (!ok) return false;
+    for (const Window& x : sc.win) {
+        // a request may run past the end of the file: only the role's own bytes have to arrive
+        if (sc.got[x.req] < 0 || (uint64_t) sc.got[x.req] < x.in_req + x.skip + x.n) return false;
         std::memcpy(x.dst + x.at, sc.buf + sc.req[x.req].pos + x.in_req + x.skip, (size_t) x.n);
     }
     return true;
