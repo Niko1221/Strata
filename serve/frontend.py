@@ -302,6 +302,19 @@ def tool_arguments(raw) -> dict:
     return {"arguments": json.dumps(raw, ensure_ascii=False)}
 
 
+def assistant_prefix_kw(req: dict, kwargs: dict) -> dict:
+    """A request's "assistant_prefix" - text the assistant has already said, so the model continues its turn from
+    it instead of starting one - as a template kwarg (Service.render_prompt renders it as an unfinished final
+    assistant turn).  Absent, None or "" is no prefix (kwargs back unchanged); anything else that is not a string
+    is a ValueError, which the server answers with a 400 naming the field."""
+    prefix = req.get("assistant_prefix")
+    if prefix is None or prefix == "":
+        return kwargs
+    if not isinstance(prefix, str):
+        raise ValueError("assistant_prefix must be a string")
+    return {**kwargs, "assistant_prefix": prefix}
+
+
 def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
     """OpenAI Chat Completions -> (template messages, template tools, template kwargs)."""
     messages = []
@@ -333,7 +346,7 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
             kwargs = {"enable_thinking": False}
         elif k == "reasoning_effort" and "enable_thinking" not in kwargs:
             kwargs.update(effort_kwargs(v))
-    return _late_system_to_user(messages), tools, kwargs
+    return _late_system_to_user(messages), tools, assistant_prefix_kw(req, kwargs)
 
 
 BILLING_HEADER = "x-anthropic-billing-header:"
@@ -427,7 +440,7 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
         # A config's reasoning_effort still applies: Service.with_shared sets output_config before this runs.  A
         # request that gives its own reasoning_budget_tokens (#123) asks for thinking, so it thinks as before.
         kwargs["enable_thinking"] = False
-    return _late_system_to_user(messages), tools, kwargs
+    return _late_system_to_user(messages), tools, assistant_prefix_kw(req, kwargs)
 
 
 # ------------------------------------------------------------------------------------------------ output parser
