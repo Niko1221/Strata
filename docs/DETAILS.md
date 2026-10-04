@@ -37,10 +37,11 @@ below are 0.1.26's.
 | **IQ3_XXS** | 482 | 1,007 | 1,745 | 1,609 | 1,602 | - |
 | **IQ3_S** | 427 | 913 | 1,624 | 1,640 | 1,443 | - |
 | **Coder** | 656 | 1,583 | 2,177 | 2,236 | 2,208 | 1,034** |
-| **IQ3_S** (AMD RX 7900 XTX, gfx1100) | 850 | 1,366 | 1,565 | 1,540 | 1,418 | - |
+| **IQ3_S** (AMD RX 7900 XTX, gfx1100) | 760 | 1,275 | 1,641 | 1,594 | 1,494 | - |
 
-Engine 0.1.26; `bench/results/2026-09-29-speed-0126`. The AMD RX 7900 XTX row: engine 0.1.31, the median
-of 3 clean cells per tier (Ryzen 9 7900X, 96 GB, ROCm 7.1.1; 1K-128K one-shot runs, 256 generated tokens,
+Engine 0.1.26; `bench/results/2026-09-29-speed-0126`. The AMD RX 7900 XTX row: engine 0.1.38 on a ROCm
+10.2 nightly with a tuned gfx1100 hipBLASLt-100500 table, the median of 3 clean cells per tier
+(Ryzen 9 7900X, 96 GB; 1K-128K one-shot runs, 256 generated tokens,
 greedy). At 32K-128K that is 8-28% faster than 0.1.22. † not measured
 again: 0.1.22. \* measured with images on (the image encoder's VRAM reserve leaves fewer experts cached). \*\* not
 measured again: 0.1.14.
@@ -54,9 +55,12 @@ measured again: 0.1.14.
 | **IQ3_XXS** | 61.9 | 61.6 | 58.5 | 57.2 | 49.0 | - |
 | **IQ3_S** | 52.4 | 53.3 | 48.3 | 46.3 | 45.5 | - |
 | **Coder** | 58.9 | 55.1 | 54.9 | 53.2 | 43.0 | 42.8† |
+| **IQ3_S** (AMD RX 7900 XTX, gfx1100) | 65.1 | 60.4 | 64.4 | 61.8 | 59.2 | - |
 
-Engine 0.1.26, the same runs. The AMD RX 7900 XTX row: engine 0.1.31, median of 3 clean cells per tier
-(same box; decode is flat in context - the GDN linear attention is O(1) per token). † not measured again: 0.1.14.
+Engine 0.1.26, the same runs. The AMD RX 7900 XTX row: engine 0.1.38 on a ROCm 10.2 nightly (tuned
+gfx1100 hipBLASLt-100500 table), median of 3 clean cells per tier (same box; decode is flat in
+context - the GDN linear attention is O(1) per token; 1K/4K prefill ran slightly under the 0.1.31
+packaged-ROCm numbers, 32K-128K ahead). † not measured again: 0.1.14.
 
 Output speed depends on the text as well: speculative decoding runs faster when more of the drafted tokens are
 accepted, so a different answer to the same prompt moves it by several percent. Run back to back on the 4K prompt,
