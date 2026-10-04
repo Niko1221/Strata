@@ -8,6 +8,12 @@
 // VRAM tier, the others streamed from the host arena through a pinned ring on a copy stream.
 //
 // Requires the native weights (`--native`): every quantized projection must carry its GGUF blocks.
+//
+// The routed experts' prompt kernels are chosen per device and pack: the FP16 tensor-core compact walk where it
+// applies (a Volta device - cc 7.0 - with a native Q2_0 pack every layer of which is MMQ-eligible), the MMQ
+// reference elsewhere.  STRATA_PREFILL_FP16TC=0 forces the MMQ reference on every device; unset or nonzero (the
+// default) keeps the compact walk wherever it is eligible.  The choice, and the compact GU/H sizing, come from one
+// per-device plan shared by `bytes_needed` and `init`/`relayout`.
 #pragma once
 
 #include "strata/core/expert_cache.hpp"
@@ -90,6 +96,18 @@ public:
     /// T x hc*n_embd, valid until the next chunk) and the chunk's first position; the MTP draft layer builds its
     /// K/V from them.  The prefill stream is synchronized before the call.
     std::function<bool(const float* R_rows, int64_t T, int64_t pos0, std::string& err)> on_chunk;
+
+    /// STRATA_PREFILL_REFILL_OVERLAP: called at the very end of `run` - every chunk is done, the chunk-scoped
+    /// stager and issuer are joined, this stage's final residual has been read and BOTH of its streams (`m.cs`
+    /// and `m.copy`, the latter because it is what streams experts into the borrowed ring) are synchronized -
+    /// and before this stage waits for the next stage's last chunk.  A layer split's non-last stage uses it to
+    /// queue the refill of the cache slots it lent the prompt path while the next stage still computes; the
+    /// wait below is otherwise idle time with the loan outstanding.  `done` is the position this run reached
+    /// (pos0 + n); the caller acts only when that is the request's final prompt position, so an earlier segment
+    /// (a root/turn checkpoint) never refills a loan its own later chunks still read.  After the call no buffer
+    /// of this stage is read again.  Returning false fails the run, but only after the next stage's chunk has
+    /// been waited for.
+    std::function<bool(int64_t done, std::string& err)> on_stage_complete;
 
     /// Layer split: called by every stage when it has read a chunk, with the position reached, while its own state
     /// is still at that chunk's end (its stream synchronized; the last stage calls it just before `on_chunk`).  An

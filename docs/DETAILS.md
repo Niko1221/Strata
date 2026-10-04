@@ -204,6 +204,64 @@ Raw measurements:
 Use `bench/run_v100_bench.py` with targets `4096,8192,16384,32768`,
 `--max-tokens 256`, `--seed 20261002`, and `--repeats 3` to repeat the sweep.
 
+**V100 int8-KV prefill with FP16 tensor-core experts (3 October 2026; dual-GPU A/B)**
+
+This run used the same two V100 PCIe 16GB cards and the same settings as the
+1 October A/B above: layer split 20, int8 KV, 524,288-token context, YaRN scale 2,
+speculation window 8 with a 0.70 draft floor, automatic prefill and expert cache,
+and a 700 MiB vision reserve. Prompt checkpoints and the conversation cache were
+off, so every request read its whole prompt (`reused=0`, `resume=0`). Each size had
+three fresh requests with exact token ids (seed 20261003), and each request
+generated one token. The table gives the median prompt time and speed.
+
+| Target prompt | Baseline prompt time | Candidate prompt time | Less time | Baseline prefill | Candidate prefill | Change |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2K | 3,663.4 ms | 2,910.7 ms | 20.6% | 559.0 tok/s | 703.6 tok/s | +25.9% |
+| 4K | 5,039.0 ms | 3,794.8 ms | 24.7% | 812.9 tok/s | 1,079.4 tok/s | +32.8% |
+| 8K | 7,810.4 ms | 5,767.0 ms | 26.2% | 1,048.9 tok/s | 1,420.5 tok/s | +35.4% |
+| 16K | 11,052.3 ms | 8,517.8 ms | 22.9% | 1,482.4 tok/s | 1,923.5 tok/s | +29.8% |
+| 32K | 18,078.8 ms | 14,506.0 ms | 19.8% | 1,812.5 tok/s | 2,258.9 tok/s | +24.6% |
+
+All five sizes gain at least 20% more tokens per second (24.6% to 35.4%). The
+"Change" column is the speed change; "Less time" is the fall in prompt time.
+Decode was not measured, because each request generated one token.
+
+At 2K the batched prompt chunk is 2,047 tokens, which is below the compact walk's
+2,048-token stream floor. That row therefore keeps the int8 small-chunk path; its
+gain comes from the new staging, buffer-sizing, and refill policies.
+
+The candidate moves the routed prompt experts of the native Q2_0 pack to FP16
+tensor-core products with FP32 accumulation. The gate/up and hidden buffers then
+hold a compact row capacity instead of one row per routed token; the last small
+chunk keeps the int8 path. On this path the compact walk also selects a 192-slot
+streamed ring (`STRATA_PREFILL_RING` overrides it). The kernels select on compute
+capability 7.0 (Volta), not on a product name. `STRATA_PREFILL_FP16TC=0` keeps the
+int8 reference on every device. The candidate also starts the refill of the
+expert-cache slots that a non-last stage lent the prompt path before that stage
+waits for the last stage (`STRATA_PREFILL_REFILL_OVERLAP=0` disables it; the serial
+and blocking refill modes bypass it).
+
+Before every measured request, both cards were at or below 55 °C for 10 seconds.
+Every request met the gate. The highest sampled temperatures were 51 °C (GPU 0)
+and 57 °C (GPU 1) in the baseline, and 50 °C and 57 °C in the candidate. Neither
+card reported a thermal or hardware slowdown.
+
+The new path is not bit-exact. The parity test `prefill_fp16tc_test` passed on both
+cards: against a double-precision reference the new path measured 1.073e-02
+relative RMS and the int8 MMQ path 1.074e-02. The first generated token was
+identical in 14 of the 15 paired requests. A one-time semantic smoke passed all
+eight checks in both arms (retrieval at 10%, 50%, and 90% depth at 2K and 32K, and
+one arithmetic question at each length), and both arms produced the same output
+tokens. This is a smoke check, not a quality measurement. Do not use these results
+to claim unchanged perplexity or long-generation quality.
+
+Only V100 cards were tested.
+
+Raw measurements: [the result directory](../bench/results/2026-10-03-v100-prefill/).
+Repeat the sweep with [`bench/run_v100_prefill.py`](../bench/run_v100_prefill.py),
+targets `2048,4096,8192,16384,32768`, `--repeats 3`, `--seed 20261003`,
+`--max-new 1`, and the same cooldown gate before every request.
+
 Long-context baseline for comparison (engine 0.1.20, models on the portable SSD, before the fast path):
 | Prompt size | Exact tokens | Prompt time | Prompt speed | Output speed | Expert-cache hit rate | Total request |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
