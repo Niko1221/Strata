@@ -1,6 +1,10 @@
 """GET /metrics in the Prometheus text format, with vLLM's metric names, so the dashboards and alerts written for a
 vLLM server read a Strata server unchanged.  Everything comes from the server's own record (Service.metrics(), the
-same dict the JSON /metrics returns) plus three latency histograms observed when a request finishes."""
+same dict the JSON /metrics returns) plus three latency histograms observed when a request finishes.
+
+What vLLM has no name for is the JSON's own facts under `strata:`, named after the JSON's keys (live.tok_s ->
+strata:live_tok_s, totals.decode_ms -> strata:totals_decode_seconds_total, hardware.gpu_util -> strata:gpu_util), so
+the two formats say the same thing and a panel can be moved from the Monitor tab to Grafana by its key."""
 import threading
 
 # vLLM's buckets for the request latencies (seconds)
@@ -95,4 +99,54 @@ def render(m: dict, lat: dict) -> str:
             out.append(f'{name}_bucket{{{lab},le="{b}"}} {c}')
         out.append(f'{name}_bucket{{{lab},le="+Inf"}} {n}')
         out.append(f"{name}_sum{{{lab}}} {round(total, 6)}\n{name}_count{{{lab}}} {n}")
+    strata(m, out, lab)
     return "\n".join(out) + "\n"
+
+
+def strata(m: dict, out: list, lab: str):
+    """The JSON's facts vLLM has no name for, under `strata:` and the JSON's key."""
+    live, totals = m.get("live") or {}, m.get("totals") or {}
+    hw, eng = m.get("hardware") or {}, m.get("engine") or {}
+    reqs = m.get("requests") or []
+
+    typed = set()
+
+    def metric(name, kind, help_, value, labels=""):
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return                                       # unknown here (no GPU telemetry, an older engine): no sample
+        if name not in typed:                            # one HELP / TYPE per family, before its first sample
+            typed.add(name)
+            out.append(f"# HELP strata:{name} {help_}\n# TYPE strata:{name} {kind}")
+        out.append(f"strata:{name}{{{lab}{labels}}} {value}")
+
+    for state in ("unloaded", "idle", "reading", "generating"):
+        metric("live_state", "gauge", "1 for what the engine is doing (live.state).", int(live.get("state") == state),
+               f',state="{state}"')
+    metric("live_tok_s", "gauge", "Decode rate over the last seconds (live.tok_s).", live.get("tok_s") or 0)
+    metric("live_prefill_tok_s_mean", "gauge", "Prompt reading rate of the running request (live.prefill_tok_s_mean).",
+           live.get("prefill_tok_s_mean") or 0)
+    metric("live_prompt_read", "gauge", "Prompt tokens read so far by the running request (live.prompt_read).",
+           live.get("prompt_read") or 0)
+    metric("engine_max_context", "gauge", "The engine's context (engine.max_context).", eng.get("max_context"))
+    metric("totals_prompt_seconds_total", "counter", "Time spent reading prompts (totals.prompt_ms).",
+           round((totals.get("prompt_ms") or 0) / 1000, 3))
+    metric("totals_decode_seconds_total", "counter", "Time spent generating (totals.decode_ms).",
+           round((totals.get("decode_ms") or 0) / 1000, 3))
+    last = reqs[0] if reqs else {}
+    metric("last_hit_rate", "gauge", "The last request's expert cache hit rate (requests[0].hit_rate).",
+           last.get("hit_rate"))
+    metric("last_decode_tok_s", "gauge", "The last request's decode rate (requests[0].decode_tok_s).",
+           last.get("decode_tok_s"))
+    gpus = hw.get("gpus") or ([{"index": 0, "util": hw.get("gpu_util"), "mem_used": hw.get("gpu_mem_used"),
+                                "mem_total": hw.get("gpu_mem_total"), "temp": hw.get("gpu_temp"),
+                                "power": hw.get("gpu_power")}] if hw.get("gpu_util") is not None else [])
+    for name, key, help_ in (("gpu_util", "util", "GPU busy, percent (hardware.gpu_util)."),
+                             ("gpu_mem_used_bytes", "mem_used", "GPU memory in use (hardware.gpu_mem_used)."),
+                             ("gpu_mem_total_bytes", "mem_total", "GPU memory (hardware.gpu_mem_total)."),
+                             ("gpu_temp_celsius", "temp", "GPU temperature (hardware.gpu_temp)."),
+                             ("gpu_power_watts", "power", "GPU power draw (hardware.gpu_power).")):
+        for g in gpus:                                   # a family's samples together, one per card
+            metric(name, "gauge", help_, g.get(key), f',gpu="{g.get("index")}"')
+    metric("cpu", "gauge", "CPU busy, percent (hardware.cpu).", hw.get("cpu"))
+    metric("ram_used_bytes", "gauge", "RAM in use (hardware.ram_used).", hw.get("ram_used"))
+    metric("ram_total_bytes", "gauge", "RAM (hardware.ram_total).", hw.get("ram_total"))

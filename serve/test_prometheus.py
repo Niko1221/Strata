@@ -24,6 +24,7 @@ def parse(text):
     out, typed = {}, set()
     for line in text.splitlines():
         if line.startswith("# TYPE "):
+            assert line.split()[2] not in typed, f"two # TYPE lines for {line.split()[2]}"
             typed.add(line.split()[2])
             continue
         if line.startswith("#") or not line:
@@ -72,6 +73,26 @@ class Units(unittest.TestCase):
         self.assertEqual(got[("vllm:prefix_cache_hits_total", lab)], 600)
         self.assertEqual(got[("vllm:spec_decode_num_accepted_tokens_total", lab)], 30)
         self.assertEqual(got[("vllm:time_to_first_token_seconds_count", lab)], 0)
+
+    def test_strata_names_follow_the_json(self):
+        m = {"engine": {"model": "m", "max_context": 1000},
+             "live": {"state": "reading", "queued": 0, "prompt_read": 300, "prefill_tok_s_mean": 2500.0},
+             "totals": {"requests": 1, "prompt_ms": 1500.0, "decode_ms": 2000.0},
+             "requests": [{"hit_rate": 0.97, "decode_tok_s": 101.5}],
+             "hardware": {"gpu_util": 40.0, "gpus": [{"index": 0, "util": 30.0, "mem_used": 1 << 30, "temp": 60},
+                                                     {"index": 1, "util": 50.0, "mem_used": 2 << 30, "temp": 65}],
+                          "cpu": 12.5, "ram_used": 8 << 30, "ram_total": 64 << 30}}
+        got = parse(render(m, Latencies().snapshot()))
+        lab = 'model_name="m"'
+        self.assertEqual(got[("strata:live_state", lab + ',state="reading"')], 1)
+        self.assertEqual(got[("strata:live_state", lab + ',state="generating"')], 0)
+        self.assertEqual(got[("strata:live_prompt_read", lab)], 300)
+        self.assertEqual(got[("strata:totals_decode_seconds_total", lab)], 2.0)
+        self.assertEqual(got[("strata:last_hit_rate", lab)], 0.97)
+        self.assertEqual(got[("strata:gpu_util", lab + ',gpu="1"')], 50)
+        self.assertEqual(got[("strata:gpu_mem_used_bytes", lab + ',gpu="0"')], 1 << 30)
+        self.assertNotIn(("strata:gpu_power_watts", lab + ',gpu="0"'), got)   # not measured: no sample
+        self.assertEqual(got[("strata:ram_total_bytes", lab)], 64 << 30)
 
 
 class Endpoint(unittest.TestCase):
