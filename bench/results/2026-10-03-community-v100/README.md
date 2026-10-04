@@ -5,6 +5,10 @@ benchmark harness. Each number is a single run unless stated; the `--calibrate` 
 is the engine's own repeated measurement. Reported per the guide in
 [COMMUNITY_BENCHMARKS.md](../../../docs/COMMUNITY_BENCHMARKS.md).
 
+The sections below describe the **v0.1.38 source build** as first submitted; an
+**update for the v0.1.39 ready-made CUDA 12 engine** (verified on this sm_70 card and
+re-calibrated, decode roughly 2x) is at the end of this file.
+
 ## Hardware
 
 - Tesla V100-PCIE-32GB (sm_70, TCC mode), solo, PCIe **Gen3** x16
@@ -77,3 +81,34 @@ the same 4,340-token document at 629.5 tok/s.
   decode on comparable MoE traffic (community anecdote, unverified).
 - Full capability comparison against Qwen3.8-27B (llama.cpp) on the same machine, and the
   thinking-budget pitfall (`reasoning_budget_tokens`), are described in issue #617.
+
+## Update (2026-10-04): v0.1.39, the ready-made CUDA 12 engine
+
+v0.1.39 ships an experimental ready-made engine for Pascal/Volta
+(`strata-windows-x64-cuda12.zip`, sm_60/61/70 + sm_75-89 + PTX, CUDA 12.9). Installed over
+this setup with `--cuda 12`: the model pack, MTP draft and settings carried over. It runs
+correctly on this real sm_70 card (the release notes check the build only - no Pascal/Volta
+card on the test PC). Driver 581.80.
+
+Re-calibrated for 0.1.39 (0.1.38 values in parentheses): `--pcie-frac 0.35` (was 0.55),
+`--spec-min-p 0.70` (unchanged). `--pool-workers` is no longer set: 35 / 23 / 18 workers
+measured within 2% of each other (76.9 / 77.2 / 78.3 tok/s in the engine's own bench),
+where on 0.1.38 eighteen workers beat 35 by 20%+. Full sweep: PCIe share 0.00: 73.4 /
+0.20: 72.0 / 0.34: 75.8 / 0.35: 76.2; draft floor 0.30: 71.5 / 0.50: 73.5 / 0.70: 79.2.
+The calibrate bench itself went 33.5 -> 76.9 tok/s (**2.30x**) between the two engines.
+
+Same-prompt API measurements (timings reported by the server, single runs):
+
+| Workload | 0.1.38 (source, calibrated) | 0.1.39 (ready-made, calibrated) |
+|---|---|---|
+| Short prose, ~150 tok out | 22.0 tok/s | 54.6 tok/s |
+| Long-form, 2.2-3.4k tok out | 33.5 tok/s steady | 64.2 tok/s |
+| 4,340-tok synthetic log doc, prompt processing | 863 tok/s | 1,127 tok/s |
+| Same doc, decode, ~800 tok out | 11.9 tok/s (pre-calibration) | 72.3 tok/s |
+
+The decode gains far exceed the RTX 5070 medians in the 0.1.39 notes (+2.5-6%): #646's
+savings are host-side launches and round trips, which weigh far more on an older
+dual-socket box (2x E5-2696 v3, DDR3L-1600) than on a modern desktop. Consistent with
+the GPU-side evidence above - decode here is host-bound, not compute-bound. The
+0.1.38-time `--pool-workers` sensitivity disappearing fits the same story: less CPU work
+per token, fewer threads needed to feed the GPU.
