@@ -1094,7 +1094,10 @@ times out, the server keeps ownership and reports an error rather than claiming 
 
 `POST /v1/chat/completions` accepts `response_format: {"type":"json_object"}` or
 `{"type":"json_schema","json_schema":{"name":"answer","strict":true,"schema":{"type":"object","properties":{"answer":{"type":"integer"}},"required":["answer"],"additionalProperties":false}}}`.
-The schema must describe an object at its root. Local `#` references work; remote references are refused.
+The schema must accept only JSON objects at its root: `"type":"object"`, or an `anyOf`/`oneOf` whose branches are all
+object schemas (an `allOf` with an object member, or a local `$ref` to one, also counts), as apps written for
+llama.cpp's `json_schema` send. A root that also allows an array, string, number, boolean or null is refused. Local
+`#` references work; remote references are refused.
 `json_schema` is checked with the Python package `jsonschema` when it is installed (`python -m pip install
 "jsonschema>=4.23,<5"`; setup does not add it); without it the answer is only checked to be one JSON object, and the
 server says so once.

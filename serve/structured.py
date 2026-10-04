@@ -51,6 +51,35 @@ def jsonschema_modules():
         return _jsonschema or None
 
 
+def _only_objects(node, root, refs=()):
+    """True when every value `node` accepts is a JSON object, so "return one JSON object" stays true.
+
+    `type: object`, an anyOf/oneOf whose branches all qualify (e.g. a root union of object shapes, which llama.cpp's
+    grammar path accepts and apps send), an allOf with a qualifying member, or a local `$ref` to one of these.
+    Anything that can also be an array, string, number, boolean or null (including `type: ["object", "null"]`) is
+    not, and a `$ref` cycle never qualifies.
+    """
+    if not isinstance(node, dict):
+        return False
+    if node.get("type") == "object":
+        return True
+    ref = node.get("$ref")
+    if isinstance(ref, str) and ref.startswith("#") and ref not in refs:
+        target = root
+        for part in ref[1:].split("/")[1:]:
+            part = part.replace("~1", "/").replace("~0", "~")
+            if not isinstance(target, dict) or part not in target:
+                return False
+            target = target[part]
+        return _only_objects(target, root, refs + (ref,))
+    for key in ("anyOf", "oneOf"):
+        branches = node.get(key)
+        if isinstance(branches, list) and branches and all(_only_objects(b, root, refs) for b in branches):
+            return True
+    branches = node.get("allOf")
+    return isinstance(branches, list) and any(_only_objects(b, root, refs) for b in branches)
+
+
 def prepare_format(response_format, messages):
     if response_format is None:
         return messages, None
@@ -71,8 +100,9 @@ def prepare_format(response_format, messages):
         if "strict" in spec and not isinstance(spec["strict"], bool):
             raise ValueError("response_format.json_schema.strict must be boolean")
         schema = spec["schema"]
-        if schema.get("type") != "object":
-            raise ValueError("response_format schema must have type object at its root")
+        if not _only_objects(schema, schema):
+            raise ValueError("response_format schema must accept only JSON objects at its root "
+                             "(type object, or anyOf/oneOf of object schemas)")
         modules = jsonschema_modules()
     else:
         raise ValueError("response_format.type must be text, json_object or json_schema")
