@@ -184,8 +184,43 @@ if(STRATA_SYCL_PARITY)
     add_executable(${p}_parity ${_src})
     target_include_directories(${p}_parity PRIVATE ${STRATA_ROOT}/src/kernels)   # the oracle .inc fixtures
     target_link_libraries(${p}_parity PRIVATE strata_kernels)
-    add_test(NAME ${p}_parity COMMAND ${p}_parity --selftest)
+    if(NOT p STREQUAL "iq" AND NOT p STREQUAL "ple")   # those two take inputs: registered below, as upstream does
+      add_test(NAME ${p}_parity COMMAND ${p}_parity --selftest)
+    endif()
   endforeach()
+  # iq_parity compares against generated fixtures (tools/iq_fixture.py: numpy + the vendored gguf-py). As in the
+  # top-level CMakeLists: a setup test writes them, and both are a skip (exit 3) when the generator cannot run; with
+  # no python3 with numpy neither is registered. (Before, the port ran `iq_parity --selftest`, which read "--selftest"
+  # as the fixture directory and failed.) By hand: python3 tools/iq_fixture.py --out <dir> && iq_parity <dir>
+  set(_iq_python "")
+  foreach(_cand IN ITEMS ${Python3_EXECUTABLE} ${STRATA_ROOT}/.venv/bin/python3 python3)
+    if(NOT _cand)
+      continue()
+    endif()
+    execute_process(COMMAND ${_cand} -c "import numpy" OUTPUT_QUIET ERROR_QUIET RESULT_VARIABLE _iq_probe)
+    if(_iq_probe EQUAL 0)
+      set(_iq_python "${_cand}")
+      break()
+    endif()
+  endforeach()
+  if(NOT _iq_python STREQUAL "")
+    add_test(NAME iq_parity_fixtures COMMAND ${_iq_python} ${STRATA_ROOT}/tools/iq_fixture.py --out ${CMAKE_CURRENT_BINARY_DIR}/iq_fixture)
+    set_tests_properties(iq_parity_fixtures PROPERTIES FIXTURES_SETUP iq_fixture_data SKIP_RETURN_CODE 3)
+    add_test(NAME iq_parity COMMAND iq_parity ${CMAKE_CURRENT_BINARY_DIR}/iq_fixture)
+    set_tests_properties(iq_parity PROPERTIES FIXTURES_REQUIRED iq_fixture_data SKIP_RETURN_CODE 3)
+  else()
+    message(STATUS "STRATA SYCL tests: no python3 with numpy - iq_parity's fixtures and its test are not registered")
+  endif()
+  # ple_parity's oracles are real artifacts (the dense pack, the original GGUF, ggml's captured block in
+  # ple_in.bin / ple_out.bin): a missing one is a hard error inside the test, so it is registered only where the
+  # captures exist (STRATA_PLE_FIXTURE_DIR, as at the top level), with the GGUF from $STRATA_PLE_GGUF.
+  set(STRATA_PLE_FIXTURE_DIR "${STRATA_ROOT}/bench/micro" CACHE PATH "Directory with ple_parity's ple_in.bin / ple_out.bin")
+  if(EXISTS "${STRATA_PLE_FIXTURE_DIR}/ple_in.bin" AND EXISTS "${STRATA_PLE_FIXTURE_DIR}/ple_out.bin")
+    add_test(NAME ple_parity COMMAND ple_parity --selftest --in "${STRATA_PLE_FIXTURE_DIR}/ple_in.bin"
+             --out "${STRATA_PLE_FIXTURE_DIR}/ple_out.bin" WORKING_DIRECTORY ${STRATA_ROOT})
+  else()
+    message(STATUS "STRATA SYCL tests: no ple_in.bin / ple_out.bin in ${STRATA_PLE_FIXTURE_DIR} - ple_parity is not registered")
+  endif()
   # 0.1.31: the IQ kernels that decode a weight part once for every column/entry, bitwise vs the per-column ones
   # (no --selftest flag: it runs its checks by default), and the rewritten per-hit/grouped expert kernels vs the
   # previous ones, bitwise

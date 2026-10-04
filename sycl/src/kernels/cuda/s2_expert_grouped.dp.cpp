@@ -1302,6 +1302,7 @@ __dpct_inline__ void gu_grouped_t_kernel(
     const int32_t *__restrict__ ent_tok, const uint8_t *__restrict__ x_q8_0,
     const float *__restrict__ x_scales, float *__restrict__ gate_up,
     int cap_entries) {
+    #pragma clang fp contract(off)   // SYCL port: round as the previous kernels do (see tools/fixups.py)
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     constexpr int NC = H / 32;
     auto &xs_w = *sycl::ext::oneapi::group_local_memory_for_overwrite<
@@ -1383,6 +1384,7 @@ __dpct_inline__ void down_grouped_t_kernel(
     const int32_t *__restrict__ grp_start, const int32_t *__restrict__ n_groups,
     const int32_t *__restrict__ ent_dst, const uint8_t *__restrict__ h_q8_0,
     const float *__restrict__ h_scales, float *__restrict__ out) {
+    #pragma clang fp contract(off)   // SYCL port: round as the previous kernels do (see tools/fixups.py)
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     constexpr int NC = FF / 32;
     auto &hs_w = *sycl::ext::oneapi::group_local_memory_for_overwrite<
