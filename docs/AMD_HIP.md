@@ -148,6 +148,46 @@ pinned by this repository. For an offline build, point `STRATA_GGML_DIR` at a
 checkout of that exact revision; using an arbitrary newer checkout changes the
 dependency being tested.
 
+## Linux: verification stalls during host-memory reclaim
+
+A verification timeout does not by itself identify a kernel or handshake bug. On one Linux system with two
+Radeon AI PRO R9700 cards and ROCm 7.2, tracing correlated a timeout with about 31 seconds of KFD USERPTR queue
+suspension on both cards. Host-memory reclaim reached `amdgpu_amdkfd_evict_userptr`; HMM page restoration
+repeatedly returned `-EAGAIN` while the queues remained suspended. No private prompts or raw host logs are
+needed to distinguish this mechanism from a computation hang.
+
+ROCr 7.2's [host allocation path](https://github.com/ROCm/ROCR-Runtime/blob/rocm-7.2.0/libhsakmt/src/fmm.c#L2094)
+uses USERPTR for paged host allocations by default. Its
+[environment-variable initialization](https://github.com/ROCm/ROCR-Runtime/blob/rocm-7.2.0/libhsakmt/src/fmm.c#L2810)
+recognizes the exact string `0` for `HSA_USERPTR_FOR_PAGED_MEM` to disable that path. HIP-allocated host memory
+should not be assumed immune to this reclaim mechanism simply because an API calls it pinned memory.
+
+For this specific failure mechanism, compare the existing configuration with the following entry merged into
+its server JSON `env` object, then restart the engine so ROCr reads the setting:
+
+```json
+"env": {
+  "HSA_USERPTR_FOR_PAGED_MEM": "0"
+}
+```
+
+Keep the rest of the environment, model, context, expert-cache size and workload identical. Removing this entry
+restores the runtime default on the next engine start. This option does not alter model precision or the
+verification watchdog. It changes the allocation path for the process, consumes kernel-managed host-memory
+resources, and does not change explicit host-memory registration. Check available RAM and driver GTT limits
+before large-context or high-concurrency tests; do not raise those limits as part of the comparison.
+
+A five-pair synthetic comparison on that dual-card system retained identical outputs. Seven-request completion
+medians were 16.65 seconds with USERPTR and 16.63 seconds with the alternative allocation path; USERPTR runs
+also included 29.76- and 42.17-second samples, whereas the alternative ranged from 16.56 to 16.89 seconds.
+Solo completion medians increased from 3.55 to 3.69 seconds, and median time to first output increased about 5%.
+These small samples support a targeted workaround, not a general speed claim, a P95 estimate or a guarantee
+against future timeouts. The kernel-event trace did not cover every comparison run.
+
+This is not a new default or a recommendation for Windows, other ROCm versions, or every AMD timeout.
+For a report, include runtime/kernel versions, whether reclaim coincides with KFD queue eviction/restoration,
+and paired inference timings; redact usernames, machine identifiers, addresses and request content.
+
 ## Model and serving configuration
 
 Prepare a supported model pack and its MTP runtime using the existing tools.
