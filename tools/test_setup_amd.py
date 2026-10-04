@@ -76,6 +76,9 @@ class KfdDetection(unittest.TestCase):
         self.assertTrue(setup.ROCM_INDEXES["gfx1200"].endswith("/gfx120X-all/"))
         self.assertEqual(setup.ROCM_INDEXES["gfx1101"], setup.ROCM_INDEXES["gfx1100"])
         self.assertEqual(setup.ROCM_INDEXES["gfx1200"], setup.ROCM_INDEXES["gfx1201"])
+        # #524: the RX 6700 XT (gfx1031) takes the RDNA2 wheels, as the RX 6800 / 6900 (gfx1030)
+        self.assertEqual(setup.ROCM_INDEXES["gfx1031"], setup.ROCM_INDEXES["gfx1030"])
+        self.assertIsNone(setup.amd_problem({"arch": "gfx1031"}))
 
 
 class GpuLists(unittest.TestCase):
@@ -334,6 +337,81 @@ _HIP_DEVICES = setup.hip_devices                      # the real parser, for the
 
 def setup_hip(text):
     return _HIP_DEVICES(text=text)
+
+
+class CalibrationKey(unittest.TestCase):
+    """#566: a calibration is saved and found again per PC and model (hardware_key).  A HIP config's cards are AMD's,
+    in HIP's numbering - nvidia-smi named them "?" (or another card with that number) before - and setup reuses a
+    saved calibration on Linux HIP.  The NVIDIA key and the settings file's format are unchanged."""
+    AMD = [{"index": 0, "name": "AMD Radeon RX 7900 XTX", "vram_gb": 23.98, "arch": "gfx1100"},
+           {"index": 1, "name": "AMD Radeon RX 7900 XT", "vram_gb": 19.98, "arch": "gfx1100"},
+           {"index": 2, "name": "AMD Radeon (gfx1201)", "vram_gb": 15.92, "arch": "gfx1201"},
+           {"index": 3, "name": "AMD Radeon (gfx1036)", "vram_gb": 0.5, "arch": "gfx1036"}]
+
+    def setUp(self):
+        self.patches = [mock.patch.object(setup, "amd_gpus", lambda *a, **k: [dict(g) for g in self.AMD]),
+                        mock.patch.object(setup, "cpu_info", lambda: ("AMD Ryzen 9 7950X", 16)),
+                        mock.patch.object(setup, "ram_gb", lambda: 63.6)]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+
+    @staticmethod
+    def cfg(gpu, backend="hip", ctx="32768"):
+        c = {"model_name": "qwen3.8-flash-next-iq3_xxs", "args": ["--max-context", ctx, "--kv", "int8"], "gpu": gpu}
+        if backend:
+            c["backend"] = backend
+        return c
+
+    def test_hip_key_names_the_amd_card_and_its_arch(self):
+        def no_nvidia(*a, **k):                     # a HIP config never asks nvidia-smi (a PC with both kinds)
+            raise AssertionError("gpu_info called for a HIP config")
+        with mock.patch.object(setup, "gpu_info", no_nvidia):
+            self.assertEqual(setup.hardware_key(self.cfg(0)),
+                             "AMD Radeon RX 7900 XTX (gfx1100)|24GB|AMD Ryzen 9 7950X|64GB|qwen3.8-flash-next-iq3_xxs|"
+                             "32768|text")
+            # the arch is not repeated when the name already holds it (no product name in sysfs)
+            self.assertTrue(setup.hardware_key(self.cfg(2)).startswith("AMD Radeon (gfx1201)|16GB|"))
+
+    def test_two_cards_of_one_arch_are_two_keys(self):
+        keys = {setup.hardware_key(self.cfg(i)) for i in (0, 1, 2)}
+        self.assertEqual(len(keys), 3)
+
+    def test_a_split_names_every_card(self):
+        self.assertTrue(setup.hardware_key(self.cfg([1, 0])).startswith(
+            "AMD Radeon RX 7900 XT (gfx1100) + AMD Radeon RX 7900 XTX (gfx1100)|44GB|"))
+
+    def test_no_gpu_in_the_config_is_the_supported_card_with_the_most_vram(self):
+        self.assertTrue(setup.hardware_key(self.cfg(None)).startswith("AMD Radeon RX 7900 XTX (gfx1100)|24GB|"))
+
+    def test_a_card_that_is_gone_is_unknown(self):
+        self.assertTrue(setup.hardware_key(self.cfg(7)).startswith("?|0GB|"))
+
+    def test_nvidia_key_unchanged(self):
+        def amd(*a, **k):
+            raise AssertionError("amd_gpus called for an NVIDIA config")
+        with mock.patch.object(setup, "amd_gpus", amd), \
+                mock.patch.object(setup, "gpu_info", lambda i=None: {"name": "NVIDIA GeForce RTX 5070", "vram_gb": 11.94}):
+            self.assertEqual(setup.hardware_key(self.cfg(0, backend=None)),
+                             "NVIDIA GeForce RTX 5070|12GB|AMD Ryzen 9 7950X|64GB|qwen3.8-flash-next-iq3_xxs|32768|text")
+            self.assertEqual(setup.hardware_key(self.cfg([0, 1], backend="cuda")),
+                             "NVIDIA GeForce RTX 5070 + NVIDIA GeForce RTX 5070|24GB|AMD Ryzen 9 7950X|64GB|"
+                             "qwen3.8-flash-next-iq3_xxs|32768|text")
+
+    def test_setup_reuses_a_saved_calibration_on_linux_hip(self):
+        cfg = self.cfg(1)
+        saved = {"settings": {"pcie_frac": 0.0}, "tok_s": 40.1, "date": "2026-10-03"}
+        other = {"settings": {"pcie_frac": 0.5}, "tok_s": 50.0, "date": "2026-10-02"}
+        store = {"calibration": {setup.hardware_key(cfg): saved, setup.hardware_key(self.cfg(0)): other}}
+        with mock.patch.object(setup, "load_settings", lambda: store):
+            with mock.patch.object(setup, "WIN", False):
+                self.assertEqual(setup.setup_calibration(cfg, hip=True), saved)       # its own card's, not the XTX's
+                self.assertIsNone(setup.setup_calibration(self.cfg(2), hip=True))     # never tuned on that card
+            with mock.patch.object(setup, "WIN", True):
+                self.assertIsNone(setup.setup_calibration(cfg, hip=True))             # Windows HIP: defaults for now
 
 
 class WindowsHipVision(unittest.TestCase):

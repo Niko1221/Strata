@@ -27,6 +27,7 @@
 #include "strata/kernels/s_gemv.hpp"
 #include "strata/kernels/native_mmvq.hpp"
 
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
 #include <cmath>
@@ -157,12 +158,30 @@ __global__ void moe_combine_kernel(const float* __restrict__ parts, const float*
 }  // namespace
 
 void shared_expert_set_native_bf16(bool enabled) { native_bf16 = enabled; }
+bool shared_expert_native_bf16_enabled() { return native_bf16; }
 
 namespace {
 __global__ void scale_rows_kernel(float* __restrict__ out, const float* __restrict__ g, int n) {
     const int t = blockIdx.y;
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) out[(size_t) t * n + i] *= g[t];
+}
+
+__global__ void sigmoid_scale_rows_kernel(float* __restrict__ out, const float* __restrict__ g, int n) {
+    const int t = blockIdx.y;
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        const float gt = __fdividef(1.0f, 1.0f + __expf(-g[t]));
+        out[(size_t) t * n + i] *= gt;
+    }
+}
+
+bool fused_swiglu_q81_enabled() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_FUSED_SWIGLU_Q81");
+        return v == nullptr || std::atoi(v) != 0;
+    }();
+    return on;
 }
 }  // namespace
 
@@ -172,28 +191,42 @@ void shared_expert_multi(int n_tok, const float* x, const uint16_t* x_bf16, cons
     if (n_tok < 1 || n_tok > 8 || !nw.q8_1 || !nw.gate_data || !nw.up_data || !nw.down_data || !stream)
         throw std::invalid_argument("shared_expert_multi: needs 1..8 tokens, native weights, scratch and a stream");
     cudaStream_t cs = (cudaStream_t) stream;
-    native_quantize_q8_1(x, nw.q8_1, (int) n_embd, n_tok, stream);
-    native_mmvq(nw.gate_type, nw.gate_data, nw.q8_1, gate, (int) n_embd, (int) n_ff, n_tok, stream);
-    native_mmvq(nw.up_type, nw.up_data, nw.q8_1, up, (int) n_embd, (int) n_ff, n_tok, stream);
+    const void* x_q8_1 = nw.x_q8_1;
+    if (!x_q8_1) {
+        native_quantize_q8_1(x, nw.q8_1, (int) n_embd, n_tok, stream);
+        x_q8_1 = nw.q8_1;
+    }
+    native_mmvq(nw.gate_type, nw.gate_data, x_q8_1, gate, (int) n_embd, (int) n_ff, n_tok, stream);
+    native_mmvq(nw.up_type, nw.up_data, x_q8_1, up, (int) n_embd, (int) n_ff, n_tok, stream);
     const int n = (int) (n_ff * n_tok);
-    native_swiglu_kernel<<<(unsigned) ((n + THREADS - 1) / THREADS), THREADS, 0, cs>>>(gate, up, gate, n);
-    native_quantize_q8_1(gate, nw.q8_1, (int) n_ff, n_tok, stream);
+    if (fused_swiglu_q81_enabled()) {
+        native_swiglu_quantize_q8_1(gate, up, nw.q8_1, (int) n_ff, n_tok, stream);
+    } else {
+        native_swiglu_kernel<<<(unsigned) ((n + THREADS - 1) / THREADS), THREADS, 0, cs>>>(gate, up, gate, n);
+        native_quantize_q8_1(gate, nw.q8_1, (int) n_ff, n_tok, stream);
+    }
     native_mmvq(nw.down_type, nw.down_data, nw.q8_1, out, (int) n_ff, (int) n_embd, n_tok, stream);
     static const bool batch = [] { const char* v = std::getenv("STRATA_DEC_BATCH"); return v == nullptr || std::atoi(v) != 0; }();
-    if (native_bf16 && batch && n_tok > 1) {   // one gemv for all rows (outputs identical), one sigmoid launch
+    if (native_bf16 && batch && n_tok > 1) {   // one gemv for all rows (outputs identical), fused sigmoid+scale
         bf16_gemv_fp32_mmvf_multi(x, n_embd, gate_inp_bf16, g, 1, n_embd, 1, n_tok, stream);
-        native_scalar_sigmoid_multi_kernel<<<1, n_tok, 0, cs>>>(g);
-    } else
-    for (int t = 0; t < n_tok; ++t) {
-        if (native_bf16) {
-            bf16_gemv_fp32_mmvf(x + (size_t) t * n_embd, gate_inp_bf16, g + t, n_embd, 1, stream);
-            native_scalar_sigmoid_kernel<<<1, 1, 0, cs>>>(g + t);
-        } else {
-            scalar_gate_kernel<<<1, 256, 0, cs>>>(x_bf16 + (size_t) t * n_embd, gate_inp_bf16, g + t, (int) n_embd);
+        sigmoid_scale_rows_kernel<<<dim3((unsigned) ((n_embd + THREADS - 1) / THREADS), (unsigned) n_tok), THREADS, 0, cs>>>(
+            out, g, (int) n_embd);
+    } else if (native_bf16 && n_tok == 1) {
+        bf16_gemv_fp32_mmvf(x, gate_inp_bf16, g, n_embd, 1, stream);
+        sigmoid_scale_rows_kernel<<<dim3((unsigned) ((n_embd + THREADS - 1) / THREADS), 1u), THREADS, 0, cs>>>(
+            out, g, (int) n_embd);
+    } else {
+        for (int t = 0; t < n_tok; ++t) {
+            if (native_bf16) {
+                bf16_gemv_fp32_mmvf(x + (size_t) t * n_embd, gate_inp_bf16, g + t, n_embd, 1, stream);
+                native_scalar_sigmoid_kernel<<<1, 1, 0, cs>>>(g + t);
+            } else {
+                scalar_gate_kernel<<<1, 256, 0, cs>>>(x_bf16 + (size_t) t * n_embd, gate_inp_bf16, g + t, (int) n_embd);
+            }
         }
+        scale_rows_kernel<<<dim3((unsigned) ((n_embd + THREADS - 1) / THREADS), (unsigned) n_tok), THREADS, 0, cs>>>(
+            out, g, (int) n_embd);
     }
-    scale_rows_kernel<<<dim3((unsigned) ((n_embd + THREADS - 1) / THREADS), (unsigned) n_tok), THREADS, 0, cs>>>(
-        out, g, (int) n_embd);
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) throw std::runtime_error(std::string("shared_expert_multi: ") + cudaGetErrorString(e));
 }
@@ -273,31 +306,36 @@ void shared_expert(const uint8_t* x_q8_0, const uint8_t* x_q8k, const uint16_t* 
         native_mmvq(native->up_type, native->up_data, native->q8_1, up, (int) n_embd, (int) n_ff, 1, stream);
     else
         gemv(up_form, up_codes, up_scales, up_off, x_q8_0, x_q8k, up, n_embd, n_ff);
-    if (native_projection)
-        native_swiglu_kernel<<<g_ff, THREADS, 0, (cudaStream_t) stream>>>(gate, up, gate, (int) n_ff);
-    else
-        swiglu_kernel<<<g_ff, THREADS, 0, (cudaStream_t) stream>>>(gate, up, gate, (int) n_ff);
-
-    // down: (n_ff) -> (n_embd), and THE INTERMEDIATE IS QUANTIZED TO THE DOWN WEIGHT'S OWN CONTRACT - which is
-    // what `ggml_mul_mat` does for every matmul in the model.  It used to be rounded to fp16 with no
-    // justification beyond "the kernel takes fp16".
-    if (native_down) {
-        native_quantize_q8_1(gate, native->q8_1, (int) n_ff, 1, stream);
+    if (native_projection && native_down && fused_swiglu_q81_enabled()) {
+        native_swiglu_quantize_q8_1(gate, up, native->q8_1, (int) n_ff, 1, stream);
         native_mmvq(native->down_type, native->down_data, native->q8_1, out, (int) n_ff, (int) n_embd, 1, stream);
-    } else if (down_form.act_kind == 1) {
-        if (n_ff % 256 != 0) {
-            std::fprintf(stderr, "shared_expert: the down weight wants Q8_K but n_ff %lld is not a multiple "
-                                 "of 256; Q8_K is structurally impossible here\n", (long long) n_ff);
-            std::exit(1);
-        }
-        quantize_q8_K(gate, h_q8k, n_ff, stream);
-        gemv(down_form, down_codes, down_scales, down_off, h_q8_0, h_q8k, out, n_ff, n_embd);
-    } else if (down_form.code_bits == 2) {
-        quantize_q8_0(gate, h_q8_0, n_ff, stream);
-        gemv(down_form, down_codes, down_scales, down_off, h_q8_0, h_q8k, out, n_ff, n_embd);
     } else {
-        quantize_q8_0(gate, h_q8_0, n_ff, stream);
-        gemv(down_form, down_codes, down_scales, down_off, h_q8_0, h_q8k, out, n_ff, n_embd);
+        if (native_projection)
+            native_swiglu_kernel<<<g_ff, THREADS, 0, (cudaStream_t) stream>>>(gate, up, gate, (int) n_ff);
+        else
+            swiglu_kernel<<<g_ff, THREADS, 0, (cudaStream_t) stream>>>(gate, up, gate, (int) n_ff);
+
+        // down: (n_ff) -> (n_embd), and THE INTERMEDIATE IS QUANTIZED TO THE DOWN WEIGHT'S OWN CONTRACT - which is
+        // what `ggml_mul_mat` does for every matmul in the model.  It used to be rounded to fp16 with no
+        // justification beyond "the kernel takes fp16".
+        if (native_down) {
+            native_quantize_q8_1(gate, native->q8_1, (int) n_ff, 1, stream);
+            native_mmvq(native->down_type, native->down_data, native->q8_1, out, (int) n_ff, (int) n_embd, 1, stream);
+        } else if (down_form.act_kind == 1) {
+            if (n_ff % 256 != 0) {
+                std::fprintf(stderr, "shared_expert: the down weight wants Q8_K but n_ff %lld is not a multiple "
+                                     "of 256; Q8_K is structurally impossible here\n", (long long) n_ff);
+                std::exit(1);
+            }
+            quantize_q8_K(gate, h_q8k, n_ff, stream);
+            gemv(down_form, down_codes, down_scales, down_off, h_q8_0, h_q8k, out, n_ff, n_embd);
+        } else if (down_form.code_bits == 2) {
+            quantize_q8_0(gate, h_q8_0, n_ff, stream);
+            gemv(down_form, down_codes, down_scales, down_off, h_q8_0, h_q8k, out, n_ff, n_embd);
+        } else {
+            quantize_q8_0(gate, h_q8_0, n_ff, stream);
+            gemv(down_form, down_codes, down_scales, down_off, h_q8_0, h_q8k, out, n_ff, n_embd);
+        }
     }
 
     // the per-token scalar gate, then the multiply.  Note the gate is computed from `x`, the ORIGINAL hidden
@@ -307,11 +345,11 @@ void shared_expert(const uint8_t* x_q8_0, const uint8_t* x_q8k, const uint16_t* 
     // round trip.  256 threads is the reduction's width, not the problem's size.
     if (use_native) {
         bf16_gemv_fp32_mmvf(x_f32, gate_inp_bf16, g, n_embd, 1, stream);
-        native_scalar_sigmoid_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(g);
+        sigmoid_scale_rows_kernel<<<dim3(g_embd, 1u), THREADS, 0, (cudaStream_t) stream>>>(out, g, (int) n_embd);
     } else {
         scalar_gate_kernel<<<1, 256, 0, (cudaStream_t) stream>>>(x_bf16, gate_inp_bf16, g, (int) n_embd);
+        scale_kernel<<<g_embd, THREADS, 0, (cudaStream_t) stream>>>(out, g, (int) n_embd);
     }
-    scale_kernel<<<g_embd, THREADS, 0, (cudaStream_t) stream>>>(out, g, (int) n_embd);
 
     if (stream == nullptr) {
         const cudaError_t e = cudaDeviceSynchronize();
