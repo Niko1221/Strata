@@ -479,7 +479,16 @@ The server listens on `http://127.0.0.1:8080` (change with `--port` in setup, or
 | Model properties | `GET /props` (also accepts `?model=<loaded-model-id>`) |
 | What the model is doing right now | `GET /status`, `GET /slots` (single slot, busy or idle) |
 | Everything the Monitor tab shows (engine, live state, last requests, hardware) | `GET /metrics` |
+| The same for Prometheus, with vLLM's metric names (asked with `Accept: text/plain` or `?format=prometheus`) | `GET /metrics` |
 | The MCP servers, their state and tools ([below](#tools-from-mcp-servers)) | `GET /mcp` |
+
+`GET /metrics` answers a Prometheus scrape (`Accept: text/plain` or `application/openmetrics-text`) in the text
+format with vLLM's names - `vllm:num_requests_running` / `_waiting`, `vllm:kv_cache_usage_perc`, the token and
+request counters, `vllm:prefix_cache_queries_total` / `_hits_total` (prompt tokens read / reused),
+`vllm:spec_decode_num_draft_tokens_total` / `_accepted_tokens_total` (the MTP drafts), and the histograms
+`vllm:time_to_first_token_seconds`, `vllm:inter_token_latency_seconds` and `vllm:e2e_request_latency_seconds` - so the
+dashboards and alerts written for a vLLM server read this one. With an API key, the scraper sends it as a bearer
+token. Any other request keeps the JSON.
 
 `/models` and `/v1/models` list only the loaded model, with its context limit and input modalities. `/props` exposes the original chat template, context limit, configured generation defaults (shared settings take precedence), model path and engine version when available. Context means the full engine context, not the resident KV window. `n_predict: -1` means no fixed output cap. Unconfigured sampling fields are omitted. `autoload` has no effect; an unknown `model` returns 404. These metadata endpoints and `/slots` require the API key when one is configured. They do not load, unload or restart models.
 
