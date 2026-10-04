@@ -2388,8 +2388,24 @@ class ToolsShape(unittest.TestCase):
                                                   "max_tokens": 8})
         self.assertEqual(s, 200, b)
 
+    def test_openai_wrapped_tool_that_normalizes_to_a_non_object_is_400(self):
+        # Copilot review on #701: {"type": "function", "function": "get_weather"} unwraps to a string, which
+        # reached serve/server.py's t.get("name") and took the request thread down.
+        for tools in ([{"type": "function", "function": "get_weather"}],
+                      [{"type": "function", "function": None}],
+                      [{"type": "function", "function": [1, 2]}],
+                      [{"type": "function", "function": 42}]):
+            s, b = self.bad("openai", tools)
+            self.assertEqual(s, 400, f"tools={tools!r} -> {s} {b}")
+            self.assertIn("tools", b["error"]["message"])
+        # the Anthropic path reads t["name"]: a wrapped string has no name
+        s, b = self.bad("anthropic", [{"type": "function", "function": "get_weather"}])
+        self.assertEqual(s, 400, b)
+        self.assertIn("tools", b["error"]["message"])
+
     def test_the_server_answers_after_a_rejected_tools(self):
         self.bad("openai", "auto")
+        self.bad("openai", [{"type": "function", "function": "get_weather"}])
         s, b = self.post("/v1/chat/completions", {"model": "m", "messages": [{"role": "user", "content": "hi"}],
                                                   "max_tokens": 8})
         self.assertEqual(s, 200, b)
