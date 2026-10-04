@@ -1,0 +1,6 @@
+prompt_tokens,baseline_prompt_ms_median,candidate_prompt_ms_median,baseline_tps_median,candidate_tps_median,tps_gain_pct,prompt_time_reduction_pct
+2048,3663.4,2910.7,559.04,703.61,25.86,20.55
+4096,5039.0,3794.8,812.86,1079.37,32.79,24.69
+8192,7810.4,5767.0,1048.86,1420.5,35.43,26.16
+16384,11052.3,8517.8,1482.41,1923.5,29.75,22.93
+32768,18078.8,14506.0,1812.51,2258.93,24.63,19.76

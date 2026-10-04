@@ -919,7 +919,7 @@ if(STRATA_NATIVE_EXPERTS)
     # #136: the Q2_0 pack's prompt experts on Strata's own int8 kernels (moe_fused.cu, opt-in STRATA_PF_FUSED=1; CUDA
     # only: the HIP branch below keeps MMQ, and an sm_75 device or an sm_75-only build reports them unavailable)
     add_library(strata_mmq STATIC src/prefill/moe_mmq.cu src/prefill/moe_fused.cu src/prefill/moe_fused_iq.cu
-                src/prefill/ggml_cuda_host.cu ${_strata_mmq}/quantize.cu)
+                src/prefill/moe_fp16tc.cu src/prefill/ggml_cuda_host.cu ${_strata_mmq}/quantize.cu)
     # q8_0: the drafter's matrices (E-9); STRATA_ORCA_Q4KS_MMQ adds q5_0 (#296, in _strata_mmq_types), and
     # STRATA_MMQ_KQUANTS q4_k q5_k q5_1, the experts of Unsloth's UD-Q4_K_XL (docs/UNSLOTH_Q4.md; the dispatch
     # follows eddoursul/Strata 7706c1b)
@@ -944,7 +944,10 @@ if(STRATA_NATIVE_EXPERTS)
       target_compile_definitions(strata_mmq PRIVATE STRATA_ORCA_Q4KS_MMQ=1)
     endif()
     target_link_libraries(strata_prefill PUBLIC strata_mmq)
-    target_compile_definitions(strata_prefill PUBLIC STRATA_PREFILL_MMQ=1 STRATA_PREFILL_FUSED=1)
+    # Volta native Q2_0 experts use WMMA FP16 products with FP32 accumulation.
+    # Runtime device/format checks retain the existing path on unsupported targets.
+    target_compile_definitions(strata_mmq PRIVATE STRATA_PREFILL_FP16TC=1)
+    target_compile_definitions(strata_prefill PUBLIC STRATA_PREFILL_MMQ=1 STRATA_PREFILL_FUSED=1 STRATA_PREFILL_FP16TC=1)
     if(STRATA_BUILD_TESTS)
       # #136: the fused int8 experts against a double-precision reference and the MMQ path (exit 77 below sm_80)
       add_executable(prefill_fused_moe_test tests/cuda/prefill_fused_moe_test.cpp)
@@ -956,6 +959,12 @@ if(STRATA_NATIVE_EXPERTS)
       target_link_libraries(prefill_fused_iq_test PRIVATE strata_mmq ggml-base ${_strata_gpu_runtime_target})
       add_test(NAME prefill_fused_iq_test COMMAND prefill_fused_iq_test)
       set_tests_properties(prefill_fused_iq_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
+      # Volta WMMA experts: reference precision and compact-group row offsets.
+      add_executable(prefill_fp16tc_test tests/cuda/prefill_fp16tc_test.cpp)
+      target_link_libraries(prefill_fp16tc_test PRIVATE strata_mmq ggml-base ${_strata_gpu_runtime_target} CUDA::cublas)
+      target_compile_definitions(prefill_fp16tc_test PRIVATE STRATA_PREFILL_FP16TC=1)
+      add_test(NAME prefill_fp16tc_test COMMAND prefill_fp16tc_test)
+      set_tests_properties(prefill_fp16tc_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
     endif()
     if(STRATA_BUILD_TESTS AND STRATA_MMQ_KQUANTS)
       # the UD-Q4_K_XL expert formats through MMQ against ggml's dequantized weights (synthetic, a few seconds)

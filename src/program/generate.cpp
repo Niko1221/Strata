@@ -4047,6 +4047,11 @@ int main(int argc, char** argv) {
             int32_t first_now = -1;        // where its buffers are laid out now
             int64_t lent_chunk = 0;
             std::vector<std::pair<int32_t, int32_t>> lent;
+            /// STRATA_PREFILL_REFILL_OVERLAP: this loan's copies are already queued - by `refill_issue` from the
+            /// prefill hook, at the end of the final batched segment while the next stage still computed - so the
+            /// normal `refill` must only wait, never copy the same slots a second time.  Cleared by `refill_wait`
+            /// (the loan is back) and by `lend` (a new loan).  The aggregate initializers below leave it false.
+            bool refill_issued = false;
         };
         auto part_slots = [&](const PfPart& p, int64_t c) -> int64_t {
             const strata::core::OnDevice on(p.dev);
@@ -5650,6 +5655,10 @@ int main(int argc, char** argv) {
             // stage's cache holding an expert it does not own, which is silent and produces plausible tokens.
             // (split in two halves so a layer split can queue every stage's copies before it waits for any: #340)
             auto refill_issue = [&](PfPart& p, std::string& e) -> bool {
+                // STRATA_PREFILL_REFILL_OVERLAP: the hook may already have queued this loan's copies while the
+                // next stage still computed, so a second issue is a no-op - `refill` then only waits for them.
+                if (p.refill_issued) return true;
+                if (p.lent.empty()) return true;
                 tr("refill start", (long long) p.lent.size());
                 const strata::core::OnDevice on(p.dev);
                 for (const auto& [i, slot] : p.lent) {   // D-4: queued, one wait (STRATA_REFILL_BLOCKING=1: each)
@@ -5657,9 +5666,10 @@ int main(int argc, char** argv) {
                     const int64_t nb = (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(i / g.n_expert);
                     if (b == nullptr || !(refill_blocking() ? p.cache->fill_slot_blocking(slot, b, e, nb)
                                                             : p.cache->fill_slot_queued(slot, b, e, nb)))
-                        return false;
+                        return false;   // not marked: a later refill retries (the same copies into the same slots)
                     host_res[(size_t) i] = slot;
                 }
+                p.refill_issued = true;   // only once every copy of this loan is queued
                 return true;
             };
             auto refill_wait = [&](PfPart& p, std::string& e) -> bool {
@@ -5667,6 +5677,7 @@ int main(int argc, char** argv) {
                 if (!p.cache->sync_queued(e)) return false;
                 p.lent.clear();
                 p.lent_chunk = 0;
+                p.refill_issued = false;   // the loan is back: the next lend and issue start clean
                 return true;
             };
             auto refill_one = [&](PfPart& p, std::string& e) -> bool {
@@ -5742,6 +5753,7 @@ int main(int argc, char** argv) {
                             }
                         }
                     p.lent_chunk = want;
+                    p.refill_issued = false;   // this is a new (or re-laid-out) loan: nothing queued for it yet
                 }
                 if (any) res_upload();
                 if (trace) {
@@ -5753,6 +5765,48 @@ int main(int argc, char** argv) {
                 }
                 return true;
             };
+            // Non-last stages can refill their loans while the last stage finishes the final segment.
+            // Earlier checkpoint segments must retain their scratch buffers. Serial/blocking refill
+            // controls and the last stage keep the normal post-run refill. Default: native Q2_0 on
+            // a Volta-only split; STRATA_PREFILL_REFILL_OVERLAP overrides it.
+            int64_t early_refill_pos = -1;   // the position the hook may act on; -1: not this segment
+            sp.on_stage_complete = nullptr;
+            for (size_t i = 0; i < stages.size(); ++i) stages[i]->sp.on_stage_complete = nullptr;
+            static const bool refill_overlap = [&] {
+                if (const char* v = std::getenv("STRATA_PREFILL_REFILL_OVERLAP"))
+                    return std::atoi(v) != 0;
+                const auto& layout = strata::kernels::cpu::expert_layout();
+                if (!multi_gpu || !layout.native || layout.fmt.empty()) return false;
+                for (const auto& f : layout.fmt)
+                    if (f.gu_type != 42 || f.d_type != 42) return false;
+                auto volta = [](int dev) {
+                    int major = 0, minor = 0;
+                    if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess ||
+                        cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev) != cudaSuccess) {
+                        cudaGetLastError();
+                        return false;
+                    }
+                    return major == 7 && minor == 0;
+                };
+                int dev = 0;
+                if (cudaGetDevice(&dev) != cudaSuccess) { cudaGetLastError(); return false; }
+                if (!volta(dev)) return false;
+                for (const auto& st : stages) if (!volta(st->dev)) return false;
+                return true;
+            }();
+            if (refill_overlap && multi_gpu && !refill_serial && !refill_blocking()) {
+                auto refill_hook = [&](size_t idx) {
+                    return [&, idx](int64_t done, std::string& e) -> bool {
+                        if (early_refill_pos < 0 || done != early_refill_pos) return true;
+                        if (idx >= pf_parts.size() || pf_parts[idx].first < 0) return true;
+                        return refill_issue(pf_parts[idx], e);
+                    };
+                };
+                if (!pf_parts.empty() && pf_parts[0].first >= 0) sp.on_stage_complete = refill_hook(0);
+                for (size_t i = 0; i + 1 < stages.size(); ++i)
+                    if (i + 1 < pf_parts.size() && pf_parts[i + 1].first >= 0)
+                        stages[i]->sp.on_stage_complete = refill_hook(i + 1);
+            }
             apply_pending(true);
             // per-request sampling for the verify window's head (greedy when temperature is absent)
             strata::kernels::SamplerParams req_sp;
@@ -5814,8 +5868,16 @@ int main(int argc, char** argv) {
                         return 1;
                     }
                 }
+                // STRATA_PREFILL_REFILL_OVERLAP: only the final batched segment (the one that reaches the last
+                // prompt position) may queue a non-last stage's loan refill from the hook.  A window segment does
+                // not run the batched path at all, and an earlier segment (a root/turn checkpoint) is followed by
+                // chunks that still read the buffers its stage lent - so the hook must not act there.  The flag is
+                // re-armed for every segment and cleared right after the run, so a later segment or the next
+                // request can never match this done position.
+                early_refill_pos = (!win && to == n - 1) ? to : -1;
                 const auto tsp = Clock::now();
                 const bool sp_ok = win ? read_windows(at, to, err) : sp.run(ids.data() + at, to - at, at, err);
+                early_refill_pos = -1;
                 if (trace) {
                     std::fprintf(stderr, "strata trace: read %lld tokens (%s) in %.1f ms\n", (long long) (to - at),
                                  win ? "windows" : "batched",

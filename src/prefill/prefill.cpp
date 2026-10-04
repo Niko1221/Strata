@@ -26,6 +26,7 @@
 #include "strata/prefill/moe_fused.hpp"
 #include "strata/prefill/moe_fused_iq.hpp"
 #include "strata/prefill/moe_mmq.hpp"
+#include "strata/prefill/moe_fp16tc.hpp"
 #include "strata/prefill/kernels.hpp"
 
 #include <cuda_runtime.h>
@@ -94,13 +95,26 @@ constexpr int STAGE = 8;           // host->device expert staging ring (chunks b
 // ring_slots()-slot ring (nearly all 512 are routed at such a chunk), so the copy engine keeps working through the
 // attention halves instead of waiting for each layer's routing.
 constexpr int RING_MAX = 1024;          // the arrays; the ring itself is ring_slots(), at most ring_cap()
+// Cached device and format eligibility is shared by sizing and execution.
+struct TcPlan {
+    bool on = false;                  // the env switch: STRATA_PREFILL_FP16TC unset or nonzero (0 = the MMQ reference)
+    bool device = false;              // fp16tc::available(): the kernels are built and this device is their target
+    bool layout = false;              // a native pack, every layer MMQ-eligible and covered by the kernels
+    std::vector<char> layer;          // per layer: MMQ-eligible and geom_ok (meaningful only when `layout`)
+    std::vector<fp16tc::Geom> geom;   // per layer: the validated geometry
+    bool ok = false;                  // on && device && layout: the compact walk is available on this device
+};
+const TcPlan& tc_plan();
+inline bool fused_ring();
 // The chunk size from which every expert streams: 1024 since 0.1.30 (was 2048).  Measured on the 5070, Q2_0 / IQ2_XS,
 // fixed cache: 1,500-token prompts 621 -> 785 / 612 -> 735 tok/s, 2,000 727 -> 934 / 712 -> 892, 4,000 (its last
 // chunk) 779 -> 912 / 766 -> 844, the same output.  Below ~1,000 tokens the output changed on Q2_0 (a smaller chunk
-// takes other kernels), so 1024 is the floor.  STRATA_PREFILL_STREAM_MIN overrides (A/B).
+// takes other kernels), so 1024 is the floor.  The compact tensor-core walk (tc_plan) defaults to a 2048-token floor,
+// only on the eligible V100 native Q2 path; other devices and packs keep 1024.  STRATA_PREFILL_STREAM_MIN overrides.
 inline int64_t stream_all_min() {
-    static const int64_t v = [] { const char* e = std::getenv("STRATA_PREFILL_STREAM_MIN"); return e ? (int64_t) std::atoll(e) : (int64_t) 1024; }();
-    return v;
+    static const int64_t env = [] { const char* e = std::getenv("STRATA_PREFILL_STREAM_MIN"); return e ? (int64_t) std::atoll(e) : (int64_t) -1; }();
+    if (env >= 0) return env;
+    return tc_plan().ok && !fused_ring() ? 2048 : 1024;
 }
 double g_pinned_share = 1.0;
 // The streamed ring: 384 slots when (nearly) every streamed expert is DMA'd from pinned RAM - measured on Q2_0,
@@ -142,7 +156,11 @@ inline int ring_slots(size_t T) {
     if (!v && g_ring_override <= 0 && wmma) return (int64_t) T >= stream_all_min() ? 96 : STAGE;
 #endif
     const int pinned_ring = fused_ring() ? 1024 : 384;
-    const int r = v ? std::atoi(v) : g_ring_override > 0 ? g_ring_override : (g_pinned_share >= 0.9 ? pinned_ring : 96);
+    // The compact tensor-core walk needs at least 48 slots for a 16-expert group and issuer lookahead.
+    // On the tested native Q2_0 Volta split, 192 slots kept more copies ahead of compute than 96 or 48.
+    // Other layouts keep the pinned-share rule. The environment and layer-split overrides still take priority.
+    const int def = tc_plan().ok && !fused_ring() ? 192 : (g_pinned_share >= 0.9 ? pinned_ring : 96);
+    const int r = v ? std::atoi(v) : g_ring_override > 0 ? g_ring_override : def;
     if (v && r == STAGE) return STAGE; // Explicit opt-in to routed-only staging, including large chunks.
     const int big = r < 16 ? 16 : r > ring_cap() ? ring_cap() : r;
     return (int64_t) T >= stream_all_min() ? big : STAGE;
@@ -394,6 +412,8 @@ struct Prefill::Impl {
     // row map, the group bounds, the group buffers of gathered experts
     void *Xq = nullptr, *Hq = nullptr;
     float* H = nullptr;
+    size_t gu_h_rows = 0;                    // the compact GU/H row capacity (fp16tc_compact; 0 = the full T*K layout)
+    const TcPlan* tc = nullptr;              // immutable per-device plan; no table copies on relayout
     int32_t *ids_identity = nullptr, *bounds_dev = nullptr;
     uint8_t *grp_gu = nullptr, *grp_d = nullptr;
     std::vector<int32_t> bounds_host;
@@ -567,21 +587,89 @@ const MmqPlan& mmq_plan() {
 bool fused_layout(size_t T, bool src) {
     return src && fused_ring() && mmq_plan().any && ring_slots(T) > STAGE && (int64_t) T >= stream_all_min();
 }
+// The compact tensor-core plan (STRATA_PREFILL_FP16TC): whether this device and pack can run the compact GU/H walk,
+// and every layer's validated geometry.  Queried once per device - `bytes_needed` (before any init) and `carve`/the
+// layer loop all read this same cache, so a region is sized and laid out from one decision, with no per-layer device
+// query or geom revalidation at runtime.  The kernels' target device is Volta (cc 7.0, fp16tc::available); the pack
+// must be native and every layer MMQ-eligible with its native format in the kernels' Q2_0 form.
+inline bool fp16tc_enabled() {
+    static const bool v = [] {
+        const char* e = std::getenv("STRATA_PREFILL_FP16TC");
+        return e == nullptr || std::atoi(e) != 0;
+    }();
+    return v;
+}
+const TcPlan& tc_plan() {
+    static std::mutex mu;
+    static std::vector<std::unique_ptr<TcPlan>> by_dev;   // one validated plan per CUDA device
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0) { cudaGetLastError(); dev = 0; }
+    std::lock_guard<std::mutex> lk(mu);
+    if ((size_t) dev >= by_dev.size()) by_dev.resize((size_t) dev + 1);
+    auto& p = by_dev[(size_t) dev];
+    if (p != nullptr) return *p;
+    std::unique_ptr<TcPlan> np(new TcPlan);
+    np->on = fp16tc_enabled();
+    np->device = np->on && fp16tc::available();
+    const MmqPlan& mp = mmq_plan();
+    const strata::kernels::cpu::ExpertLayout& lay = strata::kernels::cpu::expert_layout();
+    np->layout = np->device && mp.any && lay.native && !lay.fmt.empty() && mp.layer.size() == lay.fmt.size();
+    if (np->layout) {
+        np->layer.assign(lay.fmt.size(), 0);
+        np->geom.resize(lay.fmt.size());
+        for (size_t l = 0; l < lay.fmt.size(); ++l) {
+            const auto& f = lay.fmt[l];
+            if (!mp.layer[l] ||
+                !fp16tc::geom_ok(f.gu_type, f.d_type, f.n_embd, f.n_ff, f.gu_row, f.d_row, f.up_off, f.down_off)) {
+                np->layout = false;
+                break;
+            }
+            np->layer[l] = 1;
+            np->geom[l] = {(int) f.n_embd, (int) f.n_ff, f.gu_row, f.d_row, f.up_off};
+        }
+        if (!np->layout) { np->layer.clear(); np->geom.clear(); }
+    }
+    np->ok = np->on && np->device && np->layout;
+    p = std::move(np);
+    return *p;
+}
+// The compact GU/H walk (default on; STRATA_PREFILL_FP16TC=0 keeps the MMQ reference).  Only where tc_plan says this
+// device and pack take it, only when the fused walk is not taking the layer (its GU/H are grouping tables, not the
+// compact layout), and only when the streamed walk can split a 16-expert group into subbatches that fit the compact
+// row capacity: a chunk of at least stream_all_min() tokens and a ring of at least 48 slots (one group plus the
+// issuer's lookahead).  GU and H then hold fp16tc_capacity(T) rows instead of T*K; the capacity keeps the last small
+// chunk's MMQ fallback (stream_all_min() - 1 tokens) and one expert's rows (at most T: K distinct ids a token).
+bool fp16tc_compact(size_t T, bool src) {
+    if (!tc_plan().ok || !src) return false;
+    if (fused_layout(T, src)) return false;
+    return (int64_t) T >= stream_all_min() && ring_slots(T) >= 48;
+}
+size_t fp16tc_capacity(size_t T) {
+    return (size_t) std::max<int64_t>((int64_t) T, std::min<int64_t>((int64_t) T, stream_all_min() - 1) * K);
+}
 // The MoE buffers MMQ and the fused path share: GU and H in floats, Xq and Hq in bytes.  Without `fused` (the
-// default): MMQ's, for T tokens.
+// default): MMQ's, for T tokens - or the compact tensor-core capacity when `compact` is on (`fused` and `compact`
+// are mutually exclusive: fp16tc_compact excludes fused_layout, so GU/H are never sized for one layout and used for
+// the other).
 struct MoeBufs { size_t gu, h, xq, hq; };
-MoeBufs moe_bufs(size_t T, int64_t n_expert, bool fused) {
-    if (!fused) return {(mmq_plan().any ? T * K : T) * 1280, T * K * 640,
-                        mmq::q8_bytes((int64_t) (T * K), N), mmq::q8_bytes((int64_t) (T * K), 640)};
+MoeBufs moe_bufs(size_t T, int64_t n_expert, bool fused, bool compact) {
+    if (!fused) {
+        if (compact) {
+            const size_t cap = fp16tc_capacity(T);
+            return {cap * 1280, cap * 640, mmq::q8_bytes((int64_t) (T * K), N), mmq::q8_bytes((int64_t) cap, 640)};
+        }
+        return {(mmq_plan().any ? T * K : T) * 1280, T * K * 640,
+                mmq::q8_bytes((int64_t) (T * K), N), mmq::q8_bytes((int64_t) (T * K), 640)};
+    }
     const size_t ts = (size_t) std::min<int64_t>((int64_t) T, stream_all_min() - 1);   // MMQ's last small chunk
     return {std::max(ts * K * 1280, (fused::group_bytes((int64_t) (T * K), (int) n_expert) + 3) / 4),
             std::max(ts * K * 640, (fused::act_bytes((int64_t) (T * K), 640) + 3) / 4),
             std::max(mmq::q8_bytes((int64_t) (ts * K), N), fused::act_bytes((int64_t) T, N)),
             mmq::q8_bytes((int64_t) (ts * K), 640)};
 }
-uint64_t moe_set_bytes(size_t T, int64_t n_expert, bool fused) {
+uint64_t moe_set_bytes(size_t T, int64_t n_expert, bool fused, bool compact) {
     const MmqPlan& mp = mmq_plan();
-    const MoeBufs mb = moe_bufs(T, n_expert, fused);
+    const MoeBufs mb = moe_bufs(T, n_expert, fused, compact);
     Alloc a; a.count_only = true; bool ok = true;
     a.take<float>(T * n_expert, ok); a.take<float>(T * K, ok); a.take<int32_t>(T * K, ok); a.take<int32_t>(T * K, ok);
     a.take<int32_t>(T * K, ok);
@@ -739,9 +827,13 @@ bool Prefill::carve(size_t T, void* alloc) {
     {
         // one region for the attention half's and the MoE half's scratch (see gdn_set_bytes)
         const bool fz = fused_layout(T, m.src != nullptr);
-        const MoeBufs mb = moe_bufs(T, m.g->n_expert, fz);
+        const bool compact = fp16tc_compact(T, m.src != nullptr);
+        m.gu_h_rows = compact ? fp16tc_capacity(T) : 0;
+        m.tc = &tc_plan();
+        const MoeBufs mb = moe_bufs(T, m.g->n_expert, fz, compact);
         const uint64_t region = std::max({gdn_set_bytes(T), qsa_set_bytes(T, m.cap, m.max_blocks, m.sel_batch,
-                                                                           m.attn_batch, s), moe_set_bytes(T, m.g->n_expert, fz)});
+                                                                           m.attn_batch, s),
+                                          moe_set_bytes(T, m.g->n_expert, fz, compact)});
         uint8_t* base = o.take<uint8_t>((size_t) region, ok);
         m.region = base;
         m.region_bytes = region;
@@ -997,7 +1089,7 @@ uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::Session
     const int64_t cap = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s);
     const int64_t max_blocks = ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;
     o.take<uint8_t>((size_t) std::max({gdn_set_bytes(T), qsa_set_bytes(T, cap, max_blocks, 256, 32, s),
-                                       moe_set_bytes(T, g.n_expert, fused_layout(T, true))}), ok);
+                                       moe_set_bytes(T, g.n_expert, fused_layout(T, true), fp16tc_compact(T, true))}), ok);
     for (int i = 0; i < DQ; ++i) { o.take<uint16_t>(1280 * 2560, ok); o.take<uint16_t>(2560 * 640, ok); }
     if (mmq_plan().any) {
         const MmqPlan& mp = mmq_plan();
@@ -1688,9 +1780,20 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                     const bool use_mmq = mmq_plan().any && mmq_plan().layer[(size_t) l];
                     const int mmq_gt = lay.native ? lay.fmt[(size_t) l].gu_type : 42;
                     const int mmq_dt = lay.native ? lay.fmt[(size_t) l].d_type : 42;
-                    const bool fused_nat = use_mmq && stream_all && lay.native && fused::native_supported(mmq_gt, mmq_dt);
+                    // The compact tensor-core walk: `carve` laid GU/H out for it (m.gu_h_rows > 0) only where
+                    // fp16tc_compact held - the kernels' target device, a native pack whose every layer is
+                    // MMQ-eligible and covered, the streamed walk and a ring of at least 48 slots - and only where
+                    // the fused walk is not taking the layer.  The per-layer geometry was validated once at carve
+                    // (m.tc), so this is a table lookup, not a per-layer device query.
+                    const bool compact_l = use_mmq && stream_all && m.gu_h_rows > 0 &&
+                                           (size_t) l < m.tc->layer.size() && m.tc->layer[(size_t) l];
+                    // (the compact walk and the fused one are mutually exclusive - fp16tc_compact excludes
+                    // fused_layout - so the native coverage probe is skipped where it cannot apply)
+                    const bool fused_nat = use_mmq && stream_all && lay.native && !compact_l &&
+                                           fused::native_supported(mmq_gt, mmq_dt);
                     const bool fused_l = (use_mmq && stream_all && !lay.native && fused::enabled()) || fused_nat;
                     size_t n_order = 0;                   // the routed experts (the debug report; unknown when fused)
+                    int64_t tc_gu_bad = 0, tc_h_bad = 0;   // compact: per-subbatch finite check (the T*K scan cannot)
                     if (fused_l) {
                         if (static bool said = false; !said) {
                             said = true;
@@ -1783,8 +1886,16 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                         }
                         // the experts, in id order: resident ones from VRAM, the others through the staging ring
                         std::vector<int32_t> order;
-                        for (int32_t e = 0; e < m.g->n_expert; ++e) if (m.cnt[(size_t) e] > 0) order.push_back(e);
-                        n_order = order.size();
+                        if (compact_l) {
+                            // EVERY id 0..n_expert-1, count-0 ones included (their bounds are equal): a GROUPS batch
+                            // then spans at most GROUPS streamed entries, so the ring always covers a whole group.
+                            order.resize((size_t) m.g->n_expert);
+                            for (int32_t e = 0; e < m.g->n_expert; ++e) order[(size_t) e] = e;
+                        } else {
+                            for (int32_t e = 0; e < m.g->n_expert; ++e) if (m.cnt[(size_t) e] > 0) order.push_back(e);
+                        }
+                        n_order = 0;   // the routed experts (the debug report): the compact order spans every id
+                        for (int32_t e = 0; e < m.g->n_expert; ++e) n_order += m.cnt[(size_t) e] > 0;
                         const size_t mmq_gub = use_mmq ? mmq::matrix_bytes(mmq_gt, 1280, N) : 0;
                         const size_t mmq_db = use_mmq ? mmq::matrix_bytes(mmq_dt, N, 640) : 0;
                         pt.mark(kPfGather, cs);
@@ -1943,6 +2054,102 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                                     if (!compute(j, m.stage_dev[stage_of[j]], stage_of[j])) return false;
                                 }
                             }
+                        } else if (compact_l) {
+                            // The compact tensor-core walk (default on the eligible V100 native Q2 path): `order`
+                            // holds every expert id, so a GROUPS group is a run of consecutive ids and the ring holds
+                            // the whole group (>= 3*GROUPS slots) even while it is held.  The group's rows (at most
+                            // the capacity) go through TC subbatches split on expert boundaries, each written at the
+                            // compact buffer's row 0: gu_dst_row_base maps an expert's absolute row to the subbatch's
+                            // own row and down_act_row_base maps the group-relative down bounds back to it.  Dm keeps
+                            // its absolute rows (down's dst_row_base = the group's first row).  Every held slot is
+                            // released only after all subbatches are queued; a group the routing did not touch has no
+                            // rows and no products.
+                            const size_t down_off = lay.fmt[(size_t) l].down_off;
+                            const size_t n = order.size();
+                            const size_t cap = m.gu_h_rows;
+                            size_t k = seq_start[(size_t) l];
+                            const size_t kend = seq_start[(size_t) l + 1];
+                            static const bool dbg_nan = std::getenv("STRATA_DBG_NAN") != nullptr;
+                            auto finite_rows = [&](const float* d, int64_t rows, int64_t ld) -> int64_t {
+                                cudaStreamSynchronize(m.cs);
+                                std::vector<float> h((size_t) rows * (size_t) ld);
+                                if (cudaMemcpy(h.data(), d, h.size() * 4, cudaMemcpyDeviceToHost) != cudaSuccess) return 0;
+                                int64_t c = 0;
+                                for (float v : h) c += !std::isfinite(v);
+                                return c;
+                            };
+                            for (size_t j0 = 0; j0 < n; j0 += GROUPS) {
+                                const size_t jl = std::min(n, j0 + GROUPS);   // one past the group's last expert
+                                const size_t g = j0 / GROUPS;
+                                const int64_t gr0 = m.bounds_host[j0];   // the group's first absolute row (Dm's base)
+                                // the whole group's blobs, held until every subbatch's products are queued
+                                const uint8_t* blob[GROUPS];
+                                int held[GROUPS]; int nheld = 0;
+                                for (size_t j = j0; j < jl; ++j) {
+                                    const int32_t e = order[j];
+                                    const uint8_t* b = nullptr;
+                                    if (k < kend && seq[k].e == e) {   // streamed: its copy is on the copy stream
+                                        const int sl = (int) (k % (size_t) m.ring);
+                                        pt.mark(kPfWaitCopy, cs);
+                                        if (!threaded_issue) issue_until(k + 1);
+                                        wait_issued(k);
+                                        cudaStreamWaitEvent(m.cs, m.copied[sl], 0);
+                                        b = m.stage_dev[sl];
+                                        held[nheld++] = sl;
+                                        ++k;
+                                    } else {                            // resident: read it from VRAM, no slot to hold
+                                        ++stats_.experts_resident;
+                                        b = m.cache->device_slot(m.host_res[(size_t) l * m.g->n_expert + e]);
+                                    }
+                                    blob[j - j0] = b;
+                                }
+                                // the group's subbatches: a prefix of experts whose rows stay within the capacity (a
+                                // single expert never exceeds it - K distinct ids a token, so at most T rows)
+                                for (size_t js = j0; js < jl;) {
+                                    size_t je = js;
+                                    while (je < jl && (size_t) (m.bounds_host[je + 1] - m.bounds_host[js]) <= cap) ++je;
+                                    if (je == js) {
+                                        err = "prefill: the compact tensor-core walk: expert " +
+                                              std::to_string(order[js]) + " has " +
+                                              std::to_string(m.bounds_host[js + 1] - m.bounds_host[js]) +
+                                              " rows, over the compact capacity " + std::to_string(cap);
+                                        return false;
+                                    }
+                                    const int64_t sr0 = m.bounds_host[js];
+                                    const int64_t nr = m.bounds_host[je] - sr0;
+                                    if (nr > 0) {
+                                        fp16tc::Batch tc;
+                                        tc.n = (int) (je - js);
+                                        int64_t smaxr = 0;
+                                        for (size_t j = js; j < je; ++j) {
+                                            tc.blob[j - js] = blob[j - j0];
+                                            tc.down[j - js] = blob[j - j0] + down_off;
+                                            smaxr = std::max<int64_t>(smaxr, m.cnt[(size_t) order[j]]);
+                                        }
+                                        tc.max_rows = (int) smaxr;
+                                        tc.gu_dst_row_base = -sr0;
+                                        tc.down_act_row_base = -(sr0 - gr0);
+                                        pt.mark(kPfGemmGU, cs);
+                                        fp16tc::gu(tc, m.tc->geom[(size_t) l], m.bounds_dev + js,
+                                                   m.Xq, T * K, m.GU, 1280, m.cs);
+                                        mmq::swiglu(m.GU, m.H, nr, 640, !lay.native, m.cs);
+                                        pt.mark(kPfGemmD, cs);
+                                        mmq::quantize(m.H, nullptr, m.Hq, mmq_dt, 640, 640, nr, m.cs);
+                                        const int32_t* down_bounds = m.bounds_dev + n + 1 + g * (GROUPS + 1) + (js - j0);
+                                        fp16tc::down(tc, m.tc->geom[(size_t) l], down_bounds,
+                                                     m.Hq, nr, m.Dm, N, gr0, m.cs);
+                                        if (dbg_nan) {   // the aggregate T*K scan below cannot cover the compact buffers
+                                            tc_gu_bad += finite_rows(m.GU, nr, 1280);
+                                            tc_h_bad += finite_rows(m.H, nr, 640);
+                                        }
+                                    }
+                                    js = je;
+                                }
+                                // every subbatch's products are queued: the group's streamed slots can be recycled
+                                for (int i = 0; i < nheld; ++i) cudaEventRecord(m.used[held[i]], m.cs);
+                                consumed = k;
+                                give_back(consumed);
+                            }
                         } else {
                             // the streamed walk: this layer's entries [k, kend) in id order; an entry the routing did not
                             // pick only gives its slot back
@@ -1986,16 +2193,19 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                             for (float v : h) c += !std::isfinite(v);
                             return c;
                         };
-                        // Fused buffers contain grouping tables and int8 rows, not floats.
-                        const int64_t bgu = fused_l ? 0 : bad(m.GU, (mmq_plan().any ? T * K : T) * 1280),
+                        // Fused buffers contain grouping tables and int8 rows, not floats.  The compact walk
+                        // holds only one subbatch's rows at row 0, so its GU/H are checked per subbatch
+                        // (tc_gu_bad / tc_h_bad) instead of by the whole-T*K scans here; Dm and bo stay full.
+                        const int64_t bgu = fused_l ? 0 : compact_l ? tc_gu_bad : bad(m.GU, (mmq_plan().any ? T * K : T) * 1280),
                                       bdm = bad(m.Dm, T * K * N), bbo = bad(m.bo, T * N);
-                        const int64_t bh = m.H && !fused_l ? bad(m.H, T * K * 640) : -1;
+                        const int64_t bh = fused_l ? -1 : compact_l ? tc_h_bad : (m.H ? bad(m.H, T * K * 640) : -1);
                         static int64_t reported = -1;
                         if ((bgu || bdm || bbo || bh > 0) && reported != stats_.chunks) {
                             reported = stats_.chunks;
-                            std::fprintf(stderr, "strata dbg: layer %lld (mmq %d, types %d/%d, %zu experts): non-finite GU %lld "
+                            std::fprintf(stderr, "strata dbg: layer %lld (mmq %d, types %d/%d, %zu experts%s): non-finite GU %lld "
                                          "H %lld Dm %lld bo %lld of T %lld\n", (long long) l, (int) use_mmq, mmq_gt, mmq_dt,
-                                         n_order, (long long) bgu, (long long) bh, (long long) bdm, (long long) bbo,
+                                         n_order, compact_l ? ", compact TC GU/H per subbatch" : "",
+                                         (long long) bgu, (long long) bh, (long long) bdm, (long long) bbo,
                                          (long long) T);
                         }
                     }
@@ -2076,9 +2286,9 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
             host_chunk_ms += ms_since(toc2);
         }
     }
-    if (next_run.valid() && !next_run.get()) { err = next_err; return false; }
     ss.ple_prev[0] = prev[0];
     ss.ple_prev[1] = prev[1];
+
     if (std::getenv("STRATA_DBG_NAN") != nullptr) {   // debug: the state the prompt leaves for the token path
         cudaStreamSynchronize(m.cs);
         auto bad = [&](const float* d, int64_t n) {
@@ -2104,6 +2314,26 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
     // (PR #121) an expert copy that failed on the copy stream surfaces here, not in the next request
     if (const cudaError_t cst = cudaStreamSynchronize(m.copy); cst != cudaSuccess) {
         err = std::string("prefill: expert copy stream: ") + cudaGetErrorString(cst);
+        return false;
+    }
+    // STRATA_PREFILL_REFILL_OVERLAP: a layer split's non-last stage has read every chunk, joined its chunk-scoped
+    // stager and issuer, read its final residual and synchronized BOTH streams, so nothing of this stage touches
+    // the cache slots it lent the prompt path again - and no copy is in flight into them (`m.copy` is what streams
+    // experts into the borrowed ring, which is carved from the same lent slots).  The loan's refill can be queued
+    // NOW, before waiting for the next stage's last chunk, instead of after the wait.  The hook is told the
+    // position this run reached so the caller can require it to be the request's final one: an earlier checkpoint
+    // segment must not refill a loan its own later chunks still read.  The downstream future is always waited for
+    // before a failure is reported, and the hook's error is the one kept if the downstream failed too.
+    if (on_stage_complete) {
+        std::string hook_err;
+        const bool hook_ok = on_stage_complete(pos0 + n, hook_err);
+        if (next_run.valid() && !next_run.get()) {
+            err = hook_ok ? next_err : hook_err;
+            return false;
+        }
+        if (!hook_ok) { err = hook_err; return false; }
+    } else if (next_run.valid() && !next_run.get()) {
+        err = next_err;
         return false;
     }
     stats_.ms_total += ms_since(t_start);
