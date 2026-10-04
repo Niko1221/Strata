@@ -374,6 +374,17 @@ class StrataEngine:
     def _pump(self):
         proc, lines = self.proc, self.lines             # this process's: a restart replaces both (#344)
         for line in proc.stdout:
+            if line.startswith(("ERR verify: timed out at layer ", "ERR verify batch: timed out at layer ")):
+                # release_gpu_waits invalidates the verifier, even if the native
+                # process stays alive and prints DONE afterwards.
+                if self.proc is proc:
+                    self.silent_note = "Unrecoverable native verification timeout: " + line[4:].strip()
+                    self.ended = True
+                try:
+                    proc.terminate()
+                except OSError:
+                    pass
+                break                           # publish EOF, never the trailing DONE
             lines.put(line)
         if self.proc is proc:                           # a killed engine's pump must not mark its successor dead
             self.ended = True                           # its output closed: it is gone, even before the OS says so
@@ -502,6 +513,8 @@ class StrataEngine:
         """Yields token ids, and None as a heartbeat every 10 s while the engine is quiet (reading a long prompt):
         the HTTP layer turns it into an SSE comment, which keeps clients' watchdogs calm and notices a client that
         has gone.  A consumer that stops early (or `cancel`) makes the engine STOP, so it does not run to max_new."""
+        if not self.alive():
+            raise EngineDied("the engine is unavailable; this request was not sent")
         self.progress = None
         self.prefill_tok_s_mean = None
         # an image request takes the same sampling keys as text (#75: it used to decode greedily whatever was asked)
