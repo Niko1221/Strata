@@ -1,13 +1,11 @@
 # Strata - the details
 
 The technical side of Strata: every measured number, the API, images, all settings and how the engine works.
-New here? Start with the [README](../README.md); installing step by step is in [INSTALL.md](INSTALL.md), the models in
-[MODELS.md](MODELS.md), common problems in [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+New here? Start with the [README](../README.md) - it has everything you need to install and use it.
 
 > **On this page:** [Speed](#speed-measured) · [Other GPUs](#other-gpus-estimated) · [Which model?](#which-model) ·
 > [Requirements](#before-you-start) · [Windows](#windows) · [Linux](#linux) · [API](#using-it) ·
-> [MCP tools](#tools-from-mcp-servers) · [MCP server](#manage-strata-from-your-ai-assistant-mcp-server) ·
-> [Images](#images-vision) ·
+> [MCP tools](#tools-from-mcp-servers) · [Images](#images-vision) ·
 > [Troubleshooting](#troubleshooting) · [How it works](#how-it-works)
 
 ---
@@ -19,15 +17,6 @@ RTX 5070 **12 GB**, Ryzen 5 7600 (6 cores), 64 GB DDR5-5200, Windows, engine 0.1
 MTP speculative decoding on. "262K" is the model's full context window (a 259,943-token prompt). The IQ2_XS row was
 measured with Swift 1.5's IQ2_XS, which runs at the original's speed.
 
-**Engine 0.1.36 (#136), the same PC:** Q2_0's prompt experts run on fused int8 tensor-core kernels (RTX 30 and newer):
-4K 1,294 -> 1,570, 32K 2,170 -> 2,653, 128K 2,123 -> 2,468 tokens/s (+16-22%), as close to an FP16 reference as the
-previous kernels (closer at 32K: teacher-forced KL 0.009 vs 0.012). The decode path's block selection and greedy
-argmax run on thread-block clusters (RTX 50, sm_90+; other cards keep the previous kernels; the same tokens): Q2_0 output at 4K 89 -> 93.5, at 128K
-64.5 -> 76.4 tokens/s. `STRATA_PF_FUSED=0` keeps the previous prompt kernels (byte-identical answers to 0.1.35);
-`STRATA_PF_FUSED=1` also runs the native IQ packs' fused kernels (opt-in: IQ2_XS prompts +12% at 4K, +3% at 32K, the
-IQ3 packs about even); `STRATA_QSA_CLUSTER=0` / `STRATA_ARGMAX_MULTI=0` turn the decode kernels off. The tables
-below are 0.1.26's.
-
 ### Prompt processing (tokens/s)
 
 | Model | 1K | 4K | 32K | 64K | 128K | 262K |
@@ -37,8 +26,11 @@ below are 0.1.26's.
 | **IQ3_XXS** | 482 | 1,007 | 1,745 | 1,609 | 1,602 | - |
 | **IQ3_S** | 427 | 913 | 1,624 | 1,640 | 1,443 | - |
 | **Coder** | 656 | 1,583 | 2,177 | 2,236 | 2,208 | 1,034** |
+| **IQ3_S** (AMD RX 7900 XTX, gfx1100) | 850 | 1,366 | 1,565 | 1,540 | 1,418 | - |
 
-Engine 0.1.26; `bench/results/2026-09-29-speed-0126`. At 32K-128K that is 8-28% faster than 0.1.22. † not measured
+Engine 0.1.26; `bench/results/2026-09-29-speed-0126`. The AMD RX 7900 XTX row: engine 0.1.31, the median
+of 3 clean cells per tier (Ryzen 9 7900X, 96 GB, ROCm 7.1.1; 1K-128K one-shot runs, 256 generated tokens,
+greedy). At 32K-128K that is 8-28% faster than 0.1.22. † not measured
 again: 0.1.22. \* measured with images on (the image encoder's VRAM reserve leaves fewer experts cached). \*\* not
 measured again: 0.1.14.
 
@@ -51,8 +43,10 @@ measured again: 0.1.14.
 | **IQ3_XXS** | 61.9 | 61.6 | 58.5 | 57.2 | 49.0 | - |
 | **IQ3_S** | 52.4 | 53.3 | 48.3 | 46.3 | 45.5 | - |
 | **Coder** | 58.9 | 55.1 | 54.9 | 53.2 | 43.0 | 42.8† |
+| **IQ3_S** (AMD RX 7900 XTX, gfx1100) | 64.2 | 59.1 | 60.5 | 56.8 | 59.0 | - |
 
-Engine 0.1.26, the same runs. † not measured again: 0.1.14.
+Engine 0.1.26, the same runs. The AMD RX 7900 XTX row: engine 0.1.31, median of 3 clean cells per tier
+(same box; decode is flat in context - the GDN linear attention is O(1) per token). † not measured again: 0.1.14.
 
 Output speed depends on the text as well: speculative decoding runs faster when more of the drafted tokens are
 accepted, so a different answer to the same prompt moves it by several percent. Run back to back on the 4K prompt,
@@ -61,17 +55,14 @@ accepted, so a different answer to the same prompt moves it by several percent. 
 [`bench/results/2026-09-28-speed-0114`](../bench/results/2026-09-28-speed-0114/README.md).
 
 IQ3_XXS and IQ3_S at 262K are not measured: with their 43 / 50 GB of experts, a 260K-token context brings a 64 GB PC
-to its memory limit by setup's estimate (the experts + the context's KV cache + 24 GB), so setup recommends up to 128K
-with them on 64 GB. A longer context you choose (`--context 262144`, or a pick in its list) is kept, with a note: users
-ran IQ3_S at 256K on 64 GB with RAM to spare (#406). In the low-RAM mode the KV cache stays in VRAM and the context
-does not count against RAM. IQ3_S (engine 0.1.4 or newer) is only published for the original model, not for Swift 1.5.
+to its memory limit. Use up to 128K with them on 64 GB (setup caps it). IQ3_S (engine 0.1.4 or newer) is only published
+for the original model, not for Swift 1.5.
 
 **KV streaming (engine 0.1.5):** at 64K and more, setup keeps the context's KV cache in RAM and only the part the
 attention reads in VRAM (`--kv-resident 32768`), so more experts fit on the GPU. Q2_0 at 262K: 50.9 -> 62.6 tokens/s
 (1,589 -> 3,872 experts in VRAM); at 128K about +6%. The attention reads exactly the same values (only where the KV lives changes); it
 costs ~13.7 KB of RAM per context token (1.7 GB at 128K). Existing installs: run `START-HERE.bat --setup` once to turn
-it on. Setup turns it on when the RAM has room for it; `--kv-streaming on|off` overrides that (on past the RAM test with a
-note; never with `--kv k8v4` or under WSL, which cannot stream).
+it on.
 
 **4-bit KV cache (engine 0.1.8, optional):** `START-HERE.bat --setup` asks above 8K context (or pass `--kv q4_0`). It
 halves the KV cache's memory with a Hadamard rotation before 4-bit rounding (PR #21), about 4% faster at 128K, but it
@@ -90,32 +81,14 @@ slightly differently. How many tokens share an expert depends on the drafts in a
 at temperature 0 can end in a different (equally good) answer when the drafting, the cache state or a resumed
 conversation differ (issue #152). `STRATA_IQ_MT_MIN=1` (in the config's `env`) uses the multi-token kernels for
 every group: the answer then no longer depends on the drafting. Measured on a Ryzen 7600 (AVX-512): IQ3_S decode
--1..-3%, the other models the same; the default stays the fastest rule. Through the server, two more things carry
-over from one request to the next (#410): the adaptive tier moves experts between RAM and VRAM (the GPU and the CPU
-round an expert differently), and the prompt cache resumes a repeated prompt and reads only its tail through the
-decode path. For byte-identical repeats add `--prompt-cache 0 --adapt-swaps 0 --pcie-frac 0` to the engine's args
-as well (#410): the PCIe share of the missed experts (computed on the GPU instead of the CPU) still made the first
-answer after a start differ from the next ones. Measured here (IQ3_XXS, a 3.6K-token prompt, 4 repeats): with all
-three switches 1 answer of 4, without `--pcie-frac 0` 2 of 4 (the first one differs), with the defaults 2 of 4.
-`--pcie-frac 0` costs decode speed (the missed experts all run on the CPU), so keep it for A/B runs.
+-1..-3%, the other models the same; the default stays the fastest rule.
 
 **The draft layer's tokens (0.1.27, `--draft-vocab`):** the MTP draft layer can only propose tokens from a subset
 of the vocabulary (`mtp/rt/draft_vocab.bin`). Since 0.1.27 the subset includes every Chinese, Japanese and Korean
 token (106,299 ids), so answers in those languages are 15-38% faster (Q2_0, RTX 5070). Its head takes ~180 MiB of
 VRAM, which the expert cache leaves free for it (0.1.28). `START-HERE.bat --setup --draft-vocab en` keeps the
 English/code subset from before (40,525 ids, ~110 MiB less VRAM, English answers 1-2% faster; CJK answers get
-almost no drafts). `--draft-vocab cyrillic` takes the English/code subset plus the whole Cyrillic script (58,963
-ids): the shipped subsets hold 142 of the vocabulary's 18,580 Cyrillic tokens, so Ukrainian or Russian answers got
-1.4 tokens a round; with it 2.1, and 83 -> 109 tokens/s (RTX 5090, the NVFP4 fork), English unchanged.
-`--draft-vocab fr` (0.1.39, #597) takes the English/code subset plus the 5,686 tokens that cover 99% of a French
-Wikipedia corpus (46,211 ids, `tools/draft_vocab.py --corpus`): 23.6% of French text's tokens were outside the
-English/code subset, 0.7% are outside this one. Drafts accepted in French answers 0.51 -> 0.60 (IQ3_XXS, RTX 5070,
-8 prompts x 2 passes; English 0.61 -> 0.63 and code 0.77 -> 0.78, no loss), and 141 -> 158 tok/s in French on an
-RTX 5090 (IQ3_S, the reporter's measurement).
-`tools/draft_vocab.py` builds and inspects subsets. When the start stops with "the draft head does not fit" (a
-12 GB card with a long context, #474), the engine says how much the head needs, how much VRAM is free and which
-smaller subset fits, and the server's start error repeats it; setup suggests `--draft-vocab en` on cards under
-14 GB (only a suggestion: nothing changes unless you pass it).
+almost no drafts). `tools/draft_vocab.py` builds and inspects subsets.
 
 **Low-RAM mode (engine 0.1.26, chosen by setup):** normally all of a model's experts are copied into RAM (23-50 GB,
 pinned) and the GPU holds a copy of the most-used ones. On a PC whose RAM cannot hold them beside the system (the
@@ -284,24 +257,14 @@ thought about for 1,524 tokens. Not a benchmark, but consistent with the claim.
 START-HERE.bat --setup --family swift --model IQ2_XS
 ```
 
-### Experimental: Unsloth's UD-Q4_K_XL
-
-A 4-bit quantization of the same model (111 GB, 72 GiB of experts). Setup offers it from engine 0.1.32
-(`--family unsloth --model UD-Q4_K_XL`: a RAM budget of your RAM less 24 GB, the rest read from the SSD); what it
-does and the manual workflow are in **[docs/UNSLOTH_Q4.md](UNSLOTH_Q4.md)**. On a 64 GB PC with a 12 GB RTX 5070 it writes 7-8.5
-tokens/s, most experts read from the SSD; it picks the same tokens as llama.cpp on the same file at 97.5-99% of
-the positions of short greedy answers, 90-91% after a 16K prompt, differing mostly at near-ties
-([measured](UNSLOTH_Q4.md#quality-against-llamacpp-on-the-same-file)).
-
 ## Before you start
 
-You need **only a graphics driver**: NVIDIA 580 or newer (update it with the NVIDIA App or from
-[nvidia.com/drivers](https://www.nvidia.com/drivers)), or for AMD the one in [INSTALL.md](INSTALL.md#what-you-need).
-Everything else is installed for you the first time.
+You need **only an NVIDIA driver** (version 580 or newer; update it with the NVIDIA App or from
+[nvidia.com/drivers](https://www.nvidia.com/drivers)). Everything else is installed for you the first time.
 
 | | |
 | --- | --- |
-| GPU | NVIDIA **RTX 20, 30, 40 or 50 series**, **12 GB VRAM or more** (8 GB runs, slowly). Measured on an RTX 5070 and an RTX 3090; RTX 20 (Turing, since 0.1.27) was tested by a contributor on an RTX 2070. Or AMD **Radeon RX 7900 XT / XTX, RX 7800 XT / 7700 XT, RX 9060 XT, RX 9070 / 9070 XT, Radeon AI PRO R9700, RX 6800 / 6900 series**: [AMD_HIP.md](AMD_HIP.md). |
+| GPU | NVIDIA **RTX 20, 30, 40 or 50 series**, **12 GB VRAM or more** (8 GB runs, slowly). Measured on an RTX 5070 and an RTX 3090; RTX 20 (Turing, since 0.1.27) was tested by a contributor on an RTX 2070. |
 | RAM | **64 GB** recommended (see the table above). |
 | CPU | x86-64 with AVX2 (any Intel/AMD desktop CPU from the last ~8 years). AVX-512 (Ryzen 7000/9000) is a bit faster. Older CPUs without AVX2 are experimental and slow: [Older CPUs](INSTALL.md#older-cpus-experimental). |
 | Disk | ~70-80 GB free for the model, ~6 GB for the MTP layer (+1 GB with images). **Q2_0 on an AVX-512 CPU** also writes a one-time ~40 GB pack for the fast CPU kernel (34 GB of experts in its layout, plus the dense weights). An NVMe SSD is strongly recommended. |
@@ -432,8 +395,7 @@ server, three server options (all off by default; also as keys in `strata-<model
 | `--min-free-vram-mib 11000` | `"min_free_vram_mib": 11000` | load an unloaded model only when that much VRAM is free (it waits up to 15 s for memory being given back), else answer **503** "the GPU is in use by another program" instead of starting into what a game left (with several GPUs it checks the first one) |
 | `--before-load "cmd"` | `"before_load": "cmd"` or `["cmd", "arg"]` | a command run before the model is loaded again, e.g. one that unloads another server's model |
 
-`POST /unload` unloads it now (`409` while a request is running) and `POST /load` loads it ahead of a request (both
-with `Content-Type: application/json`, e.g. `curl -X POST -H "Content-Type: application/json" localhost:8080/unload`);
+`POST /unload` unloads it now (`409` while a request is running) and `POST /load` loads it ahead of a request;
 `/health` says `"loaded"`, `/v1/models` lists it as `unloaded` (like llama.cpp's router), `/props` sets
 `is_sleeping` and the Monitor shows the state. Unloading ends the engine process - and the image encoder, when images
 are on; it is started again first, as at a start - so their VRAM and RAM go straight back. The model files stay in
@@ -535,40 +497,6 @@ print(r.choices[0].message.content)
   15 s, and `GET /status` says what it is doing (`reading the prompt`, `answering`, tokens so far). Closing the
   connection or pressing stop in your app really stops the model, so the next request starts at once.
 - **Chat apps.** Any app with an "OpenAI-compatible" provider works: base URL `http://127.0.0.1:8080/v1`, any API key.
-- **OpenCode** (#543). A starting point for `opencode.jsonc` (in your project, or `~/.config/opencode/`); the field
-  names are OpenCode's, so check its config docs if your version differs:
-
-  ```jsonc
-  {
-    "$schema": "https://opencode.ai/config.json",
-    "provider": {
-      "strata": {
-        "npm": "@ai-sdk/openai-compatible",
-        "name": "Strata (local)",
-        "options": { "baseURL": "http://127.0.0.1:8080/v1", "apiKey": "none" },  // or your api_key
-        "models": {
-          "strata": {
-            "name": "Qwen3.8-Flash-Next (Strata)",
-            // context: what you chose in setup; output: what one reply may use (prompt + output must fit)
-            "limit": { "context": 262144, "output": 32768 },
-            "options": { "reasoningEffort": "high" },                  // sent as reasoning_effort
-            "variants": {                                              // switch between them in OpenCode
-              "low": { "reasoningEffort": "low" },
-              "medium": { "reasoningEffort": "medium" },
-              "none": { "reasoningEffort": "none" }
-            }
-          }
-        }
-      }
-    },
-    "model": "strata/strata"
-  }
-  ```
-
-  Set `limit.context` to the context you chose in setup: OpenCode compacts the conversation before it gets there.
-  Keep `limit.output` well under it: a request whose prompt plus `max_tokens` runs past the context is refused (see
-  **Context** below), or add `"fit_max_tokens": true` to `strata-<model>.json`. For a hard cap on the thinking, add
-  `"reasoning_budget_tokens": N` to `strata-<model>.json` (see above).
 - **Claude Code** (Strata 0.1.17 or newer): set `ANTHROPIC_BASE_URL=http://127.0.0.1:8080` and
   `ANTHROPIC_MODEL` to a Claude model name it knows (it refuses names it doesn't; Strata ignores the name), plus any
   `ANTHROPIC_AUTH_TOKEN` (or your `api_key`, if you set one).
@@ -598,33 +526,7 @@ print(r.choices[0].message.content)
 - **From the internet.** Put a tunnel in front of it, for example [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/):
   `cloudflared tunnel --url http://127.0.0.1:8080`. **Set a key first**, or anyone with the link can use your PC:
   add `"api_key": "some-long-secret"` to `strata-<model>.json` (or set the `STRATA_API_KEY` environment variable);
-  clients then send it as their API key. Streamed answers carry `X-Accel-Buffering: no`, so nginx-style proxies pass
-  each token on at once. The web app's settings and MCP tools only answer Strata's own page: when you open it through
-  a proxy or tunnel whose address differs, add that address, e.g. `"trusted_origins": ["https://strata.example.com"]`.
-  With the key set, any `Host` name reaches the server (see Host names below).
-- **From web apps in a browser (CORS).** Off by default. `"cors_origins": ["https://chat.example.com"]` lets pages of
-  those origins call `/v1/*` from the browser (Open WebUI's direct connections, browser extensions); `["*"]` lets any
-  page do it - only sensible with an API key. It never opens `/settings`, `/unload` or the MCP tools.
-- **Host names (DNS rebinding).** A web page of another site can point its own name at `127.0.0.1` and then reach
-  this server as if it were its own, so without an API key the server answers only requests whose `Host` is a name
-  it knows (with a key the check is off: such a page cannot send the key, and tunnels and proxies that pass their
-  own name on keep working):
-  `localhost` (and `*.localhost`), any IP address (`127.0.0.1`, `[::1]`, `192.168.x.x`, ...), the address it
-  listens on and, when it listens beyond this PC (`0.0.0.0` or a LAN address), this PC's name (`mypc`, `mypc.local`)
-  and `host.docker.internal`; any port. Others get **403** naming the setting, and the server window prints one line
-  for each. Reach it under another name (a reverse proxy that keeps the name, a tunnel, a DNS name on your network,
-  another container's name for it)? Add the name: `"allowed_hosts": ["strata.example.com"]` in
-  `strata-<model>.json` or `STRATA_ALLOWED_HOSTS=strata.example.com` (comma-separated); `".example.com"` allows that
-  name and every name below it, and `["*"]` turns the check off (so does setting `api_key`). The hosts of
-  `trusted_origins` count as allowed. Requests without a `Host` header (HTTP/1.0 clients) pass.
-- **Web pages without an API key.** Without `api_key`, a `POST` to `/v1/*` that carries an `Origin` header (a
-  browser page sent it) is answered only for Strata's own page, pages on `localhost` or an allowed host name (any
-  port), the origins in `trusted_origins` or `cors_origins`, and browser extensions and desktop apps
-  (`chrome-extension://`, `moz-extension://`, `app://`: no web site can send those), and only with a JSON body; any
-  other page, and `Origin: null`, gets **403**. Clients that send no `Origin` (curl, the OpenAI and Anthropic SDKs,
-  other servers) are not affected. With
-  an API key, the key decides. `POST /unload` and `POST /load` take `Content-Type: application/json` from Strata's
-  own page (or no `Origin`), like `/settings`.
+  clients then send it as their API key.
 
 **Conversation cache.** A request that continues a chat reads only the part after what the engine already holds: the
 live session, or one of the checkpoints it keeps in RAM (up to 6, ~118 MB each, taken at the start of each new
@@ -835,29 +737,6 @@ run is a slightly different model: the rescaled angles, and `yarn`'s magnitude c
 position, not only past the trained end. That is why the setup turns scaling on only for a context past
 262,144. Pictures read the same scaled table (their (t, h, w) positions feed it). That should work, but it is
 unmeasured: all the runs above are text.
-
----
-
-## Manage Strata from your AI assistant (MCP server)
-
-`tools/strata_mcp.py` is an MCP server for Claude Code, Claude Desktop, Cursor, VS Code, Codex and other assistants.
-Once it is added, you can ask your assistant "install Strata for this PC", "start Strata" or "is Strata running?".
-In Claude Code, add it with:
-
-```bash
-claude mcp add strata -- python C:\Users\you\Strata\tools\strata_mcp.py
-```
-
-It has eight tools: status (the running model, what is installed, the hardware, a recommended size), the model
-list, install, start, stop, logs, a speed test, and connection settings for other apps.
-
-Install runs `setup.py` with `--yes` in the background. Before it downloads anything, it shows the plan and waits
-for your OK. Start and stop work like the run scripts and the server's own unload. The MCP server only ends
-processes it started itself. It uses only Python's standard library, so it works before `.venv` exists.
-
-The config snippets for every client, the tool arguments and the safety rules are in
-[docs/MCP_SERVER.md](MCP_SERVER.md). This is the opposite direction from
-[Tools from MCP servers](#tools-from-mcp-servers) above, where the Strata model calls *your* MCP tools.
 
 ---
 
@@ -1072,56 +951,3 @@ Strata itself: [MIT](../LICENSE). The model files are not part of it; their lice
   `serve/web/fonts/OFL.txt`). Its Monitor tab started from @code-martin's dashboard idea (PR #22).
 - The experimental speed projection's vector (`data/experimental-speed-projection/`): Qwen Community License 1.0,
   made from the model's activations (see its README).
-
-### Start the text API without occupying the GPU
-
-`serve/server.py --engine strata --config strata-<model>.json --lazy` (or `"lazy_load": true` in that
-config) starts the lightweight HTTP API without spawning the native engine. The first generation request
-loads it through the existing reload path, including `before_load` and `min_free_vram_mib`. Eager startup
-remains the default. This option is text-only: a vision configuration with lazy startup is rejected explicitly.
-
-`POST /v1/load` and `/v1/unload` are JSON control aliases for integrations, accepting `{}` or
-`{"model":"<configured model>"}` and returning model status. They require the configured API key,
-`application/json`, and no foreign browser Origin. They return **409** while a request is active or queued,
-and **404** for an unknown model. Existing `/load` and `/unload` behavior is preserved. `/api/health` aliases
-`/health`; `/v1/status` exposes `loaded` and `auto_load`. The unloaded model remains discoverable.
-
-Unloading and shutdown close the native engine's stdin after sending `QUIT`, allowing Windows' detached
-stdin reader to see EOF. Cleanup waits for process exit before releasing handles; if forced shutdown still
-times out, the server keeps ownership and reports an error rather than claiming the model was unloaded.
-
-### JSON response formats
-
-`POST /v1/chat/completions` accepts `response_format: {"type":"json_object"}` or
-`{"type":"json_schema","json_schema":{"name":"answer","strict":true,"schema":{"type":"object","properties":{"answer":{"type":"integer"}},"required":["answer"],"additionalProperties":false}}}`.
-The schema must describe an object at its root. Local `#` references work; remote references are refused.
-`json_schema` is checked with the Python package `jsonschema` when it is installed (`python -m pip install
-"jsonschema>=4.23,<5"`; setup does not add it); without it the answer is only checked to be one JSON object, and the
-server says so once.
-
-This is **schema prompting followed by server validation**, not grammar-constrained decoding. One generation
-is made per request, with no hidden retry. Successful responses contain a validated JSON object. Malformed JSON,
-duplicate keys, non-finite numbers, schema violations and incomplete generations return **502** with
-`error.code: structured_output_failed`; invalid request schemas return **400**. JSON formats combined with
-tools/MCP are refused explicitly. Without `response_format`, ordinary text and tool behavior stays the same.
-
-Structured SSE buffers the answer while sending keep-alive comments. It emits content only after validation,
-then usage/timings and `[DONE]`; failures emit an SSE error and `[DONE]` without invalid content deltas.
-`/v1/status.structured_output` advertises the formats, validation method and buffered streaming behavior.
-
-### API request monitor
-
-Off by default, since it keeps prompts and answers in memory: turn it on with `"api_monitor": true` in
-`strata-<model>.json` (or `serve/server.py --api-monitor`); otherwise nothing is recorded and the two endpoints below
-answer 404.
-Open `/api-monitor` to inspect API traffic without opening a chat. It shows the model state, safe
-load/unload controls, active/queued requests, original request bodies, output, separate reasoning and
-non-stream response bodies. Total wall-clock includes FIFO waits and automatic loading; load, queue,
-first-token, prompt/output tokens and engine decode timing are shown separately.
-
-`GET /api/requests` returns compact summaries; `GET /api/requests?id=<id>` returns one retained request.
-Both use the existing API-key check. The monitor retains the newest **100 requests in memory** until restart,
-with **262,144 characters per input/output/reasoning/response field** and visible truncation flags. The actual API
-responses are unaffected. Headers are not recorded, and the monitor key is kept in this tab's session storage.
-Treat request history as sensitive input/output when exposing Strata on a network: set an API key as above.
-The page uses relative URLs and works through the existing host binding or a reverse proxy.
