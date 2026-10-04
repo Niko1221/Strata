@@ -53,6 +53,7 @@
 #include "strata/core/native_dense.hpp"
 #include "strata/program/logits_selection.hpp"
 #include "strata/program/conv_cache.hpp"
+#include "strata/program/message_boundary.hpp"
 #include "strata/spec/draft_policy.hpp"
 #include "strata/spec/suffix_drafter.hpp"
 #include "strata/kernels/cvec.hpp"
@@ -5609,8 +5610,15 @@ int main(int argc, char** argv) {
                         if (i >= o.prompt_cache_root) root_at = i;
                         break;
                     }
+            static const bool message_checkpoint = [] {
+                const char* e = std::getenv("STRATA_CACHE_MESSAGE_BOUNDARY");
+                return e != nullptr && std::atoi(e) != 0;
+            }();
+            // Only add a snapshot; the existing token and image checks still decide reuse.
+            const int64_t message_at = message_checkpoint && !multi_gpu && o.prompt_cache > 0
+                ? strata::program::message_checkpoint_boundary(ids, resume, turn_at, o.turn_token) : -1;
             int64_t at = read_from;
-            for (const int64_t to : {reread_to, root_at, turn_at, n - 1}) {
+            for (const int64_t to : {reread_to, root_at, message_at, turn_at, n - 1}) {
                 if (to <= at) continue;
                 err.clear();
                 const bool win = windows_ok(at, to);
@@ -5647,10 +5655,13 @@ int main(int argc, char** argv) {
                     break;
                 }
                 at = to;
-                if ((to == turn_at || to == root_at) && !checkpoint_at(to)) {
+                if ((to == turn_at || to == root_at || to == message_at) && !checkpoint_at(to)) {
                     std::printf("ERR saving a conversation checkpoint failed\n");
                     return 1;
                 }
+                if (trace && to == message_at)
+                    std::fprintf(stderr, "strata serve: message boundary checkpoint: %lld tokens, %lld tail\n",
+                                 (long long) message_at, (long long) (turn_at - message_at));
             }
             if (!refill(err)) {
                 std::printf("ERR refilling a lent slot failed: %s\n", err.c_str());
