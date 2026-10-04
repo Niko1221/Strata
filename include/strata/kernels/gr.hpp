@@ -111,6 +111,11 @@ void gr_read(const float* R, const float* w_norm, const uint16_t* w_down, const 
              const uint16_t* w_inject, float eps, const GrShapes& s, const GrWorkspace& ws, float* mixed,
              float* inject, void* stream);
 
+void gr_read_multi(const float* R, const float* w_norm, const uint16_t* w_down, const uint16_t* w_up,
+                   const uint16_t* w_inject, float eps, const GrShapes& s, const GrWorkspace& ws,
+                   float* xn_multi, float* lo_multi, float* gated_multi, float* mixed, float* inject,
+                   int n_tok, void* stream);
+
 /// `build_hc_combine`.  `R_out[i] = R[i] + block_out[d] * w[c]` with `w[c] = 2*sigmoid(inject[c]/hc)`.
 ///
 /// The `2*sigmoid` is what CENTRES the gate on 1, so a zero injection is a plain residual add - the source
@@ -118,5 +123,8 @@ void gr_read(const float* R, const float* w_norm, const uint16_t* w_down, const 
 /// identically; only the weight is per-stream.
 void gr_write(const float* R, const float* block_out, const float* inject, const GrShapes& s, float* R_out,
               void* stream);
+
+void gr_write_multi(const float* R, const float* block_out, const float* inject, const GrShapes& s, float* R_out,
+                    int n_tok, void* stream);
 
 }  // namespace strata::kernels

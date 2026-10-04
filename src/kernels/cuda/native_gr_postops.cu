@@ -50,6 +50,10 @@ __global__ void pre_gated(const float* __restrict__ xn, float* __restrict__ gate
                           float* __restrict__ mixed, int n_embd, int hc, float scale) {
     const std::size_t d = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
     if (d >= std::size_t(n_embd)) return;
+    const std::size_t t = blockIdx.y;
+    xn += t * std::size_t(n_embd) * hc;
+    gate += t * std::size_t(n_embd) * hc;
+    mixed += t * std::size_t(n_embd);
     float sum = 0.0f;
     for (int c = 0; c < hc; ++c) {
         const std::size_t i = std::size_t(c) * n_embd + d;
@@ -67,6 +71,11 @@ __global__ void post(const float* residual, const float* __restrict__ block_out,
                      int n_embd, int hc, float scale) {
     const std::size_t i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
     if (i >= std::size_t(n_embd) * hc) return;
+    const std::size_t t = blockIdx.y;
+    residual += t * std::size_t(n_embd) * hc;
+    block_out += t * std::size_t(n_embd);
+    inject += t * std::size_t(hc);
+    output += t * std::size_t(n_embd) * hc;
     const int c = int(i / n_embd), d = int(i % n_embd);
     const float weight = scale_zero_bias(sigmoid(scale_zero_bias(inject[c], scale)), 2.0f);
     // Exact residual/output alias is supported; no other thread reads residual[i].
@@ -96,19 +105,33 @@ void native_gr_down_silu(float* lo, int hc_lr, int hc, void* stream) {
 }
 void native_gr_pre_gated(const float* xn, float* gate, float* mixed,
                          int n_embd, int hc, bool fused_layer, void* stream) {
+    native_gr_pre_gated_multi(xn, gate, mixed, n_embd, hc, 1, fused_layer, stream);
+}
+void native_gr_pre_gated_multi(const float* xn, float* gate, float* mixed,
+                               int n_embd, int hc, int n_tok, bool fused_layer, void* stream) {
+    if (n_tok <= 0)
+        throw std::invalid_argument("native GR postops require positive n_tok");
     check_shape(n_embd, hc);
     check_pointer(xn); check_pointer(gate); check_pointer(mixed);
+    const dim3 grid{blocks(n_embd), unsigned(n_tok), 1u};
     if (fused_layer)
-        pre_gated<true><<<blocks(n_embd), THREADS, 0, static_cast<cudaStream_t>(stream)>>>(xn, gate, mixed, n_embd, hc, 1.0f / float(hc));
+        pre_gated<true><<<grid, THREADS, 0, static_cast<cudaStream_t>(stream)>>>(xn, gate, mixed, n_embd, hc, 1.0f / float(hc));
     else
-        pre_gated<false><<<blocks(n_embd), THREADS, 0, static_cast<cudaStream_t>(stream)>>>(xn, gate, mixed, n_embd, hc, 1.0f / float(hc));
+        pre_gated<false><<<grid, THREADS, 0, static_cast<cudaStream_t>(stream)>>>(xn, gate, mixed, n_embd, hc, 1.0f / float(hc));
     check_launch();
 }
 void native_gr_post(const float* residual, const float* block_out, const float* inject,
                     float* output, int n_embd, int hc, void* stream) {
+    native_gr_post_multi(residual, block_out, inject, output, n_embd, hc, 1, stream);
+}
+void native_gr_post_multi(const float* residual, const float* block_out, const float* inject,
+                          float* output, int n_embd, int hc, int n_tok, void* stream) {
+    if (n_tok <= 0)
+        throw std::invalid_argument("native GR postops require positive n_tok");
     check_shape(n_embd, hc);
     check_pointer(residual); check_pointer(block_out); check_pointer(inject); check_pointer(output);
-    post<<<blocks(std::size_t(n_embd) * hc), THREADS, 0, static_cast<cudaStream_t>(stream)>>>(
+    const dim3 grid{blocks(std::size_t(n_embd) * hc), unsigned(n_tok), 1u};
+    post<<<grid, THREADS, 0, static_cast<cudaStream_t>(stream)>>>(
         residual, block_out, inject, output, n_embd, hc, 1.0f / float(hc));
     check_launch();
 }

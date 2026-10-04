@@ -19,10 +19,16 @@ void native_gr_down_silu(float* lo, int hc_lr, int hc, void* stream);
 void native_gr_pre_gated(const float* xn, float* gate, float* mixed,
                          int n_embd, int hc, bool fused_layer, void* stream);
 
+void native_gr_pre_gated_multi(const float* xn, float* gate, float* mixed,
+                               int n_embd, int hc, int n_tok, bool fused_layer, void* stream);
+
 // inject[hc] -> SCALE(1/hc), sigmoid, SCALE(2), identity DSV4_HC_POST.
 // residual/output contain [n_embd,hc], block_out has n_embd elements.
 // output may equal residual exactly; all other overlaps are invalid.
 void native_gr_post(const float* residual, const float* block_out, const float* inject,
                     float* output, int n_embd, int hc, void* stream);
+
+void native_gr_post_multi(const float* residual, const float* block_out, const float* inject,
+                          float* output, int n_embd, int hc, int n_tok, void* stream);
 
 } // namespace strata::kernels
