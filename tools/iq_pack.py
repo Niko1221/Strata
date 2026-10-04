@@ -201,6 +201,7 @@ def check_split(files) -> None:
 ROLES = ("gate", "up", "down")
 N_EXPERT = 512
 ALIGN = 64
+HAD2_META = "strata.had2."
 
 
 def read_index(path: pathlib.Path):
@@ -435,6 +436,31 @@ def expert_layout(model: Model, src: pathlib.Path):
     exps = [n for n in T if n.startswith("blk.") and n.endswith("_exps.weight")]
     if not exps:
         return "the model has no expert tensors (blk.N.ffn_{gate,up,down}_exps.weight)"
+    had2_present = any(T[n].type_name == "HADAMARD_INT2" for n in exps)
+    had2_seed = None
+    if had2_present:
+        versions = [g.metadata.get(HAD2_META + "version") for g in model.files]
+        seeds = [g.metadata.get(HAD2_META + "seed") for g in model.files]
+        blocks = [g.metadata.get(HAD2_META + "block_size") for g in model.files]
+        bits = [g.metadata.get(HAD2_META + "bits") for g in model.files]
+        rotations = [g.metadata.get(HAD2_META + "rotation") for g in model.files]
+        scales = [g.metadata.get(HAD2_META + "scale") for g in model.files]
+        packings = [g.metadata.get(HAD2_META + "packing") for g in model.files]
+        scopes = [g.metadata.get(HAD2_META + "tensor_scope") for g in model.files]
+        codebooks = [g.metadata.get(HAD2_META + "codebook") for g in model.files]
+        wanted_codebook = np.asarray([-1.0, -1.0 / 3.0, 1.0 / 3.0, 1.0], dtype=np.float32)
+        if any(v != 1 for v in versions) or any(s is None for s in seeds) or len(set(seeds)) != 1 or \
+                any(b != 128 for b in blocks) or any(b != 2 for b in bits) or \
+                any(v != "normalized_sylvester_fwht_splitmix64_input_sign" for v in rotations) or \
+                any(v != "nonnegative_fp16_per_128_values" for v in scales) or \
+                any(v != "four_2bit_codes_per_byte_lsb_first" for v in packings) or \
+                any(v != "blk.*.ffn_{gate,up,down}_exps.weight" for v in scopes) or \
+                any(v is None for v in codebooks) or \
+                any(not np.array_equal(np.asarray(v, dtype=np.float32), wanted_codebook) for v in codebooks):
+            return "Hadamard-INT2 tensors need consistent strata.had2 version, seed, block, codebook, and rotation metadata"
+        had2_seed = int(seeds[0])
+        if any(T[n].type_name != "HADAMARD_INT2" for n in exps):
+            return "Hadamard-INT2 must cover every routed gate/up/down expert tensor"
     n_layers = 1 + max(int(n.split(".")[1]) for n in exps)
     n_expert = int(T["blk.0.ffn_gate_inp.weight"].shape[1])   # router rows = experts kept (pruned models ship < 512)
     if any(int(T["blk.%d.ffn_gate_inp.weight" % l].shape[1]) != n_expert for l in range(n_layers)):
@@ -460,7 +486,12 @@ def expert_layout(model: Model, src: pathlib.Path):
                                             *[w[0].data_start + w[1].offset for w in ws])
         lines.append(line + ("" if not column else " " + column))
         offset += blob * n_expert
-    if n_split:
+    if had2_present:
+        shard_text = " [shard | gate,up,down]" if n_split else " [shard]"
+        head = ("# strata native experts v5: layer gu_type d_type offset blob_bytes gate_off up_off down_off" +
+                shard_text + " (n_expert %d, total %d, had2_seed %d; absolute offsets in %s or named shard)\n" %
+                (n_expert, offset, had2_seed, src.name))
+    elif n_split:
         head = ("# strata native experts v4: layer gu_type d_type offset blob_bytes gate_off up_off down_off "
                 "[shard | gate,up,down] (n_expert %d, total %d; absolute offsets in %s, or in the named shard "
                 "beside it - per role where the column is gate,up,down)\n" % (n_expert, offset, src.name))

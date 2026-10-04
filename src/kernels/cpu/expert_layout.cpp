@@ -122,7 +122,7 @@ void act_quant_any(const float* x, int n, ActQ& a) {
 #if !defined(STRATA_NATIVE_EXPERTS)
 // Without ggml-cpu no native pack loads (expert_layout_load refuses), so these are never reached.
 bool native_experts_available() noexcept { return false; }
-bool native_fmt(int, int, int64_t, int64_t, NativeFmt&, std::string& err) { err = "built without native experts"; return false; }
+bool native_fmt(int, int, int64_t, int64_t, NativeFmt&, std::string& err, uint64_t) { err = "built without native experts"; return false; }
 void native_quant_act(const NativeFmt&, const float*, void*) { std::abort(); }
 void native_quant_h(const NativeFmt&, const float*, void*) { std::abort(); }
 void native_gu_rows(const NativeFmt&, const uint8_t*, const void* const*, int, float* const*, int, int) { std::abort(); }
@@ -164,6 +164,15 @@ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n
                         return false;
                     }
                 }
+                const size_t seed_at = line.find("had2_seed ");
+                if (seed_at != std::string::npos) {
+                    std::istringstream value(line.substr(seed_at + 10));
+                    if (!(value >> L.had2_seed)) {
+                        err = "native_experts.txt: invalid had2_seed in header";
+                        return false;
+                    }
+                    L.had2_seed_present = true;
+                }
                 // v3 packs record their expert count in the header; a pruned model (GSQ-RCO Coder) ships
                 // fewer experts than the canonical geometry the caller passes, which is a compile-time
                 // default, so the header wins.
@@ -180,7 +189,12 @@ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n
             return false;
         }
         NativeFmt f;
-        if (!native_fmt((int) gt, (int) dt, H, FF, f, err)) return false;
+        const uint64_t seed = L.had2_seed_present ? L.had2_seed : 0;
+        if (!native_fmt((int) gt, (int) dt, H, FF, f, err, seed)) return false;
+        if ((gt == 144 || dt == 144) && (L.version < 5 || !L.had2_seed_present)) {
+            err = "native_experts.txt: Hadamard-INT2 needs v5 metadata with had2_seed";
+            return false;
+        }
         if (f.bytes != blob) {
             err = "native_experts.txt: layer " + std::to_string(l) + " blob is " + std::to_string(blob) +
                   " B but its formats make " + std::to_string(f.bytes);

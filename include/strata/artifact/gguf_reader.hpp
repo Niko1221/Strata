@@ -49,7 +49,7 @@
 
 namespace strata {
 
-// ---- ggml type ids we care about. 42 = Q2_0, the PrismML ternary 2-bit encoding this engine targets.
+// ---- ggml type ids we care about. 42 = Q2_0; 144 = this fork's Hadamard-INT2 GGUF extension.
 inline const char* ggml_type_name(uint32_t t) {
     switch (t) {
     case 0:
@@ -112,6 +112,8 @@ inline const char* ggml_type_name(uint32_t t) {
         return "Q1_0";
     case 42:
         return "Q2_0";
+    case 144:
+        return "HADAMARD_INT2";
     default:
         return "?";
     }
@@ -213,6 +215,10 @@ inline bool block_geometry(uint32_t t, int& elems, int& bytes) {
     case 42:
         elems = 64;
         bytes = 18;
+        return true;
+    case 144:
+        elems = 128;
+        bytes = 34;
         return true;
     default:
         return false;

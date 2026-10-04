@@ -28,7 +28,7 @@ META_VALUES = {
     "bits": ("u32", 2),
     "codebook": ("array:f32", [-1.0, -1.0 / 3.0, 1.0 / 3.0, 1.0]),
     "rotation": ("string", "normalized_sylvester_fwht_splitmix64_input_sign"),
-    "scale": ("string", "positive_fp16_per_128_values"),
+    "scale": ("string", "nonnegative_fp16_per_128_values"),
     "packing": ("string", "four_2bit_codes_per_byte_lsb_first"),
     "tensor_scope": ("string", "blk.*.ffn_{gate,up,down}_exps.weight"),
 }
@@ -320,6 +320,11 @@ def main(argv: list[str] | None = None) -> int:
         output_paths = [output]
     if any(src.resolve() == dst.resolve() for src, dst in zip(shards, output_paths)):
         parser.error("input and output paths must differ")
+    report_path = args.report or (output / f"{stem}.hadamard-int2.json" if split
+                                  else output.with_suffix(output.suffix + ".hadamard-int2.json"))
+    protected_paths = {path.resolve() for path in shards + output_paths}
+    if report_path.resolve() in protected_paths:
+        parser.error("the report path must differ from every input and output GGUF path")
 
     imatrix = np.load(args.imatrix, allow_pickle=False) if args.imatrix else None
     try:
@@ -345,6 +350,8 @@ def main(argv: list[str] | None = None) -> int:
         existing = [str(path) for path in output_paths if path.exists()]
         if existing and not args.overwrite:
             raise FileExistsError(f"output already exists (pass --overwrite to replace): {', '.join(existing)}")
+        if report_path.exists() and not args.overwrite:
+            raise FileExistsError(f"report already exists (pass --overwrite to replace): {report_path}")
 
         all_metrics = []
         for source_path, output_path, gguf, plans, alignment in shard_plans:
@@ -369,8 +376,6 @@ def main(argv: list[str] | None = None) -> int:
             "tensors": all_metrics,
             "quality_note": "Weight reconstruction error only; this report does not measure end-to-end model quality.",
         }
-        report_path = args.report or (output / f"{stem}.hadamard-int2.json" if split
-                                      else output.with_suffix(output.suffix + ".hadamard-int2.json"))
         _write_report(report_path, report)
         print(f"report: {report_path}")
         return 0

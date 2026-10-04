@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -2323,6 +2324,30 @@ std::string expert_gguf_file(const std::string& gguf, const strata::kernels::cpu
     const size_t cut = gguf.find_last_of("/\\");
     return (cut == std::string::npos ? std::string() : gguf.substr(0, cut + 1)) + lay.gguf_file[i];
 }
+
+bool had2_metadata_matches(const strata::GgufFile& gguf, uint64_t seed) {
+    const auto* version = gguf.get("strata.had2.version");
+    const auto* block = gguf.get("strata.had2.block_size");
+    const auto* bits = gguf.get("strata.had2.bits");
+    const auto* got_seed = gguf.get("strata.had2.seed");
+    const auto* rotation = gguf.get("strata.had2.rotation");
+    const auto* scale = gguf.get("strata.had2.scale");
+    const auto* packing = gguf.get("strata.had2.packing");
+    const auto* scope = gguf.get("strata.had2.tensor_scope");
+    const auto* codebook = gguf.get("strata.had2.codebook");
+    if (!version || version->u != 1 || !block || block->u != 128 || !bits || bits->u != 2 ||
+        !got_seed || got_seed->u != seed || !rotation ||
+        rotation->s != "normalized_sylvester_fwht_splitmix64_input_sign" || !scale ||
+        scale->s != "nonnegative_fp16_per_128_values" || !packing ||
+        packing->s != "four_2bit_codes_per_byte_lsb_first" || !scope ||
+        scope->s != "blk.*.ffn_{gate,up,down}_exps.weight" || !codebook ||
+        codebook->type != strata::MetaType::ARRAY || codebook->elem != strata::MetaType::F32 ||
+        codebook->count != 4 || codebook->items.size() != 4) return false;
+    const double expected[4] = {-1.0, -1.0 / 3.0, 1.0 / 3.0, 1.0};
+    for (size_t i = 0; i < 4; ++i)
+        if (std::fabs(codebook->items[i].num() - expected[i]) > 1e-6) return false;
+    return true;
+}
 }  // namespace
 
 bool check_experts_gguf(const std::string& gguf, const strata::kernels::cpu::ExpertLayout& lay, std::string& err) {
@@ -2353,6 +2378,8 @@ bool check_experts_gguf(const std::string& gguf, const strata::kernels::cpu::Exp
                 if (t == nullptr) why = "is not in it";
                 else if (t->type != want_type)
                     why = std::string("is ") + t->type_name() + ", the pack says type " + std::to_string(want_type);
+                else if (t->type == 144 && !had2_metadata_matches(*f, lay.had2_seed))
+                    why = "has missing or mismatched Hadamard-INT2 format metadata";
                 else if (t->shape.size() != 3 || t->shape[0] != cols || t->shape[1] != rows ||
                          t->shape[2] != (uint64_t) lay.n_expert)
                     why = "is not [" + std::to_string(cols) + ", " + std::to_string(rows) + ", " +

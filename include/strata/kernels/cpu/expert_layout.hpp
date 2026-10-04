@@ -1,9 +1,9 @@
 // include/strata/kernels/cpu/expert_layout.hpp - plan v0.3 P6: where each routed expert lives in experts.bin.
 //
 // A Q2_0 pack (tools/strata_pack.py) has one blob size for every layer, `BLOB`, in the Strata expert form.  A
-// native pack (tools/iq_pack.py, the IQ2_XS / IQ3_XXS files) keeps each expert's raw GGUF slices, so the blob
-// size and the formats change from layer to layer; `native_experts.txt` says how.  Everything that touches an
-// expert blob - the arena, the VRAM tier, the prompt path, the CPU pool, the GPU window - asks this table.
+// native pack (tools/iq_pack.py) keeps each expert's raw GGUF slices, so the blob size and formats change from
+// layer to layer; `native_experts.txt` says how. Everything that touches an expert blob - the arena, the VRAM tier,
+// the prompt path, the CPU pool, the GPU window - asks this table.
 #pragma once
 
 #include "strata/kernels/cpu/expert.hpp"
@@ -29,6 +29,8 @@ struct ExpertLayout {
     /// and up in shard 3 (native_experts.txt v4, the `gate,up,down` shard column).
     std::vector<std::string> gguf_file;
     int version = 0;                      ///< native_experts.txt's header version (0 = none given)
+    uint64_t had2_seed = 0;               ///< v5 Hadamard-INT2 activation rotation seed, when type 144 is present
+    bool had2_seed_present = false;
     uint64_t max_blob = BLOB;
     uint64_t total = 0;                   ///< experts.bin size
 
@@ -59,8 +61,7 @@ const ExpertLayout& expert_layout();
 /// Reads `<pack_dir>/native_experts.txt` when it exists (a native pack), else sets the canonical layout.
 /// Versions up to kExpertLayoutVersion are read; a newer one is refused (a newer packer wrote it).
 bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err);
-/// The newest native_experts.txt this engine reads.  v4 = v3 plus the per-role shard column `gate,up,down`,
-/// written only when some layer's roles are in different shards (every other pack stays v3, byte for byte).
-inline constexpr int kExpertLayoutVersion = 4;
+/// The newest native_experts.txt this engine reads. v5 adds a Hadamard-INT2 seed to the file header.
+inline constexpr int kExpertLayoutVersion = 5;
 
 }  // namespace strata::kernels::cpu
