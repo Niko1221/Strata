@@ -635,6 +635,10 @@ reading after it instead of from token 0. A prompt read from the start is also c
 prompt when that is 2,048 tokens or more (engine 0.1.20; PR #62 + #65), so that root exists for agent clients with long
 system prompts and tool lists. Engine options: `--prompt-cache N` (0 = off), `--prompt-cache-every N`,
 `--prompt-cache-root N` (0 = no system-prompt checkpoint), `--turn-token ID`.
+A one-shot request that no later request continues (a classification call, a probe) can send
+`"strata_checkpoint": false` in its body: it then saves no checkpoint at its last turn and reads its prompt in one
+part, which skips work nothing would reuse. It still starts from a checkpoint it matches, and the system-prompt root
+is still taken. Without the field (or with `true`) nothing changes.
 
 **Multiple conversations (opt-in).** Add `--conversation-cache-mib 8192
 --conversation-cache-slots 4` to the engine arguments to park up to four conversations
