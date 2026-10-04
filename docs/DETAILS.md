@@ -29,7 +29,8 @@ measured with Swift 1.5's IQ2_XS, which runs at the original's speed.
 | **IQ3_S** (AMD RX 7900 XTX, gfx1100) | 760 | 1,275 | 1,641 | 1,594 | 1,494 | - |
 
 Engine 0.1.26; `bench/results/2026-09-29-speed-0126`. The AMD RX 7900 XTX row: engine 0.1.38 on a ROCm
-10.2 nightly with a tuned gfx1100 hipBLASLt-100500 table, the median of 3 clean cells per tier
+10.2 nightly with a tuned gfx1100 hipBLASLt-100500 table (upstream as [#755](https://github.com/Niko1221/Strata/pull/755)),
+the median of 3 clean cells per tier
 (Ryzen 9 7900X, 96 GB; 1K-128K one-shot runs, 256 generated tokens,
 greedy). At 32K-128K that is 8-28% faster than 0.1.22. † not measured
 again: 0.1.22. \* measured with images on (the image encoder's VRAM reserve leaves fewer experts cached). \*\* not
@@ -47,7 +48,7 @@ measured again: 0.1.14.
 | **IQ3_S** (AMD RX 7900 XTX, gfx1100) | 65.1 | 60.4 | 64.4 | 61.8 | 59.2 | - |
 
 Engine 0.1.26, the same runs. The AMD RX 7900 XTX row: engine 0.1.38 on a ROCm 10.2 nightly (tuned
-gfx1100 hipBLASLt-100500 table), median of 3 clean cells per tier (same box; decode is flat in
+gfx1100 hipBLASLt-100500 table, upstream as [#755](https://github.com/Niko1221/Strata/pull/755)), median of 3 clean cells per tier (same box; decode is flat in
 context - the GDN linear attention is O(1) per token; 1K/4K prefill ran slightly under the 0.1.31
 packaged-ROCm numbers, 32K-128K ahead). † not measured again: 0.1.14.
 
