@@ -12,7 +12,8 @@
 #
 # setup.py's rocm_root() accepts a system ROCm >= 7.0 when hipcc, libhipblas and 
 # the hip-lang dev files are present (the -full base has all three). This image
-# defaults to 7.14.1, but newer ROCm versions may also be used.
+# defaults to 7.2.4, but newer ROCm versions may also be used. A complete/full
+# release of the base image must be used as the base image.
 #
 # Build:
 #   docker build -t strata-rocm .
@@ -49,7 +50,7 @@
 # -e GPUS=0,2. A volume set up for one card switches to the pair on its first start
 # on a two-card host unless GPU or GPUS pins it. LOW_RAM=on runs on one card.
 
-FROM rocm/dev-ubuntu-26.04:7.14.1-full
+FROM rocm/dev-ubuntu-24.04:7.2.4-complete
 
 # STRATA_EXECV=1: setup.py replaces itself with the server, so the server is PID 1
 # and docker stop's SIGTERM reaches it (see setup.start). Normal Linux starts, which
@@ -89,7 +90,6 @@ RUN python3 -m venv .venv \
 RUN .venv/bin/python - <<'PYEOF'
 import json, os, pathlib, shutil
 import setup
-
 
 # Target all maintainer- and community-validated archs for a fat build by default.
 # Narrow to one for a faster build or add your own (e.g. gfx1030).
