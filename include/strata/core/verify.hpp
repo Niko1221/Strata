@@ -149,8 +149,11 @@ public:
     /// listed are not touched, so an idle slot keeps its state (a finished conversation it may continue later).
     bool run_slot_rows(const int* rows, int S, const int32_t* tokens, const int64_t* pos, PoolMultiFn pool, void* user,
                        int32_t* out, std::string& err);
-    /// Keep every row of the last batch window: each slot's state advances by its one token.
+    /// Keep every row of the last batch window.
     bool commit_slots(std::string& err);
+    /// Commit an accepted prefix in each contiguous slot group of the last window. `keep` has
+    /// one entry per slot (indexed by slot ID), each in 1..that slot's group length.
+    bool commit_slot_prefixes(const int* keep, std::string& err);
 
     // ---- The stages of a layer split as a PIPELINE.  A batch window over the slot GROUP
     // [base, base + S) is launched on ONE stage with its commit right behind it on the stage's stream (a batch window
@@ -221,11 +224,13 @@ private:
     int row_base_ = 0;                     ///< ... its hand-off rows start here (a pipeline group's own rows)
     int brow_[8] = {};                     ///< ... and row t is slot brow_[t]
     bool last_batch_ = false;              ///< the last run was a batch window (set_plan_slot: one group)
-    std::map<uint64_t, cudaGraphExec_t> exec_bm_, commit_bm_;   ///< key: batch_key(rows, S, hand-off base)
+    std::map<std::vector<int>, cudaGraphExec_t> exec_bm_, commit_bm_;   ///< full row layout avoids slot-ID collisions
     int last_rows_[8] = {};                ///< the slots of the last batch window's rows
-    static uint64_t batch_key(const int* rows, int S, int hbase) {
-        uint64_t k = (uint64_t) hbase << 40 | (uint64_t) S << 32;
-        for (int t = 0; t < S; ++t) k |= (uint64_t) (rows[t] & 15) << (4 * t);
+    static std::vector<int> batch_key(const int* rows, int S, int hbase) {
+        std::vector<int> k;
+        k.reserve((size_t) S + 1);
+        k.push_back(hbase);
+        for (int t = 0; t < S; ++t) k.push_back(rows[t]);
         return k;
     }
     // batch_launch / batch_poll

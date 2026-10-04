@@ -123,13 +123,13 @@ MtpDrafter::~MtpDrafter() {
     if (h_cparams_) cudaFreeHost(h_cparams_);
     if (h_chist_) cudaFreeHost(h_chist_);
     if (cs_) cudaStreamDestroy(cs_);
-    if (dense_) cudaFree(dense_);
-    if (experts_) cudaFree(experts_);
+    if (owns_weights_ && dense_) cudaFree(dense_);
+    if (owns_weights_ && experts_) cudaFree(experts_);
     if (state_arena_) cudaFree(state_arena_);
     if (arena_) cudaFree(arena_);
     if (head_logits_) cudaFree(head_logits_);
-    if (dhead_) cudaFree(dhead_);
-    if (dvocab_) cudaFree(dvocab_);
+    if (owns_draft_head_ && dhead_) cudaFree(dhead_);
+    if (owns_draft_head_ && dvocab_) cudaFree(dvocab_);
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_row_, h_out_, h_prob_};
     for (void* h : hosts) if (h) cudaFreeHost(h);
 }
@@ -148,7 +148,7 @@ const void* MtpDrafter::q8(const char* name) const {
 }
 
 bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, SessionState& ss, int max_t, std::string& err,
-                      int64_t window) {
+                      int64_t window, const MtpDrafter* shared) {
     cudaGetDevice(&device_);   // a layer split's last stage on another GPU: the drafter lives there
     g_ = &g;
     ss_ = &ss;
@@ -156,11 +156,23 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     max_t_ = max_t;
     rt_dir_ = rt_dir;
     if (max_t < 1 || max_t > strata::kernels::kVerifyMaxT) { err = "mtp: max_t out of range"; return false; }
+    if (shared != nullptr) {
+        if (shared->device_ != device_ || shared->g_ != &g || shared->dense_ == nullptr ||
+            shared->experts_ == nullptr || shared->rt_dir_ != rt_dir) {
+            err = "mtp: incompatible shared weights";
+            return false;
+        }
+        dense_ = shared->dense_;
+        experts_ = shared->experts_;
+        tensors_ = shared->tensors_;
+        owns_weights_ = false;
+        owns_draft_head_ = false;
+    }
     // Loader fix (0.1.15+loaderfix.2): the two reads below are the whole “drafter files” cost; reporting
     // them apart from the rest of the stage is what makes the next regression visible.
     const auto t_files = std::chrono::steady_clock::now();
     // ---- the index and the dense weights
-    {
+    if (shared == nullptr) {
         std::ifstream idx(rt_dir + "/dense.txt");
         if (!idx) { err = "mtp: cannot open " + rt_dir + "/dense.txt (run tools/mtp_rt.py)"; return false; }
         std::string line;
@@ -187,7 +199,7 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         vram_ += blob.size();
     }
     // ---- the 512 routed experts, one blob each
-    {
+    if (shared == nullptr) {
         const uint64_t bytes = (uint64_t) g.n_expert * strata::kernels::cpu::BLOB;
         // Loader fix (0.1.15+loaderfix.2): each 64 MiB read below reached the disk as ~16k 4095-byte reads under
         // MSVC's `basic_filebuf::xsgetn`, which is what made 675 MiB of drafter experts take minutes.
@@ -302,17 +314,22 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     }
     if (cudaStreamCreateWithFlags(&cs_, cudaStreamNonBlocking) != cudaSuccess) { err = "mtp: stream"; return false; }
     const double files_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_files).count();
-    std::fprintf(stderr, "strata mtp: draft layer loaded, %.0f MiB of VRAM (experts %.0f, dense %.0f), files read in %.2f s (%.0f MiB/s)\n",
-                 (double) vram_ / 1048576.0, (double) g.n_expert * strata::kernels::cpu::BLOB / 1048576.0,
-                 (double) tensors_.back().off / 1048576.0, files_s,
-                 files_s > 0 ? ((double) g.n_expert * strata::kernels::cpu::BLOB + (double) tensors_.back().off) /
-                                   1048576.0 / files_s : 0.0);
+    if (shared != nullptr) {
+        std::fprintf(stderr, "strata mtp: shared draft weights, %.0f MiB of private state and buffers\n",
+                     (double) vram_ / 1048576.0);
+    } else {
+        std::fprintf(stderr, "strata mtp: draft layer loaded, %.0f MiB of VRAM (experts %.0f, dense %.0f), files read in %.2f s (%.0f MiB/s)\n",
+                     (double) vram_ / 1048576.0, (double) g.n_expert * strata::kernels::cpu::BLOB / 1048576.0,
+                     (double) tensors_.back().off / 1048576.0, files_s,
+                     files_s > 0 ? ((double) g.n_expert * strata::kernels::cpu::BLOB + (double) tensors_.back().off) /
+                                       1048576.0 / files_s : 0.0);
+    }
     return true;
 }
 
 uint64_t MtpDrafter::bind_bytes(uint64_t head_row_bytes, int64_t n_vocab) const {
     uint64_t bytes = head_logits_ ? 0 : (uint64_t) max_t_ * (uint64_t) n_vocab * sizeof(float);
-    if (dhead_ == nullptr) {
+    if (dhead_ == nullptr && owns_draft_head_) {
         if (FILE* f = std::fopen((rt_dir_ + "/draft_vocab.bin").c_str(), "rb")) {
             std::fseek(f, 0, SEEK_END);
             const long size = std::ftell(f);
@@ -420,7 +437,8 @@ void draft_head_hint(int64_t n_tokens, int64_t row_bytes) {
 }
 }  // namespace
 
-bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float* window_R, std::string& err) {
+bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float* window_R, std::string& err,
+                      const MtpDrafter* shared) {
     const OnDevice on_device(device_);
     wt_ = &wt;
     head_ = head;
@@ -434,8 +452,19 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
         err = "mtp: the draft logits do not fit";
         return false;
     }
+    if (shared != nullptr) {
+        if (shared->head_ != head || shared->device_ != device_ ||
+            shared->n_vocab_ != n_vocab_) {
+            err = "mtp: incompatible shared draft head";
+            return false;
+        }
+        dhead_ = shared->dhead_;
+        dvocab_ = shared->dvocab_;
+        n_dvocab_ = shared->n_dvocab_;
+        owns_draft_head_ = false;
+    }
     // the draft head's token subset, when tools/draft_vocab.py wrote one
-    if (dhead_ == nullptr) {
+    if (dhead_ == nullptr && shared == nullptr) {
         std::vector<uint8_t> raw;
         if (read_file(rt_dir_ + "/draft_vocab.bin", raw) && raw.size() >= 4 && raw.size() % 4 == 0) {
             n_dvocab_ = (int64_t) (raw.size() / 4);
