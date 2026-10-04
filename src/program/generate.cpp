@@ -2695,6 +2695,12 @@ int main(int argc, char** argv) {
     //   - an expert no cache holds costs ~190 ms per unit of routed mass: the CPU pool in decode and the PCIe stream
     //     in prompts (fitted: the sweep's best K, 26-28, is where one more layer on the faster card stops paying
     //     for the ~0.1% of the mass it pushes out of its cache);
+    //     SCALED PER STAGE BY ITS PROBED LINK against the 20 GB/s x16 reference (pcie_frac_for_gbps' rule): the
+    //     prompt path fetches a missed expert over ITS stage's link, so a stage on a narrow link pays
+    //     proportionally more per missed unit.  Without this the search is blind to asymmetric cards:
+    //     2026-10-04, 2x 4090 D with CUDA1 on a physical x1 link (1.6 GB/s), auto chose K=22 and read prompts
+    //     at ~350 tok/s; with the scale (x12 on CUDA1) it chooses the fit-in-cache boundary K=38: ~1400 tok/s.
+    //     With every scale 1.0 the objective is the formula the 190 ms was fitted with (unchanged).
     //   - which experts a cache holds: its layers' profiled pairs, hottest first, until its free VRAM (less the
     //     reserve, the prompt path's buffers and, on a later GPU, 1 GiB for its windows and the drafter) is used;
     //     the routed mass of rank r is taken as (r+1)^-1.2 (fits the sweep's hit rates: K=24/26/28 predicted
@@ -2765,6 +2771,20 @@ int main(int argc, char** argv) {
                                  "%.2f GiB free before its session carve\n", dev, sms, khz / 1e6, layer_ms[(size_t) i],
                          (double) cap[(size_t) i] / 1073741824.0);
         }
+        // The per-stage link, measured here (the stage-setup probes are skipped when --pcie-frac is given, and the
+        // search needs the reading either way).
+        std::vector<double> link_scale((size_t) ns, 1.0);
+        for (int i = 0; i < ns; ++i) {
+            const int dev = i == 0 ? 0 : stages[(size_t) i - 1]->dev;
+            const strata::core::OnDevice on(dev);
+            std::string bursts;
+            const double bw = native_pack ? probe_pcie_h2d_gbps(&bursts) : -1.0;
+            // Never below 1.0: a link at or above the 20 GB/s reference keeps the fitted cost exactly (a x16
+            // gen4/5 reads 26-28 and must not credit misses below the formula the sweep's K was fitted with).
+            if (bw > 0.0) link_scale[(size_t) i] = std::clamp(20.0 / bw, 1.0, 64.0);
+            std::fprintf(stderr, "strata generate: layer split auto: CUDA%d link %.1f GB/s -> miss cost x%.2f\n",
+                         dev, bw, link_scale[(size_t) i]);
+        }
         const double miss_ms = std::getenv("STRATA_SPLIT_MISS_MS") ? std::atof(std::getenv("STRATA_SPLIT_MISS_MS")) : 190.0;
         std::vector<double> mass(profile.size());
         double total_mass = 0;
@@ -2786,19 +2806,26 @@ int main(int argc, char** argv) {
             std::fill(used.begin(), used.end(), 0);
             held_mass = 0;
             held = 0;
+            std::vector<double> mass_i((size_t) ns, 0.0), held_i((size_t) ns, 0.0);
             std::vector<bool> full((size_t) ns, false);
             for (size_t r = 0; r < profile.size(); ++r) {
                 const int64_t l = profile[r].first;
                 int st = 0;
                 while (st + 1 < ns && l >= at[(size_t) st]) ++st;
+                mass_i[(size_t) st] += mass[r];
                 if (full[(size_t) st]) continue;
                 if (used[(size_t) st] + cost(l) > capr[(size_t) st]) { full[(size_t) st] = true; continue; }   // as the fill
                 used[(size_t) st] += cost(l);
                 held_mass += mass[r];
+                held_i[(size_t) st] += mass[r];
                 ++held;
             }
             held_mass /= std::max(total_mass, 1e-9);
-            double ms = miss_ms * (1.0 - held_mass);
+            // Each stage's misses on its own link (link_scale; 1.0 everywhere = the fitted single-constant formula).
+            double ms = 0.0;
+            for (int i = 0; i < ns; ++i)
+                ms += miss_ms * link_scale[(size_t) i] * std::max(0.0, mass_i[(size_t) i] - held_i[(size_t) i]) /
+                      std::max(total_mass, 1e-9);
             for (int i = 0; i < ns; ++i) {
                 const int64_t lb = i == 0 ? 0 : at[(size_t) i - 1], le = i + 1 < ns ? at[(size_t) i] : g.n_layers;
                 ms += (double) (le - lb) * layer_ms[(size_t) i];
