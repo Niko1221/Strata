@@ -1690,7 +1690,8 @@ class Service:
         # since the server started (the Monitor's totals, issue #35)
         self.totals = {"since": time.time(), "requests": 0, "prompt_tokens": 0, "reused": 0, "output_tokens": 0,
                        "prompt_ms": 0.0, "decode_ms": 0.0,
-                       "drafts_offered": 0, "drafts_accepted": 0}   # #457: the MTP drafts, summed where reported
+                       "drafts_offered": 0, "drafts_accepted": 0,   # #457: the MTP drafts, summed where reported
+                       "implicit_reasoning_ends": 0}   # tool calls written inside the thinking (OutputParser)
         self.last_timings = None                         # the last finished request's, llama.cpp's names (/v1/status)
         self.last_request_at = None                      # when a request last started or finished
         self.started_at = time.time()
@@ -2414,7 +2415,8 @@ class Service:
                                 "file_blobs": last.get("file_blobs"), "file_mb": last.get("file_mb"),
                                 # #457: the speculative drafts from the DONE line (None: the engine did not say)
                                 "drafts_offered": last.get("drafts_offered"),
-                                "drafts_accepted": last.get("drafts_accepted")})
+                                "drafts_accepted": last.get("drafts_accepted"),
+                                "implicit_reasoning_ends": parser.implicit_ends})
                             t = self.totals
                             t["requests"] += 1
                             t["prompt_tokens"] += seen
@@ -2424,6 +2426,7 @@ class Service:
                             t["decode_ms"] += last.get("decode_ms") or 0.0
                             t["drafts_offered"] += last.get("drafts_offered") or 0
                             t["drafts_accepted"] += last.get("drafts_accepted") or 0
+                            t["implicit_reasoning_ends"] += parser.implicit_ends
                             fresh = getattr(self.engine, "last", None)
                             if fresh is not None and fresh is not before:      # the engine's clock for THIS request
                                 timings = request_timings(seen, n, last)
@@ -2438,6 +2441,10 @@ class Service:
                                 hit_msg += f" (+{pcie_share*100:.1f}% of the routed experts over PCIe)"
                             print(f"[strata] done: {n} tokens in {el:.0f} s ({rate:.1f} tok/s) "
                                   f"({finish}, cancel={cancel.is_set()}){hit_msg}", flush=True)
+                            if parser.implicit_ends:
+                                print(f"[strata] implicit end of thinking: {parser.implicit_ends} tool call(s) "
+                                      f"written inside the thinking without </think> were read as calls "
+                                      f"({t['implicit_reasoning_ends']} since start)", flush=True)
                             if finish == "length" and parser.state == "reasoning":   # #530
                                 print("[strata] the reply reached max tokens while still thinking, so it has no "
                                       "answer: a thinking budget (reasoning_budget_tokens, in the request or in "
