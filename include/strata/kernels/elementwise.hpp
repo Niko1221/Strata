@@ -1,4 +1,4 @@
-﻿// include/strata/kernels/elementwise.hpp - the small ops a LAYER needs between its GEMVs, P2.S5.
+// include/strata/kernels/elementwise.hpp - the small ops a LAYER needs between its GEMVs, P2.S5.
 //
 // These are not interesting kernels and that is why they are in one file with one parity test: they are the
 // glue in the per-layer graph, and glue that is written inline at each call site is glue with several
@@ -102,6 +102,8 @@ void doorbell_wait(const uint32_t* d_flag, const uint32_t* d_seq, void* stream);
 /// device memory with a kernel, so the handoff stays on the compute queue (a memcpy node is a copy-engine
 /// operation, which WDDM submits separately and which measured 67 flushes per token).
 void copy_from_mapped(float* dst, const float* src, int64_t n, void* stream);
+/// multi-GPU: dst[rows[r] * width ..] = src[r * width ..] for r < n (float4; dst may be mapped host memory).
+void scatter_rows_f32(const float* src, float* dst, const int32_t* rows, int64_t n, int64_t width, void* stream);
 /// Copy `rows` rows of `width` floats from mapped memory. Rows listed in hit_rows[0, *count) are GPU-owned
 /// and are written +0.0 without reading the host values, which can be stale.
 void copy_rows_from_mapped(float* dst, const float* src, int64_t rows, int64_t width, const int32_t* hit_rows,
@@ -110,13 +112,14 @@ void copy_rows_from_mapped(float* dst, const float* src, int64_t rows, int64_t w
 /// Plan v0.3 P3: the doorbell's payload and its ring in ONE kernel.  Copies `x` (n floats), `ids` and `weights`
 /// (k each) into the mapped host regions, fences, and increments the mapped sequence number - replacing three
 /// device-to-host memcpy nodes (copy-engine operations in the middle of the layer chain) and the ring kernel.
-/// E-6 (STRATA_VERIFY_DEVICE_PLAN=1): with `skip`/`expected` given, a group whose skip word EQUALS expected
-/// (the device planned it: every routed expert resident) publishes the ids/weights and the ring but NOT the
-/// activation payload - the host pool still counts usage from the valid ids and never reads the activation
-/// for an all-resident group.  Null `skip` (layer.cpp's session doorbell) keeps the full publish.
 void doorbell_publish(const float* x, const int32_t* ids, const float* weights, int64_t n, int64_t k, float* x_out,
-                      int32_t* ids_out, float* weights_out, uint32_t* d_seq, void* stream,
-                      const uint32_t* skip = nullptr, uint32_t expected = 0);
+                      int32_t* ids_out, float* weights_out, uint32_t* d_seq, void* stream);
+/// #649 (HIP, STRATA_DOORBELL_STORE=1): the ring stored as `value` instead of incremented over PCIe.
+void doorbell_publish_value(const float* x, const int32_t* ids, const float* weights, int64_t n, int64_t k,
+                            float* x_out, int32_t* ids_out, float* weights_out, uint32_t* d_seq, uint32_t value,
+                            void* stream);
+void doorbell_publish_res(const float* x, const int32_t* ids, const int32_t* d_res, int n_expert, int64_t n, int64_t k,
+                          float* x_out, int32_t* ids_out, uint32_t* d_seq, void* stream);
 
 /// Plan v0.3 P3: copy `n` int32 from mapped pinned host memory into device memory with a kernel (the QSA
 /// per-token step and positions), instead of a host-to-device memcpy node in the middle of a layer.

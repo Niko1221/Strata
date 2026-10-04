@@ -69,6 +69,29 @@ class Update(unittest.TestCase):
             m.assert_not_called()
         self.assertIn("START-HERE.bat", out)
 
+    def test_a_json_that_is_no_model_config_is_skipped(self):
+        """#549: a strata-*.json without "args" (not written by setup) stopped update.sh with KeyError: 'args'."""
+        with tempfile.TemporaryDirectory() as d:
+            p = self.config(Path(d))
+            other = Path(d) / "strata-notes.json"
+            other.write_text(json.dumps({"note": "mine"}), encoding="utf-8")
+            broken = Path(d) / "strata-cut.json"
+            broken.write_text("{\"args\": [", encoding="utf-8")
+            rc, pip, eng, dv, start, call, out = self.run_update([other, broken, p])
+        self.assertEqual(rc, 0, out)
+        self.assertIn('skipped strata-notes.json (no "exe" or "args"): it is not a Strata model config', out)
+        self.assertIn("skipped strata-cut.json (not valid JSON)", out)
+        dv.assert_called_once()                                     # the real model is still refreshed
+        self.assertIn("Qwen IQ3_S: up to date", out)
+        self.assertIn("Strata is updated", out)
+
+    def test_installed_configs_lists_only_model_configs(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = self.config(Path(d))
+            (Path(d) / "strata-notes.json").write_text("{}", encoding="utf-8")
+            with mock.patch.object(setup, "ROOT", Path(d)), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(setup.installed_configs(), [p])
+
     def test_main_update_never_starts(self):
         with tempfile.TemporaryDirectory() as d:
             p = self.config(Path(d))
@@ -81,6 +104,41 @@ class Update(unittest.TestCase):
                 self.assertEqual(setup.main(), 0)
         up.assert_called_once()
         start.assert_not_called()
+
+
+class SettingsLine(unittest.TestCase):
+    """#564: a start prints the settings it uses (the engine options without the model's paths, and the server's
+    fields), so a change made by hand to strata-<model>.json shows without reading the log."""
+
+    CFG = {"exe": "x", "host": "0.0.0.0", "port": 8081, "api_key": "secret", "gpu": [0, 1], "fit_max_tokens": True,
+           "args": ["--native", "E:\\Strata\\packs\\iq3_s", "--mtp", "/s/mtp/rt", "m.gguf", "--kv", "int8",
+                    "--kv-resident", "32768", "--spec-min-p", "0.5", "--vram-reserve-mib", "2048", "--mmap-experts",
+                    "--prefill", "auto"]}
+
+    def test_summary(self):
+        s = setup.settings_summary(self.CFG)
+        self.assertEqual(s, "--kv int8 --kv-resident 32768 --spec-min-p 0.5 --vram-reserve-mib 2048 --mmap-experts "
+                            "--prefill auto; server 0.0.0.0:8081, api key set, gpu 0,1, fit_max_tokens true")
+        self.assertNotIn("secret", s)
+        self.assertIn("127.0.0.1:9000", setup.settings_summary({"args": []}, 9000))
+
+    def test_a_start_prints_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            exe = Path(d) / "strata.exe"
+            exe.write_bytes(b"")
+            p = Path(d) / "strata-iq3_s.json"
+            args = [x for x in self.CFG["args"] if x != "m.gguf"]           # no model file here
+            p.write_text(json.dumps({**self.CFG, "exe": str(exe), "gpu": 0, "args": args}), encoding="utf-8")
+            out = io.StringIO()
+            with mock.patch.object(setup, "gpus", lambda: []), \
+                    mock.patch.object(setup, "refresh_draft_vocab"), \
+                    mock.patch.object(setup, "is_wsl", lambda: False), \
+                    mock.patch.object(setup.subprocess, "call", return_value=0), \
+                    contextlib.redirect_stdout(out):
+                setup.start(p, None, open_browser=False, yes=True)
+        text = " ".join(out.getvalue().split())
+        self.assertIn("Settings (strata-iq3_s.json): --kv int8 --kv-resident 32768", text)
+        self.assertIn("--vram-reserve-mib 2048", text)
 
 
 if __name__ == "__main__":

@@ -508,8 +508,11 @@ def main():
     }
     (output / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
     verify(results, a.spec)
-    print(f'PASS: {a.scenario} disk conversation cache, output and main-model state parity'
-          + (', byte-exact state' if a.spec == 1 else ''))
+    if a.scenario == 'corrupt':
+        print('PASS: corrupt disk conversation cache, invalid record removed and cold fallback output parity')
+    else:
+        print(f'PASS: {a.scenario} disk conversation cache, output and main-model state parity'
+              + (', byte-exact state' if a.spec == 1 else ''))
     print(f'Results: {output / "results.json"}')
 
 

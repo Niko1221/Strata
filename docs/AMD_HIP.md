@@ -5,7 +5,8 @@ covers the build on Linux (on Windows a ready-made engine, see [Windows](#window
 RX 9070 / 9070 XT / Radeon AI PRO R9700 (RDNA4, gfx1201; see [RDNA4](#rdna4-gfx1201)). The RX 7800 XT / 7700 XT
 (gfx1101) and the RX 9060 XT (gfx1200) were validated by their owners (see [Community-validated
 cards](#community-validated-cards)); the RX 6800 / 6900 series (RDNA2, gfx1030) builds and runs too, reported by a community machine and not yet validated by the maintainers (see [RDNA2](#rdna2-gfx1030)). Setup chooses it by itself on a PC with no NVIDIA card Strata can use (`--backend hip` on a PC with both); the
-install steps for users are in [INSTALL.md](INSTALL.md#amd-cards). Other AMD architectures, wave64, and mixed
+install steps for users are in [INSTALL.md](INSTALL.md#amd-cards). gfx906 (Instinct MI50 / MI60, Radeon VII; wave64) has a separate
+opt-in build, see [gfx906](#gfx906-instinct-mi50--mi60-radeon-vii-wave64-built-from-source). Other AMD architectures and mixed
 AMD/NVIDIA execution in one run are not supported.
 
 The backend maps the CUDA-shaped runtime and BLAS calls to HIP/hipBLAS, uses
@@ -46,7 +47,9 @@ the kernel's amdgpu driver (no ROCm install needed):
   architectures above; the engine is compiled for each of them (cards of two families, e.g. gfx1100 + gfx1201, need
   a system ROCm 7: AMD's wheels hold one family). A split pays only when no single card holds the model's experts
   (see RDNA4 below).
-- **Limits for now:** images only through the CPU encoder (`--vision cpu`, 0.1.32), no calibration. The Monitor
+- **Limits for now:** images only through the CPU encoder (`--vision cpu`, 0.1.32). Setup does not offer the tuning
+  (calibration) on AMD yet: its controls are being checked on HIP one at a time (#566). Since 0.1.39 a tuning run by
+  hand (`./setup.sh --calibrate`) is saved for the AMD card it ran on and reused when setup runs again. The Monitor
   shows the card's load, VRAM, temperature and power from Linux sysfs (0.1.32).
 
 The rest of setup is the same as on NVIDIA: the model download, the start script, the server.
@@ -84,6 +87,13 @@ On a PC with no NVIDIA card Strata can use, the AMD card is chosen by itself; wi
   succeeded, on Windows only. `hipHostGetDevicePointer` returns the host pointer itself on Windows: kernels read
   mapped memory through it correctly, but a device-to-device copy into it does not land, which is why
   `tests/hip/handoff` times out there (the engine does not use that copy; `tests/hip/mapped_alias` reports it).
+- Two more (#380, #377, by BlueKingMuch, measured on an RX 6800 that drives the desktop): `hipMemGetInfo` on Windows
+  does not subtract what the desktop and other programs hold on the card, so `--expert-cache auto` filled the card
+  past what Windows keeps in VRAM and decode fell from 41 to 30 tok/s. The engine now lowers that free figure by
+  what Windows' video memory budget for the process withholds (logged once: `strata: Windows budgets N of this
+  card's M MiB ...`; `STRATA_WDDM_BUDGET=0` turns it off). And the PCIe probe times its copies on the host clock
+  there, since HIP's events read impossible speeds (3,300-26,000 GB/s), so a slow link now gets a smaller
+  `pcie_frac` as on NVIDIA.
 
 **What is validated (0.1.34):** #325's author ran the engine of this port on an RX 9070 XT (Windows 11, ROCm
 10.2.0a20260930 in `.venv`, compiled on the PC): Coder IQ1_M at 32K, 29.2 tok/s decode, ~181 tok/s prefill,
@@ -183,6 +193,11 @@ The worker count above was used on a 16-core CPU; measure it for your CPU.
 The 4K context is a smoke-test starting point, not a model limit. The expert cache
 sizes itself automatically and leaves 1 GiB of VRAM headroom.
 
+**The card also drives a Linux desktop (#560 #516):** keep more VRAM free than the default 700 MiB, e.g.
+`./setup.sh --vram-reserve-mib 3072`. With the cache filling the card, the desktop's next VRAM need makes amdgpu move
+GPU memory to system RAM (GTT), the OOM killer then ends KWin/plasmashell or `systemd-oomd` ends apps, or the
+compositor fails with "Failed to pin framebuffer with error -12".
+
 The installer supports this backend (see "Install with setup" above). Images run through the CPU encoder for now (`--vision cpu`).
 Setup installs one AMD card, or several with `--gpus` (the engine's layer split; see RDNA4 below).
 
@@ -222,6 +237,10 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
   so none was shipped for it: there the plain hipBLAS path is already close. For hipBLASLt 1.5.0 (ROCm
   10.2.0a nightly) `tools/hip/gfx1201-hipblaslt-100500.txt` is shipped (see "Tuning table" below); on one R9700 it
   measured +3.9% prompt speed on 4,210-token prompts (1,590 vs 1,531 tok/s), a modest gain.
+  With the hipBLASLt 1.2.2 of a system ROCm 7.2.4 the plain path is far off, and `tools/hip/gfx1201-hipblaslt-100202.txt`
+  is shipped for it (24 of the gfx1100 table's 26 shapes; setup uses it only with that exact version): on an R9700
+  with the full IQ3_XXS, `--kv int8 --kv-resident 32768`, a fresh 32K prompt read at 638 -> 1,177 tok/s and a 7K one
+  at 656 -> 1,164 tok/s with it, decode unchanged.  `hip_prefill_hipblaslt_gemm` passes with it.
 - **Both cards in one run (layer split, engine 0.1.30):** the config's `"backend": "hip", "gpu": [1, 0]` (R9700
   first) runs through `serve/server.py` (setup writes it with `--gpus 1,0` since 0.1.31). Auto split put layers 0-27 on the R9700 and
   28-47 on the 9070 XT. With every expert on the GPUs the split gives exactly the tokens of the R9700 alone (4K and
@@ -267,8 +286,9 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
 
 ## Community-validated cards
 
-Run by their owners, not on the maintainers' machines; setup accepts them like gfx1100 / gfx1201. No hipBLASLt table
-is shipped for them (make one with [Tuning table](#tuning-table) and compare the prompt speed with and without it).
+Run by their owners, not on the maintainers' machines; setup accepts them like gfx1100 / gfx1201. setup ships a
+hipBLASLt table for gfx1200 (the numbers below); gfx1101 has none (make one with [Tuning table](#tuning-table)
+and compare the prompt speed with and without it).
 
 - **gfx1101, RX 7800 XT 16 GB** (jhohertz, #254; engine 0.1.29, Ryzen 9 5950X, 121 GiB RAM, system ROCm with
   hipBLASLt 1.4.1): `./setup.sh --backend hip` detected the card and compiled the engine; `strata-device --selftest`
@@ -287,6 +307,17 @@ is shipped for them (make one with [Tuning table](#tuning-table) and compare the
 
   Greedy output was the same across runs. For comparison, llama.cpp's HIP build measured 20 tok/s decode and
   450 tok/s prompt on that card.
+
+  Since 0.1.38 setup ships that table (`tools/hip/gfx1200-hipblaslt-100202.txt`). On engine 0.1.31, one binary (ctest
+  37/37, without `ple_parity` and `platform_memory_test`), prompts of repeated code blocks, prefill 2560 for
+  the short prompt and 16384 with `--kv int8 --kv-resident 65536` otherwise, two runs each - prompt speed
+  with the table vs plain hipBLAS (no table):
+
+  | prompt | with the table | plain hipBLAS | gain |
+  |---|---|---|---|
+  | 2,374 tokens | 597-599 tok/s | 396-398 tok/s | 1.50x |
+  | 65,045 tokens | 754-757 tok/s | 380 tok/s | 1.99x |
+  | 130,091 tokens (the same flags) | 719 tok/s | 363-370 tok/s | 1.98x |
 
 ## RDNA2 (gfx1030)
 
@@ -317,8 +348,71 @@ run it; the report below is from a community machine: an RX 6900 XT 16 GB (gfx10
   [AMD_HIP_PERFORMANCE.md](AMD_HIP_PERFORMANCE.md) cost 8.6 and 13.6 tok/s here (30 with the defaults): keep the
   defaults on a 16 GB card.
 - **hipBLASLt:** ROCm's hipBLASLt ships no gfx1030 kernels, so there is no table and the plain hipBLAS path runs.
-- **Not validated:** gfx1031 / gfx1032 (the same `dp4a` path, no hardware report), setup's own build path and the
-  `gfx103X-all` wheels on gfx1030, images, answer-quality benchmarks.
+- **gfx1031** (RX 6700 XT, #524): setup knows it (the `gfx103X-all` wheels, unvalidated); its reporter runs it daily
+  on one card.
+- **Not validated:** gfx1032 (the same `dp4a` path, no hardware report), setup's own build path and the
+  `gfx103X-all` wheels on gfx1030, images, answer-quality benchmarks. RDNA1 (gfx1012, RX 5500 XT) builds by hand:
+  [OLDER_GPUS.md](OLDER_GPUS.md#amd-building-gfx906-and-gfx1012).
+
+## gfx906 (Instinct MI50 / MI60, Radeon VII): wave64, built from source
+
+gfx906 is wave64 and has no WMMA and no packed byte arithmetic, so the wave32 backend above refuses it. A separate opt-in build compiles the CUDA sources as HIP through a small compat layer
+(`include/strata/platform/hip_compat/`), with a CUDA warp mapped to a logical half of the 64-lane wavefront
+(32-wide shuffles, a ballot of its own half). The hot kernels have wave64 layouts of their own (below). Setup does
+not build it yet: build by hand, and run `serve/server.py` with a config as on any other card.
+
+**ROCm.** AMD's current ROCm releases no longer ship gfx906 libraries. The build and the measurements below used
+HIP 7.14 from the community image [`mixa3607/rocm-gfx906:7.14-complete`](https://hub.docker.com/r/mixa3607/rocm-gfx906)
+(rocBLAS/hipBLAS with gfx906 kernels), on the kernel's amdgpu driver (Ubuntu 24.04, kernel 6.8). hipBLASLt is not
+used.
+
+```sh
+# inside the image, with this checkout at /src and llama.cpp at the pinned commit in third_party/llama.cpp
+apt-get update && apt-get install -y cmake ninja-build git python3 build-essential
+cmake -S . -B build-906 -G Ninja -DSTRATA_HIP_GFX906=ON -DCMAKE_HIP_ARCHITECTURES=gfx906 \
+  -DSTRATA_GGML_DIR=/src/third_party/llama.cpp \
+  -DCMAKE_C_COMPILER=/opt/rocm/llvm/bin/clang -DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++
+ninja -C build-906 strata
+```
+
+`STRATA_HIP_GFX906` turns on the CUDA targets and refuses `STRATA_ENABLE_HIP` (one HIP build at a time). Run the
+container with `--device=/dev/kfd --device=/dev/dri --group-add video --ipc=host --ulimit memlock=-1`; on some boards
+`HSA_OVERRIDE_GFX_VERSION=9.0.6` is needed for the runtime to accept the card.
+
+**What differs from the CUDA build** (all under `STRATA_HIP_GFX906`; each A/B switch restores the CUDA layout):
+
+| | gfx906 | switch |
+|---|---|---|
+| grouped native experts | mode 7: signs as `dp4a(g ^ m, u) - dp4a(m, u)` (no byte SIMD), grids and activations in LDS, one weight load per group; the IQ formats only (Unsloth's K-quant / Q5_1 / Q8_0 experts take the CUDA layout) | `STRATA_EXP_MODE=2` (previous AMD layout) |
+| MMVQ | one wavefront per row, 64-lane butterfly, no LDS | `STRATA_MMVQ_WAVE=0` |
+| router top-10 | one wavefront, register argmax | - |
+| verify-window routing (256-expert router) | the window's tokens in one multi-column BF16 projection + one top-k, ~3 ms of a ~55 ms window | `STRATA_ROUTE_PER_TOKEN=1` |
+| hyper-connection read | norm loads in flight, 8 lanes per row for `up` | `STRATA_GR_FAST=0` |
+| `gr_down_multi`, opt-in | split along K (8 rows x 5 slices of 2048), ~3% per window; sums in another order than the single-token read, so off by default | `STRATA_GR_SPLIT=1` |
+| IQ4 table lookup | llama.cpp's `v_perm_b32` sequence (HIP's `__byte_perm` is a scratch array) | - |
+| QSA prompt attention | the FP32 kernel (no tensor cores / WMMA) | - |
+
+Every switch above was checked bitwise against the layout it replaces: the parity tests on synthetic data,
+`native_expert_bench` on real GGUF rows (one mode against another), and the greedy text of a fixed request.
+
+**Measured** on 2x Instinct MI50 16 GB (85 W power limit each, PCIe 3.0 x16 both, peer access between them),
+Xeon E5-2666 v3 (10 cores, AVX2), 32 GB DDR4, SATA SSD; Coder IQ1_M (`--native` pack), 131,072-token context,
+`--kv int8 --kv-resident 32768`, `--layer-split 27`, `--prefill 4096`, MTP `--spec 4 --spec-min-p 0.5`,
+`--pcie-frac 0`, `STRATA_ARENA_MMAP=1`. Measured on the port this build was cut from (builds on the 0.1.30 and 0.1.33 bases, the same
+kernels, plus the layer-split weight trim and the mapped arena, which are separate pull requests):
+
+- all 12,288 experts held in VRAM across the two cards;
+- a 17,043-token agent prompt (Claude Code's first request, tools included) read in 43.5 s (392 tok/s), decode
+  on it 57.7-59.3 tok/s;
+- 25 GB of the 32 GB RAM available while serving;
+- six repeats of that request with a 6,000-token output cap and a 900-second two-client load test run six times
+  (407 requests, 202,940 tokens): no stalls, no errors, no GPU faults.
+
+For comparison on the same machine: llama.cpp (3cf0325, ROCm) on the same Coder IQ1_M measured 26.9 tok/s `tg128`.
+
+**Not done:** setup.py detection and an automatic build, Windows, images (`--vision`), MI60 and Radeon VII (the
+same gfx906 ISA; not run), a single-card run, the tensor-split experiment (the halves of every layer on two cards;
+it works but is not part of this build).
 
 ## Tuning table
 

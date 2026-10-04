@@ -122,7 +122,7 @@ class GgufDirUnsupported(unittest.TestCase):
         self.assertEqual(msg, "Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf is UD-IQ3_XXS, a GGUF Strata "
                               "cannot run")
         self.assertIn("ISTA-DASLab's GSQ-RCO files", hint)
-        self.assertIn("Unsloth's UD-Q4_K_XL only", hint)
+        self.assertIn("Unsloth's UD-Q4_K_XL and UD-IQ4_XS only", hint)
 
     def test_a_folder_without_the_choice_names_what_is_there(self):
         gsq = ["Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-%05d-of-00002.gguf" % i for i in (1, 2)]
@@ -145,33 +145,36 @@ class GgufDirUnsupported(unittest.TestCase):
             code, out, _, _ = install(ram, found, ["--gguf-dir", d, "--family", "unsloth", "--model", "IQ3_XXS"])
         self.assertEqual(code, 1)
         self.assertIn("has no IQ3_XXS model file", out)
-        self.assertIn("choose one of: UD-Q4_K_XL (or IQ3_XXS: --family qwen --model IQ3_XXS, --family swift --model "
+        self.assertIn("choose one of: UD-IQ4_XS, UD-Q4_K_XL (or IQ3_XXS: --family qwen --model IQ3_XXS, --family swift --model "
                       "IQ3_XXS)", out)
         self.assertIn("Strata runs ISTA-DASLab's GSQ-RCO files", out)
 
 
 class ExperimentalSm60(unittest.TestCase):
-    """The fork's baseline is Volta (sm_70): 7.0+ cards are admitted outright (the V100 support).  Pascal (6.x) keeps
-    upstream's experimental community build - STRATA_EXPERIMENTAL_SM60=1, -DSTRATA_EXPERIMENTAL_SM60=ON and a CUDA
-    12.x toolkit (#295); nothing changes without the variable."""
+    """#295: Pascal (6.x) and Volta (7.0) only with STRATA_EXPERIMENTAL_SM60=1, built with -DSTRATA_EXPERIMENTAL_SM60=ON
+    and a CUDA 12.x toolkit; nothing changes without the variable."""
 
     def card(self, arch):
         return {"arch": arch, "vram_gb": 11.0, "index": 0, "name": "card"}
 
     def test_the_gate(self):
         with mock.patch.dict(os.environ, {"STRATA_EXPERIMENTAL_SM60": ""}):
-            for arch in ("60", "61"):                   # Pascal: refused, with the escape in the message
+            for arch in ("60", "61", "70"):
                 p = setup.gpu_problem(self.card(arch))
                 self.assertIn("not supported", p)
-                self.assertIn("STRATA_EXPERIMENTAL_SM60=1", p)
-            for arch in ("70", "75", "120"):            # Volta and newer: admitted without any variable
-                self.assertIsNone(setup.gpu_problem(self.card(arch)), arch)
-            self.assertNotIn("STRATA_EXPERIMENTAL_SM60", setup.gpu_problem(self.card("52")))
+                self.assertIn("choose it with --gpu 0", p)              # the CUDA 12 engine (docs/OLDER_GPUS.md)
+            self.assertNotIn("--gpu", setup.gpu_problem(self.card("52")))
+            self.assertIsNone(setup.gpu_problem(self.card("75")))
         with mock.patch.dict(os.environ, {"STRATA_EXPERIMENTAL_SM60": "1"}):
             for arch in ("60", "61", "70", "75", "120"):
                 self.assertIsNone(setup.gpu_problem(self.card(arch)), arch)
-            self.assertIsNotNone(setup.gpu_problem(self.card("52")))
+            for arch in ("52", "72"):
+                self.assertIsNotNone(setup.gpu_problem(self.card(arch)), arch)
 
+    def test_the_build_flag(self):
+        self.assertEqual(setup.engine_defs([61]), ["-DSTRATA_EXPERIMENTAL_SM60=ON"])
+        self.assertEqual(setup.engine_defs([70, 86]), ["-DSTRATA_EXPERIMENTAL_SM60=ON"])
+        self.assertEqual(setup.engine_defs([75, 86, 120]), [])
 
     def test_find_nvcc_below(self):
         with tempfile.TemporaryDirectory() as d:
@@ -186,6 +189,23 @@ class ExperimentalSm60(unittest.TestCase):
                     mock.patch.object(setup, "out", lambda cmd: versions.get(cmd[0], "")):  # #414
                 self.assertEqual(setup.find_nvcc(), (str(new), (13, 0)))
                 self.assertEqual(setup.find_nvcc(below=(13, 0)), (str(old), (12, 9)))
+                # #601: STRATA_NVCC is the only one considered; CUDA_HOME is a candidate like CUDA_PATH
+                with mock.patch.dict(os.environ, {"STRATA_NVCC": str(old)}):
+                    self.assertEqual(setup.find_nvcc(), (str(old), (12, 9)))
+                with mock.patch.dict(os.environ, {"STRATA_NVCC": str(new)}):
+                    got, text = quiet(setup.find_nvcc, below=(13, 0))
+                    self.assertEqual(got, (None, None))
+                    self.assertIn("needs one older than 13.0", text)
+                with mock.patch.dict(os.environ, {"STRATA_NVCC": str(Path(d) / "missing")}):
+                    got, text = quiet(setup.find_nvcc)
+                    self.assertEqual(got, (str(new), (13, 0)))
+                    self.assertIn("no such file", text)
+            with mock.patch.object(setup, "WIN", False), mock.patch.object(setup.shutil, "which", lambda n: None), \
+                    mock.patch.dict(os.environ, {"CUDA_HOME": str(Path(d) / "12")}), \
+                    mock.patch.object(setup, "out", lambda cmd: versions.get(cmd[0], "")):
+                os.environ.pop("CUDA_PATH", None)
+                got = setup.find_nvcc(below=(13, 0))
+                self.assertEqual(got, (str(old), (12, 9)))
 
     def tools(self, archs, nvcc):
         seen = []
@@ -262,6 +282,159 @@ class HipVision(unittest.TestCase):
         built, meta, have = self.build({}, "none")
         self.assertEqual((built, have), ([], False))
         self.assertNotIn("vision_src", meta)
+
+
+class RotationalDisk(unittest.TestCase):
+    """#605: a model on a rotational disk gets --ple-io ram when the n-gram table fits the RAM, else a warning."""
+
+    def install(self, ram, disk):
+        from test_setup_golden import PROFILES, install
+        _, found = PROFILES["64GB-1x32GB"]
+        return install(ram, found, ["--family", "qwen", "--model", "Q2_0", "--no-start"],
+                       extra=[mock.patch.object(setup, "rotational_disk", lambda p: disk)])
+
+    def test_fits(self):
+        code, out, cfg, _ = self.install(127.8, "sdb")
+        self.assertEqual(code, 0, out)
+        a = cfg["args"]
+        self.assertEqual(a[a.index("--ple-io") + 1], "ram")
+        self.assertIn("rotational disk (sdb)", out)
+
+    def test_does_not_fit(self):
+        code, out, cfg, _ = self.install(63.7, "sdb")
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("--ple-io", cfg["args"])
+        self.assertIn("An SSD is recommended", out)
+
+    def test_ssd(self):
+        code, out, cfg, _ = self.install(127.8, None)
+        self.assertNotIn("--ple-io", cfg["args"])
+        self.assertNotIn("rotational", out)
+
+    def test_sysfs(self):
+        if not sys.platform.startswith("linux"):
+            self.assertIsNone(setup.rotational_disk(__file__))   # Windows: never
+            return
+        self.assertIn(setup.rotational_disk(__file__), (None,) + tuple(os.listdir("/sys/block")))
+
+
+class VramReserve(unittest.TestCase):
+    """#493: --vram-reserve-mib N - VRAM the engine leaves free for other programs - goes into the config only when
+    given (the default config is tools/test_setup_golden.py's, unchanged), at setup and on a start."""
+
+    def setUp(self):
+        from test_setup_golden import PROFILES
+        self.ram, self.found = PROFILES["64GB-1x32GB"]
+
+    def install(self, *extra):
+        from test_setup_golden import install
+        return install(self.ram, self.found, ["--family", "qwen", "--model", "Q2_0", "--no-start", *extra])
+
+    def test_given_at_setup(self):
+        code, out, cfg, _ = self.install("--vram-reserve-mib", "2048")
+        self.assertEqual(code, 0, out)
+        a = cfg["args"]
+        self.assertEqual(a.count("--vram-reserve-mib"), 1)
+        self.assertEqual(a[a.index("--vram-reserve-mib") + 1], "2048")
+        self.assertIn("VRAM kept free for other programs: 2048 MiB", out)
+        code, out, cfg, _ = self.install()
+        self.assertNotIn("--vram-reserve-mib", cfg["args"])          # not given: the engine's default, as before
+
+    def test_with_images_one_value(self):
+        code, out, cfg, _ = self.install("--vision", "cpu", "--vram-reserve-mib", "1500")
+        self.assertEqual(code, 0, out)
+        a = cfg["args"]
+        self.assertEqual(a.count("--vram-reserve-mib"), 1)
+        self.assertEqual(a[a.index("--vram-reserve-mib") + 1], "1500")
+
+    def test_a_negative_value_is_refused(self):
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            code, out, cfg, _ = self.install("--vram-reserve-mib", "-1")
+        self.assertEqual(code, 2)
+        self.assertIn("--vram-reserve-mib takes a number of MiB", err.getvalue())
+
+    def test_kept_from_an_earlier_install(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "strata-q2_0.json"
+            p.write_text(json.dumps({"args": ["--max-context", "8192", "--vram-reserve-mib", "2048"]}))
+            self.assertEqual(setup.choices_from_config(p)["vram_reserve_mib"], 2048)
+            p.write_text(json.dumps({"args": ["--vision", "--vram-reserve-mib", "700"], "vision": {"gpu": True}}))
+            self.assertIsNone(setup.choices_from_config(p)["vram_reserve_mib"])   # the images' own reserve
+            p.write_text(json.dumps({"args": ["--max-context", "8192"]}))
+            self.assertIsNone(setup.choices_from_config(p)["vram_reserve_mib"])
+
+    def test_given_on_a_start(self):
+        with tempfile.TemporaryDirectory() as d:
+            exe = Path(d) / "strata.exe"
+            exe.write_bytes(b"")
+            p = Path(d) / "strata-q2_0.json"
+            p.write_text(json.dumps({"exe": str(exe), "args": ["--kv", "int8"], "gpu": 0, "gpus_asked": True}))
+            call = mock.Mock(return_value=0)
+            with mock.patch.object(setup, "gpus", lambda: self.found), \
+                    mock.patch.object(setup, "is_wsl", lambda: False), \
+                    mock.patch.object(setup, "ensure_engine_for", lambda cards, path, cfg, yes: cfg), \
+                    mock.patch.object(setup.subprocess, "call", call):
+                for n in ("2048", "1024"):
+                    _, out = quiet(setup.start, p, None, None, False, True, None, {"vram_reserve_mib": int(n)})
+                    self.assertEqual(json.loads(p.read_text())["args"], ["--kv", "int8", "--vram-reserve-mib", n])
+        self.assertIn("1024 MiB of VRAM kept free", out)
+        self.assertTrue(call.called)
+
+
+class SmallCardTip(unittest.TestCase):
+    """#496: a card under 8 GB (a 6 GB laptop RTX 3060) gets a tip for when the start has no room for the expert cache;
+    the engine chooses its own reserve there, so the config is the one any card gets.  An 8 GB card: no tip."""
+
+    def install(self, vram, *extra):
+        from test_setup_golden import card, install
+        return install(63.7, [card(0, "NVIDIA GeForce RTX 3060 Laptop GPU", vram, "86")],
+                       ["--family", "qwen", "--model", "Q2_0", "--no-start", *extra])
+
+    def test_a_6gb_card(self):
+        code, out, cfg, _ = self.install(6.0)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("--vram-reserve-mib", cfg["args"])          # the engine decides (no fixed reserve)
+        self.assertIn("no VRAM is left for the expert cache", out)
+        self.assertIn("--draft-vocab en", out)
+        self.assertIn("--mtp", cfg["args"])                          # the draft layer stays: the server needs it
+
+    def test_an_8gb_card_has_no_tip(self):
+        for vram in (8188 / 1024, 8.0):                               # nvidia-smi lists an 8 GB card as 8188 MiB
+            code, out, cfg, _ = self.install(vram)
+            self.assertEqual(code, 0, out)
+            self.assertNotIn("no VRAM is left for the expert cache", out)
+            self.assertNotIn("--vram-reserve-mib", cfg["args"])
+
+    def test_a_given_reserve_is_kept(self):
+        code, out, cfg, _ = self.install(6.0, "--vram-reserve-mib", "500")
+        self.assertEqual(code, 0, out)
+        a = cfg["args"]
+        self.assertEqual(a[a.index("--vram-reserve-mib") + 1], "500")
+
+    def test_the_tip(self):
+        self.assertIn("an 8K context", " ".join(setup.small_card_note(32768, None)))
+        self.assertIn("--draft-vocab en", " ".join(setup.small_card_note(32768, "cjk")))
+        tip = " ".join(setup.small_card_note(8192, "en"))
+        self.assertNotIn("--draft-vocab", tip)
+        self.assertIn("close other programs", tip)
+
+
+class DesktopReserveTip(unittest.TestCase):
+    """#560 #516: an AMD card on a Linux desktop gets a recommended reserve (3072 MiB) - a tip, the config is not
+    changed."""
+
+    def test_desktop_detection(self):
+        with mock.patch.object(setup.sys, "platform", "linux"):
+            self.assertTrue(setup.linux_desktop({"WAYLAND_DISPLAY": "wayland-0"}))
+            self.assertTrue(setup.linux_desktop({"DISPLAY": ":0"}))
+            self.assertFalse(setup.linux_desktop({}))                 # a headless box / ssh
+        with mock.patch.object(setup.sys, "platform", "win32"):
+            self.assertFalse(setup.linux_desktop({"DISPLAY": ":0"}))  # Windows counts the desktop itself (#497)
+
+    def test_the_tip(self):
+        tip = " ".join(setup.desktop_reserve_note())
+        self.assertIn("--vram-reserve-mib 3072", tip)
+        self.assertIn("desktop", tip)
 
 
 if __name__ == "__main__":

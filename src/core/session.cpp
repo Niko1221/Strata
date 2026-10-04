@@ -129,10 +129,14 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
 }
 
 void session_release(SessionState& s) {
+    // The session's OWN states are qsa_ord0-relative - the same global-ordinal indexing every consumer uses
+    // (the old loop read 0..qsa_alloc, which for a split stage with qsa_ord0 > 0 looked at other sessions'
+    // value-initialized states and never released the stage's own rope table).  A half-built session (a failed
+    // session_init) is safe too: only a completed state set owns_rope.
     for (int64_t j = 0; s.qsa_states != nullptr && j < s.qsa_alloc; ++j)
-        if (s.qsa_states[j].owns_rope) {
-            strata::kernels::rope_table_release(s.qsa_states[j].cos_tab);
-            s.qsa_states[j].owns_rope = false;
+        if (s.qsa_states[s.qsa_ord0 + j].owns_rope) {
+            strata::kernels::rope_table_release(s.qsa_states[s.qsa_ord0 + j].cos_tab);
+            s.qsa_states[s.qsa_ord0 + j].owns_rope = false;
         }
 }
 
@@ -547,7 +551,7 @@ bool SessionLoopScratch::init(size_t parts_bytes_in, std::string& err) {
     const std::vector<int> cores = strata::kernels::cpu::physical_cores(false);
     if (!cores.empty()) {
         pinned_core = strata::kernels::cpu::pin_current_thread(cores[0]);
-        pinned = true;
+        pinned = pinned_core.valid;
     }
     return true;
 }
@@ -558,7 +562,7 @@ void SessionLoopScratch::free() {
     if (pinned) {
         strata::kernels::cpu::restore_thread_affinity(pinned_core);
         pinned = false;
-        pinned_core = -1;
+        pinned_core = {};
     }
     if (probe != nullptr) { cudaEventDestroy(probe); probe = nullptr; }
     if (y_miss != nullptr) { cudaFreeHost(y_miss); y_miss = nullptr; }

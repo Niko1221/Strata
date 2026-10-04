@@ -28,6 +28,8 @@ void shared_expert_set_native_bf16(bool enabled);
 /// fallback scalar gate consumes it (plan v0.3 P6: the native gate reads the original F32, so the BF16 bulk
 /// conversion is dead work while the native gate is on).  Stable between graph captures.
 bool shared_expert_native_bf16();
+/// Upstream alias of the same runtime value.
+bool shared_expert_native_bf16_enabled();
 
 /// Optional native GGUF projections. Each supported type with nonnull data
 /// replaces only that canonical projection; absent or unsupported entries fall
@@ -41,6 +43,7 @@ struct NativeSharedWeights {
     const void* up_data = nullptr;
     const void* down_data = nullptr;
     void* q8_1 = nullptr;
+    const void* x_q8_1 = nullptr;   // optional pre-quantized Q8_1 input for gate/up in shared_expert_multi
 };
 
 /// Bytes of caller-owned scratch `shared_expert` needs.  **THE KERNEL USED TO `cudaMalloc` FOUR BUFFERS ON

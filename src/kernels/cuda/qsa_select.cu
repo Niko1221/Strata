@@ -638,6 +638,125 @@ __global__ void __launch_bounds__(TK_T) block_topk_reg_kernel(const float* __res
     }
 }
 
+#if !defined(__HIPCC__)
+// ---- a query with more blocks than the register kernel holds (contexts past 4 * 1024 * TK_PER cells): the register
+// kernel's threads, per-warp histograms and warp scans, with each key read from memory again on every pass.  A
+// histogram has no order, so on the four radix passes thread t reads blocks t, t + 1024, ...: a warp reads 32
+// neighbours at a time.  The cells are emitted ascending in the order (warp, row, lane): warp w holds the `per` rows
+// of 32 consecutive blocks from block w * 32 * per.  block_topk_kernel's selection rule (radix threshold, ties to the
+// lowest index): identical ids.
+__global__ void __launch_bounds__(TK_T) block_topk_wide_kernel(const float* __restrict__ scores,
+                                                               const int32_t* __restrict__ steps, int64_t max_blocks,
+                                                               int64_t cap, int32_t* __restrict__ ids) {
+    __shared__ int hist[TK_T / 32][256];
+    __shared__ int s_gt[TK_T / 32], s_eq[TK_T / 32];
+    __shared__ int s_digit, s_above;
+    const int64_t qi = blockIdx.x;
+    const int32_t* st = steps + qi * kStepCount;
+    const int64_t n_kv = st[kStepNKv], n_bid = st[kStepNBid], width = st[kStepWidth];
+    int32_t* out = ids + qi * cap;
+    const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
+    if (n_kv <= width) {
+        for (int64_t j = t; j < n_kv; j += TK_T) out[j] = (int32_t) j;
+        return;
+    }
+    const float* sc = scores + qi * max_blocks;
+    const int64_t nb = n_bid + 1;
+    const int64_t per = (nb + TK_T - 1) / TK_T;       // rows of 32 blocks per warp
+    auto weight = [&](int64_t b) -> int { return b < n_bid ? R : (int) (n_kv - n_bid * R); };
+    uint32_t prefix = 0;
+    int above = 0;
+    for (int shift = 24; shift >= 0; shift -= 8) {
+        for (int i = lane; i < 256; i += 32) hist[warp][i] = 0;
+        __syncwarp();
+        const uint32_t hi_mask = shift == 24 ? 0u : (0xffffffffu << (shift + 8));
+        for (int64_t b = t; b < nb; b += TK_T) {
+            const int w = weight(b);
+            if (w == 0) continue;
+            const uint32_t k = order_key(sc[b]);
+            if ((k & hi_mask) == (prefix & hi_mask)) atomicAdd(&hist[warp][(k >> shift) & 255], w);
+        }
+        __syncthreads();
+        if (t < 256) {                                // fold the warps' histograms into warp 0's
+            int sum = 0;
+            for (int w2 = 0; w2 < TK_T / 32; ++w2) sum += hist[w2][t];
+            hist[0][t] = sum;
+        }
+        __syncthreads();
+        if (t == 0) {
+            int cum = above, d = 255;
+            for (; d > 0; --d) {
+                if (cum + hist[0][d] >= width) break;
+                cum += hist[0][d];
+            }
+            s_digit = d;
+            s_above = cum;
+        }
+        __syncthreads();
+        prefix |= (uint32_t) s_digit << shift;
+        above = s_above;
+        __syncthreads();
+    }
+    const uint32_t thr = prefix;
+    const int eq_budget = (int) (width - above);      // cells equal to thr that fit, lowest index first
+    const int64_t w0 = (int64_t) warp * 32 * per;
+    int gt = 0, eq = 0;
+    for (int64_t b = w0 + lane; b < nb && b < w0 + 32 * per; b += 32) {
+        const int w = weight(b);
+        if (w == 0) continue;
+        const uint32_t k = order_key(sc[b]);
+        if (k > thr) gt += w;
+        else if (k == thr) eq += w;
+    }
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) {
+        gt += __shfl_xor_sync(0xffffffffu, gt, o);
+        eq += __shfl_xor_sync(0xffffffffu, eq, o);
+    }
+    if (lane == 0) { s_gt[warp] = gt; s_eq[warp] = eq; }
+    __syncthreads();
+    if (t == 0) {                                     // per warp: the selected cells and the tied cells before it
+        int eb = 0, sb = 0;
+        for (int w2 = 0; w2 < TK_T / 32; ++w2) {
+            const int g2 = s_gt[w2], e2 = s_eq[w2];
+            const int take = eq_budget - eb < 0 ? 0 : (eq_budget - eb > e2 ? e2 : eq_budget - eb);
+            s_gt[w2] = sb;
+            s_eq[w2] = eb;
+            sb += g2 + take;
+            eb += e2;
+        }
+    }
+    __syncthreads();
+    int run_sel = s_gt[warp], run_eq = s_eq[warp];
+    for (int64_t r0 = w0; r0 < nb && r0 < w0 + 32 * per; r0 += 32) {
+        const int64_t b = r0 + lane;
+        const int w = b < nb ? weight(b) : 0;
+        const uint32_t k = w ? order_key(sc[b]) : 0u;
+        const int my_gt = (w && k > thr) ? w : 0, my_eq = (w && k == thr) ? w : 0;
+        if (__ballot_sync(0xffffffffu, (my_gt | my_eq) != 0) == 0u) continue;   // a row without a selected block
+        int pe = my_eq;                               // tied cells up to and with this lane
+#pragma unroll
+        for (int o = 1; o < 32; o <<= 1) {
+            const int y = __shfl_up_sync(0xffffffffu, pe, o);
+            if (lane >= o) pe += y;
+        }
+        const int left = eq_budget - (run_eq + pe - my_eq);
+        const int take = left < 0 ? 0 : (left > my_eq ? my_eq : left);
+        const int my_sel = my_gt + take;
+        int ps = my_sel;
+#pragma unroll
+        for (int o = 1; o < 32; o <<= 1) {
+            const int y = __shfl_up_sync(0xffffffffu, ps, o);
+            if (lane >= o) ps += y;
+        }
+        int32_t* dst = out + run_sel + ps - my_sel;
+        for (int c = 0; c < my_sel; ++c) dst[c] = (int32_t) (b * R + c);
+        run_eq += __shfl_sync(0xffffffffu, pe, 31);
+        run_sel += __shfl_sync(0xffffffffu, ps, 31);
+    }
+}
+#endif
+
 
 // Block scores with every key block read ONCE for all of a call's queries (block_scores_kernel's grid is
 // (max_blocks / 8) x nq: ~24,600 mostly-idle blocks per layer at a decode window, each key re-read per query).  A fixed
@@ -1011,6 +1130,24 @@ void qsa_block_topk_ref(const float* scores, const int32_t* steps, int64_t nq, i
     if (e != cudaSuccess) { std::fprintf(stderr, "qsa_block_topk: %s\n", cudaGetErrorString(e)); std::exit(1); }
 }
 
+#if !defined(__HIPCC__)
+// Only Turing has a retained model measurement for this CUDA dispatch. Other CUDA devices keep the capacity rule
+// (the RTX 5070 regression below). Cache the properties per calling thread; layer-split device switches are checked.
+static bool topk_active_turing_device() {
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess) return false;
+    static thread_local int cached_device = -1;
+    static thread_local bool turing = false;
+    if (dev != cached_device) {
+        cudaDeviceProp prop{};
+        if (cudaGetDeviceProperties(&prop, dev) != cudaSuccess) return false;
+        turing = prop.major == 7 && prop.minor == 5;
+        cached_device = dev;
+    }
+    return turing;
+}
+#endif
+
 bool qsa_block_topk_cluster(const float* scores, const int32_t* steps, int64_t nq, int64_t max_blocks, int64_t cap,
                             const QsaShapes& s, int32_t* ids, void* stream) {
 #if defined(__HIPCC__)
@@ -1079,8 +1216,8 @@ bool qsa_block_topk_cluster(const float* scores, const int32_t* steps, int64_t n
 
 void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64_t max_blocks, int64_t cap,
                     const QsaShapes& s, int32_t* ids, void* stream, int64_t active_blocks) {
-    // keys in registers when every query's blocks fit (contexts up to ~135K cells); the same ids. STRATA_TOPK_OLD=1:
-    // the kernel that reads them from memory on every pass
+    // keys in registers when every query's blocks fit (contexts up to ~135K cells), else (CUDA) the same threads
+    // reading them from memory; the same ids. STRATA_TOPK_OLD=1: the original kernel
     static const bool old = std::getenv("STRATA_TOPK_OLD") != nullptr;
     if (nq <= 0) return;
 #if !defined(__HIPCC__)
@@ -1098,20 +1235,28 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
 #if defined(__HIPCC__)
     const bool counted = active_blocks > 0;
 #else
-    // CUDA keeps 0.1.32's capacity rule: #337's dispatch was measured on RDNA4 only, and on the RTX 5070 the 64K
-    // prompts read 1-3% slower with it
-    const bool counted = false;
-    (void) active_blocks;
+    // Turing: --max-context 262144 makes the stride 65538, even while a 131K prompt's active blocks fit in
+    // TK_T * TK_PER registers. Use the prefill bound on sm_75, keeping max_blocks as the score-row stride.
+    // Other CUDA devices keep 0.1.32's capacity rule: #337 was measured on RDNA4, and RTX 5070 64K prompts were
+    // 1-3% slower. Decode/captured graphs omit the bound and never query the device here.
+    static const bool capacity_guard = std::getenv("STRATA_TOPK_CAPACITY_GUARD") != nullptr;
+    // STRATA_TOPK_ACTIVE_ANY=1 (tests): the Turing dispatch on any CUDA card, so qsa_topk_active_parity checks it
+    // on whatever card runs the tests (the kernels are the same on every architecture)
+    static const bool any_card = [] { const char* v = std::getenv("STRATA_TOPK_ACTIVE_ANY"); return v && v[0] == '1'; }();
+    const bool counted = !capacity_guard && active_blocks > 0 && active_blocks <= max_blocks &&
+                         (any_card || topk_active_turing_device());
 #endif
     const int64_t reach = counted && active_blocks < max_blocks ? active_blocks : max_blocks;
     const int64_t fit = (int64_t) TK_T * (counted ? TK_PER_MAX : TK_PER);
 #if defined(__HIPCC__)
     constexpr int64_t kRegMinBlocks = 7168;   // gfx1201: below ~28K cells the 1,024-thread kernel's fixed cost loses to the ref
     const bool too_small = counted && reach < kRegMinBlocks;
-#else
-    const bool too_small = false;
-#endif
     if (old || too_small || reach > fit) {
+#else
+    constexpr int64_t kWideMinBlocks = 4608;   // RTX 3060: a prompt batch below ~18K cells is faster on the ref
+    const bool too_small = reach > fit && active_blocks > 0 && active_blocks < kWideMinBlocks;
+    if (old || too_small) {
+#endif
         qsa_block_topk_ref(scores, steps, nq, max_blocks, cap, s, ids, stream);
         return;
     }
@@ -1119,6 +1264,11 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
         std::fprintf(stderr, "qsa_block_topk: unsupported geometry or cap\n");
         std::exit(1);
     }
+#if !defined(__HIPCC__)
+    if (reach > fit)   // past the register kernel's reach
+        block_topk_wide_kernel<<<(unsigned) nq, TK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks, cap, ids);
+    else
+#endif
     if (reach <= (int64_t) TK_T * TK_PER)
         block_topk_reg_kernel<TK_PER><<<(unsigned) nq, TK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks, cap, ids);
     else

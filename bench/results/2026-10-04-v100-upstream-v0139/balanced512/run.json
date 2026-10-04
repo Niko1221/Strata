@@ -1,0 +1,61 @@
+{
+  "env": {
+    "STRATA_EXPERT_PAIR": "1"
+  },
+  "exe": "$ENGINE/strata",
+  "args": [
+    "--pack",
+    "$MODEL_STORE/packs/q2_0",
+    "--native",
+    "$MODEL_STORE/models/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf",
+    "--ple-gguf",
+    "$MODEL_STORE/models/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf",
+    "--expert-profile",
+    "$MODEL_STORE/data/expert-profile.bin",
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "auto",
+    "--spec",
+    "8",
+    "--mtp",
+    "$MODEL_STORE/mtp/rt",
+    "--max-context",
+    "524288",
+    "--rope-scaling",
+    "yarn",
+    "--rope-scale",
+    "2",
+    "--kv",
+    "int8",
+    "--spec-min-p",
+    "0.70",
+    "--vision",
+    "--vram-reserve-mib",
+    "700"
+  ],
+  "cwd": "$WORKTREE",
+  "tokenizer": "$MODEL_STORE/packs/q2_0/tokenizer",
+  "model_name": "qwen",
+  "lib_dirs": [
+    "/usr/local/cuda-12.8/bin",
+    "/usr/local/cuda-12.8/lib64"
+  ],
+  "port": 8099,
+  "host": "127.0.0.1",
+  "gpu": [
+    0,
+    1
+  ],
+  "layer_split": 24,
+  "vision": {
+    "exe": "$WORKTREE/engine/strata-vision",
+    "mmproj": "$MODEL_STORE/models/Q2_0/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "$MODEL_STORE/models/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf",
+    "max_tokens": 1024,
+    "gpu": true
+  },
+  "open_browser": false,
+  "parallel": 2,
+  "log": "$OUT/balanced512/engine.log"
+}

@@ -168,6 +168,9 @@ bool moe_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer,
 /// rung, so a host that sees it knows `h_x_f`/`h_ids`/`h_weights` are in place.
 bool moe_route(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t k, const MoEBuffers& b,
                const float* x, void* stream, std::string& err, const Doorbell* db = nullptr);
+/// The verify window's n tokens routed at once (see layer.cpp); bitwise per token what `moe_route` gives.
+bool moe_route_window(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t k, const MoEBuffers& b,
+                      const float* x, float* logits, int32_t* ids, float* weights, int n, void* stream, std::string& err);
 
 /// The finishing half: the shared expert and the combination.
 ///
@@ -262,6 +265,11 @@ struct QsaState {
     /// copy and give back the overlap the doorbell protocol exists for.
     int32_t* host_step = nullptr;    ///< (kStepCount + 1,) pinned; final element is attention status
     int32_t* host_pos = nullptr;     ///< (n_head,) pinned
+    /// The ORIGINAL cudaHostAlloc pointer of the streamed K/V host copy (`host` holds pointers INTO it, mapped
+    /// aliases that are not valid cudaFreeHost arguments).  Null when the layer is fully resident or the copy
+    /// never got pinned.  Recorded even when `qsa_state_init` fails right after the allocation, so a session
+    /// owner releases a half-built state's copy exactly once.
+    void* host_base = nullptr;
 };
 
 /// Plan v0.3 P7: the RoPE cos/sin table (max_cells x n_rot/2 x 2 floats, 64 MiB at 262K) is identical in every

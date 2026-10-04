@@ -17,6 +17,40 @@ Strata is an open-source local runtime for [Qwen3.8-Flash-Next](https://huggingf
 
 Support for V100 does not imply that every upstream feature or every other GPU configuration has been tested on V100. Check the relevant code, release notes, and measurement reports before relying on a hardware-specific feature.
 
+## Upstream v0.1.39 integration
+
+This update integrates [Strata v0.1.39](https://github.com/Niko1221/Strata/releases/tag/v0.1.39), including the intervening releases. It keeps the fork's V100 tensor-core experts, attention changes, asymmetric GPU split, and disk conversation cache.
+
+- **Parallel requests:** set `"parallel": 2` in the model configuration, or use `./setup.sh --parallel 2`. Setup writes this default for a new Volta configuration and preserves an existing setting. The engine can decode separate conversations together. Extra requests wait for a free slot. Slots use additional GPU memory and can reduce single-request speed; if two slot sessions do not fit, the engine says so and serves one request at a time, with the configuration unchanged. See [batch slots](docs/BATCHING.md) for exactness settings, memory costs, and limits.
+- **APIs and interface:** the update adds the OpenAI Responses API, model settings, conversation-cache monitoring, and per-slot metrics. See [API details](docs/DETAILS.md#using-it).
+- **Performance and memory:** the update includes verify-pass launch reductions, byte-sized prompt rings, Linux huge pages, RAM-budget corrections, and multi-GPU options. An explicit `--layer-split` now loads only each stage's own layers' dense weights automatically (the upstream `--trim-stage-weights` flag and `STRATA_STAGE_TRIM` are gone); the freed VRAM goes to the expert cache. An optimization for newer GPUs does not imply a V100 speed improvement. Optional paths that change rounding must be measured before use.
+- **Other platforms:** the upstream Intel Arc, older CPU, and additional AMD paths remain available. This machine does not provide hardware validation for those platforms.
+
+V100 requires CUDA 12.x and a build that includes `sm_70`. Do not install the CUDA 13 engine on a V100. Explicit parallel configuration is recommended for existing installations; an update does not overwrite the model configuration.
+
+**Measured on the two V100 cards (4 October 2026, final build).** A controlled before/after
+run of the integrated build against the previously installed runtime, one request at a time
+(no batch slots), cold, Qwen3.8-Flash-Next Q2_0 with int8 KV at the 524,288-token context,
+the 20/28 layer split and MTP (`--spec 8`) unchanged; two fresh requests per size, medians:
+
+| Target prompt | Before (tok/s) | Integrated (tok/s) | Change |
+| ---: | ---: | ---: | ---: |
+| 2K | 701.41 | 718.5 | +2.44 % |
+| 8K | 1,402.82 | 1,458.0 | +3.93 % |
+| 32K | 2,262.4 | 2,283.7 | +0.94 % |
+
+Each value is the median of two fresh requests (`reused=0`). The gains are small; two repeats
+per size are not a statistical claim. All six paired first tokens matched the baseline's.
+The full replies are not claimed to be identical: the adaptive expert tier keeps a different
+mix of experts on the GPU and the CPU for the integrated build, and the two paths round
+differently. No decode or quality change is claimed. These are the final build's measured
+values (engine SHA-256 `e9ad337a…`), reported in the
+[full report](benchmarks/v100-q2_0-upstream-v0139-2026-10-04.md).
+
+Parallel slots at the 524,288-token context depend on the split and the memory left on the
+last stage; the measured fallback (requested 2, served one request at a time, configuration
+untouched) is described in [docs/BATCHING.md](docs/BATCHING.md).
+
 ## V100 benchmark
 
 The table below records a single-card run on one Tesla V100-PCIE-16GB using PCIe Gen3 x16. The test machine also has a second V100 on PCIe Gen3 x4; it was not used for this run. Results from a two-card setup or from a machine with two full-width links may differ and could be better. It is a reproducible measurement, not a promise of speed on other systems.
@@ -83,13 +117,14 @@ This fork tracks the upstream installation experience. For complete and current 
 - Follow the prompts to select a model and context size. Setup downloads model data and starts the local service.
 - Open the address printed by setup (normally `http://127.0.0.1:8080`).
 
-For a Tesla V100, build with a CUDA 12.x toolkit and retain `sm_70` support. See the install guide for build details and known platform limits. If using Docker, follow the repository's [Docker instructions](docs/INSTALL.md) and build for the target GPU architecture; the default prebuilt engine architecture list does not include `sm_70`.
+For a Tesla V100, use the CUDA 12 engine with `sm_70` support. Setup selects the older-GPU engine for Volta; Linux builds it locally. The upstream Windows CUDA 12 archive includes Volta code, but it was not tested on this Linux machine. See the [older-GPU guide](docs/OLDER_GPUS.md) for toolkit and driver requirements. For Docker, follow the [Docker instructions](docs/INSTALL.md) and build for the target GPU architecture.
 
 ## Use Strata
 
 - **Web app:** use the local URL printed by setup for chat and the live monitor.
 - **OpenAI-compatible API:** set your app's base URL to `http://127.0.0.1:8080/v1`.
 - **Anthropic-compatible API:** use `http://127.0.0.1:8080/v1/messages`.
+- **OpenAI Responses API:** use `http://127.0.0.1:8080/v1/responses`. This stateless endpoint supports Codex-style tool calls; it does not store `previous_response_id`.
 - **Images, MCP, multi-GPU, and configuration:** see [details](docs/DETAILS.md), [MCP server](docs/MCP_SERVER.md), and [multi-GPU guide](docs/MULTI_GPU.md).
 
 The server normally listens on localhost. If you expose it to other machines, configure an API key and use a trusted network. Do not publish secrets or private configuration in issues, benchmark results, or pull requests.
@@ -100,9 +135,9 @@ The conversation state has three tiers. Tier 1 (L1) is the live session in GPU m
 
 To use the disk store, add `--conversation-cache-disk strata-conversations --conversation-cache-disk-gib 25` to the engine arguments. The path and a positive GiB budget are required together. The store is off by default, it needs `--serve`, it works with `--conversation-cache-mib 0`, and it supports `--layer-split` on multiple GPUs. Optional: `--conversation-cache-disk-slots N` caps the record count, and `--conversation-cache-disk-min-free-mib N` keeps free space on the filesystem.
 
-A record is reused only when the prompt starts with exactly its tokens and images and its control-vector mode matches. The files are checksummed and versioned, the engine writes each one through a temporary file, and it removes invalid files at startup. The store evicts the least recently used record when it reaches its byte budget, its record cap, or the free-space floor. A corrupt or incompatible record is removed, and the request falls back to normal prompt processing.
+A record is reused only when the prompt starts with exactly its tokens and images and its control-vector mode matches. The engine picks the longest valid prefix across the live session, the RAM cache, the disk records and the idle batch slots, so a shorter disk record never displaces a longer resident state. The files are checksummed and versioned, the engine writes each one through a temporary file, and it removes invalid files at startup. The store evicts the least recently used record when it reaches its byte budget, its record cap, or the free-space floor. A corrupt or incompatible record is removed, and the request falls back to normal prompt processing.
 
-The disk tier accelerates conversation alternation and server restarts. It does not add concurrent execution: the engine still serves one request at a time. GPU capture must complete before the active session is overwritten, but the file write runs asynchronously while the next request uses the GPUs. Restore is synchronous. Save and restore stage the record in host RAM, and the engine releases that memory after the file operation. Each park writes a full record to the storage device, so frequent switching consumes flash write endurance; stop the server and delete the directory to clear the cache. Size the GiB budget for the conversations you want to keep, not for one record. See [details](docs/DETAILS.md#using-it) for the full behavior, limits, and sizing guidance.
+The disk tier accelerates conversation alternation and server restarts. It does not itself add concurrent execution. Use `"parallel": 2` for parallel requests; see [batch slots](docs/BATCHING.md) for memory costs and limits. GPU capture must complete before the active session is overwritten, but the file write runs asynchronously while the next request uses the GPUs. Restore is synchronous. Save and restore stage the record in host RAM, and the engine releases that memory after the file operation. Each park writes a full record to the storage device, so frequent switching consumes flash write endurance; stop the server and delete the directory to clear the cache. Size the GiB budget for the conversations you want to keep, not for one record. See [details](docs/DETAILS.md#using-it) for the full behavior, limits, and sizing guidance.
 
 #### Measured V100 result
 

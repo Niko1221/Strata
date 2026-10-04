@@ -1,0 +1,361 @@
+{
+  "scenario": "reuse",
+  "spec": 1,
+  "paragraphs": 16,
+  "disk": {
+    "path": "$WORKTREE/l3-store-reuse-final",
+    "gib": 25,
+    "slots": 0,
+    "min_free_mib": 0
+  },
+  "layer_split": {
+    "configured": true,
+    "baseline_in_args": true,
+    "disk_in_args": [
+      true
+    ]
+  },
+  "prompt_tokens": {
+    "A": 249,
+    "B": 61,
+    "continuation": 271
+  },
+  "baseline": {
+    "info": {
+      "version": "0.1.39",
+      "context": 524288,
+      "kv": "int8",
+      "kv_resident": 0,
+      "expert_slots": 13221,
+      "expert_cache_mib": 17429,
+      "expert_slots_primary": 7657,
+      "expert_cache_primary_mib": 10094,
+      "spec": 2,
+      "mtp_max": 1,
+      "lookup": 0,
+      "vram_free_mib": 530,
+      "cvec": 0,
+      "arena_mib": 32400,
+      "pool_workers": 5,
+      "pcie_frac": "0.08",
+      "spec_min_p": "0.00",
+      "conversation_cache_mib": 0,
+      "conversation_cache_slots": 4,
+      "conversation_cache_min_free_mib": 2560,
+      "tail_role_token": -1,
+      "vram_elastic": 0,
+      "conversation_cache_disk": 0,
+      "conversation_cache_disk_gib": 0,
+      "conversation_cache_disk_records": 0,
+      "conversation_cache_disk_bytes": 0,
+      "conversation_cache_disk_recoveries": 0,
+      "conversation_cache_disk_corruptions": 0,
+      "engine": "0.1.39"
+    },
+    "records": [
+      {
+        "name": "A",
+        "ids": [
+          40
+        ],
+        "generated": 1,
+        "prompt_tokens": 249,
+        "prompt_ms": 1418.2,
+        "decode_ms": 30.9,
+        "finish": "length",
+        "drafts_accepted": 0,
+        "drafts_offered": 0,
+        "reused": 0,
+        "hits": 428,
+        "lookups": 474,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 0.0,
+        "prompt_read": 249,
+        "offloaded": 6,
+        "state": {
+          "L": "249",
+          "gdn": "9acec264183b0fb3",
+          "ple": "c823c22b94108be8",
+          "tail": "3b900a76e8458ec5",
+          "dead": "157a80eb2389d23a",
+          "pooled": "22db2e64b78d2a15",
+          "pooled_full": "a4bd3781f0a8dd48",
+          "kv": "2d9243286c810017",
+          "ple_prev": "248069,271"
+        }
+      },
+      {
+        "name": "A+",
+        "ids": [
+          10025,
+          248046
+        ],
+        "generated": 2,
+        "prompt_tokens": 271,
+        "prompt_ms": 387.7,
+        "decode_ms": 42.5,
+        "finish": "stop",
+        "drafts_accepted": 0,
+        "drafts_offered": 0,
+        "reused": 249,
+        "hits": 799,
+        "lookups": 937,
+        "ram_blobs": 0,
+        "file_blobs": 0,
+        "file_mb": 0.0,
+        "prompt_read": 22,
+        "offloaded": 23,
+        "state": {
+          "L": "272",
+          "gdn": "37ddb82e1302d890",
+          "ple": "77bfcc1a6119281a",
+          "tail": "125a559b1a86729e",
+          "dead": "157a80eb2389d23a",
+          "pooled": "c9d8a076e898b206",
+          "pooled_full": "3369cdf7fac824c3",
+          "kv": "0e82ea1558473165",
+          "ple_prev": "271,10025"
+        }
+      }
+    ],
+    "hash_count": 2,
+    "log": {
+      "startups": [],
+      "parked": [],
+      "reads": [],
+      "restored": [],
+      "misses": [],
+      "corrupt": [],
+      "discarded": [],
+      "shape_discards": [],
+      "read_failures": [],
+      "skips": [],
+      "write_failures": [],
+      "cannot_open": []
+    },
+    "log_path": "$WORKTREE/bench/results/2026-10-04-v100-upstream-v0139/l3-reuse-final/baseline.log"
+  },
+  "disk_engines": [
+    {
+      "label": "disk-0",
+      "info": {
+        "version": "0.1.39",
+        "context": 524288,
+        "kv": "int8",
+        "kv_resident": 0,
+        "expert_slots": 13221,
+        "expert_cache_mib": 17429,
+        "expert_slots_primary": 7657,
+        "expert_cache_primary_mib": 10094,
+        "spec": 2,
+        "mtp_max": 1,
+        "lookup": 0,
+        "vram_free_mib": 530,
+        "cvec": 0,
+        "arena_mib": 32400,
+        "pool_workers": 5,
+        "pcie_frac": "0.08",
+        "spec_min_p": "0.00",
+        "conversation_cache_mib": 0,
+        "conversation_cache_slots": 4,
+        "conversation_cache_min_free_mib": 2560,
+        "tail_role_token": -1,
+        "vram_elastic": 0,
+        "conversation_cache_disk": 1,
+        "conversation_cache_disk_gib": 25,
+        "conversation_cache_disk_records": 0,
+        "conversation_cache_disk_bytes": 0,
+        "conversation_cache_disk_recoveries": 0,
+        "conversation_cache_disk_corruptions": 0,
+        "engine": "0.1.39"
+      },
+      "records": [
+        {
+          "name": "A",
+          "ids": [
+            40
+          ],
+          "generated": 1,
+          "prompt_tokens": 249,
+          "prompt_ms": 1406.6,
+          "decode_ms": 31.2,
+          "finish": "length",
+          "drafts_accepted": 0,
+          "drafts_offered": 0,
+          "reused": 0,
+          "hits": 428,
+          "lookups": 474,
+          "ram_blobs": 0,
+          "file_blobs": 0,
+          "file_mb": 0.0,
+          "prompt_read": 249,
+          "offloaded": 6,
+          "state": {
+            "L": "249",
+            "gdn": "9acec264183b0fb3",
+            "ple": "c823c22b94108be8",
+            "tail": "3b900a76e8458ec5",
+            "dead": "157a80eb2389d23a",
+            "pooled": "22db2e64b78d2a15",
+            "pooled_full": "a4bd3781f0a8dd48",
+            "kv": "2d9243286c810017",
+            "ple_prev": "248069,271"
+          }
+        },
+        {
+          "name": "B",
+          "ids": [
+            10025
+          ],
+          "generated": 1,
+          "prompt_tokens": 61,
+          "prompt_ms": 1472.1,
+          "decode_ms": 20.5,
+          "finish": "length",
+          "drafts_accepted": 0,
+          "drafts_offered": 0,
+          "reused": 0,
+          "hits": 405,
+          "lookups": 469,
+          "ram_blobs": 0,
+          "file_blobs": 0,
+          "file_mb": 0.0,
+          "prompt_read": 61,
+          "offloaded": 11,
+          "state": {
+            "L": "61",
+            "gdn": "6c53ed1121d97c0d",
+            "ple": "2ffb20026178886f",
+            "tail": "596889d47f9c74ff",
+            "dead": "a748274ec252dd6b",
+            "pooled": "c828f242828af266",
+            "pooled_full": "366718d3eaf963d6",
+            "kv": "4a269c3f550e2f97",
+            "ple_prev": "248069,271"
+          }
+        },
+        {
+          "name": "A+",
+          "ids": [
+            10025,
+            248046
+          ],
+          "generated": 2,
+          "prompt_tokens": 271,
+          "prompt_ms": 1307.9,
+          "decode_ms": 42.0,
+          "finish": "stop",
+          "drafts_accepted": 0,
+          "drafts_offered": 0,
+          "reused": 249,
+          "hits": 799,
+          "lookups": 937,
+          "ram_blobs": 0,
+          "file_blobs": 0,
+          "file_mb": 0.0,
+          "prompt_read": 22,
+          "offloaded": 23,
+          "state": {
+            "L": "272",
+            "gdn": "37ddb82e1302d890",
+            "ple": "77bfcc1a6119281a",
+            "tail": "125a559b1a86729e",
+            "dead": "157a80eb2389d23a",
+            "pooled": "c9d8a076e898b206",
+            "pooled_full": "3369cdf7fac824c3",
+            "kv": "0e82ea1558473165",
+            "ple_prev": "271,10025"
+          }
+        }
+      ],
+      "hash_count": 3,
+      "log": {
+        "startups": [
+          {
+            "directory": "$WORKTREE/l3-store-reuse-final",
+            "gib": 25,
+            "recovered": 0,
+            "bytes": 0,
+            "evictions": 0,
+            "corruptions": 0
+          }
+        ],
+        "parked": [
+          {
+            "tokens": 249,
+            "ms": 814.4,
+            "records": 1,
+            "bytes": 240715914,
+            "evictions": 0,
+            "corruptions": 0,
+            "snapshot_bytes": 240719664
+          },
+          {
+            "tokens": 61,
+            "ms": 801.2,
+            "records": 2,
+            "bytes": 478559188,
+            "evictions": 0,
+            "corruptions": 0,
+            "snapshot_bytes": 237847024
+          }
+        ],
+        "reads": [
+          {
+            "name": "cda46218babbde6b6-00000000000000f9",
+            "stages": 2,
+            "ms": 368.1,
+            "tokens": 249,
+            "records": 1,
+            "bytes": 240715914,
+            "hits": 1,
+            "misses": 2
+          }
+        ],
+        "restored": [
+          {
+            "tokens": 249,
+            "source": "live",
+            "ms": 73.0,
+            "records": 1,
+            "bytes": 240715914,
+            "hits": 1,
+            "misses": 2
+          }
+        ],
+        "misses": [
+          {
+            "ram_resume": 0,
+            "ms": 0.0,
+            "hits": 0,
+            "misses": 1,
+            "records": 0,
+            "bytes": 0,
+            "evictions": 0,
+            "corruptions": 0
+          },
+          {
+            "ram_resume": 0,
+            "ms": 0.0,
+            "hits": 0,
+            "misses": 2,
+            "records": 0,
+            "bytes": 0,
+            "evictions": 0,
+            "corruptions": 0
+          }
+        ],
+        "corrupt": [],
+        "discarded": [],
+        "shape_discards": [],
+        "read_failures": [],
+        "skips": [],
+        "write_failures": [],
+        "cannot_open": []
+      },
+      "log_path": "$WORKTREE/bench/results/2026-10-04-v100-upstream-v0139/l3-reuse-final/disk-0.log"
+    }
+  ],
+  "corruption": null
+}
