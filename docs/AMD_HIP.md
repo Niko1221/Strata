@@ -503,6 +503,11 @@ prompt speed with and without it before keeping it.
 Shipped tables:
 
 - `gfx1100-hipblaslt-100100.txt`, `gfx1100-hipblaslt-100200.txt`: RX 7900 XTX.
+- `gfx1100-hipblaslt-100300.txt`: gfx1100 (RX 7900 XT / XTX, Radeon PRO W7900 / W7800), calibrated with a system
+  ROCm 7.13 (hipBLASLt 1.3.0, runtime 71399004). The same 30 dense GEMM shapes at T=4096 and T=8192 as the 1.0.0
+  table; every chosen solution needs no workspace. On a Radeon PRO W7800 hipBLASLt measured 3.6-18.2x the plain
+  hipBLASEx path over those shapes (median 5.3x, mean 6.9x, `tune_hipblaslt` mean of three timed reps). setup uses
+  it only when the installed hipBLASLt reports 1.3.0.
 - `gfx1100-hipblaslt-100401.txt`: RX 7900 XTX, calibrated with the packaged ROCm 10.0.0
   (`rocm/dev-ubuntu-24.04:10.0.0-full`, hipBLASLt 1.4.1) on a Ryzen 7 9800X3D, over the 26 dense GEMM
   geometries of the shipped gfx1100 table. Without it, that stack reads a prompt through plain hipBLAS: on

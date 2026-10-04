@@ -233,7 +233,7 @@ bool dequant_bf16_supported(int ggml_type) noexcept {
 
 namespace {
 // plan v0.3 P6: the i-quant formats (llama.cpp's dequantizers, iq_kernels.cu)
-bool iq_only(int t) { return t == 16 || t == 17 || t == 18 || t == 21 || t == 22 || t == 29; }
+bool iq_only(int t) { return t == 16 || t == 17 || t == 18 || t == 19 || t == 21 || t == 22 || t == 29; }
 }  // namespace
 
 void dequant_bf16(int ggml_type, const void* blocks, int64_t row0, int64_t rows, int64_t cols, uint16_t* out,
