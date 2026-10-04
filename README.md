@@ -186,6 +186,6 @@ Strata is free and open source. If it is useful to you, you can support its deve
 
 ## Experimental quantization format
 
-Developers can inspect the experimental [Hadamard-INT2 GGUF specification](docs/HADAMARD_INT2.md) and its
-converter in `tools/`. Runtime support is a separate implementation stage; converted files are not loadable by this
-fork yet.
+Developers can inspect the experimental [Hadamard-INT2 GGUF specification](docs/HADAMARD_INT2.md) and convert routed
+expert tensors with `tools/convert_hadamard_int2_gguf.py`. This fork supports the custom type through native expert
+packs. End-to-end model quality and speed have not been evaluated for this format.

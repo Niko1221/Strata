@@ -3,8 +3,8 @@
 This document specifies the experimental Hadamard-INT2 encoding written by
 [`tools/convert_hadamard_int2_gguf.py`](../tools/convert_hadamard_int2_gguf.py).
 It is a Strata-specific GGUF extension. Standard GGUF tools do not know its
-custom type ID, and a model converted with this tool needs matching Strata
-runtime support before it can be loaded for inference.
+custom type ID. This Strata fork reads the converted routed experts through its
+native expert pack path.
 
 ## Encoding
 
@@ -72,6 +72,19 @@ filenames in the output directory. Existing output files require
 `--overwrite`. Converted weight rows are streamed in chunks; use
 `--rows-per-chunk` to reduce peak memory.
 
+Pack the converted file with Strata's normal packer. For split GGUF files, pass
+the converted first shard; `iq_pack.py` reads the other shards from the same
+directory and records type 144 and its seed in `native_experts.txt` v5:
+
+```sh
+python tools/iq_pack.py --gguf converted/model-00001-of-00004.gguf --out packs/hadamard-int2
+```
+
+Run the pack with the same `--pack` and `--native` options as other native
+expert packs, pointing `--native` at the converted GGUF (first shard for a
+split model). The engine checks the GGUF format metadata against the pack
+before serving expert rows.
+
 An optional NPZ file can provide one vector of non-negative input second
 moments for each tensor, with the tensor name as its NPZ key:
 
@@ -92,10 +105,16 @@ A JSON report records each converted tensor's weight MSE, normalized MSE, and
 importance-weighted MSE. Those values measure weight reconstruction only; they
 do not measure perplexity, task accuracy, or generated-text quality.
 
-## Current status
+## Runtime support and limits
 
-The converter and file-format specification are the first implementation
-stage. The Strata artifact reader, expert kernels, prefill path, and runtime
-dispatch must recognize type 144 and apply the activation transform before the
-converted model is usable. Until that runtime work is complete, use this format
-for conversion and format development only.
+This fork recognizes type 144 in its GGUF reader and native expert pack. CUDA
+decode uses the Hadamard-INT2 grouped kernels; the prompt path decodes the
+weights to FP16 and applies the same transform to activations. The CPU native
+expert path uses a scalar reference dot product. The supported model geometry
+is this build's `n_embd=2560`, `n_ff=640` geometry, and all routed gate, up,
+and down expert tensors in the pack must use Hadamard-INT2 together.
+
+The converter's report measures weight reconstruction error only. No
+end-to-end perplexity, task-quality, or speed results are claimed for this
+format. Standard GGUF tools and other llama.cpp builds cannot load the custom
+type without corresponding type-144 support.

@@ -1,10 +1,11 @@
-"""tools/iq_pack.py - plan v0.3 P6: a native pack for any of the model files (Q2_0, IQ2_XS, IQ3_XXS).
+"""tools/iq_pack.py - a native pack for Q2_0, i-quant, and Hadamard-INT2 model files.
 
     python tools/iq_pack.py --gguf <model>-00001-of-00002.gguf --out pack/iq3_xxs            (standalone)
     python tools/iq_pack.py --gguf <model>-00001-of-00002.gguf --base pack/full --out ...    (share dense.bin)
 
 The i-quant experts cannot be re-expressed in the Q2_0 pack form, so this pack keeps every quantized tensor in
-its GGUF form:
+its GGUF form. Hadamard-INT2 routed experts use custom GGUF type 144; `native_experts.txt` v5 carries their common
+rotation seed so the engine applies the matching activation transform:
 
   experts.bin          optional (--experts-bin): per layer, 512 blobs of [gate rows | up rows | down rows], the
                        raw GGUF slices.  Blob size is per layer (the files mix IQ1_M ... IQ3_S gate/up and Q2_0 /
