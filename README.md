@@ -183,3 +183,9 @@ parts and every model carry their own licenses ([which ones](docs/HOW_IT_WORKS.m
 Strata is free and open source. If it is useful to you, you can support its development:
 
 <p align="center"><a href="https://buymeacoffee.com/strataengine"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="50"></a></p>
+
+## Experimental quantization format
+
+Developers can inspect the experimental [Hadamard-INT2 GGUF specification](docs/HADAMARD_INT2.md) and its
+converter in `tools/`. Runtime support is a separate implementation stage; converted files are not loadable by this
+fork yet.

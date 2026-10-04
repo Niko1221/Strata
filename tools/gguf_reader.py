@@ -24,7 +24,7 @@ GGML_TYPES: dict[int, str] = {
     21: "IQ3_S", 22: "IQ2_S", 23: "IQ4_XS", 24: "I8", 25: "I16", 26: "I32", 27: "I64",
     28: "F64", 29: "IQ1_M", 30: "BF16", 31: "Q4_0_4_4", 32: "Q4_0_4_8", 33: "Q4_0_8_8",
     34: "TQ1_0", 35: "TQ2_0", 36: "IQ4_NL_4_4", 37: "IQ4_NL_4_8", 38: "IQ4_NL_8_8",
-    39: "MXFP4", 40: "NVFP4", 41: "Q4_0_8_8", 42: "Q2_0",
+    39: "MXFP4", 40: "NVFP4", 41: "Q4_0_8_8", 42: "Q2_0", 144: "HADAMARD_INT2",
 }
 
 # GGUF metadata value type ids
@@ -45,6 +45,7 @@ BLOCK_GEOMETRY: dict[str, tuple[int, int]] = {
     "IQ2_XXS": (256, 66), "IQ2_XS": (256, 74), "IQ3_XXS": (256, 98), "IQ1_S": (256, 50),
     "IQ4_NL": (32, 18), "IQ3_S": (256, 110), "IQ2_S": (256, 82), "IQ4_XS": (256, 136),
     "IQ1_M": (256, 56), "Q2_0": (64, 18), "MXFP4": (32, 17), "NVFP4": (64, 36),
+    "HADAMARD_INT2": (128, 34),
 }
 
 
@@ -73,10 +74,18 @@ class TensorInfo:
         return self.elements // block_elems * block_bytes
 
 
+@dataclasses.dataclass
+class MetadataEntry:
+    key: str
+    value: Any
+    encoded: bytes
+
+
 class GGUFFile:
     def __init__(self, path: pathlib.Path):
         self.path = pathlib.Path(path)
         self.metadata: dict[str, Any] = {}
+        self.metadata_entries: list[MetadataEntry] = []
         self.tensors: list[TensorInfo] = []
         self.version = 0
         self.alignment = 32
@@ -93,8 +102,16 @@ class GGUFFile:
         if self.version != 3:
             raise ValueError(f"{self.path.name}: GGUF v{self.version}, this reader handles v3")
         for _ in range(n_kv):
+            start = fh.tell()
             key = self._str(fh)
-            self.metadata[key] = self._value(fh)
+            value = self._value(fh)
+            end = fh.tell()
+            restore = end
+            fh.seek(start)
+            encoded = fh.read(end - start)
+            fh.seek(restore)
+            self.metadata[key] = value
+            self.metadata_entries.append(MetadataEntry(key, value, encoded))
         for _ in range(n_tensors):
             name = self._str(fh)
             (n_dims,) = struct.unpack("<I", fh.read(4))
