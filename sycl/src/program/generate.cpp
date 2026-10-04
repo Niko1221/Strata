@@ -3829,10 +3829,11 @@ int main(int argc, char **argv) try {
         }
         unmirrored_misses = (int64_t) miss.size() - (int64_t) (gguf_src.mirrored_bytes() ? std::count_if(miss.begin(), miss.end(),
             [&](const std::pair<int64_t, int64_t>& pr) { return gguf_src.pinned(pr.first, pr.second); }) : 0);
-        if (unmirrored_misses > 0 && std::getenv("STRATA_VERIFY_NO_HOST") != nullptr)
-            std::fprintf(stderr, "strata generate: WARNING: %lld experts are neither in VRAM nor mirrored; with STRATA_VERIFY_NO_HOST "
-                                 "the device plan cannot run them and their layers' windows fall back slowly - raise "
-                                 "STRATA_MIRROR_MIB or the free RAM, or lower --max-context\n", (long long) unmirrored_misses);
+        if (unmirrored_misses > 0 && std::getenv("STRATA_VERIFY_NO_HOST") != nullptr) {
+            std::fprintf(stderr, "strata generate: refusing STRATA_VERIFY_NO_HOST: %lld experts are neither in VRAM nor mirrored\n",
+                         (long long) unmirrored_misses);
+            return 1;
+        }
     }
 
     for (auto& stp : stages) {

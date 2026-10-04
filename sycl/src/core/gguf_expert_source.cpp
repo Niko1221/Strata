@@ -1,3 +1,4 @@
+#include "strata/sycl_large_allocation.hpp"
 // src/core/gguf_expert_source.cpp - see the header. Plain C++, no device code.
 #include "strata/core/gguf_expert_source.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
@@ -19,7 +20,7 @@ constexpr size_t kRing = 512;   // blobs alive at once: the prompt path holds a 
 GgufExpertSource::~GgufExpertSource() { close(); }
 
 void GgufExpertSource::close() {
-    if (mirror_) { sycl::free(mirror_, dpct::get_in_order_queue()); mirror_ = nullptr; }
+    if (mirror_) { strata::sycl_large_allocation::release(mirror_, dpct::get_in_order_queue()); mirror_ = nullptr; }
     mirror_bytes_ = 0; mirror_off_.clear(); layer_first_.clear();
     for (int fd : fds_) if (fd >= 0) ::close(fd);
     fds_.clear(); names_.clear(); layer_fd_.clear(); ring_.clear(); ring_key_.clear(); where_.clear();
@@ -129,7 +130,7 @@ int64_t GgufExpertSource::mirror(const std::vector<std::pair<int64_t, int64_t>>&
     if (take.empty()) return 0;
     uint8_t* base = nullptr;
     try {
-        base = (uint8_t*) sycl::malloc_host(total, dpct::get_in_order_queue());
+        base = (uint8_t*) strata::sycl_large_allocation::allocate(total, dpct::get_in_order_queue(), true);
     } catch (const sycl::exception& ex) {
         err = std::string("mirror: ") + ex.what();
     }
@@ -149,11 +150,11 @@ int64_t GgufExpertSource::mirror(const std::vector<std::pair<int64_t, int64_t>>&
         });
     for (auto& th : ts) th.join();
     if (bad.load()) {
-        sycl::free(base, dpct::get_in_order_queue());
+        strata::sycl_large_allocation::release(base, dpct::get_in_order_queue());
         err = "mirror: reading an expert from the GGUF failed";
         return -1;
     }
-    if (mirror_) sycl::free(mirror_, dpct::get_in_order_queue());
+    if (mirror_) strata::sycl_large_allocation::release(mirror_, dpct::get_in_order_queue());
     mirror_ = base;
     mirror_bytes_ = total;
     mirror_off_.assign((size_t) (n_layers_ * n_expert_), -1);

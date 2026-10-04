@@ -533,6 +533,10 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
         */
         if (!ok2) {; device_plan_ = false; }
     }
+    if (std::getenv("STRATA_VERIFY_NO_HOST") != nullptr && !device_plan_) {
+        err = "STRATA_VERIFY_NO_HOST requires an available STRATA_VERIFY_DEVICE_PLAN=1";
+        return false;
+    }
     if (std::getenv("STRATA_VERIFY_DEBUG") != nullptr) {   // SYCL port: the per-layer residual ladder (token 0)
         dbgR_ = (float*) sycl::malloc_device((size_t) g.n_layers * g.n_embd * 4, dpct::get_in_order_queue());
         dbgM_ = (float*) sycl::malloc_device((size_t) g.n_layers * g.n_embd * 4, dpct::get_in_order_queue());
@@ -583,8 +587,21 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
     auto stamp = [&](int64_t l, int i, int grp) {
         if (trace_m_ != nullptr) gpu_stamp(trace_m_, (int) ((l * kProfPer + i) * 2 + grp), cs);   // #649
         if (!prof_on_ || grp != 0) return;
-        if (eager) { cs->wait(); prof_h_[(size_t) (l * kProfPer + i)] = (unsigned long long) std::chrono::steady_clock::now().time_since_epoch().count(); }
+        if (eager) {
+            static const bool trace_eager = std::getenv("STRATA_VERIFY_EAGER_TRACE") != nullptr;
+            if (trace_eager) std::fprintf(stderr, "verify eager: waiting layer=%lld stage=%d\n", (long long)l, i);
+            cs->wait_and_throw();
+            if (trace_eager) std::fprintf(stderr, "verify eager: complete layer=%lld stage=%d\n", (long long)l, i);
+            prof_h_[(size_t) (l * kProfPer + i)] = (unsigned long long) std::chrono::steady_clock::now().time_since_epoch().count();
+        }
         else gpu_stamp(prof_, (int) (l * kProfPer + i), cs);
+    };
+    auto eager_checkpoint = [&](const char* label) {
+        if (eager && std::getenv("STRATA_VERIFY_EAGER_TRACE") != nullptr) {
+            std::fprintf(stderr, "verify eager: waiting %s\n", label);
+            cs->wait_and_throw();
+            std::fprintf(stderr, "verify eager: complete %s\n", label);
+        }
     };
     const int tb_[2] = {0, (T + 1) / 2}, te_[2] = {G == 2 ? (T + 1) / 2 : T, T};
     groups_[T] = G;
@@ -870,6 +887,7 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
         }
         stamp(l, 16, grp);
         gr_read_group(1, true, inj_, inj2_);
+        eager_checkpoint("ffn-gr-read");
         // the window's rows routed in 2 launches (one router GEMV reading the weight once, one
         // top-10) instead of 2 per token; every row's arithmetic is the single-token call's (STRATA_DEC_BATCH=0: old)
         const WeightRef* w_router = v.get("ffn_gate_inp.weight");
@@ -885,11 +903,13 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
             mb.logits = logits_ + t * NE; mb.ids = ids_ + t * K; mb.weights = w_ + t * K;
             if (!moe_route(wt, g, l, K, mb, mixed_ + t * N, cs, err, nullptr)) return false;
         }
+        eager_checkpoint("router");
         if (device_plan_)   // E-6: every routed expert resident: this group's plan without the host
             resident_plan(ids_ + tb * K, n * (int) K, (int) K, hits_.d_res + l * g.n_expert, (int) g.n_expert,
                           hits_.cache_base, slot_off_d_, (long long) hits_.blob,
                           plan_ + (size_t) grp * (size_t) (plan_i32_ + 16), (long long) max_t_ * K, skip_ + grp,
                           (uint32_t) ((l - lb_) * G + grp + 1), cs);
+        eager_checkpoint("resident-plan");
 #if defined(STRATA_USE_HIP)
         if (g_doorbell_store)   // #649 A/B: the step's ring stored, not incremented over PCIe
             doorbell_publish_value(xm, ids_ + tb * K, w_ + tb * K, (int64_t) n * N, (int64_t) n * K, m_x_ + tb * N,

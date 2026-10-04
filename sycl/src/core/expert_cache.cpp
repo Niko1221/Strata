@@ -1,3 +1,4 @@
+#include "strata/sycl_large_allocation.hpp"
 #define DPCT_COMPAT_RT_VERSION 12080
 // src/core/expert_cache.cpp - R4's slot storage and residency table.  Read the
 // header first.
@@ -508,8 +509,8 @@ bool ExpertCache::open(int64_t n_slots, int64_t n_layers, int64_t n_expert,
     if (seg_req_ > 0) {   // #533: --vram-elastic: physical segments behind one address range (zeroed below)
         if (!open_segmented(want, err)) return false;
     } else if (DPCT_CHECK_ERROR(
-                   base_ = (uint8_t *)sycl::malloc_device(
-                       (size_t)want, dpct::get_in_order_queue())) != 0) {
+                   base_ = (uint8_t *)strata::sycl_large_allocation::allocate(
+                       (size_t)want, dpct::get_in_order_queue(), false)) != 0) {
         base_ = nullptr;
         char buf[256];
         std::snprintf(
@@ -612,7 +613,7 @@ void ExpertCache::close() {
     if (!segs_.empty()) {
         release_segmented();
     } else if (base_ != nullptr) {
-        sycl::free(base_, dpct::get_in_order_queue());
+        strata::sycl_large_allocation::release(base_, dpct::get_in_order_queue());
         base_ = nullptr;
     }
     residency_.clear();

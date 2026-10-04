@@ -21,6 +21,7 @@
 #include <sstream>
 #include <stack>
 #include <sycl/sycl.hpp>
+#include "strata/sycl_driver_memory.hpp"
 #include <thread>
 #include <vector>
 #if defined(__linux__)
@@ -531,6 +532,16 @@ public:
   /// \param [out] free_memory The number of bytes of free memory on the SYCL device.
   /// \param [out] total_memory The number of bytes of total memory on the SYCL device.
   void get_memory_info(size_t &free_memory, size_t &total_memory) {
+#if defined(STRATA_HAS_STANDALONE_SYSMAN)
+    if (!has(sycl::aspect::ext_intel_free_memory) &&
+        get_backend() == sycl::backend::ext_oneapi_level_zero) {
+      // UUID matched driver telemetry, never an allocation-budget estimate.
+      const auto memory = strata::sycl_driver_memory::query(*this);
+      free_memory = memory.first;
+      total_memory = memory.second;
+      return;
+    }
+#endif
 #if (defined(__SYCL_COMPILER_VERSION) && __SYCL_COMPILER_VERSION >= 20221105)
     if (!has(sycl::aspect::ext_intel_free_memory)) {
       std::cerr << "get_memory_info: ext_intel_free_memory is not supported." << std::endl;

@@ -202,6 +202,12 @@ if(STRATA_SYCL_PARITY)
   add_executable(native_grouped_parity ${_src})
   target_link_libraries(native_grouped_parity PRIVATE strata_kernels)
   add_test(NAME native_grouped_parity COMMAND native_grouped_parity)
+  # Native router's partial-work-group participation must not hang on Alchemist.
+  add_executable(native_router_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/native_router_parity.cpp)
+  target_link_libraries(native_router_parity PRIVATE strata_kernels)
+  add_test(NAME native_router_parity COMMAND native_router_parity)
+  set_tests_properties(native_router_parity PROPERTIES TIMEOUT 30)
+
   # (upstream PR #413's gdn_rec_parity is an SM-holding NVIDIA bench - PTX timers, __nanosleep - not built here; the
   # key-head kernel is checked through the engine: output hashes with STRATA_GDN_KEYHEAD=1 and without)
   # the conversation snapshots (#216) against the engine, as upstream's STRATA_BUILD_CONVERSATION_TESTS

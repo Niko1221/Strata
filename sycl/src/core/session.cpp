@@ -800,7 +800,7 @@ void SessionLoopScratch::free() {
     if (pinned) {
         strata::kernels::cpu::restore_thread_affinity(pinned_core);
         pinned = false;
-        pinned_core = -1;
+        pinned_core = {};
     }
     if (probe != nullptr) { dpct::destroy_event(probe); probe = nullptr; }
     if (y_miss != nullptr) {
