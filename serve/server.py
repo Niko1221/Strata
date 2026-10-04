@@ -2018,6 +2018,14 @@ def make_handler(svc: Service):
                 return True
             return False
 
+        def end_headers(self):
+            # HTTP/1.0 without keep-alive: the server closes the connection after every response.  Say so, or a
+            # client that pools connections (.NET's SocketsHttpHandler) can put its next request on this socket
+            # before the close reaches it, and that request fails with "response ended prematurely" without the
+            # server ever reading it (a .NET agent app, 2026-10-03: 25 of ~1000 requests, 1-24 ms after the previous answer).
+            self.send_header("Connection", "close")
+            super().end_headers()
+
         def _watch_client(self, cancel: threading.Event) -> None:
             """#430 #431: cancel the request as soon as its client hangs up.  A non-streamed request writes nothing
             until it ends, and a streamed one only a keep-alive per prompt chunk (and the first write after a hang-up
