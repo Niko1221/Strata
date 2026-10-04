@@ -51,7 +51,7 @@ from urllib.parse import parse_qs, urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a module
-from serve.frontend import (ChatTemplate, Event, OutputParser, anthropic_to_messages,  # noqa: E402
+from serve.frontend import (ChatTemplate, Event, OutputParser, anthropic_to_messages, assistant_prefix_kw,  # noqa: E402
                             images_of, mark_think_literals, openai_to_messages, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve import runconfig  # noqa: E402
@@ -2118,7 +2118,20 @@ class Service:
         """The template rendered.  #458: with `effort_end`, a request with a non-default effort (low, medium or no
         thinking) is rendered as a default one up to the answer - the same prompt start, so the conversation cache
         keeps it - and its effort follows in a short system turn right before the answer (thinking off: the template's
-        empty thinking block).  The engine (--tail-role-token) checkpoints in front of that turn."""
+        empty thinking block).  The engine (--tail-role-token) checkpoints in front of that turn.
+
+        An "assistant_prefix" kwarg (the request's field, frontend.assistant_prefix_kw) renders the conversation with
+        the prefix as its last, unfinished assistant turn: the template writes the turn as it writes any turn after
+        the last user query (the header, the turn's empty thinking block, the text) and the end-of-turn token comes
+        off, so generation continues the turn instead of starting a new one.  The prefix is message text: the
+        template trims it like any turn's, and the effort-end trick above does not apply to it."""
+        prefix = kwargs.get("assistant_prefix")
+        if isinstance(prefix, str) and prefix:
+            kw = {k: v for k, v in kwargs.items() if k != "assistant_prefix"}
+            rendered = self.template.render(list(messages) + [{"role": "assistant", "content": prefix}],
+                                            tools=tools, add_generation_prompt=False, **kw)
+            end = IM_END + "\n"
+            return rendered[:-len(end)] if rendered.endswith(end) else rendered
         effort = kwargs.get("reasoning_effort")
         off = kwargs.get("enable_thinking") is False
         if not self.effort_end or (not off and effort in (None, "", "xhigh", "high")):
@@ -2134,8 +2147,14 @@ class Service:
 
     def encode_prompt(self, messages, tools, kwargs) -> list[int]:
         """The request's prompt: the template rendered and tokenized.  #537: a <think> / </think> written inside a
-        message's text is encoded as the text it is, not as the model's reasoning markers (the template's own are)."""
+        message's text is encoded as the text it is, not as the model's reasoning markers (the template's own are).
+        The assistant prefix is message text too, so its own literals mark the same way."""
         marked, marked_tools, changed = mark_think_literals(messages, tools)
+        prefix = kwargs.get("assistant_prefix")
+        if isinstance(prefix, str) and prefix and ("<think>" in prefix or "</think>" in prefix):
+            marked_prefix = mark_think_literals([{"role": "assistant", "content": prefix}], None)[0][0]["content"]
+            kwargs = {**kwargs, "assistant_prefix": marked_prefix}
+            changed = True
         prompt = self.render_prompt(marked, marked_tools, kwargs)
         if not changed:
             return self.tok.encode(prompt, parse_special=True)
@@ -2146,6 +2165,11 @@ class Service:
         """-> (ids, thinking, max_new). An unset or non-positive max_new (some clients send -1) means "unlimited":
         the rest of the context."""
         ids = self.encode_prompt(messages, tools, kwargs)
+        prefix = kwargs.get("assistant_prefix")
+        if isinstance(prefix, str) and prefix and os.environ.get("STRATA_DEBUG"):
+            base = len(self.encode_prompt(messages, tools, {**kwargs, "assistant_prefix": None}))
+            print(f"[strata] assistant prefill: {len(ids) - base} tokens (prompt {base} -> {len(ids)}, "
+                  f"generation starts at position {len(ids)})", flush=True)
         self.embeddings.path = None
         images = images_of(messages)
         if images:
@@ -2203,7 +2227,10 @@ class Service:
                                  f"max_tokens (at most {max(0, room)} here), or add \"fit_max_tokens\": true to the "
                                  "model's strata-<model>.json to shorten it to the room left (#545)")
             max_new = max(1, room)          # --fit-max-tokens: a shorter completion beats a 400
-        return ids, kwargs.get("enable_thinking", True) is not False, max_new
+        # a prefix turn's thinking block is already closed in the prompt (the reply has begun), so the output
+        # parser starts on the reply text, as it does for enable_thinking=false
+        thinking = kwargs.get("enable_thinking", True) is not False and not (isinstance(prefix, str) and prefix)
+        return ids, thinking, max_new
 
     def _note(self, n, evs, st=None, rate=None):
         with self.status_lock:
@@ -3501,7 +3528,7 @@ def make_handler(svc: Service):
             responses_api.check_request(req)
             messages = responses_api.input_messages(req)
             tools, names, skipped = responses_api.request_tools(req)
-            kw = responses_api.template_kwargs(req, svc.shared)
+            kw = assistant_prefix_kw(req, responses_api.template_kwargs(req, svc.shared))
             try:
                 messages, validator = prepare_format(responses_api.text_format(req), messages)
             except ValueError as e:
