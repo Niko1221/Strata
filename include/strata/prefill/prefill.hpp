@@ -83,8 +83,16 @@ public:
     /// fits it keeps 0.1.39's ring).  0 slots = none.  A layer split's set_ring_override and STRATA_PREFILL_RING win.
     static void set_ring_budget(int slots, int64_t small_max);
 
-    /// Device bytes `init` needs for a chunk of `chunk` tokens (what a borrowed region must hold).
-    static uint64_t bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk);
+    /// Device bytes `init` needs for a chunk of `chunk` tokens (what a borrowed region must hold).  `ring_budget`
+    /// >= 0 prices the streamed ring as if `set_ring_budget(ring_budget, 0)` had just run - the startup VRAM
+    /// plan's and the tests' what-if, leaving the globals alone; < 0 prices at the current globals.
+    static uint64_t bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk,
+                                 int64_t ring_budget = -1);
+
+    /// The ring's slot count for a chunk of `chunk` tokens priced at an explicit budget (`ring_budget` >= 0: as if
+    /// `set_ring_budget(ring_budget, 0)`, the STRATA_PREFILL_RING override still winning; < 0: the current
+    /// globals, as `ring_slots_for`).
+    static int64_t ring_slots_under(int64_t chunk, int64_t ring_budget);
 
     /// The same without the streamed ring: what the chunk's own buffers cost.  The auto chunk scan sizes the chunk
     /// first and hands the ring what the chunk leaves over, so it needs the chunk priced on its own.

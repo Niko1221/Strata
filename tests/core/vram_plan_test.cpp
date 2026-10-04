@@ -1,0 +1,281 @@
+// tests/core/vram_plan_test.cpp - #765: the startup VRAM plan and the shared chunk/loan policy.
+//
+// The planner is pure arithmetic over injected byte costs, so every budget case runs without a GPU: expert
+// residency giving way to a requested prefill (A), --prefill auto's fallback onto the 256-token grid (B, with a
+// non-round boundary), the deterministic no-fit failure (C), borrowed prefill never booked twice (D), sized
+// (native-pack) slots priced over their exact offsets (E), and the reserve staying the user's knob (F).
+#include "strata/prefill/vram_plan.hpp"
+
+#include <cstdio>
+#include <algorithm>
+#include <string>
+#include <vector>
+
+namespace {
+int fails = 0;
+void check(bool ok, const char* what) {
+    if (!ok) {
+        std::fprintf(stderr, "FAIL: %s\n", what);
+        ++fails;
+    }
+}
+
+constexpr int64_t BLOB = 2 << 20;          // one uniform expert slot: 2 MiB
+constexpr int64_t KIB = 1024, MIB = 1024 * 1024, GIB = 1024 * 1024 * 1024;
+
+// the fake pack: a chunk costs 64 KiB a token plus its streamed ring at 2 MiB a slot, 199 slots full (the
+// ring_cap every fake answers), 8 slots below stream_all_min - monotone in the chunk, like the real one
+int64_t base_bytes(int64_t chunk) { return chunk * 64 * KIB; }
+int64_t fake_ring(int64_t chunk, int64_t budget) {
+    if (chunk < 1024) return 8;
+    return budget > 0 ? std::min<int64_t>(budget, 199) : 199;
+}
+uint64_t fake_bytes(int64_t chunk, int64_t budget) {
+    return (uint64_t) (base_bytes(chunk) + fake_ring(chunk, budget) * BLOB);
+}
+
+strata::prefill::LendCosts fake_costs() {
+    strata::prefill::LendCosts c;
+    c.bytes_with_ring = fake_bytes;
+    c.ring_slots_under = fake_ring;
+    c.ring_cap_for = [](int64_t) { return (int64_t) 199; };
+    c.ring_default_slots = [] { return (int64_t) 199; };
+    return c;
+}
+
+strata::prefill::LendOpts fake_opts(int64_t ceiling = 8192) {
+    strata::prefill::LendOpts o;
+    o.min_keep_slots = 128;
+    o.lend_pct = 90;
+    o.auto_ceiling = ceiling;
+    o.prefill_auto_max = 32768;
+    o.max_context = 131072;
+    o.ring_bytes = true;
+    return o;
+}
+
+strata::prefill::StartupVramInput plan_input(uint64_t free_bytes) {
+    strata::prefill::StartupVramInput in;
+    in.free_bytes = free_bytes;
+    in.user_reserve_bytes = 700 * MIB;
+    in.small_reserve_mib = 300;
+    in.max_blob = BLOB;
+    in.profile_pairs = -1;
+    in.lend = fake_opts();
+    in.costs = fake_costs();
+    return in;
+}
+
+// the invariant every plan must keep: Strata's allocations plus the user's reserve never pass the free VRAM
+bool plan_fits(const strata::prefill::VramPlan& p, uint64_t free_bytes) {
+    const uint64_t cache_bytes =
+        p.expert_slots < 0 ? 0 : (uint64_t) p.expert_slots * BLOB;
+    return p.mandatory_bytes + (p.prefill_owned ? p.prefill_bytes : 0) + cache_bytes <= free_bytes;
+}
+}  // namespace
+
+int main() {
+    using namespace strata::prefill;
+
+    // ---- Case A: a requested prefill is retained and the expert residency shrinks instead
+    {
+        StartupVramInput in = plan_input(8 * GIB);
+        in.prefill_chunk = 24576;              // own buffers: ~1.9 GiB of the fake pack's bytes
+        const VramPlan p = plan_startup_vram(in);
+        check(p.ok, "A: the plan is valid");
+        check(p.prefill_owned && p.selected_prefill == 24576, "A: the requested chunk is kept, on its own buffers");
+        check(p.expert_budget_bytes == (uint64_t) 8 * GIB - p.mandatory_bytes - p.prefill_bytes,
+              "A: the cache gets exactly what the mandatory items and the owned prefill leave");
+        check(plan_fits(p, in.free_bytes), "A: the plan fits inside the free VRAM");
+        // a tighter card: the chunk gives way only as far as it must, on the 256-token grid
+        StartupVramInput tight = plan_input(1200 * MIB);
+        tight.prefill_chunk = 24576;
+        const VramPlan t = plan_startup_vram(tight);
+        check(t.ok && t.selected_prefill > 0 && t.selected_prefill < 24576 && t.selected_prefill % 256 == 0,
+              "A: the chunk is reduced on the 256-token grid, not dropped");
+        int64_t expect = 0;   // the largest chunk whose own buffers (with the page-rounding margin) fit
+        for (int64_t c = 24576 / 256 * 256; c >= 256; c -= 256)
+            if ((uint64_t) 1200 * MIB >= t.mandatory_bytes + fake_bytes(c, -1) + ((uint64_t) 64 << 20)) {
+                expect = c; break;
+            }
+        check(t.selected_prefill == expect, "A: the reduced chunk is the largest one whose own buffers fit");
+    }
+
+    // ---- Case B: --prefill auto falls back to the largest 256-grid chunk the loan affords
+    {
+        StartupVramInput in = plan_input(0);   // free_bytes set below; the budget line is what sizes the cache
+        in.prefill_borrow = true;
+        in.prefill_auto = true;
+        in.lend.auto_ceiling = 24576;
+        // 760 slots: 16384's loan does not fit, and neither does anything above it - the bisection lands on
+        // 13824, a size no hardcoded list holds (its 631-slot loan leaves exactly the 128-slot minimum + 1)
+        in.free_bytes = (uint64_t) 760 * BLOB + 700 * MIB;
+        const VramPlan p = plan_startup_vram(in);
+        check(p.ok, "B: the plan is valid");
+        check(p.selected_prefill == 13824, "B: the largest fitting chunk on the grid is selected");
+        check(!p.prefill_owned && p.lend_slots == 631, "B: the chunk is lent, 631 slots");
+        check(p.expert_slots >= p.lend_slots + 128, "B: the loan leaves the non-lendable minimum");
+        // a smaller budget whose true maximum is 8704 - also off every list - to pin the bisection, not a list
+        StartupVramInput odd = plan_input((uint64_t) 600 * BLOB + 700 * MIB);
+        odd.prefill_borrow = true;
+        odd.prefill_auto = true;
+        odd.lend.auto_ceiling = 24576;
+        const VramPlan o = plan_startup_vram(odd);
+        check(o.ok && o.selected_prefill == 8704, "B: the non-round boundary lands on 8704");
+    }
+
+    // ---- Case C: no configuration fits - a deterministic failure with a positive shortfall
+    {
+        StartupVramInput in = plan_input(718 * MIB);   // the reserve alone eats nearly all of it
+        in.prefill_chunk = 4096;
+        const VramPlan p = plan_startup_vram(in);
+        check(!p.ok, "C: the impossible plan is refused");
+        check(p.short_by_bytes > 0, "C: the shortfall is positive");
+        check(p.expert_slots >= 0, "C: no negative slot count");
+        check(!plan_fits(p, in.free_bytes) || p.prefill_bytes > 0,
+              "C: the reported minimum is genuinely over the free VRAM");
+        // the borrowed arm fails its own way: nothing can be lent, nothing can be owned
+        StartupVramInput b = plan_input(718 * MIB);
+        b.prefill_borrow = true;
+        b.prefill_auto = true;
+        const VramPlan pb = plan_startup_vram(b);
+        check(!pb.ok && pb.short_by_bytes > 0, "C: the borrowed arm fails deterministically too");
+        // a chunk that fits only by taking the cache's last slot fails when --spec needs that slot
+        StartupVramInput sp = plan_input((uint64_t) 700 * MIB + fake_bytes(4096, -1) + ((uint64_t) 64 << 20));
+        sp.prefill_borrow = true;
+        sp.prefill_chunk = 4096;
+        sp.spec_needs_cache = true;
+        const VramPlan ps = plan_startup_vram(sp);
+        check(!ps.ok && ps.short_by_bytes >= 0, "C: --spec refuses the plan that leaves the cache zero slots");
+        sp.spec_needs_cache = false;
+        const VramPlan pn = plan_startup_vram(sp);
+        check(pn.ok && pn.expert_slots == 0 && pn.prefill_owned,
+              "C: without --spec the same budget plans the token-path cache of zero slots");
+    }
+
+    // ---- Case D: borrowing is never booked twice; owning is booked exactly once
+    {
+        StartupVramInput owned = plan_input(8 * GIB);
+        owned.prefill_chunk = 4096;            // no profile: the prompt path owns its buffers
+        const VramPlan po = plan_startup_vram(owned);
+        StartupVramInput borrowed = plan_input(8 * GIB);
+        borrowed.prefill_borrow = true;
+        borrowed.prefill_chunk = 4096;         // the same chunk, lent from the cache instead
+        const VramPlan pb = plan_startup_vram(borrowed);
+        check(po.ok && pb.ok, "D: both plans are valid");
+        check(po.prefill_owned && po.prefill_bytes == fake_bytes(4096, -1) + ((uint64_t) 64 << 20),
+              "D: the owned bytes are booked once, with the page-rounding margin");
+        check(!pb.prefill_owned && pb.expert_budget_bytes == (uint64_t) 8 * GIB - pb.mandatory_bytes,
+              "D: the borrowed plan deducts no prefill bytes from the cache's budget");
+        check(pb.expert_budget_bytes - po.expert_budget_bytes >= po.prefill_bytes,
+              "D: lending keeps the cache exactly the owned prefill's bytes larger");
+        check(plan_fits(po, owned.free_bytes) && plan_fits(pb, borrowed.free_bytes), "D: both plans fit");
+    }
+
+    // ---- Case E: variable-size slots price the lend over their exact offsets, not max_blob * slots
+    {
+        CacheLendView v;
+        const std::vector<uint64_t> sizes = {3 * MIB, 1 * MIB, 2 * MIB};   // one blob each, unequal
+        std::vector<uint64_t> offs(sizes.size() + 1, 0);
+        for (size_t i = 0; i < sizes.size(); ++i) offs[(size_t) i + 1] = offs[i] + sizes[i];
+        v.slots = (int64_t) sizes.size();
+        v.bytes = (int64_t) offs.back();       // 6 MiB
+        v.slot_offsets = offs.data();
+        v.max_blob = 3 * MIB;
+        check(v.tail_bytes(2) == 3 * MIB && v.tail_bytes(3) == 6 * MIB, "E: the tail is the suffix sum");
+        check(v.slots_for_bytes((uint64_t) (3 * MIB + 512 * KIB)) == 3,
+              "E: 3.5 MiB needs the three exact-offset slots (the last slot alone is 2 MiB, two are 3)");
+        CacheLendView u;
+        u.slots = 3;
+        u.bytes = 6 * MIB;
+        u.max_blob = 3 * MIB;
+        check(u.slots_for_bytes((uint64_t) (3 * MIB + 512 * KIB)) == 2,
+              "E: the uniform view's ceil(need / max_blob) answers 2 - the two views differ, as they must");
+        // through the planner: the sized cache holds more than its uniform count would, and keeps the bigger chunk
+        StartupVramInput in = plan_input((uint64_t) 610 * BLOB + 700 * MIB);
+        in.prefill_borrow = true;
+        in.prefill_auto = true;
+        in.sized_slots_wanted = true;
+        in.profile_pairs = 3;
+        const std::vector<int64_t> pairs = {1 * MIB, 1 * MIB, 1 * MIB};   // each aligned slot: 1 MiB, not 2
+        in.pair_slot_bytes = &pairs;
+        const VramPlan p = plan_startup_vram(in);
+        check(p.ok && !p.sized_slots.empty(), "E: the sized layout is planned");
+        uint64_t sized_bytes = 0;
+        for (const int64_t s : p.sized_slots) sized_bytes += (uint64_t) ((s + 255) / 256 * 256);
+        check(sized_bytes < (uint64_t) p.expert_slots * BLOB,
+              "E: the sized cache holds fewer bytes than its uniform count prices");
+        check(p.selected_prefill > 0 && plan_fits(p, in.free_bytes), "E: the sized plan still fits");
+    }
+
+    // ---- Case F: the reserve stays the user's knob - bigger reserve, smaller cache, nothing else moves
+    {
+        StartupVramInput in = plan_input(8 * GIB);
+        in.prefill_chunk = 4096;
+        const VramPlan a = plan_startup_vram(in);
+        in.user_reserve_bytes = 1400 * MIB;
+        in.reserve_given = true;
+        const VramPlan b = plan_startup_vram(in);
+        check(a.ok && b.ok, "F: both reserves plan fine");
+        check(b.expert_budget_bytes == a.expert_budget_bytes - 700 * MIB,
+              "F: the extra 700 MiB of reserve comes out of the cache alone");
+        check(b.mandatory_bytes == a.mandatory_bytes + 700 * MIB, "F: the mandatory side carries the reserve");
+        check(plan_fits(a, in.free_bytes) && plan_fits(b, in.free_bytes),
+              "F: used_by_strata + the reserve stays inside the free VRAM");
+        // a given reserve is never adapted; the default one is, before the prompt path is planned (#496's order)
+        StartupVramInput small_card = plan_input(700 * MIB);   // the reserve alone would eat all of it
+        small_card.prefill_borrow = true;
+        small_card.prefill_chunk = 4096;
+        small_card.reserve_given = true;
+        const VramPlan given = plan_startup_vram(small_card);
+        check(!given.ok && given.short_by_bytes > 0 && given.reserve_adapted_from_mib == 0 &&
+                  given.user_reserve_bytes == (uint64_t) 700 * MIB,
+              "F: a reserve given on the command line is kept - and the impossible plan fails here, not at the "
+              "first prompt");
+        small_card.reserve_given = false;
+        const VramPlan adapted = plan_startup_vram(small_card);
+        check(adapted.ok && adapted.reserve_adapted_from_mib == 700, "F: the default reserve is adapted");
+        check(adapted.user_reserve_bytes == (uint64_t) 412 * MIB, "F: the adapted reserve leaves 144 slots");
+        check(adapted.expert_slots >= 1 && adapted.user_reserve_bytes >= (uint64_t) 300 * MIB,
+              "F: the adaptation leaves a working cache and stays above its floor");
+        check(plan_fits(adapted, small_card.free_bytes), "F: the adapted plan fits");
+    }
+
+    // ---- the shared policy: 0.1.39's list, the fixed chunk's halving, the bisection
+    {
+        CacheLendView big;
+        big.slots = 4000;
+        big.bytes = 4000 * BLOB;
+        big.max_blob = BLOB;
+        // STRATA_RING_BYTES=0: the old list, ceiling and opt-in respected
+        int64_t chunk = 0;
+        LendOpts old = fake_opts();
+        old.ring_bytes = false;
+        LendOutcome out = plan_lend_chunks(big, old, fake_costs(), true, chunk);
+        check(out.chunk == 32768 && out.ring_budget == 0, "policy: the old list takes the opt-in ceiling");
+        old.prefill_auto_max = 8192;
+        out = plan_lend_chunks(big, old, fake_costs(), true, chunk);
+        check(out.chunk == 8192, "policy: without the opt-in the old list stops at 8192");
+        // a fixed chunk halves until the loan fits (the small chunks' STAGE ring included)
+        CacheLendView mid;
+        mid.slots = 300;
+        mid.bytes = 300 * BLOB;
+        mid.max_blob = BLOB;
+        chunk = 8192;
+        out = plan_lend_chunks(mid, fake_opts(), fake_costs(), false, chunk);
+        check(out.chunk == 512 && chunk == 512 && out.ring_budget == -1,
+              "policy: the fixed chunk halves to 512 (the STAGE ring) and leaves the ring globals alone");
+        chunk = 256;
+        out = plan_lend_chunks(CacheLendView{.slots = 8, .bytes = 8 * BLOB, .max_blob = BLOB}, fake_opts(),
+                               fake_costs(), false, chunk);
+        check(out.chunk == 0 && chunk == 0, "policy: nothing lends from a tiny cache");
+        // the bisection lands on the largest grid size under a monotone cap
+        check(biggest_lend_chunk(8704, [](int64_t t) { return t <= 8704; }) == 8704,
+              "policy: the bisection holds the non-round boundary");
+        check(biggest_lend_chunk(8192, [](int64_t t) { return t < 512; }) == 256,
+              "policy: the bisection walks the 256-token grid");
+    }
+
+    if (fails == 0) std::fprintf(stderr, "vram_plan_test: all checks passed\n");
+    return fails == 0 ? 0 : 1;
+}
