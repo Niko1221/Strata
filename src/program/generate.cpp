@@ -4983,20 +4983,26 @@ int main(int argc, char** argv) {
                                      "buffers (%lld-token chunk): no loan\n",
                              (long long) effective_prefill.chunk);
             } else {
+                // the accepted loan IS the loan - and CUDA0's PfPart is its request-time bookkeeping: the
+                // per-request lend marks the lent slots not-resident through it and the refill restores them.
+                // Built from the accepted plan, never from a second scan (af2cdd4's follow-up: an empty
+                // pf_parts here would leave host_res/d_res claiming experts in slots the prompt overwrites).
+                pf_parts.push_back({&xcache, &ss, &sp, -1, 0, g.n_layers, -1, -1, 0, {}});
+                PfPart& p0 = pf_parts.back();
                 o.prefill_chunk = effective_prefill.chunk;
-                lend_first = (int32_t) (xcache.slots() - effective_prefill.lend_slots);
-                borrow = xcache.device_slot((int32_t) lend_first);
-                borrow_bytes = xcache.slot_offsets()
-                                   ? (uint64_t) (xcache.bytes() - (int64_t) xcache.slot_offsets()[lend_first])
-                                   : (uint64_t) effective_prefill.lend_slots *
-                                         (uint64_t) strata::kernels::cpu::expert_layout().max_blob;
+                p0.first = (int32_t) (xcache.slots() - effective_prefill.lend_slots);
+                p0.first_now = p0.first;
+                lend_first = p0.first;
+                borrow = xcache.device_slot(lend_first);
+                borrow_bytes = part_bytes(p0, lend_first);
                 if (effective_prefill.lend.ring_budget >= 0)
                     strata::prefill::Prefill::set_ring_budget((int) effective_prefill.lend.ring_budget,
                                                               effective_prefill.lend.ring_small_max);
                 std::fprintf(stderr, "strata serve: the accepted VRAM plan lends the prompt path %lld cache slots "
-                                     "(%.2f GiB) for %lld-token chunks\n",
+                                     "(%.2f GiB) for %lld-token chunks (first slot %d)%s\n",
                              (long long) effective_prefill.lend_slots, (double) borrow_bytes / 1073741824.0,
-                             (long long) o.prefill_chunk);
+                             (long long) o.prefill_chunk, (int) lend_first,
+                             std::getenv("STRATA_TRACE") ? " [strata trace: accepted serve loan]" : "");
             }
         }
         // STRATA_TEST_SERVE_DROP_LOAN=1: drop the accepted loan right before the contract check - proves serve
@@ -5014,7 +5020,7 @@ int main(int argc, char** argv) {
         // the same contract generate runs before its prefill.init: the accepted plan is authoritative for mode
         // and size; the runtime may run less (a shorter prompt), never more and never another mode
         if (!multi_gpu && posttouch_validated) {
-            const strata::prefill::RuntimePrefillUse actual{borrow != nullptr, o.prefill_chunk};
+            const strata::prefill::RuntimePrefillUse actual{borrow != nullptr, o.prefill_chunk, borrow_bytes};
             const strata::prefill::RuntimePlanCheck contract =
                 strata::prefill::check_runtime_prefill_use(effective_prefill, actual);
             if (!contract.ok) {
@@ -6964,8 +6970,10 @@ int main(int argc, char** argv) {
                 }
                 if (n_parts > 0) res_upload();
                 if (trace && n_parts > 0) {
-                    std::fprintf(stderr, "strata trace: refilled %lld slots on %lld stage(s) in %.1f ms\n",
-                                 (long long) n_lent, (long long) n_parts,
+                    int64_t n_left = 0;
+                    for (const PfPart& p : pf_parts) n_left += (int64_t) p.lent.size();
+                    std::fprintf(stderr, "strata trace: request refill: %lld experts restored, %lld left lent in "
+                                         "%.1f ms\n", (long long) n_lent, (long long) n_left,
                                  std::chrono::duration<double, std::milli>(Clock::now() - t_rf).count());
                     std::fflush(stderr);
                 }
@@ -7018,8 +7026,11 @@ int main(int argc, char** argv) {
                 if (trace) {
                     int64_t n_lent = 0;
                     for (const PfPart& p : pf_parts) n_lent += (int64_t) p.lent.size();
-                    std::fprintf(stderr, "strata trace: lent %lld slots for %lld tokens in %.1f ms\n", (long long) n_lent,
-                                 (long long) want, std::chrono::duration<double, std::milli>(Clock::now() - t_ln).count());
+                    std::fprintf(stderr, "strata trace: request loan: %lld slots for %lld tokens, first slot %d, "
+                                         "%lld experts marked not-resident in %.1f ms\n", (long long) n_lent,
+                                 (long long) want,
+                                 pf_parts.empty() ? -1 : (int) pf_parts[0].first_now, (long long) n_lent,
+                                 std::chrono::duration<double, std::milli>(Clock::now() - t_ln).count());
                     std::fflush(stderr);
                 }
                 return true;
@@ -7731,7 +7742,7 @@ int main(int argc, char** argv) {
         // borrowing infrastructure: the runtime may run less than accepted (a shorter prompt), never more and
         // never another mode. A future refactor that flips either side fails here, loudly.
         if (posttouch_validated) {
-            const strata::prefill::RuntimePrefillUse actual{borrow != nullptr, o.prefill_chunk};
+            const strata::prefill::RuntimePrefillUse actual{borrow != nullptr, o.prefill_chunk, borrow_bytes};
             const strata::prefill::RuntimePlanCheck contract =
                 strata::prefill::check_runtime_prefill_use(effective_prefill, actual);
             if (!contract.ok) {

@@ -172,8 +172,9 @@ inline constexpr uint64_t kOwnedPageMarginBytes = 64ull << 20;
 struct EffectivePrefillPlan {
     bool borrowed = false;
     bool owned = false;
-    int64_t chunk = 0;          ///< the chunk the runtime will run (an owned auto fallback: 1024)
+    int64_t chunk = 0;          ///< the chunk the runtime will run (an owned auto fallback: at most 1024)
     int64_t lend_slots = 0;     ///< borrowed: the loan against the final cache
+    uint64_t lend_bytes = 0;    ///< borrowed: the loan's bytes - the runtime contract's loan ceiling
     uint64_t owned_bytes = 0;   ///< owned: the buffers' price, the page margin included
     LendOutcome lend;           ///< borrowed auto: the outcome the runtime re-derives
 };
@@ -193,6 +194,7 @@ uint64_t effective_post_cache_required(const VramPlan& startup, const EffectiveP
 struct RuntimePrefillUse {
     bool borrowed = false;
     int64_t chunk = 0;
+    uint64_t borrow_bytes = 0;  ///< borrowed: the loan's bytes (0 when the caller does not track them)
 };
 
 struct RuntimePlanCheck {
@@ -202,8 +204,10 @@ struct RuntimePlanCheck {
 
 /// THE accepted EffectivePrefillPlan is the contract: the runtime may run less (a shorter prompt, a smaller
 /// loan), never more and never another mode. Accepted borrowed => the runtime borrows, at most the accepted
-/// chunk; accepted owned => the runtime owns, at most the accepted chunk; accepted off (the token path) => no
-/// unplanned prompt allocation. Pure: the generate and serve guards share it, and R19-R28 test it without CUDA.
+/// chunk and at most the accepted loan's bytes - a shorter chunk under a different ring rule may otherwise
+/// price a bigger loan than the accepted one, so the bytes are checked, not just the chunk; accepted owned =>
+/// the runtime owns, at most the accepted chunk; accepted off (the token path) => no unplanned prompt
+/// allocation. Pure: the generate and serve guards share it, and R19-R28 test it without CUDA.
 RuntimePlanCheck check_runtime_prefill_use(const EffectivePrefillPlan& accepted, const RuntimePrefillUse& actual);
 
 /// The WDDM post-touch decision for one opened cache: accept it, or - while shrinking is still allowed - how

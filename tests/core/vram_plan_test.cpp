@@ -584,6 +584,14 @@ int main() {
               "R25: borrowed 8192 over accepted 4096 refuses");
         // R26: a shorter borrowed request is allowed
         check(check_runtime_prefill_use(borrowed8192, use(true, 2048)).ok, "R26: borrowed 2048 under accepted 8192 passes");
+        // the loan's BYTES are part of the contract: a shorter chunk under a different ring rule could price a
+        // bigger loan than the accepted one, so the chunk alone does not prove safety
+        EffectivePrefillPlan loan_cap = borrowed8192;
+        loan_cap.lend_bytes = (uint64_t) 4 << 30;   // the accepted loan's bytes
+        check(check_runtime_prefill_use(loan_cap, RuntimePrefillUse{true, 4096, (uint64_t) 2 << 30}).ok,
+              "R34: a shorter request's smaller loan passes the byte ceiling");
+        check(!check_runtime_prefill_use(loan_cap, RuntimePrefillUse{true, 512, (uint64_t) 5 << 30}).ok,
+              "R34: a short chunk whose ring prices a bigger loan than accepted refuses");
         // R27/R28's rules are the same two checks the serve guard runs (its GPU hook, STRATA_TEST_SERVE_DROP_LOAN,
         // exercises the refused direction on hardware)
         check(!check_runtime_prefill_use(borrowed8192, use(false, 4096)).ok,

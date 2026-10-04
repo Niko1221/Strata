@@ -523,6 +523,7 @@ EffectivePrefillPlan revalidate_prefill_after_cache(const VramPlan& startup, con
             e.borrowed = true;
             e.chunk = e.lend.chunk;
             e.lend_slots = e.lend.slots;
+            e.lend_bytes = cache.tail_bytes(e.lend.slots);
         } else {
             e.owned = true;          // the runtime's fallback: an owned path at request_chunk's 1024 bound
             e.chunk = 1024;
@@ -538,6 +539,7 @@ EffectivePrefillPlan revalidate_prefill_after_cache(const VramPlan& startup, con
         e.borrowed = true;
         e.chunk = startup.selected_prefill;
         e.lend_slots = k;
+        e.lend_bytes = cache.tail_bytes(k);
     } else {
         e.owned = true;
         e.chunk = startup.selected_prefill;
@@ -558,6 +560,9 @@ RuntimePlanCheck check_runtime_prefill_use(const EffectivePrefillPlan& accepted,
                     "about to allocate its own buffers";
         else if (actual.chunk > accepted.chunk)
             c.why = "the runtime's loan is larger than the accepted plan's chunk";
+        else if (accepted.lend_bytes > 0 && actual.borrow_bytes > accepted.lend_bytes)
+            // the loan's BYTES are the ceiling: a shorter chunk under a different ring rule could price more
+            c.why = "the runtime's loan is larger than the accepted plan's loan bytes";
     } else if (accepted.owned) {
         if (actual.borrowed)
             c.why = "the accepted VRAM plan runs the prompt path on its own buffers, but the runtime set up a "
