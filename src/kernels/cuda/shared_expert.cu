@@ -176,6 +176,31 @@ __global__ void sigmoid_scale_rows_kernel(float* __restrict__ out, const float* 
     }
 }
 
+__global__ void sigmoid_scale_rows_vec4_kernel(float4* __restrict__ out4, const float* __restrict__ g, int n4) {
+    const int t = blockIdx.y;
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n4) {
+        const float gt = __fdividef(1.0f, 1.0f + __expf(-__ldg(g + t)));
+        float4 v = out4[(size_t) t * n4 + i];
+        v.x *= gt;
+        v.y *= gt;
+        v.z *= gt;
+        v.w *= gt;
+        out4[(size_t) t * n4 + i] = v;
+    }
+}
+
+void launch_sigmoid_scale_rows(float* out, const float* g, int n_embd, int n_tok, cudaStream_t cs) {
+    if ((n_embd & 3) == 0 && ((uintptr_t) out & 15u) == 0) {
+        const int n4 = n_embd >> 2;
+        sigmoid_scale_rows_vec4_kernel<<<dim3((unsigned) ((n4 + THREADS - 1) / THREADS), (unsigned) n_tok), THREADS, 0, cs>>>(
+            reinterpret_cast<float4*>(out), g, n4);
+    } else {
+        sigmoid_scale_rows_kernel<<<dim3((unsigned) ((n_embd + THREADS - 1) / THREADS), (unsigned) n_tok), THREADS, 0, cs>>>(
+            out, g, n_embd);
+    }
+}
+
 bool fused_swiglu_q81_enabled() {
     static const bool on = [] {
         const char* v = std::getenv("STRATA_FUSED_SWIGLU_Q81");
@@ -209,12 +234,10 @@ void shared_expert_multi(int n_tok, const float* x, const uint16_t* x_bf16, cons
     static const bool batch = [] { const char* v = std::getenv("STRATA_DEC_BATCH"); return v == nullptr || std::atoi(v) != 0; }();
     if (native_bf16 && batch && n_tok > 1) {   // one gemv for all rows (outputs identical), fused sigmoid+scale
         bf16_gemv_fp32_mmvf_multi(x, n_embd, gate_inp_bf16, g, 1, n_embd, 1, n_tok, stream);
-        sigmoid_scale_rows_kernel<<<dim3((unsigned) ((n_embd + THREADS - 1) / THREADS), (unsigned) n_tok), THREADS, 0, cs>>>(
-            out, g, (int) n_embd);
+        launch_sigmoid_scale_rows(out, g, (int) n_embd, n_tok, cs);
     } else if (native_bf16 && n_tok == 1) {
         bf16_gemv_fp32_mmvf(x, gate_inp_bf16, g, n_embd, 1, stream);
-        sigmoid_scale_rows_kernel<<<dim3((unsigned) ((n_embd + THREADS - 1) / THREADS), 1u), THREADS, 0, cs>>>(
-            out, g, (int) n_embd);
+        launch_sigmoid_scale_rows(out, g, (int) n_embd, 1, cs);
     } else {
         for (int t = 0; t < n_tok; ++t) {
             if (native_bf16) {
@@ -345,7 +368,7 @@ void shared_expert(const uint8_t* x_q8_0, const uint8_t* x_q8k, const uint16_t* 
     // round trip.  256 threads is the reduction's width, not the problem's size.
     if (use_native) {
         bf16_gemv_fp32_mmvf(x_f32, gate_inp_bf16, g, n_embd, 1, stream);
-        sigmoid_scale_rows_kernel<<<dim3(g_embd, 1u), THREADS, 0, (cudaStream_t) stream>>>(out, g, (int) n_embd);
+        launch_sigmoid_scale_rows(out, g, (int) n_embd, 1, (cudaStream_t) stream);
     } else {
         scalar_gate_kernel<<<1, 256, 0, (cudaStream_t) stream>>>(x_bf16, gate_inp_bf16, g, (int) n_embd);
         scale_kernel<<<g_embd, THREADS, 0, (cudaStream_t) stream>>>(out, g, (int) n_embd);

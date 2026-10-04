@@ -46,6 +46,35 @@ __global__ void combine(const float* __restrict__ parts, const float* __restrict
     if (shared) sum += shared[col];
     output[col] = sum;
 }
+__global__ void combine_k10_vec4(const float4* __restrict__ parts4, const float* __restrict__ weights,
+                                 const float4* __restrict__ shared4, float4* __restrict__ output4,
+                                 int64_t n4) {
+    const int64_t tk = blockIdx.y;
+    parts4 += tk * 10 * n4;
+    weights += tk * 10;
+    shared4 += tk * n4;
+    output4 += tk * n4;
+    const int64_t c4 = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (c4 >= n4) return;
+    const float w0 = __ldg(weights + 0);
+    const float4 p0 = parts4[c4];
+    float4 sum = make_float4(p0.x * w0, p0.y * w0, p0.z * w0, p0.w * w0);
+#pragma unroll
+    for (int expert = 1; expert < 10; ++expert) {
+        const float w = __ldg(weights + expert);
+        const float4 p = parts4[int64_t(expert) * n4 + c4];
+        sum.x += p.x * w;
+        sum.y += p.y * w;
+        sum.z += p.z * w;
+        sum.w += p.w * w;
+    }
+    const float4 sh = shared4[c4];
+    sum.x += sh.x;
+    sum.y += sh.y;
+    sum.z += sh.z;
+    sum.w += sh.w;
+    output4[c4] = sum;
+}
 bool valid_span(const void* p, size_t bytes) {
     const auto address = reinterpret_cast<uintptr_t>(p);
     return p && address % alignof(float) == 0 && bytes <= UINTPTR_MAX - address;
@@ -69,8 +98,16 @@ void native_moe_combine(const float* parts, const float* weights, const float* s
             || overlap(output, row_bytes, weights, weight_bytes)
             || (shared && overlap(output, row_bytes, shared, row_bytes)))
         throw std::invalid_argument("native MoE combine requires aligned spans and disjoint output");
-    combine<<<unsigned((n_embd + 255) / 256), 256, 0, static_cast<cudaStream_t>(stream)>>>(
-        parts, weights, shared, output, n_embd, int(k));
+    if (k == 10 && shared != nullptr && (n_embd & 3) == 0 &&
+        (((uintptr_t) parts | (uintptr_t) shared | (uintptr_t) output) & 15u) == 0) {
+        const int64_t n4 = n_embd >> 2;
+        combine_k10_vec4<<<unsigned((n4 + 127) / 128), 128, 0, static_cast<cudaStream_t>(stream)>>>(
+            reinterpret_cast<const float4*>(parts), weights, reinterpret_cast<const float4*>(shared),
+            reinterpret_cast<float4*>(output), n4);
+    } else {
+        combine<<<unsigned((n_embd + 255) / 256), 256, 0, static_cast<cudaStream_t>(stream)>>>(
+            parts, weights, shared, output, n_embd, int(k));
+    }
     const auto error = cudaGetLastError();
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
 }
@@ -78,8 +115,16 @@ void native_moe_combine_multi(const float* parts, const float* weights, const fl
                               int64_t n_embd, int64_t k, int n_tok, void* stream) {
     if (!stream || n_embd <= 0 || k < 1 || k > 15 || n_tok < 1)
         throw std::invalid_argument("native MoE combine (multi) requires a stream, width, 1..15 experts, tokens");
-    combine<<<dim3(unsigned((n_embd + 255) / 256), (unsigned) n_tok), 256, 0, static_cast<cudaStream_t>(stream)>>>(
-        parts, weights, shared, output, n_embd, int(k));
+    if (k == 10 && shared != nullptr && (n_embd & 3) == 0 &&
+        (((uintptr_t) parts | (uintptr_t) shared | (uintptr_t) output) & 15u) == 0) {
+        const int64_t n4 = n_embd >> 2;
+        combine_k10_vec4<<<dim3(unsigned((n4 + 127) / 128), (unsigned) n_tok), 128, 0, static_cast<cudaStream_t>(stream)>>>(
+            reinterpret_cast<const float4*>(parts), weights, reinterpret_cast<const float4*>(shared),
+            reinterpret_cast<float4*>(output), n4);
+    } else {
+        combine<<<dim3(unsigned((n_embd + 255) / 256), (unsigned) n_tok), 256, 0, static_cast<cudaStream_t>(stream)>>>(
+            parts, weights, shared, output, n_embd, int(k));
+    }
     const auto error = cudaGetLastError();
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
 }

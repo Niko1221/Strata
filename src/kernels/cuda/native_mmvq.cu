@@ -1008,16 +1008,130 @@ struct IQ4XSTraits {
         return d * sumi;
     }
 };
-// The four 32-element formats: `load` keeps the block pointer (their decode is a few integer ops) and `apply` is
-// the unchanged small_q8_dot. Their per-column cost is small; the win above is for the K and IQ formats.
+// The four 32-element formats: `load` decodes the two 32-bit weight chunks and block scale once per (row, block),
+// and `apply` runs the exact same STRATA_DP4A and scale arithmetic per activation column as `small_q8_dot`.
 template<typename Weight, int Qi>
-struct SmallTraits {
-    using Block = Weight;
-    static constexpr int DIV = 32, T = Qi / 2, KBY = 1, BPI = 2 * WARPS * WARP / Qi;
-    __device__ static int kqs(int tid) { return 2 * (tid % (Qi / 2)); }
-    struct W { const Weight* w; };
-    __device__ static W load(const Block* __restrict__ w, int) { return W{w}; }
-    __device__ static float apply(const W& r, const Q81Block* __restrict__ x, int k) { return small_q8_dot(r.w, x, k); }
+struct SmallTraits;
+
+template<>
+struct SmallTraits<Q40Block, 4> {
+    using Block = Q40Block;
+    static constexpr int DIV = 32, T = 2, KBY = 1, BPI = 2 * WARPS * WARP / 4;
+    __device__ static int kqs(int tid) { return 2 * (tid % 2); }
+    struct W { int vi0[2], vi1[2]; float d; };
+    __device__ static W load(const Block* __restrict__ w, int iqs) {
+        W r;
+#pragma unroll
+        for (int i = 0; i < 2; ++i) {
+            const int v = load_int_b2(w->qs, iqs + i);
+            r.vi0[i] = (v >> 0) & 0x0f0f0f0f;
+            r.vi1[i] = (v >> 4) & 0x0f0f0f0f;
+        }
+        r.d = w->d;
+        return r;
+    }
+    __device__ static float apply(const W& r, const Q81Block* __restrict__ x, int iqs) {
+        int sumi = 0;
+#pragma unroll
+        for (int i = 0; i < 2; ++i) {
+            sumi = STRATA_DP4A(r.vi0[i], reinterpret_cast<const int*>(x->qs)[iqs + i], sumi);
+            sumi = STRATA_DP4A(r.vi1[i], reinterpret_cast<const int*>(x->qs)[iqs + i + 4], sumi);
+        }
+        const float2 ds = __half22float2(x->ds);
+        return r.d * (sumi * ds.x - 4 * ds.y);
+    }
+};
+
+template<>
+struct SmallTraits<Q50Block, 4> {
+    using Block = Q50Block;
+    static constexpr int DIV = 32, T = 2, KBY = 1, BPI = 2 * WARPS * WARP / 4;
+    __device__ static int kqs(int tid) { return 2 * (tid % 2); }
+    struct W { int vi0[2], vi1[2]; float d; };
+    __device__ static W load(const Block* __restrict__ w, int iqs) {
+        W r;
+        const int qh = load_int_b2(w->qh, 0);
+#pragma unroll
+        for (int i = 0; i < 2; ++i) {
+            const int vl = load_int_b2(w->qs, iqs + i);
+            const int vh = qh >> (4 * (iqs + i));
+            int vi0 = (vl >> 0) & 0x0f0f0f0f;
+            vi0 |= (vh << 4) & 0x00000010;
+            vi0 |= (vh << 11) & 0x00001000;
+            vi0 |= (vh << 18) & 0x00100000;
+            vi0 |= (vh << 25) & 0x10000000;
+            r.vi0[i] = vi0;
+            int vi1 = (vl >> 4) & 0x0f0f0f0f;
+            vi1 |= (vh >> 12) & 0x00000010;
+            vi1 |= (vh >> 5) & 0x00001000;
+            vi1 |= (vh << 2) & 0x00100000;
+            vi1 |= (vh << 9) & 0x10000000;
+            r.vi1[i] = vi1;
+        }
+        r.d = w->d;
+        return r;
+    }
+    __device__ static float apply(const W& r, const Q81Block* __restrict__ x, int iqs) {
+        int sumi = 0;
+#pragma unroll
+        for (int i = 0; i < 2; ++i) {
+            sumi = STRATA_DP4A(r.vi0[i], reinterpret_cast<const int*>(x->qs)[iqs + i], sumi);
+            sumi = STRATA_DP4A(r.vi1[i], reinterpret_cast<const int*>(x->qs)[iqs + i + 4], sumi);
+        }
+        const float2 ds = __half22float2(x->ds);
+        return r.d * (sumi * ds.x - 8 * ds.y);
+    }
+};
+
+template<>
+struct SmallTraits<Q80Block, 8> {
+    using Block = Q80Block;
+    static constexpr int DIV = 32, T = 4, KBY = 1, BPI = 2 * WARPS * WARP / 8;
+    __device__ static int kqs(int tid) { return 2 * (tid % 4); }
+    struct W { int v[2]; float d0; };
+    __device__ static W load(const Block* __restrict__ w, int iqs) {
+        W r;
+#pragma unroll
+        for (int i = 0; i < 2; ++i) r.v[i] = load_int_b2(w->qs, iqs + i);
+        r.d0 = w->d;
+        return r;
+    }
+    __device__ static float apply(const W& r, const Q81Block* __restrict__ x, int iqs) {
+        int sumi = 0;
+#pragma unroll
+        for (int i = 0; i < 2; ++i) {
+            const int u = reinterpret_cast<const int*>(x->qs)[iqs + i];
+            sumi = STRATA_DP4A(r.v[i], u, sumi);
+        }
+        const float d1 = __low2float(x->ds);
+        return r.d0 * d1 * float(sumi);
+    }
+};
+
+template<>
+struct SmallTraits<IQ4NLBlock, 4> {
+    using Block = IQ4NLBlock;
+    static constexpr int DIV = 32, T = 2, KBY = 1, BPI = 2 * WARPS * WARP / 4;
+    __device__ static int kqs(int tid) { return 2 * (tid % 2); }
+    struct W { int2 v[2]; float dw; };
+    __device__ static W load(const Block* __restrict__ w, int iqs) {
+        W r;
+#pragma unroll
+        for (int i = 0; i < 2; ++i) r.v[i] = iq4_table_lookup(load_int_b2(w->qs, iqs + i));
+        r.dw = __half2float(w->d);
+        return r;
+    }
+    __device__ static float apply(const W& r, const Q81Block* __restrict__ x, int iqs) {
+        const int* q8 = reinterpret_cast<const int*>(x->qs) + iqs;
+        int sumi = 0;
+#pragma unroll
+        for (int i = 0; i < 2; ++i) {
+            sumi = STRATA_DP4A(r.v[i].x, q8[i], sumi);
+            sumi = STRATA_DP4A(r.v[i].y, q8[i + 4], sumi);
+        }
+        const float d = r.dw * __low2float(x->ds);
+        return d * sumi;
+    }
 };
 
 // NW warps per block and ROWS rows per block. The EXACT layout (NW = 4, ROWS = 1, or 4 for small K) is the
@@ -1083,13 +1197,9 @@ void launch_multi_n(const void* weights, const void* x_q8_1, float* y, int n_in,
         return;
     }
     const dim3 threads(WARP, WARPS);
-    if (n_in / F::DIV < F::BPI) {
-        constexpr int ROWS = 2;
-        const unsigned blocks = unsigned((std::size_t(n_out) + ROWS - 1) / ROWS);
-        native_mmvq_multi_kernel<F, NCOLS, WARPS, ROWS><<<blocks, threads, 0, s>>>(w, x, y, n_in, n_out);
-    } else {
-        native_mmvq_multi_kernel<F, NCOLS, WARPS, 1><<<unsigned(n_out), threads, 0, s>>>(w, x, y, n_in, n_out);
-    }
+    constexpr int ROWS = 2;
+    const unsigned blocks = unsigned((std::size_t(n_out) + ROWS - 1) / ROWS);
+    native_mmvq_multi_kernel<F, NCOLS, WARPS, ROWS><<<blocks, threads, 0, s>>>(w, x, y, n_in, n_out);
 }
 
 template<typename F>

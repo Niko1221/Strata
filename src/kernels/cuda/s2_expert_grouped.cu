@@ -15,6 +15,7 @@
 // the same reason.  `bench/micro/moe_hit_parity.cu` is the check.
 #include "strata/kernels/s2_expert_grouped.hpp"
 #include "strata/kernels/dp4a.hpp"
+#include "strata/kernels/f16_bits.hpp"
 
 #include "strata/kernels/quantize_act.hpp"
 #include "strata/kernels/verify_kernels.hpp"
@@ -169,6 +170,37 @@ __global__ void swiglu_kernel(float* __restrict__ gate_up, long long n_pairs) {
     const float g = gate_up[i];
     const float u = gate_up[n_pairs + i];
     gate_up[i] = (g / (1.0f + __expf(-g))) * u;
+}
+
+__global__ void swiglu_quantize_q8_0_scaled_kernel(float* __restrict__ gate_up, long long n_pairs,
+                                                   uint8_t* __restrict__ blocks, float* __restrict__ scales) {
+    const long long n_blocks = n_pairs >> 5;
+    const long long b = ((long long) blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    if (b >= n_blocks) return;
+    const int lane = threadIdx.x & 31;
+    const long long idx = b * 32 + lane;
+    const float g = gate_up[idx];
+    const float u = gate_up[n_pairs + idx];
+    const float xv = (g / (1.0f + __expf(-g))) * u;
+    gate_up[idx] = xv;
+    uint8_t* out = blocks + b * 34;
+
+    float amax = fabsf(xv);
+#pragma unroll
+    for (int off = 16; off > 0; off >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, off));
+    const float s = amax > 0.f ? amax / 127.f : 0.f;
+    const float inv = s > 0.f ? 1.f / s : 0.f;
+    if (lane == 0) {
+        scales[b] = s;
+        const uint16_t d16bits = f16_from_f32(s);
+        out[0] = (uint8_t) (d16bits & 0xFF);
+        out[1] = (uint8_t) (d16bits >> 8);
+    }
+    const float t = xv * inv;
+    const float r = t + (t >= 0.f ? 0.5f : -0.5f);
+    int v = (int) r;
+    v = v < -127 ? -127 : (v > 127 ? 127 : v);
+    out[2 + lane] = (uint8_t) (int8_t) v;
 }
 
 /// DOWN, ONE WARP PER ROW, reading the quantized intermediate the caller produced.
@@ -1117,13 +1149,20 @@ void moe_grouped_s2(const unsigned long long* grp_ptr, const int32_t* grp_start,
                                                     (int) cap_entries);
         check("moe_grouped_s2/gu", stream);
     }
-    {
+    if (fast && x_scales != nullptr) {
+        const long long pairs = cap_entries * (long long) FF;
+        const long long n_blocks = pairs >> 5;
+        const int warps = THREADS / 32;
+        swiglu_quantize_q8_0_scaled_kernel<<<(unsigned) ((n_blocks + warps - 1) / warps), THREADS, 0, cs>>>(
+            gate_up, pairs, h_q8_0, h_scales);
+        check("moe_grouped_s2/swiglu_q8", stream);
+    } else {
         const long long pairs = cap_entries * (long long) FF;
         swiglu_kernel<<<(unsigned) ((pairs + THREADS - 1) / THREADS), THREADS, 0, cs>>>(gate_up, pairs);
         check("moe_grouped_s2/swiglu", stream);
+        if (x_scales != nullptr) quantize_q8_0_scaled(gate_up, h_q8_0, h_scales, cap_entries * (int64_t) FF, stream);
+        else quantize_q8_0(gate_up, h_q8_0, cap_entries * (int64_t) FF, stream);
     }
-    if (x_scales != nullptr) quantize_q8_0_scaled(gate_up, h_q8_0, h_scales, cap_entries * (int64_t) FF, stream);
-    else quantize_q8_0(gate_up, h_q8_0, cap_entries * (int64_t) FF, stream);
     {
         const dim3 grid((unsigned) (H / D_ROWS), (unsigned) cap_groups);
         const float* hs = x_scales != nullptr ? h_scales : nullptr;
