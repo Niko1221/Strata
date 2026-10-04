@@ -34,6 +34,14 @@ experimental installation. Without it, a new installation continues to reject
 gfx900. Windows and builds mixing gfx900 with the wave32 architectures are refused.
 Images and multiple-card inference are unvalidated.
 
+The context includes the prompt, conversation history, thinking and answer. The
+8192-token example is a small initial configuration, so a long thinking response
+can exhaust it before producing an answer. For longer conversations, use
+`--context 32768` when running setup. To reserve room for the answer, add
+`"reasoning_budget_tokens": 2048` to the top level of `strata-iq2_xs.json`
+and restart the server. This caps thinking; a request can override it. See
+[DETAILS.md](DETAILS.md) for reasoning effort and budget settings.
+
 ## Build and check without a model
 
 With a gfx900-capable ROCm development installation on the compiler and library
@@ -85,3 +93,9 @@ and Python-code responses, repeated-prompt reuse, streaming through its final
 `[DONE]` marker, Anthropic Messages, OpenAI Responses, and monitoring metrics.
 These are functional checks on one PC, not a throughput benchmark or validation
 of every model, context size or GPU listed above.
+
+A follow-up run on the same PC uses context 32768 and a 2048-token thinking
+budget. The server accepts a 10000-token output allowance, and a modular
+arithmetic request reaches the thinking budget, switches to an answer and ends
+normally with the correct result. The larger context reduces the expert cache
+to 5663 slots (7.59 GiB); the server reports 2944 MiB of VRAM free after loading.
