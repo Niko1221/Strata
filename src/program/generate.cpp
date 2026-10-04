@@ -406,8 +406,8 @@ struct Options {
     int64_t conversation_cache_mib = 0; // opt-in host RAM for independent conversations
     int conversation_cache_slots = 4;
     int64_t conversation_cache_min_free_mib = 2560;
-    /// --serve: park conversations on disk under this directory instead of in RAM, keyed by the request's `conv=` id
-    /// (see conversation_disk.hpp); empty = off.  Replaces the RAM cache when set.
+    /// --serve: park conversations with a `conv=` id on disk under this directory (see conversation_disk.hpp); empty
+    /// = off.  Requests without an id still use the RAM cache (--conversation-cache-mib), so the two live side by side.
     std::string conversation_disk_dir;
     int64_t conversation_disk_gib = 32;
     /// --serve: also keep a checkpoint every N freshly read prompt tokens (0 = only at the last turn boundary)
@@ -520,8 +520,8 @@ void usage() {
                  "  --conversation-cache-mib N  --serve: RAM budget for parked conversations (default 0 = off)\n"
                  "  --conversation-cache-slots N  --serve: at most N parked conversations (default 4)\n"
                  "  --conversation-cache-min-free-mib N  --serve: physical RAM floor when parking (default 2560)\n"
-                 "  --conversation-disk-dir DIR  --serve: park conversations with a conv= id on disk in DIR instead of\n"
-                 "                       in RAM; requests without an id are not parked (replaces the RAM cache)\n"
+                 "  --conversation-disk-dir DIR  --serve: park conversations with a conv= id on disk in DIR; requests\n"
+                 "                       without an id use the RAM cache (--conversation-cache-mib) beside it\n"
                  "  --conversation-disk-gib N  --serve: disk budget for parked conversations (default 32)\n"
                  "  --prompt-cache-every N  --serve: also checkpoint every N fresh prompt tokens (default 16384, 0 = off)\n"
                  "  --turn-token ID      --serve: the token that opens a chat turn (default 248045, <|im_start|>)\n"
@@ -1359,11 +1359,12 @@ int main(int argc, char** argv) {
     strata::core::set_peer_portable(o.peer_device >= 1);   // multi-GPU: the Portable flag on mapped host buffers only with a peer device (before any allocation)
     if (o.serve && !o.conversation_disk_dir.empty() && o.prompt_cache == 0)
         std::fprintf(stderr, "strata serve: warning: disk parking is disabled by --prompt-cache 0\n");
-    if (o.serve && !o.conversation_disk_dir.empty() && o.conversation_cache_mib > 0) {
-        std::fprintf(stderr, "strata serve: --conversation-disk-dir replaces the RAM conversation cache; ignoring "
-                             "--conversation-cache-mib\n");
-        o.conversation_cache_mib = 0;
-    }
+    // Both at once: a conversation with an id parks on disk, a request without one (a side call, a short task) in the
+    // RAM cache.  Before, the disk replaced the RAM cache, so every request without an id was read from 0 whenever
+    // another one had taken the session in between (an agent app, one night: 816 of 840 short prompts, ~3 s each).
+    if (o.serve && !o.conversation_disk_dir.empty() && o.conversation_cache_mib > 0)
+        std::fprintf(stderr, "strata serve: conversations with an id park on disk, requests without one in %lld MiB of "
+                             "RAM\n", (long long) o.conversation_cache_mib);
     if (o.serve && o.conversation_cache_mib > 0 && (o.prompt_cache == 0 || o.conversation_cache_slots == 0))
         std::fprintf(stderr, "strata serve: warning: conversation caching is disabled by %s\n",
                      o.prompt_cache == 0 ? "--prompt-cache 0" : "--conversation-cache-slots 0");
@@ -4581,8 +4582,12 @@ int main(int argc, char** argv) {
         for (const auto& st : stages) park_stages.push_back({&st->ss, st->dev});
         // Save only on a switch/rewind, not on each continuing request. No graph
         // addresses change: all parked images live in ordinary host vectors.
+        // `live_conv` (below) is set once disk parking is on: a session that holds a conversation with an id was parked
+        // on disk already (park_disk), so only a session without one goes to RAM.
+        std::string live_conv;
         auto park_current = [&](size_t held) -> bool {
             if (!conversations.enabled() || !live_ok || live.empty()) return true;
+            if (!live_conv.empty()) return true;
             const strata::core::ConversationView view{live, live_imgs, checks, cvec_cached};
             auto reuse = conversations.take_reuse();
             size_t estimate = 0;
@@ -4658,7 +4663,6 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata serve: conversation disk: parking in %s (budget %lld GiB)\n",
                          o.conversation_disk_dir.c_str(), (long long) o.conversation_disk_gib);
         }
-        std::string live_conv;
         int64_t disk_unchanged = 0;
         auto park_disk = [&]() {
             if (!disk.enabled() || live_conv.empty() || !live_ok || live.empty()) return;
@@ -5374,7 +5378,9 @@ int main(int argc, char** argv) {
             }
             // the outgoing conversation goes to disk before anything overwrites it (the session is only read)
             if (disk.enabled() && req_conv != live_conv) park_disk();
-            const auto parked = conversations.best(ids, req_imgs, want_cvec);
+            // A request with an id is the disk's (it was looked up above); the RAM cache serves the ones without.
+            const auto parked = disk.enabled() && !req_conv.empty() ? strata::core::ConversationCache::Match{}
+                                                                    : conversations.best(ids, req_imgs, want_cvec);
             std::optional<strata::core::SavedConversation> incoming;
             if (parked.tokens > resume) incoming.emplace(conversations.take(parked.index));
             // Reject the entire image before parking/overwriting the outgoing

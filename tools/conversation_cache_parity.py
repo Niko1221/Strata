@@ -184,6 +184,33 @@ def verify_disk(results, log_text):
     results['disk'] = {'parks': parks, 'restores': restores}
 
 
+def verify_mixed(results, log_text, b_tokens):
+    """Disk parking and the RAM cache side by side: A (with an id) comes back from disk every time, B (without one)
+    from RAM, C (without one) is read and parked in RAM too, and every record matches the never-parked baseline."""
+    baseline, candidate = results['baseline'], results['candidate']
+    names = ['A', 'B', 'A+', 'B+', 'C', 'B++', 'A++']
+    for records in (baseline, candidate):
+        require([r['name'] for r in records] == names, 'incomplete mixed sequence')
+    state_keys = set(STATE_KEYS)
+    for base, cand in zip(baseline, candidate):
+        for record in (base, cand):
+            require(bool(record['ids']), 'missing generated tokens')
+            require(record['finish'] in ('length', 'stop'), 'request did not finish normally')
+            require(state_keys <= record['state'].keys(), 'incomplete state fingerprint')
+        require(base['ids'] == cand['ids'], f"{cand['name']} output differs from the baseline")
+        require(base['state'] == cand['state'], f"{cand['name']} state differs from the baseline")
+    by_name = {r['name']: r for r in candidate}
+    require(by_name['A+']['reused'] > 0 and by_name['A++']['reused'] > 0, 'A was not restored from disk')
+    require(by_name['B+']['reused'] >= b_tokens, 'B was not restored from RAM after A took the session')
+    require(by_name['B++']['reused'] > 0, 'B+ was not restored from RAM after C took the session')
+    disk_parks = re.findall(r'conversation disk: parked (\S+):', log_text)
+    require(disk_parks and set(disk_parks) == {'a'}, f'only A may park on disk, saw {disk_parks}')
+    ram_parks = len(re.findall(r'conversation cache: parked \d+ tokens', log_text))
+    ram_restores = len(re.findall(r'conversation cache: restored \d+ tokens', log_text))
+    require(ram_parks >= 2, f'expected B, B+ (and C) parked in RAM, saw {ram_parks} parks')
+    require(ram_restores >= 2, f'expected B+ and B++ restored from RAM, saw {ram_restores}')
+    results['mixed'] = {'disk_parks': disk_parks, 'ram_parks': ram_parks, 'ram_restores': ram_restores}
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--config', type=Path, required=True)
@@ -191,14 +218,14 @@ def main():
     ap.add_argument('--output', type=Path, required=True, help='new private directory; existing paths refused')
     ap.add_argument('--cache-mib', type=int, default=8192)
     ap.add_argument('--paragraphs', type=int, default=128)
-    ap.add_argument('--scenario', choices=('reuse', 'pressure', 'oversized', 'exchange', 'admission', 'disk'),
+    ap.add_argument('--scenario', choices=('reuse', 'pressure', 'oversized', 'exchange', 'admission', 'disk', 'mixed'),
                     default='reuse',
                     help='pressure requires snapshots fitting individually but not together; oversized requires none to fit')
     ap.add_argument('--min-free-mib', type=int, default=2560,
                     help='physical RAM floor; for admission denial choose a value above available system RAM')
     ap.add_argument('--spec', type=int, default=1, choices=range(1, 9),
                     help='decode window cap; 1 uses engine --spec 2 --mtp-max-t 1 for native IQ packs')
-    ap.add_argument('--disk-dir', type=Path, help='disk scenario: the --conversation-disk-dir to park in')
+    ap.add_argument('--disk-dir', type=Path, help='disk/mixed scenario: the --conversation-disk-dir to park in')
     ap.add_argument('--run', action='store_true')
     a = ap.parse_args()
     if a.cache_mib <= 0 or a.paragraphs < 1 or not 0 <= a.min_free_mib <= (2**63 - 1) // (1024 * 1024):
@@ -228,7 +255,7 @@ def main():
         log = a.output / f'{label}.log'
         args = engine_args(cfg, budget, a.spec)
         args += ['--conversation-cache-min-free-mib', str(a.min_free_mib)]
-        if a.scenario == 'disk' and label == 'candidate':
+        if a.scenario in ('disk', 'mixed') and label == 'candidate':
             args += ['--conversation-disk-dir', str(a.disk_dir)]
         engine = StrataEngine(str(a.engine.resolve()), args, cwd=cfg.get('cwd'), log=str(log), env=env)
         results['engine_info'][label] = dict(engine.info)
@@ -254,6 +281,18 @@ def main():
                 if label == 'candidate':
                     generate(C, 1, 'N')   # no id: parks A, is never parked itself
                     generate(cont2, 8, 'A++-again', 'a')   # A's live end is past this prompt: a checkpoint
+            elif a.scenario == 'mixed':
+                # A has an id (disk), B and C have none (RAM).  The baseline runs the same sequence without either
+                # cache, so every record must match it token for token and byte for byte.
+                head_a = generate(A, 1, 'A', 'a')
+                head_b = generate(B, 1, 'B')
+                cont_a = A + head_a + suffix
+                more_a = generate(cont_a, 8, 'A+', 'a')
+                cont_b = B + head_b + suffix
+                more_b = generate(cont_b, 8, 'B+')
+                generate(C, 1, 'C')
+                generate(cont_b + more_b + suffix, 8, 'B++')
+                generate(cont_a + more_a + suffix, 8, 'A++', 'a')
             elif a.scenario in ('pressure', 'oversized', 'admission'):
                 generate(A, 1, 'A')
                 generate(B, 1, 'B')
@@ -275,7 +314,7 @@ def main():
         for record, fingerprint in zip(records, hashes):
             record['state'] = fingerprint
         results[label] = records
-        if label == 'candidate' and a.scenario == 'disk':
+        if label == 'candidate' and a.scenario in ('disk', 'mixed'):
             disk_log = log.read_text(encoding='utf-8')
         elif label == 'candidate' and a.scenario != 'reuse':
             log_text = log.read_text(encoding='utf-8')
@@ -292,6 +331,10 @@ def main():
         verify_disk(results, disk_log)
         (a.output / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
         print('PASS: disk parking A/B/A, delta parks, checkpoint rewind, byte-exact main-model state')
+    elif a.scenario == 'mixed':
+        verify_mixed(results, disk_log, len(B))
+        (a.output / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
+        print('PASS: disk for the conversation with an id and RAM for the ones without, side by side, byte-exact')
     elif a.scenario == 'admission':
         verify_admission(results, a.cache_mib, a.min_free_mib)
         print('PASS: physical-memory admission denial, output and byte-exact main-model state')
