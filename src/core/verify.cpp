@@ -83,6 +83,21 @@ const bool g_doorbell_store = env_on("STRATA_DOORBELL_STORE");
 #endif
 const bool g_trace = env_on("STRATA_VERIFY_TRACE");
 
+// The shared expert runs on its own stream, forked off and joined back per layer (`sh_fork` in record_window).  The
+// overlap pays off on CUDA, where it was added (cfd3b72).  On HIP a cross-stream event dependency costs more than the
+// shared expert takes to run, so there the fork starts off: same binary, same 48,067-token prompt, three runs each on a
+// Radeon AI PRO R9700 (gfx1201, ROCm 6.4.3), the fork off decodes at 62.9 t/s against 43.4 t/s with it on.  The
+// profiler turns the fork off to time the stages, so a profiled run never showed that.  #816 reports the same fall on a
+// gfx1030 (RX 6800, Windows, 42.5 -> 56.4 t/s).  STRATA_SH_STREAM overrides either default: `=1` forks, `=0` does not.
+const bool g_sh_stream = [] {
+    if (const char* v = std::getenv("STRATA_SH_STREAM")) return v[0] != '0';
+#if defined(STRATA_USE_HIP)
+    return false;
+#else
+    return true;
+#endif
+}();
+
 bool mapped(size_t bytes, void** h, void** d) {
 #if defined(STRATA_USE_HIP)
     if (g_coherent) {
@@ -900,11 +915,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         }
         stamp(l, 16, grp);
         gr_read_group(1, true, inj_, inj2_);
-        static const bool sh_stream_env = [] {
-            const char* e = std::getenv("STRATA_SH_STREAM");
-            return !e || e[0] != '0';
-        }();
-        const bool sh_fork = sh_stream_env && !prof_on_ && sh_cs_ != nullptr && ev_fork_ != nullptr && ev_join_ != nullptr;
+        const bool sh_fork = g_sh_stream && !prof_on_ && sh_cs_ != nullptr && ev_fork_ != nullptr && ev_join_ != nullptr;
         cudaStream_t sh_stream = sh_fork ? sh_cs_ : cs;
         if (sh_fork) {
             cudaEventRecord(ev_fork_, cs);
@@ -1075,7 +1086,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             }
             moe_hit_add(parts_out, hit_out, p_dst, p_counts + 1, cap, N, cs);
         }
-        if (!prof_on_ && sh_cs_ != nullptr && ev_fork_ != nullptr && ev_join_ != nullptr) {
+        // Same condition as `sh_fork` above, which is per group and out of scope here: wait only when the fork
+        // actually ran (a wait on an event never recorded is a no-op, but saying it outright reads better).
+        if (g_sh_stream && !prof_on_ && sh_cs_ != nullptr && ev_fork_ != nullptr && ev_join_ != nullptr) {
             cudaStreamWaitEvent(cs, ev_join_, 0);
         }
         if (dec_batch && n > 1 && native_moe_combine_enabled()) {   // one launch for the window's rows
