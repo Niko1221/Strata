@@ -15,6 +15,10 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](../bench/results/2026-09-30-community-rtx-5090/README.md):
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
   each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.
+- [2026-10-03: Tesla V100-PCIE-32GB, dual Xeon E5-2696 v3, 128 GB RAM](../bench/results/2026-10-03-community-v100/README.md):
+  Strata 0.1.38 source build (sm_70), Flash-Next IQ3_XXS, 131,072-token context; field
+  decode speeds before/after `--calibrate` (16.5 to 33.5 tok/s, with the sweep), prompt
+  processing scaling to 863 tok/s on a 4.3k-token document, MTP acceptance 65-98%.
 
 ## What to record
 
