@@ -53,7 +53,9 @@ The converter changes tensors matching
 `blk.N.ffn_gate_exps.weight`, `blk.N.ffn_up_exps.weight`, and
 `blk.N.ffn_down_exps.weight`. All other tensor payloads are copied as-is. It
 accepts F16, BF16, or F32 source tensors and rejects already quantized target
-tensors. Target dimension 0 must be a positive multiple of 128.
+tensors. Target dimension 0 must be a positive multiple of 128. Before writing
+output, it requires a complete gate/up/down triplet for every layer, matching
+matrix dimensions, and a consistent expert count.
 
 For one GGUF file:
 

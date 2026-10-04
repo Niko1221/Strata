@@ -20,7 +20,7 @@ from hadamard_int2 import BLOCK_BYTES, BLOCK_SIZE, TYPE_ID, quantize_rows  # noq
 
 DEFAULT_ALIGNMENT = 32
 SHARD_RE = re.compile(r"^(?P<stem>.+)-(?P<index>\d+)-of-(?P<count>\d+)\.gguf$")
-TARGET_RE = re.compile(r"^blk\.\d+\.ffn_(?:gate|up|down)_exps\.weight$")
+TARGET_RE = re.compile(r"^blk\.(?P<layer>\d+)\.ffn_(?P<role>gate|up|down)_exps\.weight$")
 META_PREFIX = "strata.had2."
 META_VALUES = {
     "version": ("u32", 1),
@@ -142,6 +142,43 @@ def _plan_file(path: pathlib.Path, alignment: int, seed: int) -> tuple[GGUFFile,
             out_size = source_size
         plans.append(TensorPlan(tensor, source_size, out_size, convert))
     return gguf, plans
+
+
+def _validate_target_set(shard_plans: list[tuple]) -> None:
+    by_layer: dict[int, dict[str, tuple[int, ...]]] = {}
+    for _, _, _, plans, _ in shard_plans:
+        for plan in plans:
+            if not plan.convert:
+                continue
+            match = TARGET_RE.fullmatch(plan.info.name)
+            if match is None:
+                raise ValueError(f"{plan.info.name}: internal target-name mismatch")
+            layer, role = int(match.group("layer")), match.group("role")
+            shape = tuple(int(d) for d in plan.info.shape)
+            if len(shape) != 3 or any(d <= 0 for d in shape):
+                raise ValueError(f"{plan.info.name}: routed expert tensors must have three positive dimensions")
+            roles = by_layer.setdefault(layer, {})
+            if role in roles:
+                raise ValueError(f"duplicate routed {role} tensor in layer {layer}")
+            roles[role] = shape
+
+    if not by_layer:
+        raise ValueError("no routed expert tensors were planned")
+    for layer in range(max(by_layer) + 1):
+        roles = by_layer.get(layer)
+        if roles is None or set(roles) != {"gate", "up", "down"}:
+            raise ValueError(f"layer {layer}: expected exactly one gate, up, and down expert tensor")
+        gate, up, down = roles["gate"], roles["up"], roles["down"]
+        if gate != up:
+            raise ValueError(f"layer {layer}: gate and up expert shapes differ: {gate} vs {up}")
+        expected_down = (gate[1], gate[0], gate[2])
+        if down != expected_down:
+            raise ValueError(f"layer {layer}: down expert shape is {down}, expected {expected_down}")
+        if any(shape[2] != gate[2] for shape in roles.values()):
+            raise ValueError(f"layer {layer}: gate/up/down expert counts differ")
+    expert_counts = {roles["gate"][2] for roles in by_layer.values()}
+    if len(expert_counts) != 1:
+        raise ValueError("routed expert count differs across layers")
 
 
 def _header_bytes(gguf: GGUFFile, plans: list[TensorPlan], alignment: int, seed: int) -> bytes:
@@ -326,10 +363,12 @@ def main(argv: list[str] | None = None) -> int:
     if report_path.resolve() in protected_paths:
         parser.error("the report path must differ from every input and output GGUF path")
 
-    imatrix = np.load(args.imatrix, allow_pickle=False) if args.imatrix else None
+    imatrix = None
     try:
-        if imatrix is not None and not isinstance(imatrix, np.lib.npyio.NpzFile):
-            raise ValueError("--imatrix must be an NPZ archive")
+        if args.imatrix:
+            imatrix = np.load(args.imatrix, allow_pickle=False)
+            if not isinstance(imatrix, np.lib.npyio.NpzFile):
+                raise ValueError("--imatrix must be an NPZ archive")
         shard_plans = []
         seen = set()
         total_targets = 0
@@ -347,6 +386,7 @@ def main(argv: list[str] | None = None) -> int:
             shard_plans.append((path, output_paths[len(shard_plans)], gguf, plans, alignment))
         if not total_targets:
             raise ValueError("no routed expert tensors matched blk.N.ffn_{gate,up,down}_exps.weight")
+        _validate_target_set(shard_plans)
         existing = [str(path) for path in output_paths if path.exists()]
         if existing and not args.overwrite:
             raise FileExistsError(f"output already exists (pass --overwrite to replace): {', '.join(existing)}")
@@ -380,7 +420,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"report: {report_path}")
         return 0
     finally:
-        if imatrix is not None:
+        if isinstance(imatrix, np.lib.npyio.NpzFile):
             imatrix.close()
 
 
