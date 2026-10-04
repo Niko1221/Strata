@@ -24,9 +24,9 @@ __global__ void poison_kernel(float* p, uint64_t n_floats) {
     if (i < n_floats) p[i] = __int_as_float(0x7fc00000);
 }
 
-#if defined(STRATA_USE_HIP)
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
 #if !defined(STRATA_HIP_ARCHS)
-#error "STRATA_HIP_ARCHS (the compiled HIP architectures) is set by cmake/hip_backend.cmake"
+#error "STRATA_HIP_ARCHS must list the compiled HIP architectures"
 #endif
 // "gfx1201:sramecc-:xnack-" -> "gfx1201"
 std::string base_arch(const char* gcn_arch_name) {
@@ -56,8 +56,14 @@ std::string arch_problem(const cudaDeviceProp& p, int ordinal) {
                "); compile it for this card (./setup.sh --backend hip, or -DCMAKE_HIP_ARCHITECTURES=" + arch +
                ", docs/AMD_HIP.md) or choose another GPU with HIP_VISIBLE_DEVICES";
     }
-    if (p.warpSize != 32) {
-        return card + " runs wave" + std::to_string(p.warpSize) + "; Strata's HIP kernels need wave32";
+#if defined(STRATA_HIP_GFX906)
+    constexpr int required_wave = 64;
+#else
+    constexpr int required_wave = 32;
+#endif
+    if (p.warpSize != required_wave) {
+        return card + " runs wave" + std::to_string(p.warpSize) + "; this Strata HIP engine needs wave" +
+               std::to_string(required_wave);
     }
     return "";
 }
@@ -66,7 +72,7 @@ std::string arch_problem(const cudaDeviceProp& p, int ordinal) {
 }  // namespace
 
 const char* compiled_gpu_archs() {
-#if defined(STRATA_USE_HIP)
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
     return STRATA_HIP_ARCHS;
 #else
     return "";
@@ -89,7 +95,7 @@ bool device_summary(int ordinal, std::string& name, std::string& detail) {
         return false;
     }
     char buf[160];
-#if defined(STRATA_USE_HIP)
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
     std::snprintf(buf, sizeof(buf), "arch %s, %.1f GiB, wave%d", base_arch(p.gcnArchName).c_str(),
                   (double) p.totalGlobalMem / (1024.0 * 1024 * 1024), p.warpSize);
 #else
@@ -193,7 +199,7 @@ hipError_t mem_get_info(size_t* free_bytes, size_t* total_bytes) {
 namespace strata::core {
 
 std::string gpu_arch_problem(int ordinal) {
-#if defined(STRATA_USE_HIP)
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
     int count = 0;
     if (cudaGetDeviceCount(&count) != cudaSuccess || ordinal < 0 || ordinal >= count) {
         cudaGetLastError();
@@ -264,14 +270,9 @@ DeviceInfo device_info(int ordinal) {
     // to a machine with an older card and would otherwise silently take whatever path the driver chose.  The HIP
     // backend checks the card against the architectures the binary was compiled for (and wave32).
 #if defined(STRATA_HIP_GFX906)
-    // AMD gfx906 (the STRATA_HIP_GFX906 compat build, not STRATA_USE_HIP): the build targets one gfx arch
-    // (CMAKE_HIP_ARCHITECTURES, wave64); a card of another arch fails at the first kernel launch with
-    // hipErrorInvalidDeviceFunction.  gcnArchName says which it is.
-    {
-        std::string arch(p.gcnArchName);
-        if (const size_t colon = arch.find(':'); colon != std::string::npos) arch.resize(colon);
-        d.arch = arch;
-    }
+    // The wave64 build must also refuse a card it was not compiled for before launching a kernel.
+    d.arch = base_arch(p.gcnArchName);
+    if (const std::string why = arch_problem(p, ordinal); !why.empty()) throw CudaError(why, -1);
     if (p.gcnArchName[0] != 0) d.name += std::string(" (") + p.gcnArchName + ")";
 #elif defined(STRATA_USE_HIP)
     d.arch = base_arch(p.gcnArchName);

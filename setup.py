@@ -1353,11 +1353,13 @@ ROCM_INDEXES = {"gfx1100": "https://rocm.nightlies.amd.com/v2/gfx110X-dgpu/",   
                 "gfx1200": "https://rocm.nightlies.amd.com/v2/gfx120X-all/",
                 "gfx1201": "https://rocm.nightlies.amd.com/v2/gfx120X-all/",
                 "gfx1030": "https://rocm.nightlies.amd.com/v2/gfx103X-all/",
-                "gfx1031": "https://rocm.nightlies.amd.com/v2/gfx103X-all/"}
+                "gfx1031": "https://rocm.nightlies.amd.com/v2/gfx103X-all/",
+                "gfx900": "https://rocm.nightlies.amd.com/v2/gfx900/"}
 ROCM_VERSION = os.environ.get("STRATA_ROCM_VERSION", "7.10.0a20251120")   # what Strata's HIP build was tested with
 ROCM_SYSTEM_MIN = (7, 0)       # an older system ROCm is passed over for the wheels (gfx1201 needs ROCm 6.4 or newer)
 AMD_ARCHS = ("gfx1100", "gfx1101", "gfx1200", "gfx1201", "gfx1030", "gfx1031")
 AMD_NAMES = {"gfx1100": "AMD Radeon RX 7900 series (gfx1100)",   # when sysfs has no product name
+             "gfx900": "AMD Vega 10 (gfx900, experimental)",
              "gfx1101": "AMD Radeon RX 7800 XT / 7700 XT (gfx1101)",
              "gfx1200": "AMD Radeon RX 9060 series (gfx1200)",
              "gfx1201": "AMD Radeon RX 9070 series / AI PRO R9700 (gfx1201)",
@@ -1370,6 +1372,17 @@ AMD_CARDS = ("the RX 7900 XT / XTX (gfx1100), RX 7800 XT / 7700 XT (gfx1101), RX
 
 def rocm_index(arch):
     return os.environ.get("STRATA_ROCM_INDEX") or ROCM_INDEXES[arch]
+
+
+def gfx900_opt_in():
+    """Linux-only experimental wave64 engine; never selected by an ordinary setup run."""
+    return not WIN and os.environ.get("STRATA_EXPERIMENTAL_GFX900") == "1"
+
+
+def rocm_version_for(archs):
+    # gfx900 packages were not published at the normal backend's pinned version.
+    return os.environ.get("STRATA_ROCM_VERSION") or (
+        "7.14.0a20260612" if "gfx900" in archs else ROCM_VERSION)
 
 
 def amd_gpus(sysfs="/sys"):
@@ -1411,6 +1424,10 @@ def amd_gpus(sysfs="/sys"):
 
 
 def amd_problem(g):
+    if g["arch"] == "gfx900" and not gfx900_opt_in():
+        return "experimental gfx900 needs Linux and STRATA_EXPERIMENTAL_GFX900=1 (docs/OLDER_GPUS.md)"
+    if g["arch"] == "gfx900" and gfx900_opt_in():
+        return g.get("cannot_run")
     if g["arch"] not in AMD_ARCHS:
         return f"not supported - Strata's AMD backend runs on {AMD_CARDS} only, this is {g['arch']}"
     if g.get("cannot_run"):                            # Windows: the installed engine's own check (--list-devices)
@@ -1773,6 +1790,7 @@ def rocm_root(archs):
     (root, library folders).  A system ROCm 7 with hipcc, hipBLAS and the HIP development files (#446), else AMD's
     TheRock wheels (ROCM_VERSION, from the card family's index) installed into .venv."""
     archs = [archs] if isinstance(archs, str) else list(archs)
+    version = rocm_version_for(archs)
     sysroot = Path(os.environ.get("ROCM_PATH") or "/opt/rocm")
     if (sysroot / "bin" / "hipcc").exists() and list((sysroot / "lib").glob("libhipblas.so*")):
         ver = rocm_version(sysroot)
@@ -1792,13 +1810,13 @@ def rocm_root(archs):
     index = indexes[0]
     stamp = Path(sys.prefix) / ".strata-rocm.json"
     have = json.loads(stamp.read_text()) if stamp.exists() else {}
-    if have.get("version") != ROCM_VERSION or have.get("index") != index:
-        say(f"  Installing ROCm {ROCM_VERSION} for AMD GPUs into .venv (AMD's TheRock wheels, ~10 GB, no sudo) ...")
+    if have.get("version") != version or have.get("index") != index:
+        say(f"  Installing ROCm {version} for AMD GPUs into .venv (AMD's TheRock wheels, ~10 GB, no sudo) ...")
         pip = [sys.executable, "-m", "pip", "install", "--quiet", "--disable-pip-version-check", "--index-url", index]
-        if have.get("version") == ROCM_VERSION:        # the same version for another GPU family: its own libraries
-            run(pip + ["--force-reinstall", "--no-deps", f"rocm=={ROCM_VERSION}"])
-        run(pip + [f"rocm[libraries,devel]=={ROCM_VERSION}"])
-        stamp.write_text(json.dumps({"version": ROCM_VERSION, "index": index}))
+        if have.get("version") == version:        # the same version for another GPU family: its own libraries
+            run(pip + ["--force-reinstall", "--no-deps", f"rocm=={version}"])
+        run(pip + [f"rocm[libraries,devel]=={version}"])
+        stamp.write_text(json.dumps({"version": version, "index": index}))
     sdk = Path(sys.executable).parent / "rocm-sdk"
     root = Path(out([str(sdk), "path", "--root"]).strip())
     if not (root / "llvm" / "bin" / "clang++").exists():
@@ -1859,10 +1877,16 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
     meta = json.loads(stamp.read_text()) if stamp.exists() else {}
     src, vsrc = source_hash(ENGINE_SOURCES), source_hash(VISION_SOURCES)
     archs = sorted(set(gpu.get("archs") or [gpu["arch"]]))
+    wave64 = "gfx900" in archs
+    if wave64 and (not gfx900_opt_in() or archs != ["gfx900"]):
+        fail("the experimental gfx900 engine requires Linux, STRATA_EXPERIMENTAL_GFX900=1 and only gfx900 cards",
+             "use one Vega 10 card: --gpu N (docs/OLDER_GPUS.md)")
     has_archs = set(archs) <= set(meta.get("archs", []))
     floor = cpu_floor(cpu_info()[1])                     # "" on an AVX2 CPU: the normal engine
     engine_ok = meta.get("backend") == "hip" and (eng / EXE).exists() and meta.get("src") == src and has_archs and \
         (meta.get("isa_floor") or "") == floor
+    if wave64:
+        engine_ok = engine_ok and (eng / "strata-device").exists()
     vision_ok = vision == "none" or ((eng / VEXE).exists() and meta.get("vision_src") == vsrc)
     if engine_ok and vision_ok:
         ok("engine already built for this PC")
@@ -1884,14 +1908,20 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
         if meta.get("backend") == "hip" and (eng / EXE).exists() and has_archs
         else f"  Compiling the Strata engine for your AMD GPU{'s' if len(archs) > 1 else ''} ({', '.join(archs)}; "
              "10-20 minutes, once) ...")
-    cmake_build(ROOT, ROOT / "build-hip", "strata",
-                ["-DSTRATA_ENABLE_HIP=ON", "-DSTRATA_ENABLE_CUDA=OFF", "-DSTRATA_BUILD_TESTS=OFF",
-                 "-DSTRATA_PREFILL_MMQ=ON", "-DCMAKE_HIP_ARCHITECTURES=" + ";".join(archs),
+    bdir = ROOT / ("build-gfx900" if wave64 else "build-hip")
+    backend_defs = (["-DSTRATA_HIP_GFX900=ON", "-DSTRATA_ENABLE_HIP=OFF", "-DSTRATA_ENABLE_CUDA=OFF"] if wave64 else
+                    ["-DSTRATA_ENABLE_HIP=ON", "-DSTRATA_ENABLE_CUDA=OFF", "-DSTRATA_PREFILL_MMQ=ON"])
+    cmake_build(ROOT, bdir, "strata",
+                [*backend_defs, "-DSTRATA_BUILD_TESTS=OFF", "-DCMAKE_HIP_ARCHITECTURES=" + ";".join(archs),
                  f"-DCMAKE_HIP_COMPILER={root / 'llvm' / 'bin' / 'clang++'}", f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={root}",
                  "-DCMAKE_PREFIX_PATH=" + ";".join([str(root), *libs]),
                  f"-DCMAKE_HIP_FLAGS=--rocm-path={root} --rocm-device-lib-path={bitcode}",
-                 f"-DSTRATA_GGML_DIR={llama}", *isa_floor_defs(floor, ROOT / "build-hip", meta)], None, "")
-    shutil.copy2(ROOT / "build-hip" / EXE, eng / EXE)
+                 f"-DSTRATA_GGML_DIR={llama}", *isa_floor_defs(floor, bdir, meta)], None, "")
+    shutil.copy2(bdir / EXE, eng / EXE)
+    if wave64:
+        # Reject an unusable ROCm runtime before the large model download.
+        shutil.copy2(bdir / "strata-device", eng / "strata-device")
+        run([str(eng / "strata-device"), "--selftest"])
     meta = {"source": "local-hip", "backend": "hip", "version": source_version(), "archs": archs, "vision": "none",
             "lib_dirs": dirs, "src": src, **({"isa_floor": floor} if floor else {})}
     if vision != "none":
@@ -3768,6 +3798,8 @@ def main() -> int:
         if multi:
             ok("GPUs: " + " + ".join(gpu_name(x) for x in chosen) + " together (the model's layers are split across them)")
         ok(f"GPU: {gpu['name']}, {gpu['vram_gb']:.1f} GB VRAM, {gpu['arch']} (AMD: docs/AMD_HIP.md)")
+        if gpu["arch"] == "gfx900":
+            warn("gfx900 is an EXPERIMENTAL Linux wave64 port (docs/OLDER_GPUS.md); images and mixed GPU builds are unvalidated")
     else:
         if not found:
             fail("no NVIDIA GPU found (nvidia-smi did not answer)",

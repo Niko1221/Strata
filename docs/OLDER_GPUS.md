@@ -94,7 +94,11 @@ A/B switches: `STRATA_BF16_TC=0|1`, `STRATA_PROMPT_ATTN_OLD=1` (the decode kerne
 
 ## AMD: building gfx906 and gfx1012
 
-Setup does not build these; build by hand and run `serve/server.py` with a config, as on any other card.
+- **gfx900** (Vega 10 / Instinct MI25 / Vega 56 / 64, Linux, experimental):
+  `STRATA_EXPERIMENTAL_GFX900=1 ./setup.sh --backend hip` selects the wave64
+  engine and gfx900 ROCm packages. [Setup and checks](AMD_GFX900.md).
+
+For gfx906 and gfx1012, setup does not build these; build by hand and run `serve/server.py` with a config, as on any other card.
 
 - **gfx906** (MI50 / MI60 / Radeon VII, wave64): a separate opt-in build, `-DSTRATA_HIP_GFX906=ON
   -DCMAKE_HIP_ARCHITECTURES=gfx906` (not `STRATA_ENABLE_HIP`). Current ROCm no longer ships gfx906 libraries; the

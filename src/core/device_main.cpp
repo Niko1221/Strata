@@ -68,6 +68,9 @@ int main(int argc, char** argv) {
 #if defined(STRATA_USE_HIP)
         std::printf("  HIP arch            %s wave32 (compiled for %s)\n", d.arch.c_str(),
                     strata::core::compiled_gpu_archs());
+#elif defined(STRATA_HIP_GFX906)
+        std::printf("  HIP arch            %s wave64 (compiled for %s)\n", d.arch.c_str(),
+                    strata::core::compiled_gpu_archs());
 #else
         std::printf("  compute capability  %d.%d   (sm_%d%d)\n", d.cc_major, d.cc_minor, d.cc_major, d.cc_minor);
 #endif
