@@ -157,6 +157,7 @@ public:
     static constexpr int kMaxSplitMulti = 96;
     /// run_split_multi's phases, accumulated ms: gate/up rows, the intermediate quantization, down rows.
     double ms_multi_gu = 0, ms_multi_q = 0, ms_multi_down = 0;
+    double ms_multi_pipeline = 0;
     int64_t multi_bytes = 0;
 
     /// Total `_mm_pause` iterations spent waiting, over all workers, is no longer counted - see the note on the
@@ -193,6 +194,8 @@ private:
     void worker(int id);
     void drain(int id, ExpertScratch& scratch, uint32_t epoch);
     void run_phase(int mode, int n_tasks);
+    void native_rows(int expert, int r0, int r1, bool gate);
+    void quant_native(int expert);
     /// Claim the next job of batch `epoch`, or -1 (that batch is exhausted, or it is not the current one).
     int claim(uint32_t epoch);
     /// Publish the batch whose description the caller has just written: reset `done`, then `head`, then the epoch.
@@ -259,12 +262,15 @@ private:
     int64_t mrows_ = 0;     // rows of the current multi phase across all its experts (n * FF, then n * H)
     int mtasks_ = 1;        // equal row ranges the phase is cut into
     struct SplitBufMulti {
+        alignas(64) std::atomic<int> gu_remaining{0};
+        alignas(64) std::atomic<bool> down_ready{false};
         alignas(64) float ff[MAXT][FF];
         ActQ a2[MAXT];
         alignas(64) uint8_t hq[MAXT][kNativeHBytes];   // plan v0.3 P6: native down activations
     };
     const NativeFmt* nfmt_ = nullptr;
     std::vector<SplitBufMulti> split_multi_;
+    bool native_pipeline_ = false;
     PoolAffinity affinity_ = PoolAffinity::All;
     CpuTopology topo_;
 };
