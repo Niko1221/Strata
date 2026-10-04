@@ -213,6 +213,12 @@ edit("src/program/generate.cpp", lambda s: s.replace(
     "gs ? gs->adapt_stream\n                           : adapt_stream->memcpy(",
     "(gs ? gs->adapt_stream : adapt_stream)->memcpy("))
 
+# 9c. conversation_snapshot_test: dpct migrated cudaFreeHost(p) on sycl::malloc_host memory to libc free(p) - the
+#     test aborted with "munmap_chunk(): invalid pointer". USM host memory goes back through sycl::free.
+edit("src/core/conversation_snapshot_test.cpp", lambda s: s.replace(
+    "for (void *p : host) DPCT_CHECK_ERROR(free(p));",
+    "for (void *p : host) DPCT_CHECK_ERROR(sycl::free(p, dpct::get_in_order_queue()));   // SYCL port: dpct wrote free(p) for cudaFreeHost"))
+
 # 10. %globaltimer: there is no device-side wall clock in SPIR-V; the verify-window stage profiler reads zeros.
 edit("src/kernels/cuda/verify_kernels.dp.cpp", lambda s: s.replace(
     'asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));',

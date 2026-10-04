@@ -122,7 +122,7 @@ struct Fixture {
     ~Fixture() {
         for (void *p : device)
             DPCT_CHECK_ERROR(sycl::free(p, dpct::get_in_order_queue()));
-        for (void *p : host) DPCT_CHECK_ERROR(free(p));
+        for (void *p : host) DPCT_CHECK_ERROR(sycl::free(p, dpct::get_in_order_queue()));   // SYCL port: dpct wrote free(p) for cudaFreeHost
     }
 };
 bool equal(const ConversationKv& a,const ConversationKv& b) {
