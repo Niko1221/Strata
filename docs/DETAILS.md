@@ -405,6 +405,31 @@ server, three server options (all off by default; also as keys in `strata-<model
 | `--min-free-vram-mib 11000` | `"min_free_vram_mib": 11000` | load an unloaded model only when that much VRAM is free (it waits up to 15 s for memory being given back), else answer **503** "the GPU is in use by another program" instead of starting into what a game left (with several GPUs it checks the first one) |
 | `--before-load "cmd"` | `"before_load": "cmd"` or `["cmd", "arg"]` | a command run before the model is loaded again, e.g. one that unloads another server's model |
 
+**Adaptive memory budgets (opt-in, one GPU).** Add a top-level `"memory_policy": {"enabled": true}` to
+`strata-<model>.json`. The engine's `"args"` must already include `--resident-budget-gib N` and
+`--vram-reserve-mib N`: their original values remain the RAM expert-budget cap and the VRAM reserve floor.
+The policy adjusts those budgets using fresh RAM/VRAM readings; it does not change the model, quantization or
+context. Defaults are `ram_target_percent: 95`, `vram_target_percent: 99`, `min_ram_headroom_gib: 5.5` and
+`overhead_ram_gib: 2`. The overhead is a startup allowance while the model is unloaded; once loaded, decisions
+use measured RAM usage and headroom without subtracting those already-counted buffers again. The percentage
+targets are ceilings, not a promise to fill memory: the reserve floor and RAM headroom still apply.
+
+A smaller budget needs sustained pressure for 60 seconds (`pressure_seconds`); a larger one needs stable free
+space for 120 seconds (`growth_seconds`). Growth has a 600-second cooldown (`cooldown_seconds`) after any
+allocation; sustained pressure can shrink sooner after its full debounce window. A pending
+change reloads the engine just before the next request, with no active work interrupted. This is a load-boundary
+adjustment, not live resizing of native caches. Server status reports the current budget, pending change and
+reason. Normal idle unload is separate: `"idle_unload_s": 300` releases the model after five minutes without
+requests even with no memory pressure; the memory policy itself does not unload it while idle.
+
+`GET /v1/status` includes the policy state. `POST /v1/memory/refresh` with a JSON object requests an
+observation only; any resulting change is deferred until a safe request boundary. The refresh endpoint retains
+Strata's API-key and own-page checks. Missing readings or samples older than `max_sample_age_seconds`
+(default 5 seconds, configurable from 1 to 60) freeze decisions. Targets and delays can be configured within safety
+bounds. The minimums are 5.5 GiB RAM headroom, 2 GiB startup allowance, 60 seconds of pressure, 120 seconds of
+recovered headroom and 600 seconds between growth allocations. The policy is disabled
+unless `enabled` is exactly `true`; multi-GPU engine arguments are rejected when it is enabled.
+
 `POST /unload` unloads it now (`409` while a request is running) and `POST /load` loads it ahead of a request (both
 with `Content-Type: application/json`, e.g. `curl -X POST -H "Content-Type: application/json" localhost:8080/unload`);
 `/health` says `"loaded"`, `/v1/models` lists it as `unloaded` (like llama.cpp's router), `/props` sets

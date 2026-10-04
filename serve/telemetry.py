@@ -309,8 +309,47 @@ class Telemetry:
         dt = t - prev[0]
         return (c.read_bytes - prev[1]) / dt / 2**20, (c.write_bytes - prev[2]) / dt / 2**20
 
+    def capacity(self):
+        """Fresh physical RAM/VRAM only; no deltas, history, cached snapshot, or extra callback.
+
+        A multi-card total is available only when every configured reader returns that field:
+        a partial sum would understate capacity usage during model-load admission.
+        """
+        s = {"ram_used": None, "ram_total": None, "gpu_mem_used": None, "gpu_mem_total": None}
+        try:
+            if self.ps:
+                vm = self.ps.virtual_memory()
+                s["ram_used"], s["ram_total"] = vm.total - vm.available, vm.total
+            else:
+                s["ram_used"], s["ram_total"] = self.fallback.ram()
+        except Exception:  # noqa: BLE001 - a failed sensor must not stop admission sampling
+            try:
+                s["ram_used"], s["ram_total"] = self.fallback.ram()
+            except Exception:  # noqa: BLE001
+                pass
+        reads = []
+        for index, reader in self.gpus:
+            reading = {}
+            try:
+                if reader.ok():
+                    value = reader.read()
+                    if isinstance(value, dict):
+                        reading = value
+            except Exception:  # noqa: BLE001
+                pass
+            reads.append({"index": index, "mem_used": reading.get("mem_used"),
+                          "mem_total": reading.get("mem_total")})
+        if len(reads) > 1:
+            s["gpus"] = reads
+        for field in ("mem_used", "mem_total"):
+            values = [reading[field] for reading in reads]
+            if values and all(value is not None for value in values):
+                s["gpu_" + field] = sum(values)
+        s["sampled_at"] = time.time()
+        return s
+
     def sample(self):
-        s = {}
+        s = {"sampled_at": time.time()}        # capacity policy rejects old or unavailable hardware readings
         if self.gpu.ok():
             reads = [(i, g.read()) for i, g in self.gpus]
             g = dict(reads[0][1])

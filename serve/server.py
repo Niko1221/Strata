@@ -54,6 +54,7 @@ from serve.frontend import (ChatTemplate, Event, OutputParser, anthropic_to_mess
                             images_of, openai_to_messages)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve.winjob import contain  # noqa: E402
+from serve.memory_policy import MemoryPolicy  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
 
 IM_END = "<|im_end|>"
@@ -986,6 +987,11 @@ class Service:
         # only start it again when this much VRAM is free, and run this command first (e.g. to unload another
         # server's model); the next request after an unload starts the engine again
         self.idle_unload_s = 0
+        self.memory_policy = None                     # opt-in; this server is the sole capacity owner
+        self.memory_lock = threading.RLock()
+        self.memory_pending = None
+        self.memory_last_reason = None
+        self.memory_loading = False
         self.min_free_vram_mib = 0
         self.before_load = None
         self.reasoning_budget_tokens = 0                 # #123: the config's default thinking budget (0: none)
@@ -1057,6 +1063,14 @@ class Service:
     def ensure_loaded(self):
         """Start the engine if it is not running (unloaded, or it died - issue #27), after the before_load hook and
         the free-VRAM check.  The caller holds self.fifo."""
+        try:
+            self._apply_memory_plan()
+            self._ensure_loaded_native()
+        finally:
+            with self.memory_lock:
+                self.memory_loading = False
+
+    def _ensure_loaded_native(self):
         if self.loaded() and not self._vision_down():
             return
         if self.before_load:
@@ -1087,7 +1101,98 @@ class Service:
             print(f"[strata] the engine had stopped (exit code {code}); starting it again "
                   "(a minute or two) ...", flush=True)
         self.engine.restart()
+        if self.memory_policy is not None and self.memory_pending is not None:
+            with self.memory_lock:
+                self.memory_policy.applied(self.memory_pending, time.time())
+                self.memory_last_reason = self.memory_pending["reason"]
+                self.memory_pending = None
         print("[strata] the engine is running again", flush=True)
+
+    def configure_memory(self, config):
+        """Reuse native allocation at load boundaries; never change model/context/precision or active work."""
+        if config is not None and not isinstance(config, dict):
+            raise ValueError("memory_policy must be a JSON object")
+        if not config or config.get("enabled") is not True:
+            return
+        spawn = getattr(self.engine, "spawn", None)
+        if not spawn or len(spawn) != 5:
+            raise ValueError("memory_policy needs the Strata engine")
+        args = spawn[1]
+        if "--resident-budget-gib" not in args or "--vram-reserve-mib" not in args:
+            raise ValueError("memory_policy needs explicit resident-budget-gib and vram-reserve-mib caps")
+        if any(flag in args for flag in ("--devices", "--peer-device", "--layer-split")):
+            raise ValueError("memory_policy currently supports one GPU")
+        self.memory_policy = MemoryPolicy(config,
+            resident_cap_gib=float(args[args.index("--resident-budget-gib") + 1]),
+            vram_reserve_mib=int(args[args.index("--vram-reserve-mib") + 1]))
+        if self.loaded():
+            self.memory_policy.applied({"resident_budget_gib": self.memory_policy.cap,
+                                       "vram_reserve_mib": self.memory_policy.reserve_floor,
+                                       "reason": "initial_budget"}, time.time())
+
+    def memory_snapshot(self, fresh=False):
+        telemetry = getattr(self, "telemetry", None)
+        if fresh and telemetry is not None:
+            return telemetry.capacity()
+        return telemetry.snapshot().get("now", {}) if telemetry is not None else {}
+
+    def observe_memory(self):
+        if self.memory_policy is None:
+            return
+        with self.memory_lock:
+            if self.memory_loading:
+                return
+            snapshot, now = self.memory_snapshot(), time.time()
+            with self.status_lock:
+                idle = not self.status.get("busy") and not self.status.get("queued")
+            if idle and self.loaded():
+                self.memory_policy.record_loaded(snapshot, now)
+            plan = self.memory_policy.observe(snapshot, self.loaded(), getattr(self.engine, "info", {}), now)
+            self.memory_pending = plan
+
+    def _apply_memory_plan(self):
+        """Caller holds the FIFO. A pending budget takes effect just before a request, never while idle polling."""
+        if self.memory_policy is None:
+            return
+        with self.memory_lock:
+            loaded = self.loaded()
+            with self.status_lock:
+                if self.status.get("busy") or self.status.get("queued"):
+                    return
+            plan = self.memory_pending if loaded else self.memory_policy.plan_for_load(
+                self.memory_snapshot(fresh=True), time.time())
+            if plan is None:
+                return
+            self.memory_loading = True
+            if loaded:
+                print(f"[strata] memory replan at request boundary: {plan['reason']}", flush=True)
+                self.engine.unload()
+            exe, args, cwd, log, env = self.engine.spawn
+            args = list(args)
+            args[args.index("--resident-budget-gib") + 1] = str(plan["resident_budget_gib"])
+            args[args.index("--vram-reserve-mib") + 1] = str(plan["vram_reserve_mib"])
+            self.engine.spawn = (exe, args, cwd, log, env)
+            self.memory_pending = plan
+
+    def memory_status(self):
+        if self.memory_policy is None:
+            return {"enabled": False}
+        with self.memory_lock:
+            return {**self.memory_policy.status(), "enabled": True,
+                    "pending": self.memory_pending is not None, "last_reason": self.memory_last_reason,
+                    "application": "next request boundary", "idle_unload_s": self.idle_unload_s}
+
+    def start_memory_policy(self):
+        if self.memory_policy is None:
+            return
+        def loop():
+            while True:
+                try:
+                    self.observe_memory()
+                except (ValueError, TypeError, KeyError) as e:
+                    print(f"[strata] memory telemetry unavailable: {e}", flush=True)
+                time.sleep(2)
+        threading.Thread(target=loop, daemon=True).start()
 
     def _say_died(self, e: Exception) -> None:
         """The server window's line for an engine that died (or was ended, #481) in the middle of a request."""
@@ -1100,7 +1205,7 @@ class Service:
         """POST /load and every generation request: start the engine now if it is unloaded (raises GpuBusy)."""
         # a request is on its way: the idle thread must not unload between this and the request's own start
         self.last_request_at = time.time()
-        if self.loaded() and not self._vision_down():
+        if self.loaded() and not self._vision_down() and self.memory_pending is None:
             return
         trace = getattr(self.request_trace, "record", None)
         waiting = time.perf_counter()
@@ -1313,6 +1418,7 @@ class Service:
         images = self.vision is not None
         return {
             "service": "strata", "model": self.model,
+            "memory_policy": self.memory_status(),
             "loaded": self.loaded(), "auto_load": hasattr(self.engine, "restart"),
             "structured_output": {"formats": ["json_object", "json_schema"], "method": "prompt_and_validate",
                                   "constrained_decoding": False, "stream_buffered": True},
@@ -2272,6 +2378,16 @@ def make_handler(svc: Service):
                         result = "loaded"
                     self._json(200, {"status": result, **svc.v1_status()})
                     return
+                if path == "/v1/memory/refresh":
+                    if not self._own_page("the model memory policy can be refreshed"):
+                        return
+                    if req.get("model") not in (None, svc.model):
+                        self._json(404, {"error": {"message": "model not found"}})
+                        return
+                    # Observation only: never unload or restart from this HTTP control endpoint.
+                    svc.observe_memory()
+                    self._json(200, {"status": "deferred", "memory_policy": svc.memory_status()})
+                    return
                 if path in ("/v1/chat/completions", "/v1/messages"):
                     self.record = svc.begin_request(path, req)
                 if path == "/v1/chat/completions":
@@ -2973,6 +3089,10 @@ def main() -> int:
     svc.min_free_vram_mib = a.min_free_vram_mib if a.min_free_vram_mib is not None else \
         int(cfg.get("min_free_vram_mib") or 0)
     svc.before_load = a.before_load or cfg.get("before_load") or None
+    try:
+        svc.configure_memory(cfg.get("memory_policy"))
+    except (ValueError, TypeError) as e:
+        raise SystemExit(f"[strata] config {e}")
     mode = str(cfg.get("anthropic_thinking") or "model")   # #278: "on_request" = only when the request asks
     if mode not in ("model", "on_request"):
         raise SystemExit(f"[strata] config anthropic_thinking must be \"model\" or \"on_request\", not {mode!r}")
@@ -3007,6 +3127,7 @@ def main() -> int:
         atexit.register(hub.close)                      # the servers Strata started end with it
     httpd = serve(svc, host=a.host, port=a.port)
     svc.start_idle_unload()
+    svc.start_memory_policy()
     here = "127.0.0.1" if a.host in ("0.0.0.0", "", "::") else a.host
     print(f"ready: http://{here}:{a.port}/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, "
           f"context {engine.max_context} tokens{', images on' if vision else ''}"
