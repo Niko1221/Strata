@@ -35,6 +35,25 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-bubble code.inline { font: 400 .9em var(--st-font-mono); background: var(--st-surface-2); border: 1px solid var(--st-line-soft);
                          border-radius: 6px; padding: 1px 5px; }
 .st-bubble .st-code { margin: var(--st-s-3) 0; }
+.st-bubble .st-code pre { max-block-size: 500px; overscroll-behavior: contain; }
+.st-code__actions { display: flex; align-items: center; gap: var(--st-s-2); }
+.st-code__actions [data-code-preview] { height: 28px; padding: 0 10px; color: inherit; }
+.st-code__actions [data-code-preview]:hover { background: var(--st-code-bg); color: var(--st-code-ink); }
+
+/* A generated page stays separate from the chat, with enough room for desktop and mobile layouts. */
+.html-preview { width: 90%; height: calc(100dvh - 48px); max-height: 900px;
+                max-width: none; padding: 0; border: 1px solid var(--st-line); border-radius: var(--st-r-lg);
+                background: var(--st-surface); color: var(--st-ink); box-shadow: var(--st-sh-pop); }
+.html-preview[open] { display: flex; flex-direction: column; }
+.html-preview::backdrop { background: rgba(15, 23, 42, .45); }
+.html-preview__head { display: flex; align-items: center; gap: var(--st-s-2); padding: var(--st-s-3) var(--st-s-4);
+                      border-bottom: 1px solid var(--st-line); }
+.html-preview__head h2 { flex: 1; margin: 0; font-size: var(--st-fs-base); font-weight: var(--st-fw-bold); }
+.html-preview__head form { margin: 0; }
+.html-preview__content { flex: 1; min-height: 0; background: white; }
+.html-preview__content iframe { display: block; width: 100%; height: 100%; border: 0; }
+.html-preview__note { flex: none; margin: 0; padding: var(--st-s-2) var(--st-s-4); font-size: var(--st-fs-xs);
+                      color: var(--st-ink-muted); border-top: 1px solid var(--st-line); }
 .st-bubble blockquote { margin: 0 0 var(--st-s-3); padding-left: var(--st-s-3); border-left: 3px solid var(--st-line);
                         color: var(--st-ink-muted); }
 .st-bubble hr { border: 0; border-top: 1px solid var(--st-line); margin: var(--st-s-4) 0; }

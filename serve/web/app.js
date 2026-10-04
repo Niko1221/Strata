@@ -405,8 +405,12 @@ function inline(s) {
   return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code class="inline">${esc(codes[+i])}</code>`);
 }
 function codeBlock(lang, code) {
+  const html = /^(html|htm|html5)$/i.test(lang.split(/\s+/)[0]) ||
+    (!lang && /^\s*(?:<!doctype\s+html\b|<html\b)/i.test(code));
   return `<div class="st-code"><div class="st-code__head"><span>${esc(lang || "code")}</span>` +
-    `<button class="st-btn st-btn--icon" data-code-copy aria-label="Copy code">${icon("copy")}</button></div>` +
+    `<div class="st-code__actions">` +
+    (html ? `<button type="button" class="st-btn" data-code-preview aria-haspopup="dialog" aria-controls="html-preview">Preview</button>` : "") +
+    `<button class="st-btn st-btn--icon" data-code-copy aria-label="Copy code">${icon("copy")}</button></div></div>` +
     `<pre><code>${esc(code)}</code></pre></div>`;
 }
 function blocks(text) {
@@ -459,6 +463,46 @@ function markdown(text) {
   }
   return html;
 }
+
+// ------------------------------------------------------------------ HTML preview
+// Only an explicit click runs generated code. The frame has an opaque origin: no parent DOM, chat storage or API key.
+// Keep the policy before the generated markup; a later meta policy can only make these restrictions tighter.
+const HTML_PREVIEW_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; " +
+  "img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; " +
+  "frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
+// Key events inside an iframe do not reach the dialog. Relay Escape without giving the frame access to the parent.
+const HTML_PREVIEW_KEYS = `<script>document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") { event.preventDefault(); parent.postMessage("strata-html-preview-close", "*"); }
+}, true);<\/script>`;
+let previewCode = "", previewOpener = null;
+function loadHtmlPreview() {
+  const frame = document.createElement("iframe");
+  frame.title = "Generated HTML preview";
+  frame.setAttribute("sandbox", "allow-scripts");  // never add allow-same-origin alongside allow-scripts
+  frame.referrerPolicy = "no-referrer";
+  frame.srcdoc = `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${HTML_PREVIEW_CSP}">` +
+    `<meta name="viewport" content="width=device-width, initial-scale=1">${HTML_PREVIEW_KEYS}\n${previewCode}`;
+  $("html-preview-content").replaceChildren(frame);
+}
+function openHtmlPreview(button) {
+  previewCode = button.closest(".st-code").querySelector("pre").textContent;
+  previewOpener = button;
+  loadHtmlPreview();                          // a snapshot: streaming the answer does not restart its scripts
+  $("html-preview").showModal();
+}
+$("html-preview-reload").onclick = loadHtmlPreview;
+window.addEventListener("message", (event) => {
+  const frame = $("html-preview-content").querySelector("iframe");
+  if (frame && event.source === frame.contentWindow && event.data === "strata-html-preview-close" && $("html-preview").open)
+    $("html-preview").close();
+});
+$("html-preview").addEventListener("close", () => {
+  $("html-preview-content").replaceChildren(); // stop scripts, timers and media when the preview closes
+  previewCode = "";
+  if (previewOpener && previewOpener.isConnected) previewOpener.focus();
+  else $("input").focus();                    // the answer may have been rebuilt while streaming
+  previewOpener = null;
+});
 
 // ------------------------------------------------------------------ Chat
 const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true};
@@ -602,6 +646,8 @@ function nearBottom() { const s = $("chat-scroll"); return s.scrollHeight - s.sc
 function scrollDown(force) { const s = $("chat-scroll"); if (force || nearBottom()) s.scrollTop = s.scrollHeight; }
 
 $("chat").addEventListener("click", (e) => {
+  const preview = e.target.closest("[data-code-preview]");
+  if (preview) { openHtmlPreview(preview); return; }
   const cc = e.target.closest("[data-code-copy]");
   if (cc) { copyText(cc.closest(".st-code").querySelector("pre").textContent, cc); return; }
   const mc = e.target.closest("[data-msg-copy]");

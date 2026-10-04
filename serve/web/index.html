@@ -217,6 +217,16 @@
   </div>
 </aside>
 <div class="scrim" id="scrim" hidden></div>
+<dialog class="html-preview" id="html-preview" aria-labelledby="html-preview-title" aria-describedby="html-preview-note">
+  <div class="html-preview__head">
+    <h2 id="html-preview-title">HTML preview</h2>
+    <button type="button" class="st-btn st-btn--secondary" id="html-preview-reload">
+      <svg class="st-icon st-icon--sm" aria-hidden="true"><use href="web/sprite.svg#i-refresh"/></svg>Reload</button>
+    <form method="dialog"><button class="st-btn st-btn--secondary" autofocus>Close</button></form>
+  </div>
+  <div class="html-preview__content" id="html-preview-content"></div>
+  <p class="html-preview__note" id="html-preview-note">Inline HTML, CSS and JavaScript. External resources are blocked.</p>
+</dialog>
 <div class="st-toasts" id="toasts" aria-live="polite"></div>
 <script src="web/app.js"></script>
 </body>

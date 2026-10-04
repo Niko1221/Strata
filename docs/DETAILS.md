@@ -306,8 +306,12 @@ Windows, `build-essential` + CUDA on Ubuntu) and compiles the engine for your GP
 Then it downloads and prepares everything (the model is 66-76 GB, so the first start takes a while; an interrupted
 download continues where it stopped) and **starts the model**: your browser opens `http://127.0.0.1:8080`, the Strata
 app. It has three tabs:
-- **Chat:** streaming answers, the model's thinking (folded away once it answers), code with a copy button, pictures when
-  images are on, and sampling and thinking-level settings. Chats stay in your browser.
+- **Chat:** streaming answers, the model's thinking (folded away once it answers), code with a copy button and a
+  scrollable height capped at 500 pixels, pictures when images are on, and sampling and thinking-level settings.
+  HTML code blocks also have a **Preview** button: it opens the page in a centered view with 5% margins on each side, with
+  inline CSS and JavaScript. **Reload** starts that preview again; **Close** or Escape
+  stops it. External resources are blocked, and the preview cannot read the chat or its saved API key. Chats stay in
+  your browser.
 - **Monitor:** what the model is doing (reading the prompt, with progress, or writing, at how many tokens/s); GPU load,
   VRAM, temperature, power and PCIe traffic; CPU, RAM and disk; the context in use; the last requests.
 - **About:** the model and engine settings, and the addresses to connect other apps.
