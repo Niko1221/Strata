@@ -4413,11 +4413,24 @@ int main(int argc, char** argv) {
     };
     // `lend_bytes` went with the single-cache serve loan: a participant's loan is priced by `part_bytes` from its
     // OWN cache, and the only other user of the old helper was the serve path's own relayout.
+    // A segment of `tokens` reads in as few chunks as `max_chunk` allows, of equal size: n = ceil(tokens / max_chunk)
+    // chunks of ceil(tokens / n), rounded up to 256.  A chunk of stream_all_min_tokens() or more streams every expert
+    // the GPU does not hold (~1.7 s each on PCIe 3.0, whatever its length), so a long prompt's cost is its number of
+    // such chunks: a bigger chunk pays only where it saves one, and equal chunks borrow no more slots than that count
+    // needs (RTX 5070 Ti, IQ3_XXS: 20,036 tokens in 3 x 6,912 read 2.2% faster than in 2 x 8,192 + 3,652).  Full
+    // chunks and a short last one stay when that last one is below stream_all_min_tokens(): it moves only the experts
+    // its own tokens route to, where equal chunks would all stream every expert (16,402 tokens in 3 equal chunks read
+    // 22% slower than in 2 x 8,192 + 18).
     auto request_chunk = [](int64_t tokens, int64_t max_chunk) -> int64_t {
         if (tokens <= 0 || max_chunk <= 0) return 0;
-        const int64_t rounded = tokens > std::numeric_limits<int64_t>::max() - 255
-                                    ? tokens
-                                    : ((tokens + 255) / 256) * 256;
+        const int64_t n = tokens / max_chunk + (tokens % max_chunk != 0);
+        const int64_t last = tokens - (n - 1) * max_chunk;
+        const int64_t per = n > 1 && last < strata::prefill::Prefill::stream_all_min_tokens()
+                                ? max_chunk
+                                : tokens / n + (tokens % n != 0);
+        const int64_t rounded = per > std::numeric_limits<int64_t>::max() - 255
+                                    ? per
+                                    : ((per + 255) / 256) * 256;
         return std::min(max_chunk, rounded);
     };
     // The prompt path's chunk and the slots it borrows for its buffers: the requested chunk halved until it fits,

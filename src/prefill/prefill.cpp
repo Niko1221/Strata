@@ -1354,6 +1354,7 @@ void Prefill::set_ring_budget(int slots, int64_t small_max) {
     g_ring_small_max = small_max > 0 ? small_max : 0;
 }
 double Prefill::pinned_share() { return g_pinned_share; }
+int64_t Prefill::stream_all_min_tokens() { return stream_all_min(); }
 
 uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk) {
     // the same allocation sequence as `init`, counted
