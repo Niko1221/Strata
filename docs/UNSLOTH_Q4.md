@@ -140,11 +140,17 @@ model's (`data/expert-profile.bin`); it ranks the same 48 x 512 experts and deci
 budget take first.
 
 **Choosing the RAM budget N:** your RAM minus 20-24 GB (the OS, the engine itself, the 126 MB router copy, and room for
-the OS file cache that serves the rest). On 64 GB, 40. The engine clamps a budget larger than the RAM it finds free
-(minus 4 GB and a 256 MiB margin) and says so; before #403's fix such a clamped budget could then fail the start. Everything above N comes from the SSD for every token, so N is the setting that matters
+the OS file cache that serves the rest). On 64 GB, 40. The engine checks available RAM and, on Windows, available
+commit capacity. If N exceeds the smaller value minus 4 GiB headroom, it reduces N to that amount minus a 256 MiB
+margin and reports which limit applies. Before #403's fix a clamped budget could then fail the safety check.
+Everything above N comes from the SSD for every token, so N is the setting that matters
 most; a bigger budget was faster in every measurement (24 / 32 / 40 GiB). When the driver page-locks the whole budget
 (24 GiB did on this PC, 32 and 40 did not), the GPU also computes a share of the misses over PCIe, as in the resident
-low-RAM mode; `STRATA_RESIDENT_PIN=0` keeps the budget locked only (the CPU then computes every miss).
+low-RAM mode; `STRATA_RESIDENT_PIN=0` uses ordinary pageable memory (the CPU then computes every miss).
+
+On Windows, the allocation log reports available physical RAM and commit capacity before allocation and after a
+failure. Free RAM alone does not guarantee that Windows can commit the requested memory. If the pageable fallback
+also fails, the warning preserves both the GPU allocation or mapping error and the `malloc` error.
 
 **Context:** measured at 4K. The KV cache takes VRAM from the expert cache, so a longer context makes decoding slower;
 8K is a reasonable start on 12 GB. `--kv int8` halves the KV cache's VRAM.

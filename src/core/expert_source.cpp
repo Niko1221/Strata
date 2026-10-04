@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -71,6 +72,14 @@ bool cgroup_available_bytes(uint64_t limit, const CgroupMemoryStat& stat, uint64
     const uint64_t usage_after_reclaim = stat.current - reclaimable;
     bytes = usage_after_reclaim < limit ? limit - usage_after_reclaim : 0;
     return true;
+}
+
+uint64_t clamp_resident_budget(uint64_t requested, uint64_t physical, uint64_t commit, uint64_t headroom) {
+    const uint64_t available = std::min(physical, commit);
+    const uint64_t room = available > headroom ? available - headroom : 0;
+    if (requested <= room) return requested;
+    const uint64_t margin = 256ull << 20;
+    return room > margin ? room - margin : 0;
 }
 
 bool make_cache_complement_plan(
@@ -231,6 +240,7 @@ bool host_available_memory(HostMemory& m, const std::string& meminfo, const std:
     status.dwLength = sizeof(status);
     if (!GlobalMemoryStatusEx(&status)) return false;
     m.available = (uint64_t) status.ullAvailPhys;
+    m.commit = (uint64_t) status.ullAvailPageFile;
     return m.available > 0;
 #elif defined(__linux__)
     // MemAvailable includes reclaimable page cache, unlike _SC_AVPHYS_PAGES.
@@ -324,11 +334,31 @@ bool host_available_memory(HostMemory& m, const std::string& meminfo, const std:
 
 namespace {
 
-bool available_memory_bytes(uint64_t& bytes) {
+bool available_memory_bytes(uint64_t& bytes, uint64_t* commit = nullptr) {
     detail::HostMemory m;
     if (!detail::host_available_memory(m)) return false;
     bytes = m.available;
+    if (commit != nullptr) *commit = m.commit;
     return bytes > 0;
+}
+
+void log_complement_memory(const char* stage, uint64_t requested) {
+#if defined(_WIN32)
+    MEMORYSTATUSEX status{};
+    status.dwLength = sizeof(status);
+    if (!GlobalMemoryStatusEx(&status)) {
+        std::fprintf(stderr, "FileExpertSource: %s: GlobalMemoryStatusEx failed (error %lu)\n", stage, GetLastError());
+        return;
+    }
+    std::fprintf(stderr, "FileExpertSource: %s: requested %.2f GiB, available RAM %.2f GiB, available commit %.2f GiB "
+                         "(limit %.2f GiB), available virtual address space %.2f GiB\n",
+                 stage, (double) requested / 1073741824.0, (double) status.ullAvailPhys / 1073741824.0,
+                 (double) status.ullAvailPageFile / 1073741824.0, (double) status.ullTotalPageFile / 1073741824.0,
+                 (double) status.ullAvailVirtual / 1073741824.0);
+#else
+    (void) stage;
+    (void) requested;
+#endif
 }
 
 }  // namespace
@@ -1382,32 +1412,33 @@ bool FileExpertSource::pin_cache_complement(
     }
 #endif
     const bool what_fits = budget_bytes == kResidentWhatFits;   // #467: the soft mode's second try
-    uint64_t budget_physical = 0;   // #403: the RAM reading a budget was sized from (0: no budget)
+    uint64_t budget_physical = 0;   // #403: reuse the memory snapshot a budget was sized from
+    uint64_t budget_commit = std::numeric_limits<uint64_t>::max();
     if (budget_bytes > 0) {
         // CS-T: a RAM budget.  The complement's experts in `rank` order (the expert profile, hottest first) while
-        // they fit, the rest left on the mapped files; clamped to what the RAM has room for.
+        // they fit, the rest left on the mapped files; Windows commit capacity also limits the allocation (#730).
         uint64_t physical = 0;
-        if (!available_memory_bytes(physical)) {
-            err = "FileExpertSource: cannot determine available RAM for --resident-budget-gib";
+        if (!available_memory_bytes(physical, &budget_commit)) {
+            err = "FileExpertSource: cannot determine available memory for --resident-budget-gib";
             return false;
         }
         budget_physical = physical;
-        const uint64_t room = physical > headroom_bytes ? physical - headroom_bytes : 0;
-        if (budget_bytes > room) {
+        const uint64_t available = std::min(physical, budget_commit);
+        const char* limit = budget_commit < physical ? "commit" : "RAM";
+        const uint64_t clamped = detail::clamp_resident_budget(budget_bytes, physical, budget_commit, headroom_bytes);
+        if (budget_bytes > clamped) {
             // #403: 256 MiB under the room, so the engine's own allocations after this reading still leave the
             // headroom (a budget clamped to exactly the room failed the safety check below on a reading a few MB
             // lower).  An unclamped budget is unchanged.
-            const uint64_t margin = 256ull << 20;
-            const uint64_t clamped = room > margin ? room - margin : 0;
             if (what_fits)
-                std::fprintf(stderr, "FileExpertSource: RAM room for the complement: %.2f GiB (%.2f GiB available "
+                std::fprintf(stderr, "FileExpertSource: room for the complement: %.2f GiB (%.2f GiB available %s "
                                      "minus %.0f GiB headroom and a 0.25 GiB margin)\n",
-                             (double) clamped / 1073741824.0, (double) physical / 1073741824.0,
+                             (double) clamped / 1073741824.0, (double) available / 1073741824.0, limit,
                              (double) headroom_bytes / 1073741824.0);
             else
-                std::fprintf(stderr, "FileExpertSource: --resident-budget-gib %.2f is more than the RAM has room for "
-                                     "(%.2f GiB available minus %.0f GiB headroom and a 0.25 GiB margin): %.2f GiB\n",
-                             (double) budget_bytes / 1073741824.0, (double) physical / 1073741824.0,
+                std::fprintf(stderr, "FileExpertSource: --resident-budget-gib %.2f exceeds available %s "
+                                     "(%.2f GiB minus %.0f GiB headroom and a 0.25 GiB margin): %.2f GiB\n",
+                             (double) budget_bytes / 1073741824.0, limit, (double) available / 1073741824.0,
                              (double) headroom_bytes / 1073741824.0, (double) clamped / 1073741824.0);
             budget_bytes = clamped;
         }
@@ -1426,7 +1457,7 @@ bool FileExpertSource::pin_cache_complement(
                 ++held;
             }
         if (what_fits && held == 0) {   // #467: nothing to keep - the caller's plain mmap fallback, not an empty copy
-            err = "FileExpertSource: the RAM has no room for any expert of the complement";
+            err = "FileExpertSource: available memory cannot hold any expert of the complement";
             return false;
         }
         std::fprintf(stderr, "FileExpertSource: RAM budget %.2f GiB: %lld of the %.2f GiB of experts the GPU cache does "
@@ -1443,18 +1474,20 @@ bool FileExpertSource::pin_cache_complement(
         // #403: with a budget, the reading it was sized from - a second reading a few MB lower (the engine's own
         // allocations, the file cache) failed a budget the first one had clamped.  (A budget turns `lend` off.)
         uint64_t physical = budget_physical;
-        if (physical == 0 && !available_memory_bytes(physical)) {
-            err = "FileExpertSource: cannot determine available RAM for the resident-memory safety check";
+        uint64_t commit = budget_commit;
+        if (physical == 0 && !available_memory_bytes(physical, &commit)) {
+            err = "FileExpertSource: cannot determine available memory for the resident-memory safety check";
             return false;
         }
-        budget = physical > headroom_bytes ? physical - headroom_bytes : 0;
+        const uint64_t available = std::min(physical, commit);
+        budget = available > headroom_bytes ? available - headroom_bytes : 0;
         if (bytes > budget) {
             char message[320];
             std::snprintf(message, sizeof message,
-                          "FileExpertSource: resident complement %.2f GiB exceeds available RAM (%.2f GiB) minus the "
+                          "FileExpertSource: resident complement %.2f GiB exceeds available %s (%.2f GiB) minus the "
                           "%.0f GiB safety headroom",
-                          (double) bytes / 1073741824.0, (double) physical / 1073741824.0,
-                          (double) headroom_bytes / 1073741824.0);
+                          (double) bytes / 1073741824.0, commit < physical ? "commit" : "RAM",
+                          (double) available / 1073741824.0, (double) headroom_bytes / 1073741824.0);
             err = message;
             return false;
         }
@@ -1497,6 +1530,7 @@ bool FileExpertSource::pin_cache_complement(
     if (bytes > 0) {
         std::fprintf(stderr, "FileExpertSource: allocating %.2f GiB %s cache complement\n",
                      (double) bytes / 1073741824.0, pin ? "page-locked" : "pageable resident");
+        log_complement_memory("before complement allocation", bytes);
         std::fflush(stderr);
         if (pin) {
             const cudaError_t allocated = cudaHostAlloc(&arena, (size_t) bytes,
@@ -1523,9 +1557,19 @@ bool FileExpertSource::pin_cache_complement(
             }
         }
         if (arena == nullptr) {
+            if (!note.empty()) {
+                std::fprintf(stderr, "FileExpertSource: %s; trying pageable memory\n", note.c_str());
+                log_complement_memory("before pageable allocation", bytes);
+                std::fflush(stderr);
+            }
+            errno = 0;
             arena = std::malloc((size_t) bytes);
             if (arena == nullptr) {
-                err = "FileExpertSource: pageable resident complement allocation failed";
+                const int allocation_errno = errno;
+                err = "FileExpertSource: pageable resident complement allocation failed (malloc errno " +
+                      std::to_string(allocation_errno) + ": " + std::strerror(allocation_errno) + ")";
+                if (!note.empty()) err += "; " + note;
+                log_complement_memory("after pageable allocation failure", bytes);
                 return false;
             }
             if (pin) {

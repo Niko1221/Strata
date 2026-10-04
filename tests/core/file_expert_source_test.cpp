@@ -253,6 +253,35 @@ void test_resident_exchange() {
     require(offsets == before, "exchanging back did not restore the plan");
 }
 
+void test_resident_memory_budget() {
+    using strata::core::detail::clamp_resident_budget;
+    constexpr uint64_t GiB = 1ull << 30, margin = 256ull << 20, headroom = 4 * GiB;
+    constexpr uint64_t unlimited = std::numeric_limits<uint64_t>::max();
+    // #730: RAM can hold the requested cache, but Windows cannot commit it.
+    require(clamp_resident_budget(66 * GiB, 69 * GiB, 47 * GiB, headroom) == 43 * GiB - margin,
+            "a RAM budget exceeded available commit capacity");
+    require(clamp_resident_budget(66 * GiB, 47 * GiB, 69 * GiB, headroom) == 43 * GiB - margin,
+            "a RAM budget exceeded available physical memory");
+    require(clamp_resident_budget(40 * GiB, 69 * GiB, 47 * GiB, headroom) == 40 * GiB,
+            "a smaller explicit budget was changed");
+    require(clamp_resident_budget(unlimited, 69 * GiB, 47 * GiB, headroom) == 43 * GiB - margin,
+            "the what-fits budget ignored commit capacity");
+    require(clamp_resident_budget(66 * GiB, 47 * GiB, unlimited, headroom) == 43 * GiB - margin,
+            "a platform without a commit reading lost its RAM limit");
+    require(clamp_resident_budget(43 * GiB, 69 * GiB, 47 * GiB, headroom) == 43 * GiB,
+            "a budget that exactly fits received the clamping margin");
+    require(clamp_resident_budget(66 * GiB, 69 * GiB, 0, headroom) == 0,
+            "exhausted commit capacity was treated as unlimited");
+    require(clamp_resident_budget(66 * GiB, 0, 69 * GiB, headroom) == 0,
+            "exhausted RAM produced a positive budget");
+    require(clamp_resident_budget(66 * GiB, 69 * GiB, headroom - 1, headroom) == 0 &&
+                clamp_resident_budget(66 * GiB, 69 * GiB, headroom, headroom) == 0,
+            "subtracting headroom underflowed");
+    require(clamp_resident_budget(66 * GiB, 69 * GiB, headroom + margin - 1, headroom) == 0 &&
+                clamp_resident_budget(66 * GiB, 69 * GiB, headroom + margin, headroom) == 0,
+            "subtracting the clamping margin underflowed");
+}
+
 void test_cgroup_memory_budget() {
     using namespace strata::core::detail;
     constexpr uint64_t GiB = 1ull << 30;
@@ -305,7 +334,10 @@ void test_host_memory() {
                       root = (t.path / "fs").string();
     auto probe = [&](const std::string& self) {
         put("cgroup", self);
-        return host_available_memory(m, mi, cg, root);
+        m.commit = 0;
+        const bool ok = host_available_memory(m, mi, cg, root);
+        require(m.commit == ~0ull, "Linux memory probe retained a commit limit");
+        return ok;
     };
     // no cgroup line at all: MemAvailable alone (before #633: "cannot determine")
     require(probe("") && m.available == 100 * GiB && m.cgroup_limit == ~0ull, "no cgroup: MemAvailable alone");
@@ -334,6 +366,11 @@ void test_host_memory() {
     require(probe("4:memory:/elsewhere\n") && m.available == 100 * GiB, "v1 group not mounted");
 #else
     require(host_available_memory(m) && m.available > 0 && m.cgroup_limit == ~0ull, "this PC's RAM");
+#if defined(_WIN32)
+    require(m.commit != ~0ull, "Windows memory probe did not report commit capacity");
+#else
+    require(m.commit == ~0ull, "a platform without commit accounting imposed a limit");
+#endif
     (void) GiB;
 #endif
 }
@@ -345,6 +382,7 @@ int main() {
         test_complement_plan();
         test_resident_lend_region();
         test_resident_exchange();
+        test_resident_memory_budget();
         test_cgroup_memory_budget();
         test_host_memory();
         test_canonical_layout();
