@@ -489,6 +489,8 @@ struct Prefill::Impl {
     // KV streaming: one layer's whole K/V, staged from the host copy per layer and chunk (identity layout)
     strata::kernels::KvHostPools stage;
     int32_t* ident_table = nullptr;
+    cudaStream_t kv_copy = nullptr;
+    cudaEvent_t kv_released = nullptr, kv_ready = nullptr;
     // layer split: the device, and the hand-off to the next stage (two pinned chunk buffers, used in turn)
     int device = -1;
     float* hand[2] = {};
@@ -548,6 +550,7 @@ void Prefill::release() {
     if (!impl_) return;
     if (impl_->cs) cudaStreamSynchronize(impl_->cs);
     if (impl_->copy) cudaStreamSynchronize(impl_->copy);
+    if (impl_->kv_copy) cudaStreamSynchronize(impl_->kv_copy);
     for (int i = 0; i < RING_MAX; ++i) {
         if (impl_->copied[i]) cudaEventDestroy(impl_->copied[i]);
         if (impl_->used[i]) cudaEventDestroy(impl_->used[i]);
@@ -558,6 +561,9 @@ void Prefill::release() {
         if (impl_->ple_emb_host[b] && impl_->ple_pageable[b].empty()) cudaFreeHost(impl_->ple_emb_host[b]);
     }
     if (impl_->copy) cudaStreamDestroy(impl_->copy);
+    if (impl_->kv_copy) cudaStreamDestroy(impl_->kv_copy);
+    if (impl_->kv_released) cudaEventDestroy(impl_->kv_released);
+    if (impl_->kv_ready) cudaEventDestroy(impl_->kv_ready);
     if (impl_->grp_host) cudaFreeHost(impl_->grp_host);
     for (void* p : impl_->owned) cudaFree(p);
 }
@@ -868,7 +874,8 @@ bool Prefill::relayout(int64_t chunk, void* borrow, uint64_t borrow_bytes, std::
         err = "prefill: relayout needs borrowed buffers and a chunk of at most " + std::to_string(m.T_max);
         return false;
     }
-    if (cudaStreamSynchronize(m.cs) != cudaSuccess || cudaStreamSynchronize(m.copy) != cudaSuccess) {
+    if (cudaStreamSynchronize(m.cs) != cudaSuccess || cudaStreamSynchronize(m.copy) != cudaSuccess ||
+        (m.kv_copy && cudaStreamSynchronize(m.kv_copy) != cudaSuccess)) {
         err = "prefill: relayout: the stream failed";
         return false;
     }
@@ -1318,6 +1325,22 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
     strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
     s.n_head = g.n_head; s.n_head_kv = g.n_head_kv; s.head_dim = g.head_dim; s.idx_n_head = g.idx_q_heads;
     s.idx_dim = g.idx_key_dim;
+    const char* kv_env = std::getenv("STRATA_KV_PREFETCH");
+    const bool kv_prefetch = kv_env && std::atoi(kv_env) != 0;
+    if (kv_prefetch) {
+        if ((!m.kv_copy && cudaStreamCreateWithFlags(&m.kv_copy, cudaStreamNonBlocking) != cudaSuccess) ||
+            (!m.kv_released && cudaEventCreateWithFlags(&m.kv_released, cudaEventDisableTiming) != cudaSuccess) ||
+            (!m.kv_ready && cudaEventCreateWithFlags(&m.kv_ready, cudaEventDisableTiming) != cudaSuccess)) {
+            err = "prefill: KV prefetch stream/events";
+            return false;
+        }
+    }
+    // An early return must drain DMA before the caller refills the borrowed expert slots.
+    struct KvDrain {
+        cudaStream_t stream;
+        ~KvDrain() { if (stream) cudaStreamSynchronize(stream); }
+    } kv_drain{kv_prefetch ? m.kv_copy : nullptr};
+    int64_t kv_prefetches = 0;
     const uint64_t gdn_floats = (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size +
                                 (uint64_t) g.ssm_conv_channels * (g.ssm_d_conv - 1);
     int32_t prev[2] = {ss.ple_prev[0], ss.ple_prev[1]};
@@ -1466,6 +1489,34 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
 
         int64_t qsa_index = 0, gdn_index = 0;
         for (int64_t l = 0; l < LB; ++l) (core::is_qsa_layer(g, l) ? qsa_index : gdn_index) += 1;
+        int64_t kv_pending = -1;
+        auto kv_prefetch_after = [&](int64_t layer, int64_t ordinal) -> bool {
+            if (!kv_prefetch || p0 <= 0) return true;
+            for (int64_t l = layer; l < LE; ++l) {
+                if (!core::is_qsa_layer(g, l)) continue;
+                const core::QsaState& state = ss.qsa_states[ordinal];
+                if (state.kv_mode != 1) { ++ordinal; continue; }
+                // Reuse one KV pool only after its last attention reader completes. The next layer's
+                // [0, p0) host prefix is immutable throughout this chunk; its new rows are appended later.
+                if (cudaEventRecord(m.kv_released, cs) != cudaSuccess ||
+                    cudaStreamWaitEvent(m.kv_copy, m.kv_released, 0) != cudaSuccess) {
+                    err = "prefill: releasing KV staging pool";
+                    return false;
+                }
+                strata::kernels::kv_stage_from_host(pools_of(m.stage, m.ident_table), state.host,
+                    core::qsa_kv_format(state), (p0 + s.page_size - 1) / s.page_size, s, m.kv_copy);
+                if (cudaPeekAtLastError() != cudaSuccess ||
+                    cudaEventRecord(m.kv_ready, m.kv_copy) != cudaSuccess) {
+                    err = "prefill: enqueueing KV prefetch";
+                    return false;
+                }
+                kv_pending = ordinal;
+                ++kv_prefetches;
+                break;
+            }
+            return true;
+        };
+        if (!kv_prefetch_after(LB, qsa_index)) return false;
         // step 3: this chunk's stream - every non-resident expert of every layer, layer by layer in id order (entry
         // k lands in ring slot k % ring); a copy is issued once the entry `ring` before it is consumed (its slot's
         // `used` event recorded), so the copy stream never waits on an event that is not queued yet
@@ -1769,7 +1820,13 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                     const bool staged = st.kv_mode == 1;
                     if (staged) {
                         pt.mark(kPfKvStage, cs);
-                        strata::kernels::kv_stage_from_host(pools_of(m.stage, m.ident_table), st.host,
+                        if (kv_pending == qsa_index) {
+                            if (cudaStreamWaitEvent(cs, m.kv_ready, 0) != cudaSuccess) {
+                                err = "prefill: waiting for KV prefetch";
+                                return false;
+                            }
+                            kv_pending = -1;
+                        } else strata::kernels::kv_stage_from_host(pools_of(m.stage, m.ident_table), st.host,
                                                             core::qsa_kv_format(st),
                                                             (p0 + s.page_size - 1) / s.page_size, s, m.cs);
                         pt.mark(kPfQsa, cs);
@@ -1943,6 +2000,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                     gate_attn(m.attn, m.Qf, m.attn_h, T, m.cs);
                     if (!native_proj(m.gemm, wo, m.attn_h, m.bo, T, v.name("attn_output.weight"), err)) return false;
                     ++qsa_index;
+                    if (!kv_prefetch_after(l + 1, qsa_index)) return false;
                 } else {
                     // ======================= MoE =======================
                     const core::WeightRef *wr = need(v, "ffn_gate_inp.weight", err),
@@ -2670,6 +2728,14 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
     if (const cudaError_t cst = cudaStreamSynchronize(m.copy); cst != cudaSuccess) {
         err = std::string("prefill: expert copy stream: ") + cudaGetErrorString(cst);
         return false;
+    }
+    if (kv_prefetch) {
+        if (const cudaError_t cst = cudaStreamSynchronize(m.kv_copy); cst != cudaSuccess) {
+            err = std::string("prefill: KV prefetch stream: ") + cudaGetErrorString(cst);
+            return false;
+        }
+        std::fprintf(stderr, "strata KV prefetch: %lld layer prefixes, single existing staging pool\n",
+                     (long long) kv_prefetches);
     }
     stats_.ms_total += ms_since(t_start);
     if (pt.on) {
