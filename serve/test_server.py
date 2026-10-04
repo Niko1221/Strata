@@ -1021,6 +1021,42 @@ class DraftCounts(unittest.TestCase):
         self.assertEqual((m["totals"]["drafts_offered"], m["totals"]["drafts_accepted"]), (17, 10))
 
 
+class PrometheusMetrics(unittest.TestCase):
+    """GET /metrics/prometheus: the totals in Prometheus' text format, under llama-server's names."""
+
+    def test_totals(self):
+        tok = ByteTokenizer()
+        engine = DoneLineEngine(tok, "</think>\n\nok", max_context=CTX, done_lines=[
+            "DONE 4 20 400.0 200.0 stop 7 12 5",                # 5 of the prompt's tokens reused
+            "DONE 4 20 400.0 200.0 stop 3 5 0"])
+        svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        try:
+            for _ in range(2):
+                body = json.dumps({"model": "m", "max_tokens": 10, "messages": [{"role": "user", "content": "hi"}]})
+                with urllib.request.urlopen(urllib.request.Request(base + "/v1/chat/completions", data=body.encode(),
+                                                                   headers={"Content-Type": "application/json"}),
+                                            timeout=30) as r:
+                    self.assertEqual(r.status, 200)
+            with urllib.request.urlopen(base + "/metrics/prometheus", timeout=10) as r:
+                self.assertTrue(r.headers["Content-Type"].startswith("text/plain"))
+                text = r.read().decode()
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+        m = {line.split()[0]: float(line.split()[1]) for line in text.splitlines() if not line.startswith("#")}
+        t = svc.totals
+        self.assertEqual(m["llamacpp:prompt_tokens_total"], t["prompt_tokens"] - 5)
+        self.assertEqual(m["llamacpp:prompt_tokens_cached_total"], 5)
+        self.assertEqual(m["llamacpp:prompt_seconds_total"], 0.8)
+        self.assertEqual(m["llamacpp:tokens_predicted_total"], t["output_tokens"])
+        self.assertEqual(m["llamacpp:tokens_predicted_seconds_total"], 0.4)
+        self.assertEqual((m["llamacpp:requests_processing"], m["llamacpp:requests_deferred"]), (0, 0))
+        self.assertEqual((m["strata:requests_total"], m["strata:drafts_offered_total"],
+                          m["strata:drafts_accepted_total"]), (2, 17, 10))
+
+
 class PcieShare(unittest.TestCase):
     """#588: the hit rate stays the VRAM share of the lookups; the routed experts the GPU read over PCIe (the DONE
     line's 16th field, engine 0.1.39+) are given as their own share of all routed experts."""
