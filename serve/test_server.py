@@ -2329,5 +2329,87 @@ class LostStep(unittest.TestCase):
         self.run_mode("stop", stream=False)
 
 
+class ToolsShape(unittest.TestCase):
+    """#592: a malformed "tools" is a 400 naming the field, not a dead request thread (connection reset / 502)."""
+
+    @classmethod
+    def setUpClass(cls):
+        tok = ByteTokenizer()
+        cls.engine = MockEngine(tok, "ok", max_context=CTX)
+        cls.svc = Service(cls.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        cls.httpd = serve(cls.svc, port=0)
+        cls.base = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def post(self, path, body):
+        req = urllib.request.Request(self.base + path, data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, json.loads(e.read())
+
+    def bad(self, api, tools):
+        path = "/v1/chat/completions" if api == "openai" else "/v1/messages"
+        return self.post(path, {"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                                "tools": tools, "max_tokens": 8})
+
+    def test_openai_malformed_tools_is_400(self):
+        for tools in ("auto", ["get_weather"], ["a", "b"], 42, {"name": "x"}, "not json"):
+            s, b = self.bad("openai", tools)
+            self.assertEqual(s, 400, f"tools={tools!r} -> {s} {b}")
+            self.assertIn("tools", b["error"]["message"])
+
+    def test_anthropic_malformed_tools_is_400(self):
+        for tools in ("auto", ["get_weather"], 42, [{"description": "no name"}, {"name": 7}]):
+            s, b = self.bad("anthropic", tools)
+            self.assertEqual(s, 400, f"tools={tools!r} -> {s} {b}")
+            self.assertIn("tools", b["error"]["message"])
+
+    def test_valid_tools_still_work(self):
+        openai = [{"type": "function", "function": {"name": "get_weather", "parameters": {}}},
+                  {"name": "flat_tool"}]
+        anthropic = [{"name": "get_weather", "description": "d", "input_schema": {}}]
+        s, b = self.bad("openai", openai)
+        self.assertEqual(s, 200, b)
+        s, b = self.bad("anthropic", anthropic)
+        self.assertEqual(s, 200, b)
+        # a double-encoded JSON string is decoded, the #460 convention
+        s, b = self.bad("openai", json.dumps(openai))
+        self.assertEqual(s, 200, b)
+        # no field at all is unchanged
+        s, b = self.post("/v1/chat/completions", {"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                                                  "max_tokens": 8})
+        self.assertEqual(s, 200, b)
+
+    def test_openai_wrapped_tool_that_normalizes_to_a_non_object_is_400(self):
+        # Copilot review on #701: {"type": "function", "function": "get_weather"} unwraps to a string, which
+        # reached serve/server.py's t.get("name") and took the request thread down.
+        for tools in ([{"type": "function", "function": "get_weather"}],
+                      [{"type": "function", "function": None}],
+                      [{"type": "function", "function": [1, 2]}],
+                      [{"type": "function", "function": 42}]):
+            s, b = self.bad("openai", tools)
+            self.assertEqual(s, 400, f"tools={tools!r} -> {s} {b}")
+            self.assertIn("tools", b["error"]["message"])
+        # the Anthropic path reads t["name"]: a wrapped string has no name
+        s, b = self.bad("anthropic", [{"type": "function", "function": "get_weather"}])
+        self.assertEqual(s, 400, b)
+        self.assertIn("tools", b["error"]["message"])
+
+    def test_the_server_answers_after_a_rejected_tools(self):
+        self.bad("openai", "auto")
+        self.bad("openai", [{"type": "function", "function": "get_weather"}])
+        s, b = self.post("/v1/chat/completions", {"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                                                  "max_tokens": 8})
+        self.assertEqual(s, 200, b)
+
+
 if __name__ == "__main__":
     unittest.main()
