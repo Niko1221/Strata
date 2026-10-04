@@ -220,9 +220,10 @@ VramPlan plan_startup_vram(const StartupVramInput& in) {
         p.lend.ring_budget = -1;   // the runtime re-derives the ring from the real cache
         return true;
     };
-    // the largest chunk on the 256-token grid whose own buffers fit `beside` bytes of cache (0: none)
-    auto largest_owned_fit = [&](uint64_t beside) {
-        for (int64_t c = in.prefill_chunk / 256 * 256; c >= 256; c -= 256)
+    // the largest chunk on the 256-token grid, walking down from `from`, whose own buffers fit `beside` bytes
+    // of cache (0: none) - an explicit chunk walks from its request, the auto fallback from its 1024 bound
+    auto largest_owned_fit = [&](int64_t from, uint64_t beside) {
+        for (int64_t c = from / 256 * 256; c >= 256; c -= 256)
             if (chunk_fits_alone(c, beside)) return c;
         return (int64_t) 0;
     };
@@ -245,10 +246,20 @@ VramPlan plan_startup_vram(const StartupVramInput& in) {
                 p.notes.push_back("prefill auto: no cache can lend even a 256-token chunk's buffers; the prompt "
                                   "path plans its own buffers for a 1024-token chunk");
                 if (in.free_bytes < p.mandatory_bytes + own) {
-                    p.ok = false;
-                    p.short_by_bytes = (int64_t) (p.mandatory_bytes + own - in.free_bytes);
-                    p.fail_why = "the prompt path's own buffers (1024-token chunk)";
-                    return p;
+                    // the fallback itself is reduced on the 256-token grid before the cache is committed, as an
+                    // explicit chunk is - the runtime runs whatever its request_chunk(n, 1024) lands on anyway
+                    const int64_t fit = largest_owned_fit(1024, 0);
+                    if (fit == 0) {
+                        p.ok = false;
+                        p.short_by_bytes = (int64_t) (p.mandatory_bytes + own - in.free_bytes);
+                        p.fail_why = "the prompt path's own buffers (1024-token chunk)";
+                        return p;
+                    }
+                    p.prefill_bytes = owned_bytes(fit);
+                    p.selected_prefill = fit;
+                    cache_budget = in.free_bytes - p.mandatory_bytes - p.prefill_bytes;
+                    p.notes.push_back("the 1024-token fallback does not fit either; " + std::to_string(fit) +
+                                      " is the largest chunk whose own buffers do");
                 }
                 auto [s1, sized1] = build_cache(cache_budget);
                 slots = s1;
@@ -266,7 +277,8 @@ VramPlan plan_startup_vram(const StartupVramInput& in) {
                               "cache gives up the same bytes)");
             if (in.free_bytes < p.mandatory_bytes + own) {
                 // --spec reads the residency graph: the cache cannot go to zero, so the chunk yields a slot
-                const int64_t fit = largest_owned_fit(in.spec_needs_cache ? (uint64_t) blob : 0);
+                const int64_t fit =
+                    largest_owned_fit(in.prefill_chunk, in.spec_needs_cache ? (uint64_t) blob : 0);
                 if (fit == 0) {
                     p.ok = false;
                     p.prefill_owned = false;
@@ -327,7 +339,7 @@ VramPlan plan_startup_vram(const StartupVramInput& in) {
             p.notes.push_back("the expert cache (" + std::to_string(slots) +
                               " slots) cannot lend the prompt path's buffers; they are planned beside it");
             if (in.free_bytes < p.mandatory_bytes + own + cache_bytes) {
-                const int64_t fit = largest_owned_fit(cache_bytes);
+                const int64_t fit = largest_owned_fit(in.prefill_chunk, cache_bytes);
                 if (fit == 0) {
                     p.ok = false;
                     p.prefill_owned = false;
@@ -357,7 +369,7 @@ VramPlan plan_startup_vram(const StartupVramInput& in) {
                               "reads the prompt");
         if (auto_cache) {
             if (own_chunk > 0 && cache_budget < own_bytes) {
-                const int64_t fit = largest_owned_fit(blob);
+                const int64_t fit = largest_owned_fit(in.prefill_chunk, blob);
                 if (fit == 0) {
                     p.ok = false;
                     p.prefill_bytes = own_bytes;

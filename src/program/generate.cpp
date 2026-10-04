@@ -3326,12 +3326,14 @@ int main(int argc, char** argv) {
                          "  minimum prefill:        %lld MiB\n"
                          "  short by:               %lld MiB\n"
                          "To make room: a smaller --max-context (the session takes %lld MiB at %lld tokens), "
-                         "--kv q4_0, a smaller --prefill, a smaller --vram-reserve-mib, images on the CPU, or "
+                         "--kv q4_0, a smaller --prefill, a smaller --vram-reserve-mib%s, images on the CPU, or "
                          "close other programs that use the GPU\n",
                          plan.fail_why.c_str(), (long long) (plan.free_at_plan >> 20), o.vram_reserve_mib,
                          (long long) (plan.mtp_bytes >> 20), (long long) (plan.prefill_bytes >> 20),
                          (long long) ((long long) plan.short_by_bytes >> 20),
-                         (long long) (session_b >> 20), (long long) o.max_context);
+                         (long long) (session_b >> 20), (long long) o.max_context,
+                         g.n_qsa_layers() > 0 ? ", or stream more KV from RAM (--kv-resident, e.g. 32768: the "
+                                              "resident KV is VRAM this model can give back)" : "");
             return 1;
         }
         if (plan.reserve_adapted_from_mib > 0) {
@@ -3374,10 +3376,12 @@ int main(int argc, char** argv) {
                                  "(%lld MiB), about %lld MiB more than this card has free. To make room: a smaller "
                                  "--max-context (the session, mostly its KV cache, takes %lld MiB at %lld tokens), "
                                  "--kv q4_0, the English draft subset (setup --draft-vocab en; the draft head takes "
-                                 "%lld MiB now)%s, images on the CPU, or close other programs that use the GPU\n",
+                                 "%lld MiB now)%s%s, images on the CPU, or close other programs that use the GPU\n",
                          (long long) min_slots, (long long) ((min_slots * blob) >> 20), (long long) short_mib,
                          (long long) session_mib, (long long) o.max_context, (long long) (mtp_bind >> 20),
-                         reserve_tip.c_str());
+                         reserve_tip.c_str(),
+                         g.n_qsa_layers() > 0 ? ", or stream more KV from RAM (--kv-resident, e.g. 32768: the "
+                                              "resident KV is VRAM this model can give back)" : "");
         }
         // the plan, before the cache is committed (#765's diagnostics)
         std::string pf_line = "off (the token path)";
@@ -4947,6 +4951,8 @@ int main(int argc, char** argv) {
                 borrow_bytes = lend_first >= 0 ? part_bytes(pf_parts[0], lend_first) : 0;
             } else if (o.prefill_auto) {
                 o.prefill_chunk = 1024;   // nothing lendable: small buffers of its own
+                std::fprintf(stderr, "strata serve: prefill auto: no cache loan is available; using owned "
+                                     "1024-token prompt buffers\n");
             } else if (pf_parts.size() > 1) {
                 // An explicit chunk no stage can lend in full.  main falls back to the prompt path's own buffers
                 // here and so do we, rather than refusing to start - but say what every stage has, because a split
@@ -4962,6 +4968,8 @@ int main(int argc, char** argv) {
             }
         } else if (o.prefill_auto && d_res == nullptr) {
             o.prefill_chunk = 1024;       // #85: no expert cache at all (a full 8 GB card): small buffers of its own
+            std::fprintf(stderr, "strata serve: prefill auto: no expert cache to lend from; using owned 1024-token "
+                                 "prompt buffers\n");
         }
         bool any_loan = borrow != nullptr;
         for (size_t i = 1; i < pf_parts.size(); ++i) any_loan = any_loan || pf_parts[i].first >= 0;
@@ -5042,6 +5050,31 @@ int main(int argc, char** argv) {
                                          "%lld MiB free: %lld-token chunks\n", (long long) o.prefill_chunk,
                                  (long long) (need >> 20), dev, (long long) (fb >> 20), (long long) c);
                     o.prefill_chunk = c;
+                } else {
+                    // #765: nothing fits, and keeping the requested chunk would hand the allocation to the
+                    // driver: under default WDDM it may place the prompt buffers in shared system memory
+                    // instead of failing, and prefill runs at a fraction of its speed (measured on a 5080,
+                    // 524K IQ3_S: a 24576-token chunk paged ~+9.25 GiB into shared memory and read at
+                    // ~105 tok/s). The arithmetic already knows; refuse instead of paging.
+                    int d5 = 0;
+                    int64_t n5 = 0, f5 = 0;
+                    (void) own_fits(512, d5, n5, f5);
+                    std::fprintf(stderr,
+                                 "strata serve: no owned prompt chunk fits the current dedicated-VRAM budget:\n"
+                                 "  requested chunk: %lld\n"
+                                 "  smallest checked: 512\n"
+                                 "  free VRAM:        %lld MiB (CUDA%d)\n"
+                                 "  512-token need:   %lld MiB + %lld MiB headroom\n",
+                                 (long long) o.prefill_chunk, (long long) (f5 >> 20), d5 < 0 ? 0 : d5,
+                                 (long long) (n5 >> 20), (long long) (512ll << 20) >> 20);
+#if defined(_WIN32)
+                    std::fprintf(stderr,
+                                 "strata serve: WARNING: on Windows/WDDM the NVIDIA driver may satisfy these "
+                                 "buffers through shared system memory instead of returning an allocation "
+                                 "failure, which makes prefill dramatically slower; the engine refuses here "
+                                 "rather than paging\n");
+#endif
+                    return 1;
                 }
             }
         }
@@ -7598,6 +7631,11 @@ int main(int argc, char** argv) {
             }
             if (o.prefill_auto) {
                 o.prefill_chunk = k > 0 ? chunk : request_chunk(n_batched, 1024);
+                if (k == 0)
+                    std::fprintf(stderr, "strata generate: prefill auto: no cache loan is available; using owned "
+                                         "%lld-token prompt buffers%s\n", (long long) o.prefill_chunk,
+                                 effective_prefill.owned ? " (as the accepted VRAM plan planned)"
+                                                         : " (the accepted VRAM plan expected a loan)");
                 std::fprintf(stderr, "strata generate: prompt chunk auto: %lld tokens\n", (long long) o.prefill_chunk);
             } else if (chunk != o.prefill_chunk) {
                 k = 0;                                 // a fixed chunk that does not fit: its own buffers, as before

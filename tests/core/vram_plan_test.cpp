@@ -481,6 +481,49 @@ int main() {
               "R18: the disabled flag keeps both sides owned");
     }
 
+    // ---- Enky's #765 findings, E1-E5: the fallbacks a WDDM driver used to paper over
+    {
+        const uint64_t margin = kOwnedPageMarginBytes;
+        // E1: auto with nothing to lend - the owned 1024 fallback is an explicit, priced plan state
+        StartupVramInput e1 = plan_input((uint64_t) 100 * BLOB + 700 * MIB);
+        e1.prefill_borrow = true;
+        e1.prefill_auto = true;
+        const VramPlan p1 = plan_startup_vram(e1);
+        check(p1.ok && p1.prefill_owned && p1.lend_slots == 0 && p1.selected_prefill > 0 &&
+                  p1.selected_prefill <= 1024,
+              "E1: the auto->owned fallback is an explicit, priced plan state (the chunk itself may be reduced)");
+        // E2: the requested owned chunk does not fit, a smaller one does - reduced at planning, with a note
+        StartupVramInput e2 = plan_input((uint64_t) 700 * MIB + fake_bytes(6144, -1) + margin +
+                                         (uint64_t) 100 * MIB);
+        e2.prefill_borrow = true;               // lending is tried first and fails; the chunk is owned either way
+        e2.prefill_chunk = 24576;
+        const VramPlan p2 = plan_startup_vram(e2);
+        int64_t e2expect = 0;
+        for (int64_t c = 24576 / 256 * 256; c >= 256; c -= 256)
+            if (e2.free_bytes >= e2.user_reserve_bytes + e2.mtp_bytes + fake_bytes(c, -1) + margin) {
+                e2expect = c; break;
+            }
+        check(p2.ok && p2.prefill_owned && p2.selected_prefill == e2expect && e2expect >= 4096,
+              "E2: the requested chunk is reduced to the largest arithmetic fit");
+        bool noted = false;
+        for (const std::string& n : p2.notes) noted = noted || n.find("does not fit") != std::string::npos;
+        check(noted, "E2: the reduction is said at planning, not discovered at Prefill::init()");
+        // E3: even 512 does not fit - the plan refuses; 24576 never reaches an allocation
+        StartupVramInput e3 = plan_input((uint64_t) 700 * MIB + fake_bytes(256, -1));
+        e3.prefill_chunk = 24576;
+        const VramPlan p3 = plan_startup_vram(e3);
+        check(!p3.ok && p3.selected_prefill == 0 && p3.short_by_bytes > 0,
+              "E3: nothing fits - the plan refuses instead of keeping the requested chunk");
+        // E4: the decision is the arithmetic alone - the planner never asks an allocator, so a driver that
+        // would 'succeed' the allocation (WDDM sysmem fallback) cannot change the outcome
+        check(p2.ok && p2.selected_prefill == e2expect,
+              "E4: the budget alone decides the chunk; hypothetical allocation success is not consulted");
+        // E5: the pricing is the injected bytes_needed plus the shared page margin, never a fixed estimate -
+        // priced for the chunk the plan actually selected
+        check(p1.prefill_bytes == fake_bytes(p1.selected_prefill, -1) + margin,
+              "E5: the fallback's price is bytes_needed + kOwnedPageMarginBytes");
+    }
+
     if (fails == 0) std::fprintf(stderr, "vram_plan_test: all checks passed\n");
     return fails == 0 ? 0 : 1;
 }
