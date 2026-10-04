@@ -2413,11 +2413,11 @@ __global__ void __launch_bounds__(256) native_gu_fused_kernel(const unsigned lon
                 amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
                 sum += __shfl_xor_sync(0xffffffffu, sum, o);
             }
-            const float d = amax / 127.0f;
-            const int8_t q = amax == 0.0f ? 0 : roundf(xi / d);
+            const float d = q8_1_finite(amax / 127.0f);   // #606, as q8_1_store: finite blocks bit for bit
+            const int8_t q = q8_1_quant(xi, d, amax);
             block_q8_1* y = hq + (size_t) (c0 + warp) * hb + blockIdx.x;
             y->qs[lane] = q;
-            if (lane == 0) y->ds = make_half2(d, sum);
+            if (lane == 0) y->ds = q8_1_ds(d, sum);
         }
     }
 }

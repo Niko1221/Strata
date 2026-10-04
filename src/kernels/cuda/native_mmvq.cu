@@ -163,10 +163,10 @@ __global__ void native_swiglu_quantize_q8_1_kernel(const float* __restrict__ gat
     const float xi = __fmul_rn(__fdividef(gi, __fadd_rn(1.0f, __expf(-gi))), up[i]);
     const float amax = warp_max(fabsf(xi));
     const float sum = warp_sum(xi);
-    const float d = amax / 127.0f;
-    const int8_t q = amax == 0.0f ? 0 : roundf(xi / d);
+    const float d = q8_1_finite(amax / 127.0f);   // #606, as native_quantize_q8_1_kernel: finite blocks bit for bit
+    const int8_t q = q8_1_quant(xi, d, amax);
     y[i / Q8K].qs[i % Q8K] = q;
-    if (i % Q8K == 0) y[i / Q8K].ds = make_half2(d, sum);
+    if (i % Q8K == 0) y[i / Q8K].ds = q8_1_ds(d, sum);
 }
 
 // Exact pinned vec_dot_q5_K_q8_1_impl_vmmq expression and integer dot order.
