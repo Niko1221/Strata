@@ -1618,7 +1618,14 @@ int main(int argc, char** argv) {
         o.resident_cpu_experts = o.resident_pin = o.resident_soft = false;
         o.resident_headroom = 8ull << 30;
     }
-    if (o.resident_cpu_experts && (!o.layer_split.empty() || remote_caches)) {
+    // pp-opt (experimental, STRATA_RESIDENT_REMOTE=1): a RAM budget beside the CUDA1-3 helper caches.  The prompt path
+    // runs on CUDA0 alone and streams every expert its cache does not hold from the source (RAM copy or files), so the
+    // budget is what speeds up a long prompt there, while the helpers serve the decode.  The two do not share state:
+    // the helpers are filled before the RAM copy is built, and both read blobs through the source.
+    static const bool resident_remote = [] { const char* v = std::getenv("STRATA_RESIDENT_REMOTE"); return v && v[0] == '1'; }();
+    if (o.resident_cpu_experts && o.layer_split.empty() && remote_caches && resident_remote)
+        std::fprintf(stderr, "strata generate: STRATA_RESIDENT_REMOTE=1: the RAM budget beside the helper caches (experimental)\n");
+    else if (o.resident_cpu_experts && (!o.layer_split.empty() || remote_caches)) {
         std::fprintf(stderr, "strata generate: --resident-cpu-experts does not support layer splits or remote expert caches\n");
         return 2;
     }
