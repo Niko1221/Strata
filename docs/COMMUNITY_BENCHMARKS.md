@@ -21,6 +21,10 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-04: 2x Intel Arc Pro B60 24 GB, Ryzen 5 5600, 64 GB RAM](../bench/results/2026-10-04-community-2x-arc-pro-b60/README.md):
   the SYCL port at `6f32ec0` with two fixes, Coder IQ1_M and Flash-Next IQ2_XS, 8,192-token context, layer split across both cards;
   short prompts and 2K-token prompts, plus one run on a single B60. Intel's SYCL engine, no 4,096/32,768/128,000-token sweep.
+- [2026-10-04: RTX 4090 Laptop GPU (16 GB), Core i9-13900HX, 64 GB RAM](../bench/results/2026-10-04-community-rtx-4090-laptop/README.md):
+  Strata 0.1.38 (source build), original Flash-Next IQ3_S, 131,072- and 262,144-token
+  contexts; three runs each at 4,096, 32,768, 128,000 (and 250,000) prompt tokens,
+  plus fifteen recall checks.
 
 ## What to record
 
