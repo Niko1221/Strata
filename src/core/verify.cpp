@@ -1967,6 +1967,29 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
     volatile uint32_t* const seq = h_seq_;
     volatile uint32_t* const flag = h_flag_;
     const int64_t steps = le_ - lb_;
+    // #646: a stage whose every expert is resident plans on the device and raises no host doorbells, so the
+    // per-layer spin below has nothing to wait for: without the PLE flag the graph finishes with the ring silent
+    // ("verify batch: layer K never rang (graph finished)" - K is that stage's first layer), and with it the graph
+    // sits on the PLE wait until the 20 s timeout.  As run() does: raise the PLE flag the graph's first wait reads,
+    // let the graph run to the end, and skip the host's per-layer service (there is nothing to serve).
+    if (all_resident_) {
+        if (ss_->ple.ready() && ple_stage()) {
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+            _mm_sfence();
+            *flag = 1;
+        }
+        const cudaError_t se = cudaStreamSynchronize(cs_);
+        if (se != cudaSuccess) { err = std::string("verify batch: ") + cudaGetErrorString(se); return false; }
+        cudaStreamSynchronize(copy_);
+        if (prof_on_) collect_profile();
+        ++windows;
+        if (le_ < g.n_layers) return next_ == nullptr || next_->run_slot_rows(rows, S, tokens, pos, pool, next_user_, out, err);
+        if (!sample_rows(S, err)) return false;
+        for (int t = 0; t < S; ++t) out[t] = ((volatile int32_t*) h_out_)[t];
+        progress_at("decode");
+        progress_beat();
+        return true;
+    }
     for (int64_t k = 0; k < steps; ++k) {
         const int64_t l = lb_ + k;
         const uint32_t want = (uint32_t) (k + 1);
@@ -2090,7 +2113,15 @@ int Verifier::batch_poll(PoolMultiFn pool, void* user, std::string& err) {
     const OnDevice on_device(device_);
     volatile uint32_t* const seq = h_seq_;
     const int S = last_t_;
-    while (b_k_ < b_steps_) {
+    // #646: an all-resident stage's graph raises no host doorbells (see run_slot_rows): nothing to serve per layer,
+    // so the poll is just "has the graph finished" - except the PLE flag, which the graph's first wait reads and
+    // only the host can raise (the same raise run_slot_rows makes).
+    if (all_resident_ && ss_->ple.ready() && ple_stage()) {
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        _mm_sfence();
+        *h_flag_ = 1;
+    }
+    while (!all_resident_ && b_k_ < b_steps_) {
         const uint32_t want = (uint32_t) (b_k_ + 1);
         if (*seq < want) {
             const auto now = Clock::now();
