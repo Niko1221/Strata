@@ -108,9 +108,21 @@ bool valid(const QsaState& st, const Layout& l, int64_t upto, std::string& error
     return true;
 }
 
+// SYCL port: a copy with neither end in device memory (pinned USM host <-> pageable host) goes through memcpy on the
+// CPU. Through the queue it runs on the Arc's copy engine, which hung on it (dmesg "Engine reset: engine_class=bcs";
+// repeated, the B70 was declared wedged): conversation_snapshot_test, and the parked KV of a --kv-resident session.
+inline bool host_only_copy(void* dst, const void* src) {
+    const sycl::context ctx = dpct::get_in_order_queue().get_context();
+    const auto host = [&](const void* p) {
+        const sycl::usm::alloc t = sycl::get_pointer_type(p, ctx);
+        return t == sycl::usm::alloc::host || t == sycl::usm::alloc::unknown;
+    };
+    return host(dst) && host(src);
+}
 bool transfer(void *dst, const void *src, size_t n, std::string &error) try {
     if (!n) return true;
     if (!src || !dst) { error = "conversation snapshot: missing state buffer"; return false; }
+    if (host_only_copy(dst, src)) { std::memcpy(dst, src, n); return true; }
     // Default handles both device allocations and device-mapped host pool aliases.
     const dpct::err0 e =
         DPCT_CHECK_ERROR(dpct::get_in_order_queue().memcpy(dst, src, n).wait());

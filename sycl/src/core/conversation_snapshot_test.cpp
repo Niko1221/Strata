@@ -7,12 +7,24 @@
 #include <array>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <vector>
 
 using namespace strata::core;
 using namespace strata::kernels;
 
+// SYCL port: a copy with neither end in device memory (pinned USM host <-> pageable host) goes through memcpy on the
+// CPU. Through the queue it runs on the Arc's copy engine, which hung on it (dmesg "Engine reset: engine_class=bcs";
+// repeated, the B70 was declared wedged): conversation_snapshot_test, and the parked KV of a --kv-resident session.
+static bool host_only_copy(void* dst, const void* src) {
+    const sycl::context ctx = dpct::get_in_order_queue().get_context();
+    const auto host = [&](const void* p) {
+        const sycl::usm::alloc t = sycl::get_pointer_type(p, ctx);
+        return t == sycl::usm::alloc::host || t == sycl::usm::alloc::unknown;
+    };
+    return host(dst) && host(src);
+}
 namespace {
 int checks = 0;
 void check(bool ok, const char* label) {
@@ -101,7 +113,8 @@ struct Fixture {
         for (size_t i=0;i<sources.size();++i) {
             std::vector<uint8_t> data(sizes[i]);
             for (size_t j=0;j<data.size();++j) data[j]=(uint8_t)(salt+i*31+j*7+j/257);
-            if (!data.empty()) cuda_check(DPCT_CHECK_ERROR(
+            if (!data.empty() && host_only_copy(sources[i], data.data())) std::memcpy(sources[i], data.data(), data.size());
+            else if (!data.empty()) cuda_check(DPCT_CHECK_ERROR(
                 dpct::get_in_order_queue()
                     .memcpy(sources[i], data.data(), data.size())
                     .wait()));
@@ -111,7 +124,9 @@ struct Fixture {
         for (size_t i=0;i<sources.size();++i) {
             const size_t offset = i == 4 ? size_t(first_dirty/4)*g.idx_key_dim*4
                                          : (sizes[i]/size_t(state.max_cells))*size_t((first_dirty/4)*4);
-            if (sizes[i] > offset)
+            if (sizes[i] > offset && host_only_copy(sources[i], sources[i]))
+                std::memset(static_cast<uint8_t *>(sources[i]) + offset, salt, sizes[i] - offset);
+            else if (sizes[i] > offset)
                 cuda_check(DPCT_CHECK_ERROR(
                     dpct::get_in_order_queue()
                         .memset(static_cast<uint8_t *>(sources[i]) + offset,
