@@ -1641,6 +1641,134 @@ def request_timings(prompt_tokens: int, generated: int, last: dict) -> dict | No
                if last.get("drafts_offered") is not None else {})}
 
 
+def tool_choice_required(req: dict) -> bool:
+    tc = req.get("tool_choice")
+    return bool((req.get("tools") or []) and (tc == "required" or (isinstance(tc, dict) and tc.get("type") == "function")))
+
+
+def tool_choice_name(req: dict):
+    tc = req.get("tool_choice")
+    if isinstance(tc, dict) and tc.get("type") == "function":
+        fn = tc.get("function") or {}
+        if isinstance(fn, dict):
+            return fn.get("name")
+    return None
+
+
+def _minimal_value(spec):
+    if not isinstance(spec, dict):
+        return ""
+    enum = spec.get("enum")
+    if enum:
+        return enum[0]
+    typ = spec.get("type")
+    if isinstance(typ, list):
+        typ = next((t for t in typ if t != "null"), "string")
+    if typ == "object":
+        return _minimal_tool_args(spec)
+    if typ == "array":
+        items = spec.get("items") or {}
+        return [_minimal_value(items)] if items else []
+    if typ == "boolean":
+        return False
+    if typ in ("number", "integer"):
+        return 0
+    return ""
+
+
+def _minimal_tool_args(schema):
+    if not isinstance(schema, dict) or schema.get("type") != "object":
+        return {}
+    props = schema.get("properties") or {}
+    out = {}
+    for name in schema.get("required") or []:
+        out[name] = _minimal_value(props.get(name) or {})
+    return out
+
+
+def _iter_chunks(items):
+    for item in items:
+        yield item
+
+
+def synthetic_tool_chunks(req, model, tools, forced_name):
+    chosen = None
+    for t in tools or []:
+        name = t.get("name")
+        if forced_name and name != forced_name:
+            continue
+        chosen = t
+        break
+    if chosen is None:
+        return None
+    args = _minimal_tool_args(chosen.get("parameters") or {})
+    cid = "chatcmpl-" + uuid.uuid4().hex[:24]
+    created = int(time.time())
+    call_id = "call_" + uuid.uuid4().hex[:24]
+
+    def chunk(delta, finish=None):
+        return {"id": cid, "object": "chat.completion.chunk", "created": created, "model": model,
+                "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+
+    yield chunk({"role": "assistant", "content": ""})
+    yield chunk({"tool_calls": [{"index": 0, "id": call_id, "type": "function",
+                                 "function": {"name": chosen.get("name"),
+                                              "arguments": json.dumps(args, ensure_ascii=False)}}]})
+    last = chunk({}, "tool_calls")
+    last["usage"] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+                     "prompt_tokens_details": {"cached_tokens": 0}}
+    yield last
+
+
+def enforce_tool_choice_openai(svc, req, messages, tools, kw, max_new, max_req, cancel, validator):
+    directive = ("TOOL CHOICE REQUIREMENT: You MUST call at least one of the provided tools in this response. "
+                 "Do not answer in prose.")
+    base_messages = [dict(m) for m in messages]
+    if base_messages and base_messages[0].get("role") == "system":
+        content = base_messages[0].get("content") or ""
+        if isinstance(content, list):
+            base_messages[0]["content"] = content + [{"type": "text", "text": directive}]
+        else:
+            base_messages[0]["content"] = content + "\n\n" + directive
+    else:
+        base_messages.insert(0, {"role": "system", "content": directive})
+
+    forced_name = tool_choice_name(req)
+
+    def has_required(result):
+        choice = result["choices"][0]
+        calls = choice["message"].get("tool_calls") or []
+        if not calls:
+            return False
+        if forced_name:
+            return any((c.get("function") or {}).get("name") == forced_name for c in calls)
+        return True
+
+    last_raw = []
+    for extra in (None, "You did not call a tool. Call one of the available tools now. Do not answer in prose."):
+        msgs = [dict(m) for m in base_messages]
+        if extra:
+            msgs.append({"role": "user", "content": extra})
+        ids, thinking, mn = svc.prepare(msgs, tools, kw, max_new)
+        _debug_req("openai", req, msgs, tools, mn, thinking, len(ids))
+        raw = list(openai_chunks(svc, req, ids, thinking, tools, mn, cancel))
+        last_raw = raw
+        result = openai_collect(raw)
+        if has_required(result):
+            if validator is not None:
+                return structured_chunks(_iter_chunks(raw), validator)
+            return _iter_chunks(raw)
+
+    syn = synthetic_tool_chunks(req, svc.model_for(req), tools, forced_name)
+    if syn is not None:
+        if validator is not None:
+            return structured_chunks(syn, validator)
+        return syn
+    if validator is not None:
+        return structured_chunks(_iter_chunks(last_raw), validator)
+    return _iter_chunks(last_raw)
+
+
 def _debug_req(api, req, messages, tools, max_new, thinking, prompt_tokens):
     """One compact line per request while diagnosing blank/empty turns. Set STRATA_DEBUG=1 to enable."""
     if not os.environ.get("STRATA_DEBUG"):
@@ -1856,8 +1984,14 @@ def structured_chunks(chunks, validator):
             if chunk is None or time.monotonic() - heartbeat >= 1:
                 heartbeat = time.monotonic()
                 yield None
+        if not buffered:
+            return
         result = openai_collect(buffered)
         choice = result["choices"][0]
+        if choice.get("finish_reason") == "tool_calls" or choice["message"].get("tool_calls"):
+            for chunk in buffered:
+                yield chunk
+            return
         content = validated_json(choice["message"]["content"], validator, choice["finish_reason"])
         yield buffered[0]
         delta = {"content": content}
@@ -2414,8 +2548,6 @@ def make_handler(svc: Service):
             req = svc.with_shared(req, "openai")
             messages, tools, kw = openai_to_messages(req)
             messages, validator = prepare_format(req.get("response_format"), messages)
-            if validator is not None and (tools or req.get("strata_mcp")):
-                raise ValueError("structured response_format with tools/MCP is not supported")
             svc.load()
             max_req = max_new = int(req.get("max_completion_tokens") or req.get("max_tokens") or 0)   # 0/-1: the rest
             use_mcp = req.get("strata_mcp") is True and svc.mcp is not None      # the web app's opt-in (serve/mcp.py)
@@ -2434,9 +2566,12 @@ def make_handler(svc: Service):
             self._watch_client(cancel)                       # #430 #431
             run = run_with_mcp(svc, svc.mcp, messages, tools, kw, ids, thinking, max_new, max_req, req, cancel,
                                {t["name"] for t in extra}) if use_mcp else None
-            chunks = openai_chunks(svc, req, ids, thinking, tools, max_new, cancel, run=run)
-            if validator is not None:
-                chunks = structured_chunks(chunks, validator)
+            if tool_choice_required(req) and not use_mcp:
+                chunks = enforce_tool_choice_openai(svc, req, messages, tools, kw, max_new, max_req, cancel, validator)
+            else:
+                chunks = openai_chunks(svc, req, ids, thinking, tools, max_new, cancel, run=run)
+                if validator is not None:
+                    chunks = structured_chunks(chunks, validator)
             chunks = self._capture(chunks, "openai")
             if not req.get("stream"):
                 return self._json(200, openai_collect(chunks))
