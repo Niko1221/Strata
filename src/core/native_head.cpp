@@ -2,6 +2,7 @@
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/native_mmvq.hpp"
+#include "strata/platform/memory.hpp"
 
 #include <cuda_runtime.h>
 #include <climits>
@@ -47,6 +48,7 @@ bool NativeHead::load(const std::vector<std::string>& shards, int64_t n_in, int6
         cudaError_t status = cudaMalloc(&weights, bytes);
         if (status == cudaSuccess)
             status = cudaMalloc(&scratch, strata::kernels::native_q8_1_bytes((int) n_in, 1));
+        strata::platform::advise_willneed(gguf.tensor_data(*tensor), bytes);
         if (status == cudaSuccess)
             status = cudaMemcpy(weights, gguf.tensor_data(*tensor), bytes, cudaMemcpyHostToDevice);
         if (status != cudaSuccess) {
@@ -130,6 +132,7 @@ bool NativeEmbed::load(const std::vector<std::string>& shards, int64_t n_embd, i
             bytes_ = 0;
             return false;
         }
+        strata::platform::advise_willneed(gguf.tensor_data(*t), bytes_);   // copied out of the mapping below
         if (cudaHostAlloc(&host_, bytes_, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess) {
             // Under WSL2 the driver's pinned/mapped host budget (~1 GiB) can be spent by the GPU contexts
             // themselves (three cards). The table is only gathered from, so keep it in the current device's VRAM
