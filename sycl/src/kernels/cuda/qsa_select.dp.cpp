@@ -1283,6 +1283,36 @@ void block_topk_cluster_kernel(const float *__restrict__ scores,
 #endif  // !__HIPCC__
 }  // namespace
 
+// SYCL port: the prompt path's block scores as oneMKL GEMM tiles (prefill.cpp): S[q * IDX_HEADS + h][b - b0] is
+// pooled[b] . q_idx[q][h] for the blocks [b0, b0 + nb); this turns them into scores[q][b] - relu per indexer head,
+// summed in head order - and gives block n_bid the dead key with the warp kernel's +1e9 rule. Blocks past a
+// query's n_bid are not written, as in qsa_block_scores. FP32-level, not bitwise (sel_scores_bench: 7-8x faster,
+// relative error 2-4e-7, the same selection but for near-ties).
+void qsa_block_scores_reduce(const float* S, int64_t ld, int64_t b0, int64_t nb, const float* dead, const float* q_idx,
+                             const int32_t* steps, int64_t nq, int64_t max_blocks, float* scores, void* stream) {
+    if (nq <= 0 || nb <= 0) return;
+    strata::q_of(stream)->parallel_for(sycl::range<2>((size_t) nq, (size_t) nb), [=](sycl::id<2> it) {
+        const int64_t qi = (int64_t) it[0], b = b0 + (int64_t) it[1];
+        const int64_t n_kv = steps[qi * kStepCount + kStepNKv], n_bid = steps[qi * kStepCount + kStepNBid];
+        if (b > n_bid || b >= max_blocks) return;
+        float score = 0.0f;
+        if (b == n_bid) {
+            for (int h = 0; h < IDX_HEADS; ++h) {
+                float d = 0.0f;
+                for (int i = 0; i < IDX_DIM; ++i) d += dead[i] * q_idx[(qi * IDX_HEADS + h) * IDX_DIM + i];
+                score += d > 0.0f ? d : 0.0f;
+            }
+            if (n_kv % R != 0) score += 1e9f;
+        } else {
+            for (int h = 0; h < IDX_HEADS; ++h) {
+                const float d = S[(size_t) (qi * IDX_HEADS + h) * (size_t) ld + (size_t) (b - b0)];
+                score += d > 0.0f ? d : 0.0f;
+            }
+        }
+        scores[(size_t) qi * (size_t) max_blocks + (size_t) b] = score;
+    });
+}
+
 void qsa_block_scores(const float* pooled, const float* dead, const float* q_idx, const int32_t* steps, int64_t nq,
                       int64_t max_blocks, const QsaShapes& s, float* scores, void* stream, int64_t active_blocks) {
     if (nq <= 0) return;

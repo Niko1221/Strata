@@ -296,6 +296,160 @@ __dpct_inline__ void attn_merge_kernel(const float *__restrict__ part_acc,
     attn[(size_t) h * HD + d] = L > 0.0f ? acc / L : 0.0f;
 }
 
+// ---- SYCL port: the prompt path's chunk kernel with the scores computed one work-item per cell (attn_bench).
+// The warp kernel above splits a cell's 256 dimensions over a sub-group and adds them up with a 5-step shuffle
+// tree per query head - 60 shuffles a cell. Here work-item c holds cell c's key row (16-byte loads) and all 12
+// heads' dot products, reading the query heads from local memory, where every work-item reads the same element
+// at once. 128-cell chunks. The values pass is the warp kernel's. FP32, but another summation order than the warp
+// kernel: not bitwise (relative error ~2e-7 in attn_bench); attn_bench: 1.55-1.69x the warp kernel's time.
+constexpr int PC_CHUNK = 128;
+
+// 16 consecutive key values of row `row`, dimensions [d0, d0+16)
+template <int KV_MODE>
+__dpct_inline__ void load16_k(const QsaAttnPools &p, long long row, int d0, float *out) {
+    if constexpr (KV_MODE == 0) {
+        load8_f16(p, false, row, d0, out);
+        load8_f16(p, false, row, d0 + 8, out + 8);
+    } else if constexpr (KV_MODE == 1 || KV_MODE == 3) {
+        const int8_t* codes = p.k_q + row * HD + d0;
+        const float sc = sycl::vec<sycl::half, 1>(sycl::bit_cast<sycl::half, unsigned short>(
+                             p.k_scale[row * (HD / KV_Q8_GROUP) + d0 / KV_Q8_GROUP]))
+                             .convert<float, sycl::rounding_mode::automatic>()[0];
+        const sycl::int4 raw = *reinterpret_cast<const sycl::int4 *>(codes);
+        const int8_t* c = reinterpret_cast<const int8_t*>(&raw);
+#pragma unroll
+        for (int j = 0; j < 16; ++j) out[j] = (float) c[j] * sc;
+    } else {   // q4_0 (rotated): element j of a 32-block in qs[j]'s low nibble, j + 16 in its high one
+        load8_q4(p, false, row, d0, out);
+        load8_q4(p, false, row, d0 + 8, out + 8);
+    }
+}
+
+template <int KV_MODE>
+__dpct_inline__ float load1_v(const QsaAttnPools &p, long long row, int t) {
+    if constexpr (KV_MODE == 0) {
+        return sycl::vec<sycl::half, 1>(sycl::bit_cast<sycl::half, unsigned short>(p.v_pool[row * HD + t]))
+            .convert<float, sycl::rounding_mode::automatic>()[0];
+    } else if constexpr (KV_MODE == 1) {
+        const float sc = sycl::vec<sycl::half, 1>(sycl::bit_cast<sycl::half, unsigned short>(
+                             p.v_scale[row * (HD / KV_Q8_GROUP) + t / KV_Q8_GROUP]))
+                             .convert<float, sycl::rounding_mode::automatic>()[0];
+        return (float) p.v_q[row * HD + t] * sc;
+    } else {
+        constexpr int bytes_per_head = (HD / QK4_0) * sizeof(block_q4_0);
+        const block_q4_0* blk = reinterpret_cast<const block_q4_0*>(p.v_q4 + row * bytes_per_head) + t / QK4_0;
+        const float d = sycl::vec<sycl::half, 1>(sycl::bit_cast<sycl::half, unsigned short>(blk->d))
+                            .convert<float, sycl::rounding_mode::automatic>()[0];
+        const int rem = t % QK4_0;
+        const uint8_t byte = blk->qs[rem < 16 ? rem : rem - 16];
+        return (float) ((rem < 16) ? ((byte & 0x0F) - 8) : ((byte >> 4) - 8)) * d;
+    }
+}
+
+template <int KV_MODE>
+__dpct_inline__ void attn_chunk_percell_kernel(const float *__restrict__ q, QsaAttnPools p,
+                                               const int32_t *__restrict__ ids, const int32_t *__restrict__ step,
+                                               int n_kv_heads, int page_size, float scale, float *__restrict__ part_acc,
+                                               float *__restrict__ part_m, float *__restrict__ part_l, int n_chunks,
+                                               int cap, long long scratch_stride) {
+    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+    auto sg = item_ct1.get_sub_group();
+    q += (size_t) item_ct1.get_group(0) * (size_t) (n_kv_heads * G) * HD;
+    ids += (size_t) item_ct1.get_group(0) * (size_t) cap;
+    step += (size_t) item_ct1.get_group(0) * kStepCount;
+    part_acc += (size_t) item_ct1.get_group(0) * (size_t) scratch_stride;
+    part_m += (size_t) item_ct1.get_group(0) * (size_t) scratch_stride;
+    part_l += (size_t) item_ct1.get_group(0) * (size_t) scratch_stride;
+    auto &sq = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[G][HD]>(
+        sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    auto &sp = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[G][PC_CHUNK]>(
+        sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    auto &srow = *sycl::ext::oneapi::group_local_memory_for_overwrite<long long[PC_CHUNK]>(
+        sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    const int n_ids = *(step + kStepWidth);
+    const int chunk = item_ct1.get_group(2), kvh = item_ct1.get_group(1);
+    const int t = item_ct1.get_local_id(2);
+    const int lane = (int) sg.get_local_id()[0], warp = (int) sg.get_group_id()[0];
+    const int SGS = (int) sg.get_local_range()[0], NW = THREADS / SGS;
+    const int c0 = chunk * PC_CHUNK;
+    const int n_here = sycl::min(PC_CHUNK, n_ids - c0);
+    const int slot = kvh * n_chunks + chunk;
+    if (n_here <= 0) {
+        if (t < G) { part_m[slot * G + t] = -FLT_MAX; part_l[slot * G + t] = 0.0f; }
+        return;
+    }
+    for (int i = t; i < G * HD; i += THREADS) sq[i / HD][i % HD] = q[(size_t) (kvh * G) * HD + i];
+    for (int c = t; c < PC_CHUNK; c += THREADS) {
+        long long r = -1;
+        if (c < n_here) {
+            const int cell = ids[c0 + c];
+            const long long page = (long long) p.page_table[cell / page_size];
+            if (page >= 0) r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);   // -1: masked (KV streaming)
+        }
+        srow[c] = r;
+    }
+    item_ct1.barrier(sycl::access::fence_space::local_space);
+    for (int c = t; c < PC_CHUNK; c += THREADS) {
+        if (c >= n_here || srow[c] < 0) {
+#pragma unroll
+            for (int h = 0; h < G; ++h) sp[h][c] = -FLT_MAX;
+            continue;
+        }
+        float acc_s[G];
+#pragma unroll
+        for (int h = 0; h < G; ++h) acc_s[h] = 0.0f;
+        for (int d = 0; d < HD; d += 16) {
+            float kf[16];
+            load16_k<KV_MODE>(p, srow[c], d, kf);
+#pragma unroll
+            for (int h = 0; h < G; ++h) {
+#pragma unroll
+                for (int j = 0; j < 16; ++j) acc_s[h] = sycl::fma(kf[j], sq[h][d + j], acc_s[h]);
+            }
+        }
+#pragma unroll
+        for (int h = 0; h < G; ++h) sp[h][c] = acc_s[h] * scale;
+    }
+    item_ct1.barrier(sycl::access::fence_space::local_space);
+    for (int h = warp; h < G; h += NW) {
+        float m = -FLT_MAX;
+        for (int c = lane; c < PC_CHUNK; c += SGS) m = sycl::fmax(m, sp[h][c]);
+        m = sycl::reduce_over_group(sg, m, sycl::maximum<float>());
+        float l = 0.0f;
+        for (int c = lane; c < PC_CHUNK; c += SGS) {
+            const float e = (c < n_here && srow[c] >= 0) ? sycl::native::exp(sp[h][c] - m) : 0.0f;
+            sp[h][c] = e;
+            l += e;
+        }
+        l = sycl::reduce_over_group(sg, l, sycl::plus<float>());
+        if (lane == 0) { part_m[slot * G + h] = m; part_l[slot * G + h] = l; }
+    }
+    item_ct1.barrier(sycl::access::fence_space::local_space);
+    float acc[G];
+#pragma unroll
+    for (int h = 0; h < G; ++h) acc[h] = 0.0f;
+    for (int c = 0; c < n_here; ++c) {
+        if (srow[c] < 0) continue;   // masked above, weight 0
+        const float v = load1_v<KV_MODE == 3 ? 2 : KV_MODE>(p, srow[c], t);
+#pragma unroll
+        for (int h = 0; h < G; ++h) acc[h] = sycl::fma(sp[h][c], v, acc[h]);
+    }
+#pragma unroll
+    for (int h = 0; h < G; ++h) part_acc[((size_t) slot * G + h) * HD + t] = acc[h];
+}
+
+template <int KV_MODE>
+void launch_percell(dpct::queue_ptr st, const float* q, const QsaAttnPools& pools, const int32_t* ids,
+                    const int32_t* steps, int64_t cap, const QsaShapes& s, float* part_acc, float* part_m, float* part_l,
+                    int n_chunks, long long stride, int64_t n_q, float scale) {
+    const sycl::range<3> grid((size_t) n_q, (size_t) s.n_head_kv, (size_t) n_chunks);
+    st->parallel_for(sycl::nd_range<3>(grid * sycl::range<3>(1, 1, THREADS), sycl::range<3>(1, 1, THREADS)),
+                     [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
+                         attn_chunk_percell_kernel<KV_MODE>(q, pools, ids, steps, (int) s.n_head_kv, (int) s.page_size,
+                                                            scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride);
+                     });
+}
+
 }  // namespace
 
 void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
@@ -318,6 +472,23 @@ void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int3
     const dpct::dim3 grid((unsigned)n_chunks, (unsigned)s.n_head_kv,
                           (unsigned)n_q);
     dpct::queue_ptr st = strata::q_of(stream);
+    // SYCL port: the per-cell score kernel (above), 128-cell chunks in the same scratch (its stride is the 64-cell
+    // layout's, so it fits); the merge below reads its chunk count. STRATA_ATTN_PERCELL=0: the warp kernel.
+    static const bool percell = [] { const char* v = std::getenv("STRATA_ATTN_PERCELL"); return !v || v[0] != '0'; }();
+    if (percell) {
+        const int nc = (int) ((cap + PC_CHUNK - 1) / PC_CHUNK);
+        float* pa = scratch;
+        float* pm = scratch + (size_t) nc * s.n_head * HD;
+        float* pl = pm + (size_t) nc * s.n_head;
+        if (kv_mode == 3) launch_percell<3>(st, q, pools, ids, steps, cap, s, pa, pm, pl, nc, stride, n_q, scale);
+        else if (kv_mode == 2) launch_percell<2>(st, q, pools, ids, steps, cap, s, pa, pm, pl, nc, stride, n_q, scale);
+        else if (kv_mode == 1) launch_percell<1>(st, q, pools, ids, steps, cap, s, pa, pm, pl, nc, stride, n_q, scale);
+        else launch_percell<0>(st, q, pools, ids, steps, cap, s, pa, pm, pl, nc, stride, n_q, scale);
+        st->parallel_for(sycl::nd_range<3>(sycl::range<3>(1, (size_t) n_q, (size_t) s.n_head) * sycl::range<3>(1, 1, HD),
+                                           sycl::range<3>(1, 1, HD)),
+                         [=](sycl::nd_item<3>) { attn_merge_kernel(pa, pm, pl, nc, attn, stride); });
+        return;
+    }
     if (kv_mode == 3)
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
