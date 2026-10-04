@@ -18,6 +18,10 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-03: 2x AMD Instinct MI50 16 GB (gfx906), Xeon E5-2666 v3, 32 GB RAM](../bench/results/2026-10-03-community-2x-mi50/README.md):
   the gfx906 build (#638) with #639 and #640, Coder IQ1_M, 131,072-token context, layer split across both cards;
   three runs each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.
+- [2026-10-04: RX 6800 16 GB (gfx1030), Ryzen 7 5700X3D, 64 GB RAM, Windows 11](../bench/results/2026-10-04-community-rx-6800-windows/README.md):
+  the release 0.1.38 engine and the 0.1.39 tag built from source, IQ2_XS, IQ3_XXS and Q2_0, 131,072-token context;
+  0.1.39 with and without `STRATA_SH_STREAM=0`, `--draft-vocab cyrillic`, `"parallel"` 2 and 4; one to four runs per
+  configuration, plus 22 correctness tasks.
 
 ## What to record
 
