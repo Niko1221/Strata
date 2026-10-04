@@ -275,7 +275,12 @@ class OverHttp(Server):
         code, events = self.post({"model": "m", "input": "a number", "text": {"format": fmt}, "stream": True})
         self.assertEqual([e["delta"] for e in events if e["type"] == "response.output_text.delta"], ["{\"n\":3}"])
         self.assertEqual(events[-1]["type"], "response.completed")
-        # an answer that fails the schema
+        # an answer that fails the schema - only jsonschema can tell: it is optional (serve/structured.py), and
+        # without it a json_schema answer is checked to be one JSON object, which {"n": 3} is
+        try:
+            import jsonschema  # noqa: F401
+        except ImportError:
+            return
         bad = {**fmt, "schema": {**fmt["schema"], "properties": {"n": {"type": "string"}}}}
         code, r = self.post({"model": "m", "input": "a number", "text": {"format": bad}})
         self.assertEqual((code, r["error"]["code"]), (502, "structured_output_failed"))
