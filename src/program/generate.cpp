@@ -55,6 +55,7 @@
 #include "strata/core/native_dense.hpp"
 #include "strata/program/logits_selection.hpp"
 #include "strata/program/conv_cache.hpp"
+#include "strata/program/serve_window.hpp"
 #include "strata/spec/draft_policy.hpp"
 #include "strata/spec/suffix_drafter.hpp"
 #include "strata/kernels/cvec.hpp"
@@ -5919,6 +5920,50 @@ int main(int argc, char** argv) {
                         if (!p.sp->relayout(want, p.cache->device_slot(first), part_bytes(p, first), e)) return false;
                         p.first_now = first;
                     }
+                    if (live_borrow && src.exchange_capacity() > 0) {
+                        // Retain the current borrowers before their GPU bytes become prompt buffers. Reuse
+                        // one existing exchange slot and same-layer RAM ownership; neither tier grows here.
+                        sp.drain_expert_reads();
+                        lookahead.drain();
+                        apply_pending(true);
+                        if (!ver.wait_commit(e) || cudaDeviceSynchronize() != cudaSuccess) {
+                            e = "live prefill: cannot drain readers before retaining loan weights"; return false;
+                        }
+                        const auto t_cover = Clock::now();
+                        uint64_t retained = 0;
+                        int64_t core_donors = 0, ram_donors = 0;
+                        bool no_bookkeeping = false;
+                        for (int64_t l = p.lb; l < p.le && !no_bookkeeping && !stop_req.load(); ++l) {
+                            const int32_t* slots = host_res.data() + l * g.n_expert;
+                            const float* heat = drive.d.usage.empty() ? nullptr : drive.d.usage.data() + l * g.n_expert;
+                            for (int32_t ex = 0; ex < g.n_expert && !stop_req.load(); ++ex) {
+                                if (slots[ex] < first || src.has_resident(l, ex)) continue;
+                                const int32_t donor = strata::core::live_prefill_donor(slots, heat, g.n_expert, first,
+                                    [&](int32_t id) { return src.has_resident(l, id); });
+                                if (donor < 0) continue; // no budgeted room in this layer: immutable-file fallback
+                                const uint64_t bytes = strata::kernels::cpu::expert_layout().blob_bytes(l);
+                                if (cudaMemcpy(src.exchange_buffer(0), p.cache->device_slot(slots[ex]),
+                                               (size_t) bytes, cudaMemcpyDeviceToHost) != cudaSuccess) {
+                                    e = "live prefill: cannot retain borrowed GPU weights"; return false;
+                                }
+                                try {
+                                    if (!src.stage_exchange(l, donor, ex, 0) || src.commit_exchanges() != 1) {
+                                        e = "live prefill: retaining loan weights failed"; return false;
+                                    }
+                                } catch (const std::bad_alloc&) {
+                                    // No new alias is published if staging cannot allocate its bookkeeping.
+                                    no_bookkeeping = true; break;
+                                }
+                                retained += bytes;
+                                (slots[donor] >= 0 ? core_donors : ram_donors)++;
+                            }
+                        }
+                        if (trace)
+                            std::fprintf(stderr, "strata trace: loan RAM retained %.1f MiB, %lld GPU-backed / %lld cold RAM donors in %.1f ms%s\n",
+                                         (double) retained / 1048576.0, (long long) core_donors, (long long) ram_donors,
+                                         std::chrono::duration<double, std::milli>(Clock::now() - t_cover).count(),
+                                         no_bookkeeping ? "; bookkeeping allocation limited coverage" : "");
+                    }
                     uint64_t ram_bytes = 0, file_bytes = 0;
                     for (int64_t l = p.lb; l < p.le; ++l)              // THIS participant's layers only
                         for (int64_t ex = 0; ex < g.n_expert; ++ex) {
@@ -6106,6 +6151,9 @@ int main(int argc, char** argv) {
                         if (pk.lookup) { T = pk.t; from_sfx = true; }
                     }
                 }
+                // Every committed input must have an emitted output. Bound the final window before
+                // verification, so reaching max_new cannot leave hidden tokens in the live prefix.
+                T = strata::program::serve_window_size(T, max_new - produced_n);
                 const bool timed_round = !first_window;
                 const Clock::time_point round0 = Clock::now();
                 if (p + T > o.max_context) break;
@@ -6138,6 +6186,9 @@ int main(int argc, char** argv) {
                 }
                 int a = 0;
                 while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
+                a = strata::program::serve_output_count(outv.data(), a + 1, [&](int32_t token) {
+                    return std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) token) != o.eos_ids.end();
+                }) - 1;
                 if (from_sfx) { ++sfx_windows; sfx_drafts += T - 1; sfx_ok += a; }
                 const Clock::time_point tw1 = Clock::now();
                 std::thread adapt_thr;   // the adaptive tier beside the commit and the draft (as in generate)

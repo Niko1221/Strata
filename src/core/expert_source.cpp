@@ -1775,8 +1775,8 @@ bool FileExpertSource::stage_exchange(int64_t layer, int64_t in, int64_t out, in
     if (override_[i_out] != nullptr) return false;
     for (const Exchange& x : staged_)
         if (x.in == i_in || x.q == q) return false;
-    override_[i_out] = exchange_buffer(q);
     staged_.push_back({i_in, i_out, q, layer_blob_bytes_[(size_t) layer]});
+    override_[i_out] = exchange_buffer(q); // publish only after the potentially allocating bookkeeping succeeds
     return true;
 }
 

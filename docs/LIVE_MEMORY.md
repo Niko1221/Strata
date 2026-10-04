@@ -37,6 +37,11 @@ resizing uses live residency rather than the startup profile's original placemen
 remain available from the unchanged model files. All background readers and pending copies are drained before
 storage is retired. With prompt borrowing enabled, profile-ranked GPU experts may also have RAM copies;
 those copies share the existing resident budget. The loan log reports RAM coverage and file fallback.
+Before borrowing overwrites a missing RAM copy, live mode can retain the current GPU bytes in an existing
+same-layer RAM slot using exchange scratch. All readers are drained first. Current borrowers cannot be donors;
+GPU-backed duplicates are preferred, followed by the coldest measured RAM occupant. Without a donor or scratch,
+immutable-file fallback remains available. Capacity stays unchanged; evicting a RAM-only donor can increase
+later decode reads, so fewer refill reads alone do not establish a speedup.
 Prefill temporarily borrows the active cache tail and refills the current experts before decode. A control
 received during borrowed prefill waits until the entire prompt/refill has completed, including on STOP.
 Before shrink and after growth, all borrowed views are rebound to current mapped slots. Chunk sizes shrink
@@ -162,3 +167,59 @@ requests do not establish a general speedup. Available RAM differed between runs
 The original release does not enforce the reserve after all startup buffers, which also changes cache sizes.
 The enabled server policy may choose or trim a smaller resident budget to preserve RAM headroom; this
 benchmark does not establish sustained throughput after those automatic changes. Live mode remains opt-in.
+
+### Refreshing current loan coverage (2026-10-04)
+
+Adaptive swaps left later borrowers outside RAM: two follow-up prompts in the preceding run needed 831 and
+975 MiB of file fallback, corresponding to 374 and 439 additional refill blob reads. The bounded retention
+path above was then measured against the accepted borrowing implementation in A/B/A/B order. Each process
+ran one warmup and four measured requests, giving eight measured requests per version with identical prompt
+token IDs, native arguments, model/profile/MTP and 512-token output limits. No controller mutations ran.
+These measurements preceded the serving-prefix correction described below; the final binary is measured
+separately rather than inheriting results from that earlier binary.
+
+| Mean measurement | Guarded borrowing | With current-loan coverage |
+| --- | ---: | ---: |
+| Decode (tokens/s) | 47.39 | 47.18 |
+| Prefill (tokens/s) | 1,452.96 | 1,639.61 |
+| First-token latency (s) | 4.28 | 3.80 |
+| Whole request (s) | 15.10 | 14.65 |
+
+Observed prefill throughput increased 12.8% and first-token latency decreased 11.3%. Decode differed by -0.45%,
+within broad observed ranges (41.82–52.23 versus 42.79–52.18 tokens/s); no decode speedup is established.
+Every candidate loan in this workload had complete RAM coverage and zero additional refill file-blob reads.
+Logical file counters do not measure physical NVMe I/O. These remain sequential workstation observations:
+outputs differ, and actual resident RAM was 40,776–40,901 MiB before versus 40,870–41,056 MiB after; expert
+VRAM was 4,894 MiB before versus 4,767–4,863 MiB after. The donor-eviction tradeoff above still applies;
+these observations do not guarantee that every workload benefits.
+
+### Serving output limits and reusable prefixes
+
+Real-model acceptance exposed an existing serving bug at the output limit: a fully accepted four-token
+speculative window committed four inputs even when only two outputs could be emitted. The invisible tail
+prevented the next chat turn from reusing its exact prefix. An accepted tail after EOS had the same risk.
+Serving now bounds the proposed window to the remaining output allowance before verification and limits
+the committed prefix to the first accepted EOS. The existing verifier restores recurrent, indexer and PLE
+state to that prefix; the last emitted token remains the unconsumed head. Non-serving generation is unchanged.
+
+The CPU-only `serve_window_test` reproduces the old mismatch and covers output allowances, partial/full
+draft matches, accepted/rejected EOS and successive windows. Real-model acceptance then reused all 8,625
+consumed tokens after the previously failing output-limited request; a separate natural-EOS continuation
+also reused its complete consumed prefix. Long borrowed prompts, queued controls, STOP, the reduced prefill
+floor and regrowth passed with the same native process and a 65,536-token context.
+
+The final binary passed all 251 live-memory checks and six relevant CTest targets, including the new
+serving-prefix regression and the existing conversation-cache/draft checks. It also passed all 12 real-model
+decode/idle resize cases again: output continued through every active change, the process/arguments stayed
+unchanged, and the following turn reused 1,911 KV tokens. The largest observed active token gap was 0.53 s;
+releasing 3 GiB of RAM completed over 29.91 s of bounded steps. This functional run used a 24 GiB RAM cap,
+synthetic policy time/capacity inputs and real native allocation guards, without artificial system pressure.
+
+The final binary ran one warmup and four fresh measured requests with the same prompt IDs, arguments and
+512-token output limits used above. Against the preceding eight guarded-borrowing samples, mean decode was
+47.75 versus 47.39 tokens/s, prefill 1,665.89 versus 1,452.96 tokens/s, first-token latency 3.74 versus 4.28 s,
+and whole-request time 14.45 versus 15.10 s. The observed prefill gain was 14.7% and first-token latency
+decreased 12.7%. Decode differed by only 0.74%; a decode speedup is still not established. All five loans
+had complete RAM coverage and zero additional refill file-blob reads. Final expert RAM/VRAM were
+41,025/4,894 MiB, with 1,587 MiB free VRAM after startup. These are sequential workstation measurements with
+eight baseline samples versus four final samples, not a controlled trial or a throughput guarantee.

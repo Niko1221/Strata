@@ -438,7 +438,11 @@ requests an observation and reports `pending` or `observed`, rather than promisi
 This mode currently requires a single CUDA GPU with virtual memory management, file-backed native experts,
 an expert profile and graphed residency. It does not support HIP, split/peer GPUs or the other cache layouts.
 Prefill can borrow the active expert-cache tail; resize rebinds its views and changes its chunk size. The log
-reports budgeted RAM coverage and file fallback. A small mapped cache floor preserves fresh prompt support;
+reports budgeted RAM coverage and file fallback. Before overwriting borrowers, live mode can retain missing
+weights in existing same-layer RAM slots, using exchange scratch and drained readers. It protects every current
+borrower, prefers GPU-backed duplicates, then colder measured RAM occupants; unavailable donors retain file
+fallback. Total capacity stays unchanged, but an evicted RAM donor can cost a later read.
+A small mapped cache floor preserves fresh prompt support;
 an unreachable reserve reports `prefill_cache_floor` with actual sizes.
 Free space alone does not guarantee faster inference: routing, file reads, host-to-device copies and fixed
 model/KV buffers still matter. See [live-memory control and validation](LIVE_MEMORY.md).

@@ -94,6 +94,26 @@ void loan_geometry() {
                     "every variable-sized loan is sufficient and starts at the latest valid slot");
         }
 }
+void loan_donors() {
+    using strata::core::live_prefill_donor;
+    const int32_t slots[] = {0, -1, 5, 6, -1, 1};
+    const float heat[] = {9, 2, 0, 20, 1, 10};
+    bool backed[] = {true, true, true, false, true, true};
+    auto held = [&](int32_t e) { return backed[e]; };
+    require(live_prefill_donor(slots, heat, 6, 5, held) == 0,
+            "loan donor prefers a GPU-backed duplicate over colder RAM-only experts");
+    backed[0] = false;
+    require(live_prefill_donor(slots, heat, 6, 5, held) == 5, "next donor stays outside the active loan");
+    backed[5] = false;
+    require(live_prefill_donor(slots, heat, 6, 5, held) == 4, "RAM-only fallback chooses the coldest measured donor");
+    backed[4] = false; backed[3] = true;
+    require(live_prefill_donor(slots, heat, 6, 5, held) == 1,
+            "newly retained loan occupants cannot be evicted again in the same pass");
+    require(live_prefill_donor(slots, nullptr, 6, 5, held) == -1,
+            "without routing measurements, retain RAM-only experts and use file fallback");
+    backed[1] = false;
+    require(live_prefill_donor(slots, heat, 6, 5, held) == -1, "no eligible same-layer donor preserves file fallback");
+}
 void device_arena() {
     using strata::core::ExpertCache;
     std::string err;
@@ -250,6 +270,26 @@ void ram_blocks(bool pin, bool mixed = false) {
     const uint8_t* duplicate = source.blob(0, 1);
     require(!source.stage_exchange(0, 0, 1, 0) && source.blob(0, 1) == duplicate && duplicate[0] == 2,
             "already-backed adaptive victim cannot overwrite or transfer a duplicate RAM owner");
+    require(source.resize_live_resident(block, block, 0, res, rank, done, err) && done,
+            "prepare a missing borrower and two resident donor slots");
+    res[1] = 5; res[2] = 0;
+    const float heat[] = {0, 9, 8, 0};
+    const int32_t donor = live_prefill_donor(res.data(), heat, 4, 5,
+        [&](int32_t e) { return source.has_resident(0, e); });
+    const uint8_t* donor_ptr = source.blob(0, donor);
+    const uint8_t* donor_device = source.device_alias(0, donor);
+    const uint64_t pinned_before = source.pinned_bytes();
+    require(donor == 2 && donor_ptr[0] == 3 && !source.has_resident(0, 1),
+            "coverage selects the GPU-backed same-layer RAM slot rather than a cold CPU expert");
+    std::memset(source.exchange_buffer(0), 2, (size_t) BLOB); // prepared borrower bytes, as after the drained D2H copy
+    require(source.stage_exchange(0, donor, 1, 0) && source.blob(0, 1)[0] == 2 && donor_ptr[0] == 3,
+            "staged coverage exposes prepared bytes without overwriting donor ownership before commit");
+    require(source.commit_exchanges() == 1 && source.blob(0, 1) == donor_ptr &&
+            source.device_alias(0, 1) == donor_device && source.pinned_bytes() == pinned_before &&
+            source.resident_bytes() == block && !source.has_resident(0, donor),
+            "coverage publication transfers block and alias ownership without growing either RAM counter");
+    require(source.blob(0, donor)[0] == 3 && source.blob(0, 1)[0] == 2 && res[1] == 5 && res[2] == 0,
+            "evicted donor retains immutable-file bytes and GPU residency remains authoritative");
     if (mixed) {
         require(source.resize_live_resident(block * 2, block, 0, res, rank, done, err) && done,
                 "close fixture with both pinned and pageable blocks alive");
@@ -265,6 +305,7 @@ int main(int argc, char** argv) {
         protocol();
         pressure_direction();
         loan_geometry();
+        loan_donors();
         if (argc <= 1 || std::strcmp(argv[1], "--protocol-only") != 0) {
             device_arena();
 #if !defined(STRATA_LIVE_DEVICE_TEST_ONLY)
