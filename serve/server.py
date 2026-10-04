@@ -311,6 +311,8 @@ class StrataEngine:
         self.model_path = paths.get("--native") or paths.get("--pack", "pack/full")
         self.log_path = log
         self.proc, self.pump, self.log = None, None, None
+        self.pipe_lock = threading.Lock()  # GEN, STOP, QUIT and MEMORY share one line-oriented pipe
+        self.memory_acks = queue.Queue()
         self.ended, self.unloaded = True, True
         self.max_context = int(args[args.index("--max-context") + 1]) if "--max-context" in args else 4096
         self.can_stop = False            # the engine honours a STOP line mid-request (READY <ctx> stop)
@@ -367,6 +369,9 @@ class StrataEngine:
         if self.info.get("engine"):
             self.info["version"] = str(self.info["engine"])
         self.ended = False                              # READY: alive from here (restart() set it True, #344)
+        if "--live-memory" in args and not self.live_memory_capable():
+            self.close()
+            raise ValueError("live memory needs an engine advertising live_memory=1 memory_protocol=1")
         # the engine's stdout on a thread, so a request can wait with a timeout (heartbeats, cancel checks)
         self.lines: queue.Queue = queue.Queue()
         self.pump = threading.Thread(target=self._pump, daemon=True)
@@ -374,11 +379,66 @@ class StrataEngine:
 
     def _pump(self):
         proc, lines = self.proc, self.lines             # this process's: a restart replaces both (#344)
+        acks = self.memory_acks
         for line in proc.stdout:
-            lines.put(line)
+            if line.startswith("MEMORY "):
+                ack = self._memory_ack(line)
+                if ack is not None:
+                    acks.put((proc, ack))
+            else:
+                lines.put(line)
         if self.proc is proc:                           # a killed engine's pump must not mark its successor dead
             self.ended = True                           # its output closed: it is gone, even before the OS says so
         lines.put(None)
+
+    def live_memory_capable(self):
+        return self.info.get("live_memory") == 1 and self.info.get("memory_protocol") == 1
+
+    @staticmethod
+    def _memory_ack(line):
+        """Malformed control output never enters the token stream or changes an allocation."""
+        fields = line.split()
+        if (len(fields) < 3 or fields[0] != "MEMORY" or len(fields[1]) > 16
+                or not fields[1].isascii() or not fields[1].isdigit()):
+            return None
+        request_id = int(fields[1])
+        if not 0 < request_id <= 2**53:
+            return None
+        ack = {"id": request_id}
+        for field in fields[2:]:
+            key, sep, value = field.partition("=")
+            if not sep or key in ack:
+                return None
+            ack[key] = value
+        if ack.get("status") not in ("applied", "progress", "error"):
+            return None
+        for key in ("resident_mib", "expert_cache_mib", "expert_slots", "vram_free_mib", "vram_reserve_mib"):
+            value = ack.get(key, "")
+            if key == "vram_free_mib" and value == "-1":
+                ack[key] = -1  # native telemetry error: retain the committed cache sizes
+                continue
+            if len(value) > 16 or not value.isascii() or not value.isdigit() or int(value) > 2**53:
+                return None
+            ack[key] = int(value)
+        return ack
+
+    def _write(self, command, proc=None, close=False):
+        # __new__ fixtures from older protocol tests predate the pipe lock.
+        if not hasattr(self, "pipe_lock"):
+            self.pipe_lock = threading.Lock()
+        with self.pipe_lock:
+            target = self.proc if proc is None else proc
+            if target is None or target is not self.proc:
+                raise OSError("the engine pipe changed")
+            target.stdin.write(command + "\n")
+            target.stdin.flush()
+            if close:
+                target.stdin.close()
+
+    def request_memory(self, request_id, resident_mib, reserve_mib, proc):
+        if not self.live_memory_capable():
+            raise ValueError("the loaded engine does not support live memory")
+        self._write(f"MEMORY {request_id} {resident_mib} {reserve_mib}", proc=proc)
 
     def death_note(self) -> str:
         """Why the engine most likely ended, from the end of its log: its own watchdog (issue #29), else RAM."""
@@ -430,6 +490,9 @@ class StrataEngine:
         # `ended` itself once READY (before its pump thread can set it again).
         self.ended = True
         self.__init__(*self.spawn)
+        # Capabilities belong to the new process, never to a previous binary.
+        info.pop("live_memory", None)
+        info.pop("memory_protocol", None)
         self.info = {**info, **self.info}
 
     def _parse_done(self, line):
@@ -509,8 +572,7 @@ class StrataEngine:
         head = f"GENI {int(max_new)}{self.sampling_keys(sampling or {})} {embeddings}" if embeddings else \
             f"GEN {int(max_new)}{self.sampling_keys(sampling or {})}"
         try:
-            self.proc.stdin.write(f"{head} {','.join(str(int(t)) for t in ids)}\n")
-            self.proc.stdin.flush()
+            self._write(f"{head} {','.join(str(int(t)) for t in ids)}")
         except OSError:                                  # the pipe is gone: the engine died (not the client)
             raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
         done = False
@@ -573,8 +635,7 @@ class StrataEngine:
             if not done:                                  # the consumer stopped early: stop the engine, drain to DONE
                 if self.can_stop:
                     try:
-                        self.proc.stdin.write("STOP\n")
-                        self.proc.stdin.flush()
+                        self._write("STOP")
                     except OSError:
                         pass
                 # #481: never an untimed wait here - it holds the request FIFO, and an engine that lost step never
@@ -621,9 +682,7 @@ class StrataEngine:
         try:
             if self.proc.poll() is None:
                 try:
-                    self.proc.stdin.write("QUIT\n")
-                    self.proc.stdin.flush()
-                    self.proc.stdin.close()  # Windows' detached stdin reader must see EOF before shutdown
+                    self._write("QUIT", close=True)  # the detached reader must see EOF before shutdown
                     self.proc.wait(timeout=20)
                 except (OSError, ValueError, subprocess.TimeoutExpired):
                     self.proc.terminate()
@@ -794,6 +853,14 @@ def engine_args(cfg: dict) -> list[str]:
     """The engine's arguments: the config's, and with several GPUs the layer split across them ("layer_split" in the
     config: "auto" by default, or the first layer of each later GPU's share, e.g. "18" or "16,32")."""
     args = list(cfg["args"])
+    policy = cfg.get("memory_policy")
+    if isinstance(policy, dict) and policy.get("enabled") is True and policy.get("mode", "reload") == "live":
+        if cfg.get("backend") not in (None, "cuda") or len(gpu_list(cfg)) > 1:
+            raise ValueError("live memory currently requires CUDA and one GPU")
+        if any(flag in args for flag in ("--devices", "--peer-device", "--layer-split")):
+            raise ValueError("live memory currently supports one GPU")
+        if "--live-memory" not in args:
+            args.append("--live-memory")
     if len(gpu_list(cfg)) > 1 and "--layer-split" not in args:
         args += ["--layer-split", str(cfg.get("layer_split") or "auto")]
     # opt-in: an auto split runs on the first card alone when it holds every profiled expert and the KV
@@ -992,6 +1059,11 @@ class Service:
         self.memory_pending = None
         self.memory_last_reason = None
         self.memory_loading = False
+        self.memory_live_pending = None
+        self.memory_request_id = 0
+        self.memory_retry_at = 0
+        self.memory_error = None
+        self.memory_limitation = None
         self.min_free_vram_mib = 0
         self.before_load = None
         self.reasoning_budget_tokens = 0                 # #123: the config's default thinking budget (0: none)
@@ -1101,10 +1173,14 @@ class Service:
             print(f"[strata] the engine had stopped (exit code {code}); starting it again "
                   "(a minute or two) ...", flush=True)
         self.engine.restart()
-        if self.memory_policy is not None and self.memory_pending is not None:
+        if self.memory_policy is not None:
             with self.memory_lock:
-                self.memory_policy.applied(self.memory_pending, time.time())
-                self.memory_last_reason = self.memory_pending["reason"]
+                if self.memory_policy.mode == "live":
+                    self._record_live_load(self.memory_pending["reason"] if self.memory_pending else "loaded_budget")
+                elif self.memory_pending is not None:
+                    self.memory_policy.applied(self.memory_pending, time.time())
+                if self.memory_pending is not None:
+                    self.memory_last_reason = self.memory_pending["reason"]
                 self.memory_pending = None
         print("[strata] the engine is running again", flush=True)
 
@@ -1125,10 +1201,71 @@ class Service:
         self.memory_policy = MemoryPolicy(config,
             resident_cap_gib=float(args[args.index("--resident-budget-gib") + 1]),
             vram_reserve_mib=int(args[args.index("--vram-reserve-mib") + 1]))
+        if self.memory_policy.mode == "live":
+            if "--live-memory" not in args:
+                raise ValueError("live memory requires --live-memory before engine startup")
+            if self.loaded():
+                self._record_live_load("initial_budget")
+            return
         if self.loaded():
             self.memory_policy.applied({"resident_budget_gib": self.memory_policy.cap,
                                        "vram_reserve_mib": self.memory_policy.reserve_floor,
                                        "reason": "initial_budget"}, time.time())
+
+    def _record_live_load(self, reason):
+        if not self.engine.live_memory_capable():
+            raise ValueError("live memory needs an engine advertising live_memory=1 memory_protocol=1")
+        info = self.engine.info
+        arena = info.get("arena_mib")
+        if not isinstance(arena, int) or isinstance(arena, bool) or arena < 0:
+            raise ValueError("live memory engine did not report its actual arena_mib")
+        args = self.engine.spawn[1]
+        reserve = info.get("vram_reserve_mib", int(args[args.index("--vram-reserve-mib") + 1]))
+        self.memory_policy.live_actual(arena, reserve, time.time(), reason, completed=True)
+        self.memory_live_pending = None
+        self.memory_retry_at = 0
+        self.memory_error = None
+        self.memory_limitation = None
+
+    def _invalidate_live_memory(self):
+        self.memory_live_pending = None
+        self.memory_pending = None
+        self.memory_policy.current = None
+        self.memory_policy.gpu_baseline = None
+        self.memory_policy._reset_windows()
+        self.memory_last_reason = "engine_unavailable"
+        self.memory_limitation = None
+
+    def _drain_memory_acks(self, now):
+        """Observation handles ACKs; the stdout pump never takes service locks."""
+        while True:
+            try:
+                proc, ack = self.engine.memory_acks.get_nowait()
+            except queue.Empty:
+                break
+            pending = self.memory_live_pending
+            if (pending is None or proc is not pending["proc"] or proc is not self.engine.proc
+                    or ack["id"] != pending["id"]):
+                continue
+            if ack["resident_mib"] > self.memory_policy.cap * 1024:
+                continue
+            status = ack["status"]
+            reason = pending["plan"]["reason"] if status == "applied" else "native_" + status
+            self.memory_policy.live_actual(ack["resident_mib"], ack["vram_reserve_mib"],
+                                           now, reason, completed=status == "applied")
+            self.engine.info.update(arena_mib=ack["resident_mib"],
+                                    expert_cache_mib=ack["expert_cache_mib"],
+                                    expert_slots=ack["expert_slots"], vram_free_mib=ack["vram_free_mib"],
+                                    vram_reserve_mib=ack["vram_reserve_mib"])
+            self.memory_last_reason = reason
+            if status != "progress":
+                self.memory_live_pending = None
+            if status == "error":
+                self.memory_error = ack.get("error", "native_error")
+                self.memory_retry_at = now + self.memory_policy.cooldown
+            elif status == "applied":
+                self.memory_error = None
+                self.memory_limitation = ack.get("error") if ack.get("error") not in (None, "none", "") else None
 
     def memory_snapshot(self, fresh=False):
         telemetry = getattr(self, "telemetry", None)
@@ -1143,11 +1280,42 @@ class Service:
             if self.memory_loading:
                 return
             snapshot, now = self.memory_snapshot(), time.time()
+            live = self.memory_policy.mode == "live"
+            if live:
+                if not self.loaded():
+                    self._invalidate_live_memory()
+                    return
+                if (self.memory_live_pending is not None
+                        and self.memory_live_pending["proc"] is not self.engine.proc):
+                    self._invalidate_live_memory()
+                    return
+                self._drain_memory_acks(now)
+                if self.memory_live_pending is not None or now < self.memory_retry_at:
+                    return
             with self.status_lock:
                 idle = not self.status.get("busy") and not self.status.get("queued")
             if idle and self.loaded():
                 self.memory_policy.record_loaded(snapshot, now)
             plan = self.memory_policy.observe(snapshot, self.loaded(), getattr(self.engine, "info", {}), now)
+            if live:
+                if plan is None:
+                    return
+                if self.memory_request_id >= 2**53:
+                    self.memory_error = "request_id_exhausted"
+                    return
+                self.memory_request_id += 1
+                self.memory_limitation = None
+                pending = {"id": self.memory_request_id, "proc": self.engine.proc, "plan": plan}
+                self.memory_live_pending = pending
+                try:
+                    self.engine.request_memory(pending["id"], int(plan["resident_budget_gib"] * 1024),
+                                               plan["vram_reserve_mib"], pending["proc"])
+                except (OSError, ValueError) as e:
+                    self.memory_live_pending = None
+                    self.memory_error = str(e)
+                    self.memory_last_reason = "command_failed"
+                    self.memory_retry_at = now + self.memory_policy.cooldown
+                return
             self.memory_pending = plan
 
     def _apply_memory_plan(self):
@@ -1156,6 +1324,10 @@ class Service:
             return
         with self.memory_lock:
             loaded = self.loaded()
+            if self.memory_policy.mode == "live":
+                if loaded:
+                    return
+                self._invalidate_live_memory()
             with self.status_lock:
                 if self.status.get("busy") or self.status.get("queued"):
                     return
@@ -1179,8 +1351,13 @@ class Service:
             return {"enabled": False}
         with self.memory_lock:
             return {**self.memory_policy.status(), "enabled": True,
-                    "pending": self.memory_pending is not None, "last_reason": self.memory_last_reason,
-                    "application": "next request boundary", "idle_unload_s": self.idle_unload_s}
+                    "pending": self.memory_pending is not None or self.memory_live_pending is not None,
+                    "request_id": self.memory_live_pending["id"] if self.memory_live_pending else None,
+                    "last_reason": self.memory_last_reason, "error": self.memory_error,
+                    "limitation": self.memory_limitation,
+                    "retry_at": self.memory_retry_at or None,
+                    "application": "live" if self.memory_policy.mode == "live" else "next request boundary",
+                    "idle_unload_s": self.idle_unload_s}
 
     def start_memory_policy(self):
         if self.memory_policy is None:
@@ -1238,7 +1415,10 @@ class Service:
                     return "busy"
             if idle_for is not None and time.time() - (self.last_request_at or self.started_at) < idle_for:
                 return "busy"
-            self.engine.unload()
+            with self.memory_lock:
+                self.engine.unload()
+                if self.memory_policy is not None and self.memory_policy.mode == "live":
+                    self._invalidate_live_memory()
             if self.vision is not None and hasattr(self.vision, "unload"):
                 self.vision.unload()
             print(f"[strata] model unloaded{f' after {idle_for:.0f} s idle' if idle_for else ''}; "
@@ -2386,7 +2566,9 @@ def make_handler(svc: Service):
                         return
                     # Observation only: never unload or restart from this HTTP control endpoint.
                     svc.observe_memory()
-                    self._json(200, {"status": "deferred", "memory_policy": svc.memory_status()})
+                    memory = svc.memory_status()
+                    result = ("pending" if memory["pending"] else "observed") if memory.get("mode") == "live" else "deferred"
+                    self._json(200, {"status": result, "memory_policy": memory})
                     return
                 if path in ("/v1/chat/completions", "/v1/messages"):
                     self.record = svc.begin_request(path, req)

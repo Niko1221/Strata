@@ -16,6 +16,7 @@
 
 #include "strata/core/device.hpp"
 #include "strata/core/expert_cache.hpp"
+#include "strata/core/live_memory.hpp"
 #include "strata/core/conversation_snapshot.hpp"
 #include "strata/core/conversation_memory.hpp"
 #include "strata/core/coupled_draft.hpp"
@@ -279,6 +280,7 @@ struct Options {
     /// not hold that the expert profile ranks hottest are copied into RAM, the rest are read from the files in place
     /// (the GGUF shards when the pack has no experts.bin).  0 = the whole complement (--resident-experts).
     uint64_t resident_budget = 0;
+    bool live_memory = false;
     /// R4: slots of VRAM-resident experts.  **0 = off, and off is the default.**
     /// **THE COMMENT THAT USED TO BE HERE WAS FALSE AND ROUND 328 MEASURED IT.**  It said "the cache has no
     /// consumer yet - `moe_hit_grouped_s2` does not exist - so switching it on costs the fill traffic and
@@ -603,7 +605,10 @@ void usage() {
                  "                       RAM allows); adaptive swaps exchange them, so none is read from the file again.\n"
                  "  --resident-experts   the low-RAM PC's resident mode (setup): --mmap-experts --resident-cpu-experts\n"
                  "                       with the copy page-locked when possible, 4 GiB headroom, plain mmap if it\n"
-                 "                       does not fit.  Same answers as --mmap-experts for the same placement.\n");
+                 "                       does not fit.  Same answers as --mmap-experts for the same placement.\n"
+                 "  --live-memory        opt-in single-GPU CUDA serve: resize expert VRAM/RAM at safe points via\n"
+                 "                       MEMORY <id> <resident_mib> <vram_reserve_mib>; retains conversation state.\n"
+                 "                       Requires a native pack, mmap and profile; disables prompt-buffer borrowing.\n");
 }
 
 bool parse_i64_list(const char* s, std::vector<int64_t>& out, std::string& err) {
@@ -1199,6 +1204,7 @@ int main(int argc, char** argv) {
         else if (a == "--expert-cache-remote-placement")
             o.expert_cache_remote_placement = next("--expert-cache-remote-placement");
         else if (a == "--vram-reserve-mib") { o.vram_reserve_mib = std::atoi(next("--vram-reserve-mib")); o.vram_reserve_given = true; }
+        else if (a == "--live-memory") o.live_memory = true;
         else if (a == "--prefill") {
             const std::string v = next("--prefill");
             o.prefill_auto = v == "auto" || v.rfind("auto:", 0) == 0;
@@ -1418,6 +1424,25 @@ int main(int argc, char** argv) {
     }
     const bool remote_caches = o.expert_cache_remote[0] > 0 || o.expert_cache_remote[1] > 0 ||
                                o.expert_cache_remote[2] > 0;
+    if (o.live_memory) {
+#if defined(STRATA_USE_HIP)
+        std::fprintf(stderr, "strata serve: --live-memory requires CUDA VMM; HIP is unsupported\n");
+        return 2;
+#endif
+        if (!o.serve || !o.mmap_experts || o.expert_profile.empty() || !o.layer_split.empty() ||
+            remote_caches || o.peer_device >= 1 || o.expert_cache_per_layer || o.no_pool ||
+            o.no_capture || o.no_token_graph || !o.dump_layers.empty() || !o.dump_halves.empty() ||
+            !o.shared_expert_arena.empty()) {
+            std::fprintf(stderr, "strata serve: --live-memory needs single-GPU CUDA --serve, --mmap-experts, "
+                                 "--expert-profile and graph residency; splits, peer/remote caches, per-layer "
+                                 "admission and diagnostic dumps are unsupported\n");
+            return 2;
+        }
+        // The prompt path otherwise retains a borrowed tail across requests, which a live shrink can release.
+        o.no_prefill_borrow = true;
+        o.vram_reserve_mib = std::max(o.vram_reserve_mib, 256);
+        std::fprintf(stderr, "strata serve: live memory: separate prompt buffers; expert-cache borrowing disabled\n");
+    }
     if (o.resident_cpu_experts && !o.layer_split.empty() && !remote_caches && o.resident_soft &&
         !o.resident_cpu_explicit && o.resident_budget == 0) {
         // #364 #384: setup's --resident-experts with a layer split (--gpus at start, or a config edited by hand) runs
@@ -1800,6 +1825,9 @@ int main(int argc, char** argv) {
         }
     }
     const bool native_pack = strata::kernels::cpu::expert_layout().native;
+    if (o.live_memory && !native_pack) {
+        std::fprintf(stderr, "strata serve: --live-memory currently requires a native expert pack\n"); return 2;
+    }
     // STRATA_EARLY_REMOTE_CONTEXTS=1: create EVERY secondary context here, like CUDA1's.  Under WSL2 the driver's
     // pinned/mapped host budget (dxg gpadl, ~1 GiB) is spent by CUDA0's weights and MTP before the later loop runs,
     // and a new context then fails with cudaErrorMemoryAllocation (CUDA2: "cudaSetDevice(2) failed: out of memory").
@@ -2410,6 +2438,8 @@ int main(int argc, char** argv) {
     // #477: the whole ranking as loaded, the prior of --expert-profile-save's order (a layer split keeps only
     // CUDA0's pairs in `profile` below).  Empty without --expert-profile-save.
     std::vector<std::pair<int32_t, int32_t>> profile_loaded;
+    if (o.live_memory)
+        profile = strata::core::rank_learned_profile(g.n_layers, g.n_expert, {}, {}, profile);
     if (!o.expert_profile_save.empty()) profile_loaded = profile;
     // ---- layer split across GPUs: "auto" places the split points by a cost model of one decode window, measured on
     // the 5080 + 3090 rig (bench/results/2026-09-29-layer-split):
@@ -2936,6 +2966,11 @@ int main(int argc, char** argv) {
     // #369: not with --expert-cache-per-layer - its per-layer slot ranges ignore the profile rank a sized slot was cut
     // for, so a layer's larger blob could land in a smaller slot: that mode keeps slots of the largest blob
     std::vector<int64_t> sized_slots;
+    std::vector<int64_t> live_slot_sizes;
+    if (o.live_memory) {
+        for (const auto& pr : profile)
+            live_slot_sizes.push_back((int64_t) strata::kernels::cpu::expert_layout().blob_bytes(pr.first));
+    }
     if (native_pack && o.expert_cache > 0 && !profile.empty() && !o.expert_cache_per_layer) {
         size_t free_b = 0, total_b = 0;
         cudaMemGetInfo(&free_b, &total_b);
@@ -2990,7 +3025,9 @@ int main(int argc, char** argv) {
                 --fake_fails;
                 err = "ExpertCache: cudaMalloc failed: out of memory (STRATA_TEST_CACHE_FAIL)";
             } else {
-                ok = sized_slots.empty()
+                ok = o.live_memory
+                    ? xcache.open_live(live_slot_sizes, o.expert_cache, g.n_layers, g.n_expert, err)
+                    : sized_slots.empty()
                     ? xcache.open(o.expert_cache, g.n_layers, g.n_expert, (int64_t) strata::kernels::cpu::expert_layout().max_blob, err)
                     : xcache.open_sized(sized_slots, g.n_layers, g.n_expert, err);
             }
@@ -4029,7 +4066,33 @@ int main(int argc, char** argv) {
     // streamed during a prompt and copied back after it, so those are kept in RAM too as far as RAM allows.  The
     // bytes are the file's bytes and the placement is the same, so the answers are the plain mmap mode's; the
     // share-of-pinned figure above (which sizes the prompt path) is left as the mmap mode's for the same reason.
-    if (o.resident_cpu_experts) {
+    if (o.live_memory) {
+        if (host_res.empty() || d_res == nullptr || !xcache.live() || !src.enable_live_resident(o.resident_pin, err)) {
+            std::fprintf(stderr, "strata serve: live-memory initialization failed: %s\n", err.c_str()); return 1;
+        }
+        uint64_t target = o.resident_cpu_experts ? o.resident_budget : 0;
+        if (o.resident_cpu_experts && target == 0) {
+            const auto available = strata::core::conversation_available_memory();
+            target = available && *available > o.resident_headroom ? *available - o.resident_headroom : 0;
+        }
+        bool done = false;
+        while (!done) {
+            if (!src.resize_live_resident(target, 32ull << 20, o.resident_headroom, host_res, profile, done, err)) {
+                std::fprintf(stderr, "strata serve: live RAM startup kept %.1f MiB: %s\n",
+                             (double) src.resident_bytes() / 1048576.0, err.c_str()); break;
+            }
+        }
+        if (o.adapt_every > 0 && o.adapt_swaps > 0 &&
+            !src.reserve_exchanges(std::min<int64_t>(o.adapt_swaps, 96), err)) {
+            std::fprintf(stderr, "strata serve: %s\n", err.c_str()); return 1;
+        }
+        size_t free_b = 0, total_b = 0;
+        const bool measured = cudaMemGetInfo(&free_b, &total_b) == cudaSuccess;
+        std::fprintf(stderr, "strata live memory: RAM %.1f MiB pinned + %.1f MiB pageable; VRAM free %lld MiB before prompt buffers\n",
+                     (double) src.pinned_bytes() / 1048576.0,
+                     (double) (src.resident_bytes() - src.pinned_bytes()) / 1048576.0,
+                     measured ? (long long) (free_b >> 20) : -1ll);
+    } else if (o.resident_cpu_experts) {
         int64_t lend_from = -1;
         if (o.prefill_chunk > 0 && !o.no_prefill_borrow && d_res != nullptr && xcache.slots() > 0) {
             int64_t chunk = o.prefill_chunk;
@@ -4357,6 +4420,10 @@ int main(int argc, char** argv) {
             }
         }
         for (;;) {
+            if (o.live_memory)
+                std::fprintf(stderr, "strata live memory: owned prompt buffers %llu MiB for %lld-token chunks\n",
+                             (unsigned long long) (strata::prefill::Prefill::bytes_needed(g, ss, o.prefill_chunk) >> 20),
+                             (long long) o.prefill_chunk);
             const int r = init_prompt_paths();
             if (r == 0) break;
             int64_t next = 0;
@@ -4458,7 +4525,7 @@ int main(int argc, char** argv) {
         vh.cache_base = thits.cache_base;
         vh.blob = thits.blob;
         vh.slot_off = xcache.slot_offsets();   // E-6: the device plan's pointers
-        vh.n_slots = xcache.slots();
+        vh.n_slots = xcache.capacity();
         // Layer split: `ver` runs layers [0, K1) and hands its residual to the next stage's verifier, and so on; the
         // last runs the head.  The hand-offs are mapped pinned memory, portable: a stage on another GPU reads it.
         // (--split-device 0: the second stage on this GPU, sharing its weights, session and cache - the A/B.)
@@ -4775,6 +4842,7 @@ int main(int argc, char** argv) {
             }
         };
         auto apply_pending = [&](bool wait) {
+            if (o.live_memory) lookahead.drain();
             if (peer.valid()) peer.apply_pending(wait);
             if (pending.empty()) return;
             if (wait) cudaEventSynchronize(adapt_ev);
@@ -4793,6 +4861,7 @@ int main(int argc, char** argv) {
         // the VRAM tier follows the conversation (the same rule as the speculative loop below)
         auto adapt = [&]() -> bool {
             if (!pending.empty()) return true;   // the previous swaps are still in flight
+            if (o.live_memory) lookahead.drain();
             struct Swap { float gain; int32_t layer, in, out; };
             std::vector<Swap> swaps;
             std::vector<std::pair<float, int32_t>> cand, vict;
@@ -4883,7 +4952,240 @@ int main(int argc, char** argv) {
         std::mutex in_mu;
         std::condition_variable in_cv;
         std::deque<std::string> in_lines;
+        std::deque<std::string> memory_lines;
         bool in_eof = false;
+        std::optional<strata::core::LiveMemoryRequest> memory_request;
+        bool memory_gpu_growth = false, memory_gpu_capped = false;
+        Clock::time_point memory_step_at{};
+        // Call only after readers and CUDA work have drained. Both startup admission and live control remove
+        // authoritative residency before releasing mappings, preserving the captured base and offset table.
+        auto trim_live_cache = [&](int64_t slots, std::string& why) -> bool {
+            std::vector<int32_t> next_res = host_res;
+            for (auto& slot : next_res) if (slot >= slots) slot = strata::core::kNotResident;
+            if (cudaMemcpy(d_res, next_res.data(), next_res.size() * sizeof(int32_t),
+                           cudaMemcpyHostToDevice) != cudaSuccess) {
+                if (cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t),
+                               cudaMemcpyHostToDevice) != cudaSuccess) std::abort();
+                why = "cannot publish reduced residency"; return false;
+            }
+            if (!xcache.resize_live(slots, why)) {
+                if (cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t),
+                               cudaMemcpyHostToDevice) != cudaSuccess) std::abort();
+                return false;
+            }
+            std::copy(next_res.begin(), next_res.end(), host_res.begin());
+            return true;
+        };
+        auto memory_reply = [&](uint64_t id, const char* status, const char* code, uint64_t reserve) {
+            size_t free_b = 0, total_b = 0;
+            const bool measured = cudaMemGetInfo(&free_b, &total_b) == cudaSuccess;
+            if (!measured) { status = "error"; code = "telemetry"; }
+            std::printf("MEMORY %llu status=%s resident_mib=%llu expert_cache_mib=%llu expert_slots=%lld "
+                        "vram_free_mib=%lld vram_reserve_mib=%llu error=%s\n",
+                        (unsigned long long) id, status, (unsigned long long) (src.resident_bytes() >> 20),
+                        (unsigned long long) (xcache.committed_bytes() >> 20), (long long) xcache.slots(),
+                        measured ? (long long) (free_b >> 20) : -1ll, (unsigned long long) reserve, code);
+            std::fflush(stdout);
+            return measured;
+        };
+        // Main-thread only. The reader queues control lines even while GEN is running; the actual mutation
+        // happens only at a drained window boundary or while idle. No SessionState or checkpoint is touched.
+        auto service_memory = [&]() {
+          try {
+            std::deque<std::string> commands;
+            {
+                std::lock_guard<std::mutex> lk(in_mu);
+                commands.swap(memory_lines);
+            }
+            for (const auto& command : commands) {
+                strata::core::LiveMemoryRequest request;
+                if (!strata::core::parse_live_memory_request(command, request)) {
+                    memory_reply(0, "error", "invalid_request", (uint64_t) o.vram_reserve_mib); continue;
+                }
+                if (!o.live_memory) {
+                    memory_reply(request.id, "error", "unsupported", (uint64_t) o.vram_reserve_mib); continue;
+                }
+                if (memory_request) {
+                    memory_reply(request.id, "error", "busy", (uint64_t) o.vram_reserve_mib); continue;
+                }
+                request.vram_reserve_mib = std::max<uint64_t>(request.vram_reserve_mib, 256);
+                memory_gpu_growth = strata::core::live_memory_gpu_growth_allowed(
+                    request, src.resident_bytes(), (uint64_t) o.vram_reserve_mib);
+                memory_gpu_capped = false;
+                memory_request = request;
+                memory_step_at = Clock::time_point{};
+            }
+            if (!memory_request || Clock::now() - memory_step_at < std::chrono::milliseconds(100)) return;
+            memory_step_at = Clock::now();
+            const auto request = *memory_request;
+            auto fail_memory = [&](const char* code, const std::string& why) {
+                std::fprintf(stderr, "strata live memory: %s\n", why.c_str());
+                memory_reply(request.id, "error", code, request.vram_reserve_mib);
+                memory_request.reset();
+            };
+            std::string why;
+            sp.drain_expert_reads();
+            lookahead.drain();
+            apply_pending(true);
+            if (!ver.wait_commit(why) || cudaDeviceSynchronize() != cudaSuccess) {
+                fail_memory("gpu_sync", why); return;
+            }
+            bool ram_done = false;
+            const bool ram_shrinking = (request.resident_mib << 20) < src.resident_bytes();
+            if (ram_shrinking && !src.resize_live_resident(request.resident_mib << 20, 32ull << 20,
+                    o.resident_headroom, host_res, profile, ram_done, why)) {
+                fail_memory("ram_resize", why); return;
+            }
+            size_t free_b = 0, total_b = 0;
+            if (cudaMemGetInfo(&free_b, &total_b) != cudaSuccess) {
+                fail_memory("telemetry", "VRAM telemetry unavailable"); return;
+            }
+            const uint64_t reserve = request.vram_reserve_mib << 20;
+            const uint64_t committed = xcache.committed_bytes();
+            const uint64_t quantum = xcache.live_block_bytes();
+            const uint64_t budget = strata::core::live_memory_gpu_budget(free_b, committed, reserve, quantum,
+                                                                        memory_gpu_growth);
+            int64_t target_slots = xcache.slots_for_bytes(budget);
+            const int64_t old_slots = xcache.slots();
+            if (!memory_gpu_growth) target_slots = std::min(target_slots, old_slots);
+            // At most 128 MiB of VRAM and one 32 MiB RAM block per window. Mapping rounds to the driver's
+            // granularity; the budget above includes that rounding before any allocation is attempted.
+            const uint64_t step = 128ull << 20;
+            int64_t next_slots = target_slots;
+            if (target_slots < old_slots && committed > step)
+                next_slots = std::max(target_slots, xcache.slots_for_bytes(committed - step));
+            else if (target_slots > old_slots)
+                next_slots = std::min(target_slots, xcache.slots_for_bytes(committed + step));
+            if (next_slots != old_slots) {
+                if (next_slots < old_slots) {
+                    if (memory_gpu_growth) { memory_gpu_growth = false; memory_gpu_capped = true; }
+                    if (!trim_live_cache(next_slots, why)) {
+                        fail_memory("gpu_resize", why); return;
+                    }
+                } else do {
+                    // Prepare host storage before mapping; no old expert data is relocated or overwritten.
+                    std::vector<int32_t> next_res = host_res;
+                    std::vector<uint8_t> staging((size_t) strata::kernels::cpu::expert_layout().max_blob);
+                    auto cap_growth = [&] {
+                        // This request may finish its RAM work, but may not retry a refused GPU allocation.
+                        memory_gpu_growth = false; memory_gpu_capped = true;
+                        next_slots = target_slots = old_slots;
+                    };
+                    if (!xcache.resize_live(next_slots, why)) { cap_growth(); break; }
+                    bool filled = true;
+                    try {
+                    for (int64_t slot = old_slots; slot < next_slots; ++slot) {
+                        const int64_t layer = profile[(size_t) slot].first;
+                        int64_t expert = profile[(size_t) slot].second;
+                        if (next_res[(size_t) (layer * g.n_expert + expert)] >= 0) {
+                            expert = 0;
+                            while (expert < g.n_expert && next_res[(size_t) (layer * g.n_expert + expert)] >= 0) ++expert;
+                        }
+                        if (expert == g.n_expert || !src.copy_blob(layer, expert, staging.data()) ||
+                            !xcache.fill_slot_blocking((int32_t) slot, staging.data(), why,
+                                (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(layer))) {
+                            filled = false; break;
+                        }
+                        next_res[(size_t) (layer * g.n_expert + expert)] = (int32_t) slot;
+                    }
+                    } catch (...) {
+                        std::string rollback;
+                        if (!xcache.resize_live(old_slots, rollback)) std::abort();
+                        throw;
+                    }
+                    if (!filled) {
+                        std::string rollback;
+                        if (!xcache.resize_live(old_slots, rollback)) std::abort();
+                        fail_memory("gpu_fill", why.empty() ? "new GPU slots could not be filled" : why);
+                        return;
+                    }
+                    // Touching WDDM mappings can consume more apparent room than the earlier free snapshot.
+                    size_t touched_free = 0, touched_total = 0;
+                    const bool measured = cudaMemGetInfo(&touched_free, &touched_total) == cudaSuccess;
+                    if (!measured || touched_free < reserve) {
+                        std::string rollback;
+                        if (!xcache.resize_live(old_slots, rollback)) std::abort();
+                        if (!measured) { fail_memory("telemetry", "VRAM telemetry unavailable after growth"); return; }
+                        cap_growth(); break;
+                    }
+                    if (cudaMemcpy(d_res, next_res.data(), next_res.size() * sizeof(int32_t),
+                                   cudaMemcpyHostToDevice) != cudaSuccess) {
+                        std::string rollback;
+                        if (cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t),
+                                       cudaMemcpyHostToDevice) != cudaSuccess || !xcache.resize_live(old_slots, rollback))
+                            std::abort();
+                        fail_memory("residency_upload", "cannot publish grown residency"); return;
+                    }
+                    std::copy(next_res.begin(), next_res.end(), host_res.begin()); // readers retain host_res.data()
+                } while (false);
+            }
+            if (!ram_shrinking && !src.resize_live_resident(request.resident_mib << 20, 32ull << 20, o.resident_headroom,
+                                           host_res, profile, ram_done, why)) {
+                fail_memory("ram_resize", why); return;
+            }
+            size_t final_free = 0, final_total = 0;
+            if (cudaMemGetInfo(&final_free, &final_total) != cudaSuccess) {
+                fail_memory("telemetry", "VRAM telemetry unavailable after resize"); return;
+            }
+            const bool unreachable = final_free < reserve && xcache.committed_bytes() == 0;
+            if (final_free < reserve && memory_gpu_growth) {
+                memory_gpu_growth = false; memory_gpu_capped = true;
+            }
+            // RAM pinning can change WDDM's free-memory report too. A terminal success must retain its reserve
+            // after both tiers changed; otherwise the next bounded tick trims the remaining GPU cache.
+            const bool done = next_slots == target_slots && ram_done && (final_free >= reserve || unreachable);
+            o.vram_reserve_mib = (int) request.vram_reserve_mib;
+            const char* result = "none";
+            if (done && unreachable) result = "reserve_unreachable";
+            else if (done && memory_gpu_capped) result = "gpu_pressure_cap";
+            else if (done && next_slots == xcache.capacity()) result = "gpu_capacity";
+            else if (done && (src.resident_bytes() >> 20) < request.resident_mib) result = "ram_capacity_or_rounding";
+            const char* status = done ? (unreachable ? "error" : "applied") : "progress";
+            const bool reported = memory_reply(request.id, status, result, request.vram_reserve_mib);
+            strata::core::progress_beat();
+            if (done || !reported) memory_request.reset();
+          } catch (const std::bad_alloc&) {
+            if (memory_request) {
+                memory_reply(memory_request->id, "error", "host_allocation", memory_request->vram_reserve_mib);
+                memory_request.reset();
+            }
+          }
+        };
+        if (o.live_memory) {
+            // Initial cache sizing precedes the prompt/verifier/drafter allocations. Under WDDM these later
+            // buffers can consume the estimate's reserve. Admit READY only against the final measured state.
+            o.vram_reserve_mib = std::max(o.vram_reserve_mib, 256);
+            const uint64_t reserve = (uint64_t) o.vram_reserve_mib << 20;
+            const uint64_t before = xcache.committed_bytes();
+            try {
+                for (;;) {
+                    size_t free_b = 0, total_b = 0;
+                    if (cudaDeviceSynchronize() != cudaSuccess || cudaMemGetInfo(&free_b, &total_b) != cudaSuccess) {
+                        std::fprintf(stderr, "strata live memory: startup refused: VRAM telemetry/synchronization failed\n");
+                        return 1;
+                    }
+                    if ((uint64_t) free_b >= reserve) {
+                        std::fprintf(stderr, "strata live memory: startup admitted with %llu MiB VRAM free, reserve %d MiB; expert cache %llu MiB (released %llu MiB)\n",
+                                     (unsigned long long) (free_b >> 20), o.vram_reserve_mib,
+                                     (unsigned long long) (xcache.committed_bytes() >> 20),
+                                     (unsigned long long) ((before - xcache.committed_bytes()) >> 20));
+                        break;
+                    }
+                    const uint64_t committed = xcache.committed_bytes();
+                    if (committed == 0) {
+                        std::fprintf(stderr, "strata live memory: startup refused: reserve_unreachable (%llu MiB free, %d MiB requested after releasing the expert cache)\n",
+                                     (unsigned long long) (free_b >> 20), o.vram_reserve_mib);
+                        return 1;
+                    }
+                    const uint64_t next = committed > (128ull << 20) ? committed - (128ull << 20) : 0;
+                    if (!trim_live_cache(xcache.slots_for_bytes(next), err)) {
+                        std::fprintf(stderr, "strata live memory: startup trim failed: %s\n", err.c_str()); return 1;
+                    }
+                }
+            } catch (const std::bad_alloc&) {
+                std::fprintf(stderr, "strata live memory: startup refused: host bookkeeping allocation failed\n"); return 1;
+            }
+        }
         std::thread([&] {
             // read(2) on the descriptor, not std::cin: glibc's exit() flushes every stdio stream and waits for
             // stdin's lock, which getline holds while it waits for input - an engine ending on an error (every
@@ -4917,7 +5219,8 @@ int main(int argc, char** argv) {
                 if (!l.empty() && l.back() == '\r') l.pop_back();
                 if (l == "STOP") { stop_req.store(true); continue; }
                 std::lock_guard<std::mutex> lk(in_mu);
-                in_lines.push_back(l);
+                if (l == "MEMORY" || l.rfind("MEMORY ", 0) == 0) memory_lines.push_back(l);
+                else in_lines.push_back(l);
                 in_cv.notify_one();
             }
             std::lock_guard<std::mutex> lk(in_mu);
@@ -4926,13 +5229,30 @@ int main(int argc, char** argv) {
         }).detach();
         auto next_line = [&](std::string& out) -> bool {
             std::unique_lock<std::mutex> lk(in_mu);
-            in_cv.wait(lk, [&] { return !in_lines.empty() || in_eof; });
+            for (;;) {
+                lk.unlock();
+                service_memory();
+                lk.lock();
+                if (!in_lines.empty() || in_eof) break;
+                in_cv.wait_for(lk, std::chrono::milliseconds(100), [&] {
+                    return !in_lines.empty() || !memory_lines.empty() || in_eof;
+                });
+            }
             if (in_lines.empty()) return false;
             out = std::move(in_lines.front());
             in_lines.pop_front();
             return true;
         };
         sp.should_stop = [&] { return stop_req.load(); };
+        if (o.live_memory) {
+            auto chunk = std::move(sp.on_chunk);
+            sp.on_chunk = [&, chunk = std::move(chunk)](const float* rows, int64_t n, int64_t at,
+                                                       std::string& e) -> bool {
+                if (chunk && !chunk(rows, n, at, e)) return false;
+                service_memory();
+                return true;
+            };
+        }
         // STRATA_TRACE=1: one stderr line per step of a request (the log shows where a request stops)
         const bool trace = std::getenv("STRATA_TRACE") != nullptr;
         auto tr = [&](const char* what, long long a = -1, long long b = -1) {
@@ -4986,7 +5306,8 @@ int main(int argc, char** argv) {
                         "expert_slots_primary=%lld expert_cache_primary_mib=%lld spec=%d "
                         "mtp_max=%d lookup=%d vram_free_mib=%lld cvec=%s arena_mib=%lld pool_workers=%d pcie_frac=%.2f "
                         "spec_min_p=%.2f conversation_cache_mib=%lld conversation_cache_slots=%d "
-                        "conversation_cache_min_free_mib=%lld engine=" STRATA_VERSION "\n",
+                        "conversation_cache_min_free_mib=%lld live_memory=%d memory_protocol=%d "
+                        "vram_reserve_mib=%d engine=" STRATA_VERSION "\n",
                         (long long) o.max_context, o.kv.c_str(),
                         (long long) (g.n_qsa_layers() > 0 && ss.qsa_states[ss.qsa_primary()].kv_mode == 1
                                          ? ss.qsa_states[ss.qsa_primary()].n_slots * 4 : 0),
@@ -4997,7 +5318,8 @@ int main(int argc, char** argv) {
                         (long long) ((o.mmap_experts ? src.resident_bytes() : strata::kernels::cpu::expert_layout().total) >> 20),
                         pool.workers(), o.pcie_frac,
                         o.spec_min_p, (long long) o.conversation_cache_mib, o.conversation_cache_slots,
-                        (long long) o.conversation_cache_min_free_mib);
+                        (long long) o.conversation_cache_min_free_mib, o.live_memory ? 1 : 0, o.live_memory ? 1 : 0,
+                        o.vram_reserve_mib);
         }
         // issue #29: a request whose heartbeat (tokens, prompt chunks, verify windows) stops for this long is stuck on
         // a flag nobody will raise - end the engine with where it was, so the server starts it again instead of the
@@ -5413,6 +5735,7 @@ int main(int argc, char** argv) {
                 std::vector<int32_t> win((size_t) S), outw((size_t) S), nxt((size_t) S);
                 for (int64_t q = a; q < b;) {
                     if (stop_req.load()) { e = "cancelled"; return false; }
+                    service_memory();
                     const int T = (int) std::min<int64_t>(S, b - q);
                     for (int t = 0; t < T; ++t) {
                         win[(size_t) t] = (int32_t) cur[(size_t) (q + t)];
@@ -5730,6 +6053,7 @@ int main(int argc, char** argv) {
                 // expert ran on the GPU or the CPU (they round differently) depended on the copy's timing
                 // (STRATA_ADAPT_NOWAIT=1: 0.1.37's non-blocking query, the A/B)
                 apply_pending(!adapt_nowait());
+                service_memory();
                 if (hist_n > 0) {
                     // the tails the penalties count over, ONE PER ROW: the tokens the state has consumed, the
                     // fed-back head `x` (it joins `consumed` only after this window commits), then the drafts

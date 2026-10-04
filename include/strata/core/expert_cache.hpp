@@ -88,6 +88,16 @@ public:
     /// Plan v0.3 P6: slots of the given sizes, back to back (a native pack's blobs differ per layer, and a
     /// profile-filled tier never moves an expert to another layer's slot, so each slot keeps its first size).
     bool open_sized(const std::vector<int64_t>& slot_bytes, int64_t n_layers, int64_t n_expert, std::string& err);
+    /// Opt-in CUDA VMM storage. Offsets/base cover the full capacity for the lifetime of the cache;
+    /// only the active prefix owns physical memory. Call resize_live only with all readers drained.
+    bool open_live(const std::vector<int64_t>& slot_bytes, int64_t active_slots,
+                   int64_t n_layers, int64_t n_expert, std::string& err);
+    bool resize_live(int64_t active_slots, std::string& err);
+    bool live() const { return live_reserved_ != 0; }
+    int64_t capacity() const { return live() ? (int64_t) off_.size() - 1 : slots_; }
+    uint64_t committed_bytes() const { return live() ? live_handles_.size() * live_block_ : (uint64_t) bytes(); }
+    uint64_t live_block_bytes() const { return live_block_; }
+    int64_t slots_for_bytes(uint64_t budget) const;
     /// Byte offset of each slot in the arena (null for uniform slots).
     const uint64_t* slot_offsets() const { return off_.empty() ? nullptr : off_.data(); }
     void close();
@@ -97,7 +107,7 @@ public:
     /// Slots actually claimed.  Not the same as `slots()` - the cache does not evict, so a run that routes
     /// fewer distinct experts than there are slots leaves the rest empty.
     int64_t resident() const { return per_layer_ ? admitted_ : next_free_; }
-    int64_t bytes() const { return off_.empty() ? slots_ * blob_ : (int64_t) off_.back(); }
+    int64_t bytes() const { return off_.empty() ? slots_ * blob_ : (int64_t) off_[(size_t) slots_]; }
     double gib() const { return (double) bytes() / 1073741824.0; }
 
     /// `(layer, expert)` -> slot index, or `kNotResident`.  Bounds-checked: a bad layer or expert returns
@@ -165,6 +175,9 @@ private:
     std::size_t blocking_staging_bytes_ = 0;
 #endif
     uint8_t* base_ = nullptr;
+    uint64_t live_reserved_ = 0, live_block_ = 0;
+    int live_device_ = 0;
+    std::vector<uint64_t> live_handles_;
     std::vector<int32_t> residency_;   ///< [n_layers * n_expert] -> slot or kNotResident
     int64_t slots_ = 0;
     int64_t n_layers_ = 0;

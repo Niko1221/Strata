@@ -263,7 +263,6 @@ int arena_pin_cap_gib() {
     return v < 0 ? -1 : v;
 }
 
-namespace {
 #ifdef _WIN32
 // #243: how much of the arena the sliced registration may pin on Windows when the whole arena was refused.
 // Page-locked memory the GPU maps is charged to its shared (non-local) WDDM segment; pinned slice by slice until
@@ -293,8 +292,13 @@ bool sliced_pin_limit(uint64_t& limit, std::string& why) {
     why = buf;
     return true;
 }
+#else
+bool sliced_pin_limit(uint64_t& limit, std::string& why) {
+    limit = UINT64_MAX;
+    why = "no WDDM shared-memory segment";
+    return true;
+}
 #endif
-}  // namespace
 
 namespace {
 std::vector<uint64_t> uniform_bounds(uint64_t bytes, uint64_t slice) {

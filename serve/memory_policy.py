@@ -1,8 +1,9 @@
-"""Bounded cache budgets; the caller owns sampling, FIFO admission and engine reloads.
+"""Bounded cache budgets; the caller owns sampling and applying native allocations.
 
 All telemetry values are bytes, with a caller-supplied ``sampled_at`` wall-clock
 timestamp. A proposal is not an allocation: call ``applied`` only after the engine
-has successfully loaded it. The policy never changes model precision or context.
+has successfully loaded it, or ``live_actual`` for native live acknowledgements.
+The policy never changes model precision or context.
 """
 from __future__ import annotations
 
@@ -20,6 +21,9 @@ class MemoryPolicy:
     def __init__(self, config=None, resident_cap_gib=42.0, vram_reserve_mib=1536):
         config = config or {}
         self.enabled = config.get("enabled", False) is True
+        self.mode = config.get("mode", "reload")
+        if self.mode not in ("reload", "live"):
+            raise ValueError("memory policy mode must be reload or live")
         self.cap = float(resident_cap_gib)
         self.reserve_floor = int(vram_reserve_mib)
         self.ram_target = self._setting(config, "ram_target_percent", 95, 50, 95) / 100
@@ -115,6 +119,19 @@ class MemoryPolicy:
         self.gpu_baseline = None
         self._reset_windows()
 
+    def live_actual(self, resident_mib, reserve_mib, now, reason, completed=False):
+        """Native committed sizes can be below the requested minimum after rounding or partial failure."""
+        if (not _number(resident_mib) or resident_mib < 0 or resident_mib > self.cap * 1024
+                or not _number(reserve_mib) or reserve_mib < 0):
+            raise ValueError("invalid live memory allocation")
+        self.current = {"resident_budget_gib": resident_mib / 1024,
+                        "vram_reserve_mib": int(reserve_mib)}
+        self.last_reason = reason
+        if completed:
+            self.last_applied = now
+        self.gpu_baseline = None
+        self._reset_windows()
+
     def record_loaded(self, snapshot, now):
         """Record the first fresh *idle* GPU reading after successful load.
 
@@ -168,8 +185,13 @@ class MemoryPolicy:
         pressure = (reading["ram_used"] / reading["ram_total"] > self.ram_target
                     or free_ram < required_free_ram
                     or reading["gpu_mem_used"] / reading["gpu_mem_total"] > self.vram_target)
-        shrink = pressure and (ram_delta <= -1 or vram_delta >= 256)
-        grow = not pressure and (ram_delta >= 2 or vram_delta <= -512)
+        # Live CUDA cache mappings commit in 32 MiB blocks. At the 99% target,
+        # a 16 GiB card's entire pressure deficit is only 164 MiB; the legacy
+        # reload threshold would make GPU-only reclamation unreachable there.
+        shrink_vram = 32 if self.mode == "live" else 256
+        grow_vram = 32 if self.mode == "live" else 512
+        shrink = pressure and (ram_delta <= -1 or vram_delta >= shrink_vram)
+        grow = not pressure and (ram_delta >= 2 or vram_delta <= -grow_vram)
         cache = info.get("expert_cache_mib")
         gpu_grow = (not pressure and self.gpu_baseline is not None
                     and reading["gpu_mem_total"] == self.gpu_baseline[0]
@@ -209,7 +231,7 @@ class MemoryPolicy:
         return plan
 
     def status(self):
-        return {"enabled": self.enabled, "current": dict(self.current) if self.current else None,
+        return {"enabled": self.enabled, "mode": self.mode, "current": dict(self.current) if self.current else None,
                 "reason": self.last_reason, "last_applied_at": self.last_applied,
                 "resident_cap_gib": self.cap, "vram_reserve_floor_mib": self.reserve_floor,
                 "ram_target_percent": self.ram_target * 100, "vram_target_percent": self.vram_target * 100,

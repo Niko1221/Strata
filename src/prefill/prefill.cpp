@@ -538,6 +538,10 @@ strata::kernels::QsaAttnPools pools_of(const strata::kernels::KvHostPools& h, co
 Prefill::Prefill() : impl_(new Impl) {}
 Prefill::~Prefill() { release(); }
 
+void Prefill::drain_expert_reads() {
+    if (impl_->stager) impl_->stager->finish();
+}
+
 void Prefill::reset() {
     release();
     impl_.reset(new Impl);

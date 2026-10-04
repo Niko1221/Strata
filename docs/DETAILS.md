@@ -416,11 +416,29 @@ targets are ceilings, not a promise to fill memory: the reserve floor and RAM he
 
 A smaller budget needs sustained pressure for 60 seconds (`pressure_seconds`); a larger one needs stable free
 space for 120 seconds (`growth_seconds`). Growth has a 600-second cooldown (`cooldown_seconds`) after any
-allocation; sustained pressure can shrink sooner after its full debounce window. A pending
-change reloads the engine just before the next request, with no active work interrupted. This is a load-boundary
-adjustment, not live resizing of native caches. Server status reports the current budget, pending change and
-reason. Normal idle unload is separate: `"idle_unload_s": 300` releases the model after five minutes without
-requests even with no memory pressure; the memory policy itself does not unload it while idle.
+allocation; sustained pressure can shrink sooner after its full debounce window. The default `"mode": "reload"`
+applies a pending change by reloading the engine just before the next request, with no active work interrupted.
+Server status reports the current budget, pending change and reason. Normal idle unload is separate:
+`"idle_unload_s": 300` releases the model after five minutes without requests even with no memory pressure;
+the memory policy itself does not unload it while idle.
+
+**Live cache capacity (experimental, opt-in).** With a compatible engine, set
+`"memory_policy": {"enabled": true, "mode": "live"}` to adjust expert VRAM and RAM capacity in the existing
+engine process. The server adds `--live-memory` and requires its versioned capability after startup. Unsupported
+engines or configurations fail explicitly; live mode never falls back to reloading. The initial setting change
+requires restarting the server while idle. Subsequent capacity changes keep the model, KV cache and conversations.
+
+Native changes run at drained decode/prompt boundaries or while idle, in bounded steps. Generation may briefly
+pause while copies finish and blocks are added or released. The server reports actual committed capacity from
+native acknowledgements, including partial progress if a later step fails; the requested budget is not proof of
+an allocation. Failures wait through the policy cooldown before another proposal. `POST /v1/memory/refresh`
+requests an observation and reports `pending` or `observed`, rather than promising an immediate resize.
+
+This mode currently requires a single CUDA GPU with virtual memory management, file-backed native experts,
+an expert profile and graphed residency. It does not support HIP, split/peer GPUs or the other cache layouts.
+Prefill does not borrow the expert cache in live mode, so prompt throughput can differ from the default path.
+Free space alone does not guarantee faster inference: routing, file reads, host-to-device copies and fixed
+model/KV buffers still matter. See [live-memory control and validation](LIVE_MEMORY.md).
 
 `GET /v1/status` includes the policy state. `POST /v1/memory/refresh` with a JSON object requests an
 observation only; any resulting change is deferred until a safe request boundary. The refresh endpoint retains
