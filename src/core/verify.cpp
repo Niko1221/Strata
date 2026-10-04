@@ -1,6 +1,7 @@
 // src/core/verify.cpp - see include/strata/core/verify.hpp.
 #include "strata/core/verify.hpp"
 #include "strata/core/remote_expert_opt.hpp"
+#include "strata/core/dma_batch.hpp"
 #if defined(_WIN32)
 #include <intrin.h>
 #endif
@@ -1624,7 +1625,22 @@ void Verifier::fetch_dma(void* ctx, const uint8_t* const* src, int n, size_t byt
     if (n <= 0) { raise_flag(v->h_flagB_, want); return; }
     v->copy_used_ = true;
     uint8_t* stage = (uint8_t*) v->sink_.staging;                  // this group's half in a split window
-    for (int i = 0; i < n; ++i) cudaMemcpyAsync(stage + (size_t) i * bytes, src[i], bytes, cudaMemcpyHostToDevice, v->copy_);
+    // Opt-in: combine independent uploads to reduce host API submission overhead.
+    // The existing stream/callback handshake remains unchanged. Mode 2 also asks
+    // CUDA 13.4+ to prefer overlap with compute (a driver hint, not a guarantee).
+    static const int batch_mode = [] {
+        const char* e = std::getenv("STRATA_DMA_BATCH");
+        return e ? std::atoi(e) : 0;
+    }();
+    const auto copied = copy_expert_blobs(stage, src, n, bytes, v->copy_, batch_mode);
+    if (copied != cudaSuccess) {
+        // Do not signal readiness for partially submitted uploads. Termination is
+        // safer than returning an answer with stale expert weights.
+        std::fprintf(stderr, "strata DMA: expert upload failed: %s\n", cudaGetErrorString(copied));
+        std::fflush(stderr);
+        v->release_gpu_waits(5000);
+        std::abort();
+    }
     FlagSet& fs = v->flag_sets_[v->cur_layer_ % (sizeof v->flag_sets_ / sizeof v->flag_sets_[0])];
     fs.flag = v->h_flagB_;
     fs.value = want;
