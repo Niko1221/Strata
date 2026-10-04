@@ -460,6 +460,27 @@ int main() {
         check(r14.accept, "R14: the last allowed cache that meets the budget is accepted");
     }
 
+    // ---- review 3, R16-R18: the borrowing capability is ONE resolved flag; the planner plans owned whenever
+    // it is off, whatever the profile's presence would suggest
+    {
+        StartupVramInput cap = plan_input((uint64_t) 760 * BLOB + 700 * MIB);
+        cap.prefill_borrow = true;              // R16: available (profile + the residency map + not disabled)
+        cap.prefill_chunk = 4096;
+        const VramPlan on = plan_startup_vram(cap);
+        check(on.ok && !on.prefill_owned && on.selected_prefill == 4096 && on.lend_slots > 0,
+              "R16: with borrowing available the plan lends the chunk");
+        // R17: the profile exists but the runtime's residency map will not - generate.cpp resolves the flag
+        // off, and the planner must then book owned buffers, never a borrowed plan
+        StartupVramInput off = cap;
+        off.prefill_borrow = false;
+        const VramPlan r17 = plan_startup_vram(off);
+        check(r17.ok && r17.prefill_owned && r17.selected_prefill == 4096 && r17.lend_slots == 0,
+              "R17: a resolved-off capability plans owned buffers at the same chunk");
+        // R18: --no-prefill-borrow resolves the same flag off; runtime reads the same flag and stays owned
+        check(!off.prefill_borrow && r17.prefill_owned && !r17.prefill_borrow,
+              "R18: the disabled flag keeps both sides owned");
+    }
+
     if (fails == 0) std::fprintf(stderr, "vram_plan_test: all checks passed\n");
     return fails == 0 ? 0 : 1;
 }

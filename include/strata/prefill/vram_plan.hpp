@@ -191,7 +191,9 @@ uint64_t effective_post_cache_required(const VramPlan& startup, const EffectiveP
 
 /// The WDDM post-touch decision for one opened cache: accept it, or - while shrinking is still allowed - how
 /// many bytes it must give back so the next open can hold the requirement. Reaching the retry limit is a FAIL,
-/// never an unvalidated accept.
+/// never an unvalidated accept. The tolerance enters twice BY DESIGN, as hysteresis: once as the acceptance
+/// margin and once as the shrink's target headroom, so a shrink leaves ~64 MiB MORE free than the acceptance
+/// line needs and a borderline cache is not re-shrunk on the next read (driver jitter measures a few MiB).
 struct PostTouchVerdict {
     bool accept = false;
     int64_t give_back_bytes = 0;    ///< !accept: the shrink the next open must make room for

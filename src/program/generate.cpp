@@ -2708,17 +2708,21 @@ int main(int argc, char** argv) {
     // a cache from, or --no-prefill-borrow - do the buffers take a reserve, and then this estimate stands in
     // for buffers that cannot be priced exactly yet because the sessions do not exist.  `plan_lend` uses the
     // exact `Prefill::bytes_needed` as soon as it can.
-    const bool pf_borrow = !o.no_prefill_borrow && !o.expert_profile.empty();
+    // #765 review: THE one definition of whether the prompt path can borrow, startup and runtime both: an
+    // expert profile to fill the cache from, and the user has not disabled it. The residency map (the loan's
+    // bookkeeping) is built from this below, token graph or not, so a borrowed plan always has its lending
+    // infrastructure. Startup's planner input and the runtime's loan block consume this one value.
+    const bool prefill_borrow_available = !o.no_prefill_borrow && !o.expert_profile.empty();
     // (#340: the estimate predates the streamed ring: from 1024-token chunks the prompt path also holds a ring of
     // whole expert blobs, which a split without borrowing sizes at 96 (Prefill::set_ring_override below) and books
     // here - without it a `--no-prefill-borrow` split filled the cards and the draft head no longer fit)
     const int64_t split_ring_mib =
-        (multi_gpu && !pf_borrow && o.prefill_chunk >= 1024)
+        (multi_gpu && !prefill_borrow_available && o.prefill_chunk >= 1024)
             ? (int64_t) ((96ull * (uint64_t) strata::kernels::cpu::expert_layout().max_blob + (1ull << 20) - 1) >> 20)
             : 0;
     if (split_ring_mib > 0) strata::prefill::Prefill::set_ring_override(96);
     const int64_t split_pf_mib =
-        (o.prefill_chunk > 0 && !pf_borrow) ? 160 + (o.prefill_chunk * 680) / 1024 + split_ring_mib : 0;
+        (o.prefill_chunk > 0 && !prefill_borrow_available) ? 160 + (o.prefill_chunk * 680) / 1024 + split_ring_mib : 0;
     // ---- WHAT A STAGE RESERVES, AND ON WHICH STAGE.  The flat 1 GiB this used to withhold from EVERY stage
     // after the first was booked "for its windows and the drafter", but the windows measure 75 MiB ("window up
     // to 6 tokens, 74.1 MiB of device buffers", on every boot) and the drafter is loaded on ONE stage - the
@@ -3286,7 +3290,7 @@ int main(int argc, char** argv) {
             in.pair_slot_bytes = &pair_bytes;
         }
         in.profile_pairs = profile.empty() ? -1 : (int64_t) profile.size();
-        in.prefill_borrow = pf_borrow;
+        in.prefill_borrow = prefill_borrow_available;
         in.prefill_auto = o.prefill_auto;
         in.prefill_chunk = o.prefill_chunk;
         in.spec_needs_cache = o.spec > 0;
@@ -3350,11 +3354,11 @@ int main(int argc, char** argv) {
             // cache when the token path can carry the prompt, as before)
             constexpr int kSmallReserveMib = 300;
             const int64_t blob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
-            const int64_t min_slots = (pf_borrow && o.prefill_chunk > 0)
+            const int64_t min_slots = (prefill_borrow_available && o.prefill_chunk > 0)
                 ? ((int64_t) strata::prefill::Prefill::bytes_needed(g, ss, 256) + blob - 1) / blob + 128 : 1;
             const int64_t at_reserve = o.vram_reserve_given ? o.vram_reserve_mib
                                                             : std::min(o.vram_reserve_mib, kSmallReserveMib);
-            const int64_t need_b = (((int64_t) at_reserve + (o.prefill_chunk > 0 && !pf_borrow
+            const int64_t need_b = (((int64_t) at_reserve + (o.prefill_chunk > 0 && !prefill_borrow_available
                                                                 ? (int64_t) (plan.prefill_bytes >> 20)
                                                                 : 0))
                                     << 20) + mtp_bind + min_slots * blob;
@@ -3529,6 +3533,9 @@ int main(int argc, char** argv) {
             if (verdict.accept) {
                 effective_prefill = effective;
                 posttouch_validated = true;
+                // the accepted plan is the contract: the runtime re-derives the same loan from the same cache,
+                // and its chunk is pinned to the accepted one
+                if (effective.chunk > 0) o.prefill_chunk = effective.chunk;
                 if (effective.owned && !plan.prefill_owned && plan.selected_prefill > 0)
                     std::fprintf(stderr, "strata generate: VRAM plan: post-touch cache shrink moved prefill %lld "
                                          "from borrowed to own buffers; reserving %lld MiB for the prompt path\n",
@@ -4427,7 +4434,14 @@ int main(int argc, char** argv) {
     int32_t* d_hit_count = nullptr;
     strata::core::TokenHits thits;
     const bool graph_hits = hit_fn != nullptr && !profile.empty() && !o.no_pool;
-    if (graph_hits && !o.no_capture && !o.no_token_graph && layer_dump == nullptr && half_dump == nullptr) {
+    const bool graph_residency = graph_hits && !o.no_capture && !o.no_token_graph &&
+                                 layer_dump == nullptr && half_dump == nullptr;
+    // #765 review: the residency map is the prompt loan's bookkeeping - a lend marks its slots not-resident and
+    // refills them after the prompt - so borrowing builds it whoever else reads it. The token graph is one
+    // reader, not what makes borrowing work: with --no-token-graph or --no-capture the map (and its device
+    // copy, kept in sync for the paths that read one) is still built, and only the graph's hit wiring stays off.
+    const bool borrow_residency = prefill_borrow_available && o.prefill_chunk > 0;
+    if (graph_residency || borrow_residency) {
         host_res.assign((size_t) (g.n_layers * g.n_expert), strata::core::kNotResident);
         int64_t resident = 0;
         for (int64_t l = 0; l < g.n_layers; ++l)
@@ -4438,13 +4452,15 @@ int main(int argc, char** argv) {
                 if (slot != strata::core::kNotResident) ++resident;
             }
         if (cudaMalloc((void**) &d_res, host_res.size() * sizeof(int32_t)) != cudaSuccess ||
-            cudaMalloc((void**) &d_hit_count, sizeof(int32_t)) != cudaSuccess ||
+            (graph_residency && cudaMalloc((void**) &d_hit_count, sizeof(int32_t)) != cudaSuccess) ||
             cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice) != cudaSuccess) {
             std::fprintf(stderr, "strata generate: the device residency table could not be staged\n");
             return 1;
         }
-        thits.d_res = d_res;
-        thits.n_expert = g.n_expert;
+        if (graph_residency) {
+            thits.d_res = d_res;
+            thits.n_expert = g.n_expert;
+        }
         // a file-backed arena (STRATA_ARENA_MMAP): the experts no GPU holds are the ones the CPU pool and the
         // prompt path will read - start reading them now instead of faulting them in 4 KB at a time mid-request
         // ... and the ones a GPU holds are handed back first (STRATA_ARENA_RELEASE=0 keeps them): the fill read the
@@ -4479,18 +4495,23 @@ int main(int argc, char** argv) {
                 return 1;
             }
         }
-        thits.cache_base = drive.d.cache_base;
-        thits.blob = drive.d.cache_blob;
-        thits.d_slot = drive.d.d_slot;
-        thits.d_dst = drive.d.d_dst;
-        thits.d_count = d_hit_count;
-        thits.x_q8 = drive.d.x_q8_0_hit;
-        thits.x_scale = drive.d.x_q8_0_hit_scale;
-        thits.scratch = drive.d.hit_scratch;
-        thits.hit_out = drive.d.hit_out;
-        drive.d.host_res = host_res.data();
-        std::fprintf(stderr, "strata generate: token graph hit path: %lld resident experts, decided on the device\n",
-                     (long long) resident);
+        if (graph_residency) {
+            thits.cache_base = drive.d.cache_base;
+            thits.blob = drive.d.cache_blob;
+            thits.d_slot = drive.d.d_slot;
+            thits.d_dst = drive.d.d_dst;
+            thits.d_count = d_hit_count;
+            thits.x_q8 = drive.d.x_q8_0_hit;
+            thits.x_scale = drive.d.x_q8_0_hit_scale;
+            thits.scratch = drive.d.hit_scratch;
+            thits.hit_out = drive.d.hit_out;
+            drive.d.host_res = host_res.data();
+            std::fprintf(stderr, "strata generate: token graph hit path: %lld resident experts, decided on the device\n",
+                         (long long) resident);
+        } else {
+            std::fprintf(stderr, "strata generate: prompt-path residency map: %lld resident experts (the loan's "
+                                 "bookkeeping, without the token graph)\n", (long long) resident);
+        }
     }
     if (!o.no_capture && !o.no_token_graph && layer_dump == nullptr && half_dump == nullptr &&
         (hit_fn == nullptr || thits.on()) && !native_pack && !multi_gpu) {   // a split's token graph cannot span stages
@@ -4753,7 +4774,7 @@ int main(int argc, char** argv) {
         // a cache too small to lend the prompt path its buffers would make it allocate them on top - on a card
         // whose cache already filled its reserve, that is the over-subscription the auto sizing avoids - so the
         // chunk is the largest one EVERY participant can lend (a smaller chunk only reads slower)
-        if (pf_borrow && d_res != nullptr) {
+        if (prefill_borrow_available && d_res != nullptr) {
             pf_parts.push_back({&xcache, &ss, &sp, -1, 0, multi_gpu ? split_at[0] : g.n_layers, -1, -1, 0, {}});
             for (auto& st : stages)
                 pf_parts.push_back({&st->cache, &st->ss, &st->sp, st->dev, st->lb, st->le, -1, -1, 0, {}});
@@ -7556,7 +7577,7 @@ int main(int argc, char** argv) {
     if (o.prefill_chunk > 0 && n_prompt > 1) {
         void* borrow = nullptr;
         uint64_t borrow_bytes = 0;
-        if (!o.no_prefill_borrow && !host_res.empty() && d_res != nullptr) {
+        if (prefill_borrow_available && !host_res.empty() && d_res != nullptr) {
             int64_t chunk = o.prefill_chunk;
             int64_t k = plan_lend(chunk);             // auto: the largest chunk that fits; fixed: halved to fit
             // the accepted post-cache plan is the budget the engine runs under: a prompt path it validated as
@@ -7599,6 +7620,21 @@ int main(int argc, char** argv) {
         }
         if (borrow == nullptr)
             std::fprintf(stderr, "strata generate: prompt path allocates its own buffers (no cache slots to borrow)\n");
+        // THE accepted plan is authoritative, whichever way it went (the guards sit outside every condition that
+        // builds the borrowing infrastructure): a borrowed plan must run with a real loan - owned buffers
+        // outside the accepted budget are the late failure #765 closes - and an owned plan must run on its own
+        // buffers. A future refactor that flips either side fails here, loudly.
+        if (posttouch_validated && effective_prefill.borrowed && borrow == nullptr) {
+            std::fprintf(stderr, "strata generate: the accepted VRAM plan requires the prompt path to borrow from "
+                                 "the expert cache, but runtime borrowing is unavailable; refusing rather than "
+                                 "allocating owned buffers outside the budget\n");
+            return 1;
+        }
+        if (posttouch_validated && effective_prefill.owned && borrow != nullptr) {
+            std::fprintf(stderr, "strata generate: the accepted VRAM plan runs the prompt path on its own buffers, "
+                                 "but a loan was set up; refusing rather than departing from the accepted budget\n");
+            return 1;
+        }
         mem_mark("the decode graphs, before the prompt path's buffers");
         if (!prefill.init(wt, g, ss, srcp, o.expert_cache > 0 ? &xcache : nullptr,
                           host_res.empty() ? nullptr : host_res.data(), o.prefill_chunk, main_cs, err, borrow,
