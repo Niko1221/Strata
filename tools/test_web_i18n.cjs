@@ -19,11 +19,38 @@ const base = process.env.STRATA_TEST_URL || 'http://127.0.0.1:8080';
     assert.equal(await page.locator('[data-tab="chat"]').innerText(), 'المحادثة');
     assert.equal(await page.locator('#input').inputValue(), 'مسودة عربية with English');
     assert.equal(await page.locator('#input').getAttribute('dir'), 'auto');
+    // Upstream's new monitor fields still work after combining them with Arabic.
+    await page.route('**/metrics', async route => {
+      const response = await route.fetch();
+      const metrics = await response.json();
+      metrics.conversation_cache = {enabled: true, parked: 1, slots: 4, bytes: 1048576,
+        budget_mib: 8192, requests: 2, requests_reused: 1, prompt_tokens: 200,
+        reused_tokens: 100, last_event: 'restored', last_tokens: 100, last_at: Date.now() / 1000,
+        last_prompt: 100, last_reused: 80, parks: 1, restores: 1, evictions: 0};
+      metrics.requests = [{time: Date.now() / 1000, finish: 'stop', hit_rate: .8, pcie_share: .2,
+        prompt_tokens: 100, reused: 80, output_tokens: 10, decode_tok_s: 5, duration_s: 2}];
+      await route.fulfill({response, json: metrics});
+    });
     await page.locator('[data-tab="monitor"]').click();
     assert.match(await page.locator('#metrics').innerText(), /حمل البطاقة/);
+    await page.waitForFunction(() => document.getElementById('cc-sum').textContent.includes('أُعيد'));
+    assert.match(await page.locator('#cc-card').innerText(), /ذاكرة المحادثات المؤقتة/);
+    assert.match(await page.locator('#req-body').innerText(), /20.0% PCIe/);
+    assert.match(await page.locator('#req-body .muted').getAttribute('title'), /الخبراء/);
     await page.locator('[data-tab="about"]').click();
     assert.match(await page.locator('#facts-engine').innerText(), /النموذج/);
     assert.equal(await page.locator('#facts-api [data-copy]').first().getAttribute('aria-label'), 'نسخ');
+    await page.waitForSelector('#cfg-card:not([hidden])');
+    assert.match(await page.locator('#cfg-card').innerText(), /إعدادات النموذج/);
+    assert.match(await page.locator('label[for="cfg-0"]').innerText(), /درجة الحرارة/);
+    await page.locator('#cfg-0').fill('0.75');
+    await page.locator('[data-language]').selectOption('en');
+    assert.equal(await page.locator('#cfg-0').inputValue(), '0.75');
+    assert.match(await page.locator('label[for="cfg-0"]').innerText(), /Default temperature/);
+    await page.locator('[data-language]').selectOption('ar');
+    assert.equal(await page.locator('#cfg-0').inputValue(), '0.75');
+    assert.equal(await page.locator('#cfg-5 option[value="true"]').innerText(), 'مفعّل');
+    assert.equal(await page.locator('#cfg-5').inputValue(), '');
     await page.locator('[data-tab="chat"]').click();
     await page.locator('#sampling-btn').click();
     await page.locator('#s-temp').fill('0.85');
@@ -90,6 +117,6 @@ const base = process.env.STRATA_TEST_URL || 'http://127.0.0.1:8080';
     assert.equal(await privatePage.locator('html').getAttribute('dir'), 'rtl');
     assert.deepEqual(errors, []);
     await blocked.close();
-    console.log('PASS: defaults, Arabic, RTL, persistence, active request, unchanged API values, code direction, API monitor, mobile, storage fallback');
+    console.log('PASS: defaults, Arabic, RTL, persistence, active request, unchanged API values, conversation cache, PCIe share, model settings drafts, code direction, API monitor, mobile, storage fallback');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

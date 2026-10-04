@@ -24,6 +24,7 @@ namespace strata::kernels {
 /// Configure before session capture; captured graphs retain their selected kernels.
 /// In this mode shared_expert requires its optional unrounded x_f32 input.
 void shared_expert_set_native_bf16(bool enabled);
+bool shared_expert_native_bf16_enabled();
 
 /// Optional native GGUF projections. Each supported type with nonnull data
 /// replaces only that canonical projection; absent or unsupported entries fall
@@ -37,6 +38,7 @@ struct NativeSharedWeights {
     const void* up_data = nullptr;
     const void* down_data = nullptr;
     void* q8_1 = nullptr;
+    const void* x_q8_1 = nullptr;   // optional pre-quantized Q8_1 input for gate/up in shared_expert_multi
 };
 
 /// Bytes of caller-owned scratch `shared_expert` needs.  **THE KERNEL USED TO `cudaMalloc` FOUR BUFFERS ON

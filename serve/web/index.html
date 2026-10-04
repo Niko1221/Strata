@@ -120,12 +120,24 @@
           <div class="table-wrap" id="req-wrap">
             <table class="st-table">
               <thead><tr><th><span data-i18n="Time">Time</span></th><th><span data-i18n="Status">Status</span></th><th class="num"><span data-i18n="Prompt">Prompt</span></th><th class="num"><span data-i18n="Reused">Reused</span></th><th class="num"><span data-i18n="Output">Output</span></th>
-                <th class="num"><span data-i18n="Tok/s">Tok/s</span></th><th class="num" title="While writing the answer: the share of the experts looked up that were already in VRAM (experts copied over PCIe are not counted)" data-i18n-title="While writing the answer: the share of the experts looked up that were already in VRAM (experts copied over PCIe are not counted)"><span data-i18n="Hit rate">Hit rate</span></th><th class="num"><span data-i18n="Duration">Duration</span></th></tr></thead>
+                <th class="num"><span data-i18n="Tok/s">Tok/s</span></th><th class="num" title="While writing the answer: the share of the experts looked up that were already in VRAM. Experts the GPU read over PCIe (--pcie-frac) are not counted in it; their share of all routed experts is shown after it (+N% PCIe)" data-i18n-title="While writing the answer: the share of the experts looked up that were already in VRAM. Experts the GPU read over PCIe (--pcie-frac) are not counted in it; their share of all routed experts is shown after it (+N% PCIe)"><span data-i18n="VRAM hit rate">VRAM hit rate</span></th><th class="num"><span data-i18n="Duration">Duration</span></th></tr></thead>
               <tbody id="req-body"><tr><td colspan="8" class="muted"><span data-i18n="No requests yet">No requests yet</span></td></tr></tbody>
             </table>
           </div>
           <p class="muted req-totals" id="req-totals"></p>
         </div>
+      </div>
+
+      <div class="st-card cc-card" id="cc-card">
+        <div class="req-head"><span class="card-title"><span data-i18n="Conversation cache">Conversation cache</span></span><span class="muted small" id="cc-sum"></span></div>
+        <div class="cc-bars" id="cc-bars" hidden>
+          <div><div class="bar-row"><span><span data-i18n="Parked conversations">Parked conversations</span></span><span class="muted" id="cc-slots-text">&ndash;</span></div>
+            <div class="st-progress"><div class="st-progress__bar" id="cc-slots-bar" style="width:0%"></div></div></div>
+          <div><div class="bar-row"><span><span data-i18n="Their memory (RAM)">Their memory (RAM)</span></span><span class="muted" id="cc-mem-text">&ndash;</span></div>
+            <div class="st-progress"><div class="st-progress__bar" id="cc-mem-bar" style="width:0%"></div></div></div>
+        </div>
+        <dl class="facts" id="cc-facts"></dl>
+        <p class="muted small cc-note" id="cc-note"></p>
       </div>
 
       <div class="st-card mcp-card" id="mcp-card" hidden>
@@ -163,6 +175,13 @@
           <button class="st-toggle" id="dark-toggle" role="switch" aria-checked="false" aria-label="Dark theme" data-i18n-aria-label="Dark theme"></button></div>
         <p class="muted small"><span data-i18n="Chats, settings and the key are kept in this browser only.">Chats, settings and the key are kept in this browser only.
           </span><a href="https://github.com/Niko1221/Strata" target="_blank" rel="noopener noreferrer"><span data-i18n="Strata on GitHub">Strata on GitHub</span></a></p>
+      </div>
+      <div class="st-card cfg-card" id="cfg-card" hidden>
+        <div class="req-head"><span class="card-title"><span data-i18n="Model settings">Model settings</span></span><span class="muted small" id="cfg-file"></span></div>
+        <p class="muted small" data-i18n="Kept in the model&#39;s run config for every client. An empty field is the default. They take effect the next time the model starts (close Strata&#39;s window and start it again).">Kept in the model's run config for every client. An empty field is the default. They take effect the next time the model starts (close Strata's window and start it again).</p>
+        <form class="cfg-form" id="cfg-form"></form>
+        <div class="cfg-actions"><button class="st-btn st-btn--primary" id="cfg-save" type="button"><span data-i18n="Save">Save</span></button>
+          <span class="muted small" id="cfg-msg" role="status"></span></div>
       </div>
     </div>
   </section>

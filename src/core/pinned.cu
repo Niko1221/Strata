@@ -224,9 +224,27 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
         note = "MAP_HUGETLB unavailable (needed " + std::to_string(need) + " 2 MiB pages, vm.nr_hugepages=" +
                (have_pool ? std::to_string(pool) : std::string("?")) + "); using 4 KB pages";
     }
-    void* p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    // No hugetlb mapping: a 2 MiB-aligned anonymous mapping with MADV_HUGEPAGE, so transparent huge pages back
+    // it where THP is "madvise" (the common distro default). The CPU expert pool streams whole experts out of
+    // this arena; with 4 KB pages every 3 MB expert costs ~750 TLB misses.
+    constexpr uint64_t kAlign = 2ull << 20;
+    const uint64_t padded = bytes + kAlign;
+    void* raw = mmap(nullptr, padded, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     got = PageBacking::NormalPages;
-    return p == MAP_FAILED ? nullptr : p;
+    if (raw == MAP_FAILED) return nullptr;
+    const uintptr_t start = (uintptr_t) raw;
+    const uintptr_t aligned = (start + kAlign - 1) & ~(uintptr_t) (kAlign - 1);
+    if (aligned > start) munmap(raw, aligned - start);
+    const uintptr_t end = aligned + bytes, raw_end = start + padded;
+    if (raw_end > end) munmap((void*) end, raw_end - end);
+    void* p = (void*) aligned;
+    if (std::getenv("STRATA_NO_LARGEPAGES") == nullptr && madvise(p, bytes, MADV_HUGEPAGE) == 0) {
+        const std::string four_k = "; using 4 KB pages";
+        if (note.size() >= four_k.size() && note.compare(note.size() - four_k.size(), four_k.size(), four_k) == 0)
+            note.resize(note.size() - four_k.size());
+        note += "; transparent huge pages requested (MADV_HUGEPAGE)";
+    }
+    return p;
 #endif
 }
 
@@ -452,7 +470,7 @@ LoadStats load_experts_direct(const std::string& path, uint8_t* dst, const std::
     std::mutex err_mu;
     std::string err;
     const int wide = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
-    std::vector<wchar_t> wpath((size_t) std::max(wide, 1), L'\0');
+    std::vector<wchar_t> wpath((size_t) (std::max)(wide, 1), L'\0');
     if (wide > 0) MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wpath.data(), wide);
     auto worker = [&]() {
         HANDLE h = CreateFileW(wpath.data(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
@@ -503,7 +521,7 @@ LoadStats load_experts_direct(const std::string& path, uint8_t* dst, const std::
 }
 
 bool experts_unbuffered(const std::vector<std::string>& files, uint64_t arena_bytes, std::string& why,
-                        bool cache_counts) {
+                        bool cache_counts, uint64_t read_bytes) {
     const char* env = std::getenv("STRATA_UNBUFFERED_LOAD");
     if (env != nullptr && env[0] != '\0') {
         why = std::string("STRATA_UNBUFFERED_LOAD=") + env;
@@ -520,7 +538,7 @@ bool experts_unbuffered(const std::vector<std::string>& files, uint64_t arena_by
     uint64_t seed = (uint64_t) GetTickCount64() * 6364136223846793005ull + 1442695040888963407ull;
     for (const std::string& f : files) {
         const int wide = MultiByteToWideChar(CP_UTF8, 0, f.c_str(), -1, nullptr, 0);
-        std::vector<wchar_t> w((size_t) std::max(wide, 1), L'\0');
+        std::vector<wchar_t> w((size_t) (std::max)(wide, 1), L'\0');
         if (wide > 0) MultiByteToWideChar(CP_UTF8, 0, f.c_str(), -1, w.data(), wide);
         HANDLE h = CreateFileW(w.data(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_RANDOM_ACCESS,
                                nullptr);
@@ -551,15 +569,21 @@ bool experts_unbuffered(const std::vector<std::string>& files, uint64_t arena_by
     GlobalMemoryStatusEx(&ms);
     const uint64_t avail = ms.ullAvailPhys;
     // what the cache could keep beside the arena (~4 GiB for everything else)
-    const uint64_t room = avail > arena_bytes + (4ull << 30) ? avail - arena_bytes - (4ull << 30) : 0;
-    const bool keepable = room >= total_bytes;
-    char msg[200];
-    std::snprintf(msg, sizeof msg, "%d of %d probe reads from the file cache; %.1f GiB available, %.1f GiB of files",
-                  fast, n, (double) avail / (1ull << 30), (double) total_bytes / (1ull << 30));
+    const uint64_t need = read_bytes == kAllFileBytes ? total_bytes : read_bytes;
+    const bool keepable = strata::platform::file_cache_keeps(avail, arena_bytes, need);
+    char msg[256];
+    if (read_bytes == kAllFileBytes)
+        std::snprintf(msg, sizeof msg, "%d of %d probe reads from the file cache; %.1f GiB available, %.1f GiB of files",
+                      fast, n, (double) avail / (1ull << 30), (double) total_bytes / (1ull << 30));
+    else
+        std::snprintf(msg, sizeof msg, "%.1f GiB available, %.1f GiB of it still to be taken by the RAM copy, %.1f GiB "
+                      "of experts read from the files: the file cache %s keep them",
+                      (double) avail / (1ull << 30), (double) arena_bytes / (1ull << 30), (double) need / (1ull << 30),
+                      keepable ? "can" : "cannot");
     why = msg;
     return (!cached || !cache_counts) && !keepable;
 #else
-    (void) files; (void) arena_bytes; (void) cache_counts;
+    (void) files; (void) arena_bytes; (void) cache_counts; (void) read_bytes;
     why = "buffered (not Windows)";
     return false;
 #endif

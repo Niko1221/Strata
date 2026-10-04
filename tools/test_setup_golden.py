@@ -100,8 +100,10 @@ def install(ram, found, argv, answers=None, extra=(), avx512=False, configs=()):
             mock.patch.object(setup, "amd_gpus", lambda: []),
             mock.patch.object(setup, "ram_gb", lambda: ram),
             mock.patch.object(setup, "cpu_info", lambda: ("Test CPU", True, avx512)),
+            mock.patch.object(setup, "cpu_cores", lambda: None),   # #642: not a hybrid CPU
             mock.patch.object(setup, "page_file_gb", lambda: 16.0),
             mock.patch.object(setup, "is_wsl", lambda: False),
+            mock.patch.object(setup, "rotational_disk", lambda p: None),   # #605: the test PC's own disk
             mock.patch.object(setup, "free_gb", lambda p: 900.0),
             mock.patch.object(setup, "pip_install", lambda *a, **k: None),
             mock.patch.object(setup, "get_llama_cpp", lambda: t / "llama.cpp"),
@@ -113,7 +115,7 @@ def install(ram, found, argv, answers=None, extra=(), avx512=False, configs=()):
             mock.patch.object(setup, "run", lambda *a, **k: None),
             mock.patch.object(setup, "mtp_corrupt", lambda *a, **k: False),
             mock.patch.object(setup, "refresh_draft_vocab", lambda *a, **k: None),
-            mock.patch.object(setup, "write_run_script", lambda tag, cfg, port: t / f"run-{tag}.bat"),
+            mock.patch.object(setup, "write_run_script", lambda tag, cfg, port, *_: t / f"run-{tag}.bat"),
             mock.patch.object(setup, "saved_calibration", lambda cfg: None),
             mock.patch.object(setup, "calibrate_config", mock.Mock(side_effect=AssertionError("calibrated"))),
             mock.patch.dict(sys.modules, {"gguf_reader": types.SimpleNamespace(GGUFFile=FakeGGUF)}),

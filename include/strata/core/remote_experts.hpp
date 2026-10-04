@@ -11,6 +11,7 @@
 #include <vector>
 
 namespace strata::core {
+class RemoteExpertOpt;
 
 /// A static, profile-filled expert tier on another CUDA device. CUDA0 keeps all
 /// dense weights and state; results return through the existing pinned CPU rows.
@@ -27,7 +28,7 @@ public:
     bool open(int device, int slots, int64_t layers, int64_t experts,
               const std::vector<std::pair<int32_t, int32_t>>& ranked,
               const ExpertCache& primary, ExpertSource& source,
-              std::vector<uint8_t>& claimed, std::string& err);
+              std::vector<uint8_t>& claimed, std::string& err, bool auto_size = false);
     void close();
 
     /// `kind` is the primary verifier's classification (-1 = CPU candidate),
@@ -36,6 +37,7 @@ public:
                int64_t k, const int32_t* kind, const int32_t* primary_res,
                std::string& err);
     bool owns(int64_t index) const { return owned_[(size_t) index] != 0; }
+    bool optimized_decode() const { return remote_opt_ != nullptr; }
     bool finish(float* out, std::string& err);
     int64_t resident() const { return cache_.resident(); }
     int64_t computed() const { return computed_; }
@@ -48,6 +50,8 @@ public:
     double ms_wait() const { return ms_wait_; }
 
 private:
+    friend class RemoteExpertOpt;
+    RemoteExpertOpt* remote_opt_ = nullptr;
     int device_ = -1;
     int64_t n_expert_ = 0;
     int32_t groups_ = 0;
