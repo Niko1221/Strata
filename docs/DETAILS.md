@@ -428,7 +428,8 @@ engine process. The server adds `--live-memory` and requires its versioned capab
 engines or configurations fail explicitly; live mode never falls back to reloading. The initial setting change
 requires restarting the server while idle. Subsequent capacity changes keep the model, KV cache and conversations.
 
-Native changes run at drained decode/prompt boundaries or while idle, in bounded steps. Generation may briefly
+Native changes run at drained decode boundaries or while idle, in bounded steps. During borrowed prefill,
+controls wait until prompt buffers have been refilled with expert weights. Generation may briefly
 pause while copies finish and blocks are added or released. The server reports actual committed capacity from
 native acknowledgements, including partial progress if a later step fails; the requested budget is not proof of
 an allocation. Failures wait through the policy cooldown before another proposal. `POST /v1/memory/refresh`
@@ -436,7 +437,9 @@ requests an observation and reports `pending` or `observed`, rather than promisi
 
 This mode currently requires a single CUDA GPU with virtual memory management, file-backed native experts,
 an expert profile and graphed residency. It does not support HIP, split/peer GPUs or the other cache layouts.
-Prefill does not borrow the expert cache in live mode, so prompt throughput can differ from the default path.
+Prefill can borrow the active expert-cache tail; resize rebinds its views and changes its chunk size. The log
+reports budgeted RAM coverage and file fallback. A small mapped cache floor preserves fresh prompt support;
+an unreachable reserve reports `prefill_cache_floor` with actual sizes.
 Free space alone does not guarantee faster inference: routing, file reads, host-to-device copies and fixed
 model/KV buffers still matter. See [live-memory control and validation](LIVE_MEMORY.md).
 

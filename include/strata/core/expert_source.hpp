@@ -438,10 +438,11 @@ public:
         const std::vector<std::pair<int32_t, int32_t>>* rank = nullptr);
     /// Opt-in independently owned RAM blocks. Readers and staged exchanges must be drained by the caller.
     bool enable_live_resident(bool pin, std::string& err, uint64_t pin_budget = UINT64_MAX);
+    /// include_gpu keeps profile-ranked duplicates inside target for prompt loans and later GPU eviction.
     bool resize_live_resident(uint64_t target, uint64_t step_bytes, uint64_t headroom,
                               const std::vector<int32_t>& host_res,
                               const std::vector<std::pair<int32_t, int32_t>>& rank,
-                              bool& done, std::string& err);
+                              bool& done, std::string& err, bool include_gpu = false);
     void close();
 
     bool mapped() const { return base_ != nullptr; }

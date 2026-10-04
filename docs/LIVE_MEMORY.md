@@ -35,9 +35,19 @@ budget limit; blocks fall back to ordinary memory when that limit is reached or 
 The startup log reports each amount. Their current owner follows adaptive expert exchanges;
 resizing uses live residency rather than the startup profile's original placement. Experts removed from RAM
 remain available from the unchanged model files. All background readers and pending copies are drained before
-storage is retired. In live mode, prefill does not borrow expert storage, which may reduce prompt throughput.
+storage is retired. With prompt borrowing enabled, profile-ranked GPU experts may also have RAM copies;
+those copies share the existing resident budget. The loan log reports RAM coverage and file fallback.
+Prefill temporarily borrows the active cache tail and refills the current experts before decode. A control
+received during borrowed prefill waits until the entire prompt/refill has completed, including on STOP.
+Before shrink and after growth, all borrowed views are rebound to current mapped slots. Chunk sizes shrink
+and recover with the available cache, within the initial host-buffer allocation.
 After all prompt and verifier buffers are allocated, startup checks actual free VRAM and trims expert mappings
 to preserve the configured reserve before reporting READY. If that reserve cannot be met, startup fails.
+
+Borrowing keeps enough mapped slots for a 256-token prompt chunk plus 128 decode slots. If a requested reserve
+would need to retire this floor, the terminal acknowledgement reports `error=prefill_cache_floor` with actual
+committed sizes. Fresh prompts can still run using the smaller chunk. Explicit `--no-prefill-borrow` retains
+owned prompt buffers and the earlier zero-cache behavior.
 
 The engine process, generation session, KV cache, speculative state and parked conversations remain intact.
 Physical allocation still has limits: fixed model buffers and KV storage cannot be reclaimed by this feature.
@@ -115,6 +125,40 @@ Changing the first system word prevented prompt-prefix reuse. No controller muta
 These are sequential workstation observations, not an isolated estimate of the cost of VMM or resizing.
 The live path owns its prompt buffers and enforces the reserve after all buffers are allocated; the release
 borrows expert storage for prefill. Available RAM also differed. Outputs and speculative acceptance can differ.
-The experimental mode therefore remains opt-in; the daily installation retains the release engine.
-Safe prefill borrowing, refreshed loan layouts and budgeted RAM coverage for borrowed experts need further
-work and comparable measurements before claiming a performance improvement.
+That regression kept the first implementation out of the daily installation.
+This table records the first implementation with borrowing disabled. Guarded borrowing, refreshed loan layouts
+and budgeted RAM coverage are implemented in the follow-up below.
+
+### Guarded borrowing follow-up (2026-10-04)
+
+The rebuilt native suite passed all 230 live-memory checks and the three affected CTest targets. Real-model
+prefill acceptance queued a MEMORY command during a 16,562-token prompt: acknowledgements arrived after
+REUSED, following completed refill. Fresh prompts ran after cache shrink/regrowth. STOP during borrowed
+prefill cancelled cleanly with no generated tokens. An unreachable reserve reported `prefill_cache_floor`
+with the resulting actual capacity; a fresh 2,126-token prompt then ran in at least eight chunks at that floor.
+After regrowth, an 8,562-token prompt completed and a follow-up reused 8,625 KV tokens with the same process.
+This functional test used a 24 GiB RAM cap and did not allocate artificial system pressure.
+
+The follow-up also repeated all 12 decode/idle capacity changes with real native allocation and synthetic
+policy capacity/time inputs. One generation continued through every active change, with a largest observed
+token gap of 0.58 s; the following turn reused 1,887 KV tokens. The process and model/context/KV arguments
+stayed unchanged. This separate functional run also used a 24 GiB RAM cap to leave regrowth headroom.
+
+The original benchmark workload was repeated with the installed release and guarded borrowing, using the
+same model/profile/MTP, context, KV precision, 42 GiB cap and 1,536 MiB reserve. It again used one warmup,
+two measured fresh prompts and 512 output tokens, without controller mutations.
+
+| Measurement | Installed release, repeated | Live mode with guarded borrowing |
+| --- | ---: | ---: |
+| Mean decode (tokens/s) | 44.52 | 45.87 |
+| Mean prefill (tokens/s) | 1,310.17 | 1,327.36 |
+| Mean first-token latency (s) | 4.76 | 4.68 |
+| Initial expert VRAM (MiB, reported) | 5,274 | 4,927 |
+| Initial expert RAM (MiB) | 40,181 | 39,377 |
+| Free VRAM after startup (MiB) | 1,174 | 1,931 |
+
+These sequential observations show performance recovery close to this run's release baseline; two measured
+requests do not establish a general speedup. Available RAM differed between runs and from the first table.
+The original release does not enforce the reserve after all startup buffers, which also changes cache sizes.
+The enabled server policy may choose or trim a smaller resident budget to preserve RAM headroom; this
+benchmark does not establish sustained throughput after those automatic changes. Live mode remains opt-in.

@@ -1,5 +1,6 @@
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/live_memory.hpp"
+#include "strata/core/live_prefill.hpp"
 #if !defined(STRATA_LIVE_DEVICE_TEST_ONLY)
 #include "strata/core/expert_source.hpp"
 #include "strata/kernels/cpu/expert.hpp"
@@ -76,6 +77,23 @@ void pressure_direction() {
     require(live_memory_gpu_budget(1632 * MiB, 2752 * MiB, 1536 * MiB, quantum, true) == 2816 * MiB,
             "growth admits only the space beyond reserve and granule margin");
 }
+void loan_geometry() {
+    using namespace strata::core;
+    const uint64_t offsets[] = {0, 5, 8, 18, 22, 41, 47};
+    require(live_prefill_floor(offsets, 6, 20, 2) == 5, "sized loan floor retains decode prefix and whole prompt buffers");
+    require(live_prefill_first(offsets, 4, 20, 2) == -1, "loan rejects a shrunken cache below its minimum floor");
+    require(live_prefill_first(offsets, 5, 20, 2) == 3, "post-shrink loan uses the current end, not the old tail");
+    require(live_prefill_first(offsets, 6, 20, 2) == 4, "regrowth rebinds the loan to its new tail");
+    require(live_prefill_first(offsets, 6, 39, 2) == 2, "exactly fitting loan retains the complete decode prefix");
+    require(live_prefill_floor(offsets, 6, 40, 2) == -1, "unreachable prompt floor is refused");
+    for (int64_t slots = 3; slots <= 6; ++slots)
+        for (uint64_t bytes = 1; bytes <= offsets[slots] - offsets[2]; ++bytes) {
+            const int64_t first = live_prefill_first(offsets, slots, bytes, 2);
+            require(first >= 2 && first < slots && offsets[slots] - offsets[first] >= bytes &&
+                    (first + 1 == slots || offsets[slots] - offsets[first + 1] < bytes),
+                    "every variable-sized loan is sufficient and starts at the latest valid slot");
+        }
+}
 void device_arena() {
     using strata::core::ExpertCache;
     std::string err;
@@ -124,6 +142,23 @@ void device_arena() {
     require(cudaGraphLaunch(exec, stream) == cudaSuccess && cudaStreamSynchronize(stream) == cudaSuccess,
             "pre-resize captured graph replays after regrowth");
     require(std::memcmp(readback, blob.data(), 256) == 0, "captured graph reads preserved bytes");
+    // A prompt borrows only the active tail; after refill its raw views must be rebound before a shrink can
+    // retire that tail. Exercise the same sized-offset planner against real VMM mappings, not fake pointers.
+    const uint64_t loan_bytes = 12ull << 20;
+    const int64_t original_first = strata::core::live_prefill_first(offsets, cache.slots(), loan_bytes, 2);
+    auto* original_view = cache.device_slot(original_first);
+    require(cudaMemset(original_view, 0x23, (size_t) loan_bytes) == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess,
+            "borrowed view writes the mapped tail");
+    const int64_t new_slots = 12;
+    const int64_t rebound_first = strata::core::live_prefill_first(offsets, new_slots, loan_bytes, 2);
+    auto* rebound_view = cache.device_slot(rebound_first);
+    require(rebound_view != original_view && rebound_first >= 2 && cache.resize_live(new_slots, err),
+            "raw view rebind precedes retirement of the old tail");
+    require(cudaMemset(rebound_view, 0x6a, (size_t) loan_bytes) == cudaSuccess &&
+            cudaMemcpy(readback, rebound_view, 256, cudaMemcpyDeviceToHost) == cudaSuccess && readback[0] == 0x6a,
+            "rebound prompt view survives physical shrink");
+    require(cache.verify_slot(0, blob.data(), err, sizes[0]), "borrowed buffers preserve the retained decode prefix");
+    require(cache.resize_live(48, err), "loan cache regrows");
     require(!cache.resize_live(65, err) && cache.slots() == 48, "invalid growth preserves active layout");
     require(cache.resize_live(0, err) && cache.committed_bytes() == 0 && cache.valid(),
             "zero cache releases every mapping but retains the virtual base");
@@ -208,6 +243,13 @@ void ram_blocks(bool pin, bool mixed = false) {
     require(source.pinned_bytes() == 0 && !source.pcie_layer(0), "zero RAM releases all mapped-host ownership");
     require(source.resize_live_resident(block, block, 0, res, rank, done, err) && done &&
             !source.has_resident(0, 1), "regrowth uses current GPU residency rather than startup slot_of");
+    const std::vector<std::pair<int32_t, int32_t>> hot{{0, 1}, {0, 0}};
+    require(source.resize_live_resident(block * 2, block, 0, res, hot, done, err, true) && done &&
+            source.has_resident(0, 1) && source.resident_bytes() == block * 2,
+            "borrow coverage duplicates a current GPU expert within the same bounded RAM target");
+    const uint8_t* duplicate = source.blob(0, 1);
+    require(!source.stage_exchange(0, 0, 1, 0) && source.blob(0, 1) == duplicate && duplicate[0] == 2,
+            "already-backed adaptive victim cannot overwrite or transfer a duplicate RAM owner");
     if (mixed) {
         require(source.resize_live_resident(block * 2, block, 0, res, rank, done, err) && done,
                 "close fixture with both pinned and pageable blocks alive");
@@ -222,6 +264,7 @@ int main(int argc, char** argv) {
     try {
         protocol();
         pressure_direction();
+        loan_geometry();
         if (argc <= 1 || std::strcmp(argv[1], "--protocol-only") != 0) {
             device_arena();
 #if !defined(STRATA_LIVE_DEVICE_TEST_ONLY)

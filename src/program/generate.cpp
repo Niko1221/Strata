@@ -17,6 +17,7 @@
 #include "strata/core/device.hpp"
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/live_memory.hpp"
+#include "strata/core/live_prefill.hpp"
 #include "strata/core/conversation_snapshot.hpp"
 #include "strata/core/conversation_memory.hpp"
 #include "strata/core/coupled_draft.hpp"
@@ -1438,10 +1439,9 @@ int main(int argc, char** argv) {
                                  "admission and diagnostic dumps are unsupported\n");
             return 2;
         }
-        // The prompt path otherwise retains a borrowed tail across requests, which a live shrink can release.
-        o.no_prefill_borrow = true;
         o.vram_reserve_mib = std::max(o.vram_reserve_mib, 256);
-        std::fprintf(stderr, "strata serve: live memory: separate prompt buffers; expert-cache borrowing disabled\n");
+        std::fprintf(stderr, "strata serve: live memory: %s\n", o.no_prefill_borrow
+                     ? "separate prompt buffers" : "guarded prompt borrowing; controls wait for refill");
     }
     if (o.resident_cpu_experts && !o.layer_split.empty() && !remote_caches && o.resident_soft &&
         !o.resident_cpu_explicit && o.resident_budget == 0) {
@@ -4077,7 +4077,8 @@ int main(int argc, char** argv) {
         }
         bool done = false;
         while (!done) {
-            if (!src.resize_live_resident(target, 32ull << 20, o.resident_headroom, host_res, profile, done, err)) {
+            if (!src.resize_live_resident(target, 32ull << 20, o.resident_headroom, host_res, profile, done, err,
+                                           pf_borrow)) {
                 std::fprintf(stderr, "strata serve: live RAM startup kept %.1f MiB: %s\n",
                              (double) src.resident_bytes() / 1048576.0, err.c_str()); break;
             }
@@ -4154,6 +4155,7 @@ int main(int argc, char** argv) {
             return 2;
         }
         strata::prefill::Prefill sp;
+        bool live_prompt_active = false;
         void* borrow = nullptr;
         uint64_t borrow_bytes = 0;
         int32_t lend_first = -1;          // the first slot the prompt path may borrow (its largest chunk)
@@ -4420,7 +4422,7 @@ int main(int argc, char** argv) {
             }
         }
         for (;;) {
-            if (o.live_memory)
+            if (o.live_memory && borrow == nullptr)
                 std::fprintf(stderr, "strata live memory: owned prompt buffers %llu MiB for %lld-token chunks\n",
                              (unsigned long long) (strata::prefill::Prefill::bytes_needed(g, ss, o.prefill_chunk) >> 20),
                              (long long) o.prefill_chunk);
@@ -4469,6 +4471,51 @@ int main(int argc, char** argv) {
             }
         }
         mem_mark("the head and the prompt path");
+        const bool live_borrow = o.live_memory && pf_borrow;
+        const int64_t live_chunk_max = o.prefill_chunk; // host buffers allocated by init; relayout never exceeds it
+        int64_t live_cache_floor = 0;
+        if (live_borrow) {
+            live_cache_floor = strata::core::live_prefill_floor(xcache.slot_offsets(), xcache.capacity(),
+                strata::prefill::Prefill::bytes_needed(g, ss, 256));
+            if (!borrow || pf_parts.size() != 1 || live_chunk_max < 256 || live_cache_floor < 0 || xcache.slots() < live_cache_floor) {
+                std::fprintf(stderr, "strata live memory: cache cannot fund a 256-token prompt loan and 128 decode slots\n");
+                return 1;
+            }
+            std::fprintf(stderr, "strata live memory: borrowed prompt floor %lld slots / %llu MiB; RAM duplicates share the resident budget\n",
+                         (long long) live_cache_floor,
+                         (unsigned long long) ((xcache.slot_offsets()[live_cache_floor] + (1ull << 20) - 1) >> 20));
+        }
+        // Rebind every raw Prefill view before retiring mappings (or after growing them). This touches only
+        // layout metadata: cache bytes stay expert weights until lend() marks their current owners nonresident.
+        auto rebind_live_prefill = [&](int64_t slots, std::string& why) -> bool {
+            if (!live_borrow) return true;
+            if (live_prompt_active || !pf_parts[0].lent.empty() || slots < live_cache_floor) {
+                why = "live prefill: loan is active or cache is below its prompt floor"; return false;
+            }
+            static constexpr int64_t chunks[] = {32768, 16384, 8192, 6144, 4096, 3072, 2048, 1536, 1024, 512, 256};
+            int64_t chunk = std::min(live_chunk_max, o.prefill_chunk);
+            int64_t first = -1;
+            // Regrowth can recover the initial chunk; the initial init's host allocations remain the cap.
+            for (const int64_t c : chunks) {
+                if (c > live_chunk_max) continue;
+                const int64_t at = strata::core::live_prefill_first(xcache.slot_offsets(), slots,
+                    strata::prefill::Prefill::bytes_needed(g, ss, c));
+                if (at >= 0 && (!o.prefill_auto || (slots - at) * 100 <= kAutoLendPct * slots || c == 256)) {
+                    chunk = c; first = at; break;
+                }
+            }
+            if (first < 0) { why = "live prefill: no bounded loan fits"; return false; }
+            const uint64_t bytes = xcache.slot_offsets()[slots] - xcache.slot_offsets()[first];
+            if (!sp.relayout(chunk, xcache.device_slot(first), bytes, why)) return false;
+            PfPart& p = pf_parts[0];
+            p.first = p.first_now = (int32_t) first; p.lent_chunk = 0;
+            lend_first = p.first; borrow = xcache.device_slot(first); borrow_bytes = bytes;
+            if (o.prefill_chunk != chunk)
+                std::fprintf(stderr, "strata live memory: prompt loan now %lld tokens / %llu MiB with %lld cache slots\n",
+                             (long long) chunk, (unsigned long long) (bytes >> 20), (long long) slots);
+            o.prefill_chunk = chunk;
+            return true;
+        };
         // #340: STRATA_SPLIT_SMALL_OWN=S (tokens): on a layer split, every stage that borrows keeps the slots for an
         // S-token chunk's buffers for the whole session (0.1.29's own buffers, carved from the tail of its cache):
         // a request of at most S prompt tokens then lends, streams and refills nothing, a longer one lends (and
@@ -4962,6 +5009,7 @@ int main(int argc, char** argv) {
         auto trim_live_cache = [&](int64_t slots, std::string& why) -> bool {
             std::vector<int32_t> next_res = host_res;
             for (auto& slot : next_res) if (slot >= slots) slot = strata::core::kNotResident;
+            if (!rebind_live_prefill(slots, why)) return false;
             if (cudaMemcpy(d_res, next_res.data(), next_res.size() * sizeof(int32_t),
                            cudaMemcpyHostToDevice) != cudaSuccess) {
                 if (cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t),
@@ -4992,6 +5040,9 @@ int main(int argc, char** argv) {
         // happens only at a drained window boundary or while idle. No SessionState or checkpoint is touched.
         auto service_memory = [&]() {
           try {
+            // Prefill owns the borrowed addresses from lend through the final refill. In particular on_chunk
+            // is not a resize boundary: later chunks and draft-KV callbacks still use those raw views.
+            if (live_prompt_active) return;
             std::deque<std::string> commands;
             {
                 std::lock_guard<std::mutex> lk(in_mu);
@@ -5033,7 +5084,7 @@ int main(int argc, char** argv) {
             bool ram_done = false;
             const bool ram_shrinking = (request.resident_mib << 20) < src.resident_bytes();
             if (ram_shrinking && !src.resize_live_resident(request.resident_mib << 20, 32ull << 20,
-                    o.resident_headroom, host_res, profile, ram_done, why)) {
+                    o.resident_headroom, host_res, profile, ram_done, why, live_borrow)) {
                 fail_memory("ram_resize", why); return;
             }
             size_t free_b = 0, total_b = 0;
@@ -5045,7 +5096,7 @@ int main(int argc, char** argv) {
             const uint64_t quantum = xcache.live_block_bytes();
             const uint64_t budget = strata::core::live_memory_gpu_budget(free_b, committed, reserve, quantum,
                                                                         memory_gpu_growth);
-            int64_t target_slots = xcache.slots_for_bytes(budget);
+            int64_t target_slots = std::max(live_cache_floor, xcache.slots_for_bytes(budget));
             const int64_t old_slots = xcache.slots();
             if (!memory_gpu_growth) target_slots = std::min(target_slots, old_slots);
             // At most 128 MiB of VRAM and one 32 MiB RAM block per window. Mapping rounds to the driver's
@@ -5117,17 +5168,20 @@ int main(int argc, char** argv) {
                         fail_memory("residency_upload", "cannot publish grown residency"); return;
                     }
                     std::copy(next_res.begin(), next_res.end(), host_res.begin()); // readers retain host_res.data()
+                    if (!rebind_live_prefill(next_slots, why)) {
+                        fail_memory("prefill_rebind", why); return;
+                    }
                 } while (false);
             }
             if (!ram_shrinking && !src.resize_live_resident(request.resident_mib << 20, 32ull << 20, o.resident_headroom,
-                                           host_res, profile, ram_done, why)) {
+                                           host_res, profile, ram_done, why, live_borrow)) {
                 fail_memory("ram_resize", why); return;
             }
             size_t final_free = 0, final_total = 0;
             if (cudaMemGetInfo(&final_free, &final_total) != cudaSuccess) {
                 fail_memory("telemetry", "VRAM telemetry unavailable after resize"); return;
             }
-            const bool unreachable = final_free < reserve && xcache.committed_bytes() == 0;
+            const bool unreachable = final_free < reserve && xcache.slots() == live_cache_floor;
             if (final_free < reserve && memory_gpu_growth) {
                 memory_gpu_growth = false; memory_gpu_capped = true;
             }
@@ -5136,7 +5190,7 @@ int main(int argc, char** argv) {
             const bool done = next_slots == target_slots && ram_done && (final_free >= reserve || unreachable);
             o.vram_reserve_mib = (int) request.vram_reserve_mib;
             const char* result = "none";
-            if (done && unreachable) result = "reserve_unreachable";
+            if (done && unreachable) result = live_borrow ? "prefill_cache_floor" : "reserve_unreachable";
             else if (done && memory_gpu_capped) result = "gpu_pressure_cap";
             else if (done && next_slots == xcache.capacity()) result = "gpu_capacity";
             else if (done && (src.resident_bytes() >> 20) < request.resident_mib) result = "ram_capacity_or_rounding";
@@ -5172,13 +5226,13 @@ int main(int argc, char** argv) {
                         break;
                     }
                     const uint64_t committed = xcache.committed_bytes();
-                    if (committed == 0) {
-                        std::fprintf(stderr, "strata live memory: startup refused: reserve_unreachable (%llu MiB free, %d MiB requested after releasing the expert cache)\n",
+                    if (xcache.slots() == live_cache_floor) {
+                        std::fprintf(stderr, "strata live memory: startup refused: reserve_unreachable (%llu MiB free, %d MiB requested at the prompt cache floor)\n",
                                      (unsigned long long) (free_b >> 20), o.vram_reserve_mib);
                         return 1;
                     }
                     const uint64_t next = committed > (128ull << 20) ? committed - (128ull << 20) : 0;
-                    if (!trim_live_cache(xcache.slots_for_bytes(next), err)) {
+                    if (!trim_live_cache(std::max(live_cache_floor, xcache.slots_for_bytes(next)), err)) {
                         std::fprintf(stderr, "strata live memory: startup trim failed: %s\n", err.c_str()); return 1;
                     }
                 }
@@ -5865,16 +5919,25 @@ int main(int argc, char** argv) {
                         if (!p.sp->relayout(want, p.cache->device_slot(first), part_bytes(p, first), e)) return false;
                         p.first_now = first;
                     }
+                    uint64_t ram_bytes = 0, file_bytes = 0;
                     for (int64_t l = p.lb; l < p.le; ++l)              // THIS participant's layers only
                         for (int64_t ex = 0; ex < g.n_expert; ++ex) {
                             const size_t i = (size_t) (l * g.n_expert + ex);
                             if (host_res[i] >= first) {
+                                if (live_borrow) {
+                                    const uint64_t bytes = strata::kernels::cpu::expert_layout().blob_bytes(l);
+                                    (src.has_resident(l, ex) ? ram_bytes : file_bytes) += bytes;
+                                }
                                 p.lent.emplace_back((int32_t) i, host_res[i]);
                                 host_res[i] = strata::core::kNotResident;
                                 any = true;
                             }
                         }
                     p.lent_chunk = want;
+                    if (live_borrow)
+                        std::fprintf(stderr, "strata live memory: prompt loan %lld slots, %.1f MiB in budgeted RAM + %.1f MiB file fallback\n",
+                                     (long long) p.lent.size(), (double) ram_bytes / 1048576.0,
+                                     (double) file_bytes / 1048576.0);
                 }
                 if (any) res_upload();
                 if (trace) {
@@ -5911,6 +5974,7 @@ int main(int argc, char** argv) {
             const int hist_n = std::min(req_sp.penalty_last_n, kPenaltyWindowCap);
             ver.set_history(hist_n > 0 ? d_hist : nullptr, hist_n);
             bool cancelled = false;
+            live_prompt_active = live_borrow;
             tr("prompt start", n - 1);
             // The prompt is read in two parts when it has a turn boundary past `resume`: up to the last <|im_start|>
             // (the conversation so far), a checkpoint there, then the new turn's header.  The next request of the same
@@ -5983,6 +6047,7 @@ int main(int argc, char** argv) {
             const double prompt_ms = std::chrono::duration<double, std::milli>(Clock::now() - r0).count();
             std::printf("REUSED %lld\n", (long long) resume);   // the prompt is read; the first window comes next
             std::fflush(stdout);
+            live_prompt_active = false;
             // the verify windows: the first holds the last prompt token alone
             int64_t p = n - 1;
             int32_t x = (int32_t) ids[(size_t) (n - 1)];

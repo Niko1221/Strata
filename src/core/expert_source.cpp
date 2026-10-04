@@ -1635,7 +1635,7 @@ bool FileExpertSource::enable_live_resident(bool pin, std::string& err, uint64_t
 bool FileExpertSource::resize_live_resident(uint64_t target, uint64_t step, uint64_t headroom,
                                            const std::vector<int32_t>& res,
                                            const std::vector<std::pair<int32_t, int32_t>>& rank,
-                                           bool& done, std::string& err) try {
+                                           bool& done, std::string& err, bool include_gpu) try {
     done = false;
     if (!live_resident_ || res.size() != live_blobs_.size() || !staged_.empty() || step == 0) {
         err = "live RAM: invalid state or exchanges still pending"; return false;
@@ -1666,7 +1666,7 @@ bool FileExpertSource::resize_live_resident(uint64_t target, uint64_t step, uint
     std::vector<uint8_t> seen(live_blobs_.size(), 0);
     uint64_t bytes = 0;
     auto choose = [&](size_t i) {
-        if (i >= live_blobs_.size() || seen[i] || res[i] >= 0 || live_blobs_[i].host) return;
+        if (i >= live_blobs_.size() || seen[i] || (!include_gpu && res[i] >= 0) || live_blobs_[i].host) return;
         seen[i] = 1;
         const uint64_t b = layer_blob_bytes_[i / (size_t) n_expert_];
         if (b <= room - bytes) { chosen.push_back(i); bytes += b; }
