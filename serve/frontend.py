@@ -321,7 +321,13 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
             elif kind == "tool_use":
                 calls.append({"function": {"name": block.get("name"), "arguments": block.get("input") or {}}})
             elif kind == "tool_result":
-                messages.append({"role": "tool", "content": _text_of(block.get("content"))})
+                tc = block.get("content")
+                messages.append({"role": "tool", "content": _text_of(tc)})
+                if isinstance(tc, list) and _has_image(tc):
+                    # Images a tool returned (Claude Code returns a Read of a PNG this way) were dropped by _text_of,
+                    # so the model guessed. The template shows images in user turns: pass them on right after.
+                    messages.append({"role": "user", "content": [{"type": "text", "text": "(image returned by the tool above)"}] +
+                                     [p for p in _parts_of(tc) if isinstance(p, dict) and p.get("type") == "image"]})
         if text or calls or reasoning:
             out = {"role": m["role"], "content": "".join(text)}
             if reasoning:

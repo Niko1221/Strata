@@ -740,6 +740,23 @@ class ClientShapes(unittest.TestCase):
         msgs, _, _ = anthropic_to_messages({"system": "S", "messages": [{"role": "user", "content": "u"}]})
         self.assertEqual([m["role"] for m in msgs], ["system", "user"])
 
+    def test_anthropic_image_inside_a_tool_result_reaches_the_model(self):
+        # Claude Code returns a Read of a PNG as an image block inside a tool_result. Only its text was kept, so the
+        # model answered about a picture it never saw ("A, B, C, D, E" for a dashboard's four bar labels). The image
+        # now follows the tool message as a user turn, where the template shows images.
+        from serve.frontend import anthropic_to_messages, images_of
+        img = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}
+        msgs, _, _ = anthropic_to_messages({"messages": [
+            {"role": "user", "content": "look at it"},
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "/tmp/a.png"}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": [img]}]}]})
+        self.assertEqual([m["role"] for m in msgs], ["user", "assistant", "tool", "user"])
+        self.assertEqual(len(images_of(msgs)), 1)
+        # a text-only tool result is unchanged
+        msgs, _, _ = anthropic_to_messages({"messages": [
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}]})
+        self.assertEqual(msgs, [{"role": "tool", "content": "ok"}])
+
     def test_messages_sent_as_a_json_string(self):
         # #460: a client that double-encodes "messages" (and "tool_calls") as a JSON string gets them decoded; what is
         # still not a list of objects is a ValueError (the server's 400), not an AttributeError on m.get
