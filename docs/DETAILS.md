@@ -312,6 +312,15 @@ app. It has three tabs:
   VRAM, temperature, power and PCIe traffic; CPU, RAM and disk; the context in use; the last requests.
 - **About:** the model and engine settings, and the addresses to connect other apps.
 
+On Windows, AMD GPU readings use the display driver's ADL library: load, dedicated VRAM, edge temperature,
+board power (ASIC power when the board sensor is unavailable), and PCIe generation and width. PCIe traffic is
+unavailable through this reader. Unsupported sensors stay blank. No extra monitoring package is needed.
+
+The language selector in the header offers English (the default) and Arabic, including the API Monitor page.
+The choice stays in this browser. Arabic uses a right-to-left layout; messages follow their own text direction,
+and code and API addresses stay left-to-right. Changing the interface language does not change model prompts
+or API settings.
+
 `http://127.0.0.1:8080/?q=your question` opens it with a new chat already asking. The API is at
 `http://127.0.0.1:8080/v1` for your apps.
 

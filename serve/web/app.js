@@ -2,11 +2,13 @@
 // The Monitor tab rebuilds PR #22's dashboard idea (code-martin) on the server's own /metrics.
 "use strict";
 
+const tr = StrataI18n.t;
+const uiLocale = StrataI18n.locale;
 const $ = (id) => document.getElementById(id);
 const SPRITE = "web/sprite.svg";
 const icon = (name, cls = "st-icon") => `<svg class="${cls}" aria-hidden="true"><use href="${SPRITE}#i-${name}"/></svg>`;
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
-const fmt = (n, d = 0) => (n == null || Number.isNaN(n) ? "–" : Number(n).toLocaleString(undefined, {maximumFractionDigits: d, minimumFractionDigits: d}));
+const fmt = (n, d = 0) => (n == null || Number.isNaN(n) ? "–" : Number(n).toLocaleString(uiLocale(), {maximumFractionDigits: d, minimumFractionDigits: d}));
 const kfmt = (n) => (n == null ? "–" : n >= 1000 ? `${fmt(n / 1000, n >= 10000 ? 0 : 1)}k` : fmt(n));
 // a context size: 32768 -> "32K" (powers of two), else like kfmt
 const ctxfmt = (n) => (n && n % 1024 === 0 ? `${fmt(n / 1024)}K` : kfmt(n));
@@ -29,7 +31,7 @@ function toast(kind, title, text = "", ms = 3500, action = null) {
     const b = document.createElement("button");
     b.className = "st-btn st-btn--secondary";
     b.style.height = "32px";
-    b.style.marginLeft = "auto";
+    b.style.marginInlineStart = "auto";
     b.textContent = action.label;
     b.onclick = () => { action.run(); el.remove(); };
     el.appendChild(b);
@@ -50,7 +52,7 @@ async function copyText(text, btn) {
     use.setAttribute("href", `${SPRITE}#i-check`);
     setTimeout(() => use.setAttribute("href", `${SPRITE}#i-copy`), 1500);
   }
-  toast("success", "Copied to clipboard", "", 1800);
+  toast("success", tr("Copied to clipboard"), "", 1800);
 }
 
 // ------------------------------------------------------------------ theme and tabs
@@ -93,15 +95,15 @@ function headers(json = false) {
   return h;
 }
 $("api-key").value = store.get("apikey", "");
-$("api-key").onchange = () => { store.set("apikey", $("api-key").value.trim()); toast("success", "API key saved", "Kept in this browser only."); };
+$("api-key").onchange = () => { store.set("apikey", $("api-key").value.trim()); toast("success", tr("API key saved"), tr("Kept in this browser only.")); };
 
 let health = {model: "strata", images: false, max_context: 0};
 async function loadHealth() {
   try {
     health = await (await fetch("health")).json();
-    $("attach-btn").title = health.images ? "Attach a text file or a picture (or drop it here)"
-                                          : "Attach a text file (or drop it here)";
-    $("chat-empty-sub").textContent = `${health.model} runs on this PC. Nothing leaves it.`;
+    $("attach-btn").title = health.images ? tr("Attach a text file or a picture (or drop it here)")
+                                          : tr("Attach a text file (or drop it here)");
+    $("chat-empty-sub").textContent = tr("{model} runs on this PC. Nothing leaves it.", {model: health.model});
   } catch (e) {
     setTimeout(loadHealth, 2000);
   }
@@ -120,10 +122,10 @@ const METRICS = [
 ];
 $("metrics").innerHTML = METRICS.map((m) => `
   <div class="st-card metric-card"><div class="st-metric">
-    <span class="st-metric__label">${icon(m.icon, "st-icon st-icon--sm")}${esc(m.label)}</span>
+    <span class="st-metric__label">${icon(m.icon, "st-icon st-icon--sm")}<span data-i18n="${esc(m.label)}">${esc(tr(m.label))}</span></span>
     ${m.key === "speed" ? `<div class="speed-values">
-      <div><span class="st-metric__value" id="mv-speed">-</span><span class="st-metric__sub" id="ms-speed">Decode</span></div>
-      <div class="speed-prefill"><span class="st-metric__value" id="mv-prefill">-</span><span class="st-metric__sub" id="ms-prefill">Prefill</span></div>
+      <div><span class="st-metric__value" id="mv-speed">-</span><span class="st-metric__sub" id="ms-speed"><span data-i18n="Decode">${esc(tr("Decode"))}</span></span></div>
+      <div class="speed-prefill"><span class="st-metric__value" id="mv-prefill">-</span><span class="st-metric__sub" id="ms-prefill"><span data-i18n="Prefill">${esc(tr("Prefill"))}</span></span></div>
     </div>` : `<span class="st-metric__value" id="mv-${m.key}">–</span>
     <span class="st-metric__sub" id="ms-${m.key}"></span>`}
     <svg class="st-metric__spark" id="sp-${m.key}" viewBox="0 0 100 32" preserveAspectRatio="none"${m.tone ? ` data-tone="${m.tone}"` : ""}>
@@ -155,8 +157,8 @@ async function poll() {
   try {
     const r = await fetch(reqShowAll ? "metrics?requests=all" : "metrics", {headers: headers()});
     if (r.status === 401) {
-      setPill("error", "API key needed");
-      if (!keyWarned) { keyWarned = true; toast("warn", "API key needed", "This server needs a key: add it under About > Settings.", 6000); }
+      setPill("error", tr("API key needed"));
+      if (!keyWarned) { keyWarned = true; toast("warn", tr("API key needed"), tr("This server needs a key: add it under About > Settings."), 6000); }
     } else if (r.ok) {
       lastMetrics = await r.json();
       metricsFailures = 0;
@@ -165,7 +167,7 @@ async function poll() {
       throw new Error(`HTTP ${r.status}`);
     }
   } catch (e) {
-    if (++metricsFailures === 3) setPill("error", "Server not reachable");
+    if (++metricsFailures === 3) setPill("error", tr("Server not reachable"));
   }
   if (tab === "monitor" && ++mcpTick % 10 === 0) loadMcp();       // server states change rarely: every 10 s
   setTimeout(poll, 1000);
@@ -182,49 +184,49 @@ function render(m) {
   // the header pill
   if (live.state === "reading") {
     const pct = live.prompt_total ? Math.round((100 * live.prompt_read) / live.prompt_total) : null;
-    setPill("reading", pct != null ? `Reading prompt · ${pct}%` : "Reading prompt");
+    setPill("reading", pct != null ? tr("Reading prompt · {pct}%", {pct}) : tr("Reading prompt"));
   } else if (live.state === "generating") {
-    setPill("generating", `Generating · ${fmt(live.tok_s, 1)} tok/s`);
+    setPill("generating", tr("Generating · {rate} tok/s", {rate: fmt(live.tok_s, 1)}));
   } else {
-    setPill("idle", "Idle");
+    setPill("idle", tr("Idle"));
   }
-  if (live.queued > 0) setPill("queued", `${live.queued} queued`);
+  if (live.queued > 0) setPill("queued", tr("{count} queued", {count: fmt(live.queued)}));
   if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
   if (tab === "about") renderAbout(eng, hw, st);
 }
 
 function renderTotals(t) {
   if (!t || !t.requests) return "";
-  const since = new Date(t.since * 1000).toLocaleString([], {weekday: "short", hour: "2-digit", minute: "2-digit"});
+  const since = new Date(t.since * 1000).toLocaleString(uiLocale(), {weekday: "short", hour: "2-digit", minute: "2-digit"});
   const read = t.prompt_tokens - t.reused;
-  const pSpeed = t.prompt_ms > 0 && read > 0 ? ` at ${fmt(read / (t.prompt_ms / 1000))} tok/s` : "";
-  const oSpeed = t.decode_ms > 0 && t.output_tokens > 0 ? ` at ${fmt(t.output_tokens / (t.decode_ms / 1000), 1)} tok/s` : "";
-  return `Since ${since}: ${fmt(t.requests)} requests · ${fmt(read)} prompt tokens read${pSpeed} (${fmt(t.reused)} reused) · ` +
-         `${fmt(t.output_tokens)} written${oSpeed}`;
+  const pSpeed = t.prompt_ms > 0 && read > 0 ? tr(" at {rate} tok/s", {rate: fmt(read / (t.prompt_ms / 1000))}) : "";
+  const oSpeed = t.decode_ms > 0 && t.output_tokens > 0 ? tr(" at {rate} tok/s", {rate: fmt(t.output_tokens / (t.decode_ms / 1000), 1)}) : "";
+  return tr("Since {since}: {requests} requests · {read} prompt tokens read{pSpeed} ({reused} reused) · {output} written{oSpeed}",
+            {since, requests: fmt(t.requests), read: fmt(read), pSpeed, reused: fmt(t.reused), output: fmt(t.output_tokens), oSpeed});
 }
 function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   // model state
   const on = live.queued > 0 ? "queued" : live.state;
   for (const b of document.querySelectorAll("#state-badges .st-badge")) b.classList.toggle("on", b.dataset.s === on || b.dataset.s === live.state);
   const prog = $("state-progress");
-  let label = "Waiting for a request", detail = "", pct = 0;
+  let label = tr("Waiting for a request"), detail = "", pct = 0;
   if (live.state === "reading") {
-    label = "Reading prompt";
+    label = tr("Reading prompt");
     prog.dataset.tone = "info";
     if (live.prompt_total) {
       pct = (100 * live.prompt_read) / live.prompt_total;
-      detail = `${fmt(live.prompt_read)} / ${fmt(live.prompt_total)} tokens · ${fmt(pct)}%`;
+      detail = tr("{read} / {total} tokens · {pct}%", {read: fmt(live.prompt_read), total: fmt(live.prompt_total), pct: fmt(pct)});
     } else {
-      detail = `${fmt(live.prompt_tokens)} tokens`;
+      detail = tr("{count} tokens", {count: fmt(live.prompt_tokens)});
     }
   } else if (live.state === "generating") {
-    label = live.phase ? live.phase[0].toUpperCase() + live.phase.slice(1) : "Generating";
+    label = live.phase ? tr({thinking: "Thinking", writing: "Writing", answering: "Answering"}[live.phase] || live.phase[0].toUpperCase() + live.phase.slice(1)) : tr("Generating");
     delete prog.dataset.tone;
     pct = live.max_tokens ? Math.min(100, (100 * live.generated) / live.max_tokens) : 0;
-    detail = `${fmt(live.generated)} tokens · ${fmt(live.tok_s, 1)} tok/s`;
+    detail = tr("{count} tokens · {rate} tok/s", {count: fmt(live.generated), rate: fmt(live.tok_s, 1)});
   } else if (last) {
     delete prog.dataset.tone;
-    detail = `last: ${fmt(last.output_tokens)} tokens${last.decode_tok_s ? ` at ${fmt(last.decode_tok_s, 1)} tok/s` : ""}`;
+    detail = tr("last: {count} tokens{speed}", {count: fmt(last.output_tokens), speed: last.decode_tok_s ? tr(" at {rate} tok/s", {rate: fmt(last.decode_tok_s, 1)}) : ""});
   }
   $("state-label").textContent = label;
   $("state-detail").textContent = detail;
@@ -233,11 +235,11 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   // the eight cards
   const speed = live.state === "generating" ? live.tok_s : last ? last.decode_tok_s : null;
   setMetric("speed", speed == null ? null : fmt(speed, 1), "t/s",
-            live.state === "generating" ? "Decode now" : last ? "Decode last request" : "Decode");
+            live.state === "generating" ? tr("Decode now") : last ? tr("Decode last request") : tr("Decode"));
   const prefill = live.state !== "idle" ? live.prefill_tok_s_mean
                 : last && last.prompt_ms > 0 ? Math.max(0, last.prompt_tokens - (last.reused || 0)) / (last.prompt_ms / 1000) : null;
   setMetric("prefill", prefill == null ? null : fmt(prefill), "t/s",
-            live.state === "reading" ? "Prefill now" : live.state === "generating" ? "Prefill this request" : last ? "Prefill last request" : "Prefill");
+            live.state === "reading" ? tr("Prefill now") : live.state === "generating" ? tr("Prefill this request") : last ? tr("Prefill last request") : tr("Prefill"));
   spark("sp-speed", h.tok_s);
   spark("sp-prefill", h.prefill_tok_s_mean);
   // a model split across several cards (issue #112): the cards show their total / mean / hottest, and each card's own
@@ -248,26 +250,26 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   spark("sp-gpu", h.gpu_util, 100);
   setMetric("vram", hw.gpu_mem_used == null ? null : gb(hw.gpu_mem_used), hw.gpu_mem_total ? `/ ${gb(hw.gpu_mem_total, 0)} GB` : "GB",
             multi ? per((g) => (g.mem_used == null ? "–" : `${gb(g.mem_used)} GB`))
-                  : eng.expert_slots ? `${fmt(eng.expert_slots)} experts cached` : "");
+                  : eng.expert_slots ? tr("{count} experts cached", {count: fmt(eng.expert_slots)}) : "");
   spark("sp-vram", h.gpu_mem_used, hw.gpu_mem_total);
   setMetric("temp", hw.gpu_temp == null ? null : fmt(hw.gpu_temp), "°C",
             multi ? per((g) => (g.temp == null ? "–" : `${fmt(g.temp)}°`)) : "");
   spark("sp-temp", h.gpu_temp, 90);
-  setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W", hw.gpu_power_limit ? `of ${fmt(hw.gpu_power_limit)} W limit` : "");
+  setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W", hw.gpu_power_limit ? tr("of {limit} W limit", {limit: fmt(hw.gpu_power_limit)}) : "");
   spark("sp-power", h.gpu_power, hw.gpu_power_limit);
   const gen = hw.gpu_pcie_gen_max || hw.gpu_pcie_gen;
   setMetric("pcie", gen ? `Gen${gen}` : null, hw.gpu_pcie_width ? `x${hw.gpu_pcie_width}` : "",
-            hw.gpu_pcie_rx_mb == null ? "" : `to GPU ${fmt(hw.gpu_pcie_rx_mb, hw.gpu_pcie_rx_mb < 10 ? 1 : 0)} MB/s` +
-            (hw.gpu_pcie_gen && gen && hw.gpu_pcie_gen < gen ? ` · idle Gen${hw.gpu_pcie_gen}` : ""));
+            hw.gpu_pcie_rx_mb == null ? "" : tr("to GPU {rate} MB/s", {rate: fmt(hw.gpu_pcie_rx_mb, hw.gpu_pcie_rx_mb < 10 ? 1 : 0)}) +
+            (hw.gpu_pcie_gen && gen && hw.gpu_pcie_gen < gen ? tr(" · idle Gen{gen}", {gen: hw.gpu_pcie_gen}) : ""));
   spark("sp-pcie", h.gpu_pcie_rx_mb);
-  setMetric("cpu", hw.cpu == null ? null : fmt(hw.cpu), "%", st.threads ? `${st.cores ? `${st.cores} cores · ` : ""}${st.threads} threads` : "");
+  setMetric("cpu", hw.cpu == null ? null : fmt(hw.cpu), "%", st.threads ? (st.cores ? tr("{cores} cores · ", {cores: st.cores}) : "") + tr("{threads} threads", {threads: st.threads}) : "");
   spark("sp-cpu", h.cpu, 100);
   if (hw.disk_read_mb == null) {
-    setMetric("disk", null, "", st.psutil ? "" : "needs psutil (setup installs it)");
+    setMetric("disk", null, "", st.psutil ? "" : tr("needs psutil (setup installs it)"));
   } else {
     const big = hw.disk_read_mb >= 1000;
     setMetric("disk", big ? fmt(hw.disk_read_mb / 1024, 2) : fmt(hw.disk_read_mb, hw.disk_read_mb < 10 ? 1 : 0), big ? "GB/s" : "MB/s",
-              hw.disk_write_mb == null ? "" : `write ${fmt(hw.disk_write_mb, 1)} MB/s`);
+              hw.disk_write_mb == null ? "" : tr("write {rate} MB/s", {rate: fmt(hw.disk_write_mb, 1)}));
   }
   spark("sp-disk", h.disk_read_mb);
 
@@ -294,63 +296,63 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   // recent requests
   const body = $("req-body");
   if (!requests.length) {
-    body.innerHTML = `<tr><td colspan="8" class="muted">No requests yet</td></tr>`;
+    body.innerHTML = `<tr><td colspan="8" class="muted">${esc(tr("No requests yet"))}</td></tr>`;
   } else {
-    const badge = {stop: ["", "Done"], length: ["", "Max tokens"], cancel: ["st-badge--queued", "Stopped"],
-                   disconnect: ["st-badge--queued", "Closed"], error: ["st-badge--error", "Error"]};
+    const badge = {stop: ["", tr("Done")], length: ["", tr("Max tokens")], cancel: ["st-badge--queued", tr("Stopped")],
+                   disconnect: ["st-badge--queued", tr("Closed")], error: ["st-badge--error", tr("Error")]};
     body.innerHTML = requests.slice(0, reqShowAll ? requests.length : 12).map((r) => {
       const [cls, text] = badge[r.finish] || ["", r.finish || "–"];
-      const t = new Date(r.time * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"});
-      const proj = r.projection == null ? "" : ` <span class="st-badge${r.projection ? " st-badge--reading" : ""}" title="experimental speed projection ${r.projection ? "on" : "off"}">${r.projection ? "ESP" : "stock"}</span>`;
+      const t = new Date(r.time * 1000).toLocaleTimeString(uiLocale(), {hour: "2-digit", minute: "2-digit", second: "2-digit"});
+      const proj = r.projection == null ? "" : ` <span class="st-badge${r.projection ? " st-badge--reading" : ""}" title="${esc(tr("Experimental speed projection"))}: ${esc(tr(r.projection ? "on" : "off"))}">${r.projection ? "ESP" : tr("stock")}</span>`;
       const hit = r.hit_rate == null ? "–" : `${(r.hit_rate * 100).toFixed(1)}%`;
-      return `<tr><td>${esc(t)}</td><td><span class="st-badge ${cls}">${esc(text)}</span>${proj}</td><td class="num">${fmt(r.prompt_tokens)}</td>
+      return `<tr><td>${esc(t)}</td><td><span class="st-badge ${cls}">${esc(tr(text))}</span>${proj}</td><td class="num">${fmt(r.prompt_tokens)}</td>
         <td class="num">${fmt(r.reused)}</td><td class="num">${fmt(r.output_tokens)}</td><td class="num">${fmt(r.decode_tok_s, 1)}</td>
-        <td class="num">${hit}</td><td class="num">${fmt(r.duration_s, 1)} s</td></tr>`;
+        <td class="num">${hit}</td><td class="num">${fmt(r.duration_s, 1)} ${esc(tr("s"))}</td></tr>`;
     }).join("");
   }
   const all = $("req-all");
   kept = kept == null ? requests.length : kept;
   all.hidden = kept <= 12;
-  all.textContent = reqShowAll ? "Show fewer" : `Show all (${kept})`;
+  all.textContent = reqShowAll ? tr("Show fewer") : tr("Show all ({count})", {count: fmt(kept)});
   $("req-wrap").classList.toggle("all", reqShowAll);
   $("req-totals").textContent = renderTotals(totals);
 }
 
 function facts(el, rows) {
   el.innerHTML = rows.filter((r) => r[1] != null && r[1] !== "").map(([k, v, copy]) =>
-    `<dt>${esc(k)}</dt><dd>${copy ? `<code>${esc(v)}</code><button class="st-btn st-btn--icon" data-copy="${esc(v)}" aria-label="Copy">${icon("copy")}</button>` : esc(v)}</dd>`).join("");
+    `<dt>${esc(k)}</dt><dd>${copy ? `<code>${esc(v)}</code><button class="st-btn st-btn--icon" data-copy="${esc(v)}" aria-label="${esc(tr('Copy'))}">${icon("copy")}</button>` : esc(v)}</dd>`).join("");
 }
 // INFO cvec=project:4-44[:singleL] | add:A-B | 0
 function projectionText(c) {
   if (!c || c === "0" || c === 0) return null;
   const [mode, range, single] = String(c).split(":");
   const [a, b] = (range || "").split("-");
-  return `${mode === "project" ? "Projection" : "Additive"} control vector on layers ${a}–${b}` +
-         `${single ? ` (layer ${single.replace("single", "")}'s direction)` : ""}. Per chat in Sampling. Its package ` +
-         "describes the vector as a refusal-direction projection; measure the speed yourself";
+  return tr("{mode} control vector on layers {a}–{b}{direction}. Per chat in Sampling. Its package describes the vector as a refusal-direction projection; measure the speed yourself",
+            {mode: tr(mode === "project" ? "Projection" : "Additive"), a, b,
+             direction: single ? tr(" (layer {layer}'s direction)", {layer: single.replace("single", "")}) : ""});
 }
 function renderAbout(eng, hw, st) {
-  const kv = {int8: "8-bit", q4_0: "4-bit (Hadamard-rotated)", fp16: "16-bit"}[eng.kv] || eng.kv;
+  const kv = {int8: tr("8-bit"), q4_0: tr("4-bit (Hadamard-rotated)"), fp16: tr("16-bit")}[eng.kv] || eng.kv;
   facts($("facts-engine"), [
-    ["Model", eng.model],
-    ["Engine", eng.version ? `v${eng.version}` : "built from source"],
-    ["Context", eng.max_context ? `${fmt(eng.max_context)} tokens` : null],
-    ["KV cache", kv ? `${kv}${eng.kv_resident ? `, streamed: ${fmt(eng.kv_resident)} positions per layer in VRAM, the rest in RAM` : ", all in VRAM"}` : null],
-    ["Experts in VRAM", eng.expert_slots ? `${fmt(eng.expert_slots)} (${gb((eng.expert_cache_mib || 0) * 1048576)} GB)` : null],
-    ["Speculation", eng.spec ? `MTP drafts up to ${Math.max(0, (eng.mtp_max || eng.spec) - 1)} tokens${eng.lookup ? ", prompt lookup on" : ""}` : null],
-    ["Images", eng.images ? "on" : "off"],
-    ["Experimental speed projection", projectionText(eng.cvec)],
+    [tr("Model"), eng.model],
+    [tr("Engine"), eng.version ? `v${eng.version}` : tr("built from source")],
+    [tr("Context"), eng.max_context ? tr("{count} tokens", {count: fmt(eng.max_context)}) : null],
+    [tr("KV cache"), kv ? `${kv}${eng.kv_resident ? tr(", streamed: {count} positions per layer in VRAM, the rest in RAM", {count: fmt(eng.kv_resident)}) : tr(", all in VRAM")}` : null],
+    [tr("Experts in VRAM"), eng.expert_slots ? `${fmt(eng.expert_slots)} (${gb((eng.expert_cache_mib || 0) * 1048576)} GB)` : null],
+    [tr("Speculation"), eng.spec ? tr("MTP drafts up to {count} tokens{lookup}", {count: Math.max(0, (eng.mtp_max || eng.spec) - 1), lookup: eng.lookup ? tr(", prompt lookup on") : ""}) : null],
+    [tr("Images"), eng.images ? tr("on") : tr("off")],
+    [tr("Experimental speed projection"), projectionText(eng.cvec)],
   ]);
   facts($("facts-hw"), [
-    ["GPU", st.gpu_name ? `${st.gpu_name}${hw.gpu_mem_total ? `, ${gb(hw.gpu_mem_total, 0)} GB` : ""}` : "not readable (NVML)"],
-    ["CPU", st.cpu_name ? `${st.cpu_name}${st.threads ? `, ${st.threads} threads` : ""}` : null],
-    ["RAM", hw.ram_total ? `${gb(hw.ram_total, 0)} GB` : null],
+    [tr("GPU"), st.gpu_name ? `${st.gpu_name}${hw.gpu_mem_total ? `, ${gb(hw.gpu_mem_total, 0)} GB` : ""}` : tr("not readable (NVML)")],
+    [tr("CPU"), st.cpu_name ? `${st.cpu_name}${st.threads ? `, ${tr("{threads} threads", {threads: st.threads})}` : ""}` : null],
+    [tr("RAM"), hw.ram_total ? `${gb(hw.ram_total, 0)} GB` : null],
   ]);
   const base = location.origin;
   facts($("facts-api"), [
-    ["OpenAI base URL", `${base}/v1`, true],
-    ["Anthropic base URL", base, true],
-    ["Model name", eng.model, true],
+    [tr("OpenAI base URL"), `${base}/v1`, true],
+    [tr("Anthropic base URL"), base, true],
+    [tr("Model name"), eng.model, true],
   ]);
 }
 document.addEventListener("click", (e) => {
@@ -380,14 +382,14 @@ function renderMcp() {
   $("mcp-card").hidden = !servers.length;
   $("mcp-row").hidden = !servers.length;
   const ready = servers.filter((s) => s.status === "ready" || s.status === "stopped");
-  $("mcp-sum").textContent = servers.length ? `${fmt(mcpInfo.tools)} tools · ${ready.length} of ${servers.length} servers connected` : "";
-  $("mcp-row-sub").textContent = mcpInfo.tools ? `${fmt(mcpInfo.tools)} tools from ${ready.map((s) => s.name).join(", ")}; the model calls them when it decides to`
-                                               : "no server is connected yet (see the Monitor)";
+  $("mcp-sum").textContent = servers.length ? tr("{tools} tools · {ready} of {total} servers connected", {tools: fmt(mcpInfo.tools), ready: ready.length, total: servers.length}) : "";
+  $("mcp-row-sub").textContent = mcpInfo.tools ? tr("{tools} tools from {servers}; the model calls them when it decides to", {tools: fmt(mcpInfo.tools), servers: ready.map((s) => s.name).join(", ")})
+                                               : tr("no server is connected yet (see the Monitor)");
   $("mcp-list").innerHTML = servers.map((s) => {
     const [cls, text] = MCP_STATE[s.status] || ["", s.status];
     const info = s.info && s.info.name ? ` · ${s.info.name}${s.info.version ? ` ${s.info.version}` : ""}` : "";
-    return `<div class="mcp-server"><div class="mcp-server__head"><span class="st-badge ${cls}">${esc(text)}</span>` +
-      `<strong>${esc(s.name)}</strong><span class="muted small">${esc(s.transport)} · ${fmt(s.tools.length)} tools${esc(info)}</span></div>` +
+    return `<div class="mcp-server"><div class="mcp-server__head"><span class="st-badge ${cls}">${esc(tr(text))}</span>` +
+      `<strong>${esc(s.name)}</strong><span class="muted small">${esc(s.transport)} · ${esc(tr("{count} tools", {count: fmt(s.tools.length)}))}${esc(info)}</span></div>` +
       (s.error ? `<div class="msg-error">${esc(s.error)}</div>` : "") +
       (s.tools.length ? `<div class="mcp-server__tools">${s.tools.map((t) => `<span class="chip" title="${esc(t.description || "")}">${esc(t.tool)}</span>`).join("")}</div>` : "") +
       `</div>`;
@@ -405,8 +407,8 @@ function inline(s) {
   return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code class="inline">${esc(codes[+i])}</code>`);
 }
 function codeBlock(lang, code) {
-  return `<div class="st-code"><div class="st-code__head"><span>${esc(lang || "code")}</span>` +
-    `<button class="st-btn st-btn--icon" data-code-copy aria-label="Copy code">${icon("copy")}</button></div>` +
+  return `<div class="st-code"><div class="st-code__head"><span>${esc(lang || tr("code"))}</span>` +
+    `<button class="st-btn st-btn--icon" data-code-copy aria-label="${esc(tr('Copy code'))}">${icon("copy")}</button></div>` +
     `<pre><code>${esc(code)}</code></pre></div>`;
 }
 function blocks(text) {
@@ -471,7 +473,7 @@ function saveChat() {
   store.set("chat", messages.map((m) => ({...m, images: (m.images || []).map((i) => ({name: i.name})),
                                            files: (m.files || []).map((f) => ({name: f.name}))})));
 }
-function timeStr(t) { return new Date(t).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}); }
+function timeStr(t) { return new Date(t).toLocaleTimeString(uiLocale(), {hour: "2-digit", minute: "2-digit"}); }
 
 function msgEl(m, i) {
   const el = document.createElement("div");
@@ -494,24 +496,25 @@ function msgEl(m, i) {
       const wrap = document.createElement("div");
       wrap.className = "msg-images";
       for (const im of m.images) {
-        if (im.url) { const img = document.createElement("img"); img.src = im.url; img.alt = im.name || "image"; wrap.appendChild(img); }
-        else { const c = document.createElement("span"); c.className = "chip"; c.innerHTML = icon("image", "st-icon st-icon--sm"); c.append(im.name || "image"); wrap.appendChild(c); }
+        if (im.url) { const img = document.createElement("img"); img.src = im.url; img.alt = im.name || tr("image"); wrap.appendChild(img); }
+        else { const c = document.createElement("span"); c.className = "chip"; c.innerHTML = icon("image", "st-icon st-icon--sm"); c.append(im.name || tr("image")); wrap.appendChild(c); }
       }
       el.appendChild(wrap);
     }
     const b = document.createElement("div");
     b.className = "st-bubble";
+    b.dir = "auto";
     b.textContent = m.text;
     el.appendChild(b);
     const meta = document.createElement("div");
     meta.className = "st-msg__meta";
-    meta.textContent = `You · ${timeStr(m.time)}`;
+    meta.textContent = `${tr("You")} · ${timeStr(m.time)}`;
     el.appendChild(meta);
   } else {
     el.innerHTML = `<details class="st-collapse think" hidden><summary>${icon("thinking", "st-icon st-icon--sm")}<span class="think-title"></span>` +
-      `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body thinking"></div></details>` +
-      `<div class="st-bubble"></div><div class="st-msg__meta"><span class="meta-text"></span>` +
-      `<button class="st-btn st-btn--icon" data-msg-copy aria-label="Copy the answer" title="Copy">${icon("copy")}</button></div>`;
+      `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body thinking" dir="auto"></div></details>` +
+      `<div class="st-bubble" dir="auto"></div><div class="st-msg__meta"><span class="meta-text"></span>` +
+      `<button class="st-btn st-btn--icon" data-msg-copy aria-label="${esc(tr('Copy the answer'))}" title="${esc(tr('Copy'))}">${icon("copy")}</button></div>`;
     updateAssistant(el, m, false);
   }
   return el;
@@ -526,17 +529,17 @@ function toolHtml(t, k) {
   const preview = t.result != null ? t.result : args.replace(/\s+/g, " ");
   let body = "";
   if (t.open) {
-    body = `<div class="tool-call__label">Arguments</div><pre class="tool-call__pre">${esc(args || "(being written)")}</pre>`;
+    body = `<div class="tool-call__label">${esc(tr("Arguments"))}</div><pre class="tool-call__pre">${esc(args || tr("(being written)"))}</pre>`;
     if (t.result != null) {
-      body += `<div class="tool-call__label">${t.ok ? "Result" : "Error"}${t.chars ? ` · ${fmt(t.chars)} characters` : ""}` +
-              `${t.truncated ? ", cut for the model" : ""}</div><pre class="tool-call__pre">${esc(t.result)}</pre>`;
+      body += `<div class="tool-call__label">${t.ok ? tr("Result") : tr("Error")}${t.chars ? tr(" · {count} characters", {count: fmt(t.chars)}) : ""}` +
+              `${t.truncated ? tr(", cut for the model") : ""}</div><pre class="tool-call__pre">${esc(t.result)}</pre>`;
     }
   }
   return `<details class="st-collapse tool-call" data-tool="${k}" data-state="${esc(t.state)}"${t.open ? " open" : ""}>` +
     `<summary>${icon("tool", "st-icon st-icon--sm")}<span class="tool-call__name" title="${esc(t.name || "")}">${esc(t.tool || t.name || "tool")}</span>` +
     (t.server ? `<span class="muted small">${esc(t.server)}</span>` : "") +
     `<span class="tool-call__preview muted">${esc(preview.slice(0, 200))}</span>` +
-    `<span class="st-badge ${cls}">${esc(label)}</span>${t.ms != null && t.state !== "skipped" ? `<span class="muted small">${fmt(t.ms / 1000, 1)} s</span>` : ""}` +
+    `<span class="st-badge ${cls}">${esc(tr(label))}</span>${t.ms != null && t.state !== "skipped" ? `<span class="muted small">${fmt(t.ms / 1000, 1)} s</span>` : ""}` +
     `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body">${body}</div></details>`;
 }
 // the answer's text with the tool blocks where the model called them
@@ -565,12 +568,15 @@ function onTool(m, x) {
   }
 }
 function updateAssistant(el, m, streaming) {
+  const copy = el.querySelector("[data-msg-copy]");
+  copy.setAttribute("aria-label", tr("Copy the answer"));
+  copy.title = tr("Copy");
   const det = el.querySelector("details.think");
   if (m.reasoning) {
     det.hidden = false;
     const thinkingNow = streaming && !m.text;
-    el.querySelector(".think-title").textContent = thinkingNow ? "Thinking…" :
-      m.thinkSecs != null ? `Thought for ${fmt(m.thinkSecs, 1)} s` : "Thoughts";
+    el.querySelector(".think-title").textContent = thinkingNow ? tr("Thinking…") :
+      m.thinkSecs != null ? tr("Thought for {seconds} s", {seconds: fmt(m.thinkSecs, 1)}) : tr("Thoughts");
     const body = el.querySelector(".thinking");
     if (det.open || thinkingNow) body.textContent = m.reasoning;
     else body.dataset.pending = "1";
@@ -583,12 +589,12 @@ function updateAssistant(el, m, streaming) {
     bubble.innerHTML = `<div class="msg-error"></div>`;
     bubble.firstChild.textContent = m.error;
   } else if (!m.text && streaming && !(m.tools && m.tools.length)) {
-    bubble.innerHTML = m.reasoning ? `<span class="muted cursor">Writing</span>` : `<span class="cursor"></span>`;
+    bubble.innerHTML = m.reasoning ? `<span class="muted cursor">${esc(tr("Writing"))}</span>` : `<span class="cursor"></span>`;
   } else {
     bubble.innerHTML = answerHtml(m);
     if (streaming) bubble.classList.add("cursor"); else bubble.classList.remove("cursor");
   }
-  el.querySelector(".meta-text").textContent = m.meta || (streaming ? "" : m.stopped ? "Stopped" : "");
+  el.querySelector(".meta-text").textContent = messageMeta(m, streaming);
   el.querySelector("[data-msg-copy]").hidden = streaming || !m.text;
 }
 function renderChat() {
@@ -662,7 +668,7 @@ function assistantMessages(m) {
 function setBusy(on) {
   $("stop-btn").hidden = !on;
   $("send-btn").disabled = on;
-  $("composer-hint").textContent = on ? "" : "Shift+Enter: new line";
+  $("composer-hint").textContent = on ? "" : tr("Shift+Enter: new line");
 }
 
 async function send() {
@@ -702,7 +708,7 @@ async function send() {
     if (!r.ok) {
       let msg = `HTTP ${r.status}`;
       try { msg = (await r.json()).error.message || msg; } catch (e) { /* not json */ }
-      if (r.status === 401) msg = "This server needs an API key: add it under About > Settings.";
+      if (r.status === 401) msg = tr("This server needs an API key: add it under About > Settings.");
       throw new Error(msg);
     }
     const reader = r.body.getReader(), dec = new TextDecoder();
@@ -720,7 +726,7 @@ async function send() {
         if (data === "[DONE]") continue;
         let j;
         try { j = JSON.parse(data); } catch (e) { continue; }
-        if (j.error) throw new Error(j.error.message || "the engine reported an error");
+        if (j.error) throw new Error(j.error.message || tr("the engine reported an error"));
         if (j.usage) usage = j.usage;
         if (j.strata_mcp) onTool(m, j.strata_mcp);
         const d = (j.choices && j.choices[0] && j.choices[0].delta) || {};
@@ -742,21 +748,13 @@ async function send() {
     }
   } catch (e) {
     if (e.name === "AbortError") m.stopped = true;
-    else { m.error = e.message || String(e); toast("error", "The request failed", m.error, 6000); }
+    else { m.error = e.message || String(e); toast("error", tr("The request failed"), m.error, 6000); }
   }
   if (thinkStart && m.thinkSecs == null) m.thinkSecs = (performance.now() - thinkStart) / 1000;
   const n = usage ? usage.completion_tokens : null;
-  if (n && firstAt) {
-    const secs = (performance.now() - firstAt) / 1000;
-    m.meta = `${fmt(n)} tokens${secs > 0.25 ? ` · ${fmt(n / secs, 1)} tok/s` : ""}${m.stopped ? " · stopped" : ""}` +
-             (projectionLoaded() ? (settings.esp ? " · projection on" : " · projection off") : "");
-  } else if (m.stopped) {
-    m.meta = "Stopped";
-  }
+  m.stats = {tokens: n, seconds: firstAt ? (performance.now() - firstAt) / 1000 : null,
+             projection: projectionLoaded() ? !!settings.esp : null};
   for (const t of m.tools || []) if (t.state === "writing" || t.state === "running") { t.state = "skipped"; t.ms = null; }
-  const ran = (m.tools || []).filter((t) => t.state === "done" || t.state === "error").length;
-  if (ran) m.meta = `${m.meta ? `${m.meta} · ` : ""}${ran} tool call${ran > 1 ? "s" : ""}`;
-  if (m.limit) m.meta = `${m.meta || ""} · stopped at the limit of ${m.limit} tool rounds (mcp.max_rounds)`;
   busy = null;
   setBusy(false);
   if (frame) cancelAnimationFrame(frame);
@@ -774,21 +772,21 @@ function autosize() { const t = $("input"); t.style.height = "auto"; t.style.hei
 $("input").addEventListener("input", autosize);
 
 $("new-btn").onclick = () => {
-  if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
+  if (busy) { toast("warn", tr("Still writing"), tr("Stop the answer first.")); return; }
   if (!messages.length) return;
   const backup = messages;
   messages = [];
   saveChat();
   renderChat();
-  toast("info", "New chat", "The last one was cleared.", 6000, {label: "Undo", run: () => { messages = backup; saveChat(); renderChat(); }});
+  toast("info", tr("New chat"), tr("The last one was cleared."), 6000, {label: tr("Undo"), run: () => { messages = backup; saveChat(); renderChat(); }});
 };
 $("export-btn").onclick = () => {
-  if (!messages.length) { toast("info", "Nothing to save yet"); return; }
+  if (!messages.length) { toast("info", tr("Nothing to save yet")); return; }
   const tools = (m) => (m.tools || []).filter((t) => t.result != null).map((t) =>
-    `<details><summary>Tool ${t.server ? `${t.server} / ` : ""}${t.tool || t.name}${t.ok ? "" : " (error)"}</summary>\n\n` +
+    `<details><summary>${tr("Tool")} ${t.server ? `${t.server} / ` : ""}${t.tool || t.name}${t.ok ? "" : ` (${tr("Error")})`}</summary>\n\n` +
     `\`\`\`json\n${JSON.stringify(t.arguments || {}, null, 2)}\n\`\`\`\n\n\`\`\`\n${t.result}\n\`\`\`\n\n</details>\n\n`).join("");
-  const md = messages.map((m) => m.role === "user" ? `## You\n\n${m.text}\n` :
-    `## ${health.model}\n\n${m.reasoning ? `<details><summary>Thinking</summary>\n\n${m.reasoning}\n\n</details>\n\n` : ""}${tools(m)}${m.text || m.error || ""}\n`).join("\n");
+  const md = messages.map((m) => m.role === "user" ? `## ${tr("You")}\n\n${m.text}\n` :
+    `## ${health.model}\n\n${m.reasoning ? `<details><summary>${tr("Thinking")}</summary>\n\n${m.reasoning}\n\n</details>\n\n` : ""}${tools(m)}${m.text || m.error || ""}\n`).join("\n");
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([md], {type: "text/markdown"}));
   a.download = `strata-chat-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.md`;
@@ -806,19 +804,19 @@ function isTextFile(f) {
 function addFiles(files) {
   for (const f of files) {
     if (f.type.startsWith("image/")) {
-      if (!health.images) { toast("warn", "Pictures are off", "This model was set up for text only."); continue; }
-      if (f.size > 20e6) { toast("warn", "Picture too large", `${f.name} is over 20 MB.`); continue; }
+      if (!health.images) { toast("warn", tr("Pictures are off"), tr("This model was set up for text only.")); continue; }
+      if (f.size > 20e6) { toast("warn", tr("Picture too large"), tr("{name} is over 20 MB.", {name: f.name})); continue; }
       const r = new FileReader();
-      r.onload = () => { attachments.push({kind: "image", name: f.name || "pasted image", url: r.result}); renderAttachments(); };
+      r.onload = () => { attachments.push({kind: "image", name: f.name || tr("pasted image"), url: r.result}); renderAttachments(); };
       r.readAsDataURL(f);
       continue;
     }
-    if (!isTextFile(f)) { toast("warn", "Not a text file", `${f.name}: attach text files (code, notes, logs, data)${health.images ? " or pictures" : ""}.`); continue; }
-    if (f.size > MAX_TEXT_FILE) { toast("warn", "File too large", `${f.name} is over 512 KB.`); continue; }
+    if (!isTextFile(f)) { toast("warn", tr("Not a text file"), tr("{name}: attach text files (code, notes, logs, data){pictures}.", {name: f.name, pictures: health.images ? tr(" or pictures") : ""})); continue; }
+    if (f.size > MAX_TEXT_FILE) { toast("warn", tr("File too large"), tr("{name} is over 512 KB.", {name: f.name})); continue; }
     const r = new FileReader();
     r.onload = () => {
       const text = String(r.result);
-      if (text.includes("\u0000")) { toast("warn", "Not a text file", `${f.name} looks like a binary file.`); return; }
+      if (text.includes("\u0000")) { toast("warn", tr("Not a text file"), tr("{name} looks like a binary file.", {name: f.name})); return; }
       attachments.push({kind: "file", name: f.name, text});
       renderAttachments();
     };
@@ -845,7 +843,7 @@ function renderAttachments() {
     c.innerHTML = icon(a.kind === "file" ? "attach" : "image", "st-icon st-icon--sm");
     c.append(a.name);
     const x = document.createElement("button");
-    x.type = "button"; x.className = "st-btn st-btn--icon"; x.setAttribute("aria-label", "Remove");
+    x.type = "button"; x.className = "st-btn st-btn--icon"; x.setAttribute("aria-label", tr("Remove"));
     x.innerHTML = icon("trash");
     x.onclick = () => { attachments.splice(i, 1); renderAttachments(); };
     c.appendChild(x);
@@ -929,11 +927,11 @@ function projectionLoaded() {
 }
 function outputs() {
   const t = +$("s-temp").value;
-  $("o-temp").textContent = t === 0 ? "0 · greedy" : t.toFixed(2);
+  $("o-temp").textContent = t === 0 ? tr("0 · greedy") : t.toFixed(2);
   $("o-topp").textContent = (+$("s-topp").value).toFixed(2);
   $("o-topk").textContent = $("s-topk").value;
   const sel = [...$("s-thinking").children].find((b) => b.getAttribute("aria-checked") === "true");
-  $("o-thinking").textContent = sel ? {none: "answers right away", low: "short", medium: "medium", high: "thorough (default)"}[sel.dataset.v] : "";
+  $("o-thinking").textContent = sel ? tr({none: "answers right away", low: "short", medium: "medium", high: "thorough (default)"}[sel.dataset.v]) : "";
   for (const id of ["s-topp", "s-topk"]) $(id).disabled = t === 0;
 }
 for (const b of $("s-thinking").children) b.onclick = () => { for (const x of $("s-thinking").children) x.setAttribute("aria-checked", String(x === b)); outputs(); };
@@ -956,14 +954,14 @@ $("s-apply").onclick = async () => {
   if (share || sharedOn) {
     try {
       await saveShared(share, settings);
-      toast("success", "Sampling saved", share ? "Other apps (omp, API clients) use these settings from their next request."
-                                               : "Other apps use their own settings again.");
+      toast("success", tr("Sampling saved"), share ? tr("Other apps (omp, API clients) use these settings from their next request.")
+                                               : tr("Other apps use their own settings again."));
     } catch (e) {
-      toast("error", "Saved here, but not for other apps", e.message, 6000);
+      toast("error", tr("Saved here, but not for other apps"), e.message, 6000);
     }
     return;
   }
-  toast("success", "Sampling saved", settings.temperature === 0 ? "Greedy: the same question gives the same answer." : "");
+  toast("success", tr("Sampling saved"), settings.temperature === 0 ? tr("Greedy: the same question gives the same answer.") : "");
 };
 $("sampling-btn").onclick = () => openDrawer(true);
 $("drawer-close").onclick = () => openDrawer(false);
@@ -978,3 +976,28 @@ if (startQuestion) history.replaceState(null, "", location.pathname + location.h
 loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
 showTab(location.hash.slice(1) || "chat");
 poll();
+
+function messageMeta(m, streaming) {
+  if (!m.stats) return m.meta || (streaming ? "" : m.stopped ? tr("Stopped") : "");
+  const s = m.stats;
+  let value = s.tokens ? tr("{count} tokens", {count: fmt(s.tokens)}) +
+    (s.seconds > 0.25 ? ` · ${tr("{rate} tok/s", {rate: fmt(s.tokens / s.seconds, 1)})}` : "") : "";
+  if (m.stopped) value += value ? tr(" · stopped") : tr("Stopped");
+  if (s.projection != null) value += tr(s.projection ? " · projection on" : " · projection off");
+  const ran = (m.tools || []).filter(t => t.state === "done" || t.state === "error").length;
+  if (ran) value += `${value ? " · " : ""}${tr(ran === 1 ? "{count} tool call" : "{count} tool calls", {count: ran})}`;
+  if (m.limit) value += tr(" · stopped at the limit of {count} tool rounds (mcp.max_rounds)", {count: m.limit});
+  return value;
+}
+window.addEventListener("strata-language", () => {
+  if (lastMetrics) render(lastMetrics);
+  renderMcp(); setBusy(!!busy); outputs();
+  $("attach-btn").title = tr(health.images ? "Attach a text file or a picture (or drop it here)" : "Attach a text file (or drop it here)");
+  $("chat-empty-sub").textContent = tr("{model} runs on this PC. Nothing leaves it.", {model: health.model});
+  $("chat").querySelectorAll(".st-msg").forEach(el => {
+    const m = messages[+el.dataset.i];
+    if (m.role === "assistant") updateAssistant(el, m, !!busy && busy.msg === m);
+    else el.querySelector(".st-msg__meta").textContent = `${tr("You")} · ${timeStr(m.time)}`;
+  });
+});
+StrataI18n.apply();

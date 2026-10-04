@@ -2111,6 +2111,14 @@ class AmdTelemetry(unittest.TestCase):
     """#301: the AMD backend's readings from a fake amdgpu sysfs tree: KFD node -> render node, as setup numbers the
     cards (the CPU node skipped), and free_vram_mib on HIP."""
 
+    def setUp(self):
+        from serve import telemetry
+        # These fixtures describe Linux sysfs, even when the test suite runs on Windows.
+        patch = mock.patch.object(telemetry, "gpu_reader", side_effect=lambda index=0, amd=False:
+                                  telemetry._Amd(index) if amd else telemetry._Nvml(index))
+        patch.start()
+        self.addCleanup(patch.stop)
+
     def tree(self, d):
         nodes = Path(d) / "class/kfd/kfd/topology/nodes"
         for n, props in ((0, "cpu_cores_count 16\nsimd_count 0\ngfx_target_version 0\ndrm_render_minor 0\n"),
