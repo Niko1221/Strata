@@ -711,7 +711,7 @@ a leading dot or a trailing dot or space.
 
 The request must be `Content-Type: application/json` (else `415`) and come from no browser page, Strata's own or a
 trusted origin (another site's `Origin` gets `403`, also with an API key); the Host and API-key checks apply as
-everywhere. Errors: `501` without `--slot-save-path`; `400` for a slot other than 0, an unknown action, a refused
+everywhere. Errors: `501` without `--slot-save-path` or with parallel requests; `400` for a slot other than 0, an unknown action, a refused
 file name, or a file the engine refuses as invalid (not a session file, corrupt, another model or configuration, over
 this session's limits; the session is as it was); `404` for a restore of a missing file; `503` while the model is not
 loaded, when the RAM to read the file is not there or an allocation failed; `507` when the disk has no room (the
@@ -773,7 +773,8 @@ limits (context and cells, checkpoints, layers, each running-state array, each K
 and then the usual snapshot validation - all before any device write, and a refusal leaves the current session as it
 was. A transfer failure after the device writes began ends the engine (`FATAL`) rather than decode from a partial
 state; the server reports `500` and starts it again. A restore does not park the outgoing session. Not supported with
-`--layer-split`, `--peer-device` or `--prompt-cache 0` (the RAM conversation cache need not be on). On Linux the file
+`--layer-split`, `--peer-device`, `--batch` (the config's `"parallel"`, #465; the server answers `501`) or
+`--prompt-cache 0` (the RAM conversation cache need not be on). On Linux the file
 moves with `O_DIRECT` in 16 MiB blocks when the filesystem takes it (buffered I/O otherwise, or with
 `STRATA_SESSION_BUFFERED=1`); on Windows with buffered I/O. The engine has been run on Linux/CUDA only. An earlier
 revision's CPU file-I/O test passed as a 32-bit Windows executable under Wine; the current code has not been built

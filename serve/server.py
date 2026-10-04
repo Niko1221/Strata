@@ -1885,6 +1885,10 @@ class Service:
                                     "type": "invalid_request_error" if code < 500 else "server_error"}}
         if not self.slot_save_path or not hasattr(self.engine, "session_file"):
             return error(501, "slot save/restore is disabled (start the server with --slot-save-path DIR)")
+        if getattr(self.engine, "batch", 0):
+            # #465 parallel requests do not hold the FIFO and share the engine's control lines: a session file
+            # could interleave with a request being admitted, so the two are not combined (the engine refuses too)
+            return error(501, "slot save/restore is not available with parallel requests (\"parallel\" / --batch)")
         if slot != "0":
             return error(400, "this server has one slot: 0")
         if action not in ("save", "restore"):

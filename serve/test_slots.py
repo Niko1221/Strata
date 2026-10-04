@@ -420,6 +420,17 @@ class Slots(unittest.TestCase):
             self.svc.slot_save_path = saved
         self.assertEqual(s, 501, b)
 
+    def test_refused_with_parallel_requests(self):
+        """#465: batch slots do not hold the FIFO, so a session file is refused before anything reaches the engine."""
+        self.engine.batch = 2
+        try:
+            s, b = self.post("/slots/0?action=save", {"filename": "p.bin"})
+        finally:
+            self.engine.batch = 0
+        self.assertEqual(s, 501, b)
+        self.assertIn("parallel", b["error"]["message"])
+        self.assertEqual(self.engine.proc.sent, [])
+
     def test_waits_for_a_running_request(self):
         """A save never interleaves with a generation: it takes the same FIFO."""
         self.svc.fifo.acquire()
