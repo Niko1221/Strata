@@ -124,6 +124,9 @@ void device_arena() {
     auto* base = cache.device_slot(0);
     const auto* offsets = cache.slot_offsets();
     const uint64_t initial = cache.committed_bytes();
+    require(cache.slots() == 24 && cache.bytes() == (int64_t) offsets[24] && cache.mapped_bytes() == initial &&
+            cache.full_slots() == 64 && cache.capacity() == 64 && cache.full_bytes() == (int64_t) offsets[64],
+            "live open reports its active prefix and keeps full capacity separate");
     std::vector<uint8_t> blob((size_t) sizes[0], 0x57);
     require(cache.fill_slot_blocking(0, blob.data(), err, sizes[0]), "fill live slot: " + err);
     require(cache.verify_slot(0, blob.data(), err, sizes[0]), "initial live bytes: " + err);
@@ -143,6 +146,9 @@ void device_arena() {
     require(cache.resize_live(2, err), "shrink: " + err);
     require(cache.committed_bytes() < initial && cache.slots() == 2 && cache.device_slot(2) == nullptr,
             "shrink unmaps physical blocks and hides inactive slots");
+    require(cache.bytes() == (int64_t) offsets[2] && cache.full_slots() == 64 &&
+            cache.full_bytes() == (int64_t) offsets[64] && cache.slots_for_bytes(offsets[48]) == 48,
+            "shrink reports active bytes while capacity and growth geometry remain intact");
     require(cudaMemGetInfo(&free_after, &total) == cudaSuccess, "measure after shrink");
     std::printf("VMM release: committed %llu -> %llu, free %llu -> %llu bytes\n",
                 (unsigned long long) initial, (unsigned long long) cache.committed_bytes(),
@@ -184,6 +190,18 @@ void device_arena() {
             "zero cache releases every mapping but retains the virtual base");
     require(cache.resize_live(1, err) && cache.device_slot(0) == base, "regrow from zero uses the same address");
     cudaGraphExecDestroy(exec); cudaGraphDestroy(graph); cudaStreamDestroy(stream); cudaFreeHost(readback);
+    cache.close();
+    require(!cache.valid() && !cache.live() && cache.slots() == 0 && cache.full_slots() == 0 &&
+            cache.mapped_bytes() == 0, "close clears live and full cache accounting");
+    cache.set_segment_bytes(8ll << 20);
+    require(cache.open_sized(std::vector<int64_t>(32, 1ll << 20), 2, 32, err) &&
+            !cache.live() && cache.segmented() && cache.slots() == 32 && cache.full_slots() == 32,
+            "the cache can reopen in upstream segmented mode after releasing live mappings");
+    require(cache.shrink(9ll << 20, err) && cache.slots() == 16 && cache.full_slots() == 32 &&
+            cache.bytes() == (16ll << 20), "segmented prefix accounting survives live-cache reuse");
+    require(cache.open_live(sizes, 2, 2, 32, err) && cache.live() && !cache.segmented() &&
+            cache.slots() == 2 && cache.full_slots() == 64,
+            "reopening live releases prior segmented mappings and restores full live geometry");
 }
 #if !defined(STRATA_LIVE_DEVICE_TEST_ONLY)
 void ram_blocks(bool pin, bool mixed = false) {

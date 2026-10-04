@@ -5,6 +5,7 @@
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
+#include <algorithm>
 
 #include <cfloat>
 #include <cmath>
@@ -956,6 +957,19 @@ __global__ void copy_i32_kernel(int32_t* __restrict__ dst, const int32_t* __rest
         dst[i] = src[i];
 }
 }  // namespace
+namespace {
+__global__ void copy_f4_kernel(float4* __restrict__ dst, const float4* __restrict__ src, int64_t n4) {
+    for (int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x; i < n4; i += (int64_t) gridDim.x * blockDim.x)
+        dst[i] = src[i];
+}
+}  // namespace
+void copy_f32_wide(float* dst, const float* src, int64_t n, void* stream) {
+    if (n <= 0) return;
+    const int64_t n4 = n / 4, b = std::min<int64_t>((n4 + 255) / 256, 4096);
+    if (n4 > 0) copy_f4_kernel<<<(unsigned) b, 256, 0, (cudaStream_t) stream>>>((float4*) dst, (const float4*) src, n4);
+    if (n % 4) copy_i32((int32_t*) dst + n4 * 4, (const int32_t*) src + n4 * 4, n % 4, stream);
+    check("copy_f32_wide");
+}
 void copy_i32(int32_t* dst, const int32_t* src, int64_t n, void* stream) {
     if (n <= 0) return;
     const int64_t b = (n + 255) / 256;

@@ -90,6 +90,99 @@ class LiveMemoryTests(unittest.TestCase):
             svc.configure_memory({"enabled": True, "mode": "live"})
         svc.engine.unload.assert_not_called()
 
+    def test_live_admission_rejects_generated_parallel_and_competing_capacity_owner(self):
+        cfg = {"args": ARGS[:-1], "memory_policy": {"enabled": True, "mode": "live"}}
+        for extra in ({"parallel": 2}, {"vram_elastic": True},
+                      {"args": ARGS[:-1] + ["--batch", "2"]},
+                      {"args": ARGS[:-1] + ["--slots", "2"]},
+                      {"args": ARGS[:-1] + ["--batch-groups", "2"]}):
+            with self.subTest(extra=extra), self.assertRaises(ValueError):
+                engine_args({**cfg, **extra})
+        for mode in ("live", "reload"):
+            with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, "both own"):
+                engine_args({**cfg, "vram_elastic": True,
+                             "memory_policy": {"enabled": True, "mode": mode}})
+        self.assertEqual(engine_args({**cfg, "parallel": 1}), ARGS)
+        legacy = {"args": ARGS[:-1], "parallel": 2, "vram_elastic": True,
+                  "memory_policy": {"enabled": False}}
+        args = engine_args(legacy)
+        self.assertIn("--vram-elastic", args)
+        self.assertIn("--batch", args)
+        self.assertNotIn("--live-memory", args)
+
+    def test_live_service_rejects_actual_batch_slots_and_direct_competing_flags(self):
+        for extra_args, info, batch in (([], {"batch_slots": 2}, 0), ([], {}, 2),
+                                        (["--slots", "2"], {}, 0),
+                                        (["--vram-elastic"], {}, 0)):
+            with self.subTest(args=extra_args, info=info, batch=batch):
+                e = engine()
+                e.spawn = ("unused", ARGS + extra_args, None, None, None)
+                e.info.update(info)
+                e.batch = batch
+                svc = Service(e, ByteTokenizer(), None)
+                with self.assertRaises(ValueError):
+                    svc.configure_memory({"enabled": True, "mode": "live"})
+                self.assertIsNone(svc.memory_policy)
+
+    def test_pump_keeps_control_slot_and_generation_channels_separate(self):
+        e = engine()
+        e.slot_q = [queue.Queue()]
+        e.proc.stdout = io.StringIO(ack() + "MEMORY malformed\nBT 0 99\nBDONE 0 1 stop 1.0\n"
+                                  "T 10\nDONE 1 2 3 4 stop\n")
+        proc = e.proc
+        e._pump()
+        self.assertEqual(list(e.lines.queue), ["T 10\n", "DONE 1 2 3 4 stop\n", None])
+        self.assertEqual(list(e.slot_q[0].queue), ["BT 0 99\n", "BDONE 0 1 stop 1.0\n", None])
+        self.assertEqual(e.memory_acks.qsize(), 1)
+        source_proc, parsed = e.memory_acks.get_nowait()
+        self.assertIs(source_proc, proc)
+        self.assertEqual(parsed["id"], 1)
+
+    def test_generation_and_memory_writers_cannot_bypass_pipe_owner(self):
+        e = engine()
+        entered = [threading.Event(), threading.Event()]
+        written = threading.Event()
+        errors = []
+        class Pipe(io.StringIO):
+            def write(self, text):
+                written.set()
+                return super().write(text)
+        e.proc.stdin = Pipe()
+        def run(index, command):
+            entered[index].set()
+            try:
+                command()
+            except Exception as error:
+                errors.append(error)
+        writers = [threading.Thread(target=run, args=(0, lambda: e._send("GEN 1 2"))),
+                   threading.Thread(target=run, args=(1, lambda: e.request_memory(1, 40960, 1536, e.proc)))]
+        try:
+            with e.pipe_lock:
+                for writer in writers:
+                    writer.start()
+                for started in entered:
+                    self.assertTrue(started.wait(2))
+                self.assertFalse(written.wait(0.1), "a protocol writer bypassed the pipe owner")
+        finally:
+            for writer in writers:
+                writer.join(2)
+        for writer in writers:
+            self.assertFalse(writer.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(set(e.proc.stdin.getvalue().splitlines()), {"GEN 1 2", "MEMORY 1 40960 1536"})
+
+    def test_restart_does_not_inherit_old_live_capability(self):
+        e = engine()
+        e.close = mock.Mock()
+        def fresh(self, *args):
+            self.info = {"engine": "new", "batch_slots": 0}
+        with mock.patch.object(StrataEngine, "__init__", fresh):
+            e.restart()
+        self.assertNotIn("live_memory", e.info)
+        self.assertNotIn("memory_protocol", e.info)
+        self.assertEqual(e.info["engine"], "new")
+        self.assertFalse(e.starting)
+
     def test_eager_start_rejects_missing_capability_before_serving(self):
         proc = mock.Mock(stdout=io.StringIO("INFO arena_mib=43008\nREADY 4096 stop\n"), poll=lambda: None)
         with mock.patch("serve.server.subprocess.Popen", return_value=proc), mock.patch("serve.server.contain"):

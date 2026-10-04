@@ -5,9 +5,9 @@ AMD graphics card. The short version is in the [README](../README.md#install); a
 this for you with [AI_SETUP.md](AI_SETUP.md).
 
 > **On this page:** [What you need](#what-you-need) · [Windows](#windows) · [Linux](#linux) ·
-> [AMD cards](#amd-cards) · [Several cards](#two-or-three-cards) · [Docker](#docker-linux) · [Updating](#updating) ·
-> [Where things are stored](#where-things-are-stored) · [Setup's questions](#setups-questions) ·
-> [Tuning](#tuning-for-your-pc) · [All options](#options-without-questions)
+> [AMD cards](#amd-cards) · [Several cards](#two-or-three-cards) · [Docker](#docker-linux) ·
+> [Older CPUs](#older-cpus-experimental) · [Updating](#updating) · [Where things are stored](#where-things-are-stored) ·
+> [Setup's questions](#setups-questions) · [Tuning](#tuning-for-your-pc) · [All options](#options-without-questions)
 
 ## What you need
 
@@ -15,7 +15,7 @@ this for you with [AI_SETUP.md](AI_SETUP.md).
 | --- | --- |
 | **GPU** | **NVIDIA** RTX 20, 30, 40 or 50 series, **12 GB VRAM or more** (8 GB runs, slowly). Measured on an RTX 5070 and an RTX 3090; RTX 20 (Turing, since 0.1.27) was tested by a contributor on an RTX 2070. **AMD** Radeon RX 7900 XT / XTX, RX 9070 / 9070 XT and Radeon AI PRO R9700 (validated), RX 7800 XT / 7700 XT and RX 9060 XT (validated by their owners), RX 6800 / 6900 series (community-reported), with 12 GB of VRAM or more. See [AMD cards](#amd-cards). |
 | **RAM** | Enough for the size you pick ([which model](MODELS.md#pick-by-ram)); **64 GB** runs every size. A big GPU makes up for less RAM - the [low-RAM mode](MODELS.md#a-big-graphics-card-and-little-ram). |
-| **CPU** | x86-64 with AVX2 (any Intel/AMD desktop CPU from the last ~8 years). AVX-512 (Ryzen 7000/9000) is a bit faster. |
+| **CPU** | x86-64 with AVX2 (any Intel/AMD desktop CPU from the last ~8 years). AVX-512 (Ryzen 7000/9000) is a bit faster. Older CPUs without AVX2 are experimental and slow: [Older CPUs](#older-cpus-experimental). |
 | **Disk** | ~70-80 GB free for the model, ~6 GB for the MTP layer (+1 GB with images). **Q2_0 on an AVX-512 CPU** also writes a one-time ~40 GB copy of its experts for the fast CPU kernel. On Linux with an AMD card, ROCm takes ~10 GB more when setup installs it. An NVMe SSD is strongly recommended: it makes the first start much faster. |
 | **OS** | Windows 10/11, or Linux (Ubuntu 22.04/24.04 get everything installed automatically). |
 | **Driver** | **NVIDIA:** a current driver, version 580 or newer ([nvidia.com/drivers](https://www.nvidia.com/drivers) or the NVIDIA App). **AMD:** on Linux the kernel's amdgpu driver (no ROCm install needed); on Windows a current AMD Software: Adrenalin Edition driver ([amd.com/support](https://www.amd.com/en/support)). |
@@ -121,6 +121,35 @@ The same idea, in a container (NVIDIA cards).
    to a network. The image has a `HEALTHCHECK` on `/health`, so `docker ps` shows the container
    healthy once the model is loaded, and `GET /v1/status` says what it is running.
 
+## Older CPUs (experimental)
+
+Strata's ready-made engine needs AVX2 (Intel Haswell 2013, AMD Zen 2017 or newer). Since 0.1.39 an older CPU - AVX
+only (Sandy Bridge / Ivy Bridge, Xeon E5 v1/v2, AMD Bulldozer) or SSE4.2 only (Nehalem / Westmere, Xeon X5600) - runs
+as an **experimental** build that setup compiles on that PC. Run setup as usual: it says the CPU has no AVX2, warns
+that this is experimental and slow, and compiles the engine (10-20 minutes, once; Windows needs the Visual Studio Build
+Tools and the CUDA Toolkit, which setup offers to install). It does not stop. The ready-made engine still refuses such
+a CPU, and says so.
+
+What differs in that build (`STRATA_ISA_FLOOR=avx` or `none`, chosen from the CPU):
+
+- ggml-cpu is compiled for AVX or SSE4.2 instead of AVX2, and the CPU's share of the experts runs on its kernels.
+  Strata's own AVX2 / AVX-512 kernels stay in the program but are used only on a CPU that has them.
+- Only the i-quant models' packs run (every model setup installs on such a CPU); the AVX-512 Q2_0 pack does not.
+- Speed: the GPU part is unchanged and the CPU part is slower, so a GPU with more VRAM (more experts cached there)
+  helps most. With the older paths forced on a Ryzen 5 7600 + RTX 5070 and the expert cache held at 1500 slots, greedy
+  decode went from 26 to 11-17 tok/s with the AVX build and to 3.5-3.8 tok/s with the SSE4.2 build (Coder and IQ3_XXS,
+  10 prompts each, one run). An old Xeon with DDR3 will be slower than these.
+- Untested on a real old CPU by us. It was checked here by forcing the older paths on a Ryzen 5 7600
+  (`STRATA_FORCE_ISA=avx` or `sse`): the answers were sane and passed the engine's checks, but not the same token for
+  token as the normal build (ggml-cpu rounds the CPU experts differently, as the AVX2 kernel does from the AVX-512
+  one). Contributors ran earlier versions of the same approach on a Xeon E5-2680 (2.87 tok/s with a GTX 1080 Ti)
+  and on Xeon E5-2687W / X5690 machines.
+- AMD cards: Linux only (setup compiles the AMD engine there anyway); NVIDIA on Windows and Linux.
+- Two-socket Xeons: memory on the other socket is slow; keep the RAM on one CPU if you can.
+
+By hand: `cmake ... -DSTRATA_ISA_FLOOR=avx` (or `none`) builds it; `STRATA_ISA_FLOOR=avx` set for setup builds it on
+any PC (to try it). Problems and results on real hardware are welcome as GitHub issues.
+
 ## Updating
 
 **`UPDATE.bat`** (Linux: `./update.sh`) updates Strata without starting the model - for when the GPU is busy with
@@ -145,12 +174,19 @@ says so and starts the engine you had.
   kept, only their names. Another browser or a private window starts empty; clearing the site's data deletes them.
 - **How the model starts:** `strata-<model>.json` in the Strata folder (context, GPUs, host, API key, ...), written
   by setup; next to it `run-<model>.bat` / `.sh`, the log `strata-<model>.log` and, when you use "Use for other
-  apps too", `strata-<model>.shared-settings.json`.
+  apps too", `strata-<model>.shared-settings.json`. Running setup again for the same model (another context, say)
+  rewrites the keys setup writes (`exe`, `args`, `port`, `gpu`, `host`, `api_key`, `vision`, ...) and keeps the
+  ones you added (`sampling`, `mcp_servers`, `mcp`, `cors_origins`, ...); the earlier file is kept as
+  `strata-<model>.json.bak` (0.1.39). Engine options you added to `"args"` by hand are not carried over: setup names
+  them, and you add them again.
 - **The model files** (`models/`, `packs/`, `mtp/`, 70-120 GB): in **`Strata-data` next to the Strata folder**, or
   wherever `--data-dir` put them.
 - **Where that data folder is:** `%APPDATA%\Strata\settings.json` on Windows, `~/.config/strata/settings.json` on
   Linux ([details](DETAILS.md#before-you-start)).
 - **The program itself:** `.venv/`, `engine/` and `third_party/` in the Strata folder.
+- **Where github.com cannot be reached:** a build from source downloads llama.cpp's source (ggml, gguf-py) from
+  GitHub at the commit `LLAMA_CPP_COMMIT` in `setup.py` names. Put that commit's tree in `third_party/llama.cpp`
+  yourself (from a mirror or another PC) and setup uses it instead (#585).
 
 ## Setup's questions
 
@@ -187,6 +223,8 @@ START-HERE.bat --port 8081                      another port
 START-HERE.bat --gpu 1                          another GPU (setup picks the one with the most VRAM)
 START-HERE.bat --gpus 0,2                       several GPUs sharing the model
 START-HERE.bat --vram-reserve-mib 2048          leave 2 GB of VRAM free for other programs (remembered)
+START-HERE.bat --no-browser                     do not open the chat page when the model is ready (remembered;
+                                                --browser undoes it)
 START-HERE.bat --setup --backend hip            the AMD engine on a PC that also has an NVIDIA card
 START-HERE.bat --setup --host 0.0.0.0 --api-key <secret>     reachable from other devices, with a key
 START-HERE.bat --calibrate                      tune the engine for this PC (about 5-10 minutes), then start

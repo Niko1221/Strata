@@ -41,6 +41,18 @@ float h2f(uint16_t b) { __half h; *reinterpret_cast<uint16_t*>(&h) = b; return _
 uint16_t f2h(float f) { __half h = __float2half(f); return *reinterpret_cast<uint16_t*>(&h); }
 
 int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2 q4_0
+#if !defined(__HIPCC__) && !defined(STRATA_USE_HIP)
+    if (fmt == 2) {   // mode 4 (Q4_0 KV) runs on sm_80 and newer only: below that the dispatcher keeps the old kernel
+        int dev = 0, major = 0;
+        ck(cudaGetDevice(&dev), "device");
+        ck(cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev), "cc");
+        if (major < 8) {
+            std::printf("SKIP q4_0 ctx %lld: the tensor-core kernel takes Q4_0 KV on sm_80+ only (this device: sm_%d)\n",
+                        (long long) ctx, major);
+            return 0;
+        }
+    }
+#endif
     const k::QsaShapes s = k::qsa_real_shapes();
     const int64_t HD = s.head_dim, NKV = s.n_head_kv, NH = s.n_head, PS = s.page_size;
     const int64_t pages = (ctx + PS - 1) / PS, rows = pages * NKV * PS;

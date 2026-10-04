@@ -17,7 +17,13 @@ Use a locally built engine with live-memory support. The server adds `--live-mem
 `INFO live_memory=1 memory_protocol=1`. The engine validates the hardware and cache configuration; it does not
 silently substitute another allocation strategy. This implementation supports the single-GPU CUDA, file-backed
 native-expert serving path with an expert profile and graphed residency. HIP, multi-GPU, peer caches and the
-other layouts are excluded.
+other layouts, including remote expert optimization, are excluded. Live mode serves one request at a time;
+the server refuses `--batch`, `--slots` and `--batch-groups`, including flags added by the parallel setting.
+The upstream parallel paths remain available when live mode is disabled.
+
+An enabled memory policy and `--vram-elastic` cannot both own cache capacity. Choose one owner; this applies
+to both live and request-boundary reload policy. The upstream elastic VRAM control remains available when
+the memory policy is disabled.
 
 The existing percentage ceilings, RAM headroom, reserve floor and debounce/cooldown settings still apply.
 The policy can observe pressure while an answer is running. Resizing runs only when native readers and GPU
@@ -266,3 +272,33 @@ Guarded-borrowing versus repaired means were decode 29.41 versus 29.46 tokens/s,
 Final loans had complete RAM backing versus 1,351/1,593 MiB fallback in the baseline's measured requests.
 Only two sequential samples per version were measured, so this is no general throughput guarantee. The
 temporary fixture differs from daily auto-cache/42 GiB settings and does not change the daily configuration.
+
+### Current-main integration (2026-10-04)
+
+The current-main integration is based on upstream `6f32ec070f23ced9f50e704d854d775da52591ab`. It keeps the
+upstream segmented/per-layer caches, byte-budget prefill rings, parallel and Responses serving paths, run
+configuration and elastic VRAM control. Live and segmented cache owners both report their active prefix
+through `live_slots_`; the full reservation remains separate. All engine protocol writers share the pipe
+lock, MEMORY acknowledgements stay out of batch/token channels, and restarted engines cannot inherit stale
+live capabilities. The compatibility exclusions above prevent two concurrent capacity owners.
+
+A fresh Windows MSVC 19.44/CUDA 13/sm120 Release build passed 12 selected native tests, including 278
+live-memory, 6,496 serving-window and 2,169 snapshot checks. Five native CLI checks rejected unsupported live
+combinations before allocation. The server passed 58 focused policy/protocol/HTTP tests, 268 backend tests
+with five model-pack tokenizer skips, and three setup-parallel tests. A safe pipe-writer bypass was detected.
+The initial Responses schema test failed without optional `jsonschema`; isolated test dependencies then
+allowed all nine affected schema checks and the complete backend suite to pass without changing expectations.
+
+Real-model acceptance used the new binary, SHA256
+`b8198db9c84b53ca2ae7ea40e2093a4a7612f155973d479426ad9d59de05f856`. Queued controls during a 16,562-token
+borrowed prompt waited for prefill/refill. Long prompts after shrink/regrowth, STOP with zero output, explicit
+prefill-floor refusal, multi-chunk execution at that floor, floor regrowth and natural EOS all passed. The
+following turn retained its complete 8,625-token consumed prefix. A separate run passed all 12 active/idle
+resize cases with unchanged process/model/context/KV arguments and 1,911-token complete-prefix reuse. Output
+continued after each active change; the largest observed token gap was 0.50 s. Active RAM shrink completed
+in 29.28 s and growth in 21.45 s across bounded steps; direct VRAM shrink/growth acknowledged in 0.875/1.157 s.
+
+Both functional runs used a 24 GiB RAM cap, synthetic policy capacity/time inputs and real native guards,
+without artificial system pressure. They do not validate the earlier throughput tables for this integrated
+binary. The daily runtime was restored with unchanged binary/configuration. Linux/cgroup admission, HIP,
+other GPUs, prolonged natural application pressure and a new comparable throughput benchmark were not run.
