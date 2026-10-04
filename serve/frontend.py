@@ -201,8 +201,13 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
                 calls.append({"function": {"name": fn.get("name"), "arguments": args or {}}})
             out["tool_calls"] = calls
         messages.append(out)
-    tools = [t.get("function", t) if t.get("type") == "function" else t
-             for t in _tools_of(req.get("tools"), "tools")] or None
+    tools = []
+    for t in _tools_of(req.get("tools"), "tools"):
+        tool = t.get("function", t) if t.get("type") == "function" else t
+        if not isinstance(tool, dict):
+            raise ValueError('tools must be a list of objects (each with a "function" object)')
+        tools.append(tool)
+    tools = tools or None
     kwargs = {}
     # OpenAI Chat Completions: "reasoning_effort"; Responses style: "reasoning": {"effort": ...}
     reasoning = req.get("reasoning") if isinstance(req.get("reasoning"), dict) else {}
