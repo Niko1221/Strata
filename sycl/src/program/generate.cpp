@@ -4371,7 +4371,7 @@ int main(int argc, char **argv) try {
     std::vector<int64_t> produced;
     double total_ms = 0;
     double prefill_ms = 0;   // positions 0 .. n_prompt-2: prompt tokens that only condition
-    const Clock::time_point t_start = Clock::now();
+    Clock::time_point t_start = Clock::now();   // SYCL port: not const - start-up work after it is taken out (the lend mirror)
     double ttft_ms = 0;
     const int64_t n_prompt = (int64_t) o.tokens.size();
     int64_t tok = o.tokens[0];
@@ -4963,6 +4963,46 @@ int main(int argc, char **argv) try {
                          ub ? "unbuffered" : "through the file cache", ub == was ? "" : " (changed)", why.c_str());
         }
 #endif
+    }
+    // SYCL port: the same idea for --stream-experts. The slots the prompt path may lend (the cache's last ones) have
+    // their experts streamed during every prompt chunk and copied back after the prompt, each time read from the GGUF
+    // (~1 s a request with a 2 GiB loan). Kept in pinned RAM beside the VRAM misses' mirror, both are DMA from there:
+    // the same bytes into the same slots, so the same answers. The pinned share that sizes the prompt path is left as
+    // it was (as the resident mode does). STRATA_LEND_MIRROR=0: off. It takes RAM only beyond 8 GiB of headroom, which
+    // the KV streaming's pinned KV and the rest of the process need.
+    if (o.stream_experts && srcp == &gguf_src && o.prefill_chunk > 0 && !o.no_prefill_borrow && !host_res.empty() &&
+        xcache.slots() > 0 && !(std::getenv("STRATA_LEND_MIRROR") && std::getenv("STRATA_LEND_MIRROR")[0] == '0')) {
+        int64_t chunk = o.prefill_chunk;
+        const int64_t k = plan_lend(chunk);
+        if (k > 0) {
+            const int64_t from = xcache.slots() - k;
+            std::vector<std::pair<int64_t, int64_t>> lendable;
+            for (size_t i = 0; i < host_res.size(); ++i)
+                if (host_res[i] >= from) lendable.push_back({(int64_t) i / g.n_expert, (int64_t) i % g.n_expert});
+            uint64_t avail = 0;
+            if (FILE* f = std::fopen("/proc/meminfo", "r")) {
+                char key[64]; unsigned long long kb = 0;
+                while (std::fscanf(f, "%63s %llu kB", key, &kb) == 2)
+                    if (std::strcmp(key, "MemAvailable:") == 0) { avail = kb << 10; break; }
+                std::fclose(f);
+            }
+            const uint64_t cap = avail > (8ull << 30) ? avail - (8ull << 30) : 0;
+            const auto tm = Clock::now();
+            const uint64_t before = gguf_src.mirrored_bytes();
+            const int64_t got = cap > 0 ? gguf_src.mirror(lendable, cap, 8, err, /*append=*/true) : 0;
+            if (got < 0) {
+                std::fprintf(stderr, "strata generate: mirroring the lendable experts: %s (they are read from the GGUF)\n",
+                             err.c_str());
+                err.clear();
+            } else {
+                std::fprintf(stderr, "strata generate: %lld of the %zu experts in the %lld lendable slots mirrored in pinned "
+                                     "host memory (%.2f GiB, %.1f s): the prompt path streams and refills them by DMA\n",
+                             (long long) got, lendable.size(), (long long) k,
+                             (double) (gguf_src.mirrored_bytes() - before) / 1073741824.0,
+                             std::chrono::duration<double>(Clock::now() - tm).count());
+            }
+            t_start += Clock::now() - tm;   // start-up work (serve mode does it before READY): not the first token's time
+        }
     }
     if (o.serve) {
         if (o.spec < 2 || o.mtp.empty() || o.prefill_chunk <= 0 ||
