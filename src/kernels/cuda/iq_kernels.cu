@@ -973,7 +973,10 @@ template<> inline constexpr bool kSplit<145> = true;
 template<> inline constexpr bool kSplit<146> = true;
 template<int TY> struct SplitTq {
     using W = TqLane;
-    __device__ static W load(const void* __restrict__ vbq, int kbx, int iqs) { return tq_load<TY>(vbq, kbx, iqs); }
+    template<bool STAGE_GRID = false>   // (no grid table to stage: the codebook is read where it is)
+    __device__ static W load(const void* __restrict__ vbq, int kbx, int iqs, const uint32_t* __restrict__ = nullptr) {
+        return tq_load<TY>(vbq, kbx, iqs);
+    }
     __device__ static float apply(const W& r, const block_q8_1* __restrict__ bq8_1, int iqs) { return tq_apply(r, bq8_1, iqs); }
 };
 template<> struct Split<144> : SplitTq<144> {};
