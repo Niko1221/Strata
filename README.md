@@ -31,6 +31,7 @@ We measured it on two ordinary gaming PCs. A token is about ¾ of a word.
 | **IQ3_XXS** | 62 tokens/s | 1,750 tokens/s |
 | **IQ3_S** | 53 tokens/s | 1,620 tokens/s |
 | **Coder** | 55 tokens/s | 2,180 tokens/s |
+| **IQ3_S** (AMD RX 7900 XTX) | 60 tokens/s | 1,641 tokens/s |
 
 </td><td>
 
