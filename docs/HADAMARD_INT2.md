@@ -22,10 +22,35 @@ uses 2.125 bits per value, including its scale. GGUF dimension 0 must be a
 multiple of 128. Blocks follow the flattened GGUF row order, with dimension 0
 as the contiguous input-channel dimension.
 
-The scale is fitted independently for each block. The converter alternates
-nearest-level assignment and non-negative least-squares scale fitting for
-eight iterations by default, then stores the scale as FP16 and assigns codes
-again using the stored scale. Ties select the lower code index.
+The scale is fitted independently for each block. Starting from the largest
+absolute coefficient, the converter assigns each coefficient to its nearest
+codebook level `q_i`, then fits the non-negative least-squares scale
+
+```text
+s = max(0, sum_i(omega_i * w_i * q_i) / sum_i(omega_i * q_i^2))
+```
+
+It alternates assignment and scale fitting for eight iterations by default;
+`omega_i=1` without an importance matrix. It then stores the scale as FP16 and
+assigns codes again using the stored scale. Ties select the lower code index.
+
+Every output shard carries this metadata schema:
+
+| Key | GGUF value type | Required value |
+| --- | --- | --- |
+| `strata.had2.version` | `u32` | `1` |
+| `strata.had2.block_size` | `u32` | `128` |
+| `strata.had2.bits` | `u32` | `2` |
+| `strata.had2.codebook` | `array<f32>` | `[-1, -1/3, +1/3, +1]` |
+| `strata.had2.rotation` | `string` | `normalized_sylvester_fwht_splitmix64_input_sign` |
+| `strata.had2.scale` | `string` | `nonnegative_fp16_per_128_values` |
+| `strata.had2.packing` | `string` | `four_2bit_codes_per_byte_lsb_first` |
+| `strata.had2.tensor_scope` | `string` | `blk.*.ffn_{gate,up,down}_exps.weight` |
+| `strata.had2.seed` | `u64` | Converter-selected unsigned 64-bit seed |
+
+The converter reads GGUF v3. It preserves existing metadata and the declared
+tensor-data alignment, then adds these keys. Type ID 144 and these metadata
+keys are Strata extensions; they are not registered GGUF quantization types.
 
 ## Orthogonal transform
 
@@ -55,7 +80,10 @@ The converter changes tensors matching
 accepts F16, BF16, or F32 source tensors and rejects already quantized target
 tensors. Target dimension 0 must be a positive multiple of 128. Before writing
 output, it requires a complete gate/up/down triplet for every layer, matching
-matrix dimensions, and a consistent expert count.
+matrix dimensions, and a consistent expert count. Target tensors have three
+dimensions in GGUF order: gate and up use `[n_embd, n_ff, n_expert]`, and down
+uses `[n_ff, n_embd, n_expert]`. The layer indices must start at zero and be
+contiguous.
 
 For one GGUF file:
 
