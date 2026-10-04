@@ -50,7 +50,8 @@ the kernel's amdgpu driver (no ROCm install needed):
 - **Limits for now:** images only through the CPU encoder (`--vision cpu`, 0.1.32). Setup does not offer the tuning
   (calibration) on AMD yet: its controls are being checked on HIP one at a time (#566). Since 0.1.39 a tuning run by
   hand (`./setup.sh --calibrate`) is saved for the AMD card it ran on and reused when setup runs again. The Monitor
-  shows the card's load, VRAM, temperature and power from Linux sysfs (0.1.32).
+  shows the card's load, VRAM, temperature and power from Linux sysfs (0.1.32). On-device tuning of the
+decode kernels (block shapes, draft and CPU settings) is available by hand: [AMD_HIP_AUTOTUNE.md](AMD_HIP_AUTOTUNE.md).
 
 The rest of setup is the same as on NVIDIA: the model download, the start script, the server.
 

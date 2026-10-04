@@ -113,7 +113,7 @@ class Calibrate(unittest.TestCase):
             (tok / "token_type.json").write_text(json.dumps([1, 1]))
             seen = []
             saved = CAL.measure
-            CAL.measure = lambda args, ids_list, start_engine, say=print, extra=(): seen.append(args) or {}
+            CAL.measure = lambda *a, **k: seen.append(a[0]) or {}
             fake = type("ST", (), {"Tokenizer": lambda *a: type("T", (), {"encode": lambda s, t, **k: [0]})()})
             try:
                 with mock.patch.dict(sys.modules, {"strata_tokenizer": fake}):
@@ -154,6 +154,108 @@ class Calibrate(unittest.TestCase):
         self.assertEqual(CAL.pick({}, "a"), "a")
 
 
+class ArgsEngine(FakeEngine):
+    """Speed also depends on the drafting flags it was started with (--spec, --suffix-draft) and records every
+    per-request tune key it was sent."""
+
+    def __init__(self, args, speed, info_workers=6, starts=None, sent=None):
+        super().__init__(args, lambda f, p, w: 0.0, info_workers, starts)
+        self.full_speed = speed
+        self.sent = sent if sent is not None else []
+        self.spec = int(CAL.arg_value(args, "--spec") or 4)
+        self.sfx = int(CAL.arg_value(args, "--suffix-draft") or 3)
+
+    def generate(self, ids, max_new, sampling, cancel):
+        tune = sampling.get("strata_tune") or {}
+        self.sent.append(dict(tune))
+        rate = self.full_speed(tune.get("pcie_frac"), tune.get("spec_min_p", self.info["spec_min_p"]), self.workers,
+                               self.spec, self.sfx)
+        for _ in range(max_new):
+            yield 1
+        self.last = {"generated": max_new, "decode_ms": max_new / rate * 1000.0}
+
+
+HIP_BASE = ["--pack", "p", "--spec", "4", "--spec-min-p", "0.5", "--max-context", "8192", "--pcie-frac", "0",
+            "--mmap-experts", "--resident-cpu-experts", "--adapt-every", "0"]
+
+
+class HipAndDraft(unittest.TestCase):
+    def run_with(self, speed, base=HIP_BASE, backend="hip", draft=False, workers=6):
+        starts, sent = [], []
+        res = CAL.measure(base, [[1, 2, 3]] * 3, lambda a: ArgsEngine(a, speed, workers, starts, sent),
+                          say=lambda *_: None, backend=backend, draft=draft)
+        return res, starts, sent
+
+    def test_hip_keeps_the_pcie_share(self):
+        res, starts, sent = self.run_with(lambda f, p, w, s, x: 50.0)
+        self.assertEqual(res["settings"], {})
+        self.assertTrue(all("pcie_frac" not in t for t in sent))        # never swept, never overridden per request
+        self.assertTrue(all(CAL.arg_value(a, "--pcie-frac") == "0" for a in starts))
+        self.assertFalse(res["report"]["pcie_swept"])
+
+    def test_hip_finds_a_higher_draft_floor(self):
+        # a CPU-bound hybrid: every extra draft row costs more, so a confident floor wins
+        res, _, _ = self.run_with(lambda f, p, w, s, x: 60.0 if abs(p - 0.8) < 1e-6 else 50.0)
+        self.assertEqual(res["settings"], {"--spec-min-p": "0.80"})
+
+    def test_hip_apply_keeps_pcie_and_the_resident_flags(self):
+        a = CAL.apply(HIP_BASE, {"--spec-min-p": "0.70"}, backend="hip")
+        self.assertEqual(CAL.arg_value(a, "--pcie-frac"), "0")
+        self.assertEqual(CAL.arg_value(a, "--spec-min-p"), "0.70")
+        self.assertIn("--resident-cpu-experts", a)
+        b = CAL.apply(a, {}, backend="hip")
+        self.assertEqual(CAL.arg_value(b, "--pcie-frac"), "0")
+        self.assertEqual(CAL.arg_value(b, "--spec-min-p"), "0.5")
+        # NVIDIA's apply still returns the PCIe share to the engine's own choice
+        self.assertIsNone(CAL.arg_value(CAL.apply(HIP_BASE, {}), "--pcie-frac"))
+
+    def test_draft_finds_window_and_lookup(self):
+        def speed(f, p, w, spec, sfx):
+            return 50.0 + (8.0 if spec == 3 else 0.0) + (6.0 if sfx == 6 else 0.0)
+        res, starts, _ = self.run_with(speed, draft=True)
+        self.assertEqual(res["settings"].get("--spec"), "3")
+        self.assertEqual(res["settings"].get("--suffix-draft"), "6")
+        self.assertNotIn("--pcie-frac", res["settings"])
+        self.assertTrue(res["report"]["draft"])
+        # the sweep, three windows, three lookup lengths, then the workers on top of the winners
+        self.assertEqual(len(starts), 1 + len(CAL.SPECS) + len(CAL.SUFFIX_DRAFTS) + len(CAL.worker_candidates(6)))
+        last = starts[-1]
+        self.assertEqual(CAL.arg_value(last, "--spec"), "3")
+        self.assertEqual(CAL.arg_value(last, "--suffix-draft"), "6")
+
+    def test_draft_default_kept_when_flat(self):
+        res, starts, _ = self.run_with(lambda f, p, w, s, x: 50.0, draft=True)
+        self.assertEqual(res["settings"], {})
+        self.assertTrue(all(CAL.arg_value(a, "--suffix-draft") in (None, "0", "6") for a in starts))
+
+    def test_draft_apply_resets_old_draft_values(self):
+        a = CAL.apply(HIP_BASE, {"--spec": "3", "--suffix-draft": "0"}, backend="hip")
+        self.assertEqual(CAL.arg_value(a, "--spec"), "3")
+        self.assertEqual(CAL.arg_value(a, "--suffix-draft"), "0")
+        b = CAL.apply(a, {}, backend="hip", draft=True)                 # a new draft calibration found the defaults
+        self.assertEqual(CAL.arg_value(b, "--spec"), "4")
+        self.assertIsNone(CAL.arg_value(b, "--suffix-draft"))
+        c = CAL.apply(a, {}, backend="hip")                             # one without the draft sweep leaves them
+        self.assertEqual(CAL.arg_value(c, "--spec"), "3")
+
+    def test_load_prompts(self):
+        with tempfile.TemporaryDirectory() as d:
+            j = Path(d) / "p.json"
+            j.write_text(json.dumps(["fix this", "", "and this"]))
+            self.assertEqual(CAL.load_prompts(j), ["fix this", "and this"])
+            t = Path(d) / "p.txt"
+            t.write_text("first prompt\nline two\n---\nsecond\n")
+            self.assertEqual(CAL.load_prompts(t), ["first prompt\nline two", "second"])
+            bad = Path(d) / "bad.json"
+            bad.write_text(json.dumps({"a": 1}))
+            with self.assertRaises(ValueError):
+                CAL.load_prompts(bad)
+            empty = Path(d) / "empty.txt"
+            empty.write_text("\n---\n")
+            with self.assertRaises(ValueError):
+                CAL.load_prompts(empty)
+
+
 class SetupIntegration(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -191,6 +293,24 @@ class SetupIntegration(unittest.TestCase):
         # another context size is another key (its KV cache changes the expert cache)
         other = dict(written, args=CAL.with_arg(written["args"], "--max-context", "131072"))
         self.assertIsNone(self.S.saved_calibration(other))
+
+    def test_hip_calibration_keeps_pcie_and_remembers_draft(self):
+        cfg_path = Path(self.tmp.name) / "strata-iq3_xxs.json"
+        cfg = {"exe": "x", "args": list(HIP_BASE), "model_name": "qwen3.8-flash-next-iq3_xxs", "backend": "hip"}
+        cfg_path.write_text(json.dumps(cfg))
+        seen = {}
+
+        def fake_run(c, say=print, start_engine=None, prompts=None, draft=False, sweep_pcie=None):
+            seen.update(draft=draft, prompts=prompts)
+            return {"settings": {"--spec-min-p": "0.70", "--spec": "3"}, "report": {"tok_s": 74.0}}
+        CAL.run = fake_run
+        self.assertTrue(self.S.calibrate_config(cfg_path, draft=True))
+        self.assertTrue(seen["draft"])
+        written = json.loads(cfg_path.read_text())
+        self.assertEqual(CAL.arg_value(written["args"], "--pcie-frac"), "0")
+        self.assertEqual(CAL.arg_value(written["args"], "--spec"), "3")
+        self.assertEqual(CAL.arg_value(written["args"], "--spec-min-p"), "0.70")
+        self.assertTrue(self.S.saved_calibration(written)["draft"])
 
     def test_failed_calibration_keeps_defaults(self):
         cfg_path = Path(self.tmp.name) / "strata-q2_0.json"
