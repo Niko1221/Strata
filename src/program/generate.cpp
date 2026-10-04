@@ -4722,7 +4722,12 @@ int main(int argc, char** argv) {
             const strata::core::QsaState* draft0 = n_st > 0 ? nullptr : &mtp.kv_state();
             auto draft_of = [&](size_t k) -> const strata::core::QsaState* { return k + 1 == n_st ? &mtp.kv_state() : nullptr; };
             strata::core::ConversationCheckpointSplit cs;
-            if (n_st > 0) cs = strata::core::conversation_checkpoints_split(std::move(checks), n_st);
+            try {
+                if (n_st > 0) cs = strata::core::conversation_checkpoints_split(std::move(checks), n_st);
+            } catch (const std::bad_alloc&) {
+                std::fprintf(stderr, "strata serve: conversation cache: checkpoint split allocation failed; skip parking\n");
+                return true; // split preserves every checkpoint on allocation failure
+            }
             struct MergeBack {
                 strata::core::ConversationCheckpointSplit& cs; std::vector<ConvCheckpoint>& checks; bool on;
                 ~MergeBack() { if (on && !strata::core::conversation_checkpoints_merge(std::move(cs), checks)) checks.clear(); }

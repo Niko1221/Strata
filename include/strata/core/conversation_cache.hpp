@@ -79,17 +79,39 @@ inline ConversationCheckpointSplit conversation_checkpoints_split(std::vector<Co
                                                                   size_t stages) {
     ConversationCheckpointSplit out;
     out.parts.resize(stages);
-    for (auto& c : checks) {
-        const bool whole = c.stage_parts.size() == stages;
-        out.complete.push_back(whole);
-        if (!whole) { out.rest.push_back(std::move(c)); continue; }
+    out.complete.reserve(checks.size());
+    size_t whole = 0;
+    for (const auto& c : checks) {
+        const bool complete = c.stage_parts.size() == stages;
+        out.complete.push_back(complete);
+        whole += complete ? 1 : 0;
+    }
+    out.stage0.reserve(whole);
+    out.rest.reserve(checks.size() - whole);
+    for (auto& parts : out.parts) parts.reserve(whole);
+    // Allocate and copy identity metadata before moving any running state.
+    // If allocation fails, every input checkpoint remains usable by the caller.
+    for (const auto& c : checks) {
+        if (c.stage_parts.size() != stages) continue;
         for (size_t k = 0; k < stages; ++k) {
-            ConversationCheckpoint part = std::move(c.stage_parts[k]);
-            part.ids = c.ids; part.imgs = c.imgs; part.used = c.used; part.stage_parts.clear();
+            ConversationCheckpoint part;
+            part.ids = c.ids; part.imgs = c.imgs; part.used = c.used;
             out.parts[k].push_back(std::move(part));
+        }
+    }
+    size_t w = 0;
+    for (auto& c : checks) {
+        if (c.stage_parts.size() != stages) { out.rest.push_back(std::move(c)); continue; }
+        for (size_t k = 0; k < stages; ++k) {
+            auto& dst = out.parts[k][w];
+            auto& src = c.stage_parts[k];
+            dst.gdn = std::move(src.gdn); dst.ple = std::move(src.ple);
+            dst.tails = std::move(src.tails); dst.dead = std::move(src.dead);
+            dst.block_pos = std::move(src.block_pos);
         }
         c.stage_parts.clear();
         out.stage0.push_back(std::move(c));
+        ++w;
     }
     checks.clear();
     return out;
