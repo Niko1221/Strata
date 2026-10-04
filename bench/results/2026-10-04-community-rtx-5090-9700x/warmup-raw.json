@@ -1,0 +1,108 @@
+{
+  "chunks": [
+    {
+      "id": "chatcmpl-99f541d98379425588f2a85a",
+      "object": "chat.completion.chunk",
+      "created": 1791122601,
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "choices": [
+        {
+          "index": 0,
+          "delta": {
+            "role": "assistant",
+            "content": ""
+          },
+          "finish_reason": null
+        }
+      ]
+    },
+    {
+      "id": "chatcmpl-99f541d98379425588f2a85a",
+      "object": "chat.completion.chunk",
+      "created": 1791122601,
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "choices": [
+        {
+          "index": 0,
+          "delta": {
+            "content": "READY"
+          },
+          "finish_reason": null
+        }
+      ]
+    },
+    {
+      "id": "chatcmpl-99f541d98379425588f2a85a",
+      "object": "chat.completion.chunk",
+      "created": 1791122601,
+      "model": "qwen3.8-flash-next-iq3_xxs",
+      "choices": [
+        {
+          "index": 0,
+          "delta": {},
+          "finish_reason": "stop"
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 19,
+        "completion_tokens": 2,
+        "total_tokens": 21,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 19,
+        "prompt_ms": 355.5,
+        "prompt_per_token_ms": 18.711,
+        "prompt_per_second": 53.4,
+        "predicted_n": 2,
+        "predicted_ms": 84.2,
+        "predicted_per_token_ms": 42.1,
+        "predicted_per_second": 23.8,
+        "draft_n": 3,
+        "draft_n_accepted": 3
+      }
+    }
+  ],
+  "row": {
+    "label": "warmup",
+    "expected_prompt_tokens": null,
+    "request_sha256": "12311d5e48e02a0ada9952e4fb9811465df8268269e26312d686062fb511a37b",
+    "client_ttft_s": 0.38854100002208725,
+    "client_elapsed_s": 0.4445072000089567,
+    "finish_reason": "stop",
+    "usage": {
+      "prompt_tokens": 19,
+      "completion_tokens": 2,
+      "total_tokens": 21,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "engine": {
+      "projection": null,
+      "time": 1791122601.8904502,
+      "duration_s": 0.4,
+      "finish": "stop",
+      "prompt_tokens": 19,
+      "reused": 0,
+      "output_tokens": 2,
+      "prompt_total": 19,
+      "prompt_read": 19,
+      "engine_generated": 2,
+      "prompt_ms": 355.5,
+      "decode_ms": 84.2,
+      "decode_tok_s": 23.8,
+      "hit_rate": 0.748,
+      "pcie_share": 0.175,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0.0,
+      "drafts_offered": 3,
+      "drafts_accepted": 3
+    },
+    "text": "READY"
+  }
+}
