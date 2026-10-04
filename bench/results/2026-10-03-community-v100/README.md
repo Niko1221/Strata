@@ -112,3 +112,38 @@ dual-socket box (2x E5-2696 v3, DDR3L-1600) than on a modern desktop. Consistent
 the GPU-side evidence above - decode here is host-bound, not compute-bound. The
 0.1.38-time `--pool-workers` sensitivity disappearing fits the same story: less CPU work
 per token, fewer threads needed to feed the GPU.
+
+## Update (2026-10-05): images on the ready-made CUDA 12 engine (sm_70)
+
+The release notes verify the CUDA 12 build only ("we have no Pascal or Volta card"); these
+checks cover the **vision path** on a real sm_70 card. Enabled with the config's `vision`
+entry plus `--vision --vram-reserve-mib 700` in the engine args (~1.4 GiB from the expert
+cache). With images on, text decode stayed in the same 58-63 tok/s range as the vision-off
+runs above.
+
+**Speed.** A control image (shapes + caption) was described correctly at 63 tok/s decode.
+A 3-round real session with an image every turn: decode 78-80 tok/s, expert-cache hit
+96.7-97.4%, image+text prompts read at ~760 tok/s. Images cost no decode speed here.
+
+**Quality.** Three user photos through a strict constrained prompt (a fixed six-section
+answer: an 8-object inventory, an OCR list capped at 10, exactly 4 risk lines, a 5-item
+inspection record, a limits section, and a self-check line - "write 'cannot confirm' for
+anything not visible, never fill in from general knowledge"):
+
+- An illustration with no text: 8/8 objects real and positioned right; every unreadable
+  field honestly "cannot confirm"; zero invented content.
+- A vintage cast-metal nameplate: OCR exact to the character - "№2906", "SIEMENS-SCHUCKERT".
+  It listed 2 of the 4 mounting holes: a completeness miss, not a hallucination.
+- A dense motor nameplate (CG Power): 10/10 OCR lines correct to the character, including
+  "IS 12615", "MACHINE NO : 0.75KNE4FLG", "CM/L-7800028417", "kW(HP): 0.75(1.00) RPM : 1410",
+  "VOLT: 415±10% AMP : 1.82Y" (the ± sign and the Y winding code included), "REF : XEGM27571",
+  and the one low-legibility line was marked low confidence by the model itself. Only two
+  screws were visible in the photo; the model said so and marked the fastening check
+  "cannot confirm" instead of guessing.
+
+No invented identifiers, serials or risks in any of the three answers. One minor wrinkle:
+the self-check line's "read count" used a slightly different counting rule between two
+answers (with and without the "cannot confirm" rows).
+
+Vision on this card is production-usable for inspection-style work: exact OCR on clean
+nameplates, honest abstention on unreadable fields, and no decode-speed cost.
