@@ -129,6 +129,40 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(another.list()["sessions"], [stored(existing)])
         another.close()
 
+    def test_seed_accepts_baseline_name_only_attachments_without_fabricating_content(self):
+        baseline = [{"role": "user", "text": "What did I attach?", "time": 1,
+                     "images": [{"name": "screen.png", "label": "retained metadata"}],
+                     "files": [{"name": "notes.txt"}]},
+                    {"role": "assistant", "text": "Previous answer", "time": 2}]
+        original = copy.deepcopy(baseline)
+        self.assertTrue(self.archive.seed_legacy(baseline, None)["copied"])
+        saved = self.archive.list()["sessions"][0]
+        message = saved["branches"][0]["messages"][0]
+        self.assertEqual(message["images"], [{"name": "screen.png", "label": "retained metadata",
+                                             "url": "", "legacyContentUnavailable": True}])
+        self.assertEqual(message["files"], [{"name": "notes.txt", "text": "", "legacyContentUnavailable": True}])
+        self.assertEqual(saved["source"]["messages"], original)
+        self.assertEqual(baseline, original)
+        self.assertFalse(self.archive.seed_legacy({"malformed": True}, object())["copied"])
+        self.assertEqual(self.archive.list()["sessions"], [saved])
+
+    def test_seed_existing_destination_wins_and_failed_normalization_is_atomic(self):
+        existing = self.archive.save(fixture("strata:legacy"), activate=True)
+        self.assertFalse(self.archive.seed_legacy(None, object())["copied"])
+        self.assertEqual(self.archive.list(), {"sessions": [existing], "activeId": "strata:legacy"})
+        another = ChatArchive(Path(self.temp.name) / "seed-atomic.sqlite3")
+        source = [{"role": "user", "text": "Preserve", "images": [{"name": "screen.png"}]},
+                  {"role": "invalid", "text": "Reject"}]
+        original = copy.deepcopy(source)
+        try:
+            with self.assertRaises(ValueError):
+                another.seed_legacy(source, None)
+            self.assertEqual(source, original)
+            self.assertEqual(another.list(), {"sessions": [], "activeId": None})
+            self.assertTrue(another.seed_legacy(source[:1], None)["copied"])
+        finally:
+            another.close()
+
     def test_recall_large_file_pages_exact_projection(self):
         value = fixture(text="Read file")
         value["branches"][1]["messages"][0]["files"] = [{"name": "large.txt", "text": "中文内容" * 10000}]

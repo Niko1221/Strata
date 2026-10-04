@@ -10,7 +10,9 @@ messages, attachments, inactive branches, drafts and per-branch compacted contex
 earlier chats in **Chats**. Saves are transactional; stale tabs cannot overwrite a newer revision.
 
 Without `chat_archive_path`, the existing browser single chat and New chat/Undo remain available. A storage
-failure retains the original in the page and warns before reload; compaction cannot generate a summary unless
+failure attempts text and full snapshots independently. If only text fits, reload uses the newer text and attachment
+names while the previous full copy remains in storage; unsaved attachment contents stay in the page. Compaction
+cannot generate a summary unless
 an original copy has been saved. Saved-chat import, rename and memory tools require the configured archive.
 
 **Rename chat** changes a conversation's title with the same revision checks, retaining its messages,
@@ -25,6 +27,8 @@ error rather than a partial import. Original source graphs remain in the archive
 original `currNode` path are selectable. Old `#/chat/<id>` links open their imported conversation.
 
 The existing single-chat Strata browser archive is copied once without removing its localStorage record.
+Older name-only attachment records retain their names and original source, with an explicit unavailable-content
+marker; unknown image bytes are omitted from model requests. No attachment content is invented.
 **Backup all** exports full JSON including branches and raw import sources; **Save this chat** remains a
 readable Markdown export. Remote image URLs remain in the archive without loading them merely to render
 history. Importing a record never executes its historical tool calls.
@@ -45,10 +49,14 @@ The database preserves saved data independently of the model's 64K context and i
 selective; the model can still miss a relevant fact or fail to request it. Model access through another API
 client requires that client to opt into `strata_mcp`. API traffic is not automatically archived.
 
-Private archive endpoints retain API-key checks and require the server's own origin, including when other
-API paths allow wildcard CORS. No archive record is sent to a cloud service by saving or compacting it.
-This first implementation limits import requests/files to 100 MB, stored session payloads and SQLite pages
-to about 100 MB, and memory results to 12,000 characters. Capacity errors leave the original source and
+Private archive endpoints retain API-key checks and require the server's own host and port over HTTP or
+HTTPS, including when other API paths allow wildcard CORS or separately configured trusted origins. A TLS
+proxy must preserve that host header; forwarded headers do not grant access. No archive record is sent to
+a cloud service by saving or compacting it.
+This first implementation limits import requests/files and total session payloads to 100 MB, the whole
+SQLite database including its search index to about 100 MB, and memory results to 12,000 characters.
+Index and metadata overhead reduce usable history capacity. A database/disk capacity error returns JSON
+with HTTP 507; other SQLite availability errors return HTTP 503. Capacity errors leave the original source and
 previous archive intact. SQLite persistence is not an independent backup against disk failure.
 
 Checks: `node --test tools/test_chat_import.cjs tools/test_chat_library.cjs tools/test_chat_context.cjs tools/test_chat_archive_ui.cjs` and

@@ -34,6 +34,7 @@ import re
 import select
 import signal
 import socket
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -2113,8 +2114,10 @@ def make_handler(svc: Service):
 
         def _archive_page(self) -> bool:
             origin = self.headers.get("Origin", "")
-            expected = "http://" + self.headers.get("Host", "")
-            if self.headers.get("Sec-Fetch-Site") == "cross-site" or (origin and origin != expected):
+            host = self.headers.get("Host", "")
+            # TLS can terminate at a proxy; private history still requires that same host and port.
+            expected = ("http://" + host, "https://" + host)
+            if self.headers.get("Sec-Fetch-Site") == "cross-site" or (origin and origin not in expected):
                 self._json(403, {"error": {"message": "chat archives are available only to Strata's own page"}})
                 return False
             if not self._authorized():
@@ -2124,11 +2127,20 @@ def make_handler(svc: Service):
                 return False
             return True
 
+        def _archive_storage_error(self, error):
+            full = getattr(error, "sqlite_errorcode", None) == sqlite3.SQLITE_FULL
+            message = ("Chat archive capacity or disk space limit reached; previous records retained." if full else
+                       "Chat archive storage is unavailable; previous records retained.")
+            self._json(507 if full else 503, {"error": {"type": "chat_archive_error", "message": message}})
+
         def do_GET(self):
             path = self.path.split("?")[0].rstrip("/")
             if path == "/v1/chats":
                 if self._archive_page():
-                    self._json(200, svc.chat_archive.list())
+                    try:
+                        self._json(200, svc.chat_archive.list())
+                    except sqlite3.Error as error:
+                        self._archive_storage_error(error)
                 return
             if path == "/sw.js":
                 body = (ROOT / "serve" / "web" / "retire-sw.js").read_bytes()
@@ -2333,6 +2345,10 @@ def make_handler(svc: Service):
                     self._count_chat_tokens(req)
                 else:
                     self._json(404, {"error": {"message": "not found"}})
+            except sqlite3.Error as error:
+                if not path.startswith("/v1/chats/"):
+                    raise
+                self._archive_storage_error(error)
             except ValueError as e:
                 self._json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
             except ModelBusy as e:

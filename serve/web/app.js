@@ -463,13 +463,25 @@ function markdown(text) {
 // ------------------------------------------------------------------ Chat
 const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true};
 let settings = {...DEFAULTS, ...store.get("sampling", {})};
-const savedArchive = store.get("chat-archive", null);
-let messages = savedArchive && Array.isArray(savedArchive.messages) ? savedArchive.messages : store.get("chat", []);
-let chatContext = savedArchive && savedArchive.context || null;
+function browserTextSnapshot(items) {
+  return items.map(m => ({...m, images: (m.images || []).map(i => ({name: i.name})),
+    files: (m.files || []).map(f => ({name: f.name}))}));
+}
+function restoreBrowserChat() {
+  const full = store.get("chat-archive", null), text = store.get("chat", null);
+  const usable = full && Array.isArray(full.messages);
+  const matchingText = usable && (!Array.isArray(text) || JSON.stringify(text) ===
+    JSON.stringify(full.textSnapshot ?? browserTextSnapshot(full.messages)));
+  return matchingText ? {messages: full.messages, context: full.context || null} :
+    {messages: Array.isArray(text) ? text : [], context: null};
+}
+const restoredBrowserChat = restoreBrowserChat();
+let messages = restoredBrowserChat.messages;
+let chatContext = restoredBrowserChat.context;
 if (chatContext && (!chatContext.summary || !Number.isInteger(chatContext.through) || chatContext.through < 0 || chatContext.through > messages.length)) chatContext = null;
 let autoCompact = store.get("auto-compact", true);
 let attachments = [];                 // {name, url}
-let chatEpoch = 0, fallbackStorageWarned = false;
+let chatEpoch = 0, fallbackStorageWarned = false, fallbackTextSaved = false;
 let busy = null;                      // {controller, msg}
 let library = null, currentChat = null, chatList = [], historyBusy = true;
 const requestedLegacyId = /^#\/chat\/([^/?#]+)/.exec(location.hash)?.[1] || null;
@@ -478,17 +490,27 @@ let legacyRouteResolved = !requestedLegacyId;
 function currentBranch() { return currentChat?.branches.find(b => b.id === currentChat.activeBranchId); }
 async function saveChat(context = chatContext) {
   if (!library || !currentChat) {
+    let fullSaved = false;
+    fallbackTextSaved = false;
+    const text = browserTextSnapshot(messages);
     try {
-      localStorage.setItem("strata.chat-archive", JSON.stringify({messages, context}));
-      store.set("chat", messages.map(m => ({...m, images: (m.images || []).map(i => ({name: i.name})),
-        files: (m.files || []).map(f => ({name: f.name}))})));
-      fallbackStorageWarned = false;
-      return true;
-    } catch (_) {
-      if (!fallbackStorageWarned) toast("warn", "Chat is kept in this page only", "Browser storage is full or unavailable. Export the original chat before reloading; compaction cannot start until it is saved.", 7000);
+      localStorage.setItem("strata.chat", JSON.stringify(text));
+      fallbackTextSaved = true;
+    } catch (_) { /* full persistence is attempted independently */ }
+    try {
+      // Match the actual text snapshot so a later text-only save can supersede an older full copy on reload.
+      localStorage.setItem("strata.chat-archive", JSON.stringify({messages, context,
+        textSnapshot: fallbackTextSaved ? text : store.get("chat", null)}));
+      fullSaved = true;
+    } catch (_) { /* the previous full original stays untouched */ }
+    if (fullSaved) fallbackStorageWarned = false;
+    else {
+      if (!fallbackStorageWarned) toast("warn", fallbackTextSaved ? "Text saved; full chat stays in this page" : "Chat is kept in this page only",
+        fallbackTextSaved ? "Latest text and attachment names were saved. Attachment contents may be missing after reload; the older full copy was retained. Export this chat; compaction cannot start until its full original is saved." :
+        "Browser storage is full or unavailable. Export the original chat before reloading; compaction cannot start until it is saved.", 7000);
       fallbackStorageWarned = true;
-      return false;
     }
+    return fullSaved;
   }
   const copy = JSON.parse(JSON.stringify(currentChat));
   const branch = copy.branches.find(b => b.id === copy.activeBranchId);
@@ -557,6 +579,7 @@ async function initializeHistory() {
     useChat(chat);
   } catch (error) {
     library = null;
+    legacyRouteResolved = true;  // browser-only chat does not need an unresolved legacy import link
     if (!error.archiveDisabled) toast("error", "Chat history unavailable", error.message + " Existing browser chat retained.", 7000);
     $("history-status").textContent = error.archiveDisabled ? "History is kept in this browser · configure chat_archive_path for saved chats" : "History unavailable · current chat retained";
   } finally { historyBusy = false; setBusy(false); }
@@ -674,7 +697,7 @@ function msgEl(m, i) {
         const c = document.createElement("span");
         c.className = "chip";
         c.innerHTML = icon("attach", "st-icon st-icon--sm");
-        c.append(f.name);
+        c.append(f.name + (f.legacyContentUnavailable ? " (content unavailable)" : ""));
         wrap.appendChild(c);
       }
       el.appendChild(wrap);
@@ -684,7 +707,7 @@ function msgEl(m, i) {
       wrap.className = "msg-images";
       for (const im of m.images) {
         if (safeImage(im.url)) { const img = document.createElement("img"); img.src = im.url; img.alt = im.name || "image"; wrap.appendChild(img); }
-        else { const c = document.createElement("span"); c.className = "chip"; c.innerHTML = icon("image", "st-icon st-icon--sm"); c.append(im.name || "image"); wrap.appendChild(c); }
+        else { const c = document.createElement("span"); c.className = "chip"; c.innerHTML = icon("image", "st-icon st-icon--sm"); c.append((im.name || "image") + (im.legacyContentUnavailable ? " (content unavailable)" : "")); wrap.appendChild(c); }
       }
       el.appendChild(wrap);
     }
@@ -1037,9 +1060,10 @@ $("input").addEventListener("input", autosize);
 
 $("new-btn").onclick = () => historyAction(async () => {
   if (!library) {
+    legacyRouteResolved = true;
     const backup = messages, backupContext = chatContext, backupAttachments = attachments, backupInput = $("input").value;
     chatEpoch++; messages = []; chatContext = null; attachments = []; $("input").value = "";
-    if (!await saveChat()) {
+    if (!await saveChat() && !fallbackTextSaved) {
       messages = backup; chatContext = backupContext; attachments = backupAttachments; $("input").value = backupInput;
       autosize(); renderAttachments(); renderChat(); compactStatus();
       return;
@@ -1103,6 +1127,7 @@ function addFiles(files) {
 }
 // a file's text in the message, fenced with more backticks than it contains itself
 function fileBlock(f) {
+  if (f.legacyContentUnavailable) return `File: ${f.name}\n[Content unavailable: the original browser stored only the filename.]`;
   const longest = Math.max(2, ...(f.text.match(/`+/g) || []).map((s) => s.length));
   const fence = "`".repeat(longest + 1);
   return `File: ${f.name}\n${fence}\n${f.text}\n${fence}`;

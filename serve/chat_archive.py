@@ -228,26 +228,45 @@ class ChatArchive:
         return result
 
     def seed_legacy(self, messages, context):
-        if not isinstance(messages, list):
-            raise ValueError("invalid legacy messages")
-        first = next((m.get("text") for m in messages if isinstance(m, dict) and m.get("role") == "user" and m.get("text")), "New chat")
-        _string(first, "legacy message text")
-        session = {"id": "strata:legacy", "title": first[:64], "updated": int(time.time() * 1000),
-                   "activeBranchId": "main", "branches": [{"id": "main", "title": "Main", "messages": messages, "context": context}]}
-        value, payload = validate_session(session)
         with self._lock, self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             if db.execute("SELECT 1 FROM meta WHERE key='legacy-strata-copied'").fetchone():
                 return {"copied": False}
-            copied = bool(messages) and not db.execute("SELECT 1 FROM sessions WHERE id='strata:legacy'").fetchone()
-            if copied:
+            # An existing destination wins, even when a later browser record is malformed.
+            if db.execute("SELECT 1 FROM sessions WHERE id='strata:legacy'").fetchone():
+                db.execute("INSERT INTO meta(key,value) VALUES('legacy-strata-copied','true')")
+                return {"copied": False}
+            if not isinstance(messages, list):
+                raise ValueError("invalid legacy messages")
+            original = json.loads(_json(messages))
+            normalized = json.loads(_json(messages))
+            placeholders = False
+            for message in normalized:
+                if not isinstance(message, dict):
+                    continue  # the ordinary session validator owns malformed records
+                for field, content in (("images", "url"), ("files", "text")):
+                    attachments = message.get(field, [])
+                    if not isinstance(attachments, list):
+                        continue
+                    for attachment in attachments:
+                        if isinstance(attachment, dict) and content not in attachment:
+                            attachment[content] = ""
+                            attachment["legacyContentUnavailable"] = True
+                            placeholders = True
+            first = next((m.get("text") for m in normalized if isinstance(m, dict) and m.get("role") == "user" and m.get("text")), "New chat")
+            _string(first, "legacy message text")
+            session = {"id": "strata:legacy", "title": first[:64], "updated": int(time.time() * 1000),
+                       "activeBranchId": "main", "branches": [{"id": "main", "title": "Main", "messages": normalized, "context": context}]}
+            if placeholders:
+                session["source"] = {"format": "strata-browser", "messages": original, "context": context}
+            value, payload = validate_session(session)
+            if messages:
                 value["revision"] = 1
-                payload = _json(value)
-                self._put(db, value, payload)
+                self._put(db, value, _json(value))
                 if not db.execute("SELECT 1 FROM meta WHERE key='active'").fetchone():
                     db.execute("INSERT INTO meta(key,value) VALUES('active','strata:legacy')")
             db.execute("INSERT INTO meta(key,value) VALUES('legacy-strata-copied','true')")
-            return {"copied": copied}
+            return {"copied": bool(messages)}
 
     def search(self, query, chat_id=None, limit=5):
         query = _string(query, "search query", 200, True)

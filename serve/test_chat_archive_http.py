@@ -1,10 +1,12 @@
 """Archive HTTP admission and UI transition over an isolated mock service."""
 import json
+import sqlite3
 import tempfile
 import urllib.error
 import urllib.request
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from serve.chat_archive import ChatArchive
 from serve.chat_memory import MemoryProvider
@@ -67,6 +69,49 @@ class ArchiveHttp(unittest.TestCase):
         self.assertEqual(self.request("/v1/chats/import", {"sessions": [{"id": "broken"}]})[0], 400)
         self.assertEqual(len(json.loads(self.request("/v1/chats")[2])["sessions"]), 1)
         self.assertEqual(self.request("/v1/chats/save", {"session": session}, {"Origin": "https://foreign.invalid"})[0], 403)
+
+    def test_https_same_host_preserves_strict_private_archive_origin(self):
+        self.svc.api_key = "fixture-key"
+        self.svc.cors_origins = ["*"]
+        self.svc.trusted_origins = ["https://foreign.invalid"]
+        headers = {"Authorization": "Bearer fixture-key", "Host": "strata.example.com",
+                   "Origin": "https://strata.example.com"}
+        status, response, data = self.request("/v1/chats/seed", {"messages": [], "context": None}, headers)
+        self.assertEqual(status, 200)
+        self.assertFalse(json.loads(data)["copied"])
+        self.assertIsNone(response.get("Access-Control-Allow-Origin"))
+        self.assertEqual(self.request("/v1/chats", headers=headers)[0], 200)
+        for origin in ("https://foreign.invalid", "ftp://strata.example.com", "null",
+                       "https://strata.example.com/path"):
+            self.assertEqual(self.request("/v1/chats", headers={**headers, "Origin": origin})[0], 403)
+        self.assertEqual(self.request("/v1/chats", headers={**headers, "Sec-Fetch-Site": "cross-site"})[0], 403)
+
+    def test_real_sqlite_page_limit_returns_json_and_retains_original(self):
+        session = {"id": "original", "title": "Retain", "activeBranchId": "main", "branches": [
+            {"id": "main", "messages": [{"role": "user", "text": "REVIEW-7421"}], "context": None}]}
+        self.assertEqual(self.request("/v1/chats/save", {"session": session, "activate": True})[0], 200)
+        original = json.loads(self.request("/v1/chats")[2])
+        large = {**session, "id": "large", "branches": [{"id": "main", "context": None,
+                 "messages": [{"role": "user", "text": "x" * 30000}]}]}
+        # The payload fits; its duplicated search index reaches the actual SQLite page cap.
+        self.assertLess(len(json.dumps(large).encode()), 65536)
+        with mock.patch("serve.chat_archive.MAX_ARCHIVE_BYTES", 65536):
+            status, headers, data = self.request("/v1/chats/save", {"session": large})
+        self.assertEqual(status, 507)
+        self.assertEqual(headers["Cache-Control"], "no-store")
+        self.assertEqual(json.loads(data)["error"]["type"], "chat_archive_error")
+        self.assertEqual(json.loads(self.request("/v1/chats")[2]), original)
+
+    def test_sqlite_read_failure_returns_safe_json_without_path_or_cors(self):
+        self.svc.cors_origins = ["*"]
+        error = sqlite3.OperationalError("cannot open private-fixture.sqlite3")
+        with mock.patch.object(self.svc.chat_archive, "list", side_effect=error):
+            status, headers, data = self.request("/v1/chats")
+        self.assertEqual(status, 503)
+        self.assertEqual(headers["Cache-Control"], "no-store")
+        self.assertIsNone(headers.get("Access-Control-Allow-Origin"))
+        self.assertEqual(json.loads(data)["error"]["type"], "chat_archive_error")
+        self.assertNotIn(b"private-fixture", data)
 
     def test_tools_are_available_and_counted_without_archive_becoming_model_context(self):
         data = json.loads(self.request("/mcp")[2])
