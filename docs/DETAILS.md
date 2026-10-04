@@ -534,6 +534,15 @@ print(r.choices[0].message.content)
   long prompt the stream sends keep-alives, so agents do not time out; the server window prints progress every
   15 s, and `GET /status` says what it is doing (`reading the prompt`, `answering`, tokens so far). Closing the
   connection or pressing stop in your app really stops the model, so the next request starts at once.
+- **Prefill progress in the stream (opt-in).** `"return_progress": true` puts that progress on the stream instead of
+  sending only the keep-alive, as one extra field on a chunk with an empty delta: `prompt_progress` with `total`,
+  `cache`, `processed` and `time_ms`. Those are llama.cpp's four fields and mean the same there (`time_ms` is the time
+  since the prompt started reading, and the work still to do is `(total-cache) - (processed-cache)`), so a client that
+  draws a prefill bar for llama.cpp draws one here too. It is off unless the request asks, as it is in llama.cpp.
+  The engine says one line per `--prefill` chunk, so that chunk is the step: measured on two RTX 3090s with
+  `--prefill auto` (8192 tokens), a 42,131 token prompt read in 15 s sent six of them. A prompt shorter than one chunk
+  sends nothing, and that is on purpose: its only line arrives once the prompt is read, because the last tokens go
+  through the verify windows rather than the batched path, so it stops up to `--short-read` tokens short of the end.
 - **Chat apps.** Any app with an "OpenAI-compatible" provider works: base URL `http://127.0.0.1:8080/v1`, any API key.
 - **OpenCode** (#543). A starting point for `opencode.jsonc` (in your project, or `~/.config/opencode/`); the field
   names are OpenCode's, so check its config docs if your version differs:

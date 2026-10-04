@@ -432,6 +432,8 @@ class StrataEngine:
         self.info = {}                   # INFO key=value facts (engine 0.1.8+): kv, expert slots, ... (Monitor tab)
         self.prefill_tok_s_mean = None
         self.progress = None             # (read, total) prompt tokens while a prompt is read, from PP lines
+        self.progress_ms = 0             # PP's own milliseconds since the prompt started (its third field)
+        self.reused = 0                  # RESUME: prompt tokens not read again (a client takes them out of the work)
         self.silent_note = None
         try:                            # a ready-made engine's BUILD.json says its version
             self.info["version"] = json.loads((Path(exe).parent / "BUILD.json").read_text()).get("version")
@@ -742,6 +744,7 @@ class StrataEngine:
                 f = line.split()
                 if len(f) >= 3 and f[1].isdigit() and f[2].isdigit():
                     self.progress = (int(f[1]), int(f[2]))
+                    self.progress_ms = float(f[3]) if len(f) >= 4 else 0.0
                     self.prefill_tok_s_mean = float(f[4]) if len(f) >= 5 else None
                 yield None
             elif line.startswith("DONE"):
@@ -870,7 +873,7 @@ class StrataEngine:
         with a much shorter prompt (#656: `BYIELD <slot>`; the part read waits in a slot and the read goes on after).
         A consumer that stops early leaves the engine in step: the solo request is STOPped and read to its DONE, an
         admission to its BADM, a slot is BSTOPped and freed at its BDONE."""
-        self.progress = None
+        self.progress, self.progress_ms, self.reused = None, 0, 0
         keys = self.sampling_keys(sampling or {})
         out: list[int] = []
         pending: list[int] = []
@@ -1113,7 +1116,7 @@ class StrataEngine:
         if getattr(self, "batch", 0):
             yield from self.generate_batched(ids, max_new, sampling, cancel, embeddings)
             return
-        self.progress = None
+        self.progress, self.progress_ms, self.reused = None, 0, 0
         self.prefill_tok_s_mean = None
         # an image request takes the same sampling keys as text (#75: it used to decode greedily whatever was asked)
         head = f"GENI {int(max_new)}{self.sampling_keys(sampling or {})} {embeddings}" if embeddings else \
@@ -1159,6 +1162,7 @@ class StrataEngine:
                     f = line.split()
                     if len(f) >= 3 and f[1].isdigit() and f[2].isdigit():
                         self.progress = (int(f[1]), int(f[2]))             # prompt progress, one per chunk: also a heartbeat (the
+                        self.progress_ms = float(f[3]) if len(f) >= 4 else 0.0
                         self.prefill_tok_s_mean = float(f[4]) if len(f) >= 5 else None
                         rate, chunk = self.prefill_tok_s_mean or 0.0, int(f[1]) - read_to
                         read_to = int(f[1])
@@ -1169,7 +1173,7 @@ class StrataEngine:
                     yield None
                 elif line.startswith("RESUME "):          # the reused tokens: the first chunk starts after them
                     try:
-                        read_to = int(line.split()[1])
+                        read_to = self.reused = int(line.split()[1])
                     except (IndexError, ValueError):
                         pass
                 elif line.startswith("DONE"):
@@ -1257,6 +1261,7 @@ class StrataEngine:
                 self.proc = None
                 self.ended = True
                 self.progress, self.last = None, {}
+                self.progress_ms, self.reused = 0, 0
 
 
 class Vision:
@@ -2599,11 +2604,39 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
 
 
 # ------------------------------------------------------------------------------------------------ OpenAI
+# The engine's last PP line stops short of the prompt: up to `--short-read` tokens (generate.cpp's `short_read`, 64 by
+# default) are read through the verify windows instead of the batched path, so the batched path never reports the whole
+# prompt.  A PP that close to the end says the prompt is read.  It matters because a prompt shorter than one `--prefill`
+# chunk sends exactly one PP, that one: a client would see a bar that appears already full.  Such a line is dropped, and
+# the answer's first token ends the progress for the client anyway.
+PP_DONE_TAIL = 64
+
+
+def prompt_progress(svc: Service):
+    """The last PP line as llama.cpp's `prompt_progress`, so a client written for llama.cpp reads both servers: the
+    same four fields, `time_ms` elapsed since prompt reading started, and `processed` counting from token 0 so that a
+    client takes the reused prefix out with `cache` (llama.cpp's rule: the timed progress is
+    `(processed-cache)/(total-cache)`).  None when there is nothing to say: no PP yet, or the line that says the prompt
+    is read.  An engine too old to print RESUME gives `cache` 0, which only makes a reused prefix count as work."""
+    engine = svc.engine
+    progress = getattr(engine, "progress", None)
+    if not progress:
+        return None
+    read, total = progress
+    if total <= 0 or total - read <= PP_DONE_TAIL:
+        return None
+    return {"total": int(total), "cache": int(getattr(engine, "reused", 0) or 0), "processed": int(read),
+            "time_ms": int(getattr(engine, "progress_ms", 0) or 0)}
+
+
 def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel, run=None):
     """`run`: the events to send instead of Service.run's (run_with_mcp); its ("mcp", {...}) items become chunks with
     an empty delta and a `strata_mcp` field, which only the web app reads."""
     cid, created = "chatcmpl-" + uuid.uuid4().hex[:24], int(time.time())
     model = svc.model_for(req)
+    # llama.cpp's flag, and its default: a client that wants prompt progress asks for it, and nothing changes for one
+    # that does not.  Strata already sends a keep-alive comment on every PP line, so this only fills that line in.
+    want_progress = bool(req.get("return_progress"))
 
     def chunk(delta, finish=None):
         return {"id": cid, "object": "chat.completion.chunk", "created": created, "model": model,
@@ -2615,7 +2648,10 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
     finished = set()                               # ... and the ones whose final tool_call came (#211)
     for kind, x in run if run is not None else svc.run(ids, thinking, tools, max_new, req, cancel):
         if kind == "ping":
-            yield None
+            # a PP line: the prompt is being read and there is nothing to say yet.  It used to be only the SSE comment;
+            # now it carries the progress when the client asked, and stays the comment when there is nothing to report.
+            pp = prompt_progress(svc) if want_progress else None
+            yield None if pp is None else {**chunk({}), "prompt_progress": pp}
         elif kind == "mcp":
             c = chunk({})
             c["strata_mcp"] = x
@@ -2705,11 +2741,12 @@ def structured_chunks(chunks, validator):
     heartbeat = time.monotonic()
     try:
         for chunk in chunks:
-            if chunk is not None:
-                buffered.append(chunk)
-            if chunk is None or time.monotonic() - heartbeat >= 1:
+            progress = chunk is not None and "prompt_progress" in chunk
+            if chunk is not None and not progress:
+                buffered.append(chunk)      # a progress chunk carries no content: there is nothing in it to validate
+            if chunk is None or progress or time.monotonic() - heartbeat >= 1:
                 heartbeat = time.monotonic()
-                yield None
+                yield chunk if progress else None
         result = openai_collect(buffered)
         choice = result["choices"][0]
         content = validated_json(choice["message"]["content"], validator, choice["finish_reason"])

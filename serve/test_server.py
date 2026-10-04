@@ -20,9 +20,9 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate  # noqa: E402
-from serve.server import (CTX_SLACK, ByteTokenizer, EngineDied, GpuBusy, MockEngine, Service, StrataEngine,  # noqa: E402
-                          engine_args, layer_split_value, prompt_tokens_seen, request_timings, serve,
-                          start_failure_hint)
+from serve.server import (CTX_SLACK, ByteTokenizer, EngineDied, GpuBusy, MockEngine, PP_DONE_TAIL, Service,  # noqa: E402
+                          StrataEngine, engine_args, layer_split_value, prompt_progress, prompt_tokens_seen,
+                          request_timings, serve, start_failure_hint)
 from types import SimpleNamespace  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1459,6 +1459,79 @@ class LiveRate(unittest.TestCase):
         finally:
             httpd.shutdown()
             httpd.server_close()
+
+
+class PromptProgress(unittest.TestCase):
+    """`return_progress: true` puts the engine's PP line on the stream as llama.cpp's `prompt_progress`, so a client
+    written for llama.cpp shows prefill progress from either server.  Off by default, as it is in llama.cpp."""
+
+    TOKENS, TOTAL = 40, 25000
+
+    class Reading(MockEngine):
+        """A prompt read in three chunks and then answered: the engine's PP lines reach the HTTP layer as pings."""
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.progress, self.progress_ms, self.reused, self.total = None, 0.0, 0, 0
+
+        def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+            for read, ms in ((8192, 2200.0), (16384, 4400.0), (24576, 6600.0)):
+                self.progress, self.progress_ms = (read, self.total), ms
+                yield None
+            yield from super().generate(ids, max_new, sampling, cancel, embeddings)
+
+    def setUp(self):
+        tok = ByteTokenizer()
+        self.engine = self.Reading(tok, "y" * self.TOKENS, max_context=CTX)
+        self.engine.total = self.TOTAL
+        self.engine.reused = 4096                     # RESUME: the conversation checkpoint's reused prefix
+        self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        self.httpd = serve(self.svc, port=0)
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+    def stream(self, **req):
+        body = json.dumps({"model": "m", "max_tokens": self.TOKENS, "stream": True,
+                           "messages": [{"role": "user", "content": "hi"}], **req}).encode()
+        with urllib.request.urlopen(urllib.request.Request(self.base + "/v1/chat/completions", data=body,
+                                                           headers={"Content-Type": "application/json"}),
+                                    timeout=30) as r:
+            return r.read().decode()
+
+    def test_a_client_that_asks_gets_one_progress_per_chunk(self):
+        steps = [json.loads(line[6:]) for line in self.stream(return_progress=True).splitlines()
+                 if line.startswith("data: ") and "prompt_progress" in line]
+        self.assertEqual([s["prompt_progress"] for s in steps],
+                         [{"total": self.TOTAL, "cache": 4096, "processed": 8192, "time_ms": 2200},
+                          {"total": self.TOTAL, "cache": 4096, "processed": 16384, "time_ms": 4400},
+                          {"total": self.TOTAL, "cache": 4096, "processed": 24576, "time_ms": 6600}],
+                         "llama.cpp's four fields, time_ms elapsed since the read started")
+        self.assertTrue(all(s["choices"][0]["delta"] == {} for s in steps), "a progress chunk carries no content")
+
+    def test_a_client_that_does_not_ask_gets_nothing(self):
+        text = self.stream()
+        self.assertNotIn("prompt_progress", text)
+        self.assertIn(": keep-alive", text, "the PP line still keeps the connection alive as it used to")
+
+    def test_the_line_that_says_the_prompt_is_read_is_dropped(self):
+        # the batched path leaves up to --short-read tokens to the verify windows, so its last PP stops short of the
+        # prompt.  A prompt under one --prefill chunk sends only that line, and it would show a bar already full.
+        for short in (PP_DONE_TAIL, PP_DONE_TAIL - 1, 1):
+            self.engine.progress, self.engine.progress_ms = (self.TOTAL - short, self.TOTAL), 6600.0
+            self.assertIsNone(prompt_progress(self.svc), f"a PP {short} token(s) short of the end says it is read")
+        self.engine.progress = (self.TOTAL - PP_DONE_TAIL - 1, self.TOTAL)
+        self.assertEqual(prompt_progress(self.svc)["processed"], self.TOTAL - PP_DONE_TAIL - 1)
+
+    def test_nothing_before_the_first_chunk(self):
+        self.engine.progress = None
+        self.assertIsNone(prompt_progress(self.svc), "no PP line yet: there is no rate to show")
+        self.engine.progress = (8192, self.TOTAL)
+        self.engine.reused = 0                        # an engine too old to print RESUME never sets it
+        self.assertEqual(prompt_progress(self.svc)["cache"], 0,
+                         "an engine too old to print RESUME counts the reused prefix as work")
 
 
 class SharedSettings(unittest.TestCase):
