@@ -510,6 +510,14 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
             fused_gr_read_multi(fa, T, xn_, cs);
         }
         // ---- attention: K/V into the layer's own cache, then (full) dense attention over every cell
+        static const bool no_norm_rope = [] {
+            const char* v = std::getenv("STRATA_NO_NORM_ROPE");
+            return v != nullptr && v[0] != '\0' && v[0] != '0';
+        }();
+        static const bool no_batch_kv = [] {
+            const char* v = std::getenv("STRATA_NO_BATCH_KV_STEP");
+            return v != nullptr && v[0] != '\0' && v[0] != '0';
+        }();
         auto norm_rope = [&](float* data, const float* gamma, int rows, int cols, const int32_t* p) {
             native_qsa_rms_norm_weighted(data, gamma, data, cols, rows, EPS, cs);
             if (native_rope_enabled()) native_rope_apply(data, data, rows, cols, (int) s.n_rot, rope_scaling(), p, cs);
@@ -518,41 +526,58 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
         native_quantize_q8_1(mixed_, xq_, (int) N, T, cs);
         native_mmvq(GGML_Q8_0, q8("self_attn.k_proj.weight"), xq_, kcur_, (int) N, (int) (NKV * HD), T, cs);
         native_mmvq(GGML_Q8_0, q8("self_attn.v_proj.weight"), xq_, vcur_, (int) N, (int) (NKV * HD), T, cs);
-        for (int t = 0; t < T; ++t) {
-            norm_rope(kcur_ + t * NKV * HD, f32("self_attn.k_norm.weight"), (int) NKV, (int) HD, pos + t * NH);
-            if (st_.kv_rot) {   // rotated K and V (kv_q4.hpp): Q4_0, and INT8 with STRATA_KV_ROT=1
-                fwht256_inplace_cuda(kcur_ + t * NKV * HD, NKV, cs);
-                fwht256_inplace_cuda(vcur_ + t * NKV * HD, NKV, cs);
+        if (!no_norm_rope && T == 1 && native_rope_enabled()) {
+            native_qsa_rms_norm_rope(kcur_, (int) HD, f32("self_attn.k_norm.weight"), kcur_, (int) NKV, (int) HD,
+                                     (int) s.n_rot, EPS, rope_scaling(), pos, cs);
+        } else {
+            native_qsa_rms_norm_weighted(kcur_, f32("self_attn.k_norm.weight"), kcur_, (int) HD, (int) (T * NKV), EPS, cs);
+            for (int t = 0; t < T; ++t) {
+                float* kc = kcur_ + t * NKV * HD;
+                if (native_rope_enabled()) native_rope_apply(kc, kc, (int) NKV, (int) HD, (int) s.n_rot, rope_scaling(), pos + t * NH, cs);
+                else rope_neox_apply(kc, kc, (int) NKV, (int) HD, (int) s.n_rot, st_.cos_tab, st_.sin_tab, pos + t * NH, cs);
             }
-            // stored in the state's own format (#293 appended rotated INT8 K/V as Q4_0, into pools INT8 never has)
-            if (st_.kv_q4)
-                kv_append_q4_step(st_.k_q4, st_.v_q4, st_.page_table, step + t * 4, kcur_ + t * NKV * HD,
-                                  vcur_ + t * NKV * HD, s, cs, &st_.host);
-            else if (st_.kv_int8)
-                kv_append_q8_step(st_.k_q, st_.v_q, st_.k_scale, st_.v_scale, st_.page_table, step + t * 4,
-                                  kcur_ + t * NKV * HD, vcur_ + t * NKV * HD, s, cs, &st_.host);
-            else
-                kv_append_step(st_.k_pool, st_.v_pool, st_.page_table, step + t * 4, kcur_ + t * NKV * HD,
-                               vcur_ + t * NKV * HD, s, cs, &st_.host);
         }
+        if (st_.kv_rot) {   // rotated K and V (kv_q4.hpp): Q4_0, and INT8 with STRATA_KV_ROT=1
+            fwht256_inplace_cuda(kcur_, (int64_t) T * NKV, cs);
+            fwht256_inplace_cuda(vcur_, (int64_t) T * NKV, cs);
+        }
+        // stored in the state's own format (#293 appended rotated INT8 K/V as Q4_0, into pools INT8 never has)
+        if (!no_batch_kv && st_.kv_q4)
+            kv_append_q4_steps(st_.k_q4, st_.v_q4, st_.page_table, step, 4, T, kcur_, vcur_, s, cs, &st_.host);
+        else if (!no_batch_kv && st_.kv_int8)
+            kv_append_q8_steps(st_.k_q, st_.v_q, st_.k_scale, st_.v_scale, st_.page_table, step, 4, T, kcur_, vcur_,
+                               s, cs, &st_.host);
+        else
+            for (int t = 0; t < T; ++t) {
+                if (st_.kv_q4)
+                    kv_append_q4_step(st_.k_q4, st_.v_q4, st_.page_table, step + t * 4, kcur_ + t * NKV * HD,
+                                      vcur_ + t * NKV * HD, s, cs, &st_.host);
+                else if (st_.kv_int8)
+                    kv_append_q8_step(st_.k_q, st_.v_q, st_.k_scale, st_.v_scale, st_.page_table, step + t * 4,
+                                      kcur_ + t * NKV * HD, vcur_ + t * NKV * HD, s, cs, &st_.host);
+                else
+                    kv_append_step(st_.k_pool, st_.v_pool, st_.page_table, step + t * 4, kcur_ + t * NKV * HD,
+                                   vcur_ + t * NKV * HD, s, cs, &st_.host);
+            }
         if (!full) return true;
         native_mmvq(GGML_Q8_0, q8("self_attn.q_proj.weight"), xq_, qfull_, (int) N, (int) (NH * 2 * HD), T, cs);
-        for (int t = 0; t < T; ++t) {
-            float* qc = qcur_ + t * NH * HD;
-            if (cudaMemcpy2DAsync(qc, (size_t) HD * 4, qfull_ + t * NH * 2 * HD, (size_t) HD * 2 * 4, (size_t) HD * 4,
-                                  (size_t) NH, cudaMemcpyDeviceToDevice, cs) != cudaSuccess) {
-                err = "mtp: q split failed";
+        if (!no_norm_rope && native_rope_enabled()) {
+            native_qsa_rms_norm_rope(qfull_, (int) (2 * HD), f32("self_attn.q_norm.weight"), qcur_, (int) (T * NH),
+                                     (int) HD, (int) s.n_rot, EPS, rope_scaling(), pos, cs);
+        } else {
+            if (cudaMemcpy2DAsync(qcur_, (size_t) HD * 4, qfull_, (size_t) HD * 2 * 4,
+                                  (size_t) HD * 4, (size_t) (T * NH), cudaMemcpyDeviceToDevice, cs) != cudaSuccess) {
+                err = "mtp: the q/gate split failed";
                 return false;
             }
-            norm_rope(qc, f32("self_attn.q_norm.weight"), (int) NH, (int) HD, pos + t * NH);
-            if (st_.kv_rot) fwht256_inplace_cuda(qc, NH, cs);
+            norm_rope(qcur_, f32("self_attn.q_norm.weight"), (int) (T * NH), (int) HD, pos);
         }
+        if (st_.kv_rot) fwht256_inplace_cuda(qcur_, (int64_t) T * NH, cs);
         const QsaAttnPools pools = qsa_attn_pools(st_);
         if (window_ > 0) window_ids(const_cast<int32_t*>(step), T, (int) window_, ident_, cap_, cs);
         qsa_decode_attn_batch(qcur_, pools, ident_, step, cap_, s, attn_scratch_, attn_, T, cs);
         if (st_.kv_rot) fwht256_inplace_cuda(attn_, (int64_t) T * NH, cs);
-        for (int t = 0; t < T; ++t)
-            native_qsa_gate_apply(attn_ + t * NH * HD, qfull_ + t * NH * 2 * HD, attn32_ + t * NH * HD, (int) NH, (int) HD, cs);
+        native_qsa_gate_apply(attn_, qfull_, attn32_, (int) (T * NH), (int) HD, cs);
         native_quantize_q8_1(attn32_, xq_, (int) (NH * HD), T, cs);
         native_mmvq(GGML_Q8_0, q8("self_attn.o_proj.weight"), xq_, bo_, (int) (NH * HD), (int) N, T, cs);
         // ---- the MLP hyper-connection (the attention write folded in)
@@ -571,10 +596,15 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
             fused_gr_read_multi(fa, T, xn_, cs);
         }
         // ---- MoE: router, the 512 resident experts, the shared expert, the combine, the write
-        for (int t = 0; t < T; ++t) {
-            bf16_gemv_fp32_mmvf(mixed_ + t * N, bf16("mlp.gate.weight"), logits_ + t * g.n_expert, (int) N, (int) g.n_expert, cs);
-            if (native_router_enabled()) native_router_top10(logits_ + t * g.n_expert, ids_ + t * K, w_ + t * K, cs);
-            else router_top10(logits_ + t * g.n_expert, 1, (int) g.n_expert, (int) K, ids_ + t * K, w_ + t * K, cs);
+        if (T > 1 && native_router_enabled() && g.n_expert == 512 && K == 10) {
+            bf16_gemv_fp32_mmvf_multi(mixed_, N, bf16("mlp.gate.weight"), logits_, g.n_expert, (int) N, (int) g.n_expert, T, cs);
+            native_router_top10_multi(logits_, ids_, w_, T, cs);
+        } else {
+            for (int t = 0; t < T; ++t) {
+                bf16_gemv_fp32_mmvf(mixed_ + t * N, bf16("mlp.gate.weight"), logits_ + t * g.n_expert, (int) N, (int) g.n_expert, cs);
+                if (native_router_enabled()) native_router_top10(logits_ + t * g.n_expert, ids_ + t * K, w_ + t * K, cs);
+                else router_top10(logits_ + t * g.n_expert, 1, (int) g.n_expert, (int) K, ids_ + t * K, w_ + t * K, cs);
+            }
         }
         moe_group_resident(ids_, (int) (T * K), (int) K, experts_, (int64_t) strata::kernels::cpu::BLOB, grp_ptr_,
                            grp_start_, grp_counts_, hit_dst_, hit_slot_, cs);
@@ -597,13 +627,17 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
             shared_expert(nullptr, nullptr, x_bf16_, none, nullptr, nullptr, nullptr, none, nullptr, nullptr, nullptr, none,
                           nullptr, nullptr, nullptr, bf16("mlp.shared_expert_gate.weight"), sh_scratch_, shared_ + t * N,
                           N, g.n_ff, 32, cs, mixed_ + t * N, &nsw);
-            if (native_moe_combine_enabled())
-                native_moe_combine(parts_ + (size_t) t * K * N, w_ + t * K, shared_ + t * N, y_ + t * N, N, K, cs);
-            else
-                moe_combine(parts_ + (size_t) t * K * N, w_ + t * K, shared_ + t * N, y_ + t * N, N, K, cs);
-            if (!fuse_head_gr)
-                gr_write(R_ + (size_t) t * HC * N, y_ + t * N, inj2_ + t * HC, gs, R_ + (size_t) t * HC * N, cs);
+            if (!(T > 1 && native_moe_combine_enabled())) {
+                if (native_moe_combine_enabled())
+                    native_moe_combine(parts_ + (size_t) t * K * N, w_ + t * K, shared_ + t * N, y_ + t * N, N, K, cs);
+                else
+                    moe_combine(parts_ + (size_t) t * K * N, w_ + t * K, shared_ + t * N, y_ + t * N, N, K, cs);
+            }
         }
+        if (T > 1 && native_moe_combine_enabled())
+            native_moe_combine_multi(parts_, w_, shared_, y_, N, K, T, cs);
+        if (!fuse_head_gr)
+            gr_write_multi(R_, y_, inj2_, gs, R_, T, cs);
         // ---- the final mixer and the main model's head
         if (fuse_head_gr) {
             FusedGrArgs fa[kFusedGrMaxT];
@@ -619,11 +653,10 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
             }
             fused_gr_read_multi(fa, T, xn_, cs);
         } else {
-            for (int t = 0; t < T; ++t)
-                gr_read(R_ + (size_t) t * HC * N, f32("hyper_connection_mixer.hc_norm.weight"),
-                        bf16("hyper_connection_mixer.input_mix_weight_down.weight"),
-                        bf16("hyper_connection_mixer.input_mix_weight_up.weight"), nullptr, EPS, gs, ss.block.gr,
-                        sample_ + t * N, dummy_inj_, cs);
+            gr_read_multi(R_, f32("hyper_connection_mixer.hc_norm.weight"),
+                          bf16("hyper_connection_mixer.input_mix_weight_down.weight"),
+                          bf16("hyper_connection_mixer.input_mix_weight_up.weight"), nullptr, EPS, gs, ss.block.gr,
+                          xn_, lo_, parts_, sample_, dummy_inj_, T, cs);
         }
         native_quantize_q8_1(sample_, xq_, (int) N, T, cs);
         const bool sub = dhead_ != nullptr;
@@ -698,16 +731,19 @@ bool MtpDrafter::capture_round(int T, bool coupled, std::string& err) {
     // coupled: the request's chain and the penalty history's base, for this round's drafts
     if (coupled) coupled_draft_stage(m_cparams_, m_chist_, cparams_, cring_, kCoupledHistCap, cs_);
     copy_i32_from_mapped(tok_, m_tok_, T, cs_);
-    copy_i32_from_mapped(step_, m_step_, (int64_t) 2 * T * 4, cs_);
-    copy_i32_from_mapped(pos_, m_pos_, (int64_t) 2 * T * g_->n_head, cs_);
+    if (T > 1) {
+        copy_i32_from_mapped(step_, m_step_, (int64_t) (T - 1) * 4, cs_);
+        copy_i32_from_mapped(pos_, m_pos_, (int64_t) (T - 1) * g_->n_head, cs_);
+    }
     copy_i32_from_mapped(row_, m_row_, 2, cs_);
     copy_from_mapped(Rin_, window_R_, (int64_t) T * HCN, cs_);
-    // the catch-up: K/V for the window's T cells, then the full layer for row a only (its cell's K/V is written
-    // again, identically), staged by the host in step row 2*max_t - 1; the draft chain is one graph per step
-    // (`capture_step`) so the host can stop it when a draft is unlikely
+    // the catch-up: K/V for the window's prior accepted cells [0, T-1), then the full layer for row a = T-1
+    // staged by the host in step row 2*max_t - 1; the draft chain is one graph per step (`capture_step`)
     const int ra = 2 * max_t_ - 1;
-    ok = record_forward(T, -1, cs_, err);
-    if (ok) mtp_select(Rin_, HCN, tok_, row_, Rin_, tok_, nullptr, 0, cs_);
+    if (T > 1) {
+        ok = record_forward(T - 1, -1, cs_, err);
+        if (ok) mtp_select(Rin_, HCN, tok_, row_, Rin_, tok_, nullptr, 0, cs_);
+    }
     if (ok) {
         copy_i32_from_mapped(step_ + ra * 4, m_step_ + ra * 4, 4, cs_);
         copy_i32_from_mapped(pos_ + ra * g_->n_head, m_pos_ + ra * g_->n_head, g_->n_head, cs_);
@@ -855,6 +891,7 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
                        float* probs, float min_p, int* n_drafts) {
     const OnDevice on_device(device_);
     if (T < 1 || T > max_t_ || a < 0 || a >= T) { err = "mtp: draft arguments out of range"; return false; }
+    T = a + 1;
     const bool cp = coupled_active_;   // coupled draft sampling for this request: its own graphs
     if (!capture_round(T, cp, err)) return false;
     const int max_steps = std::min(max_t_ - 1, max_drafts_);

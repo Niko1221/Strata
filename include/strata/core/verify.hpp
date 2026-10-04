@@ -267,6 +267,7 @@ private:
     bool ple_stage() const { return lb_ <= 1 && 1 < le_; }   ///< holds layer 1, where the PLE block runs
     void stage_inputs(int T, const int32_t* tokens, int64_t pos0);
     bool staged_ = false;
+    bool prelaunched_ = false;
     bool copy_used_ = false;
     bool capture_commit(std::string& err);
     bool record_window(int T, cudaStream_t cs, std::string& err);
@@ -296,7 +297,7 @@ private:
     int64_t n_vocab_ = 0;
     cudaStream_t cs_ = nullptr;
     cudaStream_t sh_cs_ = nullptr;
-    cudaEvent_t ev_fork_ = nullptr, ev_join_ = nullptr;
+    cudaEvent_t ev_fork_ = nullptr, ev_join_ = nullptr, handoff_ev_ = nullptr;
     cudaGraphExec_t exec_[9] = {};
     cudaGraphExec_t commit_exec_ = nullptr;
 
