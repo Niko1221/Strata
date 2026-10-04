@@ -14,10 +14,23 @@ main { flex: 1; min-height: 0; display: flex; }
 #drawer-close .st-icon { transform: rotate(-90deg); }
 
 /* ---------------------------------------------------------------- chat */
+.chat-history { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px var(--st-s-6);
+                border-bottom: 1px solid var(--st-line-soft); font-size: var(--st-fs-xs); }
+.chat-history label { display: flex; align-items: center; gap: 6px; }
+.chat-history select { max-width: 260px; padding: 7px; border: 1px solid var(--st-line); border-radius: var(--st-r-sm);
+                       background: var(--st-surface); color: var(--st-ink); font: inherit; }
+.chat-history .st-btn { min-height: 30px; padding: 5px 9px; font-size: var(--st-fs-xs); }
+#history-status { color: var(--st-ink-muted); }
+.st-msg--system .st-bubble, .st-msg--tool .st-bubble, .st-msg--developer .st-bubble { white-space: pre-wrap;
+  overflow-wrap: anywhere; border-left: 3px solid var(--st-line); color: var(--st-ink-soft); }
 .chat-scroll { flex: 1; min-height: 0; overflow-y: auto; }
 .chat { max-width: 860px; margin: 0 auto; padding: var(--st-s-8) var(--st-s-6) var(--st-s-6); display: flex;
         flex-direction: column; gap: var(--st-s-6); }
 .chat-empty { margin: 12vh auto 0; text-align: center; }
+.chat-context { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;
+                font-size: var(--st-fs-xs); color: var(--st-ink-muted); }
+.chat-context label { display: flex; align-items: center; gap: 5px; }
+.chat-context .st-btn { min-height: 28px; padding: 4px 8px; font-size: var(--st-fs-xs); }
 .chat-empty__title { font-weight: var(--st-fw-black); font-size: var(--st-fs-display); line-height: var(--st-lh-tight);
                      letter-spacing: -.02em; }
 .chat-empty__sub { margin-top: var(--st-s-3); color: var(--st-ink-muted); }
@@ -168,3 +181,8 @@ main { flex: 1; min-height: 0; display: flex; }
   .facts { grid-template-columns: 1fr; gap: 2px; }
   .facts dd { margin-bottom: var(--st-s-2); }
 }
+
+.chat-rename { width: min(420px, calc(100vw - 32px)); padding: var(--st-s-5); color: var(--st-ink); }
+.chat-rename::backdrop { background: rgba(0, 0, 0, .45); }
+.chat-rename .st-field { margin-top: var(--st-s-4); }
+.chat-rename__actions { display: flex; justify-content: flex-end; gap: var(--st-s-2); margin-top: var(--st-s-4); }
