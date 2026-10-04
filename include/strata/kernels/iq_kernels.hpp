@@ -1,6 +1,6 @@
 // include/strata/kernels/iq_kernels.hpp - the i-quant formats (IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S,
-// IQ4_NL) and Q2_0 on the GPU for the IQ2_XS / IQ3_XXS model files, and Q4_K / Q5_K / Q5_1 / Q8_0 for Unsloth's
-// UD-Q4_K_XL (gate/up Q4_K or Q5_K, down Q5_1 or Q8_0, a Q8_0 embedding).
+// IQ4_NL) and Q2_0 on the GPU for the IQ2_XS / IQ3_XXS model files, Q4_K / Q5_K / Q5_1 / Q8_0 for Unsloth's
+// UD-Q4_K_XL, and Strata's experimental Hadamard-INT2 routed-expert extension.
 //
 // The block layouts, codebook grids and dot products are llama.cpp's (ggml-common.h, ggml-cuda/vecdotq.cuh,
 // ggml-cuda/dequantize.cuh; MIT, see third_party/ggml/LICENSE and VERSION.txt), so a weight means exactly what it
@@ -22,6 +22,15 @@ size_t iq_row_bytes(int ggml_type, int64_t n) noexcept;
 /// q8_1 blocks for `n_rows` rows of `n_cols` floats (n_cols a multiple of 32): y is n_rows * n_cols/32 blocks.
 void quantize_q8_1_rows(const float* x, int64_t n_rows, int64_t n_cols, void* y, void* stream);
 
+/// Hadamard-INT2: transform each 128-channel block, then quantize rows to the native q8_1 activation layout.
+void had2_quantize_q8_1_rows(const float* x, int64_t n_rows, int64_t n_cols, uint64_t seed, void* y, void* stream);
+/// In-place FP16 activation rotation for the prefill GEMM path.
+void had2_rotate_f16_rows(uint16_t* x, int64_t n_rows, int64_t n_cols, uint64_t seed, void* stream);
+/// Decode one Hadamard-INT2 gate/up pair to the interleaved FP16 matrix layout used by prefill GEMM.
+void had2_dequant_gu_f16(const void* gate, const void* up, int64_t n_ff, int64_t n_embd, uint16_t* dst, void* stream);
+/// Decode a row-major Hadamard-INT2 matrix into FP16.
+void had2_dequant_f16(const void* src, int64_t n_rows, int64_t n_cols, uint16_t* dst, void* stream);
+
 /// y[c][r] = W[r] . x[c] for `ncols` columns of q8_1 activations (x stride n_in/32 blocks per column).
 void iq_mmvq(int ggml_type, const void* w, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream);
 
@@ -41,11 +50,13 @@ void iq_dequant_gu_f16(int ggml_type, const void* gate, const void* up, int64_t 
 struct NativeExpertLayout {
     int gu_type = -1, d_type = -1;
     int64_t n_embd = 0, n_ff = 0;
+    uint64_t had2_seed = 0;
     size_t gu_row = 0, d_row = 0;       // bytes per row
     size_t up_off = 0, down_off = 0;    // byte offsets inside the blob
     size_t bytes = 0;                   // the whole blob
 };
-NativeExpertLayout native_expert_layout(int gu_type, int d_type, int64_t n_embd, int64_t n_ff);
+NativeExpertLayout native_expert_layout(int gu_type, int d_type, int64_t n_embd, int64_t n_ff,
+                                        uint64_t had2_seed = 0);
 /// Whether `native_expert_grouped` has kernels for this gate/up and down type pair at these dimensions, and the
 /// prompt path's dequantizer takes both (checked for every layer at startup, before anything is allocated).
 bool native_expert_supported(int gu_type, int d_type, int64_t n_embd, int64_t n_ff) noexcept;

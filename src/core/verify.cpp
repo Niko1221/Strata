@@ -716,8 +716,15 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 return false;
             }
         }
-        if (strata::kernels::cpu::expert_layout().native)
-            quantize_q8_1_rows(xm, n, N, nat_xq_ + (size_t) tb * (N / 32) * 36, cs);
+        if (strata::kernels::cpu::expert_layout().native) {
+            const auto& layout = strata::kernels::cpu::expert_layout();
+            const auto& format = layout.fmt[(size_t) l];
+            if (format.gu_type == 144)
+                had2_quantize_q8_1_rows(xm, n, N, format.had2_seed,
+                                        nat_xq_ + (size_t) tb * (N / 32) * 36, cs);
+            else
+                quantize_q8_1_rows(xm, n, N, nat_xq_ + (size_t) tb * (N / 32) * 36, cs);
+        }
         else
             quantize_q8_0_scaled(xm, hit_xq_ + (size_t) tb * (N / 32) * 34, hit_xs_ + (size_t) tb * (N / 32), (int64_t) n * N, cs);
         stamp(l, 18, grp);
@@ -752,9 +759,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         // `gy`: the native launch's groups side by side (0: cap, one block row per possible group).
         auto grouped = [&](const unsigned long long* gp, const int32_t* gs, const int32_t* gn, int64_t gy) {
             if (lay.native) {
-                // the layer's GGUF formats (i-quant gate/up, Q2_0 / IQ4_NL down)
+                // the layer's GGUF formats (i-quants, Q2_0, IQ4_NL, or Hadamard-INT2)
                 const auto& f = lay.fmt[(size_t) l];
-                const NativeExpertLayout L = native_expert_layout(f.gu_type, f.d_type, f.n_embd, f.n_ff);
+                const NativeExpertLayout L = native_expert_layout(f.gu_type, f.d_type, f.n_embd, f.n_ff,
+                                                                  f.had2_seed);
                 native_expert_grouped(L, gp, gs, gn, p_dst, p_tok, cap, cap,
                                       nat_xq_ + (size_t) tb * (N / 32) * 36, hit_scratch_, hit_out, cs, gy);
             } else {

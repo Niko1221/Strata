@@ -1033,6 +1033,195 @@ __device__ __forceinline__ void q8_1_store(const float xi, block_q8_1* __restric
     if (iqs == 0) y[ib].ds = make_half2(d, sum);
 }
 
+__device__ __forceinline__ uint64_t had2_mix(uint64_t seed, uint64_t index) {
+    uint64_t z = seed + (index + 1) * 0x9E3779B97F4A7C15ull;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return z ^ (z >> 31);
+}
+
+__device__ __forceinline__ float had2_level(int code) {
+    return code == 0 ? -1.0f : code == 1 ? -1.0f / 3.0f : code == 2 ? 1.0f / 3.0f : 1.0f;
+}
+
+__device__ __forceinline__ float had2_value(const uint8_t* row, int col) {
+    const int block_index = col / 128;
+    const int lane = col & 127;
+    const uint8_t* block = row + (size_t) block_index * 34;
+    const float scale = __half2float(*(const half*) block);
+    const uint8_t packed = block[2 + lane / 4];
+    const int code = (packed >> ((lane & 3) * 2)) & 3;
+    return scale * had2_level(code);
+}
+
+template<bool INPUT_FP16>
+__global__ void __launch_bounds__(128) had2_rotate_kernel(void* data, int64_t rows, int cols, uint64_t seed) {
+    const int nblocks = cols / 128;
+    const int64_t block = (int64_t) blockIdx.x;
+    const int64_t total = rows * nblocks;
+    if (block >= total) return;
+    const int64_t row = block / nblocks;
+    const int channel0 = (int) (block % nblocks) * 128;
+    const int lane = threadIdx.x;
+    const int64_t at = row * cols + channel0 + lane;
+    __shared__ float values[128];
+    float input;
+    if constexpr (INPUT_FP16) input = __half2float(((__half*) data)[at]);
+    else input = ((float*) data)[at];
+    values[lane] = input * ((had2_mix(seed, (uint64_t) channel0 + lane) & 1u) ? 1.0f : -1.0f);
+    __syncthreads();
+    for (int stride = 1; stride < 128; stride <<= 1) {
+        if ((lane & stride) == 0) {
+            const float a = values[lane];
+            const float b = values[lane + stride];
+            values[lane] = a + b;
+            values[lane + stride] = a - b;
+        }
+        __syncthreads();
+    }
+    constexpr float inv = 1.0f / 11.3137084989847603904f;
+    const float result = values[lane] * inv;
+    if constexpr (INPUT_FP16) ((__half*) data)[at] = __float2half_rn(result);
+    else ((float*) data)[at] = result;
+}
+
+__global__ void __launch_bounds__(128) had2_quantize_kernel(const float* x, int64_t rows, int cols, uint64_t seed,
+                                                            block_q8_1* y) {
+    const int nblocks = cols / 128;
+    const int64_t block = (int64_t) blockIdx.x;
+    if (block >= rows * nblocks) return;
+    const int64_t row = block / nblocks;
+    const int channel0 = (int) (block % nblocks) * 128;
+    const int lane = threadIdx.x;
+    const int64_t at = row * cols + channel0 + lane;
+    __shared__ float values[128];
+    values[lane] = x[at] * ((had2_mix(seed, (uint64_t) channel0 + lane) & 1u) ? 1.0f : -1.0f);
+    __syncthreads();
+    for (int stride = 1; stride < 128; stride <<= 1) {
+        if ((lane & stride) == 0) {
+            const float a = values[lane];
+            const float b = values[lane + stride];
+            values[lane] = a + b;
+            values[lane + stride] = a - b;
+        }
+        __syncthreads();
+    }
+    constexpr float inv = 1.0f / 11.3137084989847603904f;
+    q8_1_store(values[lane] * inv, y, at);
+}
+
+__global__ void had2_swiglu_zero_inactive_kernel(const float* gate, const float* up, float* h,
+                                                  const int32_t* grp_start, const int32_t* n_groups,
+                                                  int n_ff, int cap_entries) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    const int64_t n = (int64_t) cap_entries * n_ff;
+    if (i >= n) return;
+    const int active = grp_start[*n_groups];
+    if (i / n_ff < active) {
+        const float g = gate[i];
+        h[i] = (g / (1.0f + __expf(-g))) * up[i];
+    } else {
+        h[i] = 0.0f;
+    }
+}
+
+__device__ __forceinline__ float had2_warp_sum(float v) {
+#pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1) v += __shfl_down_sync(0xffffffffu, v, offset);
+    return v;
+}
+
+__global__ void __launch_bounds__(128) had2_gu_grouped_kernel(
+    const unsigned long long* grp_ptr, const int32_t* grp_start, const int32_t* n_groups,
+    const int32_t* ent_tok, const block_q8_1* xq, NativeExpertLayout L, float* gate, float* up) {
+    const int row = blockIdx.x;
+    if (row >= 2 * L.n_ff) return;
+    const bool is_up = row >= L.n_ff;
+    const int r = is_up ? row - (int) L.n_ff : row;
+    const size_t row_offset = (is_up ? L.up_off : 0) + (size_t) r * L.gu_row;
+    const int tid = threadIdx.x;
+    const int warp = tid >> 5, lane = tid & 31;
+    __shared__ float partial[4];
+    const int ng = *n_groups;
+    for (int g = blockIdx.y; g < ng; g += gridDim.y) {
+        const uint8_t* blob = (const uint8_t*) grp_ptr[g];
+        const uint8_t* wr = blob + row_offset;
+        const int e0 = grp_start[g], e1 = grp_start[g + 1];
+        for (int e = e0; e < e1; ++e) {
+            const block_q8_1* act = xq + (size_t) ent_tok[e] * (L.n_embd / 32);
+            float sum = 0.0f;
+            for (int col = tid; col < L.n_embd; col += 128) {
+                const block_q8_1& ax = act[col / 32];
+                sum += had2_value(wr, col) * (float) ax.qs[col & 31] * __low2float(ax.ds);
+            }
+            sum = had2_warp_sum(sum);
+            if (lane == 0) partial[warp] = sum;
+            __syncthreads();
+            if (warp == 0) {
+                float total = lane < 4 ? partial[lane] : 0.0f;
+                total = had2_warp_sum(total);
+                if (lane == 0) (is_up ? up : gate)[(size_t) e * L.n_ff + r] = total;
+            }
+            __syncthreads();
+        }
+    }
+}
+
+__global__ void __launch_bounds__(128) had2_down_grouped_kernel(
+    const unsigned long long* grp_ptr, const int32_t* grp_start, const int32_t* n_groups,
+    const int32_t* ent_dst, const block_q8_1* hq, NativeExpertLayout L, float* out) {
+    const int r = blockIdx.x;
+    if (r >= L.n_embd) return;
+    const size_t row_offset = L.down_off + (size_t) r * L.d_row;
+    const int tid = threadIdx.x;
+    const int warp = tid >> 5, lane = tid & 31;
+    __shared__ float partial[4];
+    const int ng = *n_groups;
+    for (int g = blockIdx.y; g < ng; g += gridDim.y) {
+        const uint8_t* wr = (const uint8_t*) grp_ptr[g] + row_offset;
+        const int e0 = grp_start[g], e1 = grp_start[g + 1];
+        for (int e = e0; e < e1; ++e) {
+            const block_q8_1* act = hq + (size_t) e * (L.n_ff / 32);
+            float sum = 0.0f;
+            for (int col = tid; col < L.n_ff; col += 128) {
+                const block_q8_1& ax = act[col / 32];
+                sum += had2_value(wr, col) * (float) ax.qs[col & 31] * __low2float(ax.ds);
+            }
+            sum = had2_warp_sum(sum);
+            if (lane == 0) partial[warp] = sum;
+            __syncthreads();
+            if (warp == 0) {
+                float total = lane < 4 ? partial[lane] : 0.0f;
+                total = had2_warp_sum(total);
+                if (lane == 0) out[(size_t) ent_dst[e] * L.n_embd + r] = total;
+            }
+            __syncthreads();
+        }
+    }
+}
+
+__global__ void had2_dequant_kernel(const uint8_t* src, int64_t rows, int cols, half* dst) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    const int64_t n = rows * cols;
+    if (i >= n) return;
+    const int row = (int) (i / cols), col = (int) (i % cols);
+    const size_t row_bytes = (size_t) (cols / 128) * 34;
+    dst[i] = __float2half(had2_value(src + (size_t) row * row_bytes, col));
+}
+
+__global__ void had2_dequant_gu_kernel(const uint8_t* gate, const uint8_t* up, int64_t n_ff, int n_embd,
+                                       half* dst) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    const int64_t n = n_ff * n_embd * 2;
+    if (i >= n) return;
+    const int row = (int) (i / (2 * n_embd));
+    const int role = (int) ((i / n_embd) & 1);
+    const int col = (int) (i % n_embd);
+    const size_t row_bytes = (size_t) (n_embd / 128) * 34;
+    const uint8_t* source = role ? up : gate;
+    dst[i] = __float2half(had2_value(source + (size_t) row * row_bytes, col));
+}
+
 __global__ void quantize_q8_1_kernel(const float* __restrict__ x, block_q8_1* __restrict__ y, long long n) {
     const long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
@@ -1436,6 +1625,7 @@ size_t iq_row_bytes(int t, int64_t n) noexcept {
         case 23: return (size_t) (n / 256) * sizeof(block_iq4_xs);
         case 11: return (size_t) (n / 256) * sizeof(block_q3_K);
         case 42: return (size_t) (n / 64) * sizeof(block_q2_0);
+        case 144: return (size_t) (n / 128) * 34;
         case 12: return (size_t) (n / 256) * sizeof(block_q4_K);
         case 13: return (size_t) (n / 256) * sizeof(block_q5_K);
         case 7: return (size_t) (n / 32) * sizeof(block_q5_1);
@@ -1451,6 +1641,45 @@ void quantize_q8_1_rows(const float* x, int64_t n_rows, int64_t n_cols, void* y,
     if (n <= 0) return;
     quantize_q8_1_kernel<<<(unsigned) ((n + 255) / 256), 256, 0, (cudaStream_t) stream>>>(x, (block_q8_1*) y, n);
     check("quantize_q8_1_rows");
+}
+
+void had2_quantize_q8_1_rows(const float* x, int64_t n_rows, int64_t n_cols, uint64_t seed, void* y,
+                             void* stream) {
+    if (n_rows <= 0) return;
+    if (n_cols <= 0 || n_cols % 128 != 0) { std::fprintf(stderr, "had2_quantize_q8_1_rows: bad width\n"); std::exit(1); }
+    const int64_t blocks = n_rows * (n_cols / 128);
+    had2_quantize_kernel<<<(unsigned) blocks, 128, 0, (cudaStream_t) stream>>>(x, n_rows, (int) n_cols, seed,
+                                                                               (block_q8_1*) y);
+    check("had2_quantize_q8_1_rows");
+}
+
+void had2_rotate_f16_rows(uint16_t* x, int64_t n_rows, int64_t n_cols, uint64_t seed, void* stream) {
+    if (n_rows <= 0) return;
+    if (n_cols <= 0 || n_cols % 128 != 0) { std::fprintf(stderr, "had2_rotate_f16_rows: bad width\n"); std::exit(1); }
+    const int64_t blocks = n_rows * (n_cols / 128);
+    had2_rotate_kernel<true><<<(unsigned) blocks, 128, 0, (cudaStream_t) stream>>>(x, n_rows, (int) n_cols, seed);
+    check("had2_rotate_f16_rows");
+}
+
+void had2_dequant_gu_f16(const void* gate, const void* up, int64_t n_ff, int64_t n_embd, uint16_t* dst,
+                         void* stream) {
+    if (n_ff <= 0 || n_embd <= 0 || n_embd % 128 != 0) {
+        std::fprintf(stderr, "had2_dequant_gu_f16: bad shape\n"); std::exit(1);
+    }
+    const int64_t n = 2 * n_ff * n_embd;
+    had2_dequant_gu_kernel<<<(unsigned) ((n + 255) / 256), 256, 0, (cudaStream_t) stream>>>(
+        (const uint8_t*) gate, (const uint8_t*) up, n_ff, (int) n_embd, (half*) dst);
+    check("had2_dequant_gu_f16");
+}
+
+void had2_dequant_f16(const void* src, int64_t n_rows, int64_t n_cols, uint16_t* dst, void* stream) {
+    if (n_rows <= 0 || n_cols <= 0 || n_cols % 128 != 0) {
+        std::fprintf(stderr, "had2_dequant_f16: bad shape\n"); std::exit(1);
+    }
+    const int64_t n = n_rows * n_cols;
+    had2_dequant_kernel<<<(unsigned) ((n + 255) / 256), 256, 0, (cudaStream_t) stream>>>(
+        (const uint8_t*) src, n_rows, (int) n_cols, (half*) dst);
+    check("had2_dequant_f16");
 }
 
 void iq_mmvq(int t, const void* w, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream) {
@@ -1508,19 +1737,22 @@ void iq_dequant_gu_f16(int t, const void* gate, const void* up, int64_t n_ff, in
 }
 
 bool native_expert_supported(int gu_type, int d_type, int64_t n_embd, int64_t n_ff) noexcept {
+    if (gu_type == 144 || d_type == 144)
+        return gu_type == 144 && d_type == 144 && n_embd > 0 && n_ff > 0 && n_embd % 128 == 0 && n_ff % 128 == 0;
     const int qg = gu_qk(gu_type), qd = d_qk(d_type);
     return qg > 0 && qd > 0 && is_iq(gu_type) && is_iq(d_type) && n_embd % qg == 0 && n_ff % qd == 0 &&
            n_embd % 256 == 0 && (n_ff * n_embd) % 256 == 0;
 }
 
-NativeExpertLayout native_expert_layout(int gu_type, int d_type, int64_t n_embd, int64_t n_ff) {
+NativeExpertLayout native_expert_layout(int gu_type, int d_type, int64_t n_embd, int64_t n_ff, uint64_t had2_seed) {
     NativeExpertLayout L;
     L.gu_type = gu_type;
     L.d_type = d_type;
     L.n_embd = n_embd;
     L.n_ff = n_ff;
-    L.gu_row = iq_row_bytes(gu_type, n_embd);
-    L.d_row = iq_row_bytes(d_type, n_ff);
+    L.had2_seed = had2_seed;
+    L.gu_row = gu_type == 144 ? (size_t) (n_embd / 128) * 34 : iq_row_bytes(gu_type, n_embd);
+    L.d_row = d_type == 144 ? (size_t) (n_ff / 128) * 34 : iq_row_bytes(d_type, n_ff);
     L.up_off = (size_t) n_ff * L.gu_row;
     L.down_off = 2 * L.up_off;
     L.bytes = L.down_off + (size_t) n_embd * L.d_row;
@@ -1553,6 +1785,26 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     const auto* X = (const block_q8_1*) x_q8_1;
     const bool v1 = g_grouped_v1;
     const int64_t gy = (v1 || grid_groups <= 0 || grid_groups > cap_groups) ? cap_groups : grid_groups;
+    if (L.gu_type == 144 || L.d_type == 144) {
+        if (L.gu_type != 144 || L.d_type != 144 || L.n_embd % 128 || L.n_ff % 128) {
+            std::fprintf(stderr, "native_expert_grouped: incompatible Hadamard-INT2 layer geometry\n");
+            std::exit(1);
+        }
+        const dim3 ggu((unsigned) (2 * L.n_ff), (unsigned) gy);
+        had2_gu_grouped_kernel<<<ggu, 128, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
+        check("native_expert_grouped/had2-gu");
+        const long long nh = (long long) cap_entries * L.n_ff;
+        had2_swiglu_zero_inactive_kernel<<<(unsigned) ((nh + 255) / 256), 256, 0, s>>>(
+            gate, up, h, grp_start, n_groups, (int) L.n_ff, (int) cap_entries);
+        had2_rotate_kernel<false><<<(unsigned) (cap_entries * (L.n_ff / 128)), 128, 0, s>>>(
+            h, cap_entries, (int) L.n_ff, L.had2_seed);
+        quantize_q8_1_kernel<<<(unsigned) ((nh + 255) / 256), 256, 0, s>>>(h, hq, nh);
+        check("native_expert_grouped/had2-activation");
+        const dim3 gd((unsigned) L.n_embd, (unsigned) gy);
+        had2_down_grouped_kernel<<<gd, 128, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
+        check("native_expert_grouped/had2-down");
+        return;
+    }
     const dim3 ggu((unsigned) ((2 * L.n_ff + GU_ROWS - 1) / GU_ROWS), (unsigned) gy);
     switch (L.gu_type) {
 #define STRATA_GU(T) case T: launch_gu<T>(ggu, s, grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); break;

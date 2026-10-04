@@ -2140,6 +2140,9 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                             }
                         } else {
                             gather_rows16(m.mixed_h, m.src_dev, m.Xs, T * K, N, m.cs);
+                            if (lay.native && lay.fmt[(size_t) l].gu_type == 144)
+                                strata::kernels::had2_rotate_f16_rows(m.Xs, T * K, N,
+                                                                       lay.fmt[(size_t) l].had2_seed, m.cs);
                         }
                         // multi-GPU: the peer's share, enqueued before the primary's own experts so both cards work at once
                         peer_now = use_mmq && !order_peer.empty();
@@ -2461,11 +2464,19 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                             }
                             const int q = (int) (j % DQ);
                             if (lay.native) {
-                                // plan v0.3 P6: a native pack's layer, dequantized by llama.cpp's own formulas
+                                // A native pack's layer: llama.cpp formulas for its IQ types, Strata's decoder for Had2.
                                 const auto& f = lay.fmt[(size_t) l];
-                                strata::kernels::iq_dequant_gu_f16(f.gu_type, blob_dev, blob_dev + f.up_off, f.n_ff, f.n_embd,
-                                                                   m.dq_gu[q], m.cs);
-                                strata::kernels::iq_dequant_f16(f.d_type, blob_dev + f.down_off, f.n_embd * f.n_ff, m.dq_d[q], m.cs);
+                                if (f.gu_type == 144) {
+                                    strata::kernels::had2_dequant_gu_f16(blob_dev, blob_dev + f.up_off, f.n_ff, f.n_embd,
+                                                                         m.dq_gu[q], m.cs);
+                                    strata::kernels::had2_dequant_f16(blob_dev + f.down_off, f.n_embd, f.n_ff,
+                                                                     m.dq_d[q], m.cs);
+                                } else {
+                                    strata::kernels::iq_dequant_gu_f16(f.gu_type, blob_dev, blob_dev + f.up_off,
+                                                                       f.n_ff, f.n_embd, m.dq_gu[q], m.cs);
+                                    strata::kernels::iq_dequant_f16(f.d_type, blob_dev + f.down_off,
+                                                                    f.n_embd * f.n_ff, m.dq_d[q], m.cs);
+                                }
                             } else {
                                 blob_dequant_f16(blob_dev, m.dq_gu[q], m.dq_d[q], m.cs);
                             }
@@ -2475,6 +2486,11 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                             m.gemm.f16(m.Xs + o0 * N, m.dq_gu[q], m.GU + o0 * 1280, ne, 1280, N);
                             swiglu_interleaved(m.GU + o0 * 1280, m.Hh + o0 * 640, ne, m.cs);
                             pt.mark(kPfGemmD, cs);
+                            if (lay.native && lay.fmt[(size_t) l].d_type == 144) {
+                                const auto& f = lay.fmt[(size_t) l];
+                                strata::kernels::had2_rotate_f16_rows(m.Hh + o0 * 640, ne, f.n_ff,
+                                                                       f.had2_seed, m.cs);
+                            }
                             m.gemm.f16(m.Hh + o0 * 640, m.dq_d[q], m.Dm + o0 * N, ne, N, 640);
                             return true;
                         };
