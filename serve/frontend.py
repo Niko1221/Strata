@@ -603,8 +603,16 @@ class OutputParser:
         while True:
             if self.state == "reasoning":
                 i = self.buf.find(THINK_END)
+                tool = self.buf.find(CALL_START)
+                if tool >= 0 and (i < 0 or tool < i):
+                    if tool:
+                        out.append(Event("reasoning", self.buf[:tool]))
+                    self.buf = self.buf[tool + len(CALL_START):]
+                    self.call_return_state = "reasoning"
+                    self.state = "call"
+                    continue
                 if i < 0:
-                    keep = self._hold(self.buf, (THINK_END,))
+                    keep = self._hold(self.buf, (THINK_END, CALL_START))
                     if len(self.buf) > keep:
                         out.append(Event("reasoning", self.buf[:len(self.buf) - keep]))
                         self.buf = self.buf[len(self.buf) - keep:]
@@ -634,6 +642,7 @@ class OutputParser:
                 if i and self.buf[:i].strip():
                     out.append(Event("content", self.buf[:i].rstrip("\n")))
                 self.buf = self.buf[i + len(CALL_START):]
+                self.call_return_state = "content"
                 self.state = "call"
             else:
                 i = call_end(self.buf)
@@ -655,7 +664,8 @@ class OutputParser:
                     call.id = self.scall.id
                 out.append(Event("tool_call", call=call))
                 self._reset_scan()
-                self.state, self.lead = "content", True
+                self.state = self.call_return_state
+                self.lead = self.state == "content"
 
     def finish(self) -> list[Event]:
         """End of generation: flush whatever is held (an unterminated tool call is returned as content; one that was
@@ -669,7 +679,7 @@ class OutputParser:
             self._reset_scan()
             return out
         if self.buf:
-            kind = {"reasoning": "reasoning", "content": "content"}.get(self.state, "content")
+            kind = self.call_return_state if self.state == "call" else self.state
             text = self.buf if self.state != "call" else CALL_START + self.buf
             out.append(Event(kind, text))
             self.buf = ""
