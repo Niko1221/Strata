@@ -130,9 +130,10 @@ VramPlan plan_startup_vram(const StartupVramInput& in) {
     const bool prefill_on = in.prefill_auto || in.prefill_chunk > 0;
     const int64_t keep = in.lend.min_keep_slots;
     // the owned prompt path's price: `bytes_needed`'s sum plus the 2 MiB page rounding of its ~35 separate
-    // cudaMallocs (the streamed ring's slots, once one allocation, were the bulk of it and are exact now)
+    // cudaMallocs (the streamed ring, one allocation now, was the bulk of it) - the same figure the post-cache
+    // revalidation prices the buffers with
     const auto owned_bytes = [&](int64_t c) -> uint64_t {
-        return in.costs.bytes_with_ring(c, -1) + ((uint64_t) 64 << 20);
+        return in.costs.bytes_with_ring(c, -1) + kOwnedPageMarginBytes;
     };
     const auto chunk_fits_alone = [&](int64_t c, uint64_t beside) {
         return in.free_bytes >= p.mandatory_bytes + owned_bytes(c) + beside;
@@ -472,6 +473,51 @@ uint64_t actual_cache_bytes(const VramPlan& p) {
 
 uint64_t post_cache_required_bytes(const VramPlan& p) {
     return p.mandatory_bytes + (p.prefill_owned ? p.prefill_bytes : 0);
+}
+
+EffectivePrefillPlan revalidate_prefill_after_cache(const VramPlan& startup, const CacheLendView& cache,
+                                                    const LendOpts& opts, const LendCosts& costs) {
+    EffectivePrefillPlan e;
+    if (startup.prefill_owned) {   // an owned plan stays owned; the cache cannot take its room back
+        e.owned = true;
+        e.chunk = startup.selected_prefill;
+        e.owned_bytes = startup.selected_prefill > 0
+            ? costs.bytes_with_ring(startup.selected_prefill, -1) + kOwnedPageMarginBytes : 0;
+        return e;
+    }
+    if (startup.prefill_auto) {
+        // the same policy the startup plan used, against the cache that actually exists now
+        int64_t ignored = 0;
+        e.lend = plan_lend_chunks(cache, opts, costs, true, ignored);
+        if (e.lend.chunk > 0) {
+            e.borrowed = true;
+            e.chunk = e.lend.chunk;
+            e.lend_slots = e.lend.slots;
+        } else {
+            e.owned = true;          // the runtime's fallback: an owned path at request_chunk's 1024 bound
+            e.chunk = 1024;
+            e.owned_bytes = costs.bytes_with_ring(1024, -1) + kOwnedPageMarginBytes;
+        }
+        return e;
+    }
+    if (startup.selected_prefill <= 0) return e;   // the token path: nothing to revalidate
+    // a fixed chunk must lend EXACTLY: the runtime rejects a halved chunk (k = 0) and allocates its own
+    // buffers at the original size, so a smaller chunk the halving would find is not a loan here
+    const int64_t k = cache.slots_for_bytes(costs.bytes_with_ring(startup.selected_prefill, -1));
+    if (k + opts.min_keep_slots <= cache.slots) {
+        e.borrowed = true;
+        e.chunk = startup.selected_prefill;
+        e.lend_slots = k;
+    } else {
+        e.owned = true;
+        e.chunk = startup.selected_prefill;
+        e.owned_bytes = costs.bytes_with_ring(startup.selected_prefill, -1) + kOwnedPageMarginBytes;
+    }
+    return e;
+}
+
+uint64_t effective_post_cache_required(const VramPlan& startup, const EffectivePrefillPlan& effective) {
+    return startup.mandatory_bytes + (effective.owned ? effective.owned_bytes : 0);
 }
 
 }  // namespace strata::prefill

@@ -374,6 +374,92 @@ int main() {
               "R7: a borrowed prompt adds nothing to the post-touch requirement");
     }
 
+    // ---- review 2, R8-R11 + R15: the prompt plan re-derived against the FINAL physical cache
+    {
+        VramPlan startup;   // a borrowed fixed-chunk plan, as the planner emits it
+        startup.mandatory_bytes = (uint64_t) 700 * MIB;
+        startup.prefill_borrow = true;
+        startup.selected_prefill = 8192;
+        startup.max_blob = BLOB;
+        const LendOpts opts = fake_opts(8192);
+        const LendCosts costs = fake_costs();
+        const auto view_of = [](int64_t slots) {
+            CacheLendView v;
+            v.slots = slots;
+            v.bytes = slots * BLOB;
+            v.max_blob = BLOB;
+            return v;
+        };
+        const uint64_t margin = (uint64_t) 64 << 20;
+        // R8: the cache still lends 8192: borrowed, nothing owned, requirement = the mandatory items
+        const EffectivePrefillPlan r8 = revalidate_prefill_after_cache(startup, view_of(760), opts, costs);
+        check(r8.borrowed && !r8.owned && r8.chunk == 8192 && r8.lend_slots == 455 && r8.owned_bytes == 0,
+              "R8: the borrowed fixed chunk stays borrowed");
+        check(effective_post_cache_required(startup, r8) == (uint64_t) 700 * MIB,
+              "R8: the effective requirement is the mandatory items alone");
+        // R9: after a shrink 8192 no longer lends (500 slots still lend 4096): owned AT 8192 - the runtime
+        // rejects a halved chunk as a loan - and the requirement carries the buffers
+        const EffectivePrefillPlan r9 = revalidate_prefill_after_cache(startup, view_of(500), opts, costs);
+        check(r9.owned && !r9.borrowed && r9.chunk == 8192,
+              "R9: the non-lendable fixed chunk becomes owned at its original size");
+        check(r9.owned_bytes == fake_bytes(8192, -1) + margin, "R9: the buffers are priced");
+        check(effective_post_cache_required(startup, r9) == (uint64_t) 700 * MIB + r9.owned_bytes,
+              "R9: the effective requirement carries the owned buffers");
+        // R10: auto re-runs the policy against the shrunken cache: a smaller BORROWED chunk, nothing owned
+        VramPlan auto_startup = startup;
+        auto_startup.prefill_auto = true;
+        const EffectivePrefillPlan r10 = revalidate_prefill_after_cache(auto_startup, view_of(460), opts, costs);
+        check(r10.borrowed && !r10.owned && r10.chunk == 4096 && r10.owned_bytes == 0,
+              "R10: auto falls to a smaller borrowed chunk, not owned buffers");
+        check(effective_post_cache_required(auto_startup, r10) == (uint64_t) 700 * MIB,
+              "R10: no owned buffers booked for the smaller loan");
+        // R11: auto with nothing left to lend: the runtime's owned 1024 fallback, priced
+        const EffectivePrefillPlan r11 = revalidate_prefill_after_cache(auto_startup, view_of(100), opts, costs);
+        check(r11.owned && !r11.borrowed && r11.chunk == 1024 && r11.owned_bytes == fake_bytes(1024, -1) + margin,
+              "R11: the auto fallback is owned at 1024 and priced");
+        check(effective_post_cache_required(auto_startup, r11) == (uint64_t) 700 * MIB + r11.owned_bytes,
+              "R11: the fallback is in the effective requirement");
+
+        // R15: a sized cache revalidates over its exact offsets: the uniform view lends this chunk, the real
+        // suffix does not (512 MiB needed; the top 272 real slots hold 369 MiB)
+        std::vector<int64_t> pairs;
+        for (int i = 0; i < 300; ++i) pairs.push_back(2 * MIB);
+        for (int i = 0; i < 100; ++i) pairs.push_back(256 * 1024);
+        std::vector<uint64_t> offs(pairs.size() + 1, 0);
+        for (size_t i = 0; i < pairs.size(); ++i)
+            offs[(size_t) i + 1] = offs[(size_t) i] + (uint64_t) ((pairs[(size_t) i] + 255) / 256 * 256);
+        CacheLendView sized;
+        sized.slots = (int64_t) pairs.size();
+        sized.bytes = (int64_t) offs.back();
+        sized.slot_offsets = offs.data();
+        sized.max_blob = BLOB;
+        VramPlan fixed1792 = startup;
+        fixed1792.selected_prefill = 1792;
+        const EffectivePrefillPlan r15 = revalidate_prefill_after_cache(fixed1792, sized, opts, costs);
+        check(r15.owned && r15.chunk == 1792, "R15: the sized cache revalidates over exact offsets - owned");
+        const EffectivePrefillPlan r15u = revalidate_prefill_after_cache(fixed1792, view_of(400), opts, costs);
+        check(r15u.borrowed && r15u.chunk == 1792,
+              "R15: the uniform view of the same slot count lends - the revalidation did not use it");
+    }
+
+    // ---- review 2, R12-R14: the correction's decision arithmetic
+    {
+        // R12: 1200 MiB free against a borrowed-looking 900 MiB requirement - but the cache no longer lends and
+        // the prompt is owned 1000 MiB: 1900 MiB required, SHRINK ~764 MiB, never an accept
+        const PostTouchVerdict r12 =
+            post_touch_verdict((uint64_t) 1200 * MIB, (uint64_t) 1900 * MIB, 64ll << 20, true);
+        check(!r12.accept && r12.give_back_bytes >= (int64_t) 700 * MIB,
+              "R12: borrowed->owned forces a shrink of ~700+ MiB");
+        // R13: the last allowed cache, still short: FAIL - the retry limit is not an accept
+        const PostTouchVerdict r13 =
+            post_touch_verdict((uint64_t) 800 * MIB, (uint64_t) 1900 * MIB, 64ll << 20, false);
+        check(!r13.accept && r13.give_back_bytes == 0, "R13: the last allowed cache fails instead of being accepted");
+        // R14: the last allowed cache that meets the budget: ACCEPT
+        const PostTouchVerdict r14 =
+            post_touch_verdict((uint64_t) 1900 * MIB, (uint64_t) 1900 * MIB, 64ll << 20, false);
+        check(r14.accept, "R14: the last allowed cache that meets the budget is accepted");
+    }
+
     if (fails == 0) std::fprintf(stderr, "vram_plan_test: all checks passed\n");
     return fails == 0 ? 0 : 1;
 }

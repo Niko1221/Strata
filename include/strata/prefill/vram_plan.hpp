@@ -163,6 +163,50 @@ uint64_t actual_cache_bytes(const VramPlan& p);
 /// and is not part of this. The WDDM post-touch correction holds the cache to this figure.
 uint64_t post_cache_required_bytes(const VramPlan& p);
 
+/// The 2 MiB page rounding of the ~35 separate cudaMallocs an owned prompt carve makes (the streamed ring, one
+/// allocation now, was the bulk of it). The planner and the post-cache revalidation price owned buffers with it.
+inline constexpr uint64_t kOwnedPageMarginBytes = 64ull << 20;
+
+/// The prompt path as the FINAL physical cache can actually serve it. The startup plan's lend decision does not
+/// survive a WDDM shrink by itself: the correction re-derives it against the touched cache before accepting it.
+struct EffectivePrefillPlan {
+    bool borrowed = false;
+    bool owned = false;
+    int64_t chunk = 0;          ///< the chunk the runtime will run (an owned auto fallback: 1024)
+    int64_t lend_slots = 0;     ///< borrowed: the loan against the final cache
+    uint64_t owned_bytes = 0;   ///< owned: the buffers' price, the page margin included
+    LendOutcome lend;           ///< borrowed auto: the outcome the runtime re-derives
+};
+
+/// Re-derive the prompt path against the actual final cache. A fixed chunk must lend EXACTLY - the runtime
+/// rejects a halved chunk (`chunk != o.prefill_chunk` -> k = 0) and allocates its own buffers at the original
+/// size, so the accounting must match that. Auto re-runs `plan_lend_chunks` and falls back to an owned
+/// 1024-token path when nothing fits. Pure; unit-testable without CUDA.
+EffectivePrefillPlan revalidate_prefill_after_cache(const VramPlan& startup, const CacheLendView& cache,
+                                                    const LendOpts& opts, const LendCosts& costs);
+
+/// The post-cache VRAM requirement after revalidation: the mandatory items plus an owned prompt path, counted
+/// exactly once (a borrowed one lives inside the cache and adds nothing here).
+uint64_t effective_post_cache_required(const VramPlan& startup, const EffectivePrefillPlan& effective);
+
+/// The WDDM post-touch decision for one opened cache: accept it, or - while shrinking is still allowed - how
+/// many bytes it must give back so the next open can hold the requirement. Reaching the retry limit is a FAIL,
+/// never an unvalidated accept.
+struct PostTouchVerdict {
+    bool accept = false;
+    int64_t give_back_bytes = 0;    ///< !accept: the shrink the next open must make room for
+};
+inline PostTouchVerdict post_touch_verdict(uint64_t free_after_touch, uint64_t required,
+                                           int64_t tolerance_bytes, bool can_shrink_more) {
+    PostTouchVerdict v;
+    const uint64_t tolerance = (uint64_t) (tolerance_bytes > 0 ? tolerance_bytes : 0);
+    v.accept = free_after_touch + tolerance >= required;
+    if (!v.accept)
+        v.give_back_bytes =
+            can_shrink_more ? (int64_t) (required - free_after_touch + tolerance) : 0;
+    return v;
+}
+
 /// Decide the startup plan: the prompt path's exact requirement participates before the expert cache is committed,
 /// borrowing is never booked twice, and an impossible configuration returns ok=false with the shortfall.
 VramPlan plan_startup_vram(const StartupVramInput& in);

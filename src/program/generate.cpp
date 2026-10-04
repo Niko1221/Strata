@@ -3239,6 +3239,29 @@ int main(int argc, char** argv) {
     // runtime's loans, so the plan and the layout cannot disagree.
     std::vector<int64_t> sized_slots;
     strata::prefill::VramPlan plan;   // outlives the block: the post-touch correction holds the cache to its figure
+    strata::prefill::EffectivePrefillPlan effective_prefill;   // what the FINAL cache actually validated
+    bool posttouch_validated = false;
+    // the chunk/loan policy's knobs and costs, built once for the startup plan's post-touch correction and the
+    // runtime's loans alike - one policy, one set of numbers
+    const strata::prefill::LendOpts lend_opts = [&] {
+        strata::prefill::LendOpts v;
+        v.min_keep_slots = 128;
+        v.lend_pct = kAutoLendPct;
+        v.auto_ceiling = auto_ceiling;
+        v.prefill_auto_max = o.prefill_auto_max;
+        v.max_context = o.max_context;
+        v.ring_bytes = strata::prefill::Prefill::ring_bytes_enabled();
+        return v;
+    }();
+    strata::prefill::LendCosts lend_costs;
+    lend_costs.bytes_with_ring = [&](int64_t c, int64_t ring) {
+        return strata::prefill::Prefill::bytes_needed(g, ss, c, ring);
+    };
+    lend_costs.ring_slots_under = [](int64_t c, int64_t ring) {
+        return strata::prefill::Prefill::ring_slots_under(c, ring);
+    };
+    lend_costs.ring_cap_for = [](int64_t small) { return strata::prefill::Prefill::ring_cap_for(small); };
+    lend_costs.ring_default_slots = [] { return strata::prefill::Prefill::ring_default_slots(); };
     {
         size_t free_b = 0, total_b = 0;
         cudaMemGetInfo(&free_b, &total_b);
@@ -3433,6 +3456,12 @@ int main(int argc, char** argv) {
         // free figure read again; while it is short of the reserve the cache is reopened smaller.
         // STRATA_TEST_CACHE_FAIL=N: the first N opens fail as an out-of-commit cudaMalloc does (tests the retry)
         int fake_fails = std::getenv("STRATA_TEST_CACHE_FAIL") ? std::atoi(std::getenv("STRATA_TEST_CACHE_FAIL")) : 0;
+        // STRATA_TEST_POSTTOUCH_SHORTFALL=N: the post-touch free read reports N MiB less than the driver says - a
+        // deterministic WDDM shrink for tests, without a real desktop eating the card
+        static const int64_t touch_shortfall = [] {
+            const char* v = std::getenv("STRATA_TEST_POSTTOUCH_SHORTFALL");
+            return v ? (int64_t) std::atoi(v) << 20 : 0;
+        }();
         int failed = 0;
         int zero_reads = 0;
         for (int attempt = 0;; ++attempt) {
@@ -3471,27 +3500,83 @@ int main(int argc, char** argv) {
 #endif
                 return 1;
             }
-            if (!auto_cache || attempt - failed >= 6) break;
+            // EVERY opened cache is touched and validated - the retry limit below bounds the SHRINKS, never the
+            // validation; the last allowed cache is accepted or fails on its own merits
             cudaMemset(xcache.device_slot(0), 0, (size_t) xcache.bytes());
             cudaDeviceSynchronize();
             size_t free_b = 0, total_b = 0;
             cudaMemGetInfo(&free_b, &total_b);
-            // everything the plan books after the cache: the user reserve, the draft head, a split's windows and
-            // an owned prompt path - a borrowed one lives inside the cache and is not part of this
-            const int64_t want = (int64_t) strata::prefill::post_cache_required_bytes(plan);
-            if ((int64_t) free_b >= want - (64ll << 20)) break;
-            // short by (want - free); a figure of 0 only says "at least": the first two such reads give back 1 GiB
-            // each (under WDDM the free figure read before the allocation runs ~0.7 GiB high), later ones a quarter
-            int64_t give = want - (int64_t) free_b + (64ll << 20);
-            if (free_b < ((size_t) 16 << 20))
+            // STRATA_TEST_POSTTOUCH_SHORTFALL=N: the post-touch read reports N MiB less - a deterministic WDDM
+            // shrink for tests, without a real desktop eating the card
+            const size_t free_read =
+                free_b > (size_t) touch_shortfall ? free_b - (size_t) touch_shortfall : 0;
+            // the effective prompt path against THIS cache: a shrink can take the planned loan away, and the
+            // runtime would then allocate its own buffers - priced here, before the cache is accepted
+            const strata::prefill::CacheLendView touched = [&] {
+                strata::prefill::CacheLendView v;
+                v.slots = xcache.slots();
+                v.bytes = xcache.bytes();
+                v.slot_offsets = xcache.slot_offsets();
+                v.max_blob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
+                return v;
+            }();
+            const strata::prefill::EffectivePrefillPlan effective =
+                strata::prefill::revalidate_prefill_after_cache(plan, touched, lend_opts, lend_costs);
+            const uint64_t required = strata::prefill::effective_post_cache_required(plan, effective);
+            const bool can_shrink = auto_cache && attempt - failed < 6;
+            const strata::prefill::PostTouchVerdict verdict =
+                strata::prefill::post_touch_verdict(free_read, required, 64ll << 20, can_shrink);
+            if (verdict.accept) {
+                effective_prefill = effective;
+                posttouch_validated = true;
+                if (effective.owned && !plan.prefill_owned && plan.selected_prefill > 0)
+                    std::fprintf(stderr, "strata generate: VRAM plan: post-touch cache shrink moved prefill %lld "
+                                         "from borrowed to own buffers; reserving %lld MiB for the prompt path\n",
+                                 (long long) plan.selected_prefill, (long long) (effective.owned_bytes >> 20));
+                else if (plan.prefill_auto && effective.borrowed && plan.selected_prefill > 0 &&
+                         effective.chunk != plan.selected_prefill)
+                    std::fprintf(stderr, "strata generate: VRAM plan: post-touch cache shrink %s prefill auto "
+                                         "from %lld to %lld tokens\n",
+                                 effective.chunk < plan.selected_prefill ? "reduced" : "raised",
+                                 (long long) plan.selected_prefill, (long long) effective.chunk);
+                break;
+            }
+            // short by (required - free); a figure of 0 only says "at least": the first two such reads give back
+            // 1 GiB each (under WDDM the free figure read before the allocation runs ~0.7 GiB high), later ones
+            // a quarter
+            int64_t give = verdict.give_back_bytes;
+            if (free_read < ((size_t) 16 << 20))
                 give = std::max<int64_t>(give, ++zero_reads <= 2 ? 1ll << 30 : xcache.bytes() / 4);
+            if (!can_shrink || give <= 0) {
+                std::fprintf(stderr,
+                             "strata generate: unable to satisfy the post-touch VRAM plan after %s the expert "
+                             "cache:\n"
+                             "  free after cache touch: %lld MiB\n"
+                             "  required after cache:   %lld MiB\n"
+                             "  user reserve:           %d MiB\n"
+                             "  draft head:             %lld MiB\n"
+                             "  prompt path:            %s\n"
+                             "  expert cache:           %.2f GiB / %lld slots\n",
+                             can_shrink ? "shrinking" : "opening",
+                             (long long) (free_read >> 20), (long long) (required >> 20), o.vram_reserve_mib,
+                             (long long) (plan.mtp_bytes >> 20),
+                             effective.owned ? "own buffers"
+                                             : effective.borrowed ? "borrowed from the cache"
+                                                                  : "off (the token path)",
+                             (double) xcache.bytes() / 1073741824.0, (long long) xcache.slots());
+                return 1;
+            }
             const int64_t keep_bytes = xcache.bytes() - give;
             std::fprintf(stderr, "strata generate: only %lld MiB free once the slots are written (the plan needs "
                                  "%lld MiB after the cache: the reserve, the draft head%s); shrinking the expert "
-                                 "cache\n", (long long) (free_b >> 20), (long long) (want >> 20),
-                         plan.prefill_owned ? ", the prompt path's own buffers" : "");
+                                 "cache\n", (long long) (free_read >> 20), (long long) (required >> 20),
+                         effective.owned ? ", the prompt path's own buffers" : "");
             xcache.close();
-            if (!shrink_to(keep_bytes)) break;
+            if (!shrink_to(keep_bytes)) {
+                std::fprintf(stderr, "strata generate: the expert cache cannot shrink further; the post-touch "
+                                     "VRAM plan cannot be satisfied\n");
+                return 1;
+            }
         }
         if (failed > 0 && o.expert_cache > 0)
             std::fprintf(stderr, "strata generate: expert cache: %d slots (%.2f GiB) after %d smaller tries - a bigger "
@@ -4513,25 +4598,6 @@ int main(int argc, char** argv) {
         v.max_blob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
         return v;
     }();
-    const strata::prefill::LendOpts lend_opts = [&] {
-        strata::prefill::LendOpts v;
-        v.min_keep_slots = 128;
-        v.lend_pct = kAutoLendPct;
-        v.auto_ceiling = auto_ceiling;
-        v.prefill_auto_max = o.prefill_auto_max;
-        v.max_context = o.max_context;
-        v.ring_bytes = strata::prefill::Prefill::ring_bytes_enabled();
-        return v;
-    }();
-    strata::prefill::LendCosts lend_costs;
-    lend_costs.bytes_with_ring = [&](int64_t c, int64_t ring) {
-        return strata::prefill::Prefill::bytes_needed(g, ss, c, ring);
-    };
-    lend_costs.ring_slots_under = [](int64_t c, int64_t ring) {
-        return strata::prefill::Prefill::ring_slots_under(c, ring);
-    };
-    lend_costs.ring_cap_for = [](int64_t small) { return strata::prefill::Prefill::ring_cap_for(small); };
-    lend_costs.ring_default_slots = [] { return strata::prefill::Prefill::ring_default_slots(); };
     auto plan_lend = [&](int64_t& chunk) -> int64_t {
         const strata::prefill::LendOutcome out =
             strata::prefill::plan_lend_chunks(lend_view, lend_opts, lend_costs, o.prefill_auto, chunk);
@@ -7493,6 +7559,15 @@ int main(int argc, char** argv) {
         if (!o.no_prefill_borrow && !host_res.empty() && d_res != nullptr) {
             int64_t chunk = o.prefill_chunk;
             int64_t k = plan_lend(chunk);             // auto: the largest chunk that fits; fixed: halved to fit
+            // the accepted post-cache plan is the budget the engine runs under: a prompt path it validated as
+            // borrowed always lends here (the same policy, the same cache); if it did not, the runtime would
+            // allocate its own buffers outside the accepted requirement - refuse instead
+            if (posttouch_validated && !effective_prefill.owned && k == 0) {
+                std::fprintf(stderr, "strata generate: the accepted VRAM plan lends the prompt path its chunk, "
+                                     "but the final cache does not: refusing rather than allocating buffers "
+                                     "outside the budget\n");
+                return 1;
+            }
             const int64_t request_sized = request_chunk(n_batched, chunk);
             if (k > 0 && request_sized < chunk) {                     // no bigger than this prompt segment needs
                 chunk = request_sized;
