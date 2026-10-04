@@ -4,6 +4,9 @@
 
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
+#if !defined(__HIPCC__)
+#include <cuda_fp16.h>
+#endif
 
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
 // The HIP compatibility shim maps CUDA shuffle spellings to Strata helpers.
@@ -16,6 +19,7 @@
 #undef __ballot_sync
 #endif
 
+#include <algorithm>
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
@@ -372,11 +376,86 @@ bool Gemm::init(void* stream, int64_t scratch_elems, std::string& err) {
     return true;
 }
 
+#if !defined(__HIPCC__)
+namespace {
+// Cards below sm_80 (RTX 20, GTX 16, V100) have FP16 tensor cores but none for BF16: cuBLAS runs a BF16 GEMM on the
+// CUDA cores. Measured on an RTX 2080 Ti at the hyper-connection shapes (T = 4096): 6 TFLOPS in BF16, 34-48 TFLOPS
+// in FP16. So there the BF16 products convert W and X to FP16 in the dequantization scratch and run in FP16 with the
+// same FP32 accumulation. A BF16 value converts exactly when its magnitude is in [2^-14, 65504]; a smaller one
+// rounds to an FP16 subnormal (absolute error <= 2^-25), a larger one saturates to +-65504 (counted on stderr with
+// STRATA_PREFILL_BF16_F16_CHECK=1; none in the Swift 1.5 prompts measured). STRATA_PREFILL_BF16_F16=0 keeps the BF16
+// GEMM, =1 takes this path on any card (tests).
+__device__ unsigned long long g_bf16_f16_saturated = 0;
+__global__ void bf16_to_f16_kernel(const uint16_t* __restrict__ in, __half* __restrict__ out, int64_t n) {
+    for (int64_t i = blockIdx.x * (int64_t) blockDim.x + threadIdx.x; i < n; i += (int64_t) gridDim.x * blockDim.x) {
+        float f = __uint_as_float((uint32_t) in[i] << 16);
+        if (fabsf(f) > 65504.0f && f == f) {
+            atomicAdd(&g_bf16_f16_saturated, 1ull);
+            f = copysignf(65504.0f, f);
+        }
+        out[i] = __float2half_rn(f);
+    }
+}
+void bf16_to_f16(const uint16_t* in, uint16_t* out, int64_t n, cudaStream_t s) {
+    const int threads = 256;
+    const int64_t blocks = std::min<int64_t>((n + threads - 1) / threads, 4096);
+    bf16_to_f16_kernel<<<(unsigned) blocks, threads, 0, s>>>(in, (__half*) out, n);
+}
+bool bf16_as_f16() {
+    static const bool v = [] {
+        if (const char* e = std::getenv("STRATA_PREFILL_BF16_F16"); e && e[0] != '\0') return e[0] != '0';
+        int dev = 0, major = 0;
+        if (cudaGetDevice(&dev) != cudaSuccess ||
+            cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess) {
+            cudaGetLastError();
+            return false;
+        }
+        return major < 8;
+    }();
+    return v;
+}
+}  // namespace
+#endif
+
 void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
                 float beta) {
     if (T <= 0 || N <= 0) return;
     if (ldy <= 0) ldy = N;
     const float alpha = 1.0f;
+#if !defined(__HIPCC__)
+    // below sm_80: FP16 tensor cores (see bf16_to_f16_kernel). W at the scratch's start, X through the rest in slices
+    // of at least 256 rows; a scratch too small for that keeps the BF16 GEMM
+    if (scratch_ && N * K + 256 * K <= scratch_elems_ && bf16_as_f16()) {
+        const cudaStream_t s = (cudaStream_t) stream_;
+        uint16_t* const w16 = scratch_;
+        uint16_t* const x16 = scratch_ + N * K;
+        const int64_t rows = std::min<int64_t>((scratch_elems_ - N * K) / K, T);
+        bf16_to_f16(W, w16, N * K, s);
+        for (int64_t t0 = 0; t0 < T; t0 += rows) {
+            const int64_t t = std::min<int64_t>(rows, T - t0);
+            bf16_to_f16(X + t0 * K, x16, t * K, s);
+            ck(cublasGemmEx((cublasHandle_t) handle_, CUBLAS_OP_T, CUBLAS_OP_N, (int) N, (int) t, (int) K, &alpha, w16,
+                            CUDA_R_16F, (int) K, x16, CUDA_R_16F, (int) K, &beta, Y + t0 * ldy, CUDA_R_32F, (int) ldy,
+                            CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT),
+               "cublasGemmEx (bf16 as f16)");
+        }
+        static const bool check = std::getenv("STRATA_PREFILL_BF16_F16_CHECK") != nullptr;
+        if (check) {   // debug: syncs the stream
+            static unsigned long long seen = 0;
+            unsigned long long n = 0;
+            if (cudaMemcpyFromSymbolAsync(&n, g_bf16_f16_saturated, sizeof n, 0, cudaMemcpyDeviceToHost, s) != cudaSuccess ||
+                cudaStreamSynchronize(s) != cudaSuccess) {
+                std::fprintf(stderr, "prefill gemm: bf16 as f16 check: %s\n", cudaGetErrorString(cudaGetLastError()));
+                std::exit(1);
+            }
+            if (n != seen)
+                std::fprintf(stderr, "strata prefill: bf16 -> f16 saturated %llu values (N=%lld K=%lld)\n", n - seen,
+                             (long long) N, (long long) K);
+            seen = n;
+        }
+        return;
+    }
+#endif
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
     if (try_hipblaslt(hipblaslt_state_, strata::prefill::hipblaslt::InputType::bf16, X, W, Y, T, N, K, ldy,
                       beta, stream_)) {

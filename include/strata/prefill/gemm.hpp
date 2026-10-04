@@ -26,6 +26,8 @@ public:
                        std::string& err);
 
     /// Y[T, N] (fp32, row stride ldy) = X[T, K] (bf16, row-major) . W[N, K]^T (bf16, row-major).  `beta` = 1 adds.
+    /// On CUDA below sm_80 (no BF16 tensor cores) W and X are converted to FP16 in the scratch and multiplied on
+    /// the FP16 tensor cores (gemm.cu): the scratch does not survive the call, as with native().
     void bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy = 0,
               float beta = 0.0f);
 
