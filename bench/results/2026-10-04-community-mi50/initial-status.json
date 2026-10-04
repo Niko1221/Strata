@@ -1,0 +1,63 @@
+{
+  "service": "strata",
+  "model": "Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS",
+  "loaded": true,
+  "auto_load": true,
+  "structured_output": {
+    "formats": [
+      "json_object",
+      "json_schema"
+    ],
+    "method": "prompt_and_validate",
+    "constrained_decoding": false,
+    "stream_buffered": true
+  },
+  "engine": "0.1.38",
+  "started": 1791113450,
+  "uptime_s": 333,
+  "cache_max_tokens": 32768,
+  "context": {
+    "native": 32768,
+    "max_positions": 32768
+  },
+  "concurrency": {
+    "serving": 1,
+    "requested": 1
+  },
+  "dialects": [
+    "/v1/chat/completions",
+    "/v1/messages"
+  ],
+  "vision": {
+    "enabled": false,
+    "available": false,
+    "error": null
+  },
+  "activity": {
+    "requests": 5,
+    "in_flight": 0,
+    "last_request_at": 1791113783
+  },
+  "last_timings": {
+    "cache_n": 0,
+    "prompt_n": 4096,
+    "prompt_ms": 12437.9,
+    "prompt_per_token_ms": 3.037,
+    "prompt_per_second": 329.3,
+    "predicted_n": 256,
+    "predicted_ms": 7089.7,
+    "predicted_per_token_ms": 27.694,
+    "predicted_per_second": 36.1,
+    "draft_n": 125,
+    "draft_n_accepted": 116,
+    "at": 1791113663
+  },
+  "machine": {
+    "at": 1791113783,
+    "gpu": null,
+    "ram": {
+      "used_gib": 38.2,
+      "total_gib": 61.6
+    }
+  }
+}
