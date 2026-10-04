@@ -63,6 +63,7 @@
 #define cudaDeviceScheduleBlockingSync hipDeviceScheduleBlockingSync
 #define cudaDeviceMapHost hipDeviceMapHost
 #define cudaFuncAttributeMaxDynamicSharedMemorySize hipFuncAttributeMaxDynamicSharedMemorySize
+#define cudaFuncAttributePreferredSharedMemoryCarveout hipFuncAttributePreferredSharedMemoryCarveout
 #define cudaDevAttrMultiProcessorCount hipDeviceAttributeMultiprocessorCount
 #define cudaDevAttrClockRate hipDeviceAttributeClockRate
 #define cudaDevAttrComputeCapabilityMajor hipDeviceAttributeComputeCapabilityMajor
@@ -151,7 +152,10 @@ template <typename T> inline hipError_t strata_host_alloc(T** p, size_t bytes, u
 #define cudaKernelNodeParams hipKernelNodeParams
 #define cudaGraphKernelNodeGetParams hipGraphKernelNodeGetParams
 inline hipError_t cudaFuncGetName(const char** name, const void*) { *name = nullptr; return hipErrorNotSupported; }
-#define cudaFuncSetAttribute(fn, attr, val) hipFuncSetAttribute(reinterpret_cast<const void*>(fn), attr, val)
+// a function, not a macro: a kernel template's arguments carry commas (gr_down_v3_kernel<1, 4, true>)
+template <typename Kernel> inline hipError_t cudaFuncSetAttribute(Kernel fn, hipFuncAttribute attr, int val) {
+    return hipFuncSetAttribute(reinterpret_cast<const void*>(fn), attr, val);
+}
 #define cudaMemcpyToSymbol(sym, src, ...) hipMemcpyToSymbol(HIP_SYMBOL(sym), src, __VA_ARGS__)
 
 // CUDA 12 has a 3-argument cudaGraphInstantiate(exec, graph, flags) and the older 5-argument one; HIP spells
