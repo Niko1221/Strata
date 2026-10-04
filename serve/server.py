@@ -1250,7 +1250,10 @@ class StrataEngine:
             if self.proc.poll() is not None:
                 if self.pump is not None:
                     self.pump.join(timeout=2)
-                self.proc.stdin.close()
+                try:
+                    self.proc.stdin.close()             # buffered data may flush again after the engine has exited
+                except OSError:
+                    pass
                 self.proc.stdout.close()
                 if self.log not in (None, subprocess.DEVNULL):
                     self.log.close()
