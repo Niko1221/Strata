@@ -600,6 +600,23 @@ budget and is discarded before evicting parked entries under memory pressure.
 If reserving space for growth would evict another conversation, parking uses a
 full capture instead.
 Oldest parked entries are evicted first.
+
+**Conversations on disk (opt-in).** `--conversation-disk-dir DIR` (budget
+`--conversation-disk-gib N`, default 32) parks a conversation on disk instead of in
+RAM, keyed by an id the client sends: the header `X-Strata-Conversation: <id>` or the
+body field `strata_conversation`. For an agent with sub-agents and side calls on a
+PC whose RAM is taken by the experts, that keeps every conversation without a host-RAM
+budget. The id only selects the files; the prompt must still continue what was parked,
+and a request that does not (the client rewrote its history) reads from the deepest
+checkpoint it shares and is logged as `does not continue its live end: diverges at N`.
+A park writes only the K/V pages past the first one the session rewrote, the running
+state and the checkpoints; the oldest conversation is removed when the budget is full.
+Requests without an id keep using the RAM cache above (`--conversation-cache-mib`), so
+a side call does not cost a parked conversation its place and is not read again from 0
+itself. Measured on IQ2_XS, RTX 5060 Ti + RTX 2000 Ada (`--layer-split`), NVMe: a
+24K-token conversation parks in 0.7 GiB / 1.1 s the first time and 0.1-0.2 GiB after
+that; restoring it reads 355 MiB of K/V in ~0.3 s plus 0.4-1.1 s of running state, where
+reading the prompt again took ~90 s for a 53K-token conversation.
 Oversized snapshots or host allocation failures fall back to ordinary prompt processing.
 `--conversation-cache-min-free-mib N` (default 2560) additionally requires that
 physical-RAM headroom remain available: the engine checks before allocation and
