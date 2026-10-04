@@ -1356,25 +1356,32 @@ def hardware_key(cfg: dict) -> str:
                      cfg.get("model_name", "?"), ctx, "images" if "--vision" in a else "text"])
 
 
-def calibrate_config(cfg_path: Path) -> bool:
+def calibrate_config(cfg_path: Path, draft: bool = False, prompts: str | None = None) -> bool:
     """Measure the engine's hardware-dependent settings on this PC (tools/calibrate.py), write them into the run
-    config and remember them per PC and model in the settings file, so an update or a reinstall keeps them."""
+    config and remember them per PC and model in the settings file, so an update or a reinstall keeps them.
+    `draft`: also the drafting settings (the MTP window, prompt lookup); `prompts`: a file of your own prompts."""
     sys.path.insert(0, str(ROOT / "tools"))
     import calibrate as CAL
     cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
+    hip = cfg.get("backend") == "hip"
     say()
-    say("  Tuning Strata for this PC: the output speed is measured with a few engine settings (the PCIe share, the")
-    say("  draft depth, the CPU threads). It takes about 5-10 minutes; the PC is busy meanwhile.")
+    say("  Tuning Strata for this PC: the output speed is measured with a few engine settings ("
+        + ("the draft floor" if hip else "the PCIe share, the draft depth") + ", the CPU threads"
+        + (", the MTP window, prompt lookup" if draft else "") + ").")
+    say(f"  It takes about {'15-30' if draft else '5-10'} minutes; the PC is busy meanwhile.")
     try:
-        res = CAL.run(cfg, say=say)
+        extra = {"draft": True} if draft else {}       # only what was asked for: older stand-ins take neither
+        if prompts:
+            extra["prompts"] = CAL.load_prompts(prompts)
+        res = CAL.run(cfg, say=say, **extra)
     except Exception as e:                             # never stops an install: the defaults stay
         warn(f"the tuning did not finish ({e}): the default settings stay")
         return False
-    cfg["args"] = CAL.apply(cfg["args"], res["settings"])
+    cfg["args"] = CAL.apply(cfg["args"], res["settings"], backend=cfg.get("backend"), draft=draft)
     cfg_path.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
     st = load_settings()
     st.setdefault("calibration", {})[hardware_key(cfg)] = {"settings": res["settings"], "tok_s": res["report"].get("tok_s"),
-                                                           "date": time.strftime("%Y-%m-%d")}
+                                                           "draft": bool(draft), "date": time.strftime("%Y-%m-%d")}
     save_settings(st)
     if res["settings"]:
         ok("tuned for this PC: " + ", ".join(f"{k} {v}" for k, v in res["settings"].items())
@@ -1578,6 +1585,12 @@ def main() -> int:
     ap.add_argument("--check", action="store_true", help="only check this PC and exit")
     ap.add_argument("--calibrate", action="store_true",
                     help="tune the engine's settings for this PC (about 5-10 minutes), then start the model")
+    ap.add_argument("--calibrate-draft", action="store_true",
+                    help="--calibrate, and also the drafting settings: the MTP window and prompt lookup (a restart "
+                         "per value; about 15-30 minutes)")
+    ap.add_argument("--calibrate-prompts", metavar="FILE",
+                    help="with --calibrate: measure with your own prompts (a JSON list of strings, or text blocks "
+                         "separated by a line ---), e.g. requests your coding agent sends")
     ap.add_argument("--low-ram", choices=["auto", "on", "off"], default="auto",
                     help="map the model's experts from its folder instead of copying them into RAM (for a PC with a big "
                          "GPU and little RAM); auto: when the experts would not fit the RAM")
@@ -1627,6 +1640,8 @@ def main() -> int:
     # choice, and asked once when the PC has cards that could share the model
     run_gpu = (parse_gpus(a.gpus, gpus()) if a.gpus else None) or a.gpu
     port = a.port or 8080                              # a new install's port (issue #32: --port for an existing one)
+    if a.calibrate_draft or a.calibrate_prompts:
+        a.calibrate = True
     if have and a.calibrate and not (a.setup or a.model or a.family or a.check):
         if not a.build:
             update_installed_engine(a.prebuilt)
@@ -1636,7 +1651,7 @@ def main() -> int:
             for i, c in enumerate(have, 1):
                 say(f"  {i}) {json.loads(c.read_text(encoding='utf-8-sig')).get('model_name', c.stem)}")
             pick_cfg = have[int(ask("Tune which one?", [str(i) for i in range(1, len(have) + 1)], "1", a.yes)) - 1]
-        calibrate_config(pick_cfg)
+        calibrate_config(pick_cfg, draft=a.calibrate_draft, prompts=a.calibrate_prompts)
         return 0 if a.no_start else start(pick_cfg, a.port, run_gpu, yes=a.yes, layer_split=a.layer_split)
     if have and not (a.setup or a.model or a.family or a.check or a.no_start):
         if not a.build:
@@ -2022,16 +2037,17 @@ def main() -> int:
         if vision == "cpu":
             cfg["vision"]["threads"] = max(1, (os.cpu_count() or 8) // 2)
     cfg_path = ROOT / f"strata-{tag.lower()}.json"
-    cal = None if hip else saved_calibration(cfg)     # tools/calibrate.py is NVIDIA-only for now
+    cal = saved_calibration(cfg)                       # AMD too: tools/calibrate.py keeps the HIP config's PCIe share
     if cal is not None:
         sys.path.insert(0, str(ROOT / "tools"))
         import calibrate as CAL
-        cfg["args"] = CAL.apply(cfg["args"], cal.get("settings") or {})
+        cfg["args"] = CAL.apply(cfg["args"], cal.get("settings") or {}, backend=cfg.get("backend"),
+                                draft=bool(cal.get("draft")))
         ok("the settings tuned for this PC earlier are used" + (f" ({cal['date']})" if cal.get("date") else ""))
     cfg_path.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
     script = write_run_script(tag, cfg_path, port)
     # offered only when someone answers: --yes installs and adopted earlier installs are not held up by it
-    if cal is None and not hip and not a.no_start and not a.yes and ask(
+    if cal is None and not a.no_start and not a.yes and ask(
             "Tune Strata for this PC now? It measures a few engine settings (about 5-10 minutes; the PC is busy "
             "meanwhile; later: START-HERE --calibrate)", ["y", "n"], "y", a.yes) == "y":
         calibrate_config(cfg_path)

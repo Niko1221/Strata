@@ -37,6 +37,7 @@
 #include "strata/kernels/native_qsa_indexer.hpp"
 #include "strata/kernels/native_rope.hpp"
 #include "strata/kernels/mrope.hpp"
+#include "strata/kernels/decode_tuning.hpp"
 #include "strata/kernels/kv_q4.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/core/native_head.hpp"
@@ -1445,6 +1446,9 @@ int main(int argc, char** argv) {
     strata::kernels::native_qsa_set_enabled(o.native_qsa);
     strata::kernels::native_qsa_indexer_set_enabled(o.native_qsa_indexer);
     strata::kernels::native_rope_set_enabled(o.native_rope);
+    // STRATA_DECODE_TUNING (HIP): the decode kernels' block shapes measured on this GPU (tools/hip/autotune.py);
+    // loaded here, before any graph captures a kernel that reads it
+    strata::kernels::decode_tuning_init();
     // The vision path: every rope kernel reads a cell's (t, h, w) from this table (strata/kernels/mrope.hpp).  It is
     // the identity until an image request, and it is set here, before any CUDA graph captures a rope kernel.
     int32_t* d_mrope = nullptr;

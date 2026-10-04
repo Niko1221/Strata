@@ -5,6 +5,7 @@
 // MIT license, third_party/ggml/LICENSE).  The block structs and codebook grids come from its ggml-common.h,
 // included unchanged.
 #include "strata/kernels/iq_kernels.hpp"
+#include "strata/kernels/decode_tuning.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -15,6 +16,8 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <string>
+#include <type_traits>
 
 namespace strata::kernels {
 namespace {
@@ -330,11 +333,14 @@ __device__ __forceinline__ float row_dot(const uint8_t* row, const block_q8_1* x
     return warp_sum(s);
 }
 
-template<int TY>
-__global__ void __launch_bounds__(128) mmvq_kernel(const uint8_t* __restrict__ w, size_t row_bytes,
-                                                   const block_q8_1* __restrict__ x, float* __restrict__ y, int n_in,
-                                                   int n_out, int ncols) {
-    const int row = blockIdx.x * 4 + threadIdx.y;
+// ROWS rows per block, one warp each (blockDim = 32 x ROWS).  The block size only groups whole rows, so every
+// variant computes each row with the same warp, lanes and order: outputs are bitwise those of ROWS = 4, the
+// default (decode_tuning.hpp; tools/hip/tune_decode.cpp checks it on the machine).
+template<int TY, int ROWS>
+__global__ void __launch_bounds__(ROWS * 32) mmvq_kernel(const uint8_t* __restrict__ w, size_t row_bytes,
+                                                         const block_q8_1* __restrict__ x, float* __restrict__ y,
+                                                         int n_in, int n_out, int ncols) {
+    const int row = blockIdx.x * ROWS + threadIdx.y;
     if (row >= n_out) return;
     const int lane = threadIdx.x;
     const int nb = n_in / Fmt<TY>::qk;
@@ -346,10 +352,10 @@ __global__ void __launch_bounds__(128) mmvq_kernel(const uint8_t* __restrict__ w
 }
 
 // ---------------------------------------------------------------- grouped native experts
-constexpr int GU_ROWS = 8;     // rows per block (one warp each)
-
-template<int TG>
-__global__ void __launch_bounds__(256) native_gu_kernel(const unsigned long long* __restrict__ grp_ptr,
+// ROWS rows per block, one warp each (blockDim = 32 * ROWS; default 8).  As with mmvq_kernel, the block size never
+// changes which warp reduces a row or in what order, so every variant is bitwise equal to the default.
+template<int TG, int ROWS>
+__global__ void __launch_bounds__(ROWS * 32) native_gu_kernel(const unsigned long long* __restrict__ grp_ptr,
                                                         const int32_t* __restrict__ grp_start,
                                                         const int32_t* __restrict__ n_groups,
                                                         const int32_t* __restrict__ ent_tok,
@@ -358,7 +364,7 @@ __global__ void __launch_bounds__(256) native_gu_kernel(const unsigned long long
     const int g = blockIdx.y;
     if (g >= *n_groups) return;
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
-    const int row = blockIdx.x * GU_ROWS + warp;             // 0 .. 2*n_ff
+    const int row = blockIdx.x * ROWS + warp;                // 0 .. 2*n_ff
     if (row >= 2 * L.n_ff) return;
     const bool is_up = row >= L.n_ff;
     const int r = is_up ? row - (int) L.n_ff : row;
@@ -380,8 +386,8 @@ __global__ void swiglu_entries_kernel(const float* __restrict__ gate, const floa
     h[i] = (g / (1.0f + __expf(-g))) * up[i];
 }
 
-template<int TD>
-__global__ void __launch_bounds__(256) native_down_kernel(const unsigned long long* __restrict__ grp_ptr,
+template<int TD, int ROWS>
+__global__ void __launch_bounds__(ROWS * 32) native_down_kernel(const unsigned long long* __restrict__ grp_ptr,
                                                           const int32_t* __restrict__ grp_start,
                                                           const int32_t* __restrict__ n_groups,
                                                           const int32_t* __restrict__ ent_dst,
@@ -390,7 +396,7 @@ __global__ void __launch_bounds__(256) native_down_kernel(const unsigned long lo
     const int g = blockIdx.y;
     if (g >= *n_groups) return;
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
-    const int r = blockIdx.x * 8 + warp;
+    const int r = blockIdx.x * ROWS + warp;
     if (r >= L.n_embd) return;
     const uint8_t* blob = (const uint8_t*) grp_ptr[g];
     const uint8_t* wr = blob + L.down_off + (size_t) r * L.d_row;
@@ -629,25 +635,73 @@ void quantize_q8_1_rows(const float* x, int64_t n_rows, int64_t n_cols, void* y,
     check("quantize_q8_1_rows");
 }
 
-void iq_mmvq(int t, const void* w, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream) {
-    const dim3 grid((unsigned) ((n_out + 3) / 4)), block(32, 4);
+namespace {
+// The rows-per-block values compiled in.  CUDA builds keep only the defaults (their behaviour and build time are
+// unchanged); HIP builds also compile the variants the tuner measures (decode_tuning.cpp lists the same values).
+#if defined(STRATA_USE_HIP)
+#define STRATA_DECODE_VARIANTS 1
+#else
+#define STRATA_DECODE_VARIANTS 0
+#endif
+
+template<typename F> bool with_mmvq_rows(int rows, F&& f) {
+    switch (rows) {
+        case 4: f(std::integral_constant<int, 4>{}); return true;
+#if STRATA_DECODE_VARIANTS
+        case 1: f(std::integral_constant<int, 1>{}); return true;
+        case 2: f(std::integral_constant<int, 2>{}); return true;
+        case 8: f(std::integral_constant<int, 8>{}); return true;
+#endif
+        default: return false;
+    }
+}
+
+template<typename F> bool with_expert_rows(int rows, F&& f) {
+    switch (rows) {
+        case 8: f(std::integral_constant<int, 8>{}); return true;
+#if STRATA_DECODE_VARIANTS
+        case 2: f(std::integral_constant<int, 2>{}); return true;
+        case 4: f(std::integral_constant<int, 4>{}); return true;
+        case 16: f(std::integral_constant<int, 16>{}); return true;
+#endif
+        default: return false;
+    }
+}
+
+template<int R>
+void launch_mmvq(int t, const uint8_t* W, size_t rb, const block_q8_1* X, float* y, int n_in, int n_out, int ncols,
+                 cudaStream_t s) {
+    const dim3 grid((unsigned) ((n_out + R - 1) / R)), block(32, R);
+    switch (t) {
+        case 16: mmvq_kernel<16, R><<<grid, block, 0, s>>>(W, rb, X, y, n_in, n_out, ncols); break;
+        case 17: mmvq_kernel<17, R><<<grid, block, 0, s>>>(W, rb, X, y, n_in, n_out, ncols); break;
+        case 18: mmvq_kernel<18, R><<<grid, block, 0, s>>>(W, rb, X, y, n_in, n_out, ncols); break;
+        case 20: mmvq_kernel<20, R><<<grid, block, 0, s>>>(W, rb, X, y, n_in, n_out, ncols); break;
+        case 21: mmvq_kernel<21, R><<<grid, block, 0, s>>>(W, rb, X, y, n_in, n_out, ncols); break;
+        case 22: mmvq_kernel<22, R><<<grid, block, 0, s>>>(W, rb, X, y, n_in, n_out, ncols); break;
+        case 23: mmvq_kernel<23, R><<<grid, block, 0, s>>>(W, rb, X, y, n_in, n_out, ncols); break;
+        case 29: mmvq_kernel<29, R><<<grid, block, 0, s>>>(W, rb, X, y, n_in, n_out, ncols); break;
+        case 42: mmvq_kernel<42, R><<<grid, block, 0, s>>>(W, rb, X, y, n_in, n_out, ncols); break;
+        default: std::fprintf(stderr, "iq_mmvq: type %d is not supported\n", t); std::exit(1);
+    }
+}
+}  // namespace
+
+void iq_mmvq_rows(int t, const void* w, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, int rows,
+                  void* stream) {
     const size_t rb = iq_row_bytes(t, n_in);
     cudaStream_t s = (cudaStream_t) stream;
     const auto* W = (const uint8_t*) w;
     const auto* X = (const block_q8_1*) x_q8_1;
-    switch (t) {
-        case 16: mmvq_kernel<16><<<grid, block, 0, s>>>(W, rb, X, y, n_in, n_out, ncols); break;
-        case 17: mmvq_kernel<17><<<grid, block, 0, s>>>(W, rb, X, y, n_in, n_out, ncols); break;
-        case 18: mmvq_kernel<18><<<grid, block, 0, s>>>(W, rb, X, y, n_in, n_out, ncols); break;
-        case 20: mmvq_kernel<20><<<grid, block, 0, s>>>(W, rb, X, y, n_in, n_out, ncols); break;
-        case 21: mmvq_kernel<21><<<grid, block, 0, s>>>(W, rb, X, y, n_in, n_out, ncols); break;
-        case 22: mmvq_kernel<22><<<grid, block, 0, s>>>(W, rb, X, y, n_in, n_out, ncols); break;
-        case 23: mmvq_kernel<23><<<grid, block, 0, s>>>(W, rb, X, y, n_in, n_out, ncols); break;
-        case 29: mmvq_kernel<29><<<grid, block, 0, s>>>(W, rb, X, y, n_in, n_out, ncols); break;
-        case 42: mmvq_kernel<42><<<grid, block, 0, s>>>(W, rb, X, y, n_in, n_out, ncols); break;
-        default: std::fprintf(stderr, "iq_mmvq: type %d is not supported\n", t); std::exit(1);
-    }
+    const bool ok = with_mmvq_rows(rows, [&](auto r) { launch_mmvq<decltype(r)::value>(t, W, rb, X, y, n_in, n_out, ncols, s); });
+    if (!ok) { std::fprintf(stderr, "iq_mmvq: %d rows per block is not compiled in this build\n", rows); std::exit(1); }
     check("iq_mmvq");
+}
+
+void iq_mmvq(int t, const void* w, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream) {
+    const DecodeTuningTable* tt = decode_tuning_active();
+    const int rows = tt ? tt->rows(DecodeKernel::Mmvq, t, n_in, n_out, kDefaultMmvqRows) : kDefaultMmvqRows;
+    iq_mmvq_rows(t, w, x_q8_1, y, n_in, n_out, ncols, rows, stream);
 }
 
 void iq_dequant_f16(int t, const void* src, int64_t n, uint16_t* dst, void* stream) {
@@ -707,9 +761,45 @@ size_t native_expert_scratch_bytes(int64_t cap, int64_t n_ff) {
     return 3 * ((f + 255) & ~(size_t) 255) + (((size_t) cap * (size_t) (n_ff / 32) * sizeof(block_q8_1) + 255) & ~(size_t) 255);
 }
 
-void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long* grp_ptr, const int32_t* grp_start,
-                           const int32_t* n_groups, const int32_t* ent_dst, const int32_t* ent_tok, int64_t cap_groups,
-                           int64_t cap_entries, const void* x_q8_1, void* scratch, float* out, void* stream) {
+namespace {
+template<int R>
+void launch_gu(const NativeExpertLayout& L, const unsigned long long* grp_ptr, const int32_t* grp_start,
+               const int32_t* n_groups, const int32_t* ent_tok, int64_t cap_groups, const block_q8_1* X, float* gate,
+               float* up, cudaStream_t s) {
+    const dim3 g((unsigned) ((2 * L.n_ff + R - 1) / R), (unsigned) cap_groups);
+    const unsigned b = R * 32;
+    switch (L.gu_type) {
+        case 16: native_gu_kernel<16, R><<<g, b, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); break;
+        case 17: native_gu_kernel<17, R><<<g, b, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); break;
+        case 18: native_gu_kernel<18, R><<<g, b, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); break;
+        case 21: native_gu_kernel<21, R><<<g, b, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); break;
+        case 22: native_gu_kernel<22, R><<<g, b, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); break;
+        case 23: native_gu_kernel<23, R><<<g, b, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); break;
+        case 29: native_gu_kernel<29, R><<<g, b, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); break;
+        case 42: native_gu_kernel<42, R><<<g, b, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); break;
+        default: std::fprintf(stderr, "native_expert_grouped: gate/up type %d\n", L.gu_type); std::exit(1);
+    }
+}
+
+template<int R>
+void launch_down(const NativeExpertLayout& L, const unsigned long long* grp_ptr, const int32_t* grp_start,
+                 const int32_t* n_groups, const int32_t* ent_dst, int64_t cap_groups, const block_q8_1* hq, float* out,
+                 cudaStream_t s) {
+    const dim3 g((unsigned) ((L.n_embd + R - 1) / R), (unsigned) cap_groups);
+    const unsigned b = R * 32;
+    switch (L.d_type) {
+        case 20: native_down_kernel<20, R><<<g, b, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
+        case 23: native_down_kernel<23, R><<<g, b, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
+        case 42: native_down_kernel<42, R><<<g, b, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
+        default: std::fprintf(stderr, "native_expert_grouped: down type %d\n", L.d_type); std::exit(1);
+    }
+}
+}  // namespace
+
+void native_expert_grouped_rows(const NativeExpertLayout& L, const unsigned long long* grp_ptr,
+                                const int32_t* grp_start, const int32_t* n_groups, const int32_t* ent_dst,
+                                const int32_t* ent_tok, int64_t cap_groups, int64_t cap_entries, const void* x_q8_1,
+                                void* scratch, float* out, int gu_rows, int down_rows, void* stream) {
     if (cap_groups <= 0 || cap_entries <= 0) return;
     cudaStream_t s = (cudaStream_t) stream;
     const size_t f = (size_t) cap_entries * (size_t) L.n_ff * sizeof(float), fa = (f + 255) & ~(size_t) 255;
@@ -718,30 +808,101 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     float* h = (float*) ((uint8_t*) scratch + 2 * fa);
     block_q8_1* hq = (block_q8_1*) ((uint8_t*) scratch + 3 * fa);
     const auto* X = (const block_q8_1*) x_q8_1;
-    const dim3 ggu((unsigned) ((2 * L.n_ff + GU_ROWS - 1) / GU_ROWS), (unsigned) cap_groups);
-    switch (L.gu_type) {
-        case 16: native_gu_kernel<16><<<ggu, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); break;
-        case 17: native_gu_kernel<17><<<ggu, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); break;
-        case 18: native_gu_kernel<18><<<ggu, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); break;
-        case 21: native_gu_kernel<21><<<ggu, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); break;
-        case 22: native_gu_kernel<22><<<ggu, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); break;
-        case 23: native_gu_kernel<23><<<ggu, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); break;
-        case 29: native_gu_kernel<29><<<ggu, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); break;
-        case 42: native_gu_kernel<42><<<ggu, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); break;
-        default: std::fprintf(stderr, "native_expert_grouped: gate/up type %d\n", L.gu_type); std::exit(1);
+    if (!with_expert_rows(gu_rows, [&](auto r) {
+            launch_gu<decltype(r)::value>(L, grp_ptr, grp_start, n_groups, ent_tok, cap_groups, X, gate, up, s);
+        })) {
+        std::fprintf(stderr, "native_expert_grouped: %d gate/up rows per block is not compiled in this build\n", gu_rows);
+        std::exit(1);
     }
     check("native_expert_grouped/gu");
     const long long nh = (long long) cap_entries * L.n_ff;
     swiglu_entries_kernel<<<(unsigned) ((nh + 255) / 256), 256, 0, s>>>(gate, up, h, nh);
     quantize_q8_1_kernel<<<(unsigned) ((nh + 255) / 256), 256, 0, s>>>(h, hq, nh);
-    const dim3 gd((unsigned) ((L.n_embd + 7) / 8), (unsigned) cap_groups);
-    switch (L.d_type) {
-        case 20: native_down_kernel<20><<<gd, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
-        case 23: native_down_kernel<23><<<gd, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
-        case 42: native_down_kernel<42><<<gd, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
-        default: std::fprintf(stderr, "native_expert_grouped: down type %d\n", L.d_type); std::exit(1);
+    if (!with_expert_rows(down_rows, [&](auto r) {
+            launch_down<decltype(r)::value>(L, grp_ptr, grp_start, n_groups, ent_dst, cap_groups, hq, out, s);
+        })) {
+        std::fprintf(stderr, "native_expert_grouped: %d down rows per block is not compiled in this build\n", down_rows);
+        std::exit(1);
     }
     check("native_expert_grouped/down");
+}
+
+void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long* grp_ptr, const int32_t* grp_start,
+                           const int32_t* n_groups, const int32_t* ent_dst, const int32_t* ent_tok, int64_t cap_groups,
+                           int64_t cap_entries, const void* x_q8_1, void* scratch, float* out, void* stream) {
+    const DecodeTuningTable* tt = decode_tuning_active();
+    const int gu = tt ? tt->rows(DecodeKernel::GateUp, L.gu_type, L.n_embd, L.n_ff, kDefaultExpertRows) : kDefaultExpertRows;
+    const int dn = tt ? tt->rows(DecodeKernel::Down, L.d_type, L.n_ff, L.n_embd, kDefaultExpertRows) : kDefaultExpertRows;
+    native_expert_grouped_rows(L, grp_ptr, grp_start, n_groups, ent_dst, ent_tok, cap_groups, cap_entries, x_q8_1,
+                               scratch, out, gu, dn, stream);
+}
+
+// ---------------------------------------------------------------- the decode tuning table (decode_tuning.hpp)
+DecodeIdentity decode_identity() {
+    DecodeIdentity id;
+#if defined(STRATA_USE_HIP)
+    int dev = 0;
+    hipDeviceProp_t p{};
+    if (hipGetDevice(&dev) == hipSuccess && hipGetDeviceProperties(&p, dev) == hipSuccess) {
+        id.arch = p.gcnArchName;
+        const size_t colon = id.arch.find(':');            // "gfx1100:sramecc-:xnack-" -> "gfx1100"
+        if (colon != std::string::npos) id.arch.resize(colon);
+    } else {
+        id.arch = "unknown";
+    }
+    int rt = 0;
+    if (hipRuntimeGetVersion(&rt) == hipSuccess) id.runtime = rt;
+#if defined(__VERSION__)
+    id.toolchain = decode_toolchain_hash(std::string(__VERSION__) + " hip " + std::to_string(HIP_VERSION));
+#else
+    id.toolchain = decode_toolchain_hash("hip " + std::to_string(HIP_VERSION));
+#endif
+#else
+    id.arch = "cuda";
+    int rt = 0;
+    if (cudaRuntimeGetVersion(&rt) == cudaSuccess) id.runtime = rt;
+    id.toolchain = decode_toolchain_hash("cuda");
+#endif
+    return id;
+}
+
+namespace {
+struct ActiveTuning {
+    DecodeTuningTable table;
+    bool on = false;
+};
+const ActiveTuning& active_tuning() {
+    static const ActiveTuning a = [] {
+        ActiveTuning t;
+        const char* path = std::getenv("STRATA_DECODE_TUNING");
+        if (path == nullptr || *path == '\0') return t;
+#if STRATA_DECODE_VARIANTS
+        const DecodeIdentity id = decode_identity();
+        std::string err;
+        if (!t.table.load(path, id, err)) {
+            std::fprintf(stderr, "decode tuning: %s refused (%s); the default kernel shapes stay\n", path, err.c_str());
+            return t;
+        }
+        t.on = true;
+        std::fprintf(stderr, "decode tuning: %zu shapes from %s (%s, runtime %lld)\n", t.table.entries().size(), path,
+                     id.arch.c_str(), id.runtime);
+        if (std::getenv("STRATA_DECODE_TUNING_VERBOSE"))
+            for (const DecodeTuningRow& r : t.table.entries())
+                std::fprintf(stderr, "decode tuning:   %s\n", DecodeTuningTable::line(r).c_str());
+#else
+        std::fprintf(stderr, "decode tuning: STRATA_DECODE_TUNING is for HIP builds; this CUDA build ignores %s\n", path);
+#endif
+        return t;
+    }();
+    return a;
+}
+}  // namespace
+
+void decode_tuning_init() { (void) active_tuning(); }
+
+const DecodeTuningTable* decode_tuning_active() {
+    const ActiveTuning& a = active_tuning();
+    return a.on ? &a.table : nullptr;
 }
 
 }  // namespace strata::kernels
