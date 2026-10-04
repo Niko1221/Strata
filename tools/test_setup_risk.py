@@ -395,10 +395,13 @@ class KvStreaming(unittest.TestCase):
         self.assertEqual(arg(cfg, "--kv-resident"), "32768")
         self.assertIn("Kept as you chose (--kv-streaming on)", out)
 
-    def test_on_where_it_cannot(self):
+    def test_k8v4_streams(self):
         code, out, cfg, _ = self.go("Q2_0", "--kv-streaming", "on", "--kv", "k8v4")
-        self.assertNotIn("--kv-resident", cfg["args"])
-        self.assertIn("it refuses the pair", out)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(arg(cfg, "--kv-resident"), "32768")
+        self.assertEqual(arg(cfg, "--kv"), "k8v4")
+
+    def test_on_where_it_cannot(self):
         code, out, cfg, _ = self.go("Q2_0", "--kv-streaming", "on", "--context", "32768")
         self.assertNotIn("--kv-resident", cfg["args"])
         self.assertIn("a context under 64K is not streamed", out)
