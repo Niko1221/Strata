@@ -1,5 +1,5 @@
 // src/kernels/qsa_select_bench.cpp - the prompt path's QSA selection (qsa_select.hpp) timed per stage, block scores
-// (the warp kernel and the tensor-core one) and top-k, for a batch of consecutive queries at a given context, and
+// (the warp kernel and the fast one: tensor cores, or the FP32 tiled kernel on CUDA below sm_80) and top-k, for a batch of consecutive queries at a given context, and
 // the two scorers compared: score difference and how many selections differ (GPU, synthetic, no model).
 // Usage: qsa_select_bench [context=131072] [queries=256] [reps=10] [capacity_cells]
 // capacity_cells (the engine's --max-context): the score buffers and the top-k dispatch follow the CAPACITY
@@ -163,9 +163,9 @@ int main(int argc, char** argv) {
     const float t_tk2 = timed([&] { k::qsa_block_topk(sc_old, d_steps, nq, max_blocks, cap, s, ids_reg, nullptr, active); });
     std::printf("top-k %.3f -> %.3f ms (%.1fx), register top-k identical to the reference %lld/%lld\n", t_tk, t_tk2,
                 t_tk / t_tk2, (long long) reg_same, (long long) nq);
-    std::printf("%s accuracy vs FP64 (score scale %.3g): warp kernel max err %.3g, tensor-core max err %.3g (%.2g of scale)\n",
+    std::printf("%s accuracy vs FP64 (score scale %.3g): warp kernel max err %.3g, fast scorer max err %.3g (%.2g of scale)\n",
                 !have_tc ? "SKIP" : acc_ok ? "PASS" : "FAIL", scale, err_old, err_new, scale > 0 ? err_new / scale : 0.0);
-    if (!have_tc) std::printf("tensor-core scorer not available on this device: warp scorer %.3f ms, top-k %.3f ms (%.0f%% of the two)\n", t_old, t_tk2, 100.0 * t_tk2 / (t_old + t_tk2));
+    if (!have_tc) std::printf("fast scorer not available on this device: warp scorer %.3f ms, top-k %.3f ms (%.0f%% of the two)\n", t_old, t_tk2, 100.0 * t_tk2 / (t_old + t_tk2));
     std::printf("ctx %lld, %lld queries x %lld blocks: scores %.3f -> %.3f ms (%.1fx), top-k %.3f ms; score rel diff "
                 "mean %.2g max %.2g; selections identical %lld/%lld, cells differing %.4f%%\n", (long long) ctx,
                 (long long) nq, (long long) active, t_old, t_new, t_old / t_new, t_tk, sum_rel / std::max(1.0, n_rel),
