@@ -185,6 +185,8 @@ function render(m) {
     setPill("reading", pct != null ? `Reading prompt · ${pct}%` : "Reading prompt");
   } else if (live.state === "generating") {
     setPill("generating", `Generating · ${fmt(live.tok_s, 1)} tok/s`);
+  } else if (live.state === "draining") {
+    setPill("queued", "Draining cancelled requests");
   } else {
     setPill("idle", "Idle");
   }
@@ -196,11 +198,10 @@ function render(m) {
 function renderTotals(t) {
   if (!t || !t.requests) return "";
   const since = new Date(t.since * 1000).toLocaleString([], {weekday: "short", hour: "2-digit", minute: "2-digit"});
-  const read = t.prompt_tokens - t.reused;
-  const pSpeed = t.prompt_ms > 0 && read > 0 ? ` at ${fmt(read / (t.prompt_ms / 1000))} tok/s` : "";
-  const oSpeed = t.decode_ms > 0 && t.output_tokens > 0 ? ` at ${fmt(t.output_tokens / (t.decode_ms / 1000), 1)} tok/s` : "";
-  return `Since ${since}: ${fmt(t.requests)} requests · ${fmt(read)} prompt tokens read${pSpeed} (${fmt(t.reused)} reused) · ` +
-         `${fmt(t.output_tokens)} written${oSpeed}`;
+  // Per-request durations overlap under batching; their sum is NOT an aggregate
+  // throughput denominator. Unknown/cancelled engine work is not "uncached read".
+  return `Since ${since}: ${fmt(t.requests)} generations · ${fmt(t.prompt_tokens)} input tokens ` +
+         `(${fmt(t.reused)} cached, reported) · ${fmt(t.output_tokens)} output tokens`;
 }
 function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   // model state
@@ -221,7 +222,12 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
     label = live.phase ? live.phase[0].toUpperCase() + live.phase.slice(1) : "Generating";
     delete prog.dataset.tone;
     pct = live.max_tokens ? Math.min(100, (100 * live.generated) / live.max_tokens) : 0;
-    detail = `${fmt(live.generated)} tokens · ${fmt(live.tok_s, 1)} tok/s`;
+    detail = `${fmt(live.generated)} tokens · ${fmt(live.tok_s, 1)} tok/s aggregate` +
+             (live.in_flight > 1 ? ` · ${fmt(live.in_flight)} in flight` : "");
+  } else if (live.state === "draining") {
+    label = "Draining cancelled requests";
+    detail = `${fmt(live.draining_slots)} slots awaiting engine acknowledgement`;
+    prog.dataset.tone = "info";
   } else if (last) {
     delete prog.dataset.tone;
     detail = `last: ${fmt(last.output_tokens)} tokens${last.decode_tok_s ? ` at ${fmt(last.decode_tok_s, 1)} tok/s` : ""}`;
@@ -233,11 +239,11 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   // the eight cards
   const speed = live.state === "generating" ? live.tok_s : last ? last.decode_tok_s : null;
   setMetric("speed", speed == null ? null : fmt(speed, 1), "t/s",
-            live.state === "generating" ? "Decode now" : last ? "Decode last request" : "Decode");
+            live.state === "generating" ? "Aggregate output now" : last ? "Decode last request" : "Decode");
   const prefill = live.state !== "idle" ? live.prefill_tok_s_mean
                 : last && last.prompt_ms > 0 ? Math.max(0, last.prompt_tokens - (last.reused || 0)) / (last.prompt_ms / 1000) : null;
   setMetric("prefill", prefill == null ? null : fmt(prefill), "t/s",
-            live.state === "reading" ? "Prefill now" : live.state === "generating" ? "Prefill this request" : last ? "Prefill last request" : "Prefill");
+            live.state !== "idle" ? "Active prefill" : last ? "Admission last request (includes cache work)" : "Prefill");
   spark("sp-speed", h.tok_s);
   spark("sp-prefill", h.prefill_tok_s_mean);
   // a model split across several cards (issue #112): the cards show their total / mean / hottest, and each card's own

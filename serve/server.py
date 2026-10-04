@@ -56,6 +56,7 @@ from serve.frontend import (ChatTemplate, Event, OutputParser, anthropic_to_mess
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve.winjob import contain  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
+from serve.request_stats import GenerationStats, ObservedGeneration, current_stats  # noqa: E402
 
 IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
@@ -389,6 +390,7 @@ class StrataEngine:
         self.slot_order = [g * gs + t for t in range(gs) for g in range(groups)]
         self.slot_q = [queue.Queue() for _ in range(self.batch)]
         self.slot_busy = [False] * self.batch
+        self.slot_generation = [0] * self.batch
         self.slot_cv = threading.Condition()
         self.waiting = 0                                # requests waiting for the control lines (ctl)
         self.ctl = threading.Lock()                     # one admission or solo request on the control lines at a time
@@ -467,16 +469,20 @@ class StrataEngine:
 
     def _parse_done(self, line):
         f = line.split()
-        self.last = {"generated": int(f[1]), "prompt_tokens": int(f[2]), "prompt_ms": float(f[3]),
-                     "decode_ms": float(f[4]), "finish": f[5]}
-        if len(f) >= 9:                                   # the conversation cache's fields (engine 0.1.3+)
-            self.last.update(drafts_accepted=int(f[6]), drafts_offered=int(f[7]), reused=int(f[8]))
-        if len(f) >= 11:                                  # decode hit rate fields
-            self.last.update(hits=int(f[9]), lookups=int(f[10]))
-        if len(f) >= 14:                                  # the expert tiers (engine 0.1.31+): RAM / file blobs, file MB
-            self.last.update(ram_blobs=int(f[11]), file_blobs=int(f[12]), file_mb=float(f[13]))
-        if len(f) >= 15:                                  # #471 (engine 0.1.36+): the prompt tokens actually read
-            self.last.update(prompt_read=int(f[14]))
+        done = {"generated": int(f[1]), "prompt_tokens": int(f[2]), "prompt_ms": float(f[3]),
+                "decode_ms": float(f[4]), "finish": f[5]}
+        if len(f) >= 9:
+            done.update(drafts_accepted=int(f[6]), drafts_offered=int(f[7]), reused=int(f[8]))
+        if len(f) >= 11:
+            done.update(hits=int(f[9]), lookups=int(f[10]))
+        if len(f) >= 14:
+            done.update(ram_blobs=int(f[11]), file_blobs=int(f[12]), file_mb=float(f[13]))
+        if len(f) >= 15:
+            done.update(prompt_read=int(f[14]))
+        self.last = done                 # compatibility diagnostic, never a batch request's source of truth
+        stats = current_stats(self)
+        if stats is not None:
+            stats.done(done)
 
     @staticmethod
     def sampling_keys(sampling: dict) -> str:
@@ -546,6 +552,7 @@ class StrataEngine:
         for each `T`; returns ("done", None) at DONE, or ("badm", continues) at BADM (after DONE).  `stop_when()`
         true sends STOP once (the request is then read to its DONE)."""
         stopped = False
+        saw_done = False
         while True:
             try:
                 line = self.lines.get(timeout=10.0)
@@ -570,15 +577,26 @@ class StrataEngine:
                 if len(f) >= 3 and f[1].isdigit() and f[2].isdigit():
                     self.progress = (int(f[1]), int(f[2]))
                     self.prefill_tok_s_mean = float(f[4]) if len(f) >= 5 else None
+                    stats = current_stats(self)
+                    if stats is not None:
+                        stats.prompt_progress(self.progress, self.prefill_tok_s_mean)
                 yield None
             elif line.startswith("DONE"):
                 self._parse_done(line)
                 self._last_done = line
+                saw_done = True
             elif line.startswith("BADM "):
                 f = line.split()
                 self._ctl_result = ("badm", len(f) >= 3 and f[2] == "1")
+                stats = current_stats(self)
+                if stats is not None:
+                    stats.admitted(self._ctl_result[1])
                 return
             elif line.startswith("ERR"):
+                # A rejection before DONE is terminal. A failure copying an already
+                # prefetched prompt into its slot instead follows DONE with ERR and
+                # BADM <slot> 0: drain THAT marker, never the next request's reply.
+                self._ctl_result = ("admission_error" if saw_done and self._ctl_mode == "batch" else "error", None)
                 raise ValueError(line[4:].strip())
             if line.startswith("DONE") and self._ctl_mode == "solo":
                 self._ctl_result = ("done", None)
@@ -597,28 +615,57 @@ class StrataEngine:
                 return None
             if line.startswith("DONE"):
                 self._parse_done(line)
+            if line.startswith("BADM "):
+                stats = current_stats(self)
+                if stats is not None:
+                    stats.admitted(line.split()[2:3] == ["1"])
             if line.startswith(until) or line.startswith("ERR"):
                 return line
         return None
 
     def _release_slot_when_done(self, slot: int):
-        """A slot whose consumer left: BSTOP it and free it once the engine says BDONE (in the background)."""
+        """Drain this process/slot, not a successor's queues after a restart.
+
+        Already-buffered BDONE is consumed inline so normal EOS retains its
+        counters. A slow cancellation drains in the background; until terminal
+        acknowledgement its timings remain explicitly incomplete.
+        """
+        q, cv, busy = self.slot_q[slot], self.slot_cv, self.slot_busy
+        stats = current_stats(self)
+        record = stats.drain_callback() if stats is not None else None
         try:
             self._send(f"BSTOP {slot}")
         except EngineDied:
             pass
+
+        def terminal(line):
+            if line is not None and not line.startswith("BDONE "):
+                return False
+            if line is not None and record is not None:
+                record(line)
+            with cv:
+                busy[slot] = False
+                cv.notify_all()
+            return True
+
+        while True:
+            try:
+                if terminal(q.get_nowait()):
+                    return
+            except queue.Empty:
+                break
+
         def wait():
             end = time.monotonic() + 600.0
             while time.monotonic() < end:
                 try:
-                    line = self.slot_q[slot].get(timeout=5.0)
+                    if terminal(q.get(timeout=5.0)):
+                        return
                 except queue.Empty:
                     continue
-                if line is None or line.startswith("BDONE "):
-                    break
-            with self.slot_cv:
-                self.slot_busy[slot] = False
-                self.slot_cv.notify_all()
+            # Reusing a slot without BDONE could route late output to a new
+            # request. Keep it reserved rather than silently crossing streams.
+            print(f"[strata] slot {slot}: no terminal acknowledgement; slot remains reserved", flush=True)
         threading.Thread(target=wait, daemon=True).start()
 
     def generate_batched(self, ids, max_new, sampling, cancel, embeddings=None):
@@ -629,6 +676,8 @@ class StrataEngine:
         are taken one request at a time.  A consumer that stops early leaves the engine in step: the solo request is
         STOPped and read to its DONE, an admission to its BADM, a slot is BSTOPped and freed at its BDONE."""
         self.progress = None
+        stats = current_stats(self)
+        waited = stats.wait("waiting_control") if stats is not None else None
         keys = self.sampling_keys(sampling or {})
         out: list[int] = []
         pending: list[int] = []
@@ -643,6 +692,8 @@ class StrataEngine:
             with self.slot_cv:
                 self.waiting -= 1
         holding = True
+        if stats is not None:
+            stats.waited("control_wait_ms", waited)
         btrace("ctl acquired")
         slot = None
         phase = "none"            # solo -> (admit -> slot) ; "done" once the engine has finished with this request
@@ -652,6 +703,8 @@ class StrataEngine:
                 alone = not any(self.slot_busy) and self.waiting == 0
             prompt, left = list(ids), int(max_new)
             if alone and left > 1:
+                if stats is not None:
+                    stats.start("solo", len(prompt))
                 head = f"GENI {left}{keys} {embeddings}" if embeddings else f"GEN {left}{keys}"
                 self._send(f"{head} {','.join(str(int(t)) for t in prompt)}")
                 phase = "solo"
@@ -671,21 +724,30 @@ class StrataEngine:
                     t = pending.pop(0)
                     out.append(t)
                     yield t
-                finish = (self.last or {}).get("finish") if isinstance(self.last, dict) else None
+                finish = self._last_done.split()[5]  # control-owned DONE, not another slot's global `last`
                 left = int(max_new) - len(out)
                 if cancel.is_set() or left <= 0 or finish in ("stop", "length") or (out and out[-1] in EOS_IDS):
                     return
                 prompt = list(ids) + out                # promoted: it continues in a batch slot from here
             # a free slot (they free themselves at BDONE, which needs no control lines)
+            waited = stats.wait("waiting_slot") if stats is not None else None
             with self.slot_cv:
                 while True:
                     slot = next((b for b in self.slot_order if not self.slot_busy[b]), None)
                     if slot is not None:
                         self.slot_busy[slot] = True
+                        if not hasattr(self, "slot_generation"):
+                            self.slot_generation = [0] * len(self.slot_busy)
+                        self.slot_generation[slot] += 1
+                        if stats is not None:
+                            stats.assign_slot(slot, self.slot_generation[slot])
                         break
                     self.slot_cv.wait(timeout=10.0)
                     if cancel.is_set():
                         return
+            if stats is not None:
+                stats.waited("slot_wait_ms", waited)
+                stats.start("admit", len(prompt))
             while not self.slot_q[slot].empty():
                 self.slot_q[slot].get_nowait()
             head = f"BGENI {slot} {left}{keys} {embeddings}" if embeddings else f"BGEN {slot} {left}{keys}"
@@ -726,13 +788,15 @@ class StrataEngine:
                     yield int(line.split()[2])
                 elif line.startswith("BDONE "):
                     phase = "none"
-                    f = line.split()
-                    if len(f) >= 5 and isinstance(self.last, dict):
-                        self.last = {**self.last, "finish": f[3], "decode_ms": float(f[4])}
+                    if stats is not None:
+                        stats.batch_done(line)
+                        self.last = stats.result()
                     return
         finally:
             # a consumer that left early (or an error): keep the engine and this server in step
             btrace("finally phase", phase, "slot", slot, "holding", holding)
+            if phase in ("solo", "admit") and self._ctl_result and self._ctl_result[0] == "error":
+                phase = "none"
             try:
                 if phase == "solo":
                     self._send("STOP")
@@ -762,6 +826,9 @@ class StrataEngine:
             return
         self.progress = None
         self.prefill_tok_s_mean = None
+        stats = current_stats(self)
+        if stats is not None:
+            stats.start("solo", len(ids))
         # an image request takes the same sampling keys as text (#75: it used to decode greedily whatever was asked)
         head = f"GENI {int(max_new)}{self.sampling_keys(sampling or {})} {embeddings}" if embeddings else \
             f"GEN {int(max_new)}{self.sampling_keys(sampling or {})}"
@@ -807,6 +874,8 @@ class StrataEngine:
                     if len(f) >= 3 and f[1].isdigit() and f[2].isdigit():
                         self.progress = (int(f[1]), int(f[2]))             # prompt progress, one per chunk: also a heartbeat (the
                         self.prefill_tok_s_mean = float(f[4]) if len(f) >= 5 else None
+                        if stats is not None:
+                            stats.prompt_progress(self.progress, self.prefill_tok_s_mean)
                         rate, chunk = self.prefill_tok_s_mean or 0.0, int(f[1]) - read_to
                         read_to = int(f[1])
                         if silence > 0 and rate > 0 and chunk > 0:   # #481: the next chunk, as long as this one
@@ -1224,8 +1293,11 @@ class Service:
         self.allowed_hosts: list[str] = []
         self.host_names: set[str] = set(LOOPBACK_NAMES)
         self.status = {"busy": False, "queued": 0}      # GET /status: what the model is doing right now
-        self.inflight = 0                                # requests past the queue (several at once with --batch)
-        self.rate = collections.deque(maxlen=32)        # (time, generated) samples for the live tok/s window
+        self.active_requests = {}                     # generation-owned state; status is only a compatibility view
+        self.rate = collections.deque(maxlen=256)       # bounded 50ms buckets of monotonic aggregate output counts
+        self._emitted = 0
+        self._epoch_started = None
+        self._epoch_emitted0 = 0
         # #332: the API request monitor (/api-monitor) keeps the last 100 requests' prompts and answers in memory,
         # so it is off unless the config's "api_monitor" (or --api-monitor) turns it on
         self.api_monitor = False
@@ -1233,7 +1305,7 @@ class Service:
         self.request_trace = threading.local()
         self.history = collections.deque(maxlen=500)    # the last finished requests, newest last (GET /metrics)
         # since the server started (the Monitor's totals, issue #35)
-        self.totals = {"since": time.time(), "requests": 0, "prompt_tokens": 0, "reused": 0, "output_tokens": 0,
+        self.totals = {"since": time.time(), "decode_ms_scope": "sum_per_request_not_wall_clock", "requests": 0, "prompt_tokens": 0, "reused": 0, "output_tokens": 0,
                        "prompt_ms": 0.0, "decode_ms": 0.0,
                        "drafts_offered": 0, "drafts_accepted": 0}   # #457: the MTP drafts, summed where reported
         self.last_timings = None                         # the last finished request's, llama.cpp's names (/v1/status)
@@ -1392,6 +1464,9 @@ class Service:
             with self.status_lock:
                 if self.status.get("busy") or self.status.get("queued"):
                     return "busy"
+            if any(getattr(self.engine, "slot_busy", [])) or (getattr(self.engine, "ctl", None) is not None
+                                                            and self.engine.ctl.locked()):
+                return "busy"                         # a disconnected request can still be draining
             if idle_for is not None and time.time() - (self.last_request_at or self.started_at) < idle_for:
                 return "busy"
             self.engine.unload()
@@ -1462,40 +1537,74 @@ class Service:
                                        gpu_indices=getattr(self, "gpu_indices", None),
                                        amd=getattr(self, "backend", None) == "hip")
 
+    def _refresh_status_locked(self):
+        """Compatibility summary. Never let one completion clear another request."""
+        if not self.active_requests:
+            return
+        states = list(self.active_requests.values())
+        queued = sum(s["queued"] or s["stats"].view()["engine_phase"] in ("waiting_control", "waiting_slot")
+                     for s in states)
+        representative = next((s for s in states if s.get("first_token") is not None), states[0])
+        first = [s["first_token"] for s in states if s.get("first_token") is not None]
+        self.status = {k: representative.get(k) for k in
+                       ("phase", "prompt_tokens", "max_tokens", "tail", "tool")}
+        self.status.update(busy=True, queued=queued, active=len(states) - queued, in_flight=len(states),
+                           started=min(s["started"] for s in states), first_token=min(first) if first else None,
+                           generated=sum(s["generated"] for s in states), request_id=representative["id"])
+        if len(states) > 1:
+            # These scalars belonged to one arbitrary request, not to the batch.
+            self.status.update(prompt_tokens=None, max_tokens=None, phase="multiple requests")
+            self.status.pop("tail", None)
+            self.status.pop("tool", None)
+
+    def _active_records_locked(self):
+        return [{"id": s["id"], "request_id": s["request_id"], "phase": s["phase"], "prompt_tokens": s["prompt_tokens"],
+                 "generated": s["generated"], "max_tokens": s["max_tokens"],
+                 "elapsed_s": round(time.monotonic() - s["clock"], 3),
+                 "first_token_s": s.get("first_token_s"), "max_token_gap_s": s["max_token_gap_s"],
+                 **s["stats"].view()} for s in self.active_requests.values()]
+
     def _tok_s(self):
-        """tok/s over the last RATE_WINDOW_S seconds.  Returns 0.0 while nothing is generating."""
+        """Recent aggregate output rate, including pauses (not sum of request rates)."""
         with self.status_lock:
-            s = dict(self.status)
-            rate = list(self.rate)
-        if not s.get("busy") or not s.get("first_token"):
+            s, rate, emitted = dict(self.status), list(self.rate), self._emitted
+        if not s.get("busy") or s.get("first_token") is None:
             return 0.0
-        now = time.time()
-        newest = rate[-1] if rate else None
-        oldest = next(((t, g) for t, g in rate if now - t <= RATE_WINDOW_S), None)
-        if newest and oldest and newest[0] - oldest[0] >= RATE_MIN_SPAN_S:
-            return max(0.0, (newest[1] - oldest[1]) / (newest[0] - oldest[0]))
-        return s["generated"] / max(RATE_MIN_SPAN_S, now - s["first_token"])
+        now = time.monotonic()
+        if not rate or now - rate[-1][0] >= RATE_WINDOW_S:
+            return 0.0
+        oldest = next(((t, g) for t, g in rate if now - t <= RATE_WINDOW_S), rate[-1])
+        if now - oldest[0] >= RATE_MIN_SPAN_S:
+            return max(0.0, (emitted - oldest[1]) / (now - oldest[0]))
+        return self._tok_s_mean()
 
     def _tok_s_mean(self):
-        """The whole-request mean since the first token (the old formula), kept so the two can be compared."""
+        """Aggregate server output since this overlapping generation epoch began."""
         with self.status_lock:
-            s = dict(self.status)
-        if not s.get("busy") or not s.get("first_token"):
-            return 0.0
-        return s["generated"] / max(1e-6, time.time() - s["first_token"])
+            if not self.status.get("busy") or self.status.get("first_token") is None or self._epoch_started is None:
+                return 0.0
+            return (self._emitted - self._epoch_emitted0) / max(RATE_MIN_SPAN_S,
+                                                               time.monotonic() - self._epoch_started)
 
     def _prefill_tok_s_mean(self):
-        """Engine-reported mean over newly read tokens, excluding the cached prefix."""
+        """Control-owner progress only; never another request's stale PP."""
         with self.status_lock:
+            if self.active_requests:
+                rates = [v["prefill_tok_s_mean"] for s in self.active_requests.values()
+                         if (v := s["stats"].view())["engine_phase"] == "prefill"
+                         and v["prefill_tok_s_mean"] is not None]
+                return sum(rates) if rates else None
             reading = self.status.get("busy") and self.status.get("first_token") is None
         return getattr(self.engine, "prefill_tok_s_mean", None) if reading else 0.0
 
     def begin_request(self, path, req):
-        """#332: a monitor record for this request, or None when the monitor is off (nothing is kept then)."""
+        """Always assign a content-free correlation id; retain I/O only with monitor opt-in."""
+        self.request_trace.request_id = uuid.uuid4().hex
+        self.request_trace.record = None
         if not self.api_monitor:
             return None
         raw = json.dumps(req, ensure_ascii=False, indent=2)
-        record = {"id": uuid.uuid4().hex[:12], "path": path, "model": req.get("model") or self.model,
+        record = {"id": self.request_trace.request_id, "path": path, "model": req.get("model") or self.model,
                   "started_at": time.time(), "state": "queued", "stream": bool(req.get("stream")),
                   "response_format": (req.get("response_format") or {}).get("type")
                   if isinstance(req.get("response_format"), dict) else None,
@@ -1525,12 +1634,15 @@ class Service:
         """GET /metrics: what the Monitor tab shows - the engine's facts, what it is doing, the last requests, and
         the hardware (with a minute of history per series)."""
         with self.status_lock:
+            self._refresh_status_locked()
             s = dict(self.status)
+            active = self._active_records_locked()
             hist = list(self.history)
             totals = dict(self.totals)
-            inflight = self.inflight
+            inflight = s.get("in_flight", 0)
         now = time.time()
-        progress = getattr(self.engine, "progress", None)
+        progress = next((r["prompt_progress"] for r in active if r["prompt_progress"]), None) if active else \
+            getattr(self.engine, "progress", None)
         if s.get("busy") and s.get("first_token") is None:
             state = "reading"
         elif s.get("busy"):
@@ -1539,24 +1651,31 @@ class Service:
             state = "unloaded"
         else:
             state = "idle"
-        # --batch: the requests past the queue that wait for the engine's control lines or a slot are waiting too
-        waiting_engine = getattr(self.engine, "waiting", 0) if getattr(self.engine, "batch", 0) else 0
-        live = {"state": state, "queued": s.get("queued", 0) + waiting_engine,
-                "running": max(0, inflight - waiting_engine), "phase": s.get("phase") if s.get("busy") else None,
+        owned_slots = {r["slot_id"] for r in active if r["slot_id"] is not None}
+        draining = sum(busy for slot, busy in enumerate(getattr(self.engine, "slot_busy", []))
+                       if slot not in owned_slots)
+        if state == "idle" and draining:
+            state = "draining"
+        live = {"state": state, "queued": s.get("queued", 0), "phase": s.get("phase") if s.get("busy") else None,
                 "prompt_tokens": s.get("prompt_tokens") if s.get("busy") else None,
                 "prompt_read": None, "prompt_total": None, "generated": s.get("generated") if s.get("busy") else None,
                 "max_tokens": s.get("max_tokens") if s.get("busy") else None,
                 "elapsed_s": round(now - s["started"], 1) if s.get("busy") and s.get("started") else None,
                 "tok_s": round(self._tok_s(), 1) if state == "generating" else None,
                 "tok_s_mean": round(self._tok_s_mean(), 1) if state == "generating" else None,
-                "prefill_tok_s_mean": getattr(self.engine, "prefill_tok_s_mean", None) if s.get("busy") else None,
-                "tok_s_window_s": RATE_WINDOW_S if state == "generating" else None}
-        if state == "reading" and progress:
+                "prefill_tok_s_mean": self._prefill_tok_s_mean() if s.get("busy") else None,
+                "tok_s_window_s": RATE_WINDOW_S if state == "generating" else None,
+                "active": s.get("active", int(bool(s.get("busy")))),
+                "running": s.get("active", int(bool(s.get("busy")))),
+                "in_flight": s.get("in_flight", int(bool(s.get("busy"))) + s.get("queued", 0)),
+                "rate_scope": "aggregate_server_output", "draining_slots": draining}
+        if state == "reading" and progress and len(active) <= 1:
             live["prompt_read"], live["prompt_total"] = progress
         engine = {"model": self.model, "max_context": self.engine.max_context, "images": self.vision is not None,
                   **dict(getattr(self.engine, "info", {}) or {})}
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
-        return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
+        return {"engine": engine, "live": live, "active_requests": active,
+                "requests": hist[::-1][:None if all_requests else 12],
                 "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
                 "hardware_static":
                 tel["static"], "history": tel["history"], "time": now}
@@ -1566,6 +1685,7 @@ class Service:
         that polls its OpenAI-compatible server's status, collabosm's for one): the model and its window, images,
         the APIs, what is running, and the last request's timings in llama.cpp's names.  /metrics has the rest."""
         with self.status_lock:
+            self._refresh_status_locked()
             s, totals = dict(self.status), dict(self.totals)
             last_t, last_at = (dict(self.last_timings) if self.last_timings else None), self.last_request_at
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "static": {}}
@@ -1588,8 +1708,9 @@ class Service:
             "concurrency": {"serving": 1, "requested": 1},       # one request at a time; more wait their turn
             "dialects": ["/v1/chat/completions", "/v1/messages"],
             "vision": {"enabled": images, "available": images, "error": None},
-            "activity": {"requests": totals["requests"] + int(busy), "in_flight": int(busy) + int(s.get("queued") or 0),
-                         "last_request_at": int(last_at) if last_at else None},
+            "activity": {"requests": totals["requests"] + s.get("in_flight", int(busy) + int(s.get("queued") or 0)),
+                         "in_flight": s.get("in_flight", int(busy) + int(s.get("queued") or 0)),
+                         "unit": "generation", "last_request_at": int(last_at) if last_at else None},
             "last_timings": last_t,
             "machine": {
                 "at": int(time.time()),
@@ -1656,13 +1777,25 @@ class Service:
             max_new = max(1, room)          # --fit-max-tokens: a shorter completion beats a 400
         return ids, kwargs.get("enable_thinking", True) is not False, max_new
 
-    def _note(self, n, evs):
+    def _note(self, s, n, evs):
         with self.status_lock:
-            s = self.status
-            s["generated"] = n
+            s["stats"].output()
+            now = time.monotonic()
             if s.get("first_token") is None:
+                if not any(r.get("first_token") is not None for r in self.active_requests.values()):
+                    self._epoch_started, self._epoch_emitted0 = now, self._emitted
+                    self.rate.clear()
                 s["first_token"] = time.time()
-            self.rate.append((time.time(), n))          # the live rate's window over the last RATE_WINDOW_S
+                s["first_token_s"] = now - s["clock"]
+            if s.get("last_token_clock") is not None:
+                s["max_token_gap_s"] = max(s["max_token_gap_s"], now - s["last_token_clock"])
+            s["last_token_clock"] = now
+            self._emitted += max(0, n - s["generated"])
+            s["generated"] = n
+            if self.rate and int(now * 20) == int(self.rate[-1][0] * 20):
+                self.rate[-1] = (now, self._emitted)
+            else:
+                self.rate.append((now, self._emitted))
             for ev in evs:
                 if ev.kind == "reasoning":
                     s["phase"] = "thinking"
@@ -1673,17 +1806,18 @@ class Service:
                 elif ev.kind == "tool_call":
                     s["phase"] = "tool call complete"
                 s["tail"] = ((s.get("tail") or "") + (ev.text or ""))[-600:]
+            self._refresh_status_locked()
 
-    def _progress(self, last_print, every=1.0):
+    def _progress(self, state, last_print, every=1.0):
         """A progress line in the server window every `every` seconds while a request runs."""
         now = time.time()
         if now - last_print < every:
             return last_print
         with self.status_lock:
-            s = dict(self.status)
+            s = dict(state)
         el = now - s.get("started", now)
         if s.get("first_token") is None:
-            pr = getattr(self.engine, "progress", None)   # (position reached, prompt tokens): a reused prefix counts
+            pr = s["stats"].view()["prompt_progress"]
             done = f"{pr[0]:,} of {pr[1]:,}" if pr and pr[1] else f"{s.get('prompt_tokens', 0):,}"   # as read (#29)
             print(f"[strata] reading the prompt: {done} tokens, {el:.0f} s so far", flush=True)
         else:
@@ -1701,63 +1835,65 @@ class Service:
             sampling = {**defaults, **req_values}
         parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True)
         detok, n, finish = Detokenizer(self.tok), 0, "length"
-        timings, before = None, None                    # this request's timings; the engine's `last` before it
+        timings = None
+        stats = GenerationStats(len(ids))
         raw_ids = []                                    # every generated id (STRATA_DEBUG: dump raw model text)
         emb = getattr(self.embeddings, "path", None)
-        # Identity token: only a DONE line replaces engine.last, so a request that died, errored or was
-        # disconnected must not have the PREVIOUS request's decode figures recorded as its own.
-        engine_last0 = getattr(self.engine, "last", None)
         trace = getattr(self.request_trace, "record", None)
         waiting = time.perf_counter()
+        s = {"id": uuid.uuid4().hex, "started": time.time(), "clock": time.monotonic(), "queued": True,
+             "phase": "queued", "prompt_tokens": len(ids), "max_tokens": max_new, "generated": 0,
+             "first_token": None, "max_token_gap_s": 0.0, "stats": stats}
+        s["request_id"] = getattr(self.request_trace, "request_id", None) or s["id"]
         with self.status_lock:
-            self.status["queued"] += 1
+            self.active_requests[s["id"]] = s
+            self._refresh_status_locked()
         try:
             # --batch: the engine runs several requests at once (StrataEngine.generate_batched orders them)
-            req_started = req_first = None              # set once this request starts (below)
             with (contextlib.nullcontext() if getattr(self.engine, "batch", 0) else self.fifo):
                 try:
                     with self.status_lock:
                         if trace is not None:
                             trace["queue_s"] += round(time.perf_counter() - waiting, 3)
                             trace["state"] = "generating"
-                        self.status["queued"] -= 1
-                    # issue #27: it died in an earlier request (or was unloaded) - start it again instead of failing
-                    self.ensure_loaded()
-                    req_started, req_first = time.time(), None   # this request's own clock (--batch: the status
-                    with self.status_lock:                          # is shared by the requests running together)
-                        self.inflight += 1
-                        self.status.update(busy=True, phase="reading the prompt", prompt_tokens=len(ids),
-                                           generated=0, started=req_started, first_token=None, tool=None, tail="",
-                                           max_tokens=max_new)
+                        s["queued"] = False
+                        s["queue_s"] = time.perf_counter() - waiting
+                        s["phase"] = "reading the prompt"
+                        stats.phase = "prefill"
+                        self._refresh_status_locked()
+                    # Serialize lifecycle transitions even for a batch server. Registered
+                    # generations prevent unload after this brief critical section.
+                    with (self.fifo if getattr(self.engine, "batch", 0) else contextlib.nullcontext()):
+                        self.ensure_loaded()
+                    with self.status_lock:
                         self.last_request_at = time.time()
-                        self.rate.clear()               # the previous request's samples must not leak into this one
-                    before = getattr(self.engine, "last", None)
                     last_print = time.time()
                     prompt, thought = ids, 0            # thought: the reasoning tokens so far (the budget's count)
                     while True:
                         gen = self.engine.generate(prompt, max_new - n, sampling, cancel, embeddings=emb) if emb \
                             else self.engine.generate(prompt, max_new - n, sampling, cancel)
+                        gen = ObservedGeneration(self.engine, gen, stats)
                         seg, wrap, leaving = [], False, False   # this pass's tokens; the budget is reached; closed
                         try:
                             for t in gen:
                                 if t is None:               # heartbeat while the engine is quiet
-                                    last_print = self._progress(last_print)
+                                    last_print = self._progress(s, last_print)
                                     yield "ping", None
                                     continue
                                 n += 1
-                                req_first = req_first or time.time()
                                 if trace is not None and trace["first_token_s"] is None:
                                     with self.status_lock:
                                         trace["first_token_s"] = round(time.perf_counter() - trace["_clock"], 3)
                                 if t in self.stop_ids:
                                     finish = "stop"
                                     raw_ids.append(t)
+                                    self._note(s, n, [])
                                     break
                                 raw_ids.append(t)
                                 seg.append(t)
                                 evs = parser.feed(detok.push(t))
-                                self._note(n, evs)
-                                last_print = self._progress(last_print)
+                                self._note(s, n, evs)
+                                last_print = self._progress(s, last_print)
                                 for ev in evs:
                                     yield "event", ev
                                 if budget and parser.state == "reasoning":
@@ -1802,7 +1938,7 @@ class Service:
                             n += 1
                             raw_ids.append(t)
                             evs = parser.feed(detok.push(t))
-                            self._note(n, evs)
+                            self._note(s, n, evs)
                             for ev in evs:
                                 yield "event", ev
                         prompt = prompt + seg + extra
@@ -1811,17 +1947,18 @@ class Service:
                 except GeneratorExit:                   # the client disconnected mid-stream
                     finish = "disconnect"
                     raise
+                except Exception:
+                    finish = "error"
+                    raise
                 finally:
-                    # #266: settle this request's status, history and totals while still holding the fifo: once
-                    # it is released the next request sets its own status, which this must not record or clear
+                    # Settle this generation once, independently of the other active slots.
                     with self.status_lock:
-                        batched = bool(getattr(self.engine, "batch", 0))
-                        if (self.status.get("busy") or batched) and req_started is not None:   # --batch: each one
-                            # only this request's DONE counts: same object means no DONE arrived (death, error,
-                            # disconnect)
-                            last = dict(getattr(self.engine, "last", {}) or {}) \
-                                if getattr(self.engine, "last", None) is not engine_last0 else {}
-                            started = req_started
+                        if s["id"] in self.active_requests:
+                            with stats.lock:
+                                last, measured = stats.result(), stats.view()
+                            if trace is not None:
+                                trace["queue_s"] += round((measured["control_wait_ms"] + measured["slot_wait_ms"]) / 1000, 3)
+                            started = s["started"]
                             cvec = (getattr(self.engine, "info", {}) or {}).get("cvec", 0)
                             loaded = str(cvec) not in ("0", "", "None")
                             hit_rate = round(last["hits"] / last["lookups"], 3) if last.get("lookups") else None
@@ -1829,7 +1966,14 @@ class Service:
                             self.history.append({
                                 "projection": (sampling or {}).get("experimental_speed_projection") is not False
                                 if loaded else None,
-                                "time": started, "duration_s": round(time.time() - started, 1), "finish": finish,
+                                "id": s["id"], "request_id": s["request_id"], "time": started,
+                                "duration_s": round(time.monotonic() - s["clock"], 3), "finish": finish,
+                                "first_token_s": s.get("first_token_s"), "max_token_gap_s": s["max_token_gap_s"],
+                                "server_decode_wall_s": max(0.0, s["last_token_clock"] - s["clock"] - s["first_token_s"])
+                                if s.get("last_token_clock") is not None else None,
+                                "queue_s": s.get("queue_s"), "measurement_scope": "server_generation_consumer",
+                                "decode_scope": last.get("decode_scope"), "prompt_scope": last.get("prompt_scope"),
+                                "engine_prompt_read_total": last.get("engine_prompt_read_total"), **measured,
                                 "prompt_tokens": seen, "reused": last.get("reused"), "output_tokens": n,
                                 # the request's whole prompt, and the tokens read of it (None: an older engine)
                                 "prompt_total": len(ids), "prompt_read": last.get("prompt_read"),
@@ -1842,6 +1986,9 @@ class Service:
                                 # #457: the speculative drafts from the DONE line (None: the engine did not say)
                                 "drafts_offered": last.get("drafts_offered"),
                                 "drafts_accepted": last.get("drafts_accepted")})
+                            self.latencies.observe(s.get("first_token_s"), n,
+                                                   (last.get("decode_ms") or 0.0) / 1000,
+                                                   time.monotonic() - s["clock"])
                             t = self.totals
                             t["requests"] += 1
                             t["prompt_tokens"] += seen
@@ -1851,16 +1998,12 @@ class Service:
                             t["decode_ms"] += last.get("decode_ms") or 0.0
                             t["drafts_offered"] += last.get("drafts_offered") or 0
                             t["drafts_accepted"] += last.get("drafts_accepted") or 0
-                            self.latencies.observe(req_first - started if req_first else None, n,
-                                                   (last.get("decode_ms") or 0.0) / 1000, time.time() - started)
-                            fresh = getattr(self.engine, "last", None)
-                            if fresh is not None and fresh is not before:      # the engine's clock for THIS request
-                                timings = request_timings(seen, n, last)
-                                self.last_timings = dict(timings, at=int(time.time())) if timings else None
+                            timings = request_timings(seen, n, last)
+                            self.last_timings = dict(timings, at=int(time.time())) if timings else None
                             self.last_request_at = time.time()
                             now = time.time()
-                            el = now - started
-                            ft = req_first
+                            el = time.monotonic() - s["clock"]
+                            ft = s.get("first_token")
                             rate = n / max(1e-6, now - ft) if ft else 0.0
                             hit_msg = f", expert cache {hit_rate*100:.1f}% hit" if hit_rate is not None else ""
                             print(f"[strata] done: {n} tokens in {el:.0f} s ({rate:.1f} tok/s) "
@@ -1871,12 +2014,13 @@ class Service:
                                       "strata-<model>.json for every request) leaves room to answer", flush=True)
                             if os.environ.get("STRATA_DEBUG") and raw_ids:
                                 print(f"[strata] raw: {self.tok.decode(raw_ids)!r}", flush=True)
-                        if req_started is not None:
-                            self.inflight -= 1
-                        if not self.inflight:               # --batch: busy until the last request running ends
-                            self.status["busy"] = False
-                        self.status.pop("tail", None)            # #212: the answer's end is not kept once it is done
-                        self.status.pop("tool", None)
+                        self.active_requests.pop(s["id"], None)
+                        if self.active_requests:
+                            self._refresh_status_locked()
+                        else:
+                            self.status = {"busy": False, "queued": 0, "active": 0, "in_flight": 0}
+                        s.pop("tail", None)                 # never retain answer text in metric history
+                        s.pop("tool", None)
         finally:
             if emb:
                 Path(emb).unlink(missing_ok=True)
@@ -1912,6 +2056,7 @@ def request_timings(prompt_tokens: int, generated: int, last: dict) -> dict | No
             "predicted_n": generated, "predicted_ms": round(decode_ms, 1),
             "predicted_per_token_ms": round(decode_ms / decoded, 3) if decoded else None,
             "predicted_per_second": round(decoded / (decode_ms / 1000), 1) if decoded and decode_ms > 0 else None,
+            **({k: last[k] for k in ("decode_scope", "prompt_scope", "engine_prompt_read_total") if k in last}),
             # the speculative drafts, as llama.cpp names them (from PR #83, @mikicvi): only when the engine reported them
             **({"draft_n": int(last["drafts_offered"]), "draft_n_accepted": int(last["drafts_accepted"])}
                if last.get("drafts_offered") is not None else {})}
@@ -2248,6 +2393,7 @@ def make_handler(svc: Service):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.0"                       # SSE ends by closing the connection
 
+        request_id = None                                   # content-free id, also exposed in response headers
         record = None                                       # #332: this request's monitor record, if kept
         watch_done = None                                   # #430 #431: stops this request's disconnect watcher
 
@@ -2345,6 +2491,7 @@ def make_handler(svc: Service):
             self.send_header("Access-Control-Allow-Headers",
                              asked or "Authorization, Content-Type, x-api-key, anthropic-version, anthropic-beta")
             self.send_header("Access-Control-Max-Age", "600")
+            self.send_header("Access-Control-Expose-Headers", "X-Strata-Request-ID")
 
         def do_OPTIONS(self):
             # a CORS preflight: no credentials come with it, so no API key; the headers only for cors_origins
@@ -2367,6 +2514,8 @@ def make_handler(svc: Service):
             self.send_header("Content-Type", "application/json")
             self._cors()
             self.send_header("Content-Length", str(len(body)))
+            if self.request_id is not None:
+                self.send_header("X-Strata-Request-ID", self.request_id)
             self.end_headers()
             self.wfile.write(body)
 
@@ -2463,6 +2612,7 @@ def make_handler(svc: Service):
                 if not self._authorized():                  # #212: it shows the end of the last answer
                     return
                 with svc.status_lock:
+                    svc._refresh_status_locked()
                     s = dict(svc.status)
                 now = time.time()
                 if s.get("busy"):
@@ -2560,6 +2710,7 @@ def make_handler(svc: Service):
                     return
                 if path in ("/v1/chat/completions", "/v1/messages"):
                     self.record = svc.begin_request(path, req)
+                    self.request_id = svc.request_trace.request_id
                 if path == "/v1/chat/completions":
                     self._openai(req)
                 elif path == "/v1/messages":
@@ -2594,7 +2745,8 @@ def make_handler(svc: Service):
                         record["wallclock_s"] = round(time.perf_counter() - record["_clock"], 3)
                         record["finished_at"] = time.time()
                         record["state"] = "error" if record.get("error") else record.get("outcome", "completed")
-                    svc.request_trace.record = None
+                svc.request_trace.record = None
+                svc.request_trace.request_id = None
 
         def _props(self):
             model = parse_qs(urlsplit(self.path).query).get("model", [svc.model])[0]
@@ -2659,6 +2811,8 @@ def make_handler(svc: Service):
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
             self.send_header("X-Accel-Buffering", "no")   # nginx and similar proxies pass each event at once
+            if self.request_id is not None:
+                self.send_header("X-Strata-Request-ID", self.request_id)
             self._cors()
             self.end_headers()
 
