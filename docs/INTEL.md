@@ -1,6 +1,6 @@
 # Strata on an Intel Arc
 
-Strata's engine is CUDA. On an Intel Arc it runs as **Strata's own engine, ported to SYCL** (`sycl/`, the
+Strata's engine is CUDA (and HIP for AMD). On an Intel Arc it runs as **Strata's own engine, ported to SYCL** (`sycl/`, the
 section "The engine itself on Intel" below). It sits behind the same Strata server, so the OpenAI and Anthropic
 APIs, streaming, tool calls, MCP and the web app are all unchanged. llama.cpp's SYCL backend is the comparison
 point: it runs the same GGUF, several times slower.
@@ -61,16 +61,16 @@ above the checkout, or `STRATA_SYCL_ROOT`.
 Then `run-<model>.sh` (or `sycl/setup_intel.py` again) starts the model. `--port N` and `--host 0.0.0.0` work as
 in upstream's setup.
 
-**Several cards.** The image pins `ONEAPI_DEVICE_SELECTOR=level_zero:0`. `serve/strata-sycl.sh` forwards the
+**Several cards.** The image pins `ONEAPI_DEVICE_SELECTOR=level_zero:0`. `sycl/serve/strata-sycl.sh` forwards the
 host's value when it is set. Without one, a `--layer-split` defaults to `level_zero:gpu`, so the engine sees every
 card.
 
 ## Things that matter on this GPU
 
-These apply to running llama.cpp by hand on the card.
+The first three apply to running llama.cpp's server on the card; the thinking switch applies to both engines.
 
-- **`SYCL_CACHE_PERSISTENT` must be 0.** The persistent JIT cache segfaults on Xe2 during the first
-  compile. The start script sets it; if you run llama-server by hand, do too.
+- **`SYCL_CACHE_PERSISTENT` must be 0 for llama.cpp.** Its persistent JIT cache segfaulted on Xe2 during the first
+  compile. The llama.cpp start script sets it; if you run llama-server by hand, do too.
 - **The whole model goes on the card** (`--n-gpu-layers 999`), except `per_layer_token_embd.weight`, the single
   28.8 GB tensor of shard 2.
   - `--override-tensor per_layer_token_embd=CPU` keeps that tensor in host memory, mmapped and paged from the SSD
@@ -81,7 +81,7 @@ These apply to running llama.cpp by hand on the card.
   - send `chat_template_kwargs: {"enable_thinking": false}` per request.
 
   Without one of those, a short `max_tokens` is spent entirely inside the think block and the answer looks empty.
-- **`/health` says 503 while loading**; the server polls `/props` instead.
+- **llama-server's `/health` says 503 while loading**; poll `/props` instead.
 
 ## How much context fits
 
@@ -111,7 +111,8 @@ This table is for llama.cpp. The architecture keeps the KV small: only every fou
 
 ## The engine itself on Intel: the SYCL port (`sycl/`)
 
-This is Strata's own engine built for the Arc with oneAPI: the 50 CUDA kernels and the host code that drives them
+This is Strata's own engine built for the Arc with oneAPI: the CUDA kernels (about 270, in 53 `.cu` files) and the
+host code that drives them
 (streams, events, graph capture, pinned memory). It is a migration of the tree, not a new backend: the engine has
 no backend seam to slot into.
 
@@ -121,9 +122,10 @@ no backend seam to slot into.
 
 **How it was made, so it can be redone.**
 
-1. **`sycl/tools/Dockerfile`:** the dev image. It is the llama.cpp SYCL image plus SYCLomatic (`dpct` 2025.3),
-   ninja, and the CUDA 12.8 headers that `sycl/tools/get-cuda-headers.sh` pulls out of NVIDIA's pip wheels. dpct
-   parses CUDA, so it needs the headers, not the toolkit.
+1. **`sycl/tools/Dockerfile`:** the dev image. It is the llama.cpp SYCL image plus SYCLomatic (`dpct` 2025.3) and
+   ninja. dpct parses CUDA, so it needs the CUDA 12.8 headers, not the toolkit: `sycl/tools/get-cuda-headers.sh`
+   pulls them out of NVIDIA's pip wheels, and the migration mounts them at `/cuda-headers`. Building the port does
+   not need them.
 2. **`sycl/tools/migrate.sh`:** writes a compilation database for the 86 CUDA-touching translation units and runs
    dpct over them. 85 migrate; dpct reports no line it could not migrate, and about 1,400 advisory notes.
 3. **`sycl/tools/fixups.py`:** what dpct got wrong or could not do, as an idempotent script with a reason per item.
@@ -156,6 +158,20 @@ no backend seam to slot into.
 | iq_parity, ple_parity, native_expert_parity | need fixtures or model files |
 | s2_expert_grouped_parity | fails (the s2 path, unused here) |
 
+**How to build it.** The checkout must sit inside a data root that holds the models too (the container mounts it
+at `/work`; `REPO` is the checkout's path inside it):
+
+```
+docker build -t strata-sycl-dev -f sycl/tools/Dockerfile sycl/tools
+docker run --rm -e AOT=bmg-g31 -e BUILD_DIR=/work/<checkout>/build-sycl-aot -e REPO=/work/<checkout> \
+    -v <data root>:/work strata-sycl-dev "bash /work/<checkout>/sycl/tools/build.sh"
+```
+
+- `AOT` is the card's device target: `bmg-g31` for the B70 (what everything here was measured on). The B580 report
+  in INTEL_PERFORMANCE.md used `bmg-g21`. `ocloc compile --help` in the image lists the targets (`-device`).
+- `JOBS` (default 12) caps the parallel compiles; the B70 machine (23 GB of RAM) builds with `JOBS=8`.
+- `sycl/tools/build.sh <target>` builds one target (`strata`, a parity test, a bench).
+
 **How to run it by hand.** This is a greedy test run, the way the engine numbers are measured. Run it inside the
 `strata-sycl-dev` image, with the AOT build in `build-sycl-aot/`:
 
@@ -173,14 +189,14 @@ build-sycl-aot/strata --pack <iq pack> --native <shard1> --ple-gguf <shard2> \
 - **`STRATA_VERIFY_NO_HOST=1`** (this port): the host waits for the whole window graph instead of per-layer
   rings. Only valid with every expert resident or in the pinned host mirror.
 - **`--mtp`:** the base Qwen3.8-Flash-Next checkpoint's MTP draft layer (`tools/mtp_fetch.py fetch`,
-  `mtp_pack.py --experts q2_0`, `mtp_rt.py`; 4.9 GB downloaded, 809 MiB of VRAM). It drafts for the Coder
+  `mtp_pack.py --experts q2_0`, `mtp_rt.py`; 4.9 GB downloaded, about 860 MiB of VRAM). It drafts for the Coder
   fine-tune with the same greedy tokens. The suffix drafter alone is rarely accepted on this card, which makes the
   draft layer the lever for decode.
 - **IDs over 128 KB:** 80K-token ids exceed Linux's 128 KB single-argument limit, so use `--tokens-file`.
 
-AOT device code is what runs: `AOT=bmg-g31 BUILD_DIR=.../build-sycl-aot`. Without AOT, the runtime JIT-compiles
-every kernel on first use, which is slow the first time a process runs.
-`SYCL_CACHE_PERSISTENT=1 SYCL_CACHE_DIR=<dir>` keeps the result across runs.
+AOT device code is what runs ("How to build it" above). Without AOT, the runtime JIT-compiles every kernel on
+first use, which is slow the first time a process runs. `SYCL_CACHE_PERSISTENT=1 SYCL_CACHE_DIR=<dir>` kept the
+port's JIT result across runs on the B70 (the segfault above was llama.cpp's); the AOT build needs neither.
 
 **What the port had to get right beyond compiling.** Each item is an entry in `sycl/tools/fixups.py` or a flag.
 
@@ -213,11 +229,13 @@ every kernel on first use, which is slow the first time a process runs.
 - `sycl/benchy.sh` (benchy v1) runs the standard bench (`sycl/tools/perf_matrix.py`): every model x the v1 prompt
   sizes, with each model's serve config, from a cold page cache. Its report is what INTEL_PERFORMANCE.md asks
   submitters to post.
-
-- `sycl/tools/Dockerfile.unitrace` builds the dev image with Intel's unitrace. Run `unitrace -d` around the engine,
-  then `sycl/rank_kernels.py`, for device time per kernel.
-- `strata-sycl-dev:metrics`, with Intel's metrics libraries and `dev.xe.observation_paranoid=0`, gives hardware
-  counters.
+- `sycl/tools/Dockerfile.unitrace` builds the dev image with Intel's unitrace (`strata-sycl-dev:unitrace`). Run
+  `unitrace -d` around the engine, then `sycl/tools/rank_kernels.py <log>`, for device time per kernel.
+- Hardware counters need Intel's metrics libraries in the image and `dev.xe.observation_paranoid=0`; that image is
+  not in the repo.
+- `sycl/probe/` holds the small standalone programs behind the platform findings: `doorbell.cpp` (host<->device
+  flags), `bw.cpp` (read bandwidth), `hostread.cpp`, `graphbench.cpp`, `nodecost.cpp`, `xmx.cpp`. Build each with
+  `icpx -fsycl` in the dev image.
 - `mmvq_bench`, `mmvq_sg_bench`, `q6k_align_bench`, `xmx_gemm_bench`, `xmx_int8_bench` and
   `native_expert_parity NATIVE_BENCH=1` time kernels in isolation. Warm the clocks first: a 5 ms run measures the
   ramp, not the kernel.
@@ -240,10 +258,10 @@ every kernel on first use, which is slow the first time a process runs.
   migrating buffers and the run never finishes. Setup's reserves (1,024 MiB to 32K; 2,048 MiB with
   `--prefill 4096` above) leave room.
 - **Streamed experts.** Experts the cache does not hold are copied for every chunk, in one of two walks:
-  - **Stream-all:** every non-resident expert, layer by layer ahead of the compute. This is the default when the
-    VRAM holds more than 90% of the (layer, expert) pairs.
-  - **Routed-only:** only the experts the chunk routes to (`STRATA_PREFILL_RING=8`). This is the default otherwise.
-    Past 90%, stream-all would copy several times the routed experts.
+  - **Stream-all:** every non-resident expert, layer by layer ahead of the compute. This is the default for chunks of
+    1,024 tokens or more (`STRATA_PREFILL_STREAM_MIN`) when the VRAM holds more than 90% of the (layer, expert) pairs.
+  - **Routed-only:** only the experts the chunk routes to (`STRATA_PREFILL_RING=8`). This is the default otherwise:
+    for smaller chunks, and past 90%, where stream-all would copy several times the routed experts.
 
   `STRATA_PREFILL_STREAM_ALL=1` / `=0` force a walk. The stager threads read the blobs themselves; an early version
   held `GgufExpertSource::blob()` pointers across reads of the ring, and those blobs were overwritten before they
@@ -277,8 +295,8 @@ the products. Every hand-written joint_matrix kernel so far is correct but loses
   - Only 12 of the 16 matrix rows are real heads.
   - Grouping neighbouring positions would cut the gather but multiply the arithmetic, because their selections
     overlap little. It was not built.
-- **Expert dot products on int8 DPAS for decode:** opt-in `STRATA_EXPERT_XMX=1`; do not enable. At 1-6 rows, the
-  grid decode and the packed-B layout cost more than the DPAS saves, and one version hung the GPU.
+- **Expert dot products on int8 DPAS for decode:** three versions were tried and are not in the tree. At 1-6 rows,
+  the grid decode and the packed-B layout cost more than the DPAS saves, and one version hung the GPU.
 - **An int8 DPAS GEMM straight from IQ4_NL for prompts** (`xmx_int8_bench`, standalone).
   - One 32-element block per DPAS, rescaled by d_x * d_w after each.
   - The per-block rescale keeps the matrix engine waiting.
@@ -399,8 +417,9 @@ mirror. They are refreshed by re-migration, not by hand:
 4. **Merge:** `sycl/tools/merge_upstream.py BASE_OUT NEW_OUT OLD_REV NEW_REV` 3-way merges only the files upstream
    changed.
    - It canonicalizes dpct's kernel-name hashes to the port's first, and resolves hash-only hunks.
-   - Copies dpct never produced take upstream's diff by hand: `verify.cpp`, `mtp.cpp`, `ple_reader.cpp` and
-     `native_expert_parity.cpp`, which include no CUDA header directly.
+   - Four files take upstream's diff by hand (the script's `HAND` list): `verify.cpp`, `mtp.cpp` and
+     `ple_reader.cpp`, which dpct never produced (they include no CUDA header directly), and
+     `native_expert_parity.cpp`, which was hand-ported.
    - New parity tests are copied in and listed in `sycl/CMakeLists.txt`.
    - `git merge-file --diff-algorithm=histogram` aligns big restructures better.
    - To port open upstream PRs ahead of upstream: migrate main plus the PRs, and merge into only the files they
@@ -409,7 +428,7 @@ mirror. They are refreshed by re-migration, not by hand:
    fixup, re-run it, rebuild.
 6. **Audit symbols.** Count the port's feature identifiers before and after. It has caught a dropped mirror hook and
    doorbell waits that had lost their spin bound.
-7. **Check outputs.** Compare greedy output tokens against the previous build: Coder 19 / 2,184-token prompts,
+7. **Check outputs.** Compare greedy output tokens against the previous build: Coder 20 / 2,185-token prompts,
    IQ2_XS, and a 40K prompt.
 
 What each merge needed:
