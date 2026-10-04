@@ -89,6 +89,29 @@ A rounding-order control as in the V100 report did not work here: `--prefill 204
 chunk did take effect, 1,059 lent slots instead of the 8192-token ring) gave results **bit-identical** to the old path, so on
 this path the chunking does not change the arithmetic and cannot serve as a control.
 
+## Where the rounding moves
+
+Round-to-nearest bounds per value rounded, for values in FP16's normal range (|x| ≥ 6.1e-5; below that FP16 is
+subnormal and its relative error grows): BF16 keeps 8 significant bits (≤ 2^-8 ≈ 0.39%), FP16 keeps 11
+(≤ 2^-11 ≈ 0.049%) but ends at 65504. Both paths accumulate in fp32.
+
+| | old path | FP16 path |
+| --- | --- | --- |
+| BF16-weight products: hyper-connection down / up / inject, router, shared-expert gate, indexer, `ssm_alpha` / `ssm_beta`, PLE | W: the pack's BF16; **X rounded to BF16** (≤ 0.39% per element); Y fp32 | W converted to FP16 (exact in the normal range; 0.1-0.9% of these weights lie below it); X rounded to FP16 (≤ 0.049% per element); **Y rounded to FP16** (≤ 0.049%), then widened |
+| quantized-weight products through `Gemm::native` / `Gemm::f16`, beta = 0 (X and W already FP16 in both paths) | Y fp32 | **Y rounded to FP16** (≤ 0.049%), then widened |
+
+So the change removes most of the BF16 activation rounding and adds an FP16 rounding of every output. The two are not
+directly comparable - an element's rounding enters a K-long dot product, where it partly cancels or adds up depending
+on the data - which is why the distribution check above measures the net effect instead of arguing it. The reference
+(`STRATA_PREFILL_BF16X2=1`) differs from the old path in exactly the term this change shrinks (it adds the BF16 low part
+to every one of these activations), and the FP16 path comes out closer to it: by median KL and argmax agreement in all
+three chats, by mean KL in two (the 106K chat's mean is pulled up by a few positions beyond its lower p99).
+
+Not shown: the reference is not an fp32 forward pass, and this is one model, one corpus and 1,578 positions. A comparison
+against an fp32 forward pass (e.g. llama.cpp on the CPU) is a follow-up for when time allows. Range is
+the cost: the range check found nothing beyond 65504 here, but a model whose activations or BF16 weights reach that far
+would need `STRATA_HIP_PROMPT_F16=0`.
+
 ## Output checks
 
 - **Needle recall** (`tools/needle_bench.py --lengths 8k,32k,128k --depths 10,30,50,70,90`, greedy, thinking off, a fresh
