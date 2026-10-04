@@ -509,7 +509,7 @@ public:
     /// #577: the same decision once the RAM copy is built (pin_cache_complement), from the RAM it really holds and the
     /// expert bytes outside it; switches either way (startup only, nothing reading).  Returns whether unbuffered.
     bool recheck_unbuffered(std::string& why);
-    bool unbuffered() const { return !direct_.empty(); }
+    bool unbuffered() const { return !direct_.empty() || !direct_fd_.empty(); }
     /// Every expert's bytes (n_layers x n_expert blobs).
     uint64_t expert_bytes() const;
     /// #286, unbuffered: assembles the blobs of these pairs ahead of the `blob` calls that will ask for them (the
@@ -530,7 +530,7 @@ public:
     /// madvise(WILLNEED) elsewhere), skipping the RAM copy's.
     void warm(int64_t layer, const int64_t* experts, int64_t n) override;
     /// Not when the reads are unbuffered: the warmed pages would be read through the file cache, a second time.
-    bool warms() const override { return !role_ptr_.empty() && direct_.empty(); }
+    bool warms() const override { return !role_ptr_.empty() && !unbuffered(); }
     /// Of the blobs the file tier read for the decode, how many had been warmed for their layer beforehand.
     int64_t warmed_hits() const { return warm_hits_.load(std::memory_order_relaxed); }
     int64_t warmed() const { return warm_count_.load(std::memory_order_relaxed); }
@@ -557,9 +557,10 @@ private:
     bool open_direct(std::string& why);
     std::vector<std::string> paths_;          ///< the mapped files, as maps_
     std::vector<void*> direct_;               ///< #286: per file, an unbuffered overlapped handle (Windows)
+    std::vector<int> direct_fd_;              ///< #286: per file, a buffered O_RDONLY fd for the expert reads (Linux)
     std::vector<int> role_file_;              ///< 3 x n_layers: index into maps_ / direct_
     /// blobs assembled in the stage buffers (`blob` hands those out): the GGUF in place, or any unbuffered source
-    bool staged() const { return !role_ptr_.empty() || !direct_.empty(); }
+    bool staged() const { return !role_ptr_.empty() || unbuffered(); }
     static constexpr uint64_t kNoComplement = detail::kNoCacheComplement;
     // ---- CS-T: the GGUF shards in place
     std::string gguf_;

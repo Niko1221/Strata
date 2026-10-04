@@ -3462,7 +3462,7 @@ int main(int argc, char** argv) {
         std::future<void> ahead;
         auto read_batch = [&](int64_t at) { src.prefetch_pairs(profile.data() + at, std::min<int64_t>(64, want - at)); };
         for (int64_t i = 0; i < want; ++i) {
-            if (!per_layer && srcp == &src && src.unbuffered() && i % 64 == 0) {
+            if (!per_layer && srcp == &src && i % 64 == 0) {
                 if (ahead.valid()) ahead.get();
                 else read_batch(i);
                 if (i + 64 < want) ahead = std::async(std::launch::async, read_batch, i + 64);

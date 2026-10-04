@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -55,6 +56,26 @@
 #endif
 
 namespace strata::core {
+
+#if !defined(_WIN32)
+namespace {
+// Read exactly `len` bytes at `off` (buffered pread), looping over short reads and EINTR.  False on any error.
+bool pread_exact(int fd, uint8_t* dst, uint64_t len, uint64_t off) {
+    while (len > 0) {
+        const ssize_t got = ::pread(fd, dst, (size_t) len, (off_t) off);
+        if (got < 0) {
+            if (errno == EINTR) continue;
+            return false;
+        }
+        if (got == 0) return false;
+        dst += got;
+        off += (uint64_t) got;
+        len -= (uint64_t) got;
+    }
+    return true;
+}
+}  // namespace
+#endif
 
 namespace detail {
 
@@ -560,8 +581,11 @@ void FileExpertSource::close() {
     paths_.clear();
 #if defined(_WIN32)
     for (void* h : direct_) CloseHandle((HANDLE) h);
+#else
+    for (int fd : direct_fd_) ::close(fd);
 #endif
     direct_.clear();
+    direct_fd_.clear();
     {
         std::lock_guard<std::mutex> lk(stage_mu_);
         stage_buf_.clear();
@@ -699,7 +723,7 @@ bool FileExpertSource::open_gguf(std::string& err) {
 
 bool FileExpertSource::copy_from_files(int64_t layer, int64_t expert, uint8_t* dst) const {
     if (dst == nullptr || layer < 0 || expert < 0 || layer >= n_layers_ || expert >= n_expert_) return false;
-    if (!direct_.empty()) {   // #286: from the drive; a failed read falls back to the mapping below
+    if (unbuffered()) {   // #286: from the drive; a failed read falls back to the mapping below
         const Fill f{0, layer, expert, dst};
         if (read_direct(&f, 1)) return true;
     }
@@ -841,7 +865,7 @@ void FileExpertSource::prefetch(int64_t layer, const int64_t* experts, int64_t n
 }
 
 void FileExpertSource::prefetch_pairs(const std::pair<int32_t, int32_t>* pairs, int64_t n) {
-    if (direct_.empty() || pairs == nullptr || n <= 0) return;   // unbuffered only: the mapped fill stays as it was
+    if (!staged() || pairs == nullptr || n <= 0) return;   // mapped or unbuffered: fill_many reads the batch in parallel
     std::vector<Fill> todo;
     {
         std::lock_guard<std::mutex> lk(stage_mu_);
@@ -858,7 +882,7 @@ void FileExpertSource::prefetch_pairs(const std::pair<int32_t, int32_t>* pairs, 
 
 void FileExpertSource::fill_many(const std::vector<Fill>& todo) {
     if (todo.empty()) return;
-    if (!direct_.empty()) {
+    if (unbuffered()) {
         // #286: overlapped batches - every role window of 16 blobs in flight at once; a big batch (the profile
         // fill) on up to 4 threads, a decode layer's few misses on this one
         std::atomic<size_t> next{0};
@@ -949,8 +973,24 @@ bool FileExpertSource::open_direct(std::string& why) {
     }
     return true;
 #else
-    (void) why;
-    return false;
+    // Linux: buffered preads of whole role slices (see read_direct).  The pages are the same ones the mapping
+    // would bring in, so the RAM the budget was sized for is unchanged - but one request per slice instead of
+    // one per page fault, which the drive serves far faster.
+    for (const std::string& path : paths_) {
+        const int fd = ::open(path.c_str(), O_RDONLY);
+        if (fd < 0) {
+            why += "; cannot open " + path + " for direct reads, read through the file cache";
+            for (int f : direct_fd_) ::close(f);
+            direct_fd_.clear();
+            return false;
+        }
+        direct_fd_.push_back(fd);
+    }
+    if (role_ptr_.empty()) {   // experts.bin: blob() now assembles into the stage buffers, sized for the largest blob
+        std::lock_guard<std::mutex> lk(stage_mu_);
+        for (uint64_t b : layer_blob_bytes_) stage_blob_ = std::max(stage_blob_, b);
+    }
+    return true;
 #endif
 }
 
@@ -967,9 +1007,15 @@ bool FileExpertSource::set_unbuffered(uint64_t ram_bytes, std::string& why) {
     if (!experts_unbuffered(paths_, arena, why, /*cache_counts=*/false, experts - arena)) return false;
     return open_direct(why);
 #else
+    // Linux: no advisor (that is Windows-only) - the caller opted in (--resident-budget-gib or
+    // STRATA_UNBUFFERED_LOAD), so open the expert files for the direct reads.
     (void) ram_bytes;
-    why = "through the file cache (not Windows)";
-    return false;
+    if (base_ == nullptr || paths_.empty() || !direct_fd_.empty()) {
+        why = !direct_fd_.empty() ? "already unbuffered" : "no expert files open";
+        return !direct_fd_.empty();
+    }
+    why = "buffered preads of the expert files";
+    return open_direct(why);
 #endif
 }
 
@@ -1121,8 +1167,29 @@ bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
     }
     return true;
 #else
-    (void) fills; (void) n;
-    return false;
+    // Linux: one buffered pread per role slice from the shard that holds it.  A page fault reads a few KiB; a
+    // pread asks for the whole slice (hundreds of KiB) as one request.  Measured on a FUSE-NTFS expert shard:
+    // ~184 MB/s faulted vs ~340-518 MB/s read.  The pages are the same the mapping would bring in.
+    for (size_t k = 0; k < n; ++k) {
+        const Fill& f = fills[k];
+        if (f.dst == nullptr || f.layer < 0 || f.e < 0 || f.layer >= n_layers_ || f.e >= n_expert_) return false;
+        if (role_ptr_.empty()) {   // experts.bin: the blob is one contiguous range
+            const uint64_t per = layer_blob_bytes_[(size_t) f.layer];
+            const uint64_t off = layer_offsets_[(size_t) f.layer] + (uint64_t) f.e * per;
+            if (!pread_exact(direct_fd_[0], f.dst, per, off)) return false;
+            continue;
+        }
+        uint64_t at = 0;
+        for (int r = 0; r < 3; ++r) {
+            const size_t i = (size_t) (3 * f.layer + r);
+            const uint64_t per = role_bytes_[i];
+            const Map& m = maps_[(size_t) role_file_[i]];
+            const uint64_t off = (uint64_t) (role_ptr_[i] - m.base) + (uint64_t) f.e * per;
+            if (!pread_exact(direct_fd_[(size_t) role_file_[i]], f.dst + at, per, off)) return false;
+            at += per;
+        }
+    }
+    return true;
 #endif
 }
 
