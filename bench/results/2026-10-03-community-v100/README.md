@@ -147,3 +147,41 @@ answers (with and without the "cannot confirm" rows).
 
 Vision on this card is production-usable for inspection-style work: exact OCR on clean
 nameplates, honest abstention on unreadable fields, and no decode-speed cost.
+
+## Update (2026-10-05): IQ3_S vs IQ3_XXS on the same box
+
+The best-quality quant ("matches the full model") installed next to the IQ3_XXS one
+(`SETUP.bat --setup --model IQ3_S --gguf-dir ... --vision gpu`; new pack in the data dir,
+MTP draft and expert profile reused, `run-iq3_s.bat` + `strata-iq3_s.json` generated, the
+XXS install untouched). Calibrated on its own (settings are remembered per model):
+
+- IQ3_S: `--pcie-frac 0.20`, `--spec-min-p 0.70` - 61.6 tok/s in the calibrate bench
+  (IQ3_XXS on the same PC: `--pcie-frac 0.35`, `--spec-min-p 0.70` - 76.9 tok/s, so S runs
+  at 80% of XXS here; the release notes' expectation for S is 8-10% slower).
+- Worker sensitivity is back on S: 35 / 23 / 18 workers measured 61.6 / 58.7 / 55.4 tok/s
+  (an 11% spread) where XXS on 0.1.39 was flat within 2%. More bits per weight = more host
+  work per token, so thread count matters again on this dual-socket box.
+
+Same-prompt API measurements, both calibrated, images on, single runs (the two quants
+choose slightly different answer lengths; the trend is stable across repeats):
+
+| Workload | IQ3_XXS | IQ3_S | S / XXS |
+|---|---|---|---|
+| Short prose, ~170-220 tok out | 54.6 tok/s | 49.3 tok/s | 90% |
+| Long-form, 2-3.8k tok out | 64.2 tok/s | 59.4 tok/s | 92% |
+| 4,340-tok doc, prompt processing | 1,127 tok/s | 1,101 tok/s | 98% |
+| Same doc, decode, ~700-800 tok out | 72.3 tok/s | 53.3 tok/s | 74% |
+| Image prompt (control image), decode | 61.8 tok/s | 52.5 tok/s | 85% |
+
+Prompt processing is compute-bound and barely moves (-2%); decode is host/memory-bound and
+pays 8-26%, worst on the long-KV document workload. The expert cache holds fewer, larger
+experts: 12,321 (23.4 GiB incl. the vision reserve) vs XXS's 14,660 (23.8 GiB).
+
+**Quality.** Three hard prompts (H1: smallest n with exactly 2019 trailing zeros in n!,
+H3: minimum bracket flips with a proof of optimality, H5: find exactly 4 bugs in a Python
+class), identical params (thinking cap 4000, seed 42): both quants answered all three
+correctly with the same final values, at comparable token counts (both burn through a
+5,000-token cap on the hardest one; a re-run of S with 8,000 finished correctly at 4,525).
+On these prompts no quality gap is visible - on this DDR3-bandwidth box the ~20% decode
+cost of S buys nothing measurable, so XXS stays the daily driver and S is the
+quality-first option.

@@ -19,6 +19,10 @@ and their limits. Report what you actually measured and label estimates separate
   Strata 0.1.38 source build (sm_70), Flash-Next IQ3_XXS, 131,072-token context; field
   decode speeds before/after `--calibrate` (16.5 to 33.5 tok/s, with the sweep), prompt
   processing scaling to 863 tok/s on a 4.3k-token document, MTP acceptance 65-98%.
+  Updated to the 0.1.39 ready-made CUDA 12 engine: decode 64 tok/s long-form (2.3x the
+  0.1.38 calibrate bench), vision verified on sm_70, and a same-box IQ3_S vs IQ3_XXS
+  comparison (S at 80-98% of XXS depending on workload, no visible quality gap on hard
+  prompts).
 
 ## What to record
 
