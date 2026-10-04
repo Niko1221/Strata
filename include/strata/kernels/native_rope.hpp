@@ -17,4 +17,8 @@ bool native_rope_enabled();
 // The struct's knobs are process constants, so kernel arguments baked at graph capture stay valid.
 void native_rope_apply(const float* x, float* out, int rows, int head_dim,
                        int n_rot, const RopeScaling& scaling, const int* positions, void* stream);
+
+void native_qsa_rms_norm_rope(const float* x, int in_stride, const float* gamma, float* out,
+                              int rows, int head_dim, int n_rot, float epsilon,
+                              const RopeScaling& scaling, const int* positions, void* stream);
 }

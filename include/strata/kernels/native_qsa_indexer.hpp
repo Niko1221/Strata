@@ -43,4 +43,10 @@ void native_qsa_indexer_append(const float* raw, const int32_t* relative_pos_dev
                                const QsaIndexerBuffers& buffers, const QsaShapes& shapes,
                                int64_t max_cells, const RopeScaling& scaling, void* stream);
 
+void native_qsa_indexer_append_steps(const float* raw, const int32_t* relative_pos_device,
+                                     int pos_stride, int n_steps, int32_t pos_base,
+                                     const float* gamma, float epsilon,
+                                     const QsaIndexerBuffers& buffers, const QsaShapes& shapes,
+                                     int64_t max_cells, const RopeScaling& scaling, void* stream);
+
 } // namespace strata::kernels

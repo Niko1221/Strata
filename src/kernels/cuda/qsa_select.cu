@@ -729,7 +729,6 @@ __global__ void __launch_bounds__(SCORE_WARPS * 32) block_scores_multi_kernel(co
                                                                               int64_t max_blocks, float* __restrict__ out) {
     __shared__ __align__(16) float qs[MQ * IDX_HEADS * IDX_DIM];
     __shared__ int64_t s_nkv[MQ], s_nbid[MQ];
-    for (int i = threadIdx.x; i < nq * IDX_HEADS * IDX_DIM; i += blockDim.x) qs[i] = q_idx[i];
     if (threadIdx.x < nq) {
         s_nkv[threadIdx.x] = steps[threadIdx.x * kStepCount + kStepNKv];
         s_nbid[threadIdx.x] = steps[threadIdx.x * kStepCount + kStepNBid];
@@ -737,11 +736,14 @@ __global__ void __launch_bounds__(SCORE_WARPS * 32) block_scores_multi_kernel(co
     __syncthreads();
     int64_t top = 0;
     for (int q = 0; q < nq; ++q) top = s_nbid[q] > top ? s_nbid[q] : top;
+    if ((int64_t) blockIdx.x * SCORE_WARPS > top) return;
+    for (int i = threadIdx.x; i < nq * IDX_HEADS * IDX_DIM; i += blockDim.x) qs[i] = q_idx[i];
+    __syncthreads();
     const int lane = threadIdx.x & 31;
+    const float4 kd = *reinterpret_cast<const float4*>(dead + lane * 4);
     const int64_t wstride = (int64_t) gridDim.x * SCORE_WARPS;
     for (int64_t b = (int64_t) blockIdx.x * SCORE_WARPS + (threadIdx.x >> 5); b <= top && b < max_blocks; b += wstride) {
         const float4 kp = *reinterpret_cast<const float4*>(pooled + b * IDX_DIM + lane * 4);
-        const float4 kd = *reinterpret_cast<const float4*>(dead + lane * 4);
         for (int qi = 0; qi < nq; ++qi) {
             const int64_t n_bid = s_nbid[qi];
             if (b > n_bid) continue;

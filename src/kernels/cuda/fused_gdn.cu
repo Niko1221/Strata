@@ -21,7 +21,8 @@ __global__ void __launch_bounds__(S * RG) gdn_step_norm_kernel(float* __restrict
                                                                const float* __restrict__ gamma, float eps,
                                                                float* __restrict__ y, int h_k, int h_v) {
     __shared__ float sk[S], sq[S];
-    __shared__ float red[RG][S];
+    __shared__ float red_kv[RG][S];
+    __shared__ float red_o[RG][S];
     __shared__ float wsum[S * RG / 32];
     const int head = blockIdx.x;
     const int col = threadIdx.x;          // 0..127
@@ -39,9 +40,9 @@ __global__ void __launch_bounds__(S * RG) gdn_step_norm_kernel(float* __restrict
     float kv = 0.0f;
 #pragma unroll
     for (int r = 0; r < RPG; ++r) kv = fmaf(s[r], sk[rg * RPG + r], kv);
-    red[rg][col] = kv;
+    red_kv[rg][col] = kv;
     __syncthreads();
-    const float kv_col = red[0][col] + red[1][col] + red[2][col] + red[3][col];
+    const float kv_col = red_kv[0][col] + red_kv[1][col] + red_kv[2][col] + red_kv[3][col];
     const float delta = (v[head * S + col] - g * kv_col) * beta[head];
     float o = 0.0f;
 #pragma unroll
@@ -50,12 +51,11 @@ __global__ void __launch_bounds__(S * RG) gdn_step_norm_kernel(float* __restrict
         o = fmaf(s[r], sq[rg * RPG + r], o);
         base[r * row_stride] = s[r];
     }
-    __syncthreads();                      // every thread has read red[] for kv_col
-    red[rg][col] = o;
+    red_o[rg][col] = o;
     __syncthreads();
     float oc = 0.0f, sq_part = 0.0f;
     if (rg == 0) {
-        oc = (red[0][col] + red[1][col] + red[2][col] + red[3][col]) * rsqrtf((float) S);
+        oc = (red_o[0][col] + red_o[1][col] + red_o[2][col] + red_o[3][col]) * rsqrtf((float) S);
         sq_part = oc * oc;
     }
     // RMS over the head's 128 outputs: warps of row group 0 are threads 0..127.

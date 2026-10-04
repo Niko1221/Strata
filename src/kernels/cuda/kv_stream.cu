@@ -104,7 +104,7 @@ __global__ void __launch_bounds__(RT) resolve_kernel(KvStreamMap m, const int32_
             }
         }
     }
-    atomicAdd(&s_lookups, lookups);
+    if (lookups > 0) atomicAdd(&s_lookups, lookups);
     __syncthreads();
     // 2. one victim per miss: a clock sweep from the hand. A slot this call uses (stamp == epoch) is never taken;
     //    a referenced one loses its bit as the hand passes it and is taken on the next pass.
