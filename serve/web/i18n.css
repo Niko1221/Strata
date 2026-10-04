@@ -1,0 +1,33 @@
+/* Arabic uses local system fonts; code, addresses and measurements keep their order. */
+:root:lang(ar) { --st-font: "Segoe UI", Tahoma, Arial, sans-serif; --st-lh-body: 1.7; }
+.language-select { max-width: 100px; padding: 5px 8px; border: 1px solid var(--st-line); border-radius: 9px;
+  background: var(--st-surface); color: var(--st-ink); font: 13px var(--st-font); }
+.language-select:focus-visible { outline: 2px solid var(--st-focus); outline-offset: 3px; }
+.st-bubble, .thinking, #input { text-align: start; }
+pre, code, .st-code, .tool-call__name, .tool-call__pre, .endpoint, .detail-title, .model,
+.st-metric__value, .ctx-gauge__label, .bar-row > :last-child, .num, #api-key { direction: ltr; unicode-bidi: isolate; }
+pre, code, .st-code, .tool-call__pre { text-align: left; }
+[dir="rtl"] .st-header .st-tabs { margin-left: 0; margin-right: var(--st-s-4); }
+[dir="rtl"] .st-table th { text-align: right; }
+[dir="rtl"] .st-table .num { text-align: left; }
+[dir="rtl"] .st-collapse > summary .st-chev { margin-left: 0; margin-right: auto; }
+[dir="rtl"] .st-drawer { right: auto; left: 0; border-left: 0; border-right: 1px solid var(--st-line); transform: translateX(-100%); }
+[dir="rtl"] .st-drawer[data-open="true"] { transform: none; }
+[dir="rtl"] #drawer-close .st-icon { transform: rotate(90deg); }
+[dir="rtl"] .st-toasts { right: auto; left: 20px; }
+[dir="rtl"] .composer-hint { margin-right: 0; margin-left: var(--st-s-2); }
+[dir="rtl"] .st-msg--user .st-bubble { border-bottom-right-radius: var(--st-r-lg); border-bottom-left-radius: 6px; }
+[dir="rtl"] .st-msg--assistant .st-bubble { border-bottom-left-radius: var(--st-r-lg); border-bottom-right-radius: 6px; }
+.st-bubble ul, .st-bubble ol { padding-left: 0; padding-inline-start: var(--st-s-6); }
+.st-bubble blockquote { padding-left: 0; border-left: 0; padding-inline-start: var(--st-s-3); border-inline-start: 3px solid var(--st-line); }
+.st-bubble th, .st-bubble td { text-align: start; }
+[dir="rtl"] .requests { border-right: 0; border-left: 1px solid var(--st-line); }
+.request { text-align: start; }
+[dir="rtl"] .request.selected { box-shadow: inset -3px 0 var(--st-accent); }
+[dir="rtl"] .tabs #copy { margin-left: 0; margin-right: auto; }
+@media (max-width: 950px) { [dir="rtl"] .requests { border-left: 0; } }
+@media (max-width: 640px) {
+  [dir="rtl"] .st-header .st-tabs { margin-right: 0; }
+  .st-header { gap: 4px; } .language-select { max-width: 78px; padding: 4px; }
+  .st-header__brand { font-size: 16px; } .st-header .st-tab { padding: 0 7px; }
+}
