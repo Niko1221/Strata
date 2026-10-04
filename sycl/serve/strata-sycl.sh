@@ -7,7 +7,8 @@
 #   STRATA_SYCL_IMAGE  the runtime image                      (default: strata-sycl-dev)
 #   STRATA_SYCL_BIN    the engine binary, relative to the repo (default: build-sycl-aot/strata)
 #   STRATA_SYCL_NAME   the container's name                   (default: strata-sycl-serve)
-#   ONEAPI_DEVICE_SELECTOR  passed in when set (the image pins level_zero:0; level_zero:* for a two-card split, #423)
+#   ONEAPI_DEVICE_SELECTOR  passed in when set; otherwise level_zero:gpu (every card) for a --layer-split, and the
+#                      image's level_zero:0 for one card (#423)
 set -euo pipefail
 here=$(cd "$(dirname "$0")/../.." && pwd)                 # the repo
 root=${STRATA_SYCL_ROOT:-$(dirname "$here")}
@@ -15,9 +16,11 @@ repo_in=/work/$(basename "$here")
 name=${STRATA_SYCL_NAME:-strata-sycl-serve}
 docker rm -f "$name" >/dev/null 2>&1 || true              # a container left behind by a killed server
 args=""
-for a in "$@"; do args+=" $(printf '%q' "$a")"; done
+split=""
+for a in "$@"; do args+=" $(printf '%q' "$a")"; [ "$a" = --layer-split ] && split=1; done
+selv=${ONEAPI_DEVICE_SELECTOR:-${split:+level_zero:gpu}}
 sel=()
-[ -n "${ONEAPI_DEVICE_SELECTOR:-}" ] && sel=(-e "ONEAPI_DEVICE_SELECTOR=$ONEAPI_DEVICE_SELECTOR")
+[ -n "$selv" ] && sel=(-e "ONEAPI_DEVICE_SELECTOR=$selv")
 # the port's run-time switches: the device-built verify plan without host handshakes (docs/INTEL.md)
 exec docker run --rm -i --name "$name" --device /dev/dri --oom-score-adj 1000 --stop-timeout 30 --no-healthcheck \
     -v "$root:/work" \

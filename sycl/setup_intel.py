@@ -186,15 +186,19 @@ def install(argv) -> None:
     def say_intel(msg=""):
         """setup's words for its AMD path and its RAM rule, said for the Intel card."""
         msg = str(msg).replace("(AMD, experimental: docs/AMD_HIP.md)", "(Intel Arc: the SYCL port, docs/INTEL.md)")
+        msg = msg.replace("(AMD: docs/AMD_HIP.md)", "(Intel Arc: the SYCL port, docs/INTEL.md)")
         msg = msg.replace("Your AMD GPUs:", "Your Intel GPUs:").replace("just run ./setup.sh", "just run sycl/setup_intel.py")
         msg = msg.replace(f"RAM: {fake_ram:.0f} GB", f"RAM: {real_ram:.0f} GB (the experts are streamed into VRAM)")
         if re.match(r"\s+\S+\s+needs ~\d+ GB RAM:", msg):   # --check's CUDA verdicts: replaced by the Intel one
             m = msg.split()[0]
             d = S.MODELS.get(m, {})
             shard1 = d.get("download_gb", 0) - 28.8          # all but the per-layer lookup table (read from disk)
-            room = intel[0]["vram_gb"] - 3 + max(0.0, real_ram - 10)   # VRAM, plus a pinned host mirror
+            one = intel[0]["vram_gb"] - 1.5                   # one card, less the KV and prompt buffers' room
+            every = sum(g["vram_gb"] - 1.5 for g in intel)    # a layer split across every card
+            room = every - 1.5 * len(intel) + max(0.0, real_ram - 10)   # VRAM, plus a pinned host mirror
             msg = (f"  {m:8s} ~{shard1:.0f} GB of weights: " +
-                   ("fits in VRAM" if shard1 <= intel[0]["vram_gb"] - 1.5 else
+                   ("fits in VRAM" if shard1 <= one else
+                    f"fits in VRAM across the {len(intel)} cards (layer split)" if shard1 <= every else
                     "fits with part of its experts mirrored in RAM (slower)" if shard1 <= room else "does not fit"))
         say(msg)
     S.say = say_intel
