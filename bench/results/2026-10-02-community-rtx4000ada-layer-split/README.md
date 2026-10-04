@@ -66,22 +66,81 @@ For this workload, adding the third card changed median decode throughput by onl
 
 The short-request portion of the suite was nearly unchanged (75.201 s on two GPUs vs 74.129 s on three GPUs). The aggregate slowdown is therefore dominated by the long-prompt case rather than by autoregressive decode.
 
+## Follow-up: SFF as a secondary expert-cache device
+
+A follow-up experiment on 2026-10-03 kept the two full-height RTX 4000 Ada cards as the layer-split pair and used the RTX 4000 SFF Ada only as the experimental secondary expert-cache device.
+
+The secondary cache was swept at 2,000 / 3,000 / 4,000 / 6,000 / 8,000 slots. The best point on this machine was around 4,000 slots.
+
+This follow-up used the current production-style configuration rather than the lighter configuration above:
+
+- vision enabled;
+- 262,144-token max context;
+- INT8 KV;
+- 32,768 resident KV cells;
+- the same IQ3_S model family.
+
+Because of those differences, the follow-up numbers below should not be compared directly with the original ~73 tok/s 2-GPU result above. The relevant comparison is the fresh pure-2GPU control versus the SFF helper run under the same current configuration.
+
+| Configuration | Short decode mean | Short decode median | 16.6K prefill | Long decode | Long wall |
+|---|---:|---:|---:|---:|---:|
+| pure 2-GPU, current config | **68.52 tok/s** | **68.0 tok/s** | **2,117.5 tok/s** | **68.9 tok/s** | **10.064 s** |
+| + SFF secondary expert cache, 4,000 slots | **70.60 tok/s** | **71.9 tok/s** | **2,116.9 tok/s** | **70.1 tok/s** | **10.387 s** |
+
+The helper therefore did perform useful work: short decode improved by about 3% on average and long decode by about 1.7%. Prefill was effectively unchanged. The gain was small relative to the extra device and synchronization complexity.
+
+GPU-side power was sampled every 500 ms. In the final pure-2GPU control, the two active full-height cards averaged about **141.5 W combined** during the suite. The installed SFF card was verified idle at **2 MiB VRAM and 0% GPU utilization**. In the 4,000-slot helper run, all three cards averaged about **164 W combined**. On this workload, the helper therefore traded materially worse GPU-side efficiency for a few percent more decode throughput.
+
+The pure-2GPU run also showed the expected workload split: autoregressive decode usually kept each full-height card well below its 130 W cap, while the long-context prefill produced short bursts near full power on both cards.
+
+### Reproducibility note: persistent setup state
+
+During the helper sweep, a nominally restored 2-GPU run was initially found to still be using the SFF. The persistent Strata setup state under `/data` regenerated the previously stored experimental arguments:
+
+```
+--expert-cache-device1 3000 --split-device 2
+```
+
+after a container restart, even though the Compose environment had already been returned to `GPUS=1,2` and `LAYER_SPLIT=auto`.
+
+The final pure-2GPU control above was accepted only after regenerating the setup and confirming the SFF had returned to **2 MiB VRAM / 0% GPU utilization**. This is worth checking when reproducing topology A/B tests with a persistent `/data` volume.
+
+## Host-memory bandwidth context
+
+The model keeps a large expert arena in host memory, so DRAM bandwidth is potentially relevant to expert-tier performance.
+
+At the time of these measurements, the R7515 had **4 x 32 GB DDR4-3200 ECC RDIMMs**, one DIMM on each of four memory channels, on an EPYC 7313P platform that supports eight memory channels.
+
+A separate STREAM run on this 4-channel configuration measured:
+
+| Threads | Copy | Scale | Add | Triad |
+|---|---:|---:|---:|---:|
+| 8 | **80.78 GB/s** | **55.15 GB/s** | **59.26 GB/s** | **60.13 GB/s** |
+| 16 | **79.66 GB/s** | — | — | — |
+
+The lack of improvement from 8 to 16 threads on Copy suggests the current configuration is already close to its available memory-bandwidth ceiling rather than being core-count limited.
+
+A planned follow-up will populate the remaining four channels (8 x 32 GB total) and repeat both STREAM and the same pure-2GPU Strata benchmark. That test should help separate GPU-side cache effects from host expert-tier bandwidth effects.
+
 ## Interpretation
 
-This single-host result supports a limited engineering conclusion: an additional GPU is not automatically beneficial for layer-split inference when it is substantially slower than the existing stages. On this R7515, the extra 20 GB of SFF Ada VRAM did not produce a measurable decode advantage in this suite, while long-prompt prefill was much slower with the third stage.
+This single-host result supports a limited engineering conclusion: an additional GPU is not automatically beneficial for layer-split inference when it is substantially slower than the existing stages. On this R7515, the extra 20 GB of SFF Ada VRAM did not produce a measurable decode advantage in the original three-stage layer split, while long-prompt prefill was much slower with the third stage.
 
-This should not be generalized to all three-GPU systems. A third card may still help when the two faster cards cannot hold enough of the routed expert working set, or when the cards have more closely matched per-layer performance.
+The secondary expert-cache follow-up adds a more nuanced result. The SFF can be useful when kept out of the layer pipeline: a ~4,000-slot helper improved decode by a few percent. On this specific system, however, that gain was not large enough to justify the extra GPU-side power and topology complexity.
+
+This should not be generalized to all three-GPU systems. A third card may still help when the two faster cards cannot hold enough of the routed expert working set, when the cards have more closely matched per-layer performance, or when host-memory bandwidth becomes the dominant bottleneck.
 
 ## Limitations
 
-- One host, one model, one quantization, one Strata engine build, and one small synthetic workload.
-- DRAM bandwidth was not measured during the benchmark.
+- One host, one model, one quantization, one Strata engine family, and one small synthetic workload.
+- The original layer-split benchmark and the later expert-cache sweep used different production settings; comparisons are only made within each controlled pair.
+- STREAM was measured separately from the inference run rather than concurrently.
 - Exact auto-selected per-GPU layer boundaries were not retained; the detailed 3-GPU startup log was accidentally overwritten after the experiment.
 - The runs were single-shot rather than repeated medians at each prompt length.
 - GPU clocks were not fixed.
 - The smoke suite was designed for local regression checking, not standardized accuracy measurement.
-- No claim is made that the observed slowdown is caused only by GPU power limit; layer allocation, clocks, PCIe behavior, cache residency, and pipeline scheduling can all contribute.
+- No claim is made that the observed slowdown is caused only by GPU power limit; layer allocation, clocks, PCIe behavior, cache residency, host-memory bandwidth, and pipeline scheduling can all contribute.
 
 ## Raw data
 
-`summary.json` contains the aggregates used in this README. The JSONL files are the original result records with only the shell prompt line containing the local user/host name removed.
+`summary.json` contains the aggregates used for the original 2026-10-02 comparison. The JSONL files are the original result records with only the shell prompt line containing the local user/host name removed. The 2026-10-03 helper sweep and power measurements are summarized here as follow-up observations; their raw files are not included in this directory.
