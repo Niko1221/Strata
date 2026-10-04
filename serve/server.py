@@ -50,8 +50,8 @@ from urllib.parse import parse_qs, urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a module
-from serve.frontend import (ChatTemplate, Event, OutputParser, anthropic_to_messages,  # noqa: E402
-                            images_of, openai_to_messages)
+from serve.frontend import (ChatTemplate, Event, KNOWN_FORMAT_FIXES, OutputParser,  # noqa: E402
+                            anthropic_to_messages, images_of, openai_to_messages)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve.winjob import contain  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
@@ -989,6 +989,11 @@ class Service:
         self.min_free_vram_mib = 0
         self.before_load = None
         self.reasoning_budget_tokens = 0                 # #123: the config's default thinking budget (0: none)
+        # --format-fixes / the config's "format_fixes" (off by default): the enabled output-format adaptations
+        # (KNOWN_FORMAT_FIXES names, parsed by parse_format_fixes).  Nothing that already streams ever changes;
+        # a fix that fires logs and is listed in the reply's "adaptations", and a detected shape with the fix
+        # off logs fail-loud - the same shape as #530's budget: never guess by default, say what was seen.
+        self.format_fixes: frozenset[str] = frozenset()
         self.anthropic_think_unasked = True               # #278: "anthropic_thinking": "on_request" -> False
         self.stop_ids = set(tokenizer.encode(IM_END, parse_special=True) +
                             tokenizer.encode("<|endoftext|>", parse_special=True))
@@ -1032,6 +1037,33 @@ class Service:
         if isinstance(value, bool) or not isinstance(value, int):
             raise ValueError(f"reasoning_budget_tokens={value!r}: expected a whole number of tokens (0: no budget)")
         return value if value > 0 else None
+
+    @staticmethod
+    def parse_format_fixes(value, where: str = "format_fixes") -> frozenset[str]:
+        """A --format-fixes / config "format_fixes" value as a set of adaptation names: "off" (or nothing, the
+        default), "all", or names from KNOWN_FORMAT_FIXES - one string, comma-separated, or a JSON list (a list
+        mixes freely: ["stranded-call"], "all" and "off, stranded-call" all work).  ValueError names the known
+        ones for anything else, so a typo fails the start instead of silently disabling a fix."""
+        known = ", ".join(("off", "all", *KNOWN_FORMAT_FIXES))
+        if value is None or value is False or value == "" or value == "off":
+            return frozenset()
+        if value is True or value == "all":
+            return frozenset(KNOWN_FORMAT_FIXES)
+        if isinstance(value, str):
+            value = value.split(",")
+        if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
+            raise ValueError(f"{where}={value!r}: expected \"off\", \"all\" or a list of names ({known})")
+        fixes = []
+        for x in (x.strip() for x in value):
+            if x in ("", "off", "none"):
+                continue
+            if x == "all":
+                return frozenset(KNOWN_FORMAT_FIXES)
+            if x not in KNOWN_FORMAT_FIXES:
+                raise ValueError(f"{where}={value!r}: unknown name {x!r}; known: {known}")
+            if x not in fixes:
+                fixes.append(x)
+        return frozenset(fixes)
 
     def _vision_down(self) -> bool:
         return self.vision is not None and hasattr(self.vision, "alive") and not self.vision.alive()
@@ -1434,7 +1466,7 @@ class Service:
         if defaults:                   # the request's own fields win (explicit 0 stays greedy)
             req_values = {k: v for k, v in (sampling or {}).items() if v is not None}
             sampling = {**defaults, **req_values}
-        parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True)
+        parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True, fixes=self.format_fixes)
         detok, n, finish = Detokenizer(self.tok), 0, "length"
         timings, before = None, None                    # this request's timings; the engine's `last` before it
         raw_ids = []                                    # every generated id (STRATA_DEBUG: dump raw model text)
@@ -1606,8 +1638,18 @@ class Service:
                 Path(emb).unlink(missing_ok=True)
         for ev in parser.finish(finish):
             yield "event", ev
-        yield "done", {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),
-                       "timings": timings}
+        if parser.format_hint:   # the shape was detected but no enabled fix covers it: say so, change nothing
+            print(f"[strata] a complete tool call was left in reasoning by an unclosed thinking span; "
+                  f"--format-fixes={parser.format_hint} (or =all) would have delivered it "
+                  f"(also \"format_fixes\" in strata-<model>.json)", flush=True)
+        if parser.adaptations:
+            print(f"[strata] format fixes applied: {', '.join(parser.adaptations)} "
+                  f"(listed in the reply's \"adaptations\")", flush=True)
+        done = {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),
+                "timings": timings}
+        if parser.adaptations:
+            done["adaptations"] = list(parser.adaptations)
+        yield "done", done
 
 
 def prompt_tokens_seen(prompt_tokens: int, last: dict) -> int:
@@ -1798,6 +1840,8 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
                              "prompt_tokens_details": {"cached_tokens": x.get("reused") or 0}}
             if x.get("timings"):
                 last["timings"] = x["timings"]          # llama.cpp's field: the speed its clients show
+            if x.get("adaptations"):
+                last["adaptations"] = x["adaptations"]  # the format fixes that fired in this reply
             yield last
 
 
@@ -1842,6 +1886,8 @@ def openai_collect(chunks) -> dict:
            "usage": last["usage"]}
     if last.get("timings"):
         out["timings"] = last["timings"]
+    if last.get("adaptations"):
+        out["adaptations"] = last["adaptations"]        # the format fixes that fired in this reply
     return out
 
 
@@ -2856,6 +2902,12 @@ def main() -> int:
     ap.add_argument("--api-monitor", action="store_true",
                     help="the API request monitor at /api-monitor: keeps the last 100 requests' prompts and answers in "
                          "memory (also \"api_monitor\": true in the config; off by default)")
+    ap.add_argument("--format-fixes", default=None, metavar="off|all|NAMES",
+                    help="compensate quirks of the Qwen-style output format, off by default (a detected quirk still "
+                         "logs).  Names, one or comma-separated: stranded-call - a complete tool call left in "
+                         "reasoning by an unclosed thinking span is delivered as a real call at end of turn.  "
+                         "Nothing that already streamed changes; every fix that fires logs and is listed in the "
+                         "reply's \"adaptations\" (also \"format_fixes\" in the config)")
     ap.add_argument("--idle-unload", type=float, default=None, metavar="SECONDS",
                     help="unload the model after this many seconds without requests, so other programs (games, other "
                          "model servers) can use the VRAM; the next request loads it again (also \"idle_unload_s\" "
@@ -2986,6 +3038,14 @@ def main() -> int:
         if budget:
             print(f"[strata] thinking budget: {budget} tokens (reasoning_budget_tokens; a request can set its own)",
                   flush=True)
+    try:
+        svc.format_fixes = Service.parse_format_fixes(
+            a.format_fixes if a.format_fixes is not None else cfg.get("format_fixes"))
+    except ValueError as e:
+        raise SystemExit(f"[strata] {e}")
+    if svc.format_fixes:
+        print(f"[strata] format fixes on: {', '.join(x for x in KNOWN_FORMAT_FIXES if x in svc.format_fixes)} "
+              f"(format_fixes; every fix that fires logs and is listed in the reply's \"adaptations\")", flush=True)
     svc.gpu_index = (gpu_list(cfg) or [0])[0]           # the Monitor reads the card the engine runs on (issue #51)
     svc.gpu_indices = gpu_list(cfg)                     # ... or every card of a layer split (issue #112)
     svc.backend = cfg.get("backend")                    # "hip": the AMD cards' readings come from sysfs (#301)

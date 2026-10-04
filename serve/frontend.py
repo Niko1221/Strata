@@ -364,11 +364,22 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
     return ToolCall(name=name, arguments=args)
 
 
+# The named adaptations --format-fixes may turn on (the flag's grammar is "off" | "all" | a comma list of these;
+# the serve parses it - Service.parse_format_fixes).  Each one is an append-at-end-of-turn correction to a quirk
+# of the one output format the serve speaks, Qwen-style <think>/<tool_call>; nothing that already streamed ever
+# changes, and every adaptation that fires logs and is listed in the reply's "adaptations".
+#   stranded-call  a complete, well-formed tool call left in reasoning by a thinking span that never closed is
+#                  delivered as a real call - a template that renders a call after the reasoning block never
+#                  emits </think> before it, and without this the client's turn ends with nothing to execute
+KNOWN_FORMAT_FIXES = ("stranded-call",)
+
+
 class OutputParser:
     """Incremental parser of the model's text. Feed deltas; get events. A tag split across deltas is held back
     until it is complete, so clients never see `<tool_` or `</thi`."""
 
-    def __init__(self, thinking: bool = True, tools: list[dict] | None = None, stream_tools: bool = False):
+    def __init__(self, thinking: bool = True, tools: list[dict] | None = None, stream_tools: bool = False,
+                 fixes=()):
         self.state = "reasoning" if thinking else "content"
         self.buf = ""
         self.lead = False
@@ -383,6 +394,13 @@ class OutputParser:
         # _rescue_unclosed_call).  Cleared the moment the span closes: a call inside a CLOSED span was a
         # mention, however valid, and must never be acted on.
         self.reasoning_tail: str | None = None
+        # the enabled format adaptations (KNOWN_FORMAT_FIXES names); off = no adaptation ever fires, and a
+        # detected shape then only raises self.format_hint, which the serve logs fail-loud
+        self.fixes = frozenset(fixes or ())
+        # the names of the adaptations finish() applied, oldest first (the serve logs them and reports them in
+        # the reply's "adaptations"), and the name of a detected shape no enabled fix covers
+        self.adaptations: list[str] = []
+        self.format_hint: str | None = None
         self._reset_scan()
 
     def _reset_scan(self):
@@ -515,41 +533,55 @@ class OutputParser:
             if c >= 0:
                 self.reasoning_tail = text[c:]
 
-    def _rescue_unclosed_call(self, finish_reason: str = "stop") -> list[Event]:
-        """End of generation inside a thinking span that never closed.  A complete <tool_call> in such a
-        span was the model ACTING, not quoting - a template that renders a call after the reasoning block
-        never emits </think> before it, so without this the whole call streams out as reasoning and a
-        client that runs tools from the content channel ends its turn with nothing to execute.  Only a
-        tail made of complete, well-formed calls is rescued; anything else stays what it already streamed
-        as.  A </think> after the opener clears the tail (a mention inside genuine reasoning), so a valid
-        quoted example is never acted on.
+    def _rescue_calls(self, tail: str) -> "list[ToolCall] | None":
+        """The kept tail as a list of calls, or None when the tail is not ONLY complete, well-formed calls
+        separated by whitespace.  The tail starts at a <tool_call> opener (see _track_reasoning), so anything
+        else in it - prose between or after the blocks, an unfinished block, a body that does not parse - is
+        the model narrating a call it considered, not making one, and stays what it already streamed as."""
+        calls, rest = [], tail
+        while True:
+            rest = rest.lstrip()
+            if not rest:
+                return calls
+            if not rest.startswith(CALL_START):
+                return None
+            b = rest.find(CALL_END, len(CALL_START))
+            if b < 0:
+                return None                  # an unfinished call stays reasoning
+            body, rest = rest[len(CALL_START):b], rest[b + len(CALL_END):]
+            s = body.strip()
+            if not s.startswith("<function="):
+                return None
+            try:
+                calls.append(parse_tool_call(s, self.schemas.get(s[len("<function="):].split(">", 1)[0])))
+            except ValueError:
+                return None                  # not a well-formed act; leave every block as reasoning
 
-        Only a turn that ended BY ITSELF (`finish_reason == "stop"`) is rescued: a reply cut by
-        max tokens ("length") most often leaves the span open mid-thought, and a complete call
-        quoted inside that reasoning was something the model CONSIDERED, not did - the review's
-        case (a quoted destructive command rescued into a real tool_use)."""
+    def _rescue_unclosed_call(self, finish_reason: str = "stop") -> list[Event]:
+        """End of generation inside a thinking span that never closed, gated on the "stranded-call" format
+        fix.  A template that renders a call after the reasoning block never emits </think> before it, so
+        the whole call streams out as reasoning_content and a client that runs tools from the content
+        channel ends its turn with nothing to execute.  Three things must hold before a tail counts as a
+        stranded act: the turn ended by itself ("length" most often leaves the span open mid-thought, and a
+        complete call quoted in that reasoning was something the model CONSIDERED, not did), the tail is
+        only complete, well-formed calls separated by whitespace (see _rescue_calls - prose after the last
+        block is a mention's shape; every live sighting of the bug ends ON the block), and every body parses
+        against the request's schemas.  A </think> after the opener clears the tail (a mention inside genuine
+        reasoning).  With the fix off, the same detection only raises self.format_hint: the serve logs it and
+        changes nothing, so the default fails loud instead of leaving a silent stall."""
         if finish_reason != "stop":
             self.reasoning_tail = None
             return []
         tail, self.reasoning_tail = self.reasoning_tail, None
         if not tail:
             return []
-        calls = []
-        rest = tail
-        while True:
-            a = rest.find(CALL_START)
-            if a < 0:
-                break
-            b = rest.find(CALL_END, a)
-            if b < 0:
-                break                      # an unfinished call stays reasoning
-            body, rest = rest[a + len(CALL_START):b], rest[b + len(CALL_END):]
-            name = body.strip()[len("<function="):].split(">", 1)[0]
-            try:
-                call = parse_tool_call(body, self.schemas.get(name))
-            except ValueError:
-                return []                  # not a well-formed act; leave every block as reasoning
-            calls.append(call)
+        calls = self._rescue_calls(tail)
+        if calls is None:
+            return []
+        if "stranded-call" not in self.fixes:
+            self.format_hint = "stranded-call"   # detected but not enabled: the serve says so, changes nothing
+            return []
+        self.adaptations.append("stranded-call")
         return [Event("tool_call", call=call) for call in calls]
 
     def feed(self, delta: str) -> list[Event]:
@@ -619,7 +651,8 @@ class OutputParser:
     def finish(self, finish_reason: str = "stop") -> list[Event]:
         """End of generation: flush whatever is held (an unterminated tool call is returned as content; one that was
         already announced stays unfinished: its JSON is not closed and no "tool_call" follows it, #211).
-        `finish_reason` gates the unclosed-thinking rescue (see _rescue_unclosed_call)."""
+        `finish_reason` gates the unclosed-thinking rescue (see _rescue_unclosed_call); an applied fix names
+        itself in self.adaptations, and a detected-but-disabled one in self.format_hint."""
         out = []
         if self.state == "call" and self.stream_tools and self.scall is not None:
             out += self._scan()                 # the output ended inside a call that was already announced

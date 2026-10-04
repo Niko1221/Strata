@@ -477,6 +477,22 @@ print(r.choices[0].message.content)
   with no `"thinking"`, effort or budget thinks as the model's template does. `"anthropic_thinking": "on_request"` in
   `strata-<model>.json` renders such a request without thinking - Anthropic's own rule, and what Claude Code's short
   helper calls (a session title in a few dozen tokens) need; its real turns ask for thinking when it is on there.
+- **Format fixes (opt-in, off by default).** `--format-fixes` to `serve/server.py`, or `"format_fixes"` in
+  `strata-<model>.json`: `off` (the default), `all`, or a comma-separated list of names. The names compensate
+  quirks of the one output format the server speaks - Qwen-style `<think>`/`<tool_call>`:
+  - `stranded-call` - some chat templates render a tool call right after the reasoning block without ever
+    emitting `</think>` before it. The whole call then streams as `reasoning_content`, and a client that runs
+    tools from the content channel ends its turn with nothing to execute - seen live as agents stopping
+    silently mid-task. With the fix on, a complete, well-formed call left in an unclosed thinking span by a
+    reply that ended by itself is delivered as a real tool call at end of turn. It is a rescue of the act, not
+    a guess at one: a call inside a span that closes is a mention and is never acted on, a reply cut by
+    `max_tokens` is never rescued (a call quoted in that reasoning was something the model considered), and
+    prose between or after the blocks - the shape of a disclaimed example - leaves them as reasoning.
+  Nothing that already streamed ever changes, and a fix that fires says so twice: in the server window and in
+  the reply's `"adaptations"` (OpenAI streaming and non-streaming). With the fix off, the same detection still
+  logs - a complete tool call was left in reasoning, and which fix would have delivered it - so the failure is
+  loud either way. An unknown name fails the start with the known ones, so a typo cannot silently disable a
+  fix.
 - **Streaming.** With `"stream": true` everything arrives as it is made: the thinking, the answer, and tool calls
   (the tool's name first, then its arguments piece by piece, like OpenAI and Anthropic do). While the model reads a
   long prompt the stream sends keep-alives, so agents do not time out; the server window prints progress every
