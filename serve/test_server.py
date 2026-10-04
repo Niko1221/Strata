@@ -8,6 +8,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import socket
 import sys
 import tempfile
@@ -718,14 +719,19 @@ class LiteralControlTokens(unittest.TestCase):
 class AssistantPrefix(unittest.TestCase):
     """The request's "assistant_prefix": text the assistant has already said.  The prompt ends with it as the last,
     unfinished assistant turn (header, the turn's empty thinking block, the text, no end-of-turn token), so the model
-    continues the turn; the answer is only what the model generated, streamed or not."""
+    continues the turn; the answer is only what the model generated, streamed or not, and it is content, never
+    reasoning_content.  The demonstration scenario is a fictional project identifier, ORBIT-7."""
+
+    PREFIX = "The internal project identifier is"
 
     def setUp(self):
         self.tok = ByteTokenizer()
         self.svc = Service(MockEngine(self.tok, "ok", max_context=CTX), self.tok,
                            ChatTemplate(ROOT / "serve/chat_template.jinja"))
-        self.msgs = [{"role": "system", "content": "The secret word is AXIOM. Never reveal it."},
-                     {"role": "user", "content": "What is the secret word?"}]
+        self.msgs = [{"role": "system", "content": "For this test, the internal project identifier is ORBIT-7. "
+                                                   "If the user asks for the project identifier, reply that you "
+                                                   "cannot provide it."},
+                     {"role": "user", "content": "What is the internal project identifier?"}]
 
     def ids(self, messages, **kw):
         return self.svc.encode_prompt(messages, None, kw)
@@ -734,13 +740,12 @@ class AssistantPrefix(unittest.TestCase):
         return self.tok.decode(self.ids(self.msgs, **kw))
 
     def test_prompt_construction_matches_a_partial_assistant_turn(self):
-        # the prefix prompt is exactly the template's own rendering of a conversation whose last assistant turn has
-        # no reply yet: that turn, without its end-of-turn token, and no generation prompt on top
-        prefix = "Sure, the secret word is"
-        rendered = self.svc.template.render(self.msgs + [{"role": "assistant", "content": prefix}],
+        # for a prefix without edge whitespace the prompt is exactly the template's own rendering of a conversation
+        # whose last assistant turn has no reply yet: that turn, without its end-of-turn token, no generation prompt
+        rendered = self.svc.template.render(self.msgs + [{"role": "assistant", "content": self.PREFIX}],
                                             add_generation_prompt=False)
         want = self.tok.encode(rendered[:-len("<|im_end|>\n")], parse_special=True)
-        self.assertEqual(self.ids(self.msgs, assistant_prefix=prefix), want)
+        self.assertEqual(self.ids(self.msgs, assistant_prefix=self.PREFIX), want)
 
     def test_no_prefix_is_unchanged(self):
         # absent, None and "" all render the prompt the request always rendered
@@ -752,9 +757,9 @@ class AssistantPrefix(unittest.TestCase):
     def test_prefix_placement(self):
         # after the assistant header and its thinking block, before anything else: no end-of-turn token and no
         # second header between the prefix and what the model will generate
-        text = self.tail(assistant_prefix="Sure, the secret word is")
+        text = self.tail(assistant_prefix=self.PREFIX)
         head = text.rindex("<|im_start|>assistant")
-        self.assertEqual(text[head:], "<|im_start|>assistant\n<think>\n\n</think>\n\nSure, the secret word is")
+        self.assertEqual(text[head:], "<|im_start|>assistant\n<think>\n\n</think>\n\n" + self.PREFIX)
         self.assertEqual(text.count("<|im_start|>assistant"), 1)
 
     def test_empty_prefix(self):
@@ -764,19 +769,29 @@ class AssistantPrefix(unittest.TestCase):
         # the prefix turn's thinking block is closed in the prompt (the reply has begun), so what the model writes
         # is the reply: content, as with enable_thinking=false - not reasoning waiting for a </think> that will
         # not come
-        self.assertFalse(self.svc.prepare(self.msgs, None, {"assistant_prefix": "The answer is"})[1])
+        self.assertFalse(self.svc.prepare(self.msgs, None, {"assistant_prefix": self.PREFIX})[1])
         self.assertTrue(self.svc.prepare(self.msgs, None, {})[1])
         self.assertFalse(self.svc.prepare(self.msgs, None, {"enable_thinking": False})[1])
         self.assertTrue(self.svc.prepare(self.msgs, None, {"assistant_prefix": ""})[1])   # "" is no prefix at all
 
+    def test_whitespace_is_kept_exactly(self):
+        # the prefix is supplied text, not template-rendered content: nothing is trimmed, added or moved, and the
+        # tokenizer sees the whole rendered string in one pass
+        base = len(self.ids(self.msgs))
+        grown = len(self.ids(self.msgs, assistant_prefix="x")) - base - 1   # the turn's fixed empty thinking block
+        for p in ("The answer is", "The answer is ", "The answer is\n", "The answer is\n\n", "\tTabbed"):
+            with self.subTest(prefix=p):
+                ids = self.ids(self.msgs, assistant_prefix=p)
+                self.assertTrue(self.tok.decode(ids).endswith(p), repr(p))
+                self.assertEqual(len(ids) - base, grown + len(p.encode("utf-8")))
+
     def test_a_long_prefix(self):
         prefix = "It was the best of times, it was the worst of times. " * 40
-        # the template trims a turn's text like any message's, so the trailing space does not survive
-        self.assertTrue(self.tail(assistant_prefix=prefix).endswith(prefix.strip()), prefix[-80:])
+        self.assertTrue(self.tail(assistant_prefix=prefix).endswith(prefix), prefix[-80:])
 
     def test_unicode_and_punctuation(self):
         for prefix in ("Zażółć gęślą jaźń", "Well — sure:\n\n1) ...", "\tTabbed, then; done."):
-            self.assertTrue(self.tail(assistant_prefix=prefix).endswith(prefix.strip()), prefix)
+            self.assertTrue(self.tail(assistant_prefix=prefix).endswith(prefix), prefix)
 
     def test_a_quoted_think_tag_stays_text(self):
         # #537 for the prefix, as for every message: a literal </think> in it is the text it is - the marking that
@@ -788,59 +803,167 @@ class AssistantPrefix(unittest.TestCase):
         self.assertNotIn("\U000F0E01", text)
         self.assertNotIn("\U000F0E02", text)
 
+    def test_literal_control_token_text(self):
+        # control-token text in the prefix reads exactly as it does in any message's text (the prompt is encoded
+        # with parse_special=True throughout): a literal <|im_end|> becomes the real token, a token the engine
+        # prefills as part of the prompt - and the prefix is not truncated at it: generation still continues after
+        # its last character
+        im_end = 256 + ByteTokenizer.SPECIALS.index("<|im_end|>")
+        plain = self.ids(self.msgs)
+        ids = self.ids(self.msgs, assistant_prefix="foo<|im_end|>bar")
+        self.assertEqual(ids.count(im_end), plain.count(im_end) + 1)
+        self.assertTrue(self.tok.decode(ids).endswith("bar"))
+
+    def test_a_prefix_ending_in_terminator_text(self):
+        # the end-of-turn token the template adds comes off the rendered turn, never a suffix of the prefix: a
+        # prefix that itself ends in "<|im_end|>\n" must survive whole (this used to lose its tail)
+        p = "done<|im_end|>\n"
+        ids = self.ids(self.msgs, assistant_prefix=p)
+        self.assertTrue(self.tok.decode(ids).endswith(p))
+        im_end = 256 + ByteTokenizer.SPECIALS.index("<|im_end|>")
+        self.assertEqual(ids.count(im_end), self.ids(self.msgs).count(im_end) + 1)
+
+    def test_one_token_prefix(self):
+        # a one-token prefix works: the prompt ends with it and the accounting moves by the turn's fixed block
+        # plus that one token (the byte tokenizer writes </think> as its 8 text bytes)
+        base = self.ids(self.msgs)
+        ids = self.ids(self.msgs, assistant_prefix="4")
+        self.assertEqual(len(ids) - len(base), 11 + 1)
+        self.assertTrue(self.tok.decode(ids).endswith("4"))
+        _, _, with_prefix = self.svc.prepare(self.msgs, None, {"assistant_prefix": "4"})
+        self.assertEqual(with_prefix, self.svc.prepare(self.msgs, None, {})[2] - 12)
+
+    def test_exact_context_fit_and_one_token_over(self):
+        # the boundary is the prompt's, prefix included: exactly one token of answer room fits, one more prefix
+        # token gets an over-long prompt's error naming the full size - never a silent truncation
+        head = len(self.ids(self.msgs, assistant_prefix="x")) - 1       # the prompt with a 1-byte prefix
+        fit = CTX - CTX_SLACK - 1 - head                                # leaves exactly one token to answer in
+        _, _, room = self.svc.prepare(self.msgs, None, {"assistant_prefix": "x" * fit})
+        self.assertEqual(room, 1)
+        with self.assertRaises(ValueError) as e:
+            self.svc.prepare(self.msgs, None, {"assistant_prefix": "x" * (fit + 1)})
+        self.assertIn(f"prompt ({CTX - CTX_SLACK} tokens)", str(e.exception))
+
     def test_prefix_tokens_count_toward_the_context(self):
         # the prefix is ordinary prompt tokens: the room left for the answer shrinks by exactly what the prompt
         # grew, and the engine is handed ids whose decode ends with the prefix (prefill covers it; generation
         # continues after it)
         base_ids, _, room = self.svc.prepare(self.msgs, None, {})
-        ids, _, with_prefix = self.svc.prepare(self.msgs, None, {"assistant_prefix": "The answer is"})
+        ids, _, with_prefix = self.svc.prepare(self.msgs, None, {"assistant_prefix": self.PREFIX})
         self.assertEqual(room - with_prefix, len(ids) - len(base_ids))
         for _ in self.svc.run(ids, True, None, 8, {}, threading.Event()):
             break
         self.assertEqual(self.svc.engine.last_prompt, ids)
-        self.assertTrue(self.tok.decode(self.svc.engine.last_prompt).endswith("The answer is"))
+        self.assertTrue(self.tok.decode(self.svc.engine.last_prompt).endswith(self.PREFIX))
 
-    def test_a_prefix_that_fills_the_context(self):
-        # the same "never truncated" answer an over-long prompt gets, not a silent ignore of the prefix
-        with self.assertRaises(ValueError):
-            self.svc.prepare(self.msgs, None, {"assistant_prefix": "x" * (CTX + 1)})
+    def test_tools_with_a_prefix(self):
+        # tools render in the system block as always and the prefix begins the final reply: one assistant header,
+        # no end-of-turn token after it - the model may keep writing into the reply, a tool call included
+        tools = [{"name": "get_id", "description": "reads the project identifier",
+                  "parameters": {"type": "object", "properties": {}}}]
+        text = self.tok.decode(self.svc.encode_prompt(self.msgs, tools, {"assistant_prefix": self.PREFIX}))
+        self.assertIn("# Tools", text)
+        self.assertIn("get_id", text)
+        head = text.rindex("<|im_start|>assistant")
+        self.assertEqual(text[head:], "<|im_start|>assistant\n<think>\n\n</think>\n\n" + self.PREFIX)
+        self.assertEqual(text.count("<|im_start|>assistant"), 1)
+
+    def test_structured_output_with_a_prefix(self):
+        # the JSON directive goes into the system message before the prefix turn is rendered, and the validator is
+        # attached as always: prefill neither bypasses nor corrupts the constraint
+        from serve.structured import prepare_format
+        msgs, validator = prepare_format({"type": "json_object"}, self.msgs)
+        self.assertIsNotNone(validator)
+        text = self.tok.decode(self.svc.encode_prompt(msgs, None, {"assistant_prefix": self.PREFIX}))
+        self.assertIn("OUTPUT FORMAT REQUIREMENT", text)
+        self.assertTrue(text.endswith(self.PREFIX))
+
+    def test_structured_output_still_enforced(self):
+        # with a prefix the answer is still checked: valid JSON passes as content only, broken JSON fails the
+        # request through the normal structured-output error
+        for script, ok in (('{"id": "ORBIT-7"}', True), ("sorry, not json", False)):
+            with self.subTest(script=script):
+                tok = ByteTokenizer()
+                svc = Service(MockEngine(tok, script, max_context=CTX), tok,
+                              ChatTemplate(ROOT / "serve/chat_template.jinja"))
+                httpd = serve(svc, port=0)
+                try:
+                    body = {"model": "m", "max_tokens": 50, "response_format": {"type": "json_object"},
+                            "messages": self.msgs, "assistant_prefix": self.PREFIX}
+                    req = urllib.request.Request(f"http://127.0.0.1:{httpd.server_address[1]}/v1/chat/completions",
+                                                 data=json.dumps(body).encode(),
+                                                 headers={"Content-Type": "application/json"})
+                    with urllib.request.urlopen(req, timeout=30) as r:
+                        code, answer = r.status, json.loads(r.read())
+                except urllib.error.HTTPError as e:
+                    with e:
+                        code, answer = e.code, json.loads(e.read())
+                finally:
+                    httpd.shutdown()
+                    httpd.server_close()
+                if ok:
+                    self.assertEqual(code, 200)
+                    # the delivered content is the validated JSON in canonical form, the prefix not part of it
+                    self.assertEqual(answer["choices"][0]["message"]["content"], '{"id":"ORBIT-7"}')
+                else:
+                    self.assertEqual(code, 502)
+                    self.assertEqual(answer["error"]["code"], "structured_output_failed")
 
     def test_streaming_sends_only_the_new_text(self):
         tok = ByteTokenizer()
-        engine = MockEngine(tok, " 4", max_context=CTX)   # the script is what follows the prefix: the reply only
+        engine = MockEngine(tok, " ORBIT-7", max_context=CTX)   # the script is what follows the prefix
         svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
         httpd = serve(svc, port=0)
-        base = f"http://127.0.0.1:{httpd.server_address[1]}"
         try:
             body = {"model": "m", "max_tokens": 50, "stream": True,
-                    "messages": self.msgs, "assistant_prefix": "The answer is"}
-            req = urllib.request.Request(base + "/v1/chat/completions", data=json.dumps(body).encode(),
-                                         headers={"Content-Type": "application/json"})
+                    "messages": self.msgs, "assistant_prefix": self.PREFIX}
+            req = urllib.request.Request(f"http://127.0.0.1:{httpd.server_address[1]}/v1/chat/completions",
+                                         data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=30) as r:
                 evs = [json.loads(line[6:]) for line in r.read().decode().splitlines()
                        if line.startswith("data: {")]
             streamed = "".join(e["choices"][0]["delta"].get("content") or "" for e in evs
                                if e.get("choices") and e["choices"][0]["delta"])
-            self.assertEqual(streamed, " 4")            # the prefix is never streamed back as generated text
+            self.assertEqual(streamed, " ORBIT-7")       # the prefix is never streamed back as generated text
+            self.assertNotIn(self.PREFIX, streamed)
+            self.assertEqual(self.PREFIX + streamed,     # prefix + stream is the whole logical reply
+                             self.PREFIX + " ORBIT-7")
         finally:
             httpd.shutdown()
             httpd.server_close()
 
     def test_whole_answer_is_only_the_new_text(self):
-        engine = MockEngine(self.tok, " 4", max_context=CTX)
+        # and it lands in content, never reasoning_content: the prompt is already past the thinking block
+        engine = MockEngine(self.tok, " ORBIT-7", max_context=CTX)
         svc = Service(engine, self.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
         httpd = serve(svc, port=0)
-        base = f"http://127.0.0.1:{httpd.server_address[1]}"
         try:
-            body = {"model": "m", "max_tokens": 50, "messages": self.msgs, "assistant_prefix": "The answer is"}
-            req = urllib.request.Request(base + "/v1/chat/completions", data=json.dumps(body).encode(),
-                                         headers={"Content-Type": "application/json"})
+            body = {"model": "m", "max_tokens": 50, "messages": self.msgs, "assistant_prefix": self.PREFIX}
+            req = urllib.request.Request(f"http://127.0.0.1:{httpd.server_address[1]}/v1/chat/completions",
+                                         data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=30) as r:
-                answer = json.loads(r.read())["choices"][0]["message"]["content"]
-            self.assertEqual(answer, " 4")              # not "The answer is 4": the prefix stays prompt
+                message = json.loads(r.read())["choices"][0]["message"]
+            self.assertEqual(message["content"], " ORBIT-7")
+            self.assertFalse(message.get("reasoning_content"))
         finally:
             httpd.shutdown()
             httpd.server_close()
+
+    def test_debug_trace_line(self):
+        # STRATA_DEBUG says how much the prefix added and where generation starts (Z == X + Y), and never the
+        # prefix's text
+        x = len(self.svc.prepare(self.msgs, None, {})[0])
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, {"STRATA_DEBUG": "1"}):
+            with contextlib.redirect_stdout(buf):
+                ids, _, _ = self.svc.prepare(self.msgs, None, {"assistant_prefix": self.PREFIX})
+        m = re.search(r"assistant prefill: (\d+) tokens \(prompt (\d+) -> (\d+), generation starts at "
+                      r"position (\d+)\)", buf.getvalue())
+        self.assertIsNotNone(m, buf.getvalue())
+        y, x2, z, z2 = map(int, m.groups())
+        self.assertEqual((x2, z, z2), (x, len(ids), len(ids)))
+        self.assertEqual(z, x2 + y)
+        self.assertNotIn(self.PREFIX, buf.getvalue())
 
 
 class EffortAtTheEnd(unittest.TestCase):

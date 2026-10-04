@@ -2682,17 +2682,27 @@ class Service:
         empty thinking block).  The engine (--tail-role-token) checkpoints in front of that turn.
 
         An "assistant_prefix" kwarg (the request's field, frontend.assistant_prefix_kw) renders the conversation with
-        the prefix as its last, unfinished assistant turn: the template writes the turn as it writes any turn after
-        the last user query (the header, the turn's empty thinking block, the text) and the end-of-turn token comes
-        off, so generation continues the turn instead of starting a new one.  The prefix is message text: the
-        template trims it like any turn's, and the effort-end trick above does not apply to it."""
+        the prefix as its last, unfinished assistant turn: the template writes an empty turn as it writes any turn
+        after the last user query (the header, the turn's empty thinking block), its end-of-turn token comes off and
+        the raw prefix text follows, so generation continues the turn instead of starting a new one.  The prefix is
+        supplied text, not template-rendered content: it goes in exactly as sent - leading and trailing whitespace
+        included - and may itself end in "<|im_end|>\\n" without the terminator removal touching it.  The effort-end
+        trick above does not apply to it."""
         prefix = kwargs.get("assistant_prefix")
         if isinstance(prefix, str) and prefix:
             kw = {k: v for k, v in kwargs.items() if k != "assistant_prefix"}
-            rendered = self.template.render(list(messages) + [{"role": "assistant", "content": prefix}],
-                                            tools=tools, add_generation_prompt=False, **kw)
+            head = self.template.render(list(messages) + [{"role": "assistant", "content": ""}],
+                                        tools=tools, add_generation_prompt=False, **kw)
             end = IM_END + "\n"
-            return rendered[:-len(end)] if rendered.endswith(end) else rendered
+            if not head.endswith(end):
+                # a template whose assistant turn does not end the way Strata's does: the prefix goes in as the
+                # turn's rendered text (trimmed, as the template writes every turn) rather than guessing at its
+                # terminator.  Strata's own template (serve/chat_template.jinja, or the pack's copy of it) always
+                # ends a turn with "<|im_end|>\\n", so this is a guard, not a supported shape.
+                rendered = self.template.render(list(messages) + [{"role": "assistant", "content": prefix}],
+                                                tools=tools, add_generation_prompt=False, **kw)
+                return rendered[:-len(end)] if rendered.endswith(end) else rendered
+            return head[:-len(end)] + prefix
         effort = kwargs.get("reasoning_effort")
         off = kwargs.get("enable_thinking") is False
         if not self.effort_end or (not off and effort in (None, "", "xhigh", "high")):
