@@ -1,7 +1,7 @@
 # Gyro (agentionai rotor quants) on Strata
 
-Validated on Linux with an RTX 5090 (32 GB, CUDA 13.0, sm_120; 2026-10-02 and 2026-10-03) and an RTX 3090 (24 GB,
-sm_86; 2026-10-03). A short end-to-end run on AMD (Strix Halo, gfx1151, ROCm) passed on 2026-10-03.
+Validated on Linux with an RTX 5090 (32 GB, CUDA 13.0, sm_120; 2026-10-02 and 2026-10-03), an RTX 3090 (24 GB,
+sm_86; 2026-10-03) and two RTX 4090s (24 GB each, sm_89; 2026-10-04, single and dual GPU). A short end-to-end run on AMD (Strix Halo, gfx1151, ROCm) passed on 2026-10-03.
 
 The targets are the published files of `agentionai/Qwen3.8-Flash-Next-Gyro-GGUF`, used unchanged:
 
@@ -30,6 +30,7 @@ git clone -b rc1 https://github.com/agentionai/Strata && cd Strata
 ```sh
 tools/gyro_setup.sh --model S --backend cuda --cuda-arch 120       # RTX 50 series
 tools/gyro_setup.sh --model S --backend cuda --cuda-arch 89        # RTX 40 series
+tools/gyro_setup.sh --model S --backend cuda --cuda-arch 86        # RTX 30 series / RTX A6000
 tools/gyro_setup.sh --model S --backend hip  --hip-arch gfx1201    # Radeon RX 9070 / AI PRO R9700 (experimental)
 ```
 
@@ -164,6 +165,16 @@ The smaller caches were emulated on the 5090 (fast GPU, PCIe 5.0 x16 at ~51 GB/s
 slower GPU, often on a slower link: read those rows as "it stays usable", not as a prediction for a specific card.
 The decoded output was read and is fluent and correct; token-level parity against llama.cpp has not been
 checked. A real chat at 128k context worked through the web interface.
+
+### Two GPUs (2026-10-04, 2× RTX 4090, no NVLink/P2P)
+
+- **Layer split** (Strata splits the layers across both cards automatically) works with Gyro, including the
+  idle-card prompt helper (`STRATA_PREFILL_HELP=1`). Repeated runs give identical output.
+- **Decode with a second card** (`--peer-device 1` or `--expert-cache-device1 auto`) works and matches single-GPU output.
+- **Prompt processing on the peer card** needs GPU-to-GPU access (NVLink or data-centre GPUs); without it Strata keeps
+  the prompt on the first GPU and logs `no P2P`.
+
+Single RTX 4090 smoke run (Gyro-S, MTP draft, greedy): code 107.5, prose 84.3, JSON 76.3 tokens/s.
 
 ## Known limits
 
