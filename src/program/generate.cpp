@@ -53,6 +53,7 @@
 #include "strata/core/native_dense.hpp"
 #include "strata/program/logits_selection.hpp"
 #include "strata/program/conv_cache.hpp"
+#include "strata/program/helper_residency.hpp"
 #include "strata/spec/draft_policy.hpp"
 #include "strata/spec/suffix_drafter.hpp"
 #include "strata/kernels/cvec.hpp"
@@ -3168,6 +3169,9 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: layer split: CUDA0 runs layers 0-%lld\n", (long long) (split_at[0] - 1));
 
     std::array<strata::core::RemoteExperts, 3> remote_experts;
+    std::vector<uint8_t> remote_resident;
+    const char* disjoint_env = std::getenv("STRATA_DISJOINT_ADAPT");
+    const bool disjoint_adapt = disjoint_env && std::atoi(disjoint_env) != 0;
     const bool multi_remote = o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0;
     if (o.expert_cache_remote[0] > 0) {
         if (o.expert_cache <= 0 || profile.empty() || o.no_pool) {
@@ -3248,6 +3252,7 @@ int main(int argc, char** argv) {
                                  "results return through pinned host rows\n", remote_dev[r],
                          (long long) remote_experts[(size_t) r].resident(), remote_experts[(size_t) r].gib());
         }
+        if (disjoint_adapt) remote_resident = claimed;
     }
 
     // ---- Multi-GPU: the second GPU's expert tier, filled with the ranked pairs the primary does not hold
@@ -4802,7 +4807,12 @@ int main(int argc, char** argv) {
                 const float* u = drive.d.usage.data() + l * g.n_expert;
                 const int32_t* r = host_res.data() + l * g.n_expert;
                 for (int32_t e = 0; e < (int32_t) g.n_expert; ++e) {
-                    if (r[e] < 0) { if (u[e] >= 2.0f && !(peer.valid() && peer.has(l, e))) cand.emplace_back(u[e], e); }
+                    if (r[e] < 0) {
+                        if (u[e] >= 2.0f && !(peer.valid() && peer.has(l, e)) &&
+                            !strata::program::helper_expert_reserved(remote_resident,
+                                (size_t) l * (size_t) g.n_expert + (size_t) e, disjoint_adapt))
+                            cand.emplace_back(u[e], e);
+                    }
                     else vict.emplace_back(u[e], e);
                 }
                 if (cand.empty() || vict.empty()) continue;
@@ -6479,7 +6489,11 @@ int main(int argc, char** argv) {
                 const float* u = drive.d.usage.data() + l * g.n_expert;
                 const int32_t* r = host_res.data() + l * g.n_expert;
                 for (int32_t e = 0; e < (int32_t) g.n_expert; ++e) {
-                    if (r[e] < 0) { if (u[e] >= 2.0f) cand.emplace_back(u[e], e); }
+                    if (r[e] < 0) {
+                        if (u[e] >= 2.0f && !strata::program::helper_expert_reserved(remote_resident,
+                                (size_t) l * (size_t) g.n_expert + (size_t) e, disjoint_adapt))
+                            cand.emplace_back(u[e], e);
+                    }
                     else vict.emplace_back(u[e], e);
                 }
                 if (cand.empty() || vict.empty()) continue;
