@@ -18,6 +18,13 @@
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
 
+// HIP's __noinline__ macro collides with libstdc++'s [[gnu::__noinline__]]
+// attributes (notably <format>, included by <chrono> in newer GCC releases).
+// The wave32 shim does the same; Strata does not use the CUDA spelling.
+#ifdef __noinline__
+#undef __noinline__
+#endif
+
 #include <cstdint>
 #include <cstdlib>
 
@@ -85,6 +92,7 @@
 #define cudaSetDevice hipSetDevice
 #define cudaGetDeviceCount hipGetDeviceCount
 #define cudaGetDeviceProperties hipGetDeviceProperties
+#define cudaFuncAttributePreferredSharedMemoryCarveout hipFuncAttributePreferredSharedMemoryCarveout
 // The shared-memory opt-in limit: some HIP versions report 0 for it on GCN cards; the real ceiling there is
 // the plain per-block limit (64 KB of LDS on gfx906).
 inline hipError_t strata_device_get_attribute(int* v, hipDeviceAttribute_t a, int dev) {
@@ -233,7 +241,11 @@ static __device__ __forceinline__ int strata_dp4a(int a, int b, int c) {
 #else
     const int8_t* va = reinterpret_cast<const int8_t*>(&a);
     const int8_t* vb = reinterpret_cast<const int8_t*>(&b);
-    return c + va[0] * vb[0] + va[1] * vb[1] + va[2] * vb[2] + va[3] * vb[3];
+    // CUDA dp4a wraps modulo 2^32, including when the signed accumulator overflows.
+    unsigned int sum = static_cast<unsigned int>(c);
+#pragma unroll
+    for (int i = 0; i < 4; ++i) sum += static_cast<unsigned int>(va[i] * vb[i]);
+    return __builtin_bit_cast(int, sum);
 #endif
 }
 static __device__ __forceinline__ unsigned int strata_dp4a(unsigned int a, unsigned int b, unsigned int c) {
