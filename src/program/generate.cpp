@@ -4775,10 +4775,16 @@ int main(int argc, char** argv) {
             }
         }
         std::vector<PfPart> pf_parts;
+        // Tasks 3+4: when the post-touch correction accepted a plan, single-GPU serve runs THAT plan - the
+        // accepted chunk, loan and ring - and the scan below (whose probes also leave ring-budget state behind)
+        // is skipped. A layer split keeps its own stage-aware logic: the planner does not model stage caches.
+        const bool serve_follows_accepted =
+            !multi_gpu && posttouch_validated &&
+            (effective_prefill.owned || (effective_prefill.borrowed && effective_prefill.lend_slots > 0));
         // a cache too small to lend the prompt path its buffers would make it allocate them on top - on a card
         // whose cache already filled its reserve, that is the over-subscription the auto sizing avoids - so the
         // chunk is the largest one EVERY participant can lend (a smaller chunk only reads slower)
-        if (prefill_borrow_available && d_res != nullptr) {
+        if (prefill_borrow_available && d_res != nullptr && !serve_follows_accepted) {
             pf_parts.push_back({&xcache, &ss, &sp, -1, 0, multi_gpu ? split_at[0] : g.n_layers, -1, -1, 0, {}});
             for (auto& st : stages)
                 pf_parts.push_back({&st->cache, &st->ss, &st->sp, st->dev, st->lb, st->le, -1, -1, 0, {}});
@@ -4970,6 +4976,52 @@ int main(int argc, char** argv) {
             o.prefill_chunk = 1024;       // #85: no expert cache at all (a full 8 GB card): small buffers of its own
             std::fprintf(stderr, "strata serve: prefill auto: no expert cache to lend from; using owned 1024-token "
                                  "prompt buffers\n");
+        }
+        if (serve_follows_accepted) {
+            if (effective_prefill.owned) {
+                std::fprintf(stderr, "strata serve: the accepted VRAM plan runs the prompt path on its own "
+                                     "buffers (%lld-token chunk): no loan\n",
+                             (long long) effective_prefill.chunk);
+            } else {
+                o.prefill_chunk = effective_prefill.chunk;
+                lend_first = (int32_t) (xcache.slots() - effective_prefill.lend_slots);
+                borrow = xcache.device_slot((int32_t) lend_first);
+                borrow_bytes = xcache.slot_offsets()
+                                   ? (uint64_t) (xcache.bytes() - (int64_t) xcache.slot_offsets()[lend_first])
+                                   : (uint64_t) effective_prefill.lend_slots *
+                                         (uint64_t) strata::kernels::cpu::expert_layout().max_blob;
+                if (effective_prefill.lend.ring_budget >= 0)
+                    strata::prefill::Prefill::set_ring_budget((int) effective_prefill.lend.ring_budget,
+                                                              effective_prefill.lend.ring_small_max);
+                std::fprintf(stderr, "strata serve: the accepted VRAM plan lends the prompt path %lld cache slots "
+                                     "(%.2f GiB) for %lld-token chunks\n",
+                             (long long) effective_prefill.lend_slots, (double) borrow_bytes / 1073741824.0,
+                             (long long) o.prefill_chunk);
+            }
+        }
+        // STRATA_TEST_SERVE_DROP_LOAN=1: drop the accepted loan right before the contract check - proves serve
+        // refuses a borrowed plan without its loan instead of letting sp.init() allocate owned buffers
+        static const bool drop_serve_loan = [] {
+            const char* v = std::getenv("STRATA_TEST_SERVE_DROP_LOAN");
+            return v != nullptr && v[0] == '1';
+        }();
+        if (drop_serve_loan && borrow != nullptr) {
+            std::fprintf(stderr, "strata serve: STRATA_TEST_SERVE_DROP_LOAN: dropping the accepted loan\n");
+            borrow = nullptr;
+            borrow_bytes = 0;
+            lend_first = -1;
+        }
+        // the same contract generate runs before its prefill.init: the accepted plan is authoritative for mode
+        // and size; the runtime may run less (a shorter prompt), never more and never another mode
+        if (!multi_gpu && posttouch_validated) {
+            const strata::prefill::RuntimePrefillUse actual{borrow != nullptr, o.prefill_chunk};
+            const strata::prefill::RuntimePlanCheck contract =
+                strata::prefill::check_runtime_prefill_use(effective_prefill, actual);
+            if (!contract.ok) {
+                std::fprintf(stderr, "strata serve: %s; refusing rather than departing from the accepted "
+                                     "budget\n", contract.why);
+                return 1;
+            }
         }
         bool any_loan = borrow != nullptr;
         for (size_t i = 1; i < pf_parts.size(); ++i) any_loan = any_loan || pf_parts[i].first >= 0;
@@ -7612,7 +7664,19 @@ int main(int argc, char** argv) {
         uint64_t borrow_bytes = 0;
         if (prefill_borrow_available && !host_res.empty() && d_res != nullptr) {
             int64_t chunk = o.prefill_chunk;
-            int64_t k = plan_lend(chunk);             // auto: the largest chunk that fits; fixed: halved to fit
+            int64_t k;
+            if (posttouch_validated && effective_prefill.borrowed) {
+                // ONE decision: the accepted post-touch plan is what the prompt path runs - the same chunk,
+                // loan and ring the correction validated - and only a shorter prompt shrinks it. A re-scan
+                // could grow both past the accepted budget.
+                chunk = effective_prefill.chunk;
+                k = effective_prefill.lend_slots;
+                if (effective_prefill.lend.ring_budget >= 0)
+                    strata::prefill::Prefill::set_ring_budget((int) effective_prefill.lend.ring_budget,
+                                                              effective_prefill.lend.ring_small_max);
+            } else {
+                k = plan_lend(chunk);                 // auto: the largest chunk that fits; fixed: halved to fit
+            }
             // the accepted post-cache plan is the budget the engine runs under: a prompt path it validated as
             // borrowed always lends here (the same policy, the same cache); if it did not, the runtime would
             // allocate its own buffers outside the accepted requirement - refuse instead
@@ -7630,7 +7694,12 @@ int main(int argc, char** argv) {
                 if (!o.prefill_auto) o.prefill_chunk = chunk;
             }
             if (o.prefill_auto) {
-                o.prefill_chunk = k > 0 ? chunk : request_chunk(n_batched, 1024);
+                // the accepted plan caps the runtime: an owned fallback's ceiling is the accepted chunk - the
+                // planner may have reduced it below 1024 - and a loan never exceeds the accepted chunk. The
+                // runtime may use less (a shorter prompt), never more.
+                const int64_t fallback_ceiling =
+                    posttouch_validated && effective_prefill.owned ? effective_prefill.chunk : 1024;
+                o.prefill_chunk = k > 0 ? chunk : request_chunk(n_batched, fallback_ceiling);
                 if (k == 0)
                     std::fprintf(stderr, "strata generate: prefill auto: no cache loan is available; using owned "
                                          "%lld-token prompt buffers%s\n", (long long) o.prefill_chunk,
@@ -7658,20 +7727,18 @@ int main(int argc, char** argv) {
         }
         if (borrow == nullptr)
             std::fprintf(stderr, "strata generate: prompt path allocates its own buffers (no cache slots to borrow)\n");
-        // THE accepted plan is authoritative, whichever way it went (the guards sit outside every condition that
-        // builds the borrowing infrastructure): a borrowed plan must run with a real loan - owned buffers
-        // outside the accepted budget are the late failure #765 closes - and an owned plan must run on its own
-        // buffers. A future refactor that flips either side fails here, loudly.
-        if (posttouch_validated && effective_prefill.borrowed && borrow == nullptr) {
-            std::fprintf(stderr, "strata generate: the accepted VRAM plan requires the prompt path to borrow from "
-                                 "the expert cache, but runtime borrowing is unavailable; refusing rather than "
-                                 "allocating owned buffers outside the budget\n");
-            return 1;
-        }
-        if (posttouch_validated && effective_prefill.owned && borrow != nullptr) {
-            std::fprintf(stderr, "strata generate: the accepted VRAM plan runs the prompt path on its own buffers, "
-                                 "but a loan was set up; refusing rather than departing from the accepted budget\n");
-            return 1;
+        // THE accepted plan is the contract - mode and size both, and outside every condition that builds the
+        // borrowing infrastructure: the runtime may run less than accepted (a shorter prompt), never more and
+        // never another mode. A future refactor that flips either side fails here, loudly.
+        if (posttouch_validated) {
+            const strata::prefill::RuntimePrefillUse actual{borrow != nullptr, o.prefill_chunk};
+            const strata::prefill::RuntimePlanCheck contract =
+                strata::prefill::check_runtime_prefill_use(effective_prefill, actual);
+            if (!contract.ok) {
+                std::fprintf(stderr, "strata generate: %s; refusing rather than departing from the accepted "
+                                     "budget\n", contract.why);
+                return 1;
+            }
         }
         mem_mark("the decode graphs, before the prompt path's buffers");
         if (!prefill.init(wt, g, ss, srcp, o.expert_cache > 0 ? &xcache : nullptr,

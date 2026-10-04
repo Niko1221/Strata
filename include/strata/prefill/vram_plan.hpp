@@ -189,6 +189,23 @@ EffectivePrefillPlan revalidate_prefill_after_cache(const VramPlan& startup, con
 /// exactly once (a borrowed one lives inside the cache and adds nothing here).
 uint64_t effective_post_cache_required(const VramPlan& startup, const EffectivePrefillPlan& effective);
 
+/// The prompt path as the runtime is about to run it, for the final contract check.
+struct RuntimePrefillUse {
+    bool borrowed = false;
+    int64_t chunk = 0;
+};
+
+struct RuntimePlanCheck {
+    bool ok = true;
+    const char* why = nullptr;   ///< !ok: the broken rule, for the refusal message
+};
+
+/// THE accepted EffectivePrefillPlan is the contract: the runtime may run less (a shorter prompt, a smaller
+/// loan), never more and never another mode. Accepted borrowed => the runtime borrows, at most the accepted
+/// chunk; accepted owned => the runtime owns, at most the accepted chunk; accepted off (the token path) => no
+/// unplanned prompt allocation. Pure: the generate and serve guards share it, and R19-R28 test it without CUDA.
+RuntimePlanCheck check_runtime_prefill_use(const EffectivePrefillPlan& accepted, const RuntimePrefillUse& actual);
+
 /// The WDDM post-touch decision for one opened cache: accept it, or - while shrinking is still allowed - how
 /// many bytes it must give back so the next open can hold the requirement. Reaching the retry limit is a FAIL,
 /// never an unvalidated accept. The tolerance enters twice BY DESIGN, as hysteresis: once as the acceptance

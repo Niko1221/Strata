@@ -524,6 +524,74 @@ int main() {
               "E5: the fallback's price is bytes_needed + kOwnedPageMarginBytes");
     }
 
+    // ---- review 4, R19-R28: the accepted plan is the runtime's contract - mode and size, less is allowed
+    {
+        const auto use = [](bool borrowed, int64_t chunk) {
+            return RuntimePrefillUse{borrowed, chunk};
+        };
+        const EffectivePrefillPlan borrowed8192 = [] {
+            EffectivePrefillPlan e;
+            e.borrowed = true;
+            e.chunk = 8192;
+            e.lend_slots = 455;
+            return e;
+        }();
+        const EffectivePrefillPlan owned768 = [] {
+            EffectivePrefillPlan e;
+            e.owned = true;
+            e.chunk = 768;
+            e.owned_bytes = fake_bytes(768, -1) + kOwnedPageMarginBytes;
+            return e;
+        }();
+        const EffectivePrefillPlan owned2048 = [] {
+            EffectivePrefillPlan e;
+            e.owned = true;
+            e.chunk = 2048;
+            return e;
+        }();
+        // R19: accepted borrowed, runtime owned - the late failure #765 closes
+        check(!check_runtime_prefill_use(borrowed8192, use(false, 8192)).ok, "R19: borrowed accepted, owned runtime refuses");
+        // R20: accepted borrowed, matching loan
+        check(check_runtime_prefill_use(borrowed8192, use(true, 8192)).ok, "R20: borrowed accepted, borrowed runtime passes");
+        // R21: accepted owned, runtime borrowed
+        check(!check_runtime_prefill_use(owned2048, use(true, 2048)).ok, "R21: owned accepted, borrowed runtime refuses");
+        // R22 + R24: the auto owned fallback reduced below 1024 cannot grow back - this is the 5b6cb2f bug
+        StartupVramInput r22 = plan_input((uint64_t) 900 * MIB);   // 1024 owned does not fit; 768 does
+        r22.prefill_borrow = true;
+        r22.prefill_auto = true;
+        const VramPlan p22 = plan_startup_vram(r22);
+        check(p22.ok && p22.prefill_owned && p22.selected_prefill == 768,
+              "R22: the auto owned fallback is planned at 768, below the 1024 candidate");
+        const EffectivePrefillPlan accepted768 = [] {
+            EffectivePrefillPlan e;
+            e.owned = true;
+            e.chunk = 768;
+            return e;
+        }();
+        check(check_runtime_prefill_use(accepted768, use(false, 768)).ok,
+              "R22: the runtime runs the accepted 768 for a long prompt");
+        check(!check_runtime_prefill_use(accepted768, use(false, 1024)).ok,
+              "R22: the runtime fallback restored to 1024 refuses - the accepted 768 is the ceiling");
+        // R23: a shorter prompt may run less
+        check(check_runtime_prefill_use(accepted768, use(false, 512)).ok, "R23: owned 512 for a short prompt passes");
+        // R24: runtime owned larger than accepted
+        check(!check_runtime_prefill_use(accepted768, use(false, 1024)).ok, "R24: owned 1024 over accepted 768 refuses");
+        // R25: a borrowed auto chunk larger than accepted refuses (the runtime ceiling is the contract, not
+        // o.prefill_chunk, which an auto scan does not treat as its ceiling)
+        check(!check_runtime_prefill_use(
+                  [] { EffectivePrefillPlan e; e.borrowed = true; e.chunk = 4096; return e; }(),
+                  use(true, 8192)).ok,
+              "R25: borrowed 8192 over accepted 4096 refuses");
+        // R26: a shorter borrowed request is allowed
+        check(check_runtime_prefill_use(borrowed8192, use(true, 2048)).ok, "R26: borrowed 2048 under accepted 8192 passes");
+        // R27/R28's rules are the same two checks the serve guard runs (its GPU hook, STRATA_TEST_SERVE_DROP_LOAN,
+        // exercises the refused direction on hardware)
+        check(!check_runtime_prefill_use(borrowed8192, use(false, 4096)).ok,
+              "R27: the serve guard's refused direction (borrowed accepted, no loan)");
+        check(check_runtime_prefill_use(owned2048, use(false, 2048)).ok,
+              "R28: the serve guard's passing direction (owned accepted, owned runtime)");
+    }
+
     if (fails == 0) std::fprintf(stderr, "vram_plan_test: all checks passed\n");
     return fails == 0 ? 0 : 1;
 }

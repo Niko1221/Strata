@@ -246,8 +246,9 @@ VramPlan plan_startup_vram(const StartupVramInput& in) {
                 p.notes.push_back("prefill auto: no cache can lend even a 256-token chunk's buffers; the prompt "
                                   "path plans its own buffers for a 1024-token chunk");
                 if (in.free_bytes < p.mandatory_bytes + own) {
-                    // the fallback itself is reduced on the 256-token grid before the cache is committed, as an
-                    // explicit chunk is - the runtime runs whatever its request_chunk(n, 1024) lands on anyway
+                    // the fallback itself is reduced on the 256-token grid before the cache is committed:
+                    // 1024 is only the initial candidate, and whatever survives becomes the runtime's ceiling
+                    // (its owned fallback runs request_chunk(n, this chunk), never a fresh 1024)
                     const int64_t fit = largest_owned_fit(1024, 0);
                     if (fit == 0) {
                         p.ok = false;
@@ -331,6 +332,23 @@ VramPlan plan_startup_vram(const StartupVramInput& in) {
                 const uint64_t own = book_owned(1024);
                 p.notes.push_back("prefill auto: the explicit cache cannot lend a chunk's buffers; the prompt "
                                   "path plans its own for a 1024-token chunk (the cache stays as asked)");
+                if (in.free_bytes < p.mandatory_bytes + own + cache_bytes) {
+                    // the fallback is reduced like any owned chunk - 1024 was only the initial candidate
+                    const int64_t fit = largest_owned_fit(1024, cache_bytes);
+                    if (fit == 0) {
+                        p.ok = false;
+                        p.prefill_bytes = in.costs.bytes_with_ring(256, -1);
+                        p.short_by_bytes = (int64_t) (p.mandatory_bytes + p.prefill_bytes + cache_bytes -
+                                                      in.free_bytes);
+                        p.fail_why = "the prompt path's own buffers beside the explicit " + std::to_string(slots) +
+                                     "-slot cache";
+                        return p;
+                    }
+                    p.prefill_bytes = owned_bytes(fit);
+                    p.selected_prefill = fit;
+                    p.notes.push_back("the 1024-token fallback does not fit beside the cache either; " +
+                                      std::to_string(fit) + " is the largest chunk that does");
+                }
             }
         } else if (plan_lends(v, in.prefill_chunk)) {
             // lent from the explicit cache's real tail
@@ -530,6 +548,27 @@ EffectivePrefillPlan revalidate_prefill_after_cache(const VramPlan& startup, con
 
 uint64_t effective_post_cache_required(const VramPlan& startup, const EffectivePrefillPlan& effective) {
     return startup.mandatory_bytes + (effective.owned ? effective.owned_bytes : 0);
+}
+
+RuntimePlanCheck check_runtime_prefill_use(const EffectivePrefillPlan& accepted, const RuntimePrefillUse& actual) {
+    RuntimePlanCheck c;
+    if (accepted.borrowed) {
+        if (!actual.borrowed)
+            c.why = "the accepted VRAM plan lends the prompt path from the expert cache, but the runtime is "
+                    "about to allocate its own buffers";
+        else if (actual.chunk > accepted.chunk)
+            c.why = "the runtime's loan is larger than the accepted plan's chunk";
+    } else if (accepted.owned) {
+        if (actual.borrowed)
+            c.why = "the accepted VRAM plan runs the prompt path on its own buffers, but the runtime set up a "
+                    "loan";
+        else if (actual.chunk > accepted.chunk)
+            c.why = "the runtime's owned prompt buffers are larger than the accepted plan's chunk";
+    } else if (actual.chunk > 0) {
+        c.why = "the accepted VRAM plan has no prompt path; the runtime is about to allocate one";
+    }
+    c.ok = c.why == nullptr;
+    return c;
 }
 
 }  // namespace strata::prefill
