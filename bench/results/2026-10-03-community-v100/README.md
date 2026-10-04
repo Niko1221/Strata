@@ -9,7 +9,8 @@ is the engine's own repeated measurement. Reported per the guide in
 
 - Tesla V100-PCIE-32GB (sm_70, TCC mode), solo, PCIe **Gen3** x16
 - dual Xeon E5-2696 v3 (36C/72T, two sockets, NUMA)
-- 128 GB DDR4
+- 128 GB DDR3L-1600 ECC REG (8x16 GB, Samsung M393B2G70QH0-YK0) - the DDR3 variant of this
+  X99-generation board; first posted as DDR4, corrected after checking the module part numbers
 - Windows 10 Enterprise LTSC (19044)
 
 ## Software
@@ -71,5 +72,8 @@ the same 4,340-token document at 629.5 tok/s.
 ## Notes
 
 - Decode is memory/PCIe-bound on this card: GPU util ~19%, 42-48 W of the 250 W limit, 49 C.
+- Host memory bandwidth is the main decode lever left on this box after calibration: DDR3L-1600
+  has no headroom, and same-CPU-generation dual-socket DDR4-2133 boxes report roughly 1.8x our
+  decode on comparable MoE traffic (community anecdote, unverified).
 - Full capability comparison against Qwen3.8-27B (llama.cpp) on the same machine, and the
   thinking-budget pitfall (`reasoning_budget_tokens`), are described in issue #617.
