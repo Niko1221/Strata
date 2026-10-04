@@ -167,6 +167,14 @@ from the GGUF gave identical tokens and logits. An expert read from the GGUF is 
 engine fetches a layer's missing experts on 8 threads (`STRATA_FETCH_THREADS`) with one batched page request
 (Windows `PrefetchVirtualMemory`). With an `experts.bin` in the pack, nothing changes. Setup does not use this yet.
 
+**IQ1_S experts:** Unsloth's UD-IQ1_S keeps the routed gate/up experts in IQ1_S (GGML type 19, 1.5625 bpw, 50 bytes per
+256-value block), which earlier engines could not run on the GPU: the dequantizer, the MMVQ dot and the grouped expert
+kernels now cover it (`src/kernels/cuda/iq_kernels.cu`), and so does the AVX-2 multi-token kernel for AVX2 CPUs
+(`src/kernels/cpu/iq_avx2.cpp`, IQ1_S and IQ1_M both). `iq_parity` measures 0.00e+00 dequant relative error against
+gguf-py; `iq_multi_parity` and `native_grouped_parity` are bitwise equal to the per-column and v1 kernels. Its down
+experts are IQ4_NL and its PLE table `per_layer_token_embd.weight` (IQ4_NL) is read by the n-gram reader
+(`src/kernels/ngram.cpp`), already supported.
+
 **A RAM budget (engine 0.1.31, `--resident-budget-gib N`):** the resident variant for a model whose experts do not all
 fit: the N GiB of experts the GPU cache does not hold that the expert profile ranks hottest are copied into RAM at
 start (locked; page-locked when the driver allows the whole budget), and the rest are read from the files through the
