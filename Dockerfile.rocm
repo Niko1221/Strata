@@ -7,7 +7,7 @@
 # The engine is compiled during docker build, so the first container start only
 # downloads the model (~70 GB) and starts the server. docker build has no GPU,
 # so the gfx targets are fixed here: the engine is a fat binary with a code
-# object per listed arch. Keep both archs unless you want a faster build for a
+# object per listed arch. Keep all archs unless you want a faster build for a
 # single card (narrow HIP_ARCHITECTURES to just yours).
 #
 # setup.py's rocm_root() accepts a system ROCm >= 7.0 when hipcc, libhipblas and 
@@ -16,8 +16,8 @@
 # release of the base image must be used as the base image.
 #
 # Build:
-#   docker build -t strata-rocm .
-#   docker build -t strata-rocm --build-arg HIP_ARCHITECTURES=gfx1100 .   # 7900 XT only
+#   docker build -t strata .
+#   docker build -t strata --build-arg HIP_ARCHITECTURES=gfx1100 .   # 7900 XT only
 #
 # Run (host needs the amdgpu driver; the container needs KFD + DRI passed through):
 #   docker run --rm \
