@@ -188,11 +188,14 @@ def verify_mixed(results, log_text, b_tokens):
     """Disk parking and the RAM cache side by side: A (with an id) comes back from disk every time, B (without one)
     from RAM, C (without one) is read and parked in RAM too, and every record matches the never-parked baseline."""
     baseline, candidate = results['baseline'], results['candidate']
-    names = ['A', 'B', 'A+', 'B+', 'C', 'B++', 'A++']
-    for records in (baseline, candidate):
-        require([r['name'] for r in records] == names, 'incomplete mixed sequence')
+    require([r['name'] for r in baseline] == ['A', 'A+', 'A++', 'B', 'B+', 'B++'], 'incomplete baseline')
+    require([r['name'] for r in candidate] == ['A', 'B', 'A+', 'B+', 'C', 'B++', 'A++'], 'incomplete candidate')
     state_keys = set(STATE_KEYS)
-    for base, cand in zip(baseline, candidate):
+    by_base = {r['name']: r for r in baseline}
+    for cand in candidate:
+        if cand['name'] == 'C':
+            continue
+        base = by_base[cand['name']]
         for record in (base, cand):
             require(bool(record['ids']), 'missing generated tokens')
             require(record['finish'] in ('length', 'stop'), 'request did not finish normally')
@@ -282,17 +285,27 @@ def main():
                     generate(C, 1, 'N')   # no id: parks A, is never parked itself
                     generate(cont2, 8, 'A++-again', 'a')   # A's live end is past this prompt: a checkpoint
             elif a.scenario == 'mixed':
-                # A has an id (disk), B and C have none (RAM).  The baseline runs the same sequence without either
-                # cache, so every record must match it token for token and byte for byte.
-                head_a = generate(A, 1, 'A', 'a')
-                head_b = generate(B, 1, 'B')
-                cont_a = A + head_a + suffix
-                more_a = generate(cont_a, 8, 'A+', 'a')
-                cont_b = B + head_b + suffix
-                more_b = generate(cont_b, 8, 'B+')
-                generate(C, 1, 'C')
-                generate(cont_b + more_b + suffix, 8, 'B++')
-                generate(cont_a + more_a + suffix, 8, 'A++', 'a')
+                # A has an id (disk), B and C have none (RAM).  The baseline plays each conversation through
+                # without interruption (a prompt read in one go and one continued from its live end differ in
+                # state, so that is what a restore must reproduce); the candidate interleaves them, with C between.
+                def turns(prompt, name, conv=None):
+                    head = generate(prompt, 1, name, conv)
+                    cont = prompt + head + suffix
+                    more = generate(cont, 8, name + '+', conv)
+                    return cont + more + suffix
+                if label == 'baseline':
+                    generate(turns(A, 'A', 'a'), 8, 'A++', 'a')
+                    generate(turns(B, 'B'), 8, 'B++')
+                else:
+                    head_a = generate(A, 1, 'A', 'a')
+                    head_b = generate(B, 1, 'B')
+                    cont_a = A + head_a + suffix
+                    more_a = generate(cont_a, 8, 'A+', 'a')
+                    cont_b = B + head_b + suffix
+                    more_b = generate(cont_b, 8, 'B+')
+                    generate(C, 1, 'C')
+                    generate(cont_b + more_b + suffix, 8, 'B++')
+                    generate(cont_a + more_a + suffix, 8, 'A++', 'a')
             elif a.scenario in ('pressure', 'oversized', 'admission'):
                 generate(A, 1, 'A')
                 generate(B, 1, 'B')
