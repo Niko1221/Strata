@@ -393,8 +393,8 @@ struct Options {
     /// Fase 3 (hetero multi-GPU), explicit roles: MAIN runs the model + KV + verify, DRAFT keeps the MTP drafter
     /// (its weights, own KV, drafting) in VRAM on its own GPU.  Opt-in and unset-by-default: without the flags
     /// everything runs on CUDA0 exactly as today, and `--main-device 0 --draft-device 0` is the degenerate
-    /// all-on-one-GPU roles run.  Refused with --layer-split or --expert-cache-deviceN: those already own the
-    /// second GPU.  docs/HETERO_MGPU_PLAN.md
+    /// all-on-one-GPU roles run.  Refused with --layer-split, --expert-cache-deviceN or --peer-device: those
+    /// already own the second GPU.  docs/HETERO_MGPU_PLAN.md
     int main_device = -1;
     int draft_device = -1;
     /// Fase 8 (hetero multi-GPU), opt-in: the prompt fill queues on the drafter's stream and the wait moves to
@@ -1498,6 +1498,11 @@ int main(int argc, char** argv) {
         if (o.main_device != o.draft_device &&
             (o.expert_cache_remote[0] > 0 || o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0)) {
             std::fprintf(stderr, "strata generate: a remote draft (--main-device %d --draft-device %d) and the remote expert caches (--expert-cache-deviceN) both address the second GPU; with both roles on one GPU the caches are fine\n",
+                         o.main_device, o.draft_device);
+            return 2;
+        }
+        if (o.main_device != o.draft_device && o.peer_device >= 1) {
+            std::fprintf(stderr, "strata generate: a remote draft (--main-device %d --draft-device %d) and the peer expert tier (--peer-device) both address the second GPU; with both roles on one GPU the peer is fine\n",
                          o.main_device, o.draft_device);
             return 2;
         }
