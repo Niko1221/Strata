@@ -553,6 +553,7 @@ struct Prefill::Impl {
     strata::kernels::KvHostPools stage;
     int32_t* ident_table = nullptr;
     // layer split: the device, and the hand-off to the next stage (two pinned chunk buffers, used in turn)
+    bool serial_tail = false;   // STRATA_PF_DEPTH=0: wait for the chain below, as before 0.1.39 (see `init`)
     int device = -1;
     float* hand[2] = {};
     // C-4: the chunk's token ids on the device, for one batched embedding gather
@@ -742,6 +743,17 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
     if (stage_lb_ < 0 || stage_lb_ >= stage_le_ || stage_le_ > g.n_layers || (stage_le_ < g.n_layers) != (next_ != nullptr)) {
         err = "prefill: the stage's layer range is wrong";
         return false;
+    }
+    // STRATA_PF_DEPTH=0 is the A/B control for the overlap: it restores the hand-off as it was before 0.1.39,
+    // where a stage's `run` also waited for the whole chain below its last chunk before returning.  Nothing else
+    // about the two settings differs, so one prompt read twice in one binary isolates what the overlap is worth.
+    // There is nothing above 1 to raise it to: a stage owns ONE set of chunk buffers (`m.R`, the staging ring, the
+    // GEMM scratch), so two of its chunks must never be in flight at once.
+    if (const char* d = std::getenv("STRATA_PF_DEPTH")) {
+        const int v = atoi(d);
+        if (v > 1) std::fprintf(stderr, "strata prefill: STRATA_PF_DEPTH=%d ignored: a stage has one set of chunk "
+                                        "buffers, so it reads one chunk at a time (1).\n", v);
+        m.serial_tail = v == 0;
     }
     for (int b = 0; next_ != nullptr && b < 2; ++b)
         if (!m.hand[b] && cudaHostAlloc((void**) &m.hand[b], (size_t) chunk * D * 4, cudaHostAllocPortable) != cudaSuccess) {
@@ -1553,6 +1565,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     // The direct successor's future lives on the Prefill object. Intermediate
     // stages therefore do not drain the complete remaining GPU chain here.
     double host_sync_ms = 0, host_chunk_ms = 0, host_setup_ms = 0;   // STRATA_PREFILL_TIMING: the host's share
+    double wait_next_ms = 0;   // STRATA_PREFILL_TIMING: time blocked on the next stage's previous chunk
     strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
     s.n_head = g.n_head; s.n_head_kv = g.n_head_kv; s.head_dim = g.head_dim; s.idx_n_head = g.idx_q_heads;
     s.idx_dim = g.idx_key_dim;
@@ -2929,7 +2942,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             // Wait only for the DIRECT successor's previous chunk. That successor
             // may already have forwarded its older chunk to later GPUs.
             if (on_stage_chunk && !on_stage_chunk(p0 + T, err)) return false;
+            const auto tw = Clock::now();
             if (next_run_.valid() && !next_run_.get()) { err = next_err_; return false; }
+            wait_next_ms += ms_since(tw);
             next_err_.clear();
             next_->hand_in_ = h;
             next_->single_chunk_ = single_chunk;
@@ -2967,6 +2982,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     }
     // Do not drain the successor here. This is the overlap: an intermediate
     // stage can return while later GPUs are still processing the previous chunk.
+    // STRATA_PF_DEPTH=0 (A/B control) puts the drain back - waiting for the chain below on every chunk is what made
+    // the stages of a split take turns instead of overlapping.
+    if (m.serial_tail && next_run_.valid() && !next_run_.get()) { err = next_err_; return false; }
     ss.ple_prev[0] = prev[0];
     ss.ple_prev[1] = prev[1];
     if (std::getenv("STRATA_DBG_NAN") != nullptr) {   // debug: the state the prompt leaves for the token path
@@ -3013,6 +3031,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         std::fprintf(stderr, "strata prefill timing: host: chunk setup (PLE rows, the expert stream plan) %.0f ms, "
                              "waiting for each chunk %.0f ms, after each chunk (the draft layer, progress) %.0f ms, "
                              "PLE %.0f ms\n", host_setup_ms, host_sync_ms, host_chunk_ms, stats_.ms_ple);
+        std::fprintf(stderr, "strata prefill timing: stage dev %d layers %lld..%lld, wall %.0f ms, waiting on the next "
+                             "stage %.0f ms\n", m.device, (long long) LB, (long long) LE, ms_since(t_start), wait_next_ms);
         if (pe.on) {
             int pd = 0; cudaGetDevice(&pd); cudaSetDevice(pe.dev); cudaStreamSynchronize(m.pp->s); pe.fold(); cudaSetDevice(pd);
             std::string pl;
