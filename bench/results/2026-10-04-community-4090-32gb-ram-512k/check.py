@@ -3,10 +3,10 @@
 32K/120K/240K/480K, then short follow-ups for stability (upstream #606), with RAM sampled. Reuses
 scripts/strata/ctx_sweep.py's haystack and chat helpers against the live port."""
 import json, sys, threading, time
-sys.path.insert(0, "~/homelab/scripts/strata")
+sys.path.insert(0, "~/bench-scripts")
 import ctx_sweep as cs
 cs.PORT = 8080
-out = "~/homelab/state/evals/2026-10-04/strata-0139-512k/results.jsonl"
+out = "./results.jsonl"
 mem = {"min_avail": 99.0, "max_swap": 0.0}
 def sample():
     while True:

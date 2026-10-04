@@ -1,6 +1,6 @@
 # Community benchmark: RTX 4090 24 GB with 32 GB of system RAM, 512K context (IQ2_XS)
 
-Measured on 2026-10-04 by [T-Crypt](https://github.com/T-Crypt) on a Linux desktop (aphotic). This tests Strata
+Measured on 2026-10-04 by [T-Crypt](https://github.com/T-Crypt) on a Linux desktop. This tests Strata
 0.1.39 with the original Flash-Next IQ2_XS on one RTX 4090 at a 524,288-token context - past the model's trained
 262,144 - with `--rope-scaling yarn --rope-scale 2`, q4_0 KV streamed (`--kv-resident 32768`) and
 `--resident-experts`, on a box with 32 GB of RAM. 24 GB of VRAM plus 32 GB of system RAM, 56 GB of memory in

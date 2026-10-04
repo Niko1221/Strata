@@ -34,7 +34,7 @@
  "cwd": "~/strata",
  "tokenizer": "~/Strata-data/packs/iq2_xs/tokenizer",
  "model_name": "sweep-q4-512k-yarn-res-p",
- "log": "~/homelab/state/evals/2026-10-03/strata-k8v4/engine-q4-512k-yarn-res-p.log",
+ "log": "./engine-q4-512k-yarn-res-p.log",
  "lib_dirs": [
   "/opt/cuda/bin",
   "/opt/cuda/lib64"
