@@ -649,6 +649,7 @@ The server listens on `http://127.0.0.1:8080` (change with `--port` in setup, or
 | Save / restore the conversation to a file (session files, below) | `POST /slots/0?action=save\|restore` |
 | Everything the Monitor tab shows (engine, live state, last requests, hardware) | `GET /metrics` |
 | The same for Prometheus, with vLLM's metric names (asked with `Accept: text/plain` or `?format=prometheus`) | `GET /metrics` |
+| Request totals and what is running in Prometheus' text format, under llama-server's metric names | `GET /metrics/prometheus` |
 | The MCP servers, their state and tools ([below](#tools-from-mcp-servers)) | `GET /mcp` |
 
 `GET /metrics` answers a Prometheus scrape (`Accept: text/plain` or `application/openmetrics-text`) in the text
