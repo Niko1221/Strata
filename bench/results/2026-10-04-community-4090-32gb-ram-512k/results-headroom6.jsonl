@@ -1,0 +1,8 @@
+{"target": 32000, "prompt_tokens": 31841, "read_secs": 12.9, "prefill_tps": 2486.1, "recall": true, "answer": "814185", "decode_at_depth": 117.9, "summary_head": "814185\n\nThe logs represent a comprehensive performance monitoring dataset for a distributed system, tracking latency acr", "min_avail": 3.71, "max_swap": 1.41}
+{"target": 120000, "prompt_tokens": 119233, "read_secs": 32.3, "prefill_tps": 3709.4, "recall": true, "answer": "378289", "decode_at_depth": 129.8, "summary_head": "378289\n\nThe logs represent a comprehensive performance monitoring dataset for a distributed system, tracking latency acr", "min_avail": 3.64, "max_swap": 2.27}
+{"target": 240000, "prompt_tokens": 238480, "read_secs": 60.4, "prefill_tps": 3696.9, "recall": true, "answer": "893147", "decode_at_depth": 128.2, "summary_head": "893147\n\nThe logs represent a comprehensive performance monitoring dataset for a distributed system, tracking latency acr", "min_avail": 3.53, "max_swap": 2.38}
+{"target": 480000, "prompt_tokens": 476820, "read_secs": 135.5, "prefill_tps": 3411.1, "recall": true, "answer": "722273", "decode_at_depth": 122.0, "summary_head": "722273\n\nThe logs represent a comprehensive performance monitoring dataset for a distributed system, detailing the latenc", "min_avail": 3.53, "max_swap": 2.5}
+{"followup": 0, "text": "391", "decode_tps": 123.1, "min_avail": 3.53, "max_swap": 2.5}
+{"followup": 1, "text": "Paris", "decode_tps": 38.6, "min_avail": 3.53, "max_swap": 2.5}
+{"followup": 2, "text": "```python\ns[::-1]\n```", "decode_tps": 106.2, "min_avail": 3.53, "max_swap": 2.5}
+{"done": true, "min_avail": 3.53, "max_swap": 2.5}
