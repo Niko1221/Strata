@@ -93,6 +93,9 @@ struct WeightRef {
     /// Plan v0.3 P1: false when the loader SKIPPED this tensor's canonical bytes because another form serves it
     /// (native GGUF projections, the native head).  The metadata above stays valid; `data` is null.
     bool resident = true;
+    /// STRATA_HC_Q8 (experiment): non-null when `data` holds int8 codes [ne1][ne0] of a BF16 hyper-connection
+    /// projection quantized Q8_0-style (one fp32 scale per 32 contiguous values, `q8_scale[ne1][ne0 / 32]`).
+    const float* q8_scale = nullptr;
 };
 
 struct LoadReport {
@@ -129,6 +132,12 @@ public:
               const std::set<std::string>* skip = nullptr);
 
     const WeightRef* find(const std::string& name) const;
+    /// STRATA_HC_Q8: the hyper-connection projections (`blk.*.hc_{attn,ffn}_{down,up}.weight`) the loader SKIPPED
+    /// are read from the pack, quantized to int8 + one fp32 scale per 32 values, and uploaded to their own device
+    /// allocation (`q8_scale` set).  Returns the bytes uploaded in `bytes`.
+    bool load_hc_q8(const std::string& pack_dir, uint64_t& bytes, std::string& err);
+    /// The tensor names `load_hc_q8` converts, for the loader's skip set.
+    static void hc_q8_names(int64_t n_layers, std::set<std::string>& out);
     const std::map<std::string, WeightRef>& all() const { return table_; }
     const LoadReport& report() const { return report_; }
 
