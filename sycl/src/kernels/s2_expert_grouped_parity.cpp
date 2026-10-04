@@ -204,6 +204,20 @@ bool twice(const char* name, float* d_out, size_t out_floats, const Scratch& s,
     size_t diff_out = 0, diff_gu = 0, diff_q8 = 0, diff_hs = 0;
     for (size_t i = 0; i < out_floats; ++i)
         diff_out += std::memcmp(&r[0].out[i], &r[1].out[i], 4) != 0;
+    if (std::getenv("S2_DEBUG")) {   // SYCL port, debugging: the first differences of the output and the gate/up
+        int shown = 0;
+        for (size_t i = 0; i < out_floats && shown < 6; ++i)
+            if (std::memcmp(&r[0].out[i], &r[1].out[i], 4) != 0) {
+                std::printf("    out[%zu]: previous %.9g new %.9g\n", i, r[0].out[i], r[1].out[i]); ++shown; }
+        shown = 0;
+        for (size_t i = 0; i + 4 <= (size_t) gu && shown < 8; i += 4)
+            if (std::memcmp(&r[0].scratch[i], &r[1].scratch[i], 4) != 0) {
+                float a, b; std::memcpy(&a, &r[0].scratch[i], 4); std::memcpy(&b, &r[1].scratch[i], 4);
+                std::printf("    gate/up byte %zu (float %zu of %llu): previous %.9g%s new %.9g%s\n", i, i / 4,
+                            (unsigned long long) (gu / 4), a, r[0].scratch[i] == 0x5A ? " (sentinel)" : "",
+                            b, r[1].scratch[i] == 0x5A ? " (sentinel)" : "");
+                ++shown; }
+    }
     for (size_t i = 0; i < (size_t) s.bytes; ++i) {
         if (r[0].scratch[i] == r[1].scratch[i]) continue;
         if (i < gu) ++diff_gu;

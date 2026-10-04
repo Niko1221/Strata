@@ -219,6 +219,20 @@ edit("src/core/conversation_snapshot_test.cpp", lambda s: s.replace(
     "for (void *p : host) DPCT_CHECK_ERROR(free(p));",
     "for (void *p : host) DPCT_CHECK_ERROR(sycl::free(p, dpct::get_in_order_queue()));   // SYCL port: dpct wrote free(p) for cudaFreeHost"))
 
+# 9d. s2_expert_grouped: the new transposed kernels (gu/down_grouped_t_kernel) write `acc += dw * dx * v` in one
+#     expression, which -fp-model=precise contracts to an FMA; the previous kernels compute the product in
+#     chunk_dot and add it in the caller, which it does not. nvcc contracts both, so on CUDA they are bitwise equal
+#     (s2_expert_grouped_parity checks that); here they differed in the last bit. No contraction in the new ones.
+def s2_no_contract(s):
+    import re as _re
+    note = "    #pragma clang fp contract(off)   // SYCL port: round as the previous kernels do (see tools/fixups.py)\n"
+    for name in ("gu_grouped_t_kernel", "down_grouped_t_kernel"):
+        m = _re.search(r"__dpct_inline__ void " + name + r"\([^{]*\{\n", s)
+        if m and not s[m.end():].startswith(note):
+            s = s[:m.end()] + note + s[m.end():]
+    return s
+edit("src/kernels/cuda/s2_expert_grouped.dp.cpp", s2_no_contract)
+
 # 10. %globaltimer: there is no device-side wall clock in SPIR-V; the verify-window stage profiler reads zeros.
 edit("src/kernels/cuda/verify_kernels.dp.cpp", lambda s: s.replace(
     'asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));',
