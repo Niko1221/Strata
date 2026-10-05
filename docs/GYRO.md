@@ -19,11 +19,7 @@ Qwen3.8-Flash-Next models. It is not the GGUF draft file from the Gyro repositor
 
 ## Quick setup
 
-Gyro support lives on the `rc1` branch of the agentionai fork:
-
-```sh
-git clone -b rc1 https://github.com/agentionai/Strata && cd Strata
-```
+From a Strata checkout:
 
 `tools/gyro_setup.sh` does every step below on Linux:
 
@@ -45,7 +41,8 @@ git clone --depth 1 https://github.com/agentionai/llama.cpp ../agention-llama.cp
 # NVIDIA. RTX 50 series: use CUDA 13 (CUDA 12.8 crashes the prompt path on sm_120: issues #220, #224)
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON \
   -DCMAKE_CUDA_ARCHITECTURES=120 -DSTRATA_GGML_DIR=$PWD/../agention-llama.cpp
-# AMD (experimental: kernel parity validated on gfx1151, plus a short end-to-end run there)
+# AMD (experimental: kernel parity and an end-to-end run validated on gfx1151; in a non-root container add
+# --group-add $(getent group render | cut -d: -f3), otherwise HIP finds no device)
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_HIP=ON -DSTRATA_PREFILL_MMQ=ON \
   -DCMAKE_HIP_ARCHITECTURES=gfx1201 -DSTRATA_GGML_DIR=$PWD/../agention-llama.cpp
 cmake --build build -j
@@ -111,7 +108,7 @@ from RAM; nothing else changes.
 ## Measured
 
 All runs: greedy or the stated sampling, same prompt tokens as llama.cpp, MTP draft `--spec 4 --spec-min-p 0.5`,
-int8 KV. "llama.cpp" is the agentionai fork with the CUDA trellis fixes (branch `cuda-tq-fixes`).
+int8 KV. "llama.cpp" is the agentionai fork with the CUDA trellis fixes (in its `main` since 2026-10-04).
 
 ### RTX 5090 (32 GB), Gyro-S, all experts on the GPU (2026-10-03)
 
