@@ -74,7 +74,13 @@ MODEL="${STRATA_MODEL:-IQ3_XXS}"
 export STRATA_MODEL="$MODEL"
 export STRATA_HF_CACHE="${STRATA_HF_CACHE:-${HF_HUB_CACHE:-/hf-cache}}"
 export STRATA_WORK="${STRATA_WORK:-/work}"
-export STRATA_PACK_DIR="${STRATA_PACK_DIR:-$STRATA_WORK/packs/$(printf '%s' "$MODEL" | tr '[:upper:]' '[:lower:]')}"
+# Release facts for the defaults below come from the same resolver the container fetches with
+# (paths may be empty here - --allow-missing; the keys are what this block uses).  If the model
+# name is unknown to the resolver, bootstrap-model.sh is the failure authority, and the fallbacks
+# below are today's pre-release-axis defaults.
+eval "$({ "$PY" "$DIR/hfmodel.py" --model "$MODEL" --cache "$STRATA_HF_CACHE" --print shell \
+         --allow-missing ${STRATA_HF_REPO:+--repo "$STRATA_HF_REPO"}; } 2>/dev/null)" || true
+export STRATA_PACK_DIR="${STRATA_PACK_DIR:-$STRATA_WORK/packs/${STRATA_PACK_TAG:-}$(printf '%s' "$MODEL" | tr '[:upper:]' '[:lower:]')}"
 export STRATA_MTP="${STRATA_MTP:-$STRATA_WORK/mtp/rt}"
 LOG="${STRATA_LOG:-$STRATA_WORK/logs/strata-hip.log}"
 RUN_DIR="${STRATA_RUNTIME_DIR:-/run}"
@@ -97,7 +103,7 @@ KV="${STRATA_KV:-int8}"
 SPEC="${STRATA_SPEC:-4}"
 POOL_WORKERS="${STRATA_POOL_WORKERS:-0}"  # engine selects one worker per allowed physical core, excluding host
 [[ "$POOL_WORKERS" =~ ^[0-9]+$ ]] || die "STRATA_POOL_WORKERS must be 0 (auto) or a positive integer"
-MODEL_NAME="${STRATA_MODEL_NAME:-qwen3.8-flash-next-$(printf '%s' "$MODEL" | tr '[:upper:]' '[:lower:]')}"
+MODEL_NAME="${STRATA_MODEL_NAME:-${STRATA_MODEL_NAME_DEFAULT:-qwen3.8-flash-next-$(printf '%s' "$MODEL" | tr '[:upper:]' '[:lower:]')}}"
 [ "${STRATA_VISION:-0}" = "1" ] && die "images/vision are NVIDIA-only on this backend (docs/AMD_HIP.md:101)"
 
 # Check-and-fetch: downloads the quant into the mounted HF cache and builds the pack if either is
@@ -129,6 +135,7 @@ if [ ! -f "$STRATA_MTP/experts.bin" ]; then
       "published numbers; see the bootstrap note above for why it is missing)"
 fi
 log "model $MODEL from $REPO_ID"
+[ -n "${STRATA_LICENSE:-}" ] && log "  license: $STRATA_LICENSE"
 log "  native=$NATIVE"
 log "  ple=$PLE"
 log "  pack=$STRATA_PACK_DIR  mtp=$STRATA_MTP  profile=$EXPERT_PROFILE"
