@@ -719,6 +719,7 @@ are refused with an error that says so.
 | `reasoning.effort` | `none`/`minimal`, `low`, `medium`, `high`/`xhigh`; without it the model's default (high) |
 | `max_output_tokens` | The output cap (thinking included). Running out ends the response `incomplete` (`max_output_tokens`) |
 | `text.format` | `json_schema` and `json_object` use the [JSON response formats](#json-response-formats) (checked, not constrained) |
+| `thread_source` `thread_title` in `client_metadata["x-codex-turn-metadata"]` | Codex's thread-title request, sent beside each user turn from another session with `tools: []`: answered without the engine as `{"title": "<the user's line, cut to 36 characters>"}`, so the conversation keeps the prompt cache. The title is the user's line, not one the model wrote |
 | `temperature`, `top_p`, `reasoning_budget_tokens`, ... | As on the chat path |
 
 The model's thinking comes back as a `reasoning` output item with `reasoning_text` content (streamed as
