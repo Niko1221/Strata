@@ -8,7 +8,7 @@
 #if defined(_MSC_VER)
 #include <intrin.h>
 #include <immintrin.h>
-#else
+#elif !defined(__aarch64__) && !defined(__arm__)
 #include <cpuid.h>
 #endif
 #include <fstream>
@@ -37,6 +37,15 @@ int cpu_isa_cap() {
     return cap;
 }
 
+#if defined(__aarch64__) || defined(__arm__)
+bool cpu_avx512_ok() { return false; }
+bool cpu_avx512bw_ok() { return false; }
+bool cpu_avx2_ok() { return false; }
+bool cpu_avx1_ok() { return false; }
+bool cpu_sse42_ok() { return false; }
+const char* isa_floor_build() { return "arm64"; }
+std::string cpu_name() { return "ARM64"; }
+#else
 bool cpu_avx512_ok() {
     static const bool ok = [] {
         if (const char* f = std::getenv("STRATA_FORCE_AVX2"); f != nullptr && f[0] == '1') return false;
@@ -208,16 +217,25 @@ std::string cpu_name() {
     const size_t b0 = name.find_first_not_of(' '), b1 = name.find_last_not_of(' ');
     return b0 == std::string::npos ? std::string("unknown") : name.substr(b0, b1 - b0 + 1);
 }
+#endif
 
 void q2_rows_any(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt, float* const* out,
                  int r0, int r1) {
+#if defined(__aarch64__) || defined(__arm__)
+    q2_0_gguf_rows_multi(w, row_bytes, nblocks, a, nt, out, r0, r1);
+#else
     if (cpu_avx512_ok()) q2_0_gguf_rows_multi(w, row_bytes, nblocks, a, nt, out, r0, r1);
     else q2_0_gguf_rows_multi_avx2(w, row_bytes, nblocks, a, nt, out, r0, r1);
+#endif
 }
 
 void act_quant_any(const float* x, int n, ActQ& a) {
+#if defined(__aarch64__) || defined(__arm__)
+    act_quant_q8_1(x, n, a);
+#else
     if (cpu_avx512_ok()) act_quant_q8_1(x, n, a);
     else act_quant_q8_1_avx2(x, n, a);
+#endif
 }
 
 #if !defined(STRATA_NATIVE_EXPERTS)

@@ -1,7 +1,9 @@
 // src/core/graph.cpp - P2.S5: the GraphRegistry implementation.
 #include "strata/core/graph.hpp"
 
+#if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
+#endif
 
 #include <chrono>
 #include <cstdio>
@@ -97,7 +99,13 @@ bool CapturedGraph::wait_ms(int timeout_ms) const {
         if (q == cudaSuccess) return true;
         if (q != cudaErrorNotReady) return false;   // a real error, not "not finished"
         if (std::chrono::steady_clock::now() >= deadline) return false;
-        for (int i = 0; i < 64; ++i) _mm_pause();
+        for (int i = 0; i < 64; ++i) {
+#if defined(__x86_64__) || defined(_M_X64)
+            _mm_pause();
+#elif defined(__aarch64__)
+            __asm__ __volatile__("yield");
+#endif
+        }
     }
 }
 

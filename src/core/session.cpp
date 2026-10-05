@@ -19,13 +19,17 @@
 #include <cstring>
 #include <vector>
 
-// `_mm_pause` for the doorbell spin.  Guarded because it is x86-only; a target without it still builds, the
-// spin is just less polite to the pipeline.
+// CPU hints/barriers for the doorbell spin. Keep these portable so the engine can build on ARM64 hosts.
 #if defined(_MSC_VER) || defined(__x86_64__) || defined(__i386__)
 #include <immintrin.h>
 #define STRATA_SPIN_PAUSE() _mm_pause()
+#define STRATA_SFENCE() _mm_sfence()
+#elif defined(__aarch64__)
+#define STRATA_SPIN_PAUSE() __asm__ __volatile__("yield" ::: "memory")
+#define STRATA_SFENCE() __asm__ __volatile__("dmb ish" ::: "memory")
 #else
 #define STRATA_SPIN_PAUSE() ((void) 0)
+#define STRATA_SFENCE() __atomic_thread_fence(__ATOMIC_SEQ_CST)
 #endif
 
 namespace strata::core {
@@ -948,7 +952,7 @@ bool session_run_token(const ModelGeometry& g, int64_t pos, int32_t pos_base, Se
         progress_at("token: the CPU experts of layer", l);
         if (pool != nullptr) pool(user, s.db->h_x_f, s.db->h_ids, s.db->h_weights, g.n_embd, s.k, y_miss_host);
         std::atomic_thread_fence(std::memory_order_seq_cst);
-        _mm_sfence();
+        STRATA_SFENCE();
         *flag = want;
         const auto t2 = Clock::now();
         tg.ms_wait += std::chrono::duration<double, std::milli>(t1 - t0).count();
