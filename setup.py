@@ -1435,7 +1435,16 @@ def amd_problem(g):
 def amd_gpus_win() -> list[dict]:
     """Windows: the AMD GPUs as the HIP runtime numbers them once the HIP engine is installed (hip_devices), else in
     the display-adapter order (amd_gpus_windows)."""
-    return hip_devices() or amd_gpus_windows()
+    hip = hip_devices()
+    if not hip:
+        return amd_gpus_windows()
+    listed = None
+    for g in hip:
+        if isinstance(g, dict) and g.get("shared_memory"):   # gfx1151: HIP's figure adds shared RAM; its VRAM is the
+            listed = amd_gpus_windows() if listed is None else listed   # carve-out the registry lists (16 GB here)
+            carve = next((x["vram_gb"] for x in listed if x["arch"] == g["arch"] and x["vram_gb"] > 0), 0.0)
+            g["vram_gb"] = carve or g["vram_gb"]
+    return hip
 
 
 def amd_parse_gpus(text, amd) -> list:
@@ -1698,7 +1707,8 @@ def hip_card(eng: Path, gpu: dict, listed: list[dict]) -> dict:
         fail(f"HIP device {m['index']} ({m['name']}) cannot be used: {amd_problem(m)}")
     if gpu.get("driver") != "hip" and m["index"] != gpu["index"]:
         ok(f"HIP numbers this card {m['index']} (an integrated GPU comes first): the engine is pointed at it")
-    return {**gpu, "index": m["index"], "count": len(hip), "vram_gb": m["vram_gb"] or gpu["vram_gb"], "driver": "hip"}
+    vram = gpu["vram_gb"] if gpu.get("shared_memory") and gpu["vram_gb"] else m["vram_gb"] or gpu["vram_gb"]
+    return {**gpu, "index": m["index"], "count": len(hip), "vram_gb": vram, "driver": "hip"}
 
 
 def get_prebuilt_hip(url_base, gpu, updating=False) -> Path | None:

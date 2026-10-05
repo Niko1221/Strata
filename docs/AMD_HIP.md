@@ -245,7 +245,8 @@ Radeon 8060S / 8050S by its PCI id (`0x1586`) or its name. On Windows the GPU's 
 carve-out (set in the BIOS or AMD Software), which Windows keeps outside system RAM, and shared system RAM. On a
 Ryzen AI Max+ 395 with 64 GB and a 16 GB carve-out, Windows reports 47.8 GB of RAM, the registry 16 GB of VRAM and
 the HIP runtime 43.8 GiB (carve-out plus shared). Setup treats both figures as shared, so neither adds to the RAM in
-its model choice. The engine sizes its automatic expert cache from host memory as on Linux, plus what is left of the
+its model choice, and takes the carve-out (the "dedicated GPU memory" Task Manager shows) as the VRAM that sizes the
+default context: 64K on that PC, not the 128K HIP's figure would give. The engine sizes its automatic expert cache from host memory as on Linux, plus what is left of the
 carve-out (DXGI's dedicated video memory less this process's local usage; logged as `integrated AMD GPU: N GiB of
 its carve-out free`). Checked on that PC (Windows 11, AMD driver 32.0.22018.5, TheRock ROCm 10.2.0a20260930):
 `tools\hip\build_windows.bat tests` builds and packages the archive with gfx1151 (rocBLAS ships gfx1151's kernels

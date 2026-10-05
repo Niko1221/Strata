@@ -277,7 +277,12 @@ class WindowsDetection(unittest.TestCase):
         with mock.patch.object(setup, "hip_devices", lambda probe=None, text=None: h), \
                 mock.patch.object(setup, "ok", lambda *a: None):
             card = setup.hip_card(Path("engine"), g[0], g)
-        self.assertEqual((card["index"], card["vram_gb"], card["shared_memory"]), (0, 43.8, True))
+        # the VRAM that sizes the context is the carve-out (16 GB, as Windows shows it), not HIP's 43.8
+        self.assertEqual((card["index"], card["vram_gb"], card["shared_memory"]), (0, 16.0, True))
+        with mock.patch.object(setup, "hip_devices", lambda probe=None, text=None: [dict(x) for x in h]), \
+                mock.patch.object(setup, "amd_gpus_windows", lambda adapters=None, registry=None: g):
+            later = setup.amd_gpus_win()                # a later run: HIP's numbering, the registry's VRAM
+        self.assertEqual((later[0]["arch"], later[0]["vram_gb"], later[0]["shared_memory"]), ("gfx1151", 16.0, True))
 
     def test_arch_names(self):
         for name, arch in (("AMD Radeon RX 9070 GRE", "gfx1201"), ("AMD Radeon AI PRO R9700", "gfx1201"),
