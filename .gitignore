@@ -19,6 +19,9 @@ __pycache__/
 # plan v0.3 P1 (repository hygiene, review E1): profiler captures and large diagnostic dumps stay out of git.
 *.nsys-rep
 
+# Working plans: local design records (see PLAN_TEMPLATE.md), not checked in.
+plans/
+
 # Amanda harness (local tooling + session state, not project source)
 .amanda/
 amanda/
