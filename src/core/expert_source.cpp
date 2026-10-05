@@ -1670,6 +1670,21 @@ bool FileExpertSource::pin_cache_complement(
                 return;
             }
             }
+#else
+            // Windows: each layer released as above, the GGUF in place included. A page copied through the mapping
+            // stays in this process's working set beside the RAM copy it fills until it is released, so releasing
+            // only after the last layer holds the complement twice at the peak. Measured with IQ2_XS, 2 slots x 256K,
+            // RTX 4090 + 64 GB RAM: available RAM fell to 0.2 GiB during the copy; released per layer, 16.9 GiB,
+            // same load time. VirtualUnlock on pages that are not locked moves them to the standby list.
+            if (!role_ptr_.empty()) {   // the GGUF in place: the layer's gate, up and down rows
+                for (int r = 0; r < 3; ++r) {
+                    const size_t i = (size_t) (3 * layer + r);
+                    (void) VirtualUnlock((LPVOID) role_ptr_[i], (SIZE_T) (role_bytes_[i] * (uint64_t) n_expert_));
+                }
+            } else {                    // experts.bin: one span per layer
+                (void) VirtualUnlock((LPVOID) (base_ + (size_t) layer_offsets_[(size_t) layer]),
+                                     (SIZE_T) (blob_bytes * (uint64_t) n_expert_));
+            }
 #endif
             const int64_t done = layers_done.fetch_add(1) + 1;
             if (done % 8 == 0 || done == n_layers_)
