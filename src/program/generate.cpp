@@ -22,6 +22,7 @@
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/conversation_snapshot.hpp"
 #include "strata/core/conversation_file.hpp"
+#include "strata/core/prefix_store.hpp"
 #include "strata/core/conversation_memory.hpp"
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/expert_source.hpp"
@@ -590,6 +591,10 @@ struct Options {
     int64_t conversation_cache_min_free_mib = 2560;
     /// --serve SAVE: disk space a session file must leave free where it is written (MiB; 0 = no check)
     int64_t session_min_free_mib = 4096;
+    /// --serve: persistent prefix snapshots (docs/DETAILS.md): the state at the end of each system prompt, on disk
+    /// in this directory (empty = off) and the most recently used ones also in RAM
+    std::string prefix_cache_dir;
+    int64_t prefix_cache_ram_mib = 2048, prefix_cache_disk_mib = 51200;
     /// --serve: also keep a checkpoint every N freshly read prompt tokens (0 = only at the last turn boundary)
     int64_t prompt_cache_every = 16384;
     bool prompt_cache_tail = false;   // optional extra checkpoint at an existing near-tail chunk boundary
@@ -733,6 +738,10 @@ void usage() {
                  "  --conversation-cache-min-free-mib N  --serve: physical RAM floor when parking or restoring a\n"
                  "                       session file (default 2560)\n"
                  "  --session-min-free-mib N  --serve: disk space a SAVE must leave free (default 4096; 0 = no check)\n"
+                 "  --prefix-cache-dir DIR  --serve: keep the state at the end of each system prompt in DIR, so a new\n"
+                 "                       chat with it reads only the rest (default off; one GPU, no --batch)\n"
+                 "  --prefix-cache-ram-mib N  --serve: of those, keep the latest in N MiB of RAM (default 2048)\n"
+                 "  --prefix-cache-disk-mib N  --serve: at most N MiB of them in DIR (default 51200)\n"
                  "  --vram-elastic       --serve (#533, opt-in, NVIDIA): the expert cache in segments (--vram-segment-mib,\n"
                  "                       default 512), so the command `VRAM <reserve_mib>` (the server's POST /v1/vram) can\n"
                  "                       give VRAM back to other programs between requests and take it back later\n"
@@ -1751,8 +1760,10 @@ int main(int argc, char** argv) {
         else if (a == "--serve") o.serve = true;
         else if (a == "--vision") o.vision = true;
         else if (a == "--prompt-cache") o.prompt_cache = std::max(0, std::atoi(next("--prompt-cache")));
+        else if (a == "--prefix-cache-dir") o.prefix_cache_dir = next("--prefix-cache-dir");
         else if (a == "--conversation-cache-mib" || a == "--conversation-cache-slots" ||
-                 a == "--conversation-cache-min-free-mib" || a == "--session-min-free-mib") {
+                 a == "--conversation-cache-min-free-mib" || a == "--session-min-free-mib" ||
+                 a == "--prefix-cache-ram-mib" || a == "--prefix-cache-disk-mib") {
             const std::string value = next(a.c_str());
             int64_t number = 0;
             const auto result = std::from_chars(value.data(), value.data() + value.size(), number);
@@ -1764,6 +1775,8 @@ int main(int argc, char** argv) {
             if (a == "--conversation-cache-mib") o.conversation_cache_mib = number;
             else if (a == "--conversation-cache-min-free-mib") o.conversation_cache_min_free_mib = number;
             else if (a == "--session-min-free-mib") o.session_min_free_mib = number;
+            else if (a == "--prefix-cache-ram-mib") o.prefix_cache_ram_mib = number;
+            else if (a == "--prefix-cache-disk-mib") o.prefix_cache_disk_mib = number;
             else o.conversation_cache_slots = (int) number;
         }
         else if (a == "--prompt-cache-tail") o.prompt_cache_tail = true;
@@ -6867,6 +6880,24 @@ int main(int argc, char** argv) {
             id.config = *config_fp;
             return true;
         };
+        // docs/DETAILS.md: one GPU without --batch; a build or model change makes the files unusable
+        strata::core::PrefixStore prefixes;
+        if (!o.prefix_cache_dir.empty() && o.prompt_cache > 0 && stages.empty() && o.batch <= 0) {
+            strata::core::PrefixStore::Options po;
+            po.dir = o.prefix_cache_dir;
+            po.identity = std::string(STRATA_VERSION " " __DATE__ " " __TIME__) + "|" + o.pack + "|" +
+                          o.native_preset + "|" + o.mtp + "|" + o.kv + "|" +
+                          (std::getenv("STRATA_BF16_TC") ? std::getenv("STRATA_BF16_TC") : "");
+            po.ram_budget = (size_t) o.prefix_cache_ram_mib << 20;
+            po.disk_budget = (size_t) o.prefix_cache_disk_mib << 20;
+            po.min_free = (size_t) o.conversation_cache_min_free_mib << 20;
+            std::string log;
+            if (prefixes.open(po, log, err)) std::fprintf(stderr, "strata serve: prefix cache: %s\n", log.c_str());
+            else std::fprintf(stderr, "strata serve: prefix cache off: %s\n", err.c_str());
+            err.clear();
+        } else if (!o.prefix_cache_dir.empty()) {
+            std::fprintf(stderr, "strata serve: prefix cache off (it needs --prompt-cache, one GPU and no --batch)\n");
+        }
         // Save only on a switch/rewind, not on each continuing request. No graph
         // addresses change: all parked images live in ordinary host vectors.
         auto park_current_body = [&](size_t held) -> bool {
@@ -8909,9 +8940,20 @@ int main(int argc, char** argv) {
                         }
                 }
             const auto parked = conversations.best(ids, req_imgs, want_cvec);
+            // docs/DETAILS.md: a saved system prompt, when it covers more of this prompt than the session or a
+            // slot holds, and at least as much as a parked conversation - taking that one would leave it to read
+            // its whole history again on its next turn
+            strata::core::PrefixStore::Match prefix;
+            if (prefixes.enabled() && o.prompt_cache > 0) {
+                const auto m = prefixes.best(ids, want_cvec);
+                if (m.tokens > std::max(resume, slot_tokens) && m.tokens >= parked.tokens &&
+                    imgs_below(req_imgs, m.tokens).empty())
+                    prefix = m;
+            }
             std::optional<strata::core::SavedConversation> incoming;
-            if (parked.tokens > std::max(resume, slot_tokens)) incoming.emplace(conversations.take(parked.index));
-            if (incoming) slot_source = -1;
+            if (prefix.tokens == 0 && parked.tokens > std::max(resume, slot_tokens))
+                incoming.emplace(conversations.take(parked.index));
+            if (incoming || prefix.tokens > 0) slot_source = -1;
             // Reject the entire image before parking/overwriting the outgoing
             // state. Invalid entries can safely fall back to its existing prefix.
             if (incoming && incoming->stage_images.size() != stages.size()) {
@@ -8943,10 +8985,10 @@ int main(int argc, char** argv) {
             // N queries keep one prefix.  A request without pin=, or one that resumes anywhere else, parks as before.
             bool pin_sibling = false;
             if (req_pin > 0 && req_ckpt && o.prompt_cache >= 3 && !from_live && !incoming && slot_source < 0 &&
-                resume == req_pin && live_ok)
+                resume == req_pin && live_ok && prefix.tokens == 0)
                 for (const ConvCheckpoint& c : checks)
                     if ((int64_t) c.ids.size() == resume && c.pinned) pin_sibling = true;
-            if ((!from_live || incoming || slot_source >= 0) && !pin_sibling && !park_current(incoming ? incoming->bytes() : 0)) {
+            if ((!from_live || incoming || slot_source >= 0 || prefix.tokens > 0) && !pin_sibling && !park_current(incoming ? incoming->bytes() : 0)) {
                 std::printf("ERR %s\n", err.c_str());
                 return 1;
             }
@@ -9050,6 +9092,41 @@ int main(int argc, char** argv) {
                              (long long) resume, from_live ? "live" : "checkpoint",
                              std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
                              conversations.size(), conversations.bytes());
+            }
+            if (prefix.tokens > 0) {
+                const auto t0 = Clock::now();
+                std::string source;
+                const auto r = prefixes.restore(prefix.key, ss, g, mtp.kv_state(), source, err);
+                conversations.limit_reuse(0);   // retained K/V pages no longer match the cells
+                ConvCheckpoint root;
+                root.ids.assign(ids.begin(), ids.begin() + prefix.tokens);
+                if (r == strata::core::ConversationRestore::restored && checkpoint_save(root, ss, g)) {
+                    root.used = ++check_clock;
+                    live = root.ids;
+                    live_imgs.clear();
+                    checks.clear();
+                    checks.push_back(std::move(root));   // the chain's root again, as if this chat had read it
+                    cvec_cached = want_cvec;
+                    resume = prefix.tokens;
+                    from_live = true;
+                    std::fprintf(stderr, "strata serve: prefix cache: restored %lld tokens (%s) in %.1f ms\n",
+                                 (long long) resume, source.c_str(),
+                                 std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
+                } else {
+                    // invalid: nothing was written, what the session holds still stands; otherwise it may be
+                    // half written, so this prompt is read from the start
+                    std::fprintf(stderr, "strata serve: prefix cache: not restored (%s)%s\n",
+                                 err.empty() ? "running state" : err.c_str(),
+                                 r == strata::core::ConversationRestore::invalid ? "" : "; reading the whole prompt");
+                    if (r != strata::core::ConversationRestore::invalid) {
+                        live.clear();
+                        live_imgs.clear();
+                        checks.clear();
+                        resume = 0;
+                        from_live = false;
+                    }
+                }
+                err.clear();
             }
             if (want_cvec != cvec_cached) {
                 live_ok = false;
@@ -10680,6 +10757,24 @@ int main(int argc, char** argv) {
                         (double) (src.file_read_bytes() - file_bytes0) / 1e6, (long long) read_n,
                         (long long) req_offload, chain_txt);
             std::fflush(stdout);
+            // docs/DETAILS.md: the first time a system prompt is read whole, the state at its end (the chain's
+            // root) goes to the prefix cache - after DONE, so the client does not wait for it
+            if (prefixes.enabled() && live_ok && o.turn_token >= 0 && o.prompt_cache_root > 0) {
+                int64_t root_at = -1;
+                for (size_t i = 1; i < live.size(); ++i)
+                    if (live[i] == o.turn_token) { root_at = (int64_t) i; break; }
+                if (root_at >= o.prompt_cache_root && imgs_below(live_imgs, root_at).empty())
+                    for (const ConvCheckpoint& c : checks)
+                        if ((int64_t) c.ids.size() == root_at && !prefixes.contains(c.ids, cvec_cached)) {
+                            std::string log;
+                            if (prefixes.capture(c, cvec_cached, ss, g, mtp.kv_state(), log, err))
+                                std::fprintf(stderr, "strata serve: prefix cache: %s\n", log.c_str());
+                            else
+                                std::fprintf(stderr, "strata serve: prefix cache: save failed (%s)\n", err.c_str());
+                            err.clear();
+                            break;
+                        }
+            }
             if (admit_slot >= 0) {   // --batch: BADM <slot> <1 = continues in the batch windows | 0 = done>
                 bool cont = !cancelled && produced_n == 1 && admit_max_new > 1 && std::strcmp(finish, "length") == 0 &&
                             (int64_t) live.size() == p;
