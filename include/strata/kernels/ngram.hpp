@@ -46,7 +46,8 @@ inline constexpr float NG_RMS_EPS = 1e-6f;
 inline constexpr uint64_t PLE_TABLE_ROWS = 320001536ull;
 inline constexpr int PLE_ROW_BYTES = (PLE_HEAD_DIM / 32) * 18;           // 90: an IQ4_NL row
 inline constexpr int PLE_ROW_BYTES_FP8 = PLE_HEAD_DIM;                   // 160: an F8_E4M3 row, one byte a value
-inline constexpr int PLE_ROW_BYTES_MAX = PLE_ROW_BYTES_FP8;
+inline constexpr int PLE_ROW_BYTES_Q8 = (PLE_HEAD_DIM / 32) * 34;       // 170: a Q8_0 row (unsloth, Swift-1.5)
+inline constexpr int PLE_ROW_BYTES_MAX = PLE_ROW_BYTES_Q8;
 
 /// The artifact's own hash constants, transcribed from `docs/gguf-dump-shard1.txt`:
 ///
