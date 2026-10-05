@@ -73,6 +73,8 @@
             <button type="button" class="st-btn st-btn--icon" id="attach-btn" title="Attach a text file (or drop it here)" aria-label="Attach a file" data-i18n-label="composer.attachLabel">
               <svg class="st-icon"><use href="web/sprite.svg#i-attach"/></svg></button>
             <input type="file" id="file" multiple hidden>
+            <button type="button" class="st-btn st-btn--icon" id="compact-btn" title="Compact older turns into a summary" aria-label="Compact older turns">
+              <svg class="st-icon"><use href="web/sprite.svg#i-layers"/></svg></button>
             <button type="button" class="st-btn st-btn--icon" id="new-btn" title="New chat" aria-label="New chat" data-i18n-title="chat.new" data-i18n-label="chat.new">
               <svg class="st-icon"><use href="web/sprite.svg#i-new-chat"/></svg></button>
             <button type="button" class="st-btn st-btn--icon" id="export-btn" title="Save this chat as Markdown" aria-label="Save this chat" data-i18n-title="composer.save" data-i18n-label="composer.saveLabel">
@@ -316,6 +318,8 @@
 <script src="web/history.js"></script>
 <script src="web/chatstore.js"></script>
 <script src="web/chats-ui.js"></script>
+<script src="web/compact-prompt.js"></script>
+<script src="web/compaction.js"></script>
 <script src="web/app.js"></script>
 </body>
 </html>

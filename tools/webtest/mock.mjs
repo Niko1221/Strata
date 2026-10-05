@@ -65,6 +65,8 @@ export async function startMock({ port = 0, root = WEB, loaded = true, csp = tru
     state.requests.push(b);
     const text = lastUser(b.messages || []);
     if (text.includes("#error")) return json(500, { error: { message: "The mock engine failed on purpose." } });
+    if (b.stream === false) return json(200, {choices:[{message:{role:"assistant", content:"Conversation summary."}, finish_reason:"stop"}],
+      usage:{prompt_tokens:100, completion_tokens:5}});
     state.loaded = true;
     res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
     let closed = false;
