@@ -9,8 +9,9 @@
 #   STRATA_SYCL_NAME   the container's name                   (default: strata-sycl-serve)
 #   ONEAPI_DEVICE_SELECTOR  passed in when set; otherwise level_zero:gpu (every card) for a --layer-split, and the
 #                      image's level_zero:0 for one card (#423)
-#   STRATA_SYCL_RUNNER docker (the image, default); native - already inside a toolbox with oneAPI where the data root
-#                      is /work (the server runs there too); distrobox:<name> - from the host, in that distrobox
+#   STRATA_SYCL_RUNNER docker (the image, default) or podman (the image, rootless; SELinux labels off for the mount,
+#                      as data disks often carry none); native - already inside a toolbox with oneAPI where the data
+#                      root is /work (the server runs there too); distrobox:<name> - from the host, in that distrobox
 set -euo pipefail
 here=$(cd "$(dirname "$0")/../.." && pwd)                 # the repo
 root=${STRATA_SYCL_ROOT:-$(dirname "$here")}
@@ -29,9 +30,11 @@ case "${STRATA_SYCL_RUNNER:-docker}" in
 native) exec bash -c "$run" ;;
 distrobox:?*) exec distrobox enter "${STRATA_SYCL_RUNNER#distrobox:}" -- bash -c "$run" ;;
 esac
-docker rm -f "$name" >/dev/null 2>&1 || true              # a container left behind by a killed server
-exec docker run --rm -i --name "$name" --device /dev/dri --oom-score-adj 1000 --stop-timeout 30 --no-healthcheck \
-    -v "$root:/work" \
+ctr=docker; opts=()
+[ "${STRATA_SYCL_RUNNER:-docker}" = podman ] && { ctr=podman; opts=(--security-opt label=disable); }
+$ctr rm -f "$name" >/dev/null 2>&1 || true                # a container left behind by a killed server
+exec $ctr run --rm -i --name "$name" --device /dev/dri --oom-score-adj 1000 --stop-timeout 30 --no-healthcheck \
+    "${opts[@]}" -v "$root:/work" \
     -e STRATA_VERIFY_DEVICE_PLAN=1 -e STRATA_VERIFY_NO_HOST=1 -e STRATA_STAGER_THREADS=12 \
     "${sel[@]}" \
     "${STRATA_SYCL_IMAGE:-strata-sycl-dev}" \
