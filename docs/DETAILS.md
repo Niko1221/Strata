@@ -633,7 +633,9 @@ and pictures. The oldest checkpoint - in practice the end of the system prompt, 
 shares - is kept for good while the rest rotates by least recent use, so a NEW chat that shares that prefix starts
 reading after it instead of from token 0. A prompt read from the start is also checkpointed at the end of its system
 prompt when that is 2,048 tokens or more (engine 0.1.20; PR #62 + #65), so that root exists for agent clients with long
-system prompts and tool lists. Engine options: `--prompt-cache N` (0 = off), `--prompt-cache-every N`,
+system prompts and tool lists. Claude Code stamps its system prompt with a billing header that changes on every
+request (`cch=...`) and every session (the 4th part of `cc_version=`); the server pins both stamps (to `f`s, as
+llama.cpp does), so the system prompt and the tool list in front of it are the same prompt on every turn. Engine options: `--prompt-cache N` (0 = off), `--prompt-cache-every N`,
 `--prompt-cache-root N` (0 = no system-prompt checkpoint), `--turn-token ID`.
 
 **Multiple conversations (opt-in).** Add `--conversation-cache-mib 8192
