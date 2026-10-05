@@ -1,376 +1,459 @@
 {
- "_about": "Every specimen of the --format-fixes family in one collection, each carrying its own expectation: the calls the fixes must deliver with the flag on (an empty list: none), whether the flag-off run raises the fail-loud hint, and whether the fixes change anything at all (a normal-path call is the same with them off).  serve/test_server.py's FormatFixCorpus runs all of them (plus the four live failures of #804, from stranded_tool_call_failures.json) at three chunk sizes with stream_tools on and off, and asserts nothing that already streamed differs with the fixes on.  A new shape is a data append here, not new test code - and a change to any trigger re-runs the whole recorded world, so fixing one case cannot silently break another.  'class' is the shape's kind (act / mention / envelope / cut / known-miss / same); 'source' is where it was seen; class known-miss documents a real shape no fix covers today.",
  "specimens": [
   {
    "name": "act-natural-stop",
-   "class": "act",
-   "source": "#804 shape",
-   "input": "planning.\n\n<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>",
+   "source": "https://github.com/Niko1221/Strata/issues/804",
+   "input": "The user asked what the file contains. Reading it first is the right step, and then I can summarize what is inside.\n\n<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>",
    "finish": "stop",
    "tools": [
     "execute_code"
    ],
    "expect": {
-    "calls": [
-     "execute_code"
+    "text": "unchanged",
+    "on": [
+     [
+      "execute_code",
+      {
+       "code": "print(1)"
+      }
+     ]
     ],
-    "hint": true,
-    "differs": true
+    "off": [],
+    "hint": "stranded-call",
+    "note": false
    }
   },
   {
    "name": "act-first-text",
-   "class": "act",
-   "source": "#970",
+   "source": "https://github.com/Niko1221/Strata/pull/970",
    "input": "<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>",
    "finish": "stop",
    "tools": [
     "execute_code"
    ],
    "expect": {
-    "calls": [
-     "execute_code"
+    "text": "unchanged",
+    "on": [
+     [
+      "execute_code",
+      {
+       "code": "print(1)"
+      }
+     ]
     ],
-    "hint": true,
-    "differs": true
+    "off": [],
+    "hint": "stranded-call",
+    "note": false
    }
   },
   {
    "name": "act-two-adjacent",
-   "class": "act",
-   "source": "#525",
-   "input": "a\n<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>",
+   "source": "https://github.com/Niko1221/Strata/pull/525",
+   "input": "The comparison needs both files. I will read them one after the other.\n\n<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>",
    "finish": "stop",
    "tools": [
     "execute_code"
    ],
    "expect": {
-    "calls": [
-     "execute_code",
-     "execute_code"
+    "text": "unchanged",
+    "on": [
+     [
+      "execute_code",
+      {
+       "code": "print(1)"
+      }
+     ],
+     [
+      "execute_code",
+      {
+       "code": "print(1)"
+      }
+     ]
     ],
-    "hint": true,
-    "differs": true
+    "off": [],
+    "hint": "stranded-call",
+    "note": false
    }
   },
   {
    "name": "envelope-undeclared",
-   "class": "envelope",
-   "source": "#804 live shape",
-   "input": "Plan.\n\n<tool_call>\n<function=tool_call>\n<parameter=calls>\n[{\"name\": \"execute_code\", \"arguments\": {\"code\": \"print(1)\"}}]\n</parameter>\n</function>\n</tool_call>",
+   "source": "https://github.com/Niko1221/Strata/issues/804",
+   "input": "The tool for this step is not in my visible list, so it goes through the wrapper with a single entry.\n\n<tool_call>\n<function=tool_call>\n<parameter=calls>\n[{\"name\": \"execute_code\", \"arguments\": {\"code\": \"print(1)\"}}]\n</parameter>\n</function>\n</tool_call>",
    "finish": "stop",
    "tools": [
     "execute_code"
    ],
    "expect": {
-    "calls": [],
-    "hint": false,
-    "differs": true
+    "text": "unchanged",
+    "on": [],
+    "off": [],
+    "hint": null,
+    "note": true
    }
   },
   {
    "name": "envelope-declared",
-   "class": "envelope",
-   "source": "#980 meta-tool",
-   "input": "Plan.\n\n<tool_call>\n<function=tool_call>\n<parameter=calls>\n[{\"name\": \"execute_code\", \"arguments\": {\"code\": \"print(1)\"}}]\n</parameter>\n</function>\n</tool_call>",
+   "source": "https://github.com/Niko1221/Strata/issues/980",
+   "input": "The tool for this step is not in my visible list, so it goes through the wrapper with a single entry.\n\n<tool_call>\n<function=tool_call>\n<parameter=calls>\n[{\"name\": \"execute_code\", \"arguments\": {\"code\": \"print(1)\"}}]\n</parameter>\n</function>\n</tool_call>",
    "finish": "stop",
    "tools": [
     "execute_code",
     "tool_call"
    ],
    "expect": {
-    "calls": [
-     "tool_call"
+    "text": "unchanged",
+    "on": [
+     [
+      "tool_call",
+      {
+       "calls": [
+        {
+         "name": "execute_code",
+         "arguments": {
+          "code": "print(1)"
+         }
+        }
+       ]
+      }
+     ]
     ],
-    "hint": true,
-    "differs": true
+    "off": [],
+    "hint": "stranded-call",
+    "note": false
    }
   },
   {
-   "name": "ctl-backticks-midsentence",
-   "class": "mention",
-   "source": "#970",
-   "input": "I must emit `<tool_call>` then `<function=execute_code>` - the format.\n",
+   "name": "mention-backticks-midsentence",
+   "source": "https://github.com/Niko1221/Strata/pull/970",
+   "input": "Before answering, a note on the wire protocol: I must emit `<tool_call>` then `<function=execute_code>` - the format.\nWith that settled, the plan is clear.",
    "finish": "stop",
    "tools": [
     "execute_code"
    ],
    "expect": {
-    "calls": [],
-    "hint": false,
-    "differs": true
+    "text": "unchanged",
+    "on": [],
+    "off": [],
+    "hint": null,
+    "note": false
    }
   },
   {
-   "name": "ctl-midsentence-whole-call",
-   "class": "mention",
-   "source": "#970",
-   "input": "The format is <tool_call>\n<function=execute_code>\n</function>\n</tool_call> ok.\n",
+   "name": "mention-midsentence-whole-call",
+   "source": "https://github.com/Niko1221/Strata/pull/970",
+   "input": "The format is <tool_call>\n<function=execute_code>\n</function>\n</tool_call> ok.\nI will follow it for the real call next.",
    "finish": "stop",
    "tools": [
     "execute_code"
    ],
    "expect": {
-    "calls": [],
-    "hint": false,
-    "differs": true
+    "text": "unchanged",
+    "on": [],
+    "off": [],
+    "hint": null,
+    "note": false
    }
   },
   {
-   "name": "ctl-backticks-line-start",
-   "class": "mention",
-   "source": "#970",
-   "input": "Plan:\n`<tool_call>\n<function=execute_code>` comes next.\n",
+   "name": "mention-backticks-line-start",
+   "source": "https://github.com/Niko1221/Strata/pull/970",
+   "input": "Plan:\n`<tool_call>\n<function=execute_code>` comes next.\nThat is the shape the harness wants.",
    "finish": "stop",
    "tools": [
     "execute_code"
    ],
    "expect": {
-    "calls": [],
-    "hint": false,
-    "differs": true
+    "text": "unchanged",
+    "on": [],
+    "off": [],
+    "hint": null,
+    "note": false
    }
   },
   {
-   "name": "ctl-line-start-no-function",
-   "class": "mention",
-   "source": "#970",
-   "input": "Next step:\n<tool_call> is the tag the format starts with.\n",
+   "name": "mention-line-start-no-function",
+   "source": "https://github.com/Niko1221/Strata/pull/970",
+   "input": "Next step:\n<tool_call> is the tag the format starts with.\nThe parameters follow it.",
    "finish": "stop",
    "tools": [
     "execute_code"
    ],
    "expect": {
-    "calls": [],
-    "hint": false,
-    "differs": true
+    "text": "unchanged",
+    "on": [],
+    "off": [],
+    "hint": null,
+    "note": false
    }
   },
   {
-   "name": "ctl-line-start-other-tag",
-   "class": "mention",
-   "source": "#970",
-   "input": "Example:\n<tool_call>\n<parameter=code>\nx\n</parameter>\n",
+   "name": "mention-line-start-other-tag",
+   "source": "https://github.com/Niko1221/Strata/pull/970",
+   "input": "Example:\n<tool_call>\n<parameter=code>\nx\n</parameter>\nThe body would continue here.",
    "finish": "stop",
    "tools": [
     "execute_code"
    ],
    "expect": {
-    "calls": [],
-    "hint": false,
-    "differs": true
+    "text": "unchanged",
+    "on": [],
+    "off": [],
+    "hint": null,
+    "note": false
    }
   },
   {
-   "name": "ctl-indented",
-   "class": "mention",
-   "source": "#970",
-   "input": "As a list:\n  <tool_call>\n  <function=execute_code>\n",
+   "name": "mention-indented",
+   "source": "https://github.com/Niko1221/Strata/pull/970",
+   "input": "As a list:\n  <tool_call>\n  <function=execute_code>\n  ...and so on for each field.\nThat covers the layout.",
    "finish": "stop",
    "tools": [
     "execute_code"
    ],
    "expect": {
-    "calls": [],
-    "hint": false,
-    "differs": true
+    "text": "unchanged",
+    "on": [],
+    "off": [],
+    "hint": null,
+    "note": false
    }
   },
   {
-   "name": "ctl-markdown-quote",
-   "class": "mention",
-   "source": "#970",
-   "input": "The doc says:\n> <tool_call>\n> <function=execute_code>\n",
+   "name": "mention-markdown-quote",
+   "source": "https://github.com/Niko1221/Strata/pull/970",
+   "input": "The doc says:\n> <tool_call>\n> <function=execute_code>\nand that is all it says about calling.",
    "finish": "stop",
    "tools": [
     "execute_code"
    ],
    "expect": {
-    "calls": [],
-    "hint": false,
-    "differs": true
+    "text": "unchanged",
+    "on": [],
+    "off": [],
+    "hint": null,
+    "note": false
    }
   },
   {
-   "name": "ctl-backtick-block",
-   "class": "mention",
-   "source": "#970",
-   "input": "Format:\n```xml\n<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>\n```\nThat is how a call looks.\n",
+   "name": "mention-backtick-block",
+   "source": "https://github.com/Niko1221/Strata/pull/970",
+   "input": "Format:\n```xml\n<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>\n```\nThat is how a call looks, for reference.",
    "finish": "stop",
    "tools": [
     "execute_code"
    ],
    "expect": {
-    "calls": [],
-    "hint": false,
-    "differs": true
+    "text": "unchanged",
+    "on": [],
+    "off": [],
+    "hint": null,
+    "note": false
    }
   },
   {
-   "name": "ctl-tilde-block",
-   "class": "mention",
-   "source": "#970",
-   "input": "Format:\n~~~\n<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>\n~~~\nDone.\n",
+   "name": "mention-tilde-block",
+   "source": "https://github.com/Niko1221/Strata/pull/970",
+   "input": "Format:\n~~~\n<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>\n~~~\nDone, that is the whole example.",
    "finish": "stop",
    "tools": [
     "execute_code"
    ],
    "expect": {
-    "calls": [],
-    "hint": false,
-    "differs": true
+    "text": "unchanged",
+    "on": [],
+    "off": [],
+    "hint": null,
+    "note": false
    }
   },
   {
-   "name": "ctl-tag-before-think-end",
-   "class": "mention",
-   "source": "#970",
-   "input": "So I call it:\n<tool_call>\n</think>Here is the answer.",
+   "name": "mention-tag-before-think-end",
+   "source": "https://github.com/Niko1221/Strata/pull/970",
+   "input": "So I call it:\n<tool_call>\n</think>Here is the answer to your question.",
    "finish": "stop",
    "tools": [
     "execute_code"
    ],
    "expect": {
-    "calls": [],
-    "hint": false,
-    "differs": true
+    "text": "unchanged",
+    "on": [],
+    "off": [],
+    "hint": null,
+    "note": false
    }
   },
   {
-   "name": "closed-span-fenced",
-   "class": "mention",
-   "source": "#525 review",
+   "name": "mention-closed-span-fenced",
+   "source": "https://github.com/Niko1221/Strata/pull/525",
    "input": "This is a documentation example, not an action:\n```xml\n<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>\n```\nI should explain it without calling any tool.\n</think>Here is the explanation.",
    "finish": "stop",
    "tools": [
     "execute_code"
    ],
    "expect": {
-    "calls": [],
-    "hint": false,
-    "differs": true
+    "text": "unchanged",
+    "on": [],
+    "off": [],
+    "hint": null,
+    "note": false
    }
   },
   {
-   "name": "unclosed-disclaimed",
-   "class": "mention",
-   "source": "#525 review",
+   "name": "mention-unclosed-disclaimed",
+   "source": "https://github.com/Niko1221/Strata/pull/525",
    "input": "This is a documentation example, not an action:\n```xml\n<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>\n```\nI should explain it without calling any tool.",
    "finish": "stop",
    "tools": [
     "execute_code"
    ],
    "expect": {
-    "calls": [],
-    "hint": false,
-    "differs": true
+    "text": "unchanged",
+    "on": [],
+    "off": [],
+    "hint": null,
+    "note": false
    }
   },
   {
-   "name": "length-cut",
-   "class": "cut",
-   "source": "#525 review",
+   "name": "cut-max-tokens",
+   "source": "https://github.com/Niko1221/Strata/pull/525",
    "input": "I could run\n<tool_call>\n<function=execute_code>\n<parameter=code>\nrm -rf build\n</parameter>\n</function>\n</tool_call>\nbut first let me check what build holds...",
    "finish": "length",
    "tools": [
     "execute_code"
    ],
    "expect": {
-    "calls": [],
-    "hint": false,
-    "differs": true
+    "text": "unchanged",
+    "on": [],
+    "off": [],
+    "hint": null,
+    "note": false
    }
   },
   {
-   "name": "midsentence-declared",
-   "class": "mention",
-   "source": "#525 review, vLLM #58147",
+   "name": "mention-midsentence-declared",
+   "source": "https://github.com/vllm-project/vllm/issues/58147",
    "input": "I could run <tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>",
    "finish": "stop",
    "tools": [
     "execute_code"
    ],
    "expect": {
-    "calls": [],
-    "hint": false,
-    "differs": true
+    "text": "unchanged",
+    "on": [],
+    "off": [],
+    "hint": null,
+    "note": false
    }
   },
   {
-   "name": "trailing-prose",
-   "class": "mention",
-   "source": "#525",
-   "input": "planning\n<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>\nlet me see what comes back.",
+   "name": "mention-trailing-prose",
+   "source": "https://github.com/Niko1221/Strata/pull/525",
+   "input": "The file is small, so one read is enough.\n<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>\nlet me see what comes back.",
    "finish": "stop",
    "tools": [
     "execute_code"
    ],
    "expect": {
-    "calls": [],
-    "hint": false,
-    "differs": true
+    "text": "unchanged",
+    "on": [],
+    "off": [],
+    "hint": null,
+    "note": false
    }
   },
   {
-   "name": "prose-between-calls",
-   "class": "mention",
-   "source": "#525",
-   "input": "a\n<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>b<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>",
+   "name": "mention-prose-between-calls",
+   "source": "https://github.com/Niko1221/Strata/pull/525",
+   "input": "Both are needed.\n<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call> and also <tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>",
    "finish": "stop",
    "tools": [
     "execute_code"
    ],
    "expect": {
-    "calls": [],
-    "hint": false,
-    "differs": true
+    "text": "unchanged",
+    "on": [],
+    "off": [],
+    "hint": null,
+    "note": false
    }
   },
   {
-   "name": "empty-span",
-   "class": "mention",
-   "source": "vLLM #59821",
-   "input": "Next:\n<tool_call>\n</tool_call>",
+   "name": "mention-empty-span",
+   "source": "https://github.com/vllm-project/vllm/pull/59821",
+   "input": "Next:\n<tool_call>\n</tool_call>\nNothing further to add.",
    "finish": "stop",
    "tools": [
     "execute_code"
    ],
    "expect": {
-    "calls": [],
-    "hint": false,
-    "differs": true
+    "text": "unchanged",
+    "on": [],
+    "off": [],
+    "hint": null,
+    "note": false
    }
   },
   {
-   "name": "bare-function-opener",
-   "class": "known-miss",
-   "source": "vLLM #59928",
+   "name": "known-miss-bare-function-opener",
+   "source": "https://github.com/vllm-project/vllm/pull/59928",
    "input": "Let me run it.\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>",
    "finish": "stop",
    "tools": [
     "execute_code"
    ],
    "expect": {
-    "calls": [],
-    "hint": false,
-    "differs": true
+    "text": "unchanged",
+    "on": [],
+    "off": [],
+    "hint": null,
+    "note": false
    }
   },
   {
-   "name": "mention-then-real-call",
-   "class": "same",
-   "source": "#970",
+   "name": "normal-call-after-think-end",
+   "source": "https://github.com/Niko1221/Strata/pull/970",
    "input": "I must emit `<tool_call>` then `<function=execute_code>` - the format.\n</think>\n\n<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>",
    "finish": "stop",
    "tools": [
     "execute_code"
    ],
    "expect": {
-    "calls": [
-     "execute_code"
+    "text": "unchanged",
+    "on": [
+     [
+      "execute_code",
+      {
+       "code": "print(1)"
+      }
+     ]
     ],
-    "hint": false,
-    "differs": false
+    "off": [
+     [
+      "execute_code",
+      {
+       "code": "print(1)"
+      }
+     ]
+    ],
+    "hint": null,
+    "note": false
+   }
+  },
+  {
+   "name": "mixed-declared-and-envelope",
+   "source": "https://github.com/Niko1221/Strata/pull/525#issuecomment-5983810127",
+   "input": "Two things to do, so both calls go out together.\n\n<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=tool_call>\n<parameter=calls>\n[{\"name\": \"execute_code\", \"arguments\": {\"code\": \"print(1)\"}}]\n</parameter>\n</function>\n</tool_call>",
+   "finish": "stop",
+   "tools": [
+    "execute_code"
+   ],
+   "expect": {
+    "text": "unchanged",
+    "on": [],
+    "off": [],
+    "hint": null,
+    "note": true
    }
   }
  ]

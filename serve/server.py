@@ -2497,6 +2497,9 @@ class Service:
             print(f"[strata] a complete tool call was left in reasoning by an unclosed thinking span; "
                   f"--format-fixes={parser.format_hint} (or =all) would have delivered it "
                   f"(also \"format_fixes\" in strata-<model>.json)", flush=True)
+        if parser.format_note:   # a detected stranded act no enabled fix can deliver (e.g. an envelope
+            #                     # naming an undeclared tool): say what was seen, in both flag states
+            print(f"[strata] {parser.format_note}", flush=True)
         if parser.adaptations:
             print(f"[strata] format fixes applied: {', '.join(parser.adaptations)} "
                   f"(listed in the reply's \"adaptations\")", flush=True)

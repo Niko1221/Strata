@@ -2897,43 +2897,6 @@ class ReasoningToolCall(unittest.TestCase):
         evs = self.run_parser(text, False, 7)
         self.assertFalse([e for e in evs if e.kind == "tool_call"])
 
-    def test_the_four_live_failures(self):
-        # The four recorded failures of #804 (#970's fixtures, real Hermes Agent traffic): a complete
-        # call inside unclosed thinking, natural stop.  One is a genuine act and is rescued; the other
-        # three are <function=tool_call> envelopes - a calls list wrapped in a call to a tool no request
-        # declares - and stay reasoning: delivering one would hand the client a bogus tool.
-        import json
-        from pathlib import Path
-        from serve.frontend import OutputParser
-        cases = json.loads((Path(__file__).resolve().parents[1] / "serve" / "fixtures" /
-                            "stranded_tool_call_failures.json").read_text(encoding="utf-8"))["failures"]
-        self.assertEqual(len(cases), 4)
-        tools = [{"name": n, "parameters": {"properties": {"code": {"type": "string"}}}}
-                 for n in ("execute_code", "read_file", "write_file", "mcp__unreal_engine__list_toolsets")]
-        rescued = 0
-        for case in cases:
-            text = case["reasoning_content"] + case["content"]
-            for step in (1, 7, 10_000):
-                with self.subTest(when=case["when"], step=step):
-                    p = OutputParser(thinking=True, tools=tools, stream_tools=False,
-                                     fixes=("stranded-call",))
-                    evs = []
-                    for i in range(0, len(text), step):
-                        evs += p.feed(text[i:i + step])
-                    evs += p.finish("stop")
-                    calls = [e.call for e in evs if e.kind == "tool_call"]
-                    if calls:                     # the one genuine act
-                        self.assertEqual([(c.name, "code" in c.arguments) for c in calls],
-                                         [("execute_code", True)])
-                        self.assertEqual(p.adaptations, ["stranded-call"])
-                        rescued += 1
-                    else:                         # the envelopes
-                        self.assertEqual(p.adaptations, [])
-                        self.assertIsNone(p.format_hint)   # not even the stranded shape: no declared act
-                        self.assertIn("<function=tool_call>",
-                                      "".join(e.text for e in evs if e.kind == "reasoning"))
-        self.assertGreater(rescued, 0)
-
     def test_mention_only_controls(self):
         # The ten mention shapes of #970 (controls recorded alongside the live failures): none may start
         # a rescue, whatever the chunking - the opener is quoted, mid-sentence, indented, in a markdown
@@ -3020,58 +2983,64 @@ class FormatFixesOption(unittest.TestCase):
 
 
 class FormatFixCorpus(unittest.TestCase):
-    """Every specimen of the format-fix family, run the same way: the collection in
-    serve/fixtures/format_fix_specimens.json, plus the four live failures recorded in
-    serve/fixtures/stranded_tool_call_failures.json (#804).  A specimen carries its own
-    expectation - the calls the fixes must deliver, whether the off-run raises the fail-loud
-    hint, and whether the fixes change anything at all (a normal-path call is the same with
-    them off) - so a new shape is a data append, not new test code, and a change to any
-    trigger re-runs the whole recorded world: fixing one case cannot silently break another.
-    Nothing that already streamed may differ between fixes on and off, whatever the specimen."""
+    """The specimen collection of the format-fix family, serve/fixtures/format_fix_specimens.json:
+    every shape the fixes have been measured against.  Each entry is a complete synthetic message
+    and the expected delta: the exact calls each flag state delivers, the flag-off hint, and the
+    streamed text's fate ("unchanged" - the level-1 contract).  Run at three chunk sizes with
+    stream_tools on and off.  A new shape is a data append, not new test code - and a change to any
+    trigger re-runs the whole recorded world, so fixing one case cannot silently break another.
+    Every specimen is the generic shape; where it was seen is the source link."""
 
     def specimens(self):
         from pathlib import Path
-        root = Path(__file__).resolve().parents[1]
-        corpus = json.loads((root / "serve" / "fixtures" / "format_fix_specimens.json")
-                             .read_text(encoding="utf-8"))
-        live = json.loads((root / "serve" / "fixtures" / "stranded_tool_call_failures.json")
-                          .read_text(encoding="utf-8"))
-        tools = ["execute_code", "read_file", "write_file", "mcp__unreal_engine__list_toolsets"]
-        out = list(corpus["specimens"])
-        for case in live["failures"]:
-            text = case["reasoning_content"] + case["content"]
-            envelope = "<function=tool_call>" in text
-            out.append({"name": f"live {case['when']}", "class": "envelope" if envelope else "act",
-                        "source": "#804 live", "input": text, "finish": "stop", "tools": tools,
-                        "expect": ({"calls": [], "hint": False, "differs": True} if envelope else
-                                   {"calls": ["execute_code"], "hint": True, "differs": True})})
-        return out
+        path = Path(__file__).resolve().parents[1] / "serve" / "fixtures" / "format_fix_specimens.json"
+        return json.loads(path.read_text(encoding="utf-8"))["specimens"]
 
     def test_corpus(self):
+        """A specimen is one copy of the message (the before) plus the delta (the after): the exact
+        calls each flag state delivers, and the flag-off hint.  expect.text is the streamed text's
+        fate - "unchanged" means the two states produce byte-identical reasoning and content, which
+        is the level-1 contract stated once; a future fix that rewrites the stream states the string
+        in the same field.  The runner proves the delta and nothing else differs."""
+        import random
         from serve.frontend import OutputParser
         for sp in self.specimens():
             exp = sp["expect"]
-            for step in (1, 7, 10 ** 9):
+            for step in (1, 7, "random 1-9", 10 ** 9):
                 for st in (False, True):
                     with self.subTest(name=sp["name"], step=step, stream_tools=st):
+                        text = sp["input"]
+                        if isinstance(step, str):        # the review's feeding mode: random contiguous
+                            r = random.Random(7)         # chunks, seeded so both states see the same cuts
+                            pieces, i = [], 0
+                            while i < len(text):
+                                n = r.randint(1, 9)
+                                pieces.append(text[i:i + n])
+                                i += n
+                        else:
+                            pieces = [text[i:i + step] for i in range(0, len(text), step)]
                         runs = []
                         for fixes in ((), ("stranded-call",)):
                             p = OutputParser(thinking=True, stream_tools=st, fixes=fixes,
                                              tools=[{"name": n, "parameters": {"properties":
                                                      {"code": {"type": "string"}}}} for n in sp["tools"]])
-                            evs, text = [], sp["input"]
-                            for i in range(0, len(text), step):
-                                evs += p.feed(text[i:i + step])
-                            evs += p.finish(sp.get("finish", "stop"))
-                            runs.append((p, evs))
-                        (p_off, evs_off), (p_on, evs_on) = runs
-                        names = [e.call.name for e in evs_on if e.kind == "tool_call"]
-                        self.assertEqual(names, exp["calls"])
-                        off = [] if exp.get("differs", True) else exp["calls"]
-                        self.assertEqual([e.call.name for e in evs_off if e.kind == "tool_call"], off)
-                        self.assertEqual(p_off.format_hint, "stranded-call" if exp.get("hint") else None)
-                        self.assertEqual("".join(e.text for e in evs_on if e.kind == "reasoning"),
-                                         "".join(e.text for e in evs_off if e.kind == "reasoning"))
+                            evs = []
+                            for piece in pieces:
+                                evs += p.feed(piece)
+                            evs += p.finish(sp["finish"])
+                            runs.append((p, [[e.call.name, e.call.arguments] for e in evs if e.kind == "tool_call"],
+                                         "".join(e.text for e in evs if e.kind in ("reasoning", "content"))))
+                        (p_off, calls_off, text_off), (p_on, calls_on, text_on) = runs
+                        self.assertEqual(calls_on, exp["on"])
+                        self.assertEqual(calls_off, exp["off"])
+                        self.assertEqual(p_off.format_hint, exp["hint"])
+                        # a stranded act nothing delivers (an envelope) is loud in BOTH states
+                        self.assertEqual(bool(p_off.format_note), bool(exp.get("note")))
+                        self.assertEqual(bool(p_on.format_note), bool(exp.get("note")))
+                        if exp["text"] == "unchanged":
+                            self.assertEqual(text_on, text_off)
+                        else:
+                            self.assertEqual(text_on, exp["text"])
 
 
 if __name__ == "__main__":

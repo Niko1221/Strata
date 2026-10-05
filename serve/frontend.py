@@ -498,6 +498,10 @@ class OutputParser:
         # the reply's "adaptations"), and the name of a detected shape no enabled fix covers
         self.adaptations: list[str] = []
         self.format_hint: str | None = None
+        # a stranded act that no enabled fix can deliver (its blocks name tools the request did not
+        # declare): what was seen, logged by the serve in BOTH flag states - loud without promising
+        # a fix, unlike format_hint, which names a fix that really would have delivered the call
+        self.format_note: str | None = None
         # line/fence state ahead of the tail (see _track_reasoning): the partial line carried across
         # chunks ("" = the next text starts a line / nothing seen yet), and whether a line-start ``` or
         # ~~~ has the reasoning inside a quoted code block
@@ -658,23 +662,21 @@ class OutputParser:
             if p.startswith(("```", "~~~")):
                 self._in_fence = not self._in_fence
 
-    def _rescue_calls(self, tail: str) -> "list[ToolCall] | None":
-        """The kept tail as a list of calls, or None when the tail is not ONLY complete, well-formed calls
-        separated by whitespace, each naming a tool the request declared.  The tail starts at a
-        <tool_call> opener (see _track_reasoning), so anything
-        else in it - prose between or after the blocks, an unfinished block, a body that does not parse -
-        is the model narrating a call it considered, not making one, and stays what it already streamed
-        as.  The declared-tool requirement is the rescue's own bar, stricter than the content channel
-        (which delivers any name the model writes): this path infers an act from bytes the model streamed
-        as reasoning, and an act references a declared instrument.  Three of the four live sightings in
-        #804 are `<function=tool_call>` envelopes - a `calls` list of real calls wrapped in a call to a
-        tool no request declares - and delivering one would hand the client a bogus tool, so they stay
-        reasoning (their shape is a candidate fix of its own, not a guess this one makes)."""
-        calls, rest = [], tail
+    def _rescue_blocks(self, tail: str) -> "list[str] | None":
+        """The kept tail as its complete call-shaped bodies (`<function=...>...</function>`), or None
+        when the tail is not only such blocks separated by whitespace.  The tail starts at a
+        <tool_call> opener (see _track_reasoning), so anything else in it - prose between or after the
+        blocks, an unfinished block, a body without `<function=` - is the model narrating a call it
+        considered, not making one, and stays what it already streamed as, silently.  This is the
+        DETECTION: whether the detected act can be delivered (declared names, parseable bodies) is
+        decided by the caller, because an undeliverable stranded act must still be heard - 2 of the 12
+        live strandings in the review corpus, and 3 of the 4 in #804, are `<function=tool_call>`
+        envelopes naming a tool no request declares."""
+        blocks, rest = [], tail
         while True:
             rest = rest.lstrip()
             if not rest:
-                return calls
+                return blocks
             if not rest.startswith(CALL_START):
                 return None
             b = rest.find(CALL_END, len(CALL_START))
@@ -684,13 +686,7 @@ class OutputParser:
             s = body.strip()
             if not s.startswith("<function="):
                 return None
-            name = s[len("<function="):].split(">", 1)[0]
-            if name not in self.schemas:
-                return None                  # not a tool this request declared: not an act to infer
-            try:
-                calls.append(parse_tool_call(s, self.schemas.get(name)))
-            except ValueError:
-                return None                  # not a well-formed act; leave every block as reasoning
+            blocks.append(s)
 
     def _rescue_unclosed_call(self, finish_reason: str = "stop") -> list[Event]:
         """End of generation inside a thinking span that never closed, gated on the "stranded-call" format
@@ -712,9 +708,28 @@ class OutputParser:
         tail, self.reasoning_tail = self.reasoning_tail, None
         if not tail:
             return []
-        calls = self._rescue_calls(tail)
-        if calls is None:
+        blocks = self._rescue_blocks(tail)
+        if blocks is None:
+            return []                          # not an act's shape: a mention stays a mention, silently
+        names = [b[len("<function="):].split(">", 1)[0] for b in blocks]
+        undeclared = sorted({n for n in names if n not in self.schemas})
+        if undeclared:
+            # an act's shape that names tool(s) the request did not declare (the envelope).  No
+            # enabled fix delivers this - not even with the flag on - so format_hint would be a
+            # promise the fix cannot keep; format_note says what was seen instead, and the serve
+            # logs it in BOTH states.  A mixed tail (a declared call beside an undeclared one) lands
+            # here too: all-or-nothing by design, but never silent.
+            self.format_note = (f"{len(blocks)} complete tool call{'s' if len(blocks) != 1 else ''} left in "
+                                f"reasoning by an unclosed thinking span name{'s' if len(blocks) == 1 else ''} "
+                                f"a tool the request did not declare ({', '.join(undeclared)}); nothing delivers "
+                                f"this, so they stayed reasoning")
             return []
+        calls = []
+        for b, n in zip(blocks, names):
+            try:
+                calls.append(parse_tool_call(b, self.schemas.get(n)))
+            except ValueError:
+                return []                      # a body that does not parse stays reasoning
         if "stranded-call" not in self.fixes:
             self.format_hint = "stranded-call"   # detected but not enabled: the serve says so, changes nothing
             return []

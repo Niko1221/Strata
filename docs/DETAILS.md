@@ -549,7 +549,10 @@ print(r.choices[0].message.content)
   Nothing that already streamed ever changes, and a fix that fires says so twice: in the server window and in
   the reply's `"adaptations"` (OpenAI streaming and non-streaming). With the fix off, the same detection still
   logs - a complete tool call was left in reasoning, and which fix would have delivered it - so the failure is
-  loud either way. An unknown name fails the start with the known ones, so a typo cannot silently disable a
+  loud either way. A stranded act that names a tool the request did not declare (the `<function=tool_call>`
+  envelope: a `calls` list wrapped in a call to a tool no request declares - 3 of the 4 sightings in #804, 2
+  of 12 in a second corpus) is delivered by no fix and hints at none; it logs what was seen, in both flag
+  states, because an undetected stall is the one outcome this leaves nothing to. An unknown name fails the start with the known ones, so a typo cannot silently disable a
   fix.
 - **Streaming.** With `"stream": true` everything arrives as it is made: the thinking, the answer, and tool calls
   (the tool's name first, then its arguments piece by piece, like OpenAI and Anthropic do). While the model reads a
