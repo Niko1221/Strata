@@ -205,6 +205,12 @@ void test_complement_plan() {
     require(!make_cache_complement_plan(2, 3, {3, 5}, {{2, 0}}, {}, offsets, bytes, error),
             "out-of-range pair accepted");
     require(!make_cache_complement_plan(2, 3, {0, 5}, {}, {}, offsets, bytes, error), "zero-size layer accepted");
+    // a layer split's resident mode: CUDA0's cache holds layer 0's experts, the later stage's cache (the additional
+    // tier) layer 1's - the RAM copy keeps only what neither holds
+    require(make_cache_complement_plan(2, 3, {3, 5}, {{0, 1}}, {{1, 0}, {1, 2}}, offsets, bytes, error), error);
+    require(bytes == 11 && offsets == std::vector<uint64_t>{0, kNoCacheComplement, 3, kNoCacheComplement, 6,
+                                                             kNoCacheComplement},
+            "a later stage's cached experts were copied into RAM");
 }
 
 void test_resident_lend_region() {

@@ -34,7 +34,9 @@ What setup does differently for this model:
   `"layer_split": "auto"`. Measured on 2x RTX 3090 with 165 GiB (#498): decode 31 tok/s on one card with the budget,
   64-78 tok/s split (55 tok/s at a 128K prompt), with `MemAvailable` never under 68 GiB. With less RAM, `--gpus`
   keeps one GPU and says so, and `START-HERE.bat --gpus 0,1` on an installed UD-Q4_K_XL stops with the reason
-  (it used to keep the budget, and the engine exited with code 2).
+  (it used to keep the budget, and the engine exited with code 2). With less RAM, the resident RAM mode with a
+  split keeps only the experts no card holds (42.5 GiB on 2x RTX 3090, opt-in, by hand):
+  [MULTI_GPU.md](MULTI_GPU.md#less-ram-the-resident-ram-mode-with-a-split-opt-in).
 - It downloads the four shards below from the pinned revision `38bb39e` (resumable, like the other models), then
   checks each one's size and SHA-256 against the table below; the check takes a few minutes once and is remembered
   in the file's finish mark. A file with the wrong hash is deleted, so the next run downloads it again.

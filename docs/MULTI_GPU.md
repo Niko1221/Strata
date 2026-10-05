@@ -122,6 +122,36 @@ Prompts are read in chunks that flow through the cards in turn; while a later ca
 already reads chunk c+1. Conversation checkpoints save and restore every card's state; the adaptive expert swaps copy
 into the card that owns the layer.
 
+## Less RAM: the resident RAM mode with a split (opt-in)
+
+Without the flags below, a split keeps **every** expert in RAM - also the ones the cards' caches already hold -
+so UD-Q4_K_XL needs ~135 GB of RAM to share its 72 GiB of experts across GPUs. `--mmap-experts` with a split
+needs less, but its misses run on the CPU only (the cards have no mapped alias of the file pages).
+
+`--resident-experts --resident-cpu-experts` with `--layer-split` keeps in page-locked RAM only the experts **no
+stage's cache holds** (every later stage's cache is left out of the RAM copy, as CUDA0's always was), so the
+cards read their share of the misses over PCIe as with one GPU. The adaptive swaps copy an evicted expert back
+from the cache, device and stream of the stage that owns its layer. `--resident-cpu-experts` is what makes it
+explicit: `--resident-experts` alone with a split still runs as the plain mmap mode (#364, #384).
+
+Measured on 2x RTX 3090 (PCIe 4.0 x16, no P2P), Ryzen 9 5900X (AVX2, no AVX-512), 64 GB DDR4 (62.7 GiB usable),
+Linux, UD-Q4_K_XL, 200K context, fp16 KV, MTP on, split auto K=24 (the caches hold 10,013 experts, 29 GiB).
+Three requests with a ~16.6K-token shared prefix and 768 tokens out each (Python, Italian prose, JSON),
+measured from the client:
+
+| | RAM copy | Decode tok/s | Prompt tok/s (16.6K) | Three requests |
+| --- | ---: | ---: | ---: | ---: |
+| split, `--mmap-experts` | page cache | 30.9 | 461 | 122.0 s |
+| split, resident (this mode) | 42.5 GiB page-locked | 63.9 | 735 | 63.8 s |
+
+- Decode timing (`STRATA_DECODE_TIMING=1`): the CPU expert jobs went from 41-64 ms per window to ~0.02 ms;
+  2-3% of the routed experts are read over PCIe, ~90% hit the caches.
+- 175K-token prompt (three needles, then a second turn): read in 89 s, decode 51.8 tok/s at 175K, 3/3 needles,
+  the second turn reused the prefix (1.6 s to its first token); `MemAvailable` never under 11.3 GiB with
+  `STRATA_RESIDENT_HEADROOM_GIB=2`.
+- The RAM it needs is the experts minus what the caches hold, plus the headroom: on this PC 42.5 GiB instead of 72.
+  Setup does not offer it yet (#498, #737).
+
 ## Limits (for now)
 
 - **Works across cards** (bench/results/2026-09-29-layer-split-limits):
