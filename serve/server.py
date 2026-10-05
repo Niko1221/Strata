@@ -135,6 +135,21 @@ class EngineStarting(RuntimeError):
     not a 400 about the prompt."""
 
 
+class PoolFull(ValueError):
+    """The engine's shared KV pool (--kv-pool-tokens) cannot hold another conversation now: the decoding lanes hold it.
+    Retryable - a 503 with Retry-After, not the 400 of a request that can never fit (that one is refused before the
+    engine sees it)."""
+
+
+POOL_FULL_PREFIX = "KV pool full"
+POOL_RETRY_S = 10
+
+
+def engine_error(msg: str) -> ValueError:
+    """The exception for an engine ERR line: PoolFull for the KV pool's refusal, else ValueError."""
+    return PoolFull(msg) if msg.startswith(POOL_FULL_PREFIX) else ValueError(msg)
+
+
 class ModelBusy(RuntimeError):
     """Explicit model controls must not interrupt active or queued requests."""
 
@@ -498,6 +513,7 @@ class StrataEngine:
         # slots in the order that spreads requests over the pipeline's groups first: 0, gs, 2gs, .., 1, gs+1, ..
         self.slot_order = [g * gs + t for t in range(gs) for g in range(groups)]
         self.slot_q = [queue.Queue() for _ in range(self.batch)]
+        self.pool = None                                # the engine's last POOL line (--kv-pool-tokens)
         self.slot_busy = [False] * self.batch
         # what each slot's sessions hold (prompt + every token a window fed), so a conversation's next turn goes to
         # the slot that has its start (the engine checks it again); when the slot was last used
@@ -518,6 +534,14 @@ class StrataEngine:
         proc, lines = self.proc, self.lines             # this process's: a restart replaces both (#344)
         slot_q = self.slot_q
         for line in proc.stdout:
+            if line.startswith("POOL "):                # --kv-pool-tokens: the shared KV pool's use, for /metrics
+                f = line.split()
+                try:
+                    self.pool = {"cells": int(f[1]), "free": int(f[2]), "main": int(f[3]),
+                                 "slots": [int(x) for x in f[4].split(",")] if f[4] != "-" else []}
+                except (IndexError, ValueError):
+                    pass
+                continue
             if line.startswith(("BT ", "BDONE ")) and slot_q:   # --batch: a batch slot's own lines
                 try:
                     slot_q[int(line.split()[1])].put(line)
@@ -756,7 +780,7 @@ class StrataEngine:
                 if len(f) >= 3 and f[1].lstrip("-").isdigit() and f[2].isdigit():
                     self._yielded = (int(f[1]), int(f[2]))
             elif line.startswith("ERR"):
-                raise ValueError(line[4:].strip())
+                raise engine_error(line[4:].strip())
             if line.startswith("DONE") and self._ctl_mode == "solo":
                 self._ctl_result = ("done", None)
                 return
@@ -1178,7 +1202,7 @@ class StrataEngine:
                     return
                 elif line.startswith("ERR"):
                     done = True
-                    raise ValueError(line[4:].strip())
+                    raise engine_error(line[4:].strip())
         finally:
             if not done:                                  # the consumer stopped early: stop the engine, drain to DONE
                 if self.can_stop:
@@ -2051,6 +2075,8 @@ class Service:
                 "tok_s_window_s": RATE_WINDOW_S if state == "generating" else None}
         if state == "reading" and progress:
             live["prompt_read"], live["prompt_total"] = progress
+        if getattr(self.engine, "pool", None):         # --kv-pool-tokens: cells in all, free, held by each session
+            live["kv_pool"] = self.engine.pool
         par = int(getattr(self.engine, "batch", 0) or 0)
         if par:                                         # #465: the requests running together, slot by slot
             with self.status_lock:
@@ -2253,6 +2279,7 @@ class Service:
         run_tok, run_len, repeated = None, 0, False     # #606: the current run of one repeated token
         thinking_n = 0                                  # tokens written while thinking (Responses' reasoning_tokens)
         timings, before = None, None                    # this request's timings; the engine's `last` before it
+        truncated = False
         raw_ids = []                                    # every generated id (STRATA_DEBUG: dump raw model text)
         emb = getattr(self.embeddings, "path", None)
         # Identity token: only a DONE line replaces engine.last, so a request that died, errored or was
@@ -2390,6 +2417,8 @@ class Service:
                             last = dict(getattr(self.engine, "last", {}) or {}) \
                                 if getattr(self.engine, "last", None) is not engine_last0 else {}
                             started = st.get("started", time.time())
+                            # the engine's KV pool (--kv-pool-tokens) was full: ended short of what was asked
+                            truncated = last.get("finish") == "pool"
                             cvec = (getattr(self.engine, "info", {}) or {}).get("cvec", 0)
                             loaded = str(cvec) not in ("0", "", "None")
                             hit_rate = round(last["hits"] / last["lookups"], 3) if last.get("lookups") else None
@@ -2461,7 +2490,7 @@ class Service:
         for ev in parser.finish():
             yield "event", ev
         yield "done", {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),
-                       "timings": timings, "reasoning_tokens": thinking_n}
+                       "timings": timings, "reasoning_tokens": thinking_n, "truncated": truncated}
 
 
 def prompt_tokens_seen(prompt_tokens: int, last: dict) -> int:
@@ -2652,6 +2681,8 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
                              "prompt_tokens_details": {"cached_tokens": x.get("reused") or 0}}
             if x.get("timings"):
                 last["timings"] = x["timings"]          # llama.cpp's field: the speed its clients show
+            if x.get("truncated"):
+                last["truncated"] = True                # llama.cpp's field: ended short of what was asked
             yield last
 
 
@@ -2696,6 +2727,8 @@ def openai_collect(chunks) -> dict:
            "usage": last["usage"]}
     if last.get("timings"):
         out["timings"] = last["timings"]
+    if last.get("truncated"):
+        out["truncated"] = True
     return out
 
 
@@ -2931,7 +2964,7 @@ def make_handler(svc: Service):
             self.send_header("Content-Length", "0")
             self.end_headers()
 
-        def _json(self, code, obj):
+        def _json(self, code, obj, headers=None):
             if self.record is not None:
                 with svc.status_lock:
                     self.record["http_status"] = code
@@ -2943,6 +2976,8 @@ def make_handler(svc: Service):
             body = json.dumps(obj, ensure_ascii=False).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json")
+            for k, v in (headers or {}).items():
+                self.send_header(k, v)
             self._cors()
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -3162,6 +3197,13 @@ def make_handler(svc: Service):
                     self._count_tokens(req)
                 else:
                     self._json(404, {"error": {"message": "not found"}})
+            except PoolFull as e:                            # retryable: the lanes hold the KV pool for now
+                retry = {"Retry-After": str(POOL_RETRY_S)}
+                if path == "/v1/responses":
+                    self._json(503, responses_error_body(str(e), "server_error", code="kv_pool_full"), retry)
+                else:
+                    self._json(503, {"error": {"type": "server_error", "code": "kv_pool_full", "message": str(e)}},
+                               retry)
             except ValueError as e:
                 if path == "/v1/responses":
                     self._json(400, responses_error_body(str(e)))
