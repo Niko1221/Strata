@@ -14,7 +14,11 @@ in both the server and command-line generation paths.
 
 Set `STRATA_DISJOINT_ADAPT=1` before starting the engine. It is off by default.
 It leaves the existing peer-tier check and expert arithmetic unchanged.
-The reservation mask is copied after successful helper loading.
+The reservation mask is copied after successful static helper loading. When the
+upstream dynamic helper optimizer is enabled, the initial mask is not frozen:
+the live ownership query decides whether the helper still holds an expert.
+The server keeps upstream's live ownership check, and the opt-in CLI guard uses
+that check instead of stale initial reservations.
 
 ## Validation environment
 
@@ -55,3 +59,18 @@ These repetitive tasks do not represent all agent workloads.
   checks still need to be run. Keep this PR as a draft until then.
 - Historical combined builds passed those safety checks, but that is not a
   substitute for validating this independent port.
+
+## 0.1.39 follow-up
+
+The branch now includes official 0.1.39 (`6f32ec0`) and preserves the dynamic
+helper optimizer. A combined custom build passed a five-arm, 240-request HTTP
+suite using SC117 abliterated IQ3_S and unchanged 250/280W power limits.
+Its recommended serial configuration decoded a 110K cached prompt at 130.1
+tokens/s versus 107.5 for official 0.1.39. This is a WHOLE-BUILD result including
+other optimizations, not a new speed claim for this ownership guard alone.
+No independent dynamic-optimizer GPU regression or isolated speed measurement
+is claimed here. The PR remains opt-in and draft.
+
+The exact revised branch compiled and linked independently against official
+0.1.39 on the Linux host above. The standalone ownership/candidate-filter test
+passed. No model server was launched for this branch-specific check.

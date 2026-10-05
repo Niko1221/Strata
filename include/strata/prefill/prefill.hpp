@@ -18,6 +18,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <future>
 #include <memory>
 #include <string>
 
@@ -78,9 +79,36 @@ public:
     /// #340: the streamed ring's slot count for chunks that stream every expert, instead of the pinned-share rule
     /// (0 = that rule). Set before any `bytes_needed`/`init` (both count the ring); STRATA_PREFILL_RING still wins.
     static void set_ring_override(int slots);
+    /// #583: the auto chunk scan's byte-budget ring, for chunks above `small_max` (0.1.39's auto chunk: a prompt that
+    /// fits it keeps 0.1.39's ring).  0 slots = none.  A layer split's set_ring_override and STRATA_PREFILL_RING win.
+    static void set_ring_budget(int slots, int64_t small_max);
 
     /// Device bytes `init` needs for a chunk of `chunk` tokens (what a borrowed region must hold).
     static uint64_t bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk);
+
+    /// The same without the streamed ring: what the chunk's own buffers cost.  The auto chunk scan sizes the chunk
+    /// first and hands the ring what the chunk leaves over, so it needs the chunk priced on its own.
+    static uint64_t bytes_needed_no_ring(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk);
+
+    /// The streamed ring's byte budget as a slot count for this pack (the measured slot count x Q2_0's blob, over
+    /// max_blob, never past ring_cap()):
+    /// what the auto chunk scan treats as a full ring.  A slot is one whole blob, so a pack with bigger blobs than
+    /// Q2_0's gets fewer of them for the same bytes - 384 on Q2_0, 199 on a 2.54 MiB-blob IQ3_S pack.
+    static int64_t ring_max_slots();
+    /// 0.1.39's ring for this PC (1024 fused / 384 pinned / 96), within ring_cap().
+    static int64_t ring_default_slots();
+    /// #583: the ring the auto scan keeps full, given the chunk 0.1.39's rule picked: its byte budget where that rule's
+    /// chunk was small (< 6144), else 0.1.39's ring (measured: shrinking it for a bigger chunk lost there).
+    static int64_t ring_cap_for(int64_t old_chunk);
+
+    /// What the ring actually resolves to for a chunk of `chunk` tokens, after the override, STRATA_PREFILL_RING
+    /// and the pinned-share rule - the slot count `init` lays out.  The engine reports it on its INFO line so the
+    /// Monitor tab shows the pair the run really got, not what it asked for.
+    static int64_t ring_slots_for(int64_t chunk);
+
+    /// 0.1.39b (#583, the default): the ring as a byte budget, the loan's corrected count and the auto chunk scan that
+    /// keeps the ring full.  STRATA_RING_BYTES=0: 0.1.39's ring, loan and chunk list.
+    static bool ring_bytes_enabled();
 
     /// Positions [pos0, pos0 + n) holding `tokens`; `ss.ple_prev` must be the two tokens before pos0 (oldest
     /// first, -1 for none) and is advanced to the last two of these.
@@ -120,10 +148,32 @@ public:
         stage_lb_ = layer_begin; stage_le_ = layer_end; next_ = next;
     }
 
+    /// LAYER SPLIT: `helper` is another stage's prompt path (another GPU).  A prompt of one chunk runs the stages one
+    /// after the other, so while this stage reads it the helper's GPU idles: it then streams a share of this stage's
+    /// non-resident experts over its own PCIe link into its own (lent) prompt buffers, computes their rows, and sends
+    /// them back - the --peer-device peer's streaming, without P2P (activations and rows through mapped host memory,
+    /// read by copy kernels).  Only on the MMQ prompt path, only for chunks of stream_all_min() tokens and more, up to
+    /// the size where the measured share stops paying.  Opt-in: STRATA_PREFILL_HELP=1 (not bit-identical to the default).  Both stages must have
+    /// run `init`.
+    bool set_stage_helper(Prefill* helper, std::string& err);
+
 private:
+    // Stage-1 pipeline: intermediate stages return after handing their chunk to
+    // the direct successor. The public run() drains the chain once at prompt end.
+    bool run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err);
+    bool drain_pipeline(std::string& err);
+
     int64_t stage_lb_ = 0, stage_le_ = -1;
     Prefill* next_ = nullptr;
+    Prefill* helper_ = nullptr;         ///< set_stage_helper
+    bool single_chunk_ = false;         ///< a later stage: the prompt is one chunk (set by the stage before)
+    bool bind_stage_helper(int64_t T);  // binds the helper's buffers for a one-chunk prompt of T tokens
     const float* hand_in_ = nullptr;    ///< the previous stage's rows of the chunk being read (host, pinned)
+
+    std::string next_err_;
+    std::future<bool> next_run_;
+    int hand_buf_ = 0;
+
     bool carve(std::size_t T, void* alloc);   // the device buffers of a chunk (prefill.cpp's Alloc)
     void release();                          // the destructor's cleanup (also `reset`'s)
     struct Impl;

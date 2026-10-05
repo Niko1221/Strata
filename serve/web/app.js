@@ -79,6 +79,7 @@ function showTab(name) {
   if (location.hash.slice(1) !== tab) history.replaceState(null, "", tab === "chat" ? location.pathname : `#${tab}`);
   if (tab === "chat") $("input").focus();
   if (tab === "monitor") loadMcp();
+  if (tab === "about") loadConfig();
   if (lastMetrics) render(lastMetrics);
 }
 for (const b of document.querySelectorAll(".st-tab")) b.onclick = () => showTab(b.dataset.tab);
@@ -190,7 +191,41 @@ function render(m) {
   }
   if (live.queued > 0) setPill("queued", `${live.queued} queued`);
   if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
+  if (tab === "monitor") renderConvCache(m.conversation_cache);
   if (tab === "about") renderAbout(eng, hw, st);
+}
+
+// #596: the conversation cache - the prompt's state the engine keeps between requests (always), and the whole
+// conversations it parks in RAM when "--conversation-cache-mib N" is in the run config's args (opt-in)
+function since(t) {
+  if (!t) return "";
+  const s = Math.max(0, Date.now() / 1000 - t);
+  return s < 60 ? "just now" : s < 3600 ? `${fmt(s / 60)} min ago` : `${fmt(s / 3600, 1)} h ago`;
+}
+function renderConvCache(c) {
+  $("cc-card").hidden = !c;
+  if (!c) return;                                  // an older server
+  const pct = (a, b) => (b ? `${Math.min(100, (100 * a) / b)}%` : "0%");
+  $("cc-bars").hidden = !c.enabled;
+  if (c.enabled) {
+    $("cc-slots-text").textContent = `${fmt(c.parked)} / ${fmt(c.slots)}`;
+    $("cc-slots-bar").style.width = pct(c.parked, c.slots);
+    const budget = c.budget_mib * 1048576;
+    $("cc-mem-text").textContent = `${gb(c.bytes)} / ${gb(budget)} GB`;
+    $("cc-mem-bar").style.width = pct(c.bytes, budget);
+  }
+  $("cc-sum").textContent = c.requests ? `${fmt(c.requests_reused)} of ${fmt(c.requests)} requests reused part of their prompt` : "";
+  const share = c.prompt_tokens ? ` (${fmt((100 * c.reused_tokens) / c.prompt_tokens)}% of all prompt tokens)` : "";
+  const event = c.last_event ? `${c.last_event === "parked" ? "Parked" : "Restored"} ${fmt(c.last_tokens)} tokens, ${since(c.last_at)}` : null;
+  facts($("cc-facts"), [
+    ["Last request", c.last_prompt != null ? `${fmt(c.last_reused || 0)} of ${fmt(c.last_prompt)} prompt tokens reused` : null],
+    ["Reused since start", c.requests ? `${fmt(c.reused_tokens)} tokens${share}` : null],
+    ["Parked / restored", c.enabled ? `${fmt(c.parks)} / ${fmt(c.restores)}${c.evictions ? ` · ${fmt(c.evictions)} evicted` : ""}` : null],
+    ["Last switch", c.enabled ? event : null],
+  ]);
+  $("cc-note").textContent = c.enabled
+    ? "A request that continues a parked conversation gets its state back instead of reading it again; the oldest goes when the slots or the memory are full."
+    : "The engine keeps the last conversation's state, so a follow-up reads only what is new. To keep several conversations (agents taking turns), add \"--conversation-cache-mib\", \"8192\" to the run config's args (docs/DETAILS.md).";
 }
 
 function renderTotals(t) {
@@ -302,7 +337,9 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
       const [cls, text] = badge[r.finish] || ["", r.finish || "–"];
       const t = new Date(r.time * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"});
       const proj = r.projection == null ? "" : ` <span class="st-badge${r.projection ? " st-badge--reading" : ""}" title="experimental speed projection ${r.projection ? "on" : "off"}">${r.projection ? "ESP" : "stock"}</span>`;
-      const hit = r.hit_rate == null ? "–" : `${(r.hit_rate * 100).toFixed(1)}%`;
+      // #588: the VRAM share; the PCIe share (--pcie-frac) beside it when there is one
+      const hit = r.hit_rate == null ? "–" : `${(r.hit_rate * 100).toFixed(1)}%` +
+        (r.pcie_share ? ` <span class="muted" title="routed experts the GPU read over PCIe (--pcie-frac) or another GPU computed">+${(r.pcie_share * 100).toFixed(1)}% PCIe</span>` : "");
       return `<tr><td>${esc(t)}</td><td><span class="st-badge ${cls}">${esc(text)}</span>${proj}</td><td class="num">${fmt(r.prompt_tokens)}</td>
         <td class="num">${fmt(r.reused)}</td><td class="num">${fmt(r.output_tokens)}</td><td class="num">${fmt(r.decode_tok_s, 1)}</td>
         <td class="num">${hit}</td><td class="num">${fmt(r.duration_s, 1)} s</td></tr>`;
@@ -393,6 +430,62 @@ function renderMcp() {
       `</div>`;
   }).join("");
 }
+
+// ------------------------------------------------------------------ Model settings (GET / POST /config, #564)
+// A few documented keys of the run config (strata-<model>.json), for every client, from the next start on.  The
+// server lists them, checks every value and keeps every other key of the file as it is.
+let cfgKeys = [];
+async function loadConfig() {
+  let r;
+  try { r = await fetch("config", {headers: headers()}); } catch (e) { return; }
+  if (!r.ok) { $("cfg-card").hidden = true; return; }       // no run config, an older server, or no key yet
+  const c = await r.json();
+  cfgKeys = c.keys || [];
+  $("cfg-file").textContent = c.file || "";
+  $("cfg-form").innerHTML = cfgKeys.map((k, i) => {
+    const id = `cfg-${i}`, v = k.value;
+    let input;
+    if (k.kind === "bool" || k.kind === "enum") {
+      const opts = k.kind === "bool" ? [["true", "on"], ["false", "off"]] : k.choices.map((x) => [x, x]);
+      const cur = v == null ? "" : String(v);
+      input = `<select class="st-input" id="${id}"><option value=""${cur === "" ? " selected" : ""}>default</option>` +
+        opts.map(([val, text]) => `<option value="${esc(val)}"${cur === val ? " selected" : ""}>${esc(text)}</option>`).join("") + `</select>`;
+    } else {
+      const text = v == null ? "" : Array.isArray(v) ? v.join(", ") : String(v);
+      input = `<input class="st-input" id="${id}" ${k.kind === "number" ? 'type="number" step="any" min="0"' : 'type="text"'} ` +
+        `value="${esc(text)}" placeholder="default" autocomplete="off">`;
+    }
+    return `<label for="${id}" title="${esc(k.help)}">${esc(k.help)}<code>${esc(k.key)}</code></label>${input}`;
+  }).join("");
+  $("cfg-card").hidden = false;
+}
+function configValue(k, el) {
+  const s = el.value.trim();
+  if (s === "") return null;
+  if (k.kind === "bool") return s === "true";
+  if (k.kind === "number") return Number(s);
+  return s;                                         // enum, or names (the server splits them at commas)
+}
+$("cfg-save").addEventListener("click", async () => {
+  const set = {};
+  cfgKeys.forEach((k, i) => {
+    const v = configValue(k, $(`cfg-${i}`));
+    const old = Array.isArray(k.value) ? k.value.join(", ") : k.value;
+    if (JSON.stringify(v) !== JSON.stringify(old ?? null)) set[k.key] = v;
+  });
+  if (!Object.keys(set).length) { $("cfg-msg").textContent = "Nothing changed."; return; }
+  try {
+    const r = await fetch("config", {method: "POST", headers: headers(true), body: JSON.stringify({set})});
+    const b = await r.json();
+    if (!r.ok) throw new Error((b.error || {}).message || `HTTP ${r.status}`);
+    $("cfg-msg").textContent = b.changed.length
+      ? `Saved (${b.changed.join(", ")}); the earlier file is ${b.file}.bak. Start the model again to use it.` : "Nothing changed.";
+    loadConfig();
+  } catch (e) {
+    $("cfg-msg").textContent = "";
+    toast("error", "Not saved", String(e.message || e), 6000);
+  }
+});
 
 // ------------------------------------------------------------------ Markdown (escaped first, then formatted)
 function inline(s) {

@@ -1,4 +1,5 @@
 #include "strata/core/native_dense.hpp"
+#include <cstdlib>
 #include "strata/core/weights.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/kernels/native_mmvq.hpp"
@@ -6,6 +7,7 @@
 #include <cuda_runtime.h>
 #include <algorithm>
 #include <climits>
+#include <cstdlib>
 #include <exception>
 #include <limits>
 #include <memory>
@@ -13,6 +15,12 @@
 
 namespace strata::core {
 namespace {
+int g_layer_lb = -1, g_layer_le = -1;   // set_layer_range; -1: every layer
+bool in_range(const std::string& name) {
+    if (g_layer_lb < 0 || name.rfind("blk.", 0) != 0) return true;
+    const int l = std::atoi(name.c_str() + 4);
+    return l >= g_layer_lb && l < g_layer_le;
+}
 bool eligible(const strata::TensorInfo& tensor, bool include_ple_key) {
     const auto& name = tensor.name;
     if (name.rfind("blk.", 0) != 0) return false;
@@ -53,6 +61,7 @@ bool NativeDense::served_names(const std::vector<std::string>& shards, bool incl
     }
 }
 
+void NativeDense::set_layer_range(int lb, int le) { g_layer_lb = lb; g_layer_le = le; }
 bool NativeDense::keep_unquantized_ple_key(const std::string& pack_dir, std::set<std::string>& skip,
                                            std::string& err) {
     const std::string key = "blk.1.ple_key.weight";
@@ -69,7 +78,12 @@ NativeDense::~NativeDense() {
 }
 
 bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& table, std::string& err,
-                       bool include_ple_key) {
+                       bool include_ple_key, int64_t layer_lo, int64_t layer_hi) {
+    auto outside = [&](const std::string& name) {   // a blk.<l>. tensor of another stage's layers
+        if (layer_hi < 0 || name.rfind("blk.", 0) != 0) return false;
+        const long l = std::strtol(name.c_str() + 4, nullptr, 10);
+        return l < layer_lo || l >= layer_hi;
+    };
     if (scratch_ || !weights_.empty()) { err = "native dense: already loaded"; return false; }
     if (shards.empty()) { err = "native dense: at least one GGUF shard is required"; return false; }
     try {
@@ -138,7 +152,8 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                 }
             }
             for (const auto& tensor : gguf.tensors()) {
-                if (!eligible(tensor, include_ple_key)) continue;
+                if (!eligible(tensor, include_ple_key) || outside(tensor.name)) continue;
+                if (!in_range(tensor.name) && tensor.name.find("ple") == std::string::npos) continue;
                 if (!seen.insert(tensor.name).second) {
                     err = "native dense: duplicate tensor " + tensor.name; return false;
                 }

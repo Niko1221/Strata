@@ -547,7 +547,7 @@ bool SessionLoopScratch::init(size_t parts_bytes_in, std::string& err) {
     const std::vector<int> cores = strata::kernels::cpu::physical_cores(false);
     if (!cores.empty()) {
         pinned_core = strata::kernels::cpu::pin_current_thread(cores[0]);
-        pinned = true;
+        pinned = pinned_core.valid;
     }
     return true;
 }
@@ -558,7 +558,7 @@ void SessionLoopScratch::free() {
     if (pinned) {
         strata::kernels::cpu::restore_thread_affinity(pinned_core);
         pinned = false;
-        pinned_core = -1;
+        pinned_core = {};
     }
     if (probe != nullptr) { cudaEventDestroy(probe); probe = nullptr; }
     if (y_miss != nullptr) { cudaFreeHost(y_miss); y_miss = nullptr; }

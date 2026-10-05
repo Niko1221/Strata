@@ -168,6 +168,9 @@ bool moe_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer,
 /// rung, so a host that sees it knows `h_x_f`/`h_ids`/`h_weights` are in place.
 bool moe_route(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t k, const MoEBuffers& b,
                const float* x, void* stream, std::string& err, const Doorbell* db = nullptr);
+/// The verify window's n tokens routed at once (see layer.cpp); bitwise per token what `moe_route` gives.
+bool moe_route_window(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t k, const MoEBuffers& b,
+                      const float* x, float* logits, int32_t* ids, float* weights, int n, void* stream, std::string& err);
 
 /// The finishing half: the shared expert and the combination.
 ///
