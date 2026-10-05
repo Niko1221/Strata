@@ -7,12 +7,12 @@ let apiKey = "";
 try { apiKey = sessionStorage.getItem("strata.monitor.key") || ""; } catch (e) { /* storage blocked */ }
 
 const S = {
-  samples: [], requests: [], offset: 0, everyS: 1, enabled: null, path: "",
+  samples: [], requests: [], offset: 0, started: false, everyS: 1, enabled: null, path: "",
   range: 900, live: true, frozenEnd: null, hover: null, error: null,
 };
 try {
   const r = localStorage.getItem("strata.history.range");
-  if (r !== null && !Number.isNaN(+r)) S.range = +r;
+  if (r !== null && [300, 900, 3600, 21600, 86400].includes(+r)) S.range = +r;
 } catch (e) { /* ignore */ }
 
 // ------------------------------------------------------------------ the charts
@@ -98,7 +98,9 @@ async function poll() {
   try {
     let d;
     do {
-      d = await api(`/metrics-log?offset=${S.offset}`);
+      // the first read: the last day only (the log runs all the time); then the new lines from the byte offset
+      d = await api(S.started ? `/metrics-log?offset=${S.offset}` : `/metrics-log?since=${Date.now() / 1000 - 86400}`);
+      S.started = true;
       if (d.reset) { S.samples = []; S.requests = []; }
       S.enabled = d.enabled;
       S.path = d.path || "";

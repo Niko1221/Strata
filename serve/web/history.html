@@ -82,7 +82,7 @@ th:first-child,td:first-child{text-align:left}
   <div class="controls">
     <div class="seg" id="ranges" role="group" aria-label="Time range">
       <button data-s="300">5 min</button><button data-s="900">15 min</button><button data-s="3600">1 h</button>
-      <button data-s="21600">6 h</button><button data-s="86400">24 h</button><button data-s="0">All</button>
+      <button data-s="21600">6 h</button><button data-s="86400">24 h</button>
     </div>
     <button id="live" aria-pressed="true" title="Follow new values as they arrive">Live</button>
     <a href="/#monitor"><button tabindex="-1">Monitor</button></a>
@@ -92,9 +92,9 @@ th:first-child,td:first-child{text-align:left}
 <main>
   <div class="status" role="status"><span id="dot" class="dot"></span><span id="state-text">Connecting…</span>
     <span id="count"></span><span id="path" class="path"></span></div>
-  <div id="off" class="notice" hidden>The metrics log is off, so there is nothing to show yet. Add
-    <code>"metrics_log": "logs/metrics.jsonl"</code> at the top level of <code>strata-&lt;model&gt;.json</code> (or start the
-    server with <code>--metrics-log</code>) and restart the server.</div>
+  <div id="off" class="notice" hidden>The metrics log is off, so there is nothing to show. It is on by default:
+    remove <code>"metrics_log": false</code> from <code>strata-&lt;model&gt;.json</code> (or start the server without
+    <code>--no-metrics-log</code>) and restart the server.</div>
   <div id="error" class="notice" hidden></div>
   <form id="auth" hidden><label for="api-key">API key</label>
     <input id="api-key" type="password" autocomplete="off" placeholder="The server's --api-key"><button>Connect</button></form>

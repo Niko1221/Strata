@@ -297,6 +297,45 @@ class MetricsLog(unittest.TestCase):
             self.assertGreater(done[0]["prompt_tokens"], 0)
             self.assertGreater(samples[-1]["context_used"], 0)
 
+    def test_on_by_default_and_where(self):
+        from serve.server import ROOT, metrics_log_path
+        self.assertEqual(metrics_log_path(None, {}), str(ROOT / "logs" / "metrics.jsonl"))   # whatever the cwd
+        self.assertIsNone(metrics_log_path(None, {"metrics_log": False}))
+        self.assertIsNone(metrics_log_path(None, {}, off=True))                    # --no-metrics-log
+        self.assertEqual(metrics_log_path(None, {"metrics_log": "x/m.jsonl"}), str(ROOT / "x" / "m.jsonl"))
+        self.assertEqual(metrics_log_path("y.jsonl", {"metrics_log": "x/m.jsonl"}), str(ROOT / "y.jsonl"))
+        absolute = str(Path(__file__).resolve().parent / "a.jsonl")
+        self.assertEqual(metrics_log_path(absolute, {}), absolute)
+
+    def test_since_finds_the_offset(self):
+        import io
+        from serve.server import metrics_log_offset_at
+        lines = [json.dumps({"type": "sample", "t": 100.0 + i, "pad": "x" * (i % 7)}).encode() + b"\n" for i in range(300)]
+        data = b"".join(lines)
+        starts = [0]
+        for x in lines:
+            starts.append(starts[-1] + len(x))
+        for since in (0, 99.5, 100, 100.5, 150, 250.2, 399, 399.5, 1000):
+            want = next((starts[i] for i in range(300) if 100.0 + i >= since), len(data))
+            self.assertEqual(metrics_log_offset_at(io.BytesIO(data), len(data), since), want, since)
+
+    def test_rotates_past_its_size(self):
+        import tempfile
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, "Hello.", max_context=4096), tok,
+                      ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "m.jsonl"
+            svc.start_metrics_log(str(log), every_s=0.2, max_mb=2000 / 2**20)    # about two samples a file
+            deadline = time.monotonic() + 8
+            while time.monotonic() < deadline and not (log.with_name("m.jsonl.1").exists() and log.exists()):
+                time.sleep(0.1)
+            time.sleep(0.5)
+            self.assertTrue(log.with_name("m.jsonl.1").exists())
+            first = json.loads(log.read_text(encoding="utf-8").splitlines()[0])
+            self.assertEqual(first["type"], "start")                       # each file says what the server is
+            self.assertLess(log.stat().st_size, 2000 + 4000)
+
     def test_history_endpoint_and_page(self):
         import tempfile
         tok = ByteTokenizer()
@@ -322,7 +361,9 @@ class MetricsLog(unittest.TestCase):
                 more = json.loads(get(f"/metrics-log?offset={first['offset']}"))
                 self.assertEqual([x["t"] for x in more["lines"]], [12.0])
                 self.assertEqual(json.loads(get(f"/metrics-log?offset={more['offset']}"))["lines"], [])
-                self.assertEqual([x["t"] for x in json.loads(get("/metrics-log?since=11"))["lines"]], [11.0, 12.0])
+                since = json.loads(get("/metrics-log?since=11"))
+                self.assertEqual([x["t"] for x in since["lines"]], [11.0, 12.0])
+                self.assertEqual(since["offset"], more["offset"])               # the page goes on from here
                 log.write_text('{"type": "sample", "t": 20.0}\n', encoding="utf-8")   # replaced: read again
                 again = json.loads(get(f"/metrics-log?offset={more['offset']}"))
                 self.assertTrue(again["reset"])
