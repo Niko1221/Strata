@@ -89,6 +89,19 @@ Its measurements on the B70, which Strata's own benches never matched:
       per-cell kernel is arithmetic-bound; if it widens K to float for q.k, a per-head int8 q with dp4a would cut
       the scores half (the values pass, ~60% of the kernel, unchanged). Check what the kernel does first.
 
+## 5. Another SYCL fork's experiments: maxious/Strata_SYCL
+
+https://github.com/maxious/Strata_SYCL, branch `b70-intel-arc-0139`: built on this port's `intel-arc-0.1.39`, with
+its own experiments on top (2026-10-05): "experiments 42-46" measured on an Arc Pro B60; int8 DPAS benches (a Q6_K
+MMVQ, a fused gate+up, a prompt-width sweep); the host-flag spin priced (an exhaustion counter, a doorbell probe).
+
+- [ ] Fetch the branch and diff it against `intel-arc-0.1.39`: what each experiment changes, what it measured, and
+      on which card (the B60 is a smaller Xe2 die than the B70).
+- [ ] Re-run the int8 DPAS benches here (B70, B65): the fused gate+up and the prompt-width sweep bear directly on 4
+      (the expert groups' row counts, int8 against fp16) - and on why this port's own int8 DPAS kernel lost.
+- [ ] The spin pricing against this port's doorbell and bounded spins (decode's host handshake); take what wins, with
+      credit, through benchy v1.
+
 ## Later
 
 - Fewer decode graph nodes (norm+rope, scores+top-k, gate+quantize fused): launch gaps are 15-20% of a round. See 4.
