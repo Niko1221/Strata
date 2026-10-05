@@ -53,6 +53,7 @@ public:
     void gather_one(int64_t token, float* out, void* stream) const;
     uint64_t bytes() const { return bytes_; }
     int type() const { return type_; }
+    int64_t n_vocab() const { return n_vocab_; }
 
 private:
     void* host_ = nullptr;

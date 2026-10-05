@@ -7,6 +7,7 @@
 #include <cstring>
 #include <deque>
 #include <exception>
+#include <limits>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
@@ -41,11 +42,16 @@ struct RowCache {
     uint64_t used = 0;
 
     void init(uint64_t rows, uint32_t row_bytes = ROW_BYTES) {
+        if (rows > (1ull << 32)) throw std::runtime_error("PLE row cache too large");
         sets = rows / WAYS;
         rb = row_bytes;
-        keys.assign(sets * WAYS, EMPTY);
-        data.assign(sets * WAYS * rb, 0);
-        next.assign(sets, 0);
+        const uint64_t max = (std::numeric_limits<uint64_t>::max)();
+        if (sets > max / (uint64_t) WAYS || sets * (uint64_t) WAYS > max / (uint64_t) rb)
+            throw std::runtime_error("PLE row cache size overflows");
+        const uint64_t n_keys = sets * (uint64_t) WAYS, n_data = n_keys * (uint64_t) rb;
+        keys.assign((size_t) n_keys, EMPTY);
+        data.assign((size_t) n_data, 0);
+        next.assign((size_t) sets, 0);
         used = 0;
     }
     static uint64_t mix(uint32_t r) {
@@ -188,9 +194,14 @@ struct PleReader::Impl {
         rng ^= rng << 13;
         rng ^= rng >> 7;
         rng ^= rng << 17;
-        const uint64_t first = table_offset / PAGE, end = (table_offset + n_rows * (uint64_t) row_bytes) / PAGE;
+        const uint64_t max = (std::numeric_limits<uint64_t>::max)();
+        if (row_bytes == 0 || n_rows > max / (uint64_t) row_bytes) return;
+        const uint64_t span = n_rows * (uint64_t) row_bytes;
+        if (table_offset > max - span) return;
+        const uint64_t end = table_offset + span;
+        const uint64_t first = table_offset / PAGE, last = end / PAGE;
         Job j;
-        j.offset = (first + (end > first ? rng % (end - first) : 0)) * PAGE;
+        j.offset = (first + (last > first ? rng % (last - first) : 0)) * PAGE;
         j.length = PAGE;
         j.keepalive = true;
         queue.push_back(std::move(j));
@@ -339,7 +350,14 @@ bool PleReader::open(const std::string& path, uint64_t table_offset, uint64_t n_
     if (row_bytes == 0 || row_bytes > PAGE) { err = "PleReader: row_bytes must be 1..4096"; return false; }
     if (!impl_->file.open(path, err)) return false;
     impl_->row_bytes = row_bytes;
-    if (table_offset + n_rows * (uint64_t) row_bytes > impl_->file.size()) {
+    const uint64_t max = (std::numeric_limits<uint64_t>::max)();
+    if (n_rows > max / (uint64_t) row_bytes) {
+        err = "PleReader: the table size overflows";
+        close();
+        return false;
+    }
+    const uint64_t span = n_rows * (uint64_t) row_bytes;
+    if (table_offset > max - span || table_offset + span > impl_->file.size()) {
         err = "PleReader: the table extends past the end of " + path;
         close();
         return false;
@@ -352,7 +370,13 @@ bool PleReader::open(const std::string& path, uint64_t table_offset, uint64_t n_
     impl_->inflight.assign(max_inflight, Job{});
     impl_->free_slots.clear();
     for (uint32_t s = max_inflight; s-- > 0;) impl_->free_slots.push_back(s);
-    impl_->cache.init(cache_rows, row_bytes);
+    try {
+        impl_->cache.init(cache_rows, row_bytes);
+    } catch (const std::exception& e) {
+        err = std::string("PleReader: ") + e.what();
+        close();
+        return false;
+    }
     impl_->error.clear();
     impl_->keep_us = 0;
     impl_->last_issue_us = impl_->last_read_us = 0;

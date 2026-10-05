@@ -50,6 +50,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 import textwrap
 import time
 import urllib.error
@@ -1151,6 +1152,34 @@ def drop_archive(z: Path) -> None:
     z.with_name(z.name + ".done").unlink(missing_ok=True)
 
 
+def safe_extract(z: Path, tmp: Path, skip_substr: str | None = None) -> None:
+    """Unpack a downloaded zip without path traversal or symlinks. Absolute paths (POSIX and Windows
+    drive-absolute), `..`, and link entries are refused. `skip_substr` drops members (llama.cpp's unused
+    web UI). Executable bits from the archive are preserved so engine binaries keep +x."""
+    with zipfile.ZipFile(z) as f:
+        for info in f.infolist():
+            name = info.filename
+            if skip_substr and skip_substr in name:
+                continue
+            if name.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", name) or ".." in Path(name).parts:
+                fail(f"refusing archive entry {name!r} in {z.name}", "download it again (the file is not used)")
+            if (info.external_attr >> 16) & 0o170000 == 0o120000:
+                fail(f"refusing symlink {name!r} in {z.name}", "download it again (the file is not used)")
+            if info.is_dir():
+                (tmp / name).mkdir(parents=True, exist_ok=True)
+                continue
+            target = tmp / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with f.open(info) as src, open(target, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            mode = (info.external_attr >> 16) & 0o777
+            if mode & 0o111:
+                try:
+                    os.chmod(target, 0o755 if mode & 0o100 else mode)
+                except OSError:
+                    pass
+
+
 def download(url, dst: Path, what=None):
     """Resumable HTTP(S) download with a progress line; `file://` and plain paths are copied (tests, mirrors).
     A finished file gets a <name>.done mark, so a later run skips it without asking the server."""
@@ -1395,10 +1424,7 @@ def get_llama_cpp():
     download(LLAMA_CPP_ZIP, z, "llama.cpp source")
     tmp = ROOT / "third_party" / "_unpack"
     shutil.rmtree(tmp, ignore_errors=True)
-    with zipfile.ZipFile(z) as f:
-        # llama.cpp's own web UI (tools/ui) is not used, and its deep paths passed Windows' 260-character limit in a
-        # folder like Downloads\Strata-main\Strata-main (#206)
-        f.extractall(tmp, [m for m in f.namelist() if "/tools/ui/" not in m])
+    safe_extract(z, tmp, skip_substr="/tools/ui/")
     top = next(tmp.iterdir())
     shutil.rmtree(llama, ignore_errors=True)
     # PR #63: on Windows a rename can fail with PermissionError while an antivirus scanner still holds a file of the
@@ -2017,8 +2043,7 @@ def get_prebuilt_hip(url_base, gpu, updating=False) -> Path | None:
     download(base + WIN_HIP_ASSET, z, "Strata AMD engine")
     tmp = eng / "_unpack"
     shutil.rmtree(tmp, ignore_errors=True)
-    with zipfile.ZipFile(z) as f:
-        f.extractall(tmp)
+    safe_extract(z, tmp)
     try:
         meta = json.loads((tmp / "BUILD.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -2357,8 +2382,7 @@ def get_prebuilt(url_base, gpu, vision, updating=False, toolkit=13) -> Path | No
     tmp = eng / "_unpack"
     shutil.rmtree(tmp, ignore_errors=True)
     try:
-        with zipfile.ZipFile(z) as f:
-            f.extractall(tmp)
+        safe_extract(z, tmp)
     except zipfile.BadZipFile:                         # not a zip, or a damaged one: a kept .done mark would make
         drop_archive(z)                                # every later run fail on it instead of downloading it again
         raise
@@ -2557,7 +2581,7 @@ def install_build_tools(gpu, yes):
             if osr.get("ID") != "ubuntu" or ver not in ("2204", "2404"):
                 fail("the CUDA Toolkit can be installed automatically on Ubuntu 22.04 / 24.04 only",
                      "install it from https://developer.nvidia.com/cuda-downloads and run it again")
-            deb = Path("/tmp/cuda-keyring.deb")
+            deb = Path(tempfile.mkdtemp(prefix="strata-cuda-")) / "cuda-keyring.deb"
             download(f"https://developer.download.nvidia.com/compute/cuda/repos/ubuntu{ver}/x86_64/cuda-keyring_1.1-1_all.deb",
                      deb, "CUDA repository key")
             run(["sudo", "dpkg", "-i", str(deb)])
@@ -2586,7 +2610,7 @@ def cmake_build(src, bdir, target, defs, vcvars, bat_name):
             fail("the Visual Studio C++ build tools were not found",
                  "install them (Visual Studio 2019 or 2022, workload 'Desktop development with C++') and run setup again")
         bat = ROOT / bat_name
-        q = lambda c: " ".join(f'"{x}"' if " " in str(x) else str(x) for x in c)  # noqa: E731
+        q = subprocess.list2cmdline
         bat.write_text(f'@echo off\r\ncall "{vcvars}" >nul\r\n{q(conf)} || exit /b 1\r\n{q(build)} && exit /b 0\r\n'
                        f'echo   (the build stopped - trying it once more)\r\n{q(build)} || exit /b 1\r\n',
                        encoding="utf-8")

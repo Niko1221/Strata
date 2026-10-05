@@ -286,7 +286,8 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
     // then fit inside the file at its own offset; alone in its shard (the original's shard 2) it fills it exactly.
     // The size arithmetic is checked before it is used (#865): a header that claims enough rows to wrap the 64-bit
     // product, or a data section that starts past the end of the file, must be refused, not compared after wrapping.
-    if (impl_->n_rows > std::numeric_limits<uint64_t>::max() / impl_->rb ||
+    if (impl_->rb == 0 ||
+        impl_->n_rows > std::numeric_limits<uint64_t>::max() / impl_->rb ||
         impl_->file->data_start() > impl_->file->file_size()) {
         err = "PLE table size overflow or invalid data offset in " + gguf_path;
         close();
