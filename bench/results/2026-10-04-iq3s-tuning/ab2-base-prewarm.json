@@ -1,18 +1,18 @@
 [
   {
-    "label": "ring48-prewarm",
+    "label": "ab2-base-prewarm",
     "kind": "warmup",
     "trial": 0,
-    "wall_s": 0.6899457690306008,
+    "wall_s": 0.6078162479680032,
     "metrics": {
       "prompt_tokens": 15.0,
       "reused": 0.0,
       "fresh": 15.0,
-      "prefill_ms": 488.0,
-      "prefill_tps": 30.8,
+      "prefill_ms": 428.0,
+      "prefill_tps": 35.1,
       "generated": 2.0,
-      "decode_ms": 193.0,
-      "decode_tps": 10.3
+      "decode_ms": 172.0,
+      "decode_tps": 11.6
     },
     "usage": {
       "prompt_tokens": 15,
@@ -29,19 +29,19 @@
     }
   },
   {
-    "label": "ring48-prewarm",
+    "label": "ab2-base-prewarm",
     "kind": "fresh",
     "trial": 90,
-    "wall_s": 51.08192043798044,
+    "wall_s": 59.819557845941745,
     "metrics": {
       "prompt_tokens": 8831.0,
       "reused": 0.0,
       "fresh": 8831.0,
-      "prefill_ms": 46428.0,
-      "prefill_tps": 190.2,
+      "prefill_ms": 55246.0,
+      "prefill_tps": 159.8,
       "generated": 128.0,
-      "decode_ms": 4636.0,
-      "decode_tps": 27.6
+      "decode_ms": 4556.0,
+      "decode_tps": 28.1
     },
     "usage": {
       "prompt_tokens": 8831,
@@ -58,19 +58,19 @@
     }
   },
   {
-    "label": "ring48-prewarm",
+    "label": "ab2-base-prewarm",
     "kind": "followup",
     "trial": 90,
-    "wall_s": 7.201901645050384,
+    "wall_s": 7.048581889015622,
     "metrics": {
       "prompt_tokens": 9072.0,
       "reused": 8958.0,
       "fresh": 114.0,
-      "prefill_ms": 2419.0,
-      "prefill_tps": 47.1,
+      "prefill_ms": 2321.0,
+      "prefill_tps": 49.1,
       "generated": 128.0,
-      "decode_ms": 4764.0,
-      "decode_tps": 26.9
+      "decode_ms": 4712.0,
+      "decode_tps": 27.2
     },
     "usage": {
       "prompt_tokens": 9072,
@@ -87,19 +87,19 @@
     }
   },
   {
-    "label": "ring48-prewarm",
+    "label": "ab2-base-prewarm",
     "kind": "fresh",
     "trial": 91,
-    "wall_s": 22.39333064504899,
+    "wall_s": 28.95060881297104,
     "metrics": {
       "prompt_tokens": 4211.0,
       "reused": 0.0,
       "fresh": 4211.0,
-      "prefill_ms": 17994.0,
-      "prefill_tps": 234.0,
+      "prefill_ms": 24526.0,
+      "prefill_tps": 171.7,
       "generated": 128.0,
-      "decode_ms": 4389.0,
-      "decode_tps": 29.2
+      "decode_ms": 4415.0,
+      "decode_tps": 29.0
     },
     "usage": {
       "prompt_tokens": 4211,
@@ -112,52 +112,52 @@
     "finish_reason": "length",
     "message": {
       "role": "assistant",
-      "content": "This source code defines a collection of 140 exported JavaScript functions, named `rule0` through `rule139`, each implementing a specific conditional arithmetic transformation on a single numeric input `x`. Every function follows an identical logical pattern: it checks if the input `x` is strictly equal to the integer `n` corresponding to the function's name (e.g., `rule91` checks if `x === 91`). If the condition is true, the function returns `x + (n + 1)`; otherwise, it returns `x - n`. Consequently, for any given function `ruleN"
+      "content": "This source code defines a collection of 140 exported JavaScript functions, named `rule0` through `rule139`, each implementing a specific conditional arithmetic transformation on a numeric input `x`. Every function follows an identical logical pattern: it checks if the input `x` is strictly equal to the integer `n` corresponding to the function's name (e.g., `rule91` checks if `x === 91`). If the condition is true, the function returns `x + (n + 1)`; otherwise, it returns `x - n`. Consequently, for any given function `ruleN`,"
     }
   },
   {
-    "label": "ring48-prewarm",
+    "label": "ab2-base-prewarm",
     "kind": "followup",
     "trial": 91,
-    "wall_s": 6.688535669003613,
+    "wall_s": 6.734595821937546,
     "metrics": {
       "prompt_tokens": 4452.0,
-      "reused": 4339.0,
-      "fresh": 113.0,
-      "prefill_ms": 2090.0,
-      "prefill_tps": 54.1,
+      "reused": 4338.0,
+      "fresh": 114.0,
+      "prefill_ms": 2248.0,
+      "prefill_tps": 50.7,
       "generated": 128.0,
-      "decode_ms": 4588.0,
-      "decode_tps": 27.9
+      "decode_ms": 4476.0,
+      "decode_tps": 28.6
     },
     "usage": {
       "prompt_tokens": 4452,
       "completion_tokens": 128,
       "total_tokens": 4580,
       "prompt_tokens_details": {
-        "cached_tokens": 4339
+        "cached_tokens": 4338
       }
     },
     "finish_reason": "length",
     "message": {
       "role": "assistant",
-      "content": "The most relevant boundary case is the **exact integer match** (e.g., `rule91(91)`), which triggers the unique \"addition\" branch (`x + n + 1`) rather than the default \"subtraction\" branch (`x - n`); this is critical because the behavior flips discontinuously at this single point, and off-by-one errors in the condition (`===`) or the arithmetic constants (`n+1` vs `n`) would silently corrupt data for that specific input. The smallest useful regression test is a **two-case assertion per function**: one verifying the boundary match (e.g., `"
+      "content": "The most relevant boundary case is the **exact integer match** (e.g., `rule91(91)`), which triggers the unique \"addition\" branch (`x + n + 1`) rather than the default \"subtraction\" branch (`x - n`); this is critical because the behavior flips discontinuously at this single point, and off-by-one errors in the constant `n` or the offset `+1` would silently corrupt data for all other inputs. The smallest useful regression test is a **two-case assertion per function**: one verifying the identity-like behavior for a non-matching input (e.g.,"
     }
   },
   {
-    "label": "ring48-prewarm",
+    "label": "ab2-base-prewarm",
     "kind": "fresh",
     "trial": 92,
-    "wall_s": 40.84192094800528,
+    "wall_s": 52.884901233017445,
     "metrics": {
       "prompt_tokens": 8831.0,
       "reused": 0.0,
       "fresh": 8831.0,
-      "prefill_ms": 36413.0,
-      "prefill_tps": 242.5,
+      "prefill_ms": 48384.0,
+      "prefill_tps": 182.5,
       "generated": 128.0,
-      "decode_ms": 4410.0,
-      "decode_tps": 29.0
+      "decode_ms": 4483.0,
+      "decode_tps": 28.6
     },
     "usage": {
       "prompt_tokens": 8831,
@@ -174,19 +174,19 @@
     }
   },
   {
-    "label": "ring48-prewarm",
+    "label": "ab2-base-prewarm",
     "kind": "followup",
     "trial": 92,
-    "wall_s": 7.228730765986256,
+    "wall_s": 6.817312172031961,
     "metrics": {
       "prompt_tokens": 9072.0,
       "reused": 8958.0,
       "fresh": 114.0,
-      "prefill_ms": 2161.0,
-      "prefill_tps": 52.7,
+      "prefill_ms": 2049.0,
+      "prefill_tps": 55.6,
       "generated": 128.0,
-      "decode_ms": 5051.0,
-      "decode_tps": 25.3
+      "decode_ms": 4753.0,
+      "decode_tps": 26.9
     },
     "usage": {
       "prompt_tokens": 9072,
@@ -199,7 +199,7 @@
     "finish_reason": "length",
     "message": {
       "role": "assistant",
-      "content": "The most relevant boundary case is the **exact integer match** for the specific rule index, particularly at the lower bound of `rule0` where the \"true\" branch returns `1` (since `0 + 1`) and the \"false\" branch returns `0` (since `0 - 0`), creating a unique identity-like behavior for zero that differs from all other rules where the false branch subtracts a non-zero value. A critical regression test must verify that `rule0(0)` returns `1` while `rule0(1)` returns `1` (via `1 - 0`), ensuring"
+      "content": "The most relevant boundary case is the **exact integer match** (e.g., `rule92(92)`), which triggers the unique \"addition\" branch (`x + 93`), whereas any other integer input triggers the \"subtraction\" branch (`x - 92`). This highlights the function's extreme sensitivity to precise integer equality; a single off-by-one error in the caller (e.g., passing `91` or `93` to `rule92`) results in a completely different arithmetic operation, potentially causing significant logical errors in downstream calculations.\n\nThe smallest useful regression test should verify both"
     }
   }
 ]

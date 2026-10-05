@@ -60,18 +60,22 @@ ENV STRATA_VRAM_BUDGET_MIB=10240 \
     STRATA_VRAM_SLACK_MIB=256 \
     HIP_VISIBLE_DEVICES=0 \
     HSA_ENABLE_SDMA=1 \
-    STRATA_MODEL=IQ3_XXS \
+    STRATA_MODEL=IQ3_S \
     STRATA_HF_CACHE=/hf-cache \
     HF_HUB_CACHE=/hf-cache \
     STRATA_WORK=/work \
     STRATA_HOST=0.0.0.0 \
     STRATA_PORT=8080 \
     STRATA_GGUF_PY=/opt/strata/gguf-py \
-    STRATA_EXPERT_CACHE=800 \
+    STRATA_EXPERT_CACHE=auto \
     STRATA_PREFILL=2048 \
     STRATA_POOL_WORKERS=0 \
-    STRATA_VRAM_LATER_MIB=768 \
+    STRATA_VRAM_LATER_MIB=700 \
+    STRATA_PREFILL_RING=48 \
     STRATA_VRAM_RUNTIME_RESERVE_MIB=1024
+# The IQ3_S tuning above is the one measured on the gfx1101 host
+# (bench/results/2026-10-04-iq3s-tuning/); ./run.sh passes its own per-quant values explicitly,
+# so these ENV defaults are what a container started without them gets.
 # Not a HEALTHCHECK on purpose: the first start maps tens of GB and takes minutes, which would flap
 # red for no reason.  ./run.sh --check asks /v1/models instead, once the engine says it is up.
 EXPOSE 8080

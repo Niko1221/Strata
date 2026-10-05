@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 # Run the Strata server container on this machine's AMD GPU.
 #
-#   ./run.sh                      IQ3_XXS, 10 GiB VRAM budget, http://127.0.0.1:9931
-#   ./run.sh --model IQ3_S        the best-quality quant this card's 10 GiB slice still takes
+#   ./run.sh                      IQ3_S, 10 GiB VRAM budget, http://127.0.0.1:9931
+#   ./run.sh --model IQ3_XXS      the previous default quant
 #   ./run.sh --model IQ2_XS       a smaller quant (fetched into your HF cache on first start)
 #   ./run.sh --detach             background;  ./run.sh --check  asks it afterwards whether it is up
 #   ./run.sh --offline            never download: fail with the command to run instead
 #   ./run.sh --dry-run            print the docker command and the reasoning, change nothing
 #
-# The expert-cache budget is tuned per quant: IQ3_S is the tightest fit (its experts.bin is ~50 GB
-# against IQ3_XXS's ~43 GB, so every slot holds ~17% more bytes), and the budget below scales it
-# down (680 largest-blob slots instead of 800) so each quant spends the same VRAM: the 10 GiB
-# ceiling is NOT raised, and the engine still caps the cache to the free room under the guard.
+# The IQ3_S tuning below is measured on this machine's card (bench/results/2026-10-04-iq3s-tuning/):
+# `auto` expert-cache sizing under the guard, the 700 MiB later-allowance floor, and a 48-slot prefill
+# ring keep the prompt path on its 2,048-token chunk instead of halving to 1,024: coding fresh prefill
+# 173 -> 233 tok/s, TTFT at 4,096 tokens 21.1 -> 16.3 s, decode 30.5 -> 30.1 tok/s (within noise), and
+# Strata's own VRAM share 8,656 -> 8,723 MiB - all under the same 10 GiB ceiling, which is NOT raised
+# (the 12 272 MiB card keeps its ~2 GiB for the desktop and the GUI).
 #
 # Models are read from, and downloaded into, a Hugging Face cache in ~/Development/models (mounted
 # at /hf-cache) - the big filesystem, not the root disk that holds ~/.cache/huggingface.  One download
@@ -29,7 +31,6 @@ ARCH=""                                        # empty: whatever this machine ac
 MODEL="${STRATA_MODEL:-IQ3_S}"                 # the shipped default quant
 IMAGE="${STRATA_IMAGE:-}"
 NAME=""
-export STRATA_VRAM_LATER_MIB="${STRATA_VRAM_LATER_MIB:-768}"
 BUDGET="${STRATA_VRAM_BUDGET_MIB:-10240}"      # this card has 12 272 MiB; the contract is 10 GiB
 # The model cache lives with the models, on the big filesystem: ~$HOME/Development (a symlink to
 # /mnt/storage/Development here) - NOT ~/.cache/huggingface, whose filesystem has ~90 GB free and
@@ -77,10 +78,9 @@ Options:
       --reasoning-effort L reasoning level a request gets when it names none: off, minimal, low,
                            medium, high (default high; the request's own value always wins)
       --prefill N          prefill chunk (default: 2048; engine reduces it if borrowing cannot fit)
-      --expert-cache N     expert slot budget (default: 800 on IQ3_XXS, 680 on the other quants;
-                           native slots are sized per pair, and IQ3_S's blobs are ~17% larger, so
-                           680 on IQ3_S holds what 800 holds on IQ3_XXS - both stay inside the
-                           10 GiB ceiling)
+      --expert-cache N|auto  expert slot budget (default: auto on IQ3_S - the engine sizes it from
+                           the room the guard leaves and logs the number; 800 on IQ3_XXS, 680 on the
+                           other quants, as pinned before the IQ3_S measurements)
       --pool-workers N     CPU expert workers (default: 0, physical cores minus the host's)
   -e, --env KEY=VALUE      pass extra environment through (repeatable)
       --image NAME:TAG     override the image (default strata-hip:<arch>-latest)
@@ -122,18 +122,28 @@ done
   || die "budget must be 1281..10240 MiB; 10 GiB is the hard ceiling"
 [ "$MAX_CONTEXT" = 131072 ] || die "this deployment keeps exactly 131072 tokens (128K context)"
 # IQ3_S stores its experts ~17% wider than IQ3_XXS (arena 50.3 GB vs 42.9 GB), so the same VRAM
-# holds fewer of them: 680 slots on IQ3_S spend what 800 IQ3_XXS slots spent.  This is the tuned
-# budget per quant - not a bigger VRAM slice, which stays capped at $BUDGET MiB.
+# holds fewer of them.  For IQ3_S the tuned values are MEASURED on the gfx1101 host
+# (bench/results/2026-10-04-iq3s-tuning/): the engine's own `auto` cache sizing plus the 700 MiB
+# later-allowance floor and a 48-slot prefill ring let the prompt path keep its 2,048-token chunk
+# instead of halving to 1,024 - coding prefill 173 -> 233 tok/s, TTFT at 4K 21.1 -> 16.3 s,
+# decode and the 10 GiB contract unchanged.  The other quants keep the 0.1.39 pins.
 case "$MODEL" in
-  IQ3_XXS) EXPERT_CACHE_DEFAULT=800 ;;   # the shipped default quant
-  *)       EXPERT_CACHE_DEFAULT=680 ;;   # the other quants, IQ3_S included
+  IQ3_XXS) EXPERT_CACHE_DEFAULT=800; LATER_DEFAULT=768; RING_DEFAULT="" ;;   # the shipped 0.1.39 pins
+  IQ3_S)   EXPERT_CACHE_DEFAULT=auto; LATER_DEFAULT=700; RING_DEFAULT=48 ;;  # measured on gfx1101
+  *)       EXPERT_CACHE_DEFAULT=680; LATER_DEFAULT=768; RING_DEFAULT="" ;;
 esac
+export STRATA_VRAM_LATER_MIB="${STRATA_VRAM_LATER_MIB:-$LATER_DEFAULT}"
 # A slot budget above the tuned value buys nothing under the same 10 GiB ceiling: the engine would
 # only cut it back to the free room.  Say so rather than let an explicit number look like more VRAM.
 wanted="${STRATA_EXPERT_CACHE:-${EXPLICIT_CACHE:-$EXPERT_CACHE_DEFAULT}}"
-if [ "$wanted" != auto ] && [[ "$wanted" =~ ^[0-9]+$ ]] && [ "$wanted" -gt "$EXPERT_CACHE_DEFAULT" ]; then
-  warn "expert cache budget $wanted exceeds the tuned $EXPERT_CACHE_DEFAULT for $MODEL; VRAM stays
+if [ "$wanted" != auto ] && [[ "$wanted" =~ ^[0-9]+$ ]]; then
+  if [ "$EXPERT_CACHE_DEFAULT" = auto ]; then
+    warn "expert cache budget $wanted overrides the tuned auto sizing for $MODEL; the ceiling stays
+      at $BUDGET MiB - the engine admits only what fits under the guard and logs the number"
+  elif [ "$wanted" -gt "$EXPERT_CACHE_DEFAULT" ]; then
+    warn "expert cache budget $wanted exceeds the tuned $EXPERT_CACHE_DEFAULT for $MODEL; VRAM stays
       capped at $BUDGET MiB, so the engine will cut it back to what fits - raise quality by no other means"
+  fi
 fi
 
 PY="${PYTHON:-python3}"
@@ -323,6 +333,9 @@ ARGS=(docker run --rm --name "$NAME$CHECK_ONLY_SUFFIX"
 [ -n "${HF_REVISION:-}" ]     && ARGS+=(-e "HF_REVISION=$HF_REVISION")
 [ -n "${STRATA_MAX_TOKENS:-}" ]  && ARGS+=(-e "STRATA_MAX_TOKENS=$STRATA_MAX_TOKENS")
 [ -n "${STRATA_REASONING_EFFORT:-}" ] && ARGS+=(-e "STRATA_REASONING_EFFORT=$STRATA_REASONING_EFFORT")
+# the tuned prefill ring for this quant (measured: bench/results/2026-10-04-iq3s-tuning); set before
+# the forwarding loop and EXTRA_ENV below so an explicit $STRATA_PREFILL_RING or -e still wins
+[ -n "$RING_DEFAULT" ] && ARGS+=(-e "STRATA_PREFILL_RING=$RING_DEFAULT")
 for tuning_key in STRATA_PREFILL_RING STRATA_STAGER_RING STRATA_STAGER_THREADS \
                   STRATA_IO_THREADS STRATA_HIPBLASLT_TUNING STRATA_PREFILL_TIMING \
                   STRATA_PREFILL_MEMORY_REPORT STRATA_PREFILL_LEND_PCT; do

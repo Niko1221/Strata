@@ -1,0 +1,321 @@
+[
+  {
+    "label": "w12",
+    "kind": "warmup",
+    "trial": 0,
+    "wall_s": 0.5749820930650458,
+    "metrics": {
+      "prompt_tokens": 15.0,
+      "reused": 0.0,
+      "fresh": 15.0,
+      "prefill_ms": 413.0,
+      "prefill_tps": 36.3,
+      "generated": 2.0,
+      "decode_ms": 154.0,
+      "decode_tps": 13.0
+    },
+    "usage": {
+      "prompt_tokens": 15,
+      "completion_tokens": 2,
+      "total_tokens": 17,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "stop",
+    "message": {
+      "role": "assistant",
+      "content": "READY"
+    }
+  },
+  {
+    "label": "w12",
+    "kind": "fresh",
+    "trial": 1,
+    "wall_s": 29.52962456899695,
+    "metrics": {
+      "prompt_tokens": 4210.0,
+      "reused": 0.0,
+      "fresh": 4210.0,
+      "prefill_ms": 25008.0,
+      "prefill_tps": 168.3,
+      "generated": 128.0,
+      "decode_ms": 4511.0,
+      "decode_tps": 28.4
+    },
+    "usage": {
+      "prompt_tokens": 4210,
+      "completion_tokens": 128,
+      "total_tokens": 4338,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "This source code defines a collection of 140 exported JavaScript functions, named `rule0` through `rule139`, each implementing a specific conditional arithmetic transformation on a single numeric input `x`. Every function follows an identical structural pattern: it checks if the input `x` is strictly equal to the integer `n` corresponding to the function's name (e.g., `rule5` checks for `x === 5`). If the condition is true, the function returns `x + (n + 1)`; otherwise, it returns `x - n`. Consequently, each function acts as a specialized handler that increments"
+    }
+  },
+  {
+    "label": "w12",
+    "kind": "followup",
+    "trial": 1,
+    "wall_s": 6.444816053030081,
+    "metrics": {
+      "prompt_tokens": 4451.0,
+      "reused": 4337.0,
+      "fresh": 114.0,
+      "prefill_ms": 2018.0,
+      "prefill_tps": 56.5,
+      "generated": 128.0,
+      "decode_ms": 4415.0,
+      "decode_tps": 29.0
+    },
+    "usage": {
+      "prompt_tokens": 4451,
+      "completion_tokens": 128,
+      "total_tokens": 4579,
+      "prompt_tokens_details": {
+        "cached_tokens": 4337
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The most relevant boundary case is the **exact integer match** (e.g., `rule5(5)`), which triggers the unique \"increment\" branch (`x + n + 1`) rather than the default \"decrement\" branch (`x - n`). This is critical because the function's behavior changes discontinuously at this single point; for `rule5`, `rule5(5)` returns `11`, while `rule5(4)` returns `-1` and `rule5(6)` returns `1`. A regression test must verify this specific transition to ensure the conditional logic hasn't been inverted or the arithmetic constants"
+    }
+  },
+  {
+    "label": "w12",
+    "kind": "fresh",
+    "trial": 2,
+    "wall_s": 53.4682886430528,
+    "metrics": {
+      "prompt_tokens": 8830.0,
+      "reused": 0.0,
+      "fresh": 8830.0,
+      "prefill_ms": 49315.0,
+      "prefill_tps": 179.1,
+      "generated": 128.0,
+      "decode_ms": 4135.0,
+      "decode_tps": 31.0
+    },
+    "usage": {
+      "prompt_tokens": 8830,
+      "completion_tokens": 128,
+      "total_tokens": 8958,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "This source code defines a collection of 280 exported JavaScript functions, named `rule0` through `rule279`, each implementing a specific conditional arithmetic transformation on a single numeric input `x`. Every function follows an identical logical structure: it checks if the input `x` is strictly equal to the integer value embedded in the function's name (e.g., `rule5` checks if `x === 5`). If the condition is true, the function returns `x` incremented by one more than the check value (e.g., `x + 6` for `rule5`); if the condition is false"
+    }
+  },
+  {
+    "label": "w12",
+    "kind": "followup",
+    "trial": 2,
+    "wall_s": 7.071494463016279,
+    "metrics": {
+      "prompt_tokens": 9071.0,
+      "reused": 8957.0,
+      "fresh": 114.0,
+      "prefill_ms": 2265.0,
+      "prefill_tps": 50.3,
+      "generated": 128.0,
+      "decode_ms": 4786.0,
+      "decode_tps": 26.7
+    },
+    "usage": {
+      "prompt_tokens": 9071,
+      "completion_tokens": 128,
+      "total_tokens": 9199,
+      "prompt_tokens_details": {
+        "cached_tokens": 8957
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The most relevant boundary case is **integer equality at the specific threshold defined by the function name**, particularly when `x` equals the rule index (e.g., `rule5(5)`). This is the only path that triggers the \"increment\" branch (`x + (index + 1)`), whereas all other inputs trigger the \"decrement\" branch (`x - index`). A critical edge case within this is **zero**: `rule0(0)` returns `1` (since `0 === 0` is true, so `0 + 1`), while `rule0(-1)` returns `-1` ("
+    }
+  },
+  {
+    "label": "w12",
+    "kind": "fresh",
+    "trial": 3,
+    "wall_s": 28.919609783100896,
+    "metrics": {
+      "prompt_tokens": 4210.0,
+      "reused": 0.0,
+      "fresh": 4210.0,
+      "prefill_ms": 24534.0,
+      "prefill_tps": 171.6,
+      "generated": 128.0,
+      "decode_ms": 4374.0,
+      "decode_tps": 29.3
+    },
+    "usage": {
+      "prompt_tokens": 4210,
+      "completion_tokens": 128,
+      "total_tokens": 4338,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "This source code defines a collection of 140 exported JavaScript functions, named `rule0` through `rule139`, each implementing a specific conditional arithmetic transformation on a single numeric input `x`. Every function follows an identical structural pattern: it checks if the input `x` is strictly equal to the integer `n` corresponding to the function's name (e.g., `rule5` checks if `x === 5`). If the condition is true, the function returns `x + (n + 1)`; otherwise, it returns `x - n`. Consequently, for any given function `ruleN`, the"
+    }
+  },
+  {
+    "label": "w12",
+    "kind": "followup",
+    "trial": 3,
+    "wall_s": 7.044689174974337,
+    "metrics": {
+      "prompt_tokens": 4451.0,
+      "reused": 4338.0,
+      "fresh": 113.0,
+      "prefill_ms": 2152.0,
+      "prefill_tps": 52.5,
+      "generated": 128.0,
+      "decode_ms": 4880.0,
+      "decode_tps": 26.2
+    },
+    "usage": {
+      "prompt_tokens": 4451,
+      "completion_tokens": 128,
+      "total_tokens": 4579,
+      "prompt_tokens_details": {
+        "cached_tokens": 4338
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The most relevant boundary case is the **exact integer match** (e.g., calling `rule5(5)`), which triggers the unique \"addition\" branch (`x + n + 1`) rather than the default \"subtraction\" branch (`x - n`); this is critical because the behavior flips discontinuously at this single point, and off-by-one errors in the condition (`===`) or the arithmetic constants (`n+1` vs `n`) are easily missed. The smallest useful regression test is a **single assertion per rule** verifying the boundary: `assert(ruleN(N) === 2*N + 1"
+    }
+  },
+  {
+    "label": "w12",
+    "kind": "fresh",
+    "trial": 4,
+    "wall_s": 53.37976902804803,
+    "metrics": {
+      "prompt_tokens": 8830.0,
+      "reused": 0.0,
+      "fresh": 8830.0,
+      "prefill_ms": 49150.0,
+      "prefill_tps": 179.7,
+      "generated": 128.0,
+      "decode_ms": 4212.0,
+      "decode_tps": 30.4
+    },
+    "usage": {
+      "prompt_tokens": 8830,
+      "completion_tokens": 128,
+      "total_tokens": 8958,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "This source code defines a collection of 280 exported JavaScript functions, named `rule0` through `rule279`, each implementing a specific conditional arithmetic transformation on a numeric input `x`. Every function follows an identical structural pattern: it checks if the input `x` is strictly equal to the integer corresponding to the function's name (e.g., `rule5` checks if `x === 5`). If the condition is true, the function returns `x` incremented by one more than the rule index (e.g., `rule5` returns `x + 6`); if the condition is false, it"
+    }
+  },
+  {
+    "label": "w12",
+    "kind": "followup",
+    "trial": 4,
+    "wall_s": 6.7151682319818065,
+    "metrics": {
+      "prompt_tokens": 9071.0,
+      "reused": 8957.0,
+      "fresh": 114.0,
+      "prefill_ms": 2163.0,
+      "prefill_tps": 52.7,
+      "generated": 128.0,
+      "decode_ms": 4533.0,
+      "decode_tps": 28.2
+    },
+    "usage": {
+      "prompt_tokens": 9071,
+      "completion_tokens": 128,
+      "total_tokens": 9199,
+      "prompt_tokens_details": {
+        "cached_tokens": 8957
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The most relevant boundary case is the **strict integer equality check** (`x === N`), which creates a discontinuity in behavior: for any integer `N`, `ruleN(N)` returns `N + N + 1` (a large positive jump), while `ruleN(N + 1)` or `ruleN(N - 1)` returns `N + 1 - N` or `N - 1 - N` (small negative or zero results). This means the function is **not continuous** and behaves very differently at the exact integer matching the rule index versus nearby values.\n\nThe smallest useful regression test should"
+    }
+  },
+  {
+    "label": "w12",
+    "kind": "fresh",
+    "trial": 5,
+    "wall_s": 28.740581617923453,
+    "metrics": {
+      "prompt_tokens": 4210.0,
+      "reused": 0.0,
+      "fresh": 4210.0,
+      "prefill_ms": 24672.0,
+      "prefill_tps": 170.6,
+      "generated": 128.0,
+      "decode_ms": 4057.0,
+      "decode_tps": 31.6
+    },
+    "usage": {
+      "prompt_tokens": 4210,
+      "completion_tokens": 128,
+      "total_tokens": 4338,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "This source code defines a collection of 140 exported JavaScript functions, named `rule0` through `rule139`, each implementing a specific conditional arithmetic transformation on a single numeric input `x`. Every function follows an identical structural pattern: it checks if the input `x` is strictly equal to the integer corresponding to the function's index (e.g., `rule5` checks if `x === 5`). If the condition is true, the function returns `x` incremented by one more than the index (e.g., `rule5` returns `x + 6`); if the condition is false, it"
+    }
+  },
+  {
+    "label": "w12",
+    "kind": "followup",
+    "trial": 5,
+    "wall_s": 7.94199145399034,
+    "metrics": {
+      "prompt_tokens": 4451.0,
+      "reused": 4203.0,
+      "fresh": 248.0,
+      "prefill_ms": 3159.0,
+      "prefill_tps": 78.5,
+      "generated": 128.0,
+      "decode_ms": 4770.0,
+      "decode_tps": 26.8
+    },
+    "usage": {
+      "prompt_tokens": 4451,
+      "completion_tokens": 128,
+      "total_tokens": 4579,
+      "prompt_tokens_details": {
+        "cached_tokens": 4203
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The most relevant boundary case is the **exact integer match** (e.g., `rule5(5)`), which triggers the unique \"increment\" branch (`x + 6`), whereas any other integer input (including `5.0` if treated as float, or `4`/`6`) falls into the \"decrement\" branch (`x - 5`). This highlights the critical dependency on strict integer equality (`===`) and the asymmetry between the two branches.\n\nThe smallest useful regression test is:\n```javascript\n// Test the boundary: exact match vs. near-miss\nconsole.assert(rule5("
+    }
+  }
+]

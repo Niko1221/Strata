@@ -1,18 +1,18 @@
 [
   {
-    "label": "ring48-prewarm",
+    "label": "ab3-ring48-prewarm",
     "kind": "warmup",
     "trial": 0,
-    "wall_s": 0.6899457690306008,
+    "wall_s": 0.6167066060006618,
     "metrics": {
       "prompt_tokens": 15.0,
       "reused": 0.0,
       "fresh": 15.0,
-      "prefill_ms": 488.0,
-      "prefill_tps": 30.8,
+      "prefill_ms": 453.0,
+      "prefill_tps": 33.1,
       "generated": 2.0,
-      "decode_ms": 193.0,
-      "decode_tps": 10.3
+      "decode_ms": 155.0,
+      "decode_tps": 12.9
     },
     "usage": {
       "prompt_tokens": 15,
@@ -29,19 +29,19 @@
     }
   },
   {
-    "label": "ring48-prewarm",
+    "label": "ab3-ring48-prewarm",
     "kind": "fresh",
     "trial": 90,
-    "wall_s": 51.08192043798044,
+    "wall_s": 40.936272653983906,
     "metrics": {
       "prompt_tokens": 8831.0,
       "reused": 0.0,
       "fresh": 8831.0,
-      "prefill_ms": 46428.0,
-      "prefill_tps": 190.2,
+      "prefill_ms": 36312.0,
+      "prefill_tps": 243.2,
       "generated": 128.0,
-      "decode_ms": 4636.0,
-      "decode_tps": 27.6
+      "decode_ms": 4609.0,
+      "decode_tps": 27.8
     },
     "usage": {
       "prompt_tokens": 8831,
@@ -58,18 +58,18 @@
     }
   },
   {
-    "label": "ring48-prewarm",
+    "label": "ab3-ring48-prewarm",
     "kind": "followup",
     "trial": 90,
-    "wall_s": 7.201901645050384,
+    "wall_s": 7.034918022924103,
     "metrics": {
       "prompt_tokens": 9072.0,
       "reused": 8958.0,
       "fresh": 114.0,
-      "prefill_ms": 2419.0,
-      "prefill_tps": 47.1,
+      "prefill_ms": 2253.0,
+      "prefill_tps": 50.6,
       "generated": 128.0,
-      "decode_ms": 4764.0,
+      "decode_ms": 4765.0,
       "decode_tps": 26.9
     },
     "usage": {
@@ -87,18 +87,18 @@
     }
   },
   {
-    "label": "ring48-prewarm",
+    "label": "ab3-ring48-prewarm",
     "kind": "fresh",
     "trial": 91,
-    "wall_s": 22.39333064504899,
+    "wall_s": 22.702834047959186,
     "metrics": {
       "prompt_tokens": 4211.0,
       "reused": 0.0,
       "fresh": 4211.0,
-      "prefill_ms": 17994.0,
-      "prefill_tps": 234.0,
+      "prefill_ms": 18312.0,
+      "prefill_tps": 230.0,
       "generated": 128.0,
-      "decode_ms": 4389.0,
+      "decode_ms": 4381.0,
       "decode_tps": 29.2
     },
     "usage": {
@@ -116,19 +116,19 @@
     }
   },
   {
-    "label": "ring48-prewarm",
+    "label": "ab3-ring48-prewarm",
     "kind": "followup",
     "trial": 91,
-    "wall_s": 6.688535669003613,
+    "wall_s": 6.6975455729989335,
     "metrics": {
       "prompt_tokens": 4452.0,
       "reused": 4339.0,
       "fresh": 113.0,
-      "prefill_ms": 2090.0,
-      "prefill_tps": 54.1,
+      "prefill_ms": 2115.0,
+      "prefill_tps": 53.4,
       "generated": 128.0,
-      "decode_ms": 4588.0,
-      "decode_tps": 27.9
+      "decode_ms": 4572.0,
+      "decode_tps": 28.0
     },
     "usage": {
       "prompt_tokens": 4452,
@@ -145,19 +145,19 @@
     }
   },
   {
-    "label": "ring48-prewarm",
+    "label": "ab3-ring48-prewarm",
     "kind": "fresh",
     "trial": 92,
-    "wall_s": 40.84192094800528,
+    "wall_s": 40.57266623596661,
     "metrics": {
       "prompt_tokens": 8831.0,
       "reused": 0.0,
       "fresh": 8831.0,
-      "prefill_ms": 36413.0,
-      "prefill_tps": 242.5,
+      "prefill_ms": 36242.0,
+      "prefill_tps": 243.7,
       "generated": 128.0,
-      "decode_ms": 4410.0,
-      "decode_tps": 29.0
+      "decode_ms": 4316.0,
+      "decode_tps": 29.7
     },
     "usage": {
       "prompt_tokens": 8831,
@@ -174,19 +174,19 @@
     }
   },
   {
-    "label": "ring48-prewarm",
+    "label": "ab3-ring48-prewarm",
     "kind": "followup",
     "trial": 92,
-    "wall_s": 7.228730765986256,
+    "wall_s": 8.204403163981624,
     "metrics": {
       "prompt_tokens": 9072.0,
       "reused": 8958.0,
       "fresh": 114.0,
-      "prefill_ms": 2161.0,
-      "prefill_tps": 52.7,
+      "prefill_ms": 2213.0,
+      "prefill_tps": 51.5,
       "generated": 128.0,
-      "decode_ms": 5051.0,
-      "decode_tps": 25.3
+      "decode_ms": 5975.0,
+      "decode_tps": 21.4
     },
     "usage": {
       "prompt_tokens": 9072,
@@ -199,7 +199,7 @@
     "finish_reason": "length",
     "message": {
       "role": "assistant",
-      "content": "The most relevant boundary case is the **exact integer match** for the specific rule index, particularly at the lower bound of `rule0` where the \"true\" branch returns `1` (since `0 + 1`) and the \"false\" branch returns `0` (since `0 - 0`), creating a unique identity-like behavior for zero that differs from all other rules where the false branch subtracts a non-zero value. A critical regression test must verify that `rule0(0)` returns `1` while `rule0(1)` returns `1` (via `1 - 0`), ensuring"
+      "content": "The most relevant boundary case is the **exact integer match** (e.g., `rule92(92)`), which triggers the unique \"addition\" branch (`x + 93`), whereas any other integer input triggers the \"subtraction\" branch (`x - 92`). This highlights the function's discontinuous behavior: it is not a continuous mathematical function but a discrete switch that behaves differently at exactly one point per rule.\n\nThe smallest useful regression test should verify this critical divergence for a single rule, such as `rule92`:\n1.  **Match Case:** `rule92(9"
     }
   }
 ]

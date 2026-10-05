@@ -1,0 +1,44 @@
+{
+  "label": "ab3-ring48",
+  "prompt": "Return only a Python code block defining merge_intervals(intervals). Input is a list of integer pairs [start,end] with start <= end. Return sorted disjoint intervals as lists, merging overlapping or touching endpoints. Handle empty input and negative endpoints, and do not mutate input. No imports or explanations.",
+  "wall_s": 6.31179480208084,
+  "reply": {
+    "id": "chatcmpl-9df37813ddc14226bde20b8c",
+    "object": "chat.completion",
+    "created": 1791187691,
+    "model": "qwen3.8-flash-next-iq3_s",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "```python\ndef merge_intervals(intervals):\n    if not intervals:\n        return []\n    \n    # Create a copy to avoid mutating input\n    sorted_intervals = sorted(intervals, key=lambda x: x[0])\n    \n    merged = []\n    current_start, current_end = sorted_intervals[0]\n    \n    for start, end in sorted_intervals[1:]:\n        if start <= current_end:\n            # Overlapping or touching, merge\n            current_end = max(current_end, end)\n        else:\n            # No overlap, add current interval and start new one\n            merged.append([current_start, current_end])\n            current_start, current_end = start, end\n    \n    merged.append([current_start, current_end])\n    \n    return merged\n```"
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 71,
+      "completion_tokens": 166,
+      "total_tokens": 237,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 71,
+      "prompt_ms": 1551.5,
+      "prompt_per_token_ms": 21.852,
+      "prompt_per_second": 45.8,
+      "predicted_n": 166,
+      "predicted_ms": 4751.5,
+      "predicted_per_token_ms": 28.623,
+      "predicted_per_second": 34.9,
+      "draft_n": 136,
+      "draft_n_accepted": 121
+    }
+  },
+  "verdict": "PASS",
+  "cases": 205
+}

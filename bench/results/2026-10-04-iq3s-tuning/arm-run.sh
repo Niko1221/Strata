@@ -8,7 +8,8 @@ LABEL="$1"
 ROOT="/mnt/storage/Development/github/dhoard/strata"
 D="$ROOT/bench/results/2026-10-04-iq3s-tuning"
 LOG=/mnt/storage/Development/strata-work/logs/strata-hip.log
-MODEL=qwen3.8-flash-next-iq3_s
+MODEL="${ARM_MODEL:-qwen3.8-flash-next-iq3_s}"
+TOKENIZER="${ARM_TOKENIZER:-/mnt/storage/Development/strata-work/packs/iq3_s/tokenizer}"
 URL=http://127.0.0.1:19931
 START=$(stat -c %s "$LOG")
 
@@ -39,7 +40,7 @@ for l in sys.stdin:
 
 echo "== bench_discover (1024/4096 x5 + followups) =="
 python3 "$ROOT/tools/hip/bench_discover.py" --url "$URL" --model "$MODEL" \
-  --tokenizer /mnt/storage/Development/strata-work/packs/iq3_s/tokenizer \
+  --tokenizer "$TOKENIZER" \
   --engine-log "$LOG" --output "$D/$LABEL-stream.json" --label "$LABEL" \
   --sizes 1024,4096 --repetitions 5 --followups --timeout 3600 || echo "STREAM FAILED"
 
