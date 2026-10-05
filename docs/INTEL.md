@@ -168,7 +168,21 @@ docker run --rm -e AOT=bmg-g31 -e BUILD_DIR=/work/<checkout>/build-sycl-aot -e R
     -v <data root>:/work strata-sycl-dev "bash /work/<checkout>/sycl/tools/build.sh"
 ```
 
-**Without Docker: a toolbox with oneAPI** (Fedora Silverblue, where tools live in a distrobox). Measured with a
+**With Podman instead of Docker** (rootless; how the numbers since 2026-10-04 are measured, on Fedora Silverblue):
+the same image and build, with SELinux labels off for the data root's mount (data disks often carry none, and a
+confined container cannot read unlabeled files):
+
+```
+podman build -t strata-sycl-dev -f sycl/tools/Dockerfile sycl/tools
+podman run --rm --security-opt label=disable -e AOT=bmg-g31 -e BUILD_DIR=/work/<checkout>/build-sycl-aot \
+    -e REPO=/work/<checkout> -v <data root>:/work strata-sycl-dev "bash /work/<checkout>/sycl/tools/build.sh"
+```
+
+`STRATA_SYCL_RUNNER=podman` makes `sycl/serve/strata-sycl.sh` and benchy use it; benchy, which runs as root, starts
+the container as the user who ran sudo (rootless images are that user's). Its numbers match the toolbox below to
+within run-to-run noise (9 benchy rows, 2026-10-04).
+
+**Without a container image: a toolbox with oneAPI** (a distrobox, for building and working in). Measured with a
 Debian 13 distrobox, Intel's compute runtime 26.35 and oneAPI 2026.1.1:
 
 - Install `intel-oneapi-compiler-dpcpp-cpp-2026.1` and `intel-oneapi-mkl-devel-2026.1` from Intel's apt repository

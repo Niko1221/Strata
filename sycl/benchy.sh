@@ -11,7 +11,8 @@
 # - Each run is a fresh engine process, after the page cache is dropped (root, so it re-runs itself with sudo; --warm
 #   skips the drop and the sudo, and the table says it was warm).
 #
-# The engine runs in the strata-sycl-dev image; STRATA_SYCL_RUNNER=distrobox:<name> runs it in a distrobox with oneAPI,
+# The engine runs in the strata-sycl-dev image (STRATA_SYCL_RUNNER=docker, or podman); distrobox:<name> runs it in a
+# distrobox with oneAPI,
 # where /work is the data root (the directory that holds the checkout), as in the image.
 #
 # Stop the served model first: benchy refuses to start while more than 2 GB of VRAM is in use (--force overrides).
@@ -29,9 +30,16 @@ docker)
         "STRATA_SYCL_RUNNER=distrobox:<name> runs it in a distrobox with oneAPI instead)" >&2; exit 2; }
     docker image inspect "${STRATA_SYCL_IMAGE:-strata-sycl-dev}" >/dev/null 2>&1 \
         || { echo "benchy: the image ${STRATA_SYCL_IMAGE:-strata-sycl-dev} is missing (sycl/tools/Dockerfile)" >&2; exit 2; } ;;
+podman)
+    command -v podman >/dev/null || { echo "benchy: podman is not installed" >&2; exit 2; }
+    as_user=()   # rootless images are the user's who ran sudo, not root's
+    [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ] && as_user=(runuser -u "$SUDO_USER" -- env "XDG_RUNTIME_DIR=/run/user/$SUDO_UID")
+    "${as_user[@]}" podman image inspect "${STRATA_SYCL_IMAGE:-strata-sycl-dev}" >/dev/null 2>&1 \
+        || { echo "benchy: the image ${STRATA_SYCL_IMAGE:-strata-sycl-dev} is missing (podman build -t strata-sycl-dev" \
+             "-f sycl/tools/Dockerfile sycl/tools)" >&2; exit 2; } ;;
 distrobox:?*)
     command -v distrobox >/dev/null || { echo "benchy: distrobox is not installed" >&2; exit 2; } ;;
-*)  echo "benchy: STRATA_SYCL_RUNNER is docker or distrobox:<name>" >&2; exit 2 ;;
+*)  echo "benchy: STRATA_SYCL_RUNNER is docker, podman or distrobox:<name>" >&2; exit 2 ;;
 esac
 if [ "$(id -u)" != 0 ] && [ $warm = 0 ]; then
     echo "benchy v1: re-running with sudo (it drops the page cache before each run; --warm to run without)" >&2
