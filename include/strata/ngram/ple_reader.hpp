@@ -58,7 +58,7 @@ public:
     /// validated GGUF parse (PleTable::open checks the table exactly fills the file from there).
     /// `io_thread` (default): a worker thread submits and reaps reads, so `issue` costs the caller no ReadFile
     /// calls. false: the caller's thread does it (A/B arm).
-    /// `row_bytes`: one row's size in the file (90 IQ4_NL, 160 FP8), at most one page.
+    /// `row_bytes`: one row's size in the file (90 IQ4_NL, 110 Q5_0, 160 FP8, 170 Q8_0), at most one page.
     bool open(const std::string& path, uint64_t table_offset, uint64_t n_rows, uint32_t max_inflight,
               uint64_t cache_rows, std::string& err, bool io_thread = true, uint32_t row_bytes = ROW_BYTES);
     uint32_t row_bytes() const;
