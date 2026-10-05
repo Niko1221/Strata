@@ -1004,7 +1004,8 @@ async function loadShared() {
 }
 function sharedDefaults(s) {
   const d = {reasoning_effort: s.thinking, temperature: +s.temperature};
-  if (+s.temperature > 0) Object.assign(d, {top_p: +s.top_p, top_k: +s.top_k});
+  if (+s.temperature > 0) Object.assign(d, {top_p: +s.top_p});
+  if (+s.temperature > 0 && !NATIVE_DEEPMOE) d.top_k = +s.top_k;
   if (s.seed) d.seed = +s.seed;
   if (s.max) d.max_tokens = +s.max;
   if (projectionLoaded()) d.experimental_speed_projection = s.esp !== false;

@@ -110,6 +110,13 @@ class Protocol(unittest.TestCase):
             self.assertIn('reasoning_content',stream);self.assertIn('data: [DONE]',stream)
             b=json.loads(post('/v1/messages',{'model':'m','messages':msgs,'max_tokens':40,'thinking':{'type':'disabled'}}))
             self.assertEqual(b['content'][0]['text'],'Answer')
+            b=json.loads(post('/v1/responses',{'model':'m','input':'q','max_output_tokens':40,
+                                              'reasoning':{'effort':'none'}}))
+            output=''.join(c.get('text','') for item in b['output'] for c in item.get('content',[]))
+            self.assertEqual(output,'Answer')
+            self.assertEqual(b['status'],'completed')
+            html=urllib.request.urlopen(base+'/').read().decode()
+            self.assertIn('data-engine="deepmoe"',html)
         finally:
             httpd.shutdown();httpd.server_close()
 
@@ -137,6 +144,31 @@ class Template(unittest.TestCase):
             for cfg in ({},{'exe':'x'},{'exe':'x','model':'x','parallel':2}):
                 with self.assertRaises(ValueError):backend_from_config(cfg)
             engine.assert_not_called()
+
+
+class MainConfig(unittest.TestCase):
+    def test_native_topk_zero_does_not_use_qwen_config_range(self):
+        import signal
+        import sys
+        from serve import server
+        old = signal.getsignal(signal.SIGTERM)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                config = Path(tmp) / 'config.json'
+                config.write_text(json.dumps({'exe':'fake','model':'unused','sampling':{'top_k':0}}))
+                from types import SimpleNamespace
+                engine = SimpleNamespace(max_context=4096, info={}, stop_ids={1}, close=Mock(), batch=0)
+                template = Mock()
+                http = Mock(server_address=('127.0.0.1',0))
+                with patch.object(sys,'argv',['server','--engine','deepmoe','--config',str(config),'--port','0']), \
+                     patch('serve.deepmoe.backend_from_config',return_value=(engine,ByteTokenizer(),template)) as factory, \
+                     patch.object(server,'serve',return_value=http), \
+                     patch.object(server.time,'sleep',side_effect=KeyboardInterrupt):
+                    self.assertEqual(server.main(),0)
+                    factory.assert_called_once()
+                self.assertTrue(engine.close.called)
+        finally:
+            signal.signal(signal.SIGTERM,old)
 
 
 if __name__=='__main__':unittest.main()

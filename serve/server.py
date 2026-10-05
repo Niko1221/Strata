@@ -4012,6 +4012,11 @@ def main() -> int:
         from serve.deepmoe import backend_from_config
         if a.lazy or a.mcp_config:
             ap.error("deepmoe currently supports eager text-only inference without MCP")
+        native_sampling = dict(cfg.get("sampling") or {})
+        if native_sampling.get("top_k") not in (None, 0):
+            ap.error("deepmoe sampling.top_k must be omitted or zero")
+        native_sampling.pop("top_k", None)
+        sampling_defaults = sampling_defaults_from_config({**cfg, "sampling": native_sampling})
         try:
             engine, tok, template = backend_from_config(cfg, EngineDied)
         except (ValueError, OSError) as e:
@@ -4019,7 +4024,6 @@ def main() -> int:
         cfg.setdefault("model_name", "deepseek-v4.1-flash")
         cfg.setdefault("backend", "vulkan")
         vision, effort_end = None, None
-        sampling_defaults = sampling_defaults_from_config(cfg)
     else:
         effort_end = None
         engine, vision, sampling_defaults = MockEngine(tok, a.script or [
