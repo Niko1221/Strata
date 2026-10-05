@@ -2770,6 +2770,11 @@ class AnswerBeforeTheBody(unittest.TestCase):
                     self.status("POST", path)
                     self.assertLess(time.monotonic() - started, 2)
 
+    def test_a_control_body_over_its_limit(self):
+        """/load answers 413 to a body over 64 KiB without reading it: the drain takes it."""
+        status = self.status("POST", "/load", body=b'{"x": "' + b"a" * (70 << 10) + b'"}')
+        self.assertTrue(status.startswith("HTTP/1.0 413 "), status)   # the reason phrase depends on Python
+
     def test_not_the_apps_own_page(self):
         self.assertEqual(self.status("POST", "/load", {"Origin": "https://example.com"}), "HTTP/1.0 403 Forbidden")
 
