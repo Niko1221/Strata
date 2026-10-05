@@ -1,3 +1,7 @@
+# Source files are LF everywhere. A CRLF commit makes a whole diff unreadable: PR #783
+# showed ~12,900 phantom changed lines across 23 files when only 180 real lines changed.
+* text=auto eol=lf
+
 # Frozen prompts are hashed byte for byte (manifest sha256): never convert their line endings.
 bench/prompts/** -text
 
