@@ -2378,6 +2378,33 @@ def low_ram_fits(model, ram, vram_gb) -> bool:
     return ram - 6 + max(0.0, vram_gb - 5) >= arena
 
 
+def low_ram_wanted(model, ram, choice="auto") -> bool:
+    """Does setup put this model in the low-RAM mode on this PC: its experts do not fit the RAM with the usual room
+    beside them (`low_ram_needed`), or the user asked for it.  Unsloth's 4-bit file is not the low-RAM mode at all:
+    it always reads part of its experts from the files, through its RAM budget.  Step 5 applies exactly this answer,
+    and the launcher's preset diff asks it too - so a preset that says "auto" is compared with what auto decides,
+    not with the word."""
+    if MODELS[model].get("budget"):
+        return False
+    return choice in ("on", "resident", "mmap") or (choice == "auto" and low_ram_needed(model, ram))
+
+
+def kv_streaming_ram_gb(ctx, kv) -> float:
+    """The RAM a streamed KV cache takes: ~13.7 KB per context token with 8-bit KV (1.7 GB at 128K), 7.5 KB with
+    4-bit - 12 QSA layers + the draft layer."""
+    return ctx * (13 * (576 if kv == "q4_0" else 1056)) / 1e9
+
+
+def kv_streaming_wanted(model, ctx, kv, ram, choice="auto") -> bool:
+    """Will setup stream this model's KV cache on this PC: from 64K up, when the RAM holds the cache beside the
+    model's experts (+1 GB); `--kv-streaming on|off` overrides the RAM test (the owner's rule), and hybrid K8/V4
+    and WSL never stream.  Step 7 writes `--kv-resident` on exactly this answer, and the launcher's preset diff
+    asks it too: a config's `--kv-resident` and a preset's "auto" are the same setting when this says yes."""
+    if kv == "k8v4" or is_wsl() or choice == "off":
+        return False
+    return ctx >= 65536 and (ram >= MODELS[model]["ram_gb"] + kv_streaming_ram_gb(ctx, kv) + 1 or choice == "on")
+
+
 def low_ram_one_gpu_why(model, ram, choice, sel=None) -> list[str]:
     """#250: why the low-RAM mode recommends one GPU, with the RAM math that turned it on; #364 #384: and how to use
     all of them (sel: the cards, for the --gpus example)."""
@@ -3925,8 +3952,7 @@ def main() -> int:
     elif a.resident_budget_gib is not None:
         warn(f"--resident-budget-gib is for UD-Q4_K_XL and UD-IQ4_XS: {model} keeps all of its experts in RAM or in "
              "the low-RAM mode")
-    low_ram = budget is None and (a.low_ram in ("on", "resident", "mmap") or
-                                  (a.low_ram == "auto" and low_ram_needed(model, ram)))
+    low_ram = low_ram_wanted(model, ram, a.low_ram)
     if low_ram and multi and not low_ram_together(a, model, ram, gpu, chosen):
         multi, sel, chosen = [], [gpu["index"]], [gpu]
     # (the low-RAM mode's variant is decided once the context is known, below; on several GPUs it is the mapped one)
@@ -4251,7 +4277,7 @@ def main() -> int:
     # KV streaming: from 64K up the whole KV cache lives in RAM and only the part the attention reads (32K positions
     # per layer) stays in VRAM; the VRAM it frees holds more experts (+6% at 128K, +23% at 262K with Q2_0). It
     # costs ~13.7 KB of RAM per context token with 8-bit KV (1.7 GB at 128K), 7.5 KB with 4-bit, so only when it fits.
-    kv_ram_gb = ctx * (13 * (576 if kv == "q4_0" else 1056)) / 1e9   # 12 QSA layers + the draft layer
+    kv_ram_gb = kv_streaming_ram_gb(ctx, kv)      # the branches below are kv_streaming_wanted, with its messages
     # Hybrid K8V4 never streams its KV (mode 0 only, layer.hpp), so it is excluded from the WHOLE streaming
     # decision rather than one threshold at a time - a future tier added to this chain cannot reintroduce the
     # combination the engine refuses (PR review).

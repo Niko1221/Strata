@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import itertools
 import json
 import os
 import sys
@@ -408,6 +409,38 @@ class KvStreaming(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertNotIn("--resident-budget-gib", cfg["args"])
         self.assertIn("--resident-budget-gib is for UD-Q4_K_XL", out)
+
+
+class RulesAgreeWithTheWrittenConfig(unittest.TestCase):
+    """The launcher's preset diff asks setup's rules (`kv_streaming_wanted`, `low_ram_wanted`) what "auto" decides on
+    this PC, instead of comparing the word "auto" with a config's flags.  That is only honest if those rules are
+    exactly what setup writes into the model's config: the same PC, the same flags, every size and every
+    --kv-streaming / --low-ram choice."""
+    RAM64, CARDS64 = PROFILES["64GB-1x32GB"]
+    RAM32, CARDS32 = PROFILES["32GB-2x24GB"]
+
+    def go(self, ram, cards, model, *flags):
+        return install(ram, cards, ["--family", "qwen", "--model", model, "--no-start", *flags])
+
+    def test_the_streaming_rule_is_the_flag_setup_writes(self):
+        for model, ctx, kv, choice in itertools.product(("Q2_0", "IQ3_XXS", "IQ3_S"), ("32768", "131072"),
+                                                        ("int8", "q4_0", "k8v4"), ("auto", "on", "off")):
+            code, out, cfg, _ = self.go(self.RAM64, self.CARDS64, model, "--context", ctx, "--kv", kv,
+                                        "--kv-streaming", choice)
+            self.assertEqual(code, 0, out)
+            self.assertEqual("--kv-resident" in cfg["args"],
+                             setup.kv_streaming_wanted(model, int(ctx), kv, self.RAM64, choice),
+                             f"{model} at {ctx} with {kv}, --kv-streaming {choice}: setup wrote {cfg['args']}")
+
+    def test_the_low_ram_rule_is_the_flag_setup_writes(self):
+        pcs = [(self.RAM64, self.CARDS64), (self.RAM32, self.CARDS32)]      # auto is on here, off there
+        for (ram, cards), model, choice in itertools.product(pcs, ("Q2_0", "IQ3_XXS", "IQ3_S"),
+                                                              ("auto", "on", "off", "mmap")):
+            code, out, cfg, _ = self.go(ram, cards, model, "--low-ram", choice)
+            self.assertEqual(code, 0, out)
+            low = "--resident-experts" in cfg["args"] or "--mmap-experts" in cfg["args"]
+            self.assertEqual(low, setup.low_ram_wanted(model, ram, choice),
+                             f"{model} on {ram:.0f} GB of RAM, --low-ram {choice}: setup wrote {cfg['args']}")
 
 
 if __name__ == "__main__":
