@@ -2214,6 +2214,20 @@ class WebApp(unittest.TestCase):
         finally:
             svc.engine.max_context, svc.vision, svc.sampling_defaults, svc.shared = previous
 
+    def test_props_total_slots_follows_the_batch_slots(self):
+        # llama.cpp clients read total_slots as the number of requests the server runs at once
+        engine, had = self.svc.engine, hasattr(self.svc.engine, "batch")
+        previous = getattr(engine, "batch", None)
+        try:
+            for batch, slots in ((0, 1), (3, 3)):
+                engine.batch = batch
+                self.assertEqual(json.loads(self.get("/props")[2])["total_slots"], slots)
+        finally:
+            if had:
+                engine.batch = previous
+            else:
+                del engine.batch
+
     def test_discovery_needs_the_api_key(self):
         self.svc.api_key = "secret"
         try:
