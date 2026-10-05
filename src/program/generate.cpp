@@ -2702,6 +2702,14 @@ int main(int argc, char** argv) {
         }
     }
     strata::core::set_peer_portable(o.peer_device >= 1);   // multi-GPU: the Portable flag on mapped host buffers only with a peer device (before any allocation)
+    if (o.peer_device >= 1) {   // the peer's context must exist BEFORE the arena's whole-range cudaHostRegister
+        int n = -1;             // (#253's Linux default). Registered first, the peer's first device op — a
+        if (cudaGetDeviceCount(&n) == cudaSuccess && o.peer_device < n) {  // stream, in PeerExperts::open — fails
+            cudaSetDevice(o.peer_device);   // with a misleading 'out of memory' even on an empty card (the
+            cudaFree(0);                    // registration has to map into every context). Forced here, that
+            cudaSetDevice(0);               // mapping lands on the register itself, whose sliced-pin fallback
+        }                                   // (#243 / STRATA_ARENA_PIN_GIB) can already take over.
+    }
     {   // the RAM guard (parking, session save/restore): --memory-limit-mib, else STRATA_MEMORY_LIMIT_MIB, else none
         int64_t mib = o.memory_limit_mib;
         if (mib < 0) {
