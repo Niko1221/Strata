@@ -1129,12 +1129,25 @@ bool launch70(const float*, const QsaAttnPools&, const int32_t*, const int32_t*,
 // FP32-level accuracy, deterministic, but not bitwise equal to qsa_decode_attn_batch (another summation order).
 // Fragment layout (16x16x16, wave32, checked on gfx1201): A lane l holds A[l % 16][(l / 16) * 8 + i], B lane l holds
 // B[(l / 16) * 8 + i][l % 16], C/D lane l holds D[(l / 16) * 8 + i][l % 16], i = 0..7.
+// RDNA3 / RDNA3.5 (gfx11, v_wmma_f32_16x16x16_f16 wave32, checked on gfx1151): A lane l holds all of A[l % 16][0..15]
+// and B lane l all of B[0..15][l % 16] (both halves of the wave the same), C/D lane l holds D[2 * i + l / 16][l % 16].
+// Every fragment below is loaded directly, so the two layouts differ only in FK / KOFF (the A/B elements a lane holds
+// and where they start) and PA_ROW (an accumulator element's row); the accumulators are only ever combined elementwise.
 #if defined(__gfx1200__) || defined(__gfx1201__)
 #define STRATA_PA_WMMA 1
+#define STRATA_PA_FK 8
+#elif defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || \
+    defined(__gfx1150__) || defined(__gfx1151__) || defined(__gfx1152__) || defined(__gfx1153__)
+#define STRATA_PA_WMMA 2
+#define STRATA_PA_FK 16
 #else
 #define STRATA_PA_WMMA 0
+#define STRATA_PA_FK 8
 #endif
-typedef _Float16 wh8 __attribute__((ext_vector_type(8)));
+constexpr int FK = STRATA_PA_FK;                        // A/B elements per lane
+#define PA_KOFF(half) (FK == 16 ? 0 : (half) * 8)       // the first k of a lane's A/B elements
+#define PA_ROW(half, i) (FK == 16 ? 2 * (i) + (half) : (half) * 8 + (i))   // the row of accumulator element i
+typedef _Float16 wh8 __attribute__((ext_vector_type(STRATA_PA_FK)));
 typedef float wf8 __attribute__((ext_vector_type(8)));
 constexpr int WCH = 32;          // cells per chunk (two 16-cell tiles)
 constexpr int WVS = 80;          // staged V row stride in bytes (64 codes, 16-byte aligned, banks spread)
@@ -1151,21 +1164,20 @@ struct alignas(16) SmemW {
 };
 
 __device__ __forceinline__ wf8 wmma_f16(wh8 a, wh8 b, wf8 c) {
-#if STRATA_PA_WMMA
+#if STRATA_PA_WMMA == 1
     return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(a, b, c);
+#elif STRATA_PA_WMMA == 2
+    return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(a, b, c);
 #else
     __builtin_trap();
     return c;
 #endif
 }
 
-__device__ __forceinline__ wh8 i8x8_to_h8(uint2 x) {   // exact: |code| <= 128
+__device__ __forceinline__ wh8 i8_to_h(const uint32_t* x) {   // FK codes, exact: |code| <= 128
     wh8 h;
 #pragma unroll
-    for (int i = 0; i < 4; ++i) {
-        h[i] = (_Float16) (int) (int8_t) (x.x >> (8 * i));
-        h[4 + i] = (_Float16) (int) (int8_t) (x.y >> (8 * i));
-    }
+    for (int i = 0; i < FK; ++i) h[i] = (_Float16) (int) (int8_t) (x[i / 4] >> (8 * (i % 4)));
     return h;
 }
 
@@ -1197,21 +1209,24 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
     int qe = 0;
     if (qm > 0.0f) frexpf(qm, &qe);
     const float qup = ldexpf(1.0f, 14 - qe), qdown = ldexpf(scale_log2, qe - 14);
-    // q A fragments of this wave's 64 dims: row = col (heads 12..15 zero), k = dim0 + kk*16 + half*8 + i
+    // q A fragments of this wave's 64 dims: row = col (heads 12..15 zero), k = dim0 + kk*16 + KOFF + i
     wh8 qh[4], ql[4];
 #pragma unroll
     for (int kk = 0; kk < 4; ++kk) {
-        float x[8];
+        float x[FK];
         if (col < G) {
-            const float4* src = reinterpret_cast<const float4*>(q + (size_t) col * HD + dim0 + kk * 16 + half * 8);
-            const float4 a = src[0], b = src[1];
-            x[0] = a.x; x[1] = a.y; x[2] = a.z; x[3] = a.w; x[4] = b.x; x[5] = b.y; x[6] = b.z; x[7] = b.w;
+            const float4* src = reinterpret_cast<const float4*>(q + (size_t) col * HD + dim0 + kk * 16 + PA_KOFF(half));
+#pragma unroll
+            for (int v4 = 0; v4 < FK / 4; ++v4) {
+                const float4 a = src[v4];
+                x[4 * v4] = a.x; x[4 * v4 + 1] = a.y; x[4 * v4 + 2] = a.z; x[4 * v4 + 3] = a.w;
+            }
         } else {
 #pragma unroll
-            for (int i = 0; i < 8; ++i) x[i] = 0.0f;
+            for (int i = 0; i < FK; ++i) x[i] = 0.0f;
         }
 #pragma unroll
-        for (int i = 0; i < 8; ++i) {
+        for (int i = 0; i < FK; ++i) {
             const float v = x[i] * qup;
             const _Float16 hi = (_Float16) v;
             qh[kk][i] = hi;
@@ -1258,14 +1273,18 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
             if (rr >= 0) ksc = __half2float(__ushort_as_half(__ldg(p.k_scale + rr * (HD / KV_Q8_GROUP) + warp)));
 #pragma unroll
             for (int kk = 0; kk < 4; ++kk) {
-                uint2 kx = make_uint2(0, 0);
-                if (rr >= 0) kx = __ldg(reinterpret_cast<const uint2*>(p.k_q + rr * HD + dim0 + kk * 16 + half * 8));
-                const wh8 b = i8x8_to_h8(kx);
+                uint32_t kx[FK / 4] = {};
+                if (rr >= 0) {
+                    const uint32_t* src = reinterpret_cast<const uint32_t*>(p.k_q + rr * HD + dim0 + kk * 16 + PA_KOFF(half));
+#pragma unroll
+                    for (int w = 0; w < FK / 4; ++w) kx[w] = __ldg(src + w);
+                }
+                const wh8 b = i8_to_h(kx);
                 s = wmma_f16(qh[kk], b, s);
                 s = wmma_f16(ql[kk], b, s);
             }
 #pragma unroll
-            for (int i = 0; i < 8; ++i) S.part[warp][half * 8 + i][nt * 16 + col] = s[i] * ksc;
+            for (int i = 0; i < 8; ++i) S.part[warp][PA_ROW(half, i)][nt * 16 + col] = s[i] * ksc;
         }
         __syncthreads();
         // online softmax over the four groups' sum (fixed order): row t/8, 4 cells per thread
@@ -1312,10 +1331,10 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
             for (int j = 0; j < 4; ++j) tmp[j] = wf8{0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
 #pragma unroll
             for (int ks = 0; ks < 2; ++ks) {
-                const int cb = ks * 16 + half * 8;   // this lane's 8 cells
+                const int cb = ks * 16 + PA_KOFF(half);   // this lane's FK cells
                 wh8 ah, al;
 #pragma unroll
-                for (int i = 0; i < 8; ++i) {
+                for (int i = 0; i < FK; ++i) {
                     const float pv = S.p[col][cb + i] * (S.vs[warp][cb + i] * vup);
                     const _Float16 hi = (_Float16) pv;
                     ah[i] = hi;
@@ -1326,14 +1345,14 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
                     const int d = j * 16 + col;
                     wh8 b;
 #pragma unroll
-                    for (int i = 0; i < 8; ++i) b[i] = (_Float16) (int) (int8_t) S.v[warp][cb + i][d];
+                    for (int i = 0; i < FK; ++i) b[i] = (_Float16) (int) (int8_t) S.v[warp][cb + i][d];
                     tmp[j] = wmma_f16(ah, b, tmp[j]);
                     tmp[j] = wmma_f16(al, b, tmp[j]);
                 }
             }
             float a[8];
 #pragma unroll
-            for (int i = 0; i < 8; ++i) a[i] = S.alpha[half * 8 + i];
+            for (int i = 0; i < 8; ++i) a[i] = S.alpha[PA_ROW(half, i)];
 #pragma unroll
             for (int j = 0; j < 4; ++j)
 #pragma unroll
@@ -1345,14 +1364,14 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
     float inv[8];
 #pragma unroll
     for (int i = 0; i < 8; ++i) {
-        const float l = S.lsum[half * 8 + i];
+        const float l = S.lsum[PA_ROW(half, i)];
         inv[i] = l > 0.0f ? 1.0f / l : 0.0f;
     }
 #pragma unroll
     for (int j = 0; j < 4; ++j)
 #pragma unroll
         for (int i = 0; i < 8; ++i) {
-            const int row = half * 8 + i;
+            const int row = PA_ROW(half, i);
             if (row < G) attn[(size_t) row * HD + dim0 + j * 16 + col] = acc[j][i] * inv[i];
         }
 #else
@@ -1360,20 +1379,22 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
 #endif
 }
 
-// gfx12 (RDNA4) only, and only on request: the output differs from the default kernel's in its last bits
+// gfx12 (RDNA4) and gfx11 (RDNA3 / RDNA3.5), only on request: the output differs from the default kernel's in its
+// last bits
 bool hip_wmma_usable() {
     static const bool want = [] {
         const char* e = std::getenv("STRATA_HIP_WMMA");
         return e != nullptr && e[0] == '1';
     }();
     if (!want) return false;
-    static int arch[64] = {};   // 0 unknown, 1 gfx12, 2 other
+    static int arch[64] = {};   // 0 unknown, 1 gfx12 / gfx11, 2 other
     int dev = 0;
     if (hipGetDevice(&dev) != hipSuccess || dev < 0 || dev >= 64) { (void) hipGetLastError(); return false; }
     if (arch[dev] == 0) {
         hipDeviceProp_t prop{};
         if (hipGetDeviceProperties(&prop, dev) != hipSuccess) { (void) hipGetLastError(); return false; }
-        arch[dev] = std::strncmp(prop.gcnArchName, "gfx12", 5) == 0 ? 1 : 2;
+        arch[dev] = std::strncmp(prop.gcnArchName, "gfx12", 5) == 0 || std::strncmp(prop.gcnArchName, "gfx11", 5) == 0
+                        ? 1 : 2;
         static bool told = false;
         if (!told) {
             told = true;
