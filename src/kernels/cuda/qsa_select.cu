@@ -291,24 +291,48 @@ __global__ void __launch_bounds__(128) block_scores_tc_kernel(const float* __res
 //   a lane ends up with 8 consecutive blocks of ONE query, written as one run.  No LDS for keys: a lane reads its
 //   32-byte slice of the key row from global (the 16 query tiles of a launch re-read them from L2); the queries are
 //   split once per CTA into LDS.
+//   gfx11 (RDNA3 / RDNA3.5: v_wmma_f32_16x16x16_bf16 wave32, checked on gfx1151): a lane holds all 16 k of its row
+//   (A) / column (B), both halves of the wave the same, and D element i is row 2*i + l/16 - so SEL_FK / SEL_KOFF say
+//   which k a lane loads and SEL_ROW which block an accumulator element is; everything else is shared.
 #if defined(__gfx1200__) || defined(__gfx1201__)
 #define STRATA_SEL_GFX12 1
+#define STRATA_SEL_FK 8
+#elif defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || \
+    defined(__gfx1150__) || defined(__gfx1151__) || defined(__gfx1152__) || defined(__gfx1153__)
+#define STRATA_SEL_GFX12 2
+#define STRATA_SEL_FK 16
 #else
 #define STRATA_SEL_GFX12 0
+#define STRATA_SEL_FK 8
 #endif
+constexpr int SEL_FK = STRATA_SEL_FK;                         // A/B elements per lane
+#define SEL_KOFF(g) (SEL_FK == 16 ? 0 : (g) * 8)               // the first k of a lane's A/B elements
+#define SEL_ROW(g, i) (SEL_FK == 16 ? 2 * (i) + (g) : (g) * 8 + (i))   // the block row of accumulator element i
 typedef short sel_s8 __attribute__((ext_vector_type(8)));
+typedef short sel_sf __attribute__((ext_vector_type(STRATA_SEL_FK)));   // one A/B fragment
 typedef float sel_f8 __attribute__((ext_vector_type(8)));
-typedef uint32_t sel_u4 __attribute__((ext_vector_type(4)));
+typedef uint32_t sel_u4 __attribute__((ext_vector_type(STRATA_SEL_FK / 2)));
 constexpr int WQT = 16;                    // queries per CTA (the N of one WMMA)
 constexpr int WITER = 4;                   // key tiles per warp (the CTA covers 4 warps * WITER * 16 blocks)
 constexpr int WQS = IDX_DIM + 8;           // bf16 elements per LDS row: 272 bytes, conflict-free 16-byte reads
 
-__device__ __forceinline__ sel_f8 wmma_bf16(const sel_s8& a, const sel_s8& b, const sel_f8& c) {
-#if STRATA_SEL_GFX12
+__device__ __forceinline__ sel_f8 wmma_bf16(const sel_sf& a, const sel_sf& b, const sel_f8& c) {
+#if STRATA_SEL_GFX12 == 1
     return __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32_gfx12(a, b, c);
+#elif STRATA_SEL_GFX12 == 2
+    return __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, c);
 #else
     __trap();
     return c;
+#endif
+}
+// a B fragment from an LDS row (16-byte aligned: gfx11's 32-byte fragment is read as two halves)
+__device__ __forceinline__ sel_sf load_b(const uint16_t* p) {
+#if STRATA_SEL_FK == 16
+    const sel_s8 a = *reinterpret_cast<const sel_s8*>(p), b = *reinterpret_cast<const sel_s8*>(p + 8);
+    return __builtin_shufflevector(a, b, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+#else
+    return *reinterpret_cast<const sel_s8*>(p);
 #endif
 }
 // the bf16 pieces of x as fp32 bit patterns whose upper 16 bits are the bf16 (lower 16 are zero)
@@ -360,7 +384,7 @@ __global__ void __launch_bounds__(128) block_scores_wmma_kernel(const float* __r
         if (b0 >= reach || b0 >= hi_nbid) break;          // warp-uniform; later tiles start higher
         const int64_t row = b0 + l16;
         const bool rv = row < hi_nbid && row < max_blocks;
-        const float* kp = pooled + (rv ? row : 0) * IDX_DIM + g * 8;
+        const float* kp = pooled + (rv ? row : 0) * IDX_DIM + SEL_KOFF(g);
         // acc: the hi*hi products; cor: the five smaller ones (<= 2^-8 of it). Kept apart and added once at the end: a
         // correction summed into the big accumulator is rounded to ITS ulp at every one of the 48 steps (measured: 8e-7
         // of the score scale; apart, near the warp kernel's)
@@ -369,29 +393,29 @@ __global__ void __launch_bounds__(128) block_scores_wmma_kernel(const float* __r
         for (int h = 0; h < IDX_HEADS; ++h) acc[h] = cor[h] = sel_f8{0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
 #pragma unroll 2
         for (int kk = 0; kk < IDX_DIM / 16; ++kk) {
-            float4 k0 = make_float4(0.f, 0.f, 0.f, 0.f), k1 = k0;
-            if (rv) {
-                k0 = *reinterpret_cast<const float4*>(kp + kk * 16);
-                k1 = *reinterpret_cast<const float4*>(kp + kk * 16 + 4);
-            }
-            const float x[8] = {k0.x, k0.y, k0.z, k0.w, k1.x, k1.y, k1.z, k1.w};
-            uint32_t hb[8], mb[8], lb[8];
+            float x[SEL_FK];
 #pragma unroll
-            for (int j = 0; j < 8; ++j) split3(x[j], hb[j], mb[j], lb[j]);
+            for (int v4 = 0; v4 < SEL_FK / 4; ++v4) {
+                const float4 k = rv ? *reinterpret_cast<const float4*>(kp + kk * 16 + 4 * v4) : make_float4(0.f, 0.f, 0.f, 0.f);
+                x[4 * v4] = k.x; x[4 * v4 + 1] = k.y; x[4 * v4 + 2] = k.z; x[4 * v4 + 3] = k.w;
+            }
+            uint32_t hb[SEL_FK], mb[SEL_FK], lb[SEL_FK];
+#pragma unroll
+            for (int j = 0; j < SEL_FK; ++j) split3(x[j], hb[j], mb[j], lb[j]);
             sel_u4 ah, am, al;
 #pragma unroll
-            for (int j = 0; j < 4; ++j) {
+            for (int j = 0; j < SEL_FK / 2; ++j) {
                 ah[j] = pack_bf16x2(hb[2 * j], hb[2 * j + 1]);
                 am[j] = pack_bf16x2(mb[2 * j], mb[2 * j + 1]);
                 al[j] = pack_bf16x2(lb[2 * j], lb[2 * j + 1]);
             }
-            const sel_s8 Ah = __builtin_bit_cast(sel_s8, ah), Am = __builtin_bit_cast(sel_s8, am),
-                         Al = __builtin_bit_cast(sel_s8, al);
+            const sel_sf Ah = __builtin_bit_cast(sel_sf, ah), Am = __builtin_bit_cast(sel_sf, am),
+                         Al = __builtin_bit_cast(sel_sf, al);
 #pragma unroll
             for (int h = 0; h < IDX_HEADS; ++h) {
-                const sel_s8 Bh = *reinterpret_cast<const sel_s8*>(&sq[0][h][l16][kk * 16 + g * 8]);
-                const sel_s8 Bm = *reinterpret_cast<const sel_s8*>(&sq[1][h][l16][kk * 16 + g * 8]);
-                const sel_s8 Bl = *reinterpret_cast<const sel_s8*>(&sq[2][h][l16][kk * 16 + g * 8]);
+                const sel_sf Bh = load_b(&sq[0][h][l16][kk * 16 + SEL_KOFF(g)]);
+                const sel_sf Bm = load_b(&sq[1][h][l16][kk * 16 + SEL_KOFF(g)]);
+                const sel_sf Bl = load_b(&sq[2][h][l16][kk * 16 + SEL_KOFF(g)]);
                 cor[h] = wmma_bf16(Al, Bh, cor[h]);
                 cor[h] = wmma_bf16(Ah, Bl, cor[h]);
                 cor[h] = wmma_bf16(Am, Bm, cor[h]);
@@ -400,11 +424,11 @@ __global__ void __launch_bounds__(128) block_scores_wmma_kernel(const float* __r
                 acc[h] = wmma_bf16(Ah, Bh, acc[h]);
             }
         }
-        // relu per head, heads added in order (as the warp kernel); this lane: query qi, blocks b0 + 8g .. 8g+7
+        // relu per head, heads added in order (as the warp kernel); this lane: query qi, blocks b0 + SEL_ROW(g, 0..7)
         if (qi < nq) {
 #pragma unroll
             for (int i = 0; i < 8; ++i) {
-                const int64_t b = b0 + g * 8 + i;
+                const int64_t b = b0 + SEL_ROW(g, i);
                 if (b >= nb_q || b >= max_blocks) continue;
                 float score = 0.0f;
 #pragma unroll
@@ -418,7 +442,7 @@ __global__ void __launch_bounds__(128) block_scores_wmma_kernel(const float* __r
     }
 }
 
-// the gfx12 kernel needs gfx1200/gfx1201 code objects and a gfx12 device (gfx1100 has WMMA too, with another layout)
+// the WMMA kernel needs gfx1200/gfx1201 or gfx11 code objects and a device of that family (the layouts differ)
 bool sel_gfx12_device() {
     static int ok[64] = {};   // per device: 0 unknown, 1 yes, 2 no
     int dev = 0;
@@ -426,7 +450,8 @@ bool sel_gfx12_device() {
     if (ok[dev] == 0) {
         cudaDeviceProp prop;
         ok[dev] = (cudaGetDeviceProperties(&prop, dev) == cudaSuccess &&
-                   (std::strncmp(prop.gcnArchName, "gfx1200", 7) == 0 || std::strncmp(prop.gcnArchName, "gfx1201", 7) == 0))
+                   (std::strncmp(prop.gcnArchName, "gfx1200", 7) == 0 || std::strncmp(prop.gcnArchName, "gfx1201", 7) == 0 ||
+                    std::strncmp(prop.gcnArchName, "gfx11", 5) == 0))
                       ? 1 : 2;
         cudaGetLastError();
     }
