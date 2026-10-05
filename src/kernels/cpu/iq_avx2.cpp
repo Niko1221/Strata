@@ -44,6 +44,21 @@ inline __m256i sgn_vec(uint32_t m) {
     return _mm256_or_si256(nz, _mm256_set1_epi8(1));
 }
 
+// The same sign vector read in place from the half's four sign bytes (IQ3_S, IQ2_S): the bytes come in as one
+// broadcast load (vpbroadcastd from memory, a load uop) and ONE pshufb expands them, instead of sgn_vec's two
+// pshufb + inserti128 - three uops on the single shuffle port of Haswell-class cores, one here.
+inline __m256i sgn_vec_at(const uint8_t* p) {
+    const __m256i bits = _mm256_shuffle_epi8(_mm256_set1_epi32((int) u32(p)),
+                                             _mm256_setr_epi8(0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1,
+                                                              2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3));
+    const __m256i sel = _mm256_setr_epi8(1, 2, 4, 8, 16, 32, 64, (char) 0x80,
+                                         1, 2, 4, 8, 16, 32, 64, (char) 0x80,
+                                         1, 2, 4, 8, 16, 32, 64, (char) 0x80,
+                                         1, 2, 4, 8, 16, 32, 64, (char) 0x80);
+    const __m256i nz = _mm256_cmpeq_epi8(_mm256_and_si256(bits, sel), sel);
+    return _mm256_or_si256(nz, _mm256_set1_epi8(1));
+}
+
 // The two 16-value scales of one 32-value half (IQ2_XS, IQ2_S): int16 lanes 0-7 = a (values 0-15),
 // 8-15 = b (values 16-31).  NOT a broadcast dword [a,b] - that would alternate the scales lane by lane.
 inline __m256i sc16(int a, int b) {
@@ -81,6 +96,54 @@ static constexpr EvenSigns even_signs{};
 static_assert(even_signs.v[0] == 0x0101010101010101ull && even_signs.v[1] == 0xFF010101010101FFull,
               "keven_signs_q2xs: byte k = 0xFF when bit k of ksigns_iq2xs[i] is set");
 
+// IQ3_S / IQ2_S grid indices: the high index bits of a 32-value half (one qh byte) spread one index per byte,
+// so a single punpcklbw puts them next to the low index bytes and every grid lookup is a 16-bit load plus the
+// table load - instead of a shift, a mask and an or per index.  IQ3_S: byte k = bit k (the 9th bit of index k).
+// IQ2_S: byte k = bits 2k,2k+1 (bits 8-9 of index k), k < 4.  constexpr for the same reason as EvenSigns.
+struct HiSpread {
+    uint64_t iq3s[256];
+    uint64_t iq2s[256];
+    constexpr HiSpread() : iq3s{}, iq2s{} {
+        for (int h = 0; h < 256; ++h) {
+            uint64_t r3 = 0, r2 = 0;
+            for (int k = 0; k < 8; ++k) r3 |= (uint64_t) ((h >> k) & 1) << (8 * k);
+            for (int k = 0; k < 4; ++k) r2 |= (uint64_t) ((h >> (2 * k)) & 3) << (8 * k);
+            iq3s[h] = r3;
+            iq2s[h] = r2;
+        }
+    }
+};
+static constexpr HiSpread hi_spread{};
+static_assert(hi_spread.iq3s[0x81] == 0x0100000000000001ull && hi_spread.iq2s[0xE4] == 0x0000000003020100ull,
+              "hi_spread: one high-bit group per index byte");
+
+// The (2s+1) scale vectors as tables (IQ3_S: one 4-bit scale per 32-value half; IQ2_S: one scale byte holding
+// the two 16-value scales of the half) - one load instead of the shift/or/broadcast chain of sc32()/sc16().
+struct ScaleVecs {
+    int16_t s32[16][16];    // all 16 lanes = 2s+1
+    int16_t s16[256][16];   // lanes 0-7 = 2*(b&15)+1, lanes 8-15 = 2*(b>>4)+1 (the layout sc16() builds)
+    constexpr ScaleVecs() : s32{}, s16{} {
+        for (int s = 0; s < 16; ++s)
+            for (int l = 0; l < 16; ++l) s32[s][l] = (int16_t) (2 * s + 1);
+        for (int b = 0; b < 256; ++b)
+            for (int l = 0; l < 8; ++l) {
+                s16[b][l] = (int16_t) (2 * (b & 15) + 1);
+                s16[b][l + 8] = (int16_t) (2 * (b >> 4) + 1);
+            }
+    }
+};
+static constexpr ScaleVecs scale_vecs{};
+static_assert(scale_vecs.s32[15][0] == 31 && scale_vecs.s16[0x2F][7] == 31 && scale_vecs.s16[0x2F][8] == 5,
+              "scale_vecs: 2s+1, low nibble in lanes 0-7");
+
+inline __m256i scale_vec(const int16_t* lanes) { return _mm256_loadu_si256((const __m256i*) lanes); }
+
+// The low index bytes q[0..7] interleaved with the spread high bits: eight 16-bit grid indices in sp[].
+inline void grid_indices(const uint8_t* q, uint64_t hi, uint16_t* sp) {
+    _mm_storeu_si128((__m128i*) sp, _mm_unpacklo_epi8(_mm_cvtsi64_si128((long long) u64(q)),
+                                                      _mm_cvtsi64_si128((long long) hi)));
+}
+
 inline float hsum8(__m256 v) {
     const __m128 lo = _mm256_castps256_ps128(v), hi = _mm256_extractf128_ps(v, 1);
     __m128 s = _mm_add_ps(lo, hi);
@@ -110,6 +173,10 @@ inline void rows_ahead(const uint8_t* p) {
 // scalar loads assembled with set_epi32.  AVX2 gather is a different instruction with worse throughput on some cores
 // (opt-in, as on AVX-512); on the i7-12850HX it measures ~1.3x on the two 32-bit-grid formats, bit-exact.
 static const bool gather = [] { const char* v = std::getenv("STRATA_IQ256_GATHER"); return v != nullptr && std::atoi(v) != 0; }();
+// IQ3_S's gather variant is a separate instantiation (21 | kGather), chosen once per call by iq256_rows /
+// iq256_gu_rows.  Testing `gather` inside its decode() put a branch in the innermost loop; with the table-driven
+// IQ3_S decode below that cost 25-35 % at nt=2-3 on a Zen 3 5950X (the default, non-gather path).
+constexpr int kGather = 0x100;
 
 // ---- per format: one 32-value half (values 64*j + 32*half .. +31) -> grid magnitudes, sign vector, scales
 template <int TY> struct Fmt32;
@@ -149,17 +216,13 @@ template <> struct Fmt32<22> {   // IQ2_S: d, qs[64] (32 grid bytes, 32 sign byt
     static constexpr int bytes = 82;
     static constexpr float K = 0.125f;
     static inline void decode(const uint8_t* b, int j, int half, __m256i& g, __m256i& sgn, __m256i& sc) {
-        const uint8_t* qs = b + 2 + 8 * j;
-        const uint8_t h = b[66 + 2 * j + half];
-        const int o = 4 * half;
-        g = _mm256_set_epi64x((long long) iq2s_grid[qs[o + 3] | ((h << 2) & 0x300)],
-                              (long long) iq2s_grid[qs[o + 2] | ((h << 4) & 0x300)],
-                              (long long) iq2s_grid[qs[o + 1] | ((h << 6) & 0x300)],
-                              (long long) iq2s_grid[qs[o] | ((h << 8) & 0x300)]);
-        const uint64_t m = u64(b + 2 + 32 + 8 * j);
-        sgn = sgn_vec(half ? (uint32_t) (m >> 32) : (uint32_t) m);
-        const uint8_t sb = b[74 + 2 * j + half];
-        sc = sc16(2 * (sb & 15) + 1, 2 * (sb >> 4) + 1);
+        // grid_indices reads 8 index bytes; only the first 4 are this half's (the rest stay inside the block)
+        alignas(16) uint16_t sp[8];
+        grid_indices(b + 2 + 8 * j + 4 * half, hi_spread.iq2s[b[66 + 2 * j + half]], sp);
+        g = _mm256_set_epi64x((long long) iq2s_grid[sp[3]], (long long) iq2s_grid[sp[2]],
+                              (long long) iq2s_grid[sp[1]], (long long) iq2s_grid[sp[0]]);
+        sgn = sgn_vec_at(b + 2 + 32 + 8 * j + 4 * half);
+        sc = scale_vec(scale_vecs.s16[b[74 + 2 * j + half]]);
     }
 };
 
@@ -182,29 +245,32 @@ template <> struct Fmt32<18> {   // IQ3_XXS: d, qs[64] grid bytes, 8 x u32 (4 x 
     }
 };
 
-template <> struct Fmt32<21> {   // IQ3_S: d, qs[64], qh[8], signs[32], scales[4]
+template <bool G> struct Iq3s {   // IQ3_S: d, qs[64], qh[8], signs[32], scales[4]
     static constexpr int bytes = 110;
     static constexpr float K = 1.0f;
     static inline void decode(const uint8_t* b, int j, int half, __m256i& g, __m256i& sgn, __m256i& sc) {
         const uint8_t* q = b + 2 + 16 * j + 8 * half;
         const uint32_t h = b[66 + 2 * j + half];
-        if (gather) {
+        if constexpr (G) {
             const __m256i bits = _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7);
             __m256i idx = _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i*) q));
             idx = _mm256_add_epi32(idx, _mm256_slli_epi32(
                 _mm256_and_si256(_mm256_srlv_epi32(_mm256_set1_epi32((int) h), bits), _mm256_set1_epi32(1)), 8));
             g = _mm256_i32gather_epi32((const int*) iq3s_grid, idx, 4);
         } else {
-#define G3(k) (int) iq3s_grid[q[k] | (((h >> k) & 1u) << 8)]
+            alignas(16) uint16_t sp[8];
+            grid_indices(q, hi_spread.iq3s[h], sp);
+#define G3(k) (int) iq3s_grid[sp[k]]
             g = _mm256_set_epi32(G3(7), G3(6), G3(5), G3(4), G3(3), G3(2), G3(1), G3(0));
 #undef G3
         }
-        const uint64_t m = u64(b + 74 + 8 * j);
-        sgn = sgn_vec(half ? (uint32_t) (m >> 32) : (uint32_t) m);
+        sgn = sgn_vec_at(b + 74 + 8 * j + 4 * half);
         const uint8_t s = b[106 + j];
-        sc = sc32(half ? 2 * (s >> 4) + 1 : 2 * (s & 15) + 1);
+        sc = scale_vec(scale_vecs.s32[half ? s >> 4 : s & 15]);
     }
 };
+template <> struct Fmt32<21> : Iq3s<false> {};
+template <> struct Fmt32<21 | kGather> : Iq3s<true> {};
 
 template <> struct Fmt32<23> {   // IQ4_XS: d, scales_h, scales_l[4], qs[128] - 136 B, 8 signed sub-scales
     // ggml's ggml_vec_dot_iq4_xs_q8_K: the same 16-value codebook as IQ4_NL, but each of the eight 32-value
@@ -417,7 +483,8 @@ void iq256_gu_rows(int type, const uint8_t* blob, size_t gu_row, size_t up_off, 
         case 16: gu_rows_nt<16>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
         case 17: gu_rows_nt<17>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
         case 18: gu_rows_nt<18>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        case 21: gu_rows_nt<21>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 21: gather ? gu_rows_nt<21 | kGather>(nt, blob, gu_row, up_off, n, act, ff, r0, r1)
+                        : gu_rows_nt<21>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
         case 22: gu_rows_nt<22>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
         case 23: gu_rows_nt<23>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
         default: break;
@@ -430,7 +497,8 @@ void iq256_rows(int type, const uint8_t* w, size_t row_bytes, int n, const void*
         case 16: dot_rows_nt<16>(nt, w, row_bytes, n, act, out, r0, r1); break;
         case 17: dot_rows_nt<17>(nt, w, row_bytes, n, act, out, r0, r1); break;
         case 18: dot_rows_nt<18>(nt, w, row_bytes, n, act, out, r0, r1); break;
-        case 21: dot_rows_nt<21>(nt, w, row_bytes, n, act, out, r0, r1); break;
+        case 21: gather ? dot_rows_nt<21 | kGather>(nt, w, row_bytes, n, act, out, r0, r1)
+                        : dot_rows_nt<21>(nt, w, row_bytes, n, act, out, r0, r1); break;
         case 22: dot_rows_nt<22>(nt, w, row_bytes, n, act, out, r0, r1); break;
         case 23: dot_rows_nt<23>(nt, w, row_bytes, n, act, out, r0, r1); break;
         default: break;
