@@ -1806,12 +1806,13 @@ bool Verifier::capture_batch(const int* rows, int S, int hbase, std::string& err
     }
     const cudaError_t ie = cudaGraphInstantiate(&ex, graph, 0);
     cudaGraphDestroy(graph);
-    if (ie != cudaSuccess) { err = std::string("verify: batch instantiate: ") + cudaGetErrorString(ie); return false; }
+    if (ie != cudaSuccess) {
+        ex = nullptr;
+        err = std::string("verify: batch instantiate: ") + cudaGetErrorString(ie);
+        return false;
+    }
     cudaGraphUpload(ex, cs_);
     cudaStreamSynchronize(cs_);
-    std::string list;
-    for (int t = 0; t < S; ++t) list += (t ? "," : "") + std::to_string(rows[t]);
-    std::fprintf(stderr, "strata verify: captured the batch window over slots %s\n", list.c_str());
     return true;
 }
 
@@ -1896,13 +1897,29 @@ bool Verifier::capture_commit_batch(const int* rows, int S, int hbase, std::stri
         if (graph) cudaGraphDestroy(graph);
         return false;
     }
-    if (ce != cudaSuccess || cudaGraphInstantiate(&cex, graph, 0) != cudaSuccess) {
+    if (ce != cudaSuccess) {
         if (graph) cudaGraphDestroy(graph);
-        err = std::string("verify: batch commit capture: ") + cudaGetErrorString(ce);
+        err = std::string("verify: end batch commit capture: ") + cudaGetErrorString(ce);
         return false;
     }
+    const cudaError_t ie = cudaGraphInstantiate(&cex, graph, 0);
     cudaGraphDestroy(graph);
+    if (ie != cudaSuccess) {
+        cex = nullptr;
+        err = std::string("verify: batch commit instantiate: ") + cudaGetErrorString(ie);
+        return false;
+    }
     return true;
+}
+
+void Verifier::drop_batch_graphs(const std::vector<int>& key) {
+    for (auto* m : {&exec_bm_, &commit_bm_}) {
+        const auto it = m->find(key);
+        if (it == m->end()) continue;
+        if (it->second) cudaGraphExecDestroy(it->second);
+        m->erase(it);
+    }
+    used_bm_.erase(key);
 }
 
 bool Verifier::stage_batch(const int* rows, int S, int hbase, const int32_t* tokens, const int64_t* pos,
@@ -1939,25 +1956,41 @@ bool Verifier::stage_batch(const int* rows, int S, int hbase, const int32_t* tok
             err = "verify: slot " + std::to_string(rows[t]) + " runs past its context";
             return false;
         }
-    // Slot rotation creates new layouts; bound the captured graph pairs.
+    // Each set of slots and row counts is its own layout; bound the captured graph pairs, dropping the least recently
+    // used pair when a new layout needs room.
     const auto key = batch_key(rows, S, hbase);
     constexpr size_t graph_limit = 32;
-    if (exec_bm_.find(key) == exec_bm_.end() && exec_bm_.size() >= graph_limit) {
+    auto ready = [&key](const std::map<std::vector<int>, cudaGraphExec_t>& m) {
+        const auto it = m.find(key);
+        return it != m.end() && it->second != nullptr;
+    };
+    const bool fresh = !ready(exec_bm_) || !ready(commit_bm_);
+    if (fresh && used_bm_.find(key) == used_bm_.end() && used_bm_.size() >= graph_limit) {
         if (cudaStreamSynchronize(cs_) != cudaSuccess) {
             err = "verify: synchronizing before batch graph eviction failed";
             return false;
         }
-        auto old = exec_bm_.begin();
-        const auto old_key = old->first;
-        if (old->second) cudaGraphExecDestroy(old->second);
-        exec_bm_.erase(old);
-        auto commit_old = commit_bm_.find(old_key);
-        if (commit_old != commit_bm_.end()) {
-            if (commit_old->second) cudaGraphExecDestroy(commit_old->second);
-            commit_bm_.erase(commit_old);
-        }
+        auto oldest = used_bm_.begin();
+        for (auto it = used_bm_.begin(); it != used_bm_.end(); ++it)
+            if (it->second < oldest->second) oldest = it;
+        const std::vector<int> old_key = oldest->first;
+        drop_batch_graphs(old_key);
     }
-    if (!capture_batch(rows, S, hbase, err) || !capture_commit_batch(rows, S, hbase, err)) return false;
+    used_bm_[key] = ++use_clock_;
+    if (!capture_batch(rows, S, hbase, err) || !capture_commit_batch(rows, S, hbase, err)) {
+        // a half-built pair is never launched: the next window with this layout captures both again
+        (void) cudaStreamSynchronize(cs_);
+        drop_batch_graphs(key);
+        return false;
+    }
+    if (fresh) {
+        size_t free_b = 0, total_b = 0;
+        (void) cudaMemGetInfo(&free_b, &total_b);
+        std::string list;
+        for (int t = 0; t < S; ++t) list += (t ? "," : "") + std::to_string(rows[t]);
+        std::fprintf(stderr, "strata verify: batch graphs for rows %s (%zu cached, %zu MiB free)\n", list.c_str(),
+                     used_bm_.size(), free_b >> 20);
+    }
     const Clock::time_point t0 = Clock::now();
     const QsaShapes s = shapes_of(g);
     for (int t = 0; t < S; ++t) {

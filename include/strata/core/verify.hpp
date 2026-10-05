@@ -225,6 +225,9 @@ private:
     int brow_[8] = {};                     ///< ... and row t is slot brow_[t]
     bool last_batch_ = false;              ///< the last run was a batch window (set_plan_slot: one group)
     std::map<std::vector<int>, cudaGraphExec_t> exec_bm_, commit_bm_;   ///< full row layout avoids slot-ID collisions
+    std::map<std::vector<int>, uint64_t> used_bm_;   ///< each layout's last use (use_clock_): eviction drops the oldest
+    uint64_t use_clock_ = 0;
+    void drop_batch_graphs(const std::vector<int>& key);   ///< destroys a layout's window and commit graphs together
     int last_rows_[8] = {};                ///< the slots of the last batch window's rows
     static std::vector<int> batch_key(const int* rows, int S, int hbase) {
         std::vector<int> k;
