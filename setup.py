@@ -4079,9 +4079,15 @@ def main() -> int:
     # the .part files already on the disk count
     on_disk = sum(f.stat().st_size for s in shards for f in (s, s.with_name(s.name + ".part")) if f.is_file()) / 1e9
     to_fetch = 0 if a.gguf_dir or have_model else max(MODELS[model]["download_gb"] - on_disk, 0)
-    need = to_fetch + 8 + \
-        (40 if model == "Q2_0" and avx512 and family == "qwen" else 0) + (1 if vision != "none" else 0) + \
-        (MODELS[model]["arena_gb"] + 1 if low_ram and not (model == "Q2_0" and avx512 and family == "qwen") else 0)
+    # count only what step 6 will still write: a pack whose experts.bin is already there (the AVX-512 Q2_0
+    # conversion, or the low-RAM mode's copy) and an existing MTP draft layer need no new room
+    pack_now = find_in(roots, f"packs/{tag.lower()}") or data / "packs" / tag.lower()
+    pack_bin = (pack_now / "experts.bin").exists() and (pack_now / "index.txt").exists()
+    mtp_have = find_in(roots, "mtp/rt/experts.bin") is not None
+    q2_avx = model == "Q2_0" and avx512 and family == "qwen"
+    need = to_fetch + (2 if mtp_have else 8) + \
+        (40 if q2_avx and not pack_bin else 0) + (1 if vision != "none" else 0) + \
+        (MODELS[model]["arena_gb"] + 1 if low_ram and not q2_avx and not pack_bin else 0)
     if free_gb(models_dir) < need:
         fail(f"not enough free disk space in {models_dir}: need ~{need:.0f} GB" +
              (f" ({on_disk:.0f} GB of the model is already there)" if on_disk >= 1 and not have_model else ""),
