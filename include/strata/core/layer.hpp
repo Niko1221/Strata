@@ -306,6 +306,12 @@ int64_t qsa_kv_resident();
 int64_t qsa_kv_resident_min();
 /// Pinned host bytes the streamed states hold (their host copies).
 uint64_t qsa_kv_host_bytes();
+/// A shared KV pool (kv_pool.hpp): a streamed state takes no host copy of its own, the pool attaches one. Set before
+/// initializing the sessions.
+void qsa_set_kv_shared_host(bool enabled);
+/// Pins `pages` blocks of host K/V in `st`'s format, device-mapped, and points `out`'s arrays into it (the layout
+/// of kv_stream.hpp). False when the driver refuses to pin.
+bool qsa_host_alloc(const ModelGeometry& g, const QsaState& st, int64_t pages, strata::kernels::KvHostPools& out);
 /// Plan v0.3 P7: store K/V as INT8 with FP16 scales per 64 values (half the VRAM of FP16). Set before sizing and
 /// initializing the session; default off until gate G-C accepts it.
 void qsa_set_kv_int8(bool enabled);
