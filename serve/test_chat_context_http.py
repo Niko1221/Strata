@@ -9,7 +9,7 @@ from unittest import mock
 
 from serve.frontend import ChatTemplate
 from serve.server import ByteTokenizer, CTX_SLACK, Service, serve
-from serve.test_server import UnloadableEngine
+from serve.test_server import ThinkTokenizer, UnloadableEngine
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -60,6 +60,32 @@ class ChatContextHttp(unittest.TestCase):
         self.assertEqual(count["input_tokens"], completed["usage"]["prompt_tokens"])
         explicit = self.post("/v1/chat/count_tokens", {**request, "max_completion_tokens": 32})[1]
         self.assertEqual(explicit["effective_max_tokens"], 32)
+
+    def test_literal_thinking_tags_count_like_completion_without_loading(self):
+        self.svc.tok = ThinkTokenizer()
+        self.engine.unload()
+        request = {"messages": [{"role": "user", "content": "Quote </think> and <think> as text."}],
+                   "reasoning_effort": "none", "max_tokens": 16}
+        status, count = self.post("/v1/chat/count_tokens", request)
+        self.assertEqual(status, 200)
+        self.assertFalse(self.engine.alive())
+        self.assertEqual(self.engine.starts, 0)
+        status, completion = self.post("/v1/chat/completions", request)
+        self.assertEqual(status, 200)
+        self.assertEqual(count["input_tokens"], completion["usage"]["prompt_tokens"])
+
+    def test_trailing_effort_turn_count_matches_completion_without_loading(self):
+        self.svc.effort_end = True
+        self.engine.unload()
+        request = {"messages": [{"role": "user", "content": "Explain the cache."}],
+                   "reasoning_effort": "low", "max_tokens": 16}
+        status, count = self.post("/v1/chat/count_tokens", request)
+        self.assertEqual(status, 200)
+        self.assertFalse(self.engine.alive())
+        self.assertEqual(self.engine.starts, 0)
+        status, completion = self.post("/v1/chat/completions", request)
+        self.assertEqual(status, 200)
+        self.assertEqual(count["input_tokens"], completion["usage"]["prompt_tokens"])
 
     def test_count_mcp_template_without_running_tools(self):
         tool = {"name": "search", "description": "Search the web", "parameters": {"type": "object"}}
