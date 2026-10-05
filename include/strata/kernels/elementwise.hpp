@@ -119,7 +119,10 @@ void doorbell_publish_value(const float* x, const int32_t* ids, const float* wei
                             float* x_out, int32_t* ids_out, float* weights_out, uint32_t* d_seq, uint32_t value,
                             void* stream);
 void doorbell_publish_res(const float* x, const int32_t* ids, const int32_t* d_res, int n_expert, int64_t n, int64_t k,
-                          float* x_out, int32_t* ids_out, uint32_t* d_seq, void* stream);
+                          float* x_out, int32_t* ids_out, uint32_t* d_seq, void* stream,
+                          const float* weights = nullptr, float* weights_out = nullptr,
+                          const float* router_scores = nullptr, float* router_scores_out = nullptr,
+                          int64_t n_router_scores = 0);
 
 /// Plan v0.3 P3: copy `n` int32 from mapped pinned host memory into device memory with a kernel (the QSA
 /// per-token step and positions), instead of a host-to-device memcpy node in the middle of a layer.

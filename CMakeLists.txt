@@ -425,7 +425,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # about arithmetic, and this one knows the ORDER the arithmetic happens in.
   add_library(strata_engine STATIC src/core/layer.cpp src/core/session.cpp src/core/expert_source.cpp src/core/remote_experts.cpp
     src/core/remote_expert_opt.cu
-    src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp
+    src/core/expert_cache.cpp src/core/car.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp
     src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp)
   target_include_directories(strata_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_kernels_cpu ${_strata_gpu_runtime_target})
@@ -917,6 +917,15 @@ if(STRATA_BUILD_TESTS)
   add_executable(draft_policy_test src/spec/draft_policy_test.cpp)
   target_link_libraries(draft_policy_test PRIVATE strata_spec)
   add_test(NAME draft_policy_test COMMAND draft_policy_test)
+  # cache-aware routing's decision rule.  It has no engine dependency at all (no GPU, no session, no weights),
+  # which is the point of keeping it in its own translation unit - so it is compiled into this test directly
+  # and builds and runs in a CPU-only configuration too, not only in a HIP/CUDA build.
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/car_substitute_test.cpp")
+    add_executable(car_substitute_test tests/core/car_substitute_test.cpp src/core/car.cpp)
+    target_include_directories(car_substitute_test PRIVATE include)
+    add_test(NAME car_substitute_test COMMAND car_substitute_test)
+    set_tests_properties(car_substitute_test PROPERTIES TIMEOUT 60)
+  endif()
 endif()
 if(STRATA_BUILD_TESTS OR STRATA_BUILD_CONVERSATION_TESTS)
   # the serve loop's conversation-cache retention policy (header-only, no library to link)

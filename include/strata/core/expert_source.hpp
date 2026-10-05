@@ -22,12 +22,14 @@
 #pragma once
 
 #include "strata/core/expert_cache.hpp"
+#include "strata/core/car.hpp"
 #include "strata/core/hit_hook.hpp"
 #include "strata/kernels/cpu/pool.hpp"
 
 #include <atomic>
 #include <cstdint>
 #include <cstddef>
+#include <cstdio>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -361,6 +363,24 @@ struct ExpertDispatch {
     std::vector<float> usage;
     int64_t multi_misses = 0;      ///< distinct (layer, expert) pairs the CPU computed in verify windows
     int64_t multi_entries = 0;     ///< routed (token, expert) entries the CPU served in verify windows
+    // ================================ CACHE-AWARE ROUTING ================================
+    //
+    // **THE DECISION IS MADE IN `car_apply`, ON THE ROUTED IDS THE WINDOW PUBLISHED, BEFORE THE PLAN IS
+    // BUILT.**  `host_res` (the residency table this file already consults for the tier split) is the cache's
+    // own view, so "resident" means the same thing here as it does three lines further down.  A substituted
+    // entry is then an ordinary resident hit: `kind[]` marks it VRAM, the plan points at its slot, and the CPU
+    // pool never sees it.
+    strata::core::car::Config car_cfg;              ///< threshold 1.0 = off (the default)
+    strata::core::car::Scratch car_scratch;         ///< reused, so a group allocates nothing
+    strata::core::car::Stats car_stats;             ///< this session's totals, for the report
+    std::vector<int32_t> car_kept;                  ///< the routed ids of the group, before substitution
+    int64_t car_token_index = 0;                    ///< the session's token counter, for the warmup window
+    /// The experts a substitution replaced, counted as "wanted" (`d.usage`) so the adaptive swap's next round
+    /// puts them in the cache: fomoe's backfill rule, whose absence is worth up to 80% of the quality cost.
+    int64_t car_backfilled = 0;
+    /// Where `STRATA_DUMP_ROUTER_SCORES` writes the router score rows (`STRCS1`), or null.
+    std::FILE* car_dump = nullptr;
+    int64_t car_dump_records = 0;
     /// Multi-GPU: the second GPU's tier.  Its experts are computed there instead of on the CPU (kind 2).
     PeerExperts* peer = nullptr;
     int64_t peer_entries = 0;      ///< routed entries the peer served in verify windows
@@ -395,6 +415,18 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
 /// It must run AFTER the host has copied the misses into `parts_dev` (it writes into the same buffer, on rows
 /// the CPU zeroed) and BEFORE `post[l]` (which reads it).  Both are stream-ordered on the loop's own stream.
 void expert_hit_run(void* user, void* stream, HitPhase phase, const int32_t* ids, int64_t k);
+
+/// **CACHE-AWARE ROUTING'S APPLICATION: the window's own hook (a `Verifier::CarFn`).**  Called once per group,
+/// on the ids the window just published, BEFORE the pool and before the plan - so the substitution is in the one
+/// list every consumer reads.  Also writes the `STRCS1` trace when `car_dump` is open, which is what makes the
+/// offline estimator's input come from a real run rather than from a model of one.
+///
+/// `user` is the `ExpertDispatch` of the session.  `weights` and `scores` may be null (no publication): the
+/// decision then has nothing to weigh a substitute with and only the trace is served.
+void car_apply(void* user, int32_t* ids, const float* weights, const float* scores, int64_t n_tok, int64_t k,
+               int64_t layer);
+/// The per-request report line's numbers, or an empty string when CAR never ran.
+std::string car_report(const ExpertDispatch& d);
 /// The pool half of the same decision; see `ExpertDispatch::is_hit`.
 
 /// **PHASE 2'S ONLY SOURCE: `experts.bin`, memory-mapped, no cache.**

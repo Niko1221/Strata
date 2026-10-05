@@ -125,6 +125,24 @@ public:
     /// floats per token in a hand-off buffer
     static int64_t handoff_floats(const ModelGeometry& g) { return (int64_t) g.hc * g.n_embd + g.n_embd + g.hc; }
 
+    /// **CACHE-AWARE ROUTING'S ROUTER SCORES, AND THE HOST HOOK THAT USES THEM.**  A window's layer publishes
+    /// its routed ids as it always has; with this set it also publishes the WHOLE router score row of every
+    /// token in the group (T * n_expert floats), so the host can weigh any RESIDENT expert against the pick it
+    /// might replace.  `fn` is called once per group, right before the pool, with the ids array the pool will
+    /// read - so a substitution made there is a substitution every consumer of the window sees.
+    ///
+    /// A null `fn` with `publish_scores == false` is the default and is exactly the pre-CAR path: the same
+    /// kernel with the same arguments, no extra bytes over PCIe.
+    using CarFn = void (*)(void* user, int32_t* ids, const float* weights, const float* scores, int64_t n_tok,
+                           int64_t k, int64_t layer);
+    void set_car(CarFn fn, void* user, bool publish_scores) {
+        car_fn_ = fn;
+        car_user_ = user;
+        publish_scores_ = publish_scores;
+        if (next_) next_->set_car(fn, user, publish_scores);
+    }
+    bool car_scores_published() const { return publish_scores_; }
+
     /// Keep the first `n_keep` (1..T) tokens of the last window; advances `ss.ple_prev` by them.
     bool commit(int n_keep, std::string& err);
 
@@ -330,6 +348,9 @@ private:
     bool split_ = false;   // opt-in (--spec-split): exact but slower, see the overlap study
     int groups_[9] = {};
     float* h_ymiss_ = nullptr;   float* m_ymiss_ = nullptr;     // T * k * n_embd
+    float* h_car_ = nullptr;     float* m_car_ = nullptr;       // T * n_expert router scores (cache-aware routing)
+    CarFn car_fn_ = nullptr;     void* car_user_ = nullptr;     // the host hook, once per group, before the pool
+    bool publish_scores_ = false;
 
     // device
     void* arena_ = nullptr;

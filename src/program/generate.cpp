@@ -495,6 +495,34 @@ struct Options {
     /// The vision path: keep a per-cell (t, h, w) rotary position table so --serve can take GENI requests.
     bool vision = false;
     int adapt_swaps = 96;
+    /// **CACHE-AWARE ROUTING (fomoe's CAR).**  A decode window's uncached pick is replaced by the best RESIDENT
+    /// expert of that layer (the one the token did not already select) when the router's own score ratio clears
+    /// the threshold.  The substituted entry keeps the router's weight for its position and the GPU computes the
+    /// resident expert from a slot that is already in VRAM, so the CPU pool (or the PCIe copy) that would have
+    /// produced the original expert does not happen.
+    ///
+    /// **0.35 IS THE DEFAULT, AND IT IS A MEASURED NUMBER.**  On this machine's line (Swift 1.5 IQ3_XXS, RX 7700
+    /// XT, 10 GiB budget) it substitutes 30.8% of the decode's misses, cuts the CPU expert pool's share of the
+    /// window by 32% and the window by 12.4%, and writes 35.3 against 30.5 tokens/s (8 trials each arm):
+    /// `bench/results/2026-10-05-car-decode/`.  `1.0` is OFF and restores the stock model's answers exactly
+    /// (byte-identical: the same build at 1.0 produces the pre-CAR engine's tokens, `greedy-caroff-*.json`).
+    /// Below the default the substitutions grow (0.25: 42.9% of misses) and the mean accepted ratio falls.
+    double car_threshold = 0.35;
+    /// Whether the threshold came from the user (flag or `STRATA_CAR_THRESHOLD`) rather than from this default.
+    /// It decides whether an unsupported path is a refusal or a downgrade: an explicit request that cannot be
+    /// honored must fail loudly, a default must not break a run that never asked for it.
+    bool car_explicit = false;
+    /// CAR is off for the session's first N tokens (a cold cache has nothing worth substituting with).
+    int64_t car_warmup = 0;
+    /// Substitutions allowed per token (0 = unlimited), with ratios at or above `car_free_ratio` costing none.
+    int64_t car_budget = 0;
+    double car_free_ratio = 0.0;
+    /// Dampening scales the substitute's weight by the ratio (fomoe's `car.h`); NOT IMPLEMENTED here - a
+    /// substituted entry keeps the router's own weight - so the flag is refused rather than silently ignored.
+    int car_dampen = -1;   ///< -1: not given, 0: off, 1: on (refused)
+    /// `STRATA_DUMP_ROUTER_SCORES=<path>`: write this run's router score rows (the `STRCS1` trace that
+    /// `tools/car_estimate.py` reads).  A probe: it changes no decision and costs one file write per group.
+    std::string dump_router_scores;
     /// --serve: how many conversation checkpoints to keep between requests (0 = every request reads its whole
     /// prompt again, the v0.1.2 behaviour).  One is the GDN recurrence of the 36 layers, the QSA indexer tails and
     /// the PLE history (~118 MB of host RAM); the KV cache itself is positional and stays where it is.
@@ -1251,6 +1279,18 @@ int main(int argc, char** argv) {
 #endif
     }
     Options o;
+    // **THE `STRATA_CAR_*` DEFAULTS, READ BEFORE THE FLAGS SO A FLAG ALWAYS WINS.**  The launcher passes its knobs
+    // as environment (`docker -e`), and a value given on the command line has to override it - which is what
+    // reading the environment here and parsing the arguments below does.  Nothing here has an effect while
+    // `car_threshold` stays 1.0.
+    if (const char* v = std::getenv("STRATA_CAR_THRESHOLD"); v != nullptr && *v != '\0') {
+        o.car_threshold = std::atof(v);
+        o.car_explicit = true;
+    }
+    if (const char* v = std::getenv("STRATA_CAR_WARMUP"); v != nullptr && *v != '\0') o.car_warmup = std::atoll(v);
+    if (const char* v = std::getenv("STRATA_CAR_BUDGET"); v != nullptr && *v != '\0') o.car_budget = std::atoll(v);
+    if (const char* v = std::getenv("STRATA_CAR_FREE_RATIO"); v != nullptr && *v != '\0') o.car_free_ratio = std::atof(v);
+    if (const char* v = std::getenv("STRATA_CAR_DUMP_ROUTER_SCORES"); v != nullptr && *v != '\0') o.dump_router_scores = v;
     bool have_tokens = false;
     bool have_logits_stride = false;
     for (int i = 1; i < argc; ++i) {
@@ -1482,6 +1522,12 @@ int main(int argc, char** argv) {
             o.stop_eos = true;
         }
         else if (a == "--adapt-swaps") o.adapt_swaps = std::atoi(next("--adapt-swaps"));
+        else if (a == "--car-threshold") { o.car_threshold = std::atof(next("--car-threshold")); o.car_explicit = true; }
+        else if (a == "--car-warmup") o.car_warmup = std::atoll(next("--car-warmup"));
+        else if (a == "--car-budget") o.car_budget = std::atoll(next("--car-budget"));
+        else if (a == "--car-free-ratio") o.car_free_ratio = std::atof(next("--car-free-ratio"));
+        else if (a == "--car-dampen") o.car_dampen = std::atoi(next("--car-dampen"));
+        else if (a == "--car-dump-router-scores") o.dump_router_scores = next("--car-dump-router-scores");
         else if (a == "--expert-cache-cpu-order") o.expert_cache_cpu_order = true;
         else if (a == "--expert-cache-per-layer") o.expert_cache_per_layer = true;
         else if (a == "--peer-device") o.peer_device = std::atoi(next("--peer-device"));
@@ -1912,6 +1958,38 @@ int main(int argc, char** argv) {
     }
     if (o.remote_expert_opt && !o.serve) {
         std::fprintf(stderr, "strata generate: --remote-expert-opt requires --serve\n");
+        return 2;
+    }
+    // ---- CACHE-AWARE ROUTING: the checks that keep it from being SILENTLY wrong.
+    //
+    // Each path below is one where the decision cannot be made where the engine makes it - the ids the device
+    // reads are not the ids the host patched, or no window published them at all.  With the feature asked for
+    // EXPLICITLY that is a refusal: substituting nothing while reporting success would be worse.  With it coming
+    // from the default, it is a downgrade with a line saying so - a run that never named CAR must not fail, and
+    // a run that names it must not be lied to.
+    if (o.car_threshold < 1.0) {
+        const char* why = nullptr;
+        if (o.car_dampen == 1) why = "--car-dampen is not implemented in this build: a substituted entry keeps the router's weight for its position (see docs/DETAILS.md)";
+        else if (o.no_pool) why = "cache-aware routing needs the expert pool (the pool builds the plan and runs the CPU's share)";
+        else if (o.spec < 1) why = "cache-aware routing needs the verify window path (--spec N, N >= 1): the non-speculative loop publishes no router scores";
+        else if (o.batch > 0) why = "cache-aware routing is not wired into the batch verify path (--batch/--slots)";
+        else if (!o.layer_split.empty()) why = "cache-aware routing is not wired into a layer split (--layer-split): each stage would decide on its own residency";
+        else if (o.peer_device >= 1) why = "cache-aware routing is not wired into the peer expert tier (--peer-device)";
+        else if (o.remote_expert_opt) why = "cache-aware routing is not wired into the helper-GPU expert tier (--remote-expert-opt)";
+        else if (const char* dp = std::getenv("STRATA_VERIFY_DEVICE_PLAN"); dp != nullptr && std::atoi(dp) != 0)
+            why = "cache-aware routing is not wired into the device-side plan (STRATA_VERIFY_DEVICE_PLAN=1): the plans are made from the device's ids, which a host substitution cannot reach";
+        if (why != nullptr) {
+            if (o.car_explicit) {
+                std::fprintf(stderr, "strata generate: --car-threshold: %s\n", why);
+                return 2;
+            }
+            std::fprintf(stderr, "strata generate: cache-aware routing is OFF for this run: %s\n", why);
+            o.car_threshold = 1.0;   // the default gives way to the path the run actually takes
+        }
+    } else if (o.car_dampen == 1) {
+        // Still refused when CAR is off: the flag does nothing on its own, and a silently ignored option is how a
+        // measurement arm gets mislabeled.
+        std::fprintf(stderr, "strata generate: --car-dampen 1 has no effect without a threshold below 1\n");
         return 2;
     }
     // the peer tier is the second card's only user: a layer split or a remote expert cache would put a second engine
@@ -3677,6 +3755,47 @@ int main(int argc, char** argv) {
     drive.d.src = srcp;
     drive.d.n_expert = g.n_expert;
     drive.d.jobs.resize((size_t) K);
+    // ================================ CACHE-AWARE ROUTING ================================
+    //
+    // **THE OPT-IN, AND THE ONE PLACE THE ENGINE SAYS WHAT IT TOOK.**  With `--car-threshold 1.0` (and no
+    // `STRATA_CAR_*`) nothing below changes a byte of behavior: no score publication, no hook, no trace.  With a
+    // threshold below 1.0 the decode window publishes its router score rows and this hook decides, per group,
+    // which uncached picks a resident expert replaces.
+    drive.d.car_cfg.threshold = (float) o.car_threshold;
+    drive.d.car_cfg.warmup_tokens = o.car_warmup;
+    drive.d.car_cfg.budget_per_token = o.car_budget;
+    drive.d.car_cfg.free_ratio = (float) o.car_free_ratio;
+    if (!o.dump_router_scores.empty()) {
+        drive.d.car_dump = std::fopen(o.dump_router_scores.c_str(), "wb");
+        if (drive.d.car_dump == nullptr) {
+            std::fprintf(stderr, "strata generate: cannot write %s\n", o.dump_router_scores.c_str());
+            return 1;
+        }
+        // the STRCS1 header `tools/car_estimate.py` reads: the magic, then version | n_layers | n_expert | flags
+        const uint32_t hdr[4] = {1u, (uint32_t) g.n_layers, (uint32_t) g.n_expert, 0u};
+        std::fwrite("STRCS1\n", 7, 1, drive.d.car_dump);
+        std::fwrite(hdr, sizeof hdr, 1, drive.d.car_dump);
+    }
+    const bool car_on = o.car_threshold < 1.0;
+    const bool car_publish = car_on || drive.d.car_dump != nullptr;
+    if (car_on || car_publish) {
+        std::fprintf(stderr,
+                     "strata generate: cache-aware routing %s: threshold %.2f%s%s%s%s\n",
+                     car_on ? "ON (the answer is no longer the stock model's - see docs/DETAILS.md)" : "(trace probe)",
+                     o.car_threshold, o.car_warmup > 0 ? ", warmup " : "",
+                     o.car_warmup > 0 ? std::to_string(o.car_warmup).c_str() : "",
+                     o.car_budget > 0 ? ", budget " : "", o.car_budget > 0 ? std::to_string(o.car_budget).c_str() : "");
+        if (car_on && o.adapt_swaps <= 0)
+            std::fprintf(stderr, "strata generate: WARNING: cache-aware routing without the adaptive tier "
+                                 "(--adapt-swaps 0): the experts it replaces are never brought into the cache, "
+                                 "which is where up to 80%% of its quality cost comes from\n");
+    }
+    // Sets the window verifier up: the hook, and whether the group's score rows are published at all.  Every
+    // verifier (a layer split has one per stage) has to be told, which is why this is a lambda and not a flag read
+    // inside the verifier.
+    auto set_car_on = [&](strata::core::Verifier& v) {
+        v.set_car(car_publish ? &strata::core::car_apply : nullptr, (void*) &drive.d, car_publish);
+    };
     // CS-T: routing-aware prefetch of the file tier (the GGUF in place): the next layer's router on this layer's MoE
     // input predicts its experts and their pages are warmed meanwhile.  It only warms pages; STRATA_LOOKAHEAD=0 is
     // the A/B arm, STRATA_LOOKAHEAD_K the experts per token (default 10).
@@ -5125,6 +5244,7 @@ int main(int argc, char** argv) {
             }
             for (int st = 1; st < n_stages; ++st) {
                 bool ok_s = false;
+                set_car_on(stage_ver(st));   // refused with --layer-split, but a strip/renumber must not drift
                 if (split_same) {
                     ok_s = ver_same.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, std::max(o.spec, o.batch), err);
                 } else {
@@ -5156,6 +5276,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata serve: layer split: layers %s, one hand-off per window\n", plan_s.c_str());
         }
         ver.set_remote_expert_opt(remote_opt.get());
+        set_car_on(ver);
         if (!ver.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, std::max(o.spec, o.batch), err) ||
             !mtp.bind(last_st ? last_st->wt : wt, last_st ? &last_st->head : &native_head, ver.final_R_all(), err)) {
             std::fprintf(stderr, "strata serve: %s\n", err.c_str());
@@ -6725,6 +6846,7 @@ int main(int argc, char** argv) {
                     drive.d.layers = 0;
                     drive.d.experts = 0;
                     drive.d.failed = false;
+                    drive.d.car_token_index = q;   // the warmup window counts the session's positions
                     if (!ver.run(T, win.data(), q, win_pool_fn, win_pool_user, outw.data(), e) || drive.d.failed) {
                         if (drive.d.failed && drive.d.fail) e = drive.d.fail;
                         return false;
@@ -7153,6 +7275,7 @@ int main(int argc, char** argv) {
                 }
                 tr("window", p, T);
                 const Clock::time_point tw0 = Clock::now();
+                drive.d.car_token_index = p;   // the warmup window counts the session's positions
                 if (!ver.run(T, window.data(), p, win_pool_fn, win_pool_user, outv.data(), err) || drive.d.failed) {
                     std::printf("ERR %s\n", drive.d.failed && drive.d.fail ? drive.d.fail : err.c_str());
                     return 1;
@@ -7435,6 +7558,16 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata serve: decode expert cache hit rate: %.1f%% (%lld hits / %lld lookups)%s\n",
                              100.0 * (double) req_hits / (double) req_look,
                              (long long) req_hits, (long long) req_look, off);
+            }
+            // cache-aware routing, cumulative: how much of the CPU/PCIe work the substitution removed, and how
+            // well the substitutes matched (the mean accepted ratio is the number a threshold's quality cost
+            // moves with).  Silent when CAR never ran, so a default run's log is unchanged.
+            {
+                const std::string carline = strata::core::car_report(drive.d);
+                if (!carline.empty()) std::fprintf(stderr, "strata serve: %s\n", carline.c_str());
+                else if (car_on)
+                    std::fprintf(stderr, "strata serve: cache-aware routing is ON but no verify window ran it "
+                                        "(0 groups): it did not substitute anything in this request\n");
             }
             // the resident RAM mode, cumulative: experts read from experts.bin since the copy was made (what the plain
             // mmap mode reads through the OS file cache, from the SSD when the RAM could not keep it)
@@ -7853,6 +7986,7 @@ int main(int argc, char** argv) {
         vh.blob = thits.blob;
         vh.slot_off = xcache.slot_offsets();   // E-6: the device plan's pointers
         vh.n_slots = xcache.slots();
+        set_car_on(ver);                       // before init: it decides whether the score rows are allocated
         if (!ver.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, o.spec, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
@@ -8057,6 +8191,7 @@ int main(int argc, char** argv) {
             drive.d.layers = 0;
             drive.d.experts = 0;
             drive.d.failed = false;
+            drive.d.car_token_index = p;   // the warmup window counts the session's positions
             // #463: the previous adapt round's copies land first - with a non-blocking query, whether a swapped-in
             // expert ran on the GPU or the CPU (they round differently) depended on the copy's timing
             // (STRATA_ADAPT_NOWAIT=1: 0.1.37's non-blocking query, the A/B)
@@ -8140,6 +8275,13 @@ int main(int argc, char** argv) {
                     "speculation", (long long) rounds, o.spec, (long long) drafts_ok, (long long) drafts_total,
                     drafts_total > 0 ? (double) drafts_ok / (double) drafts_total : 0.0,
                     rounds > 0 ? (double) (drafts_ok + rounds) / (double) rounds : 0.0);
+        {
+            const std::string carline = strata::core::car_report(drive.d);
+            if (!carline.empty()) std::printf("%-24s %s\n", "cache-aware routing", carline.c_str());
+            else if (car_on)
+                std::fprintf(stderr, "strata generate: cache-aware routing is ON but no verify window ran it "
+                                     "(0 groups): it did not substitute anything\n");
+        }
         if (o.spec_min_p > 0.0) {
             std::printf("%-24s", "window sizes");
             for (size_t i = 1; i < window_hist.size(); ++i) std::printf(" T%zu:%lld", i, (long long) window_hist[i]);

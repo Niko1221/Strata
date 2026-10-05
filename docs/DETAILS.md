@@ -98,6 +98,13 @@ as well (#410): the PCIe share of the missed experts (computed on the GPU instea
 answer after a start differ from the next ones. Measured here (IQ3_XXS, a 3.6K-token prompt, 4 repeats): with all
 three switches 1 answer of 4, without `--pcie-frac 0` 2 of 4 (the first one differs), with the defaults 2 of 4.
 `--pcie-frac 0` costs decode speed (the missed experts all run on the CPU), so keep it for A/B runs.
+Cache-aware routing adds one more term to that list, and it is the largest: a substitution depends on what is in
+the cache, so two runs can differ before they reach their first divergence. Measured here (the shipping line,
+greedy, with `STRATA_IQ_MT_MIN=1`): three identical requests to the **unmodified** engine gave three different
+answers (1,627 / 1,561 / 1,482 chars) with CAR off, and two identical requests with CAR on gave one answer
+twice - the engine's own variance is what dominates unless the switches above are set. `--car-threshold 1.0`
+removes CAR from the picture entirely (with the same switches, its tokens are byte-identical to the build
+before the feature).
 
 **The draft layer's tokens (0.1.27, `--draft-vocab`):** the MTP draft layer can only propose tokens from a subset
 of the vocabulary (`mtp/rt/draft_vocab.bin`). Since 0.1.27 the subset includes every Chinese, Japanese and Korean
@@ -189,6 +196,41 @@ Its `hit_rate` is the VRAM share of the experts looked up while answering: exper
 (`--pcie-frac`) are not in it, so a higher `--pcie-frac` raises it even when decoding gets slower. `pcie_share`
 (engine 0.1.39 or newer, #588) is their share of all routed experts, and the server log and the Monitor tab show it
 beside the hit rate.
+
+**Cache-aware routing (engine 0.1.40, default):** a decode window's expert that is **not** in the VRAM cache is
+replaced by the best **resident** expert of that layer that this token did not already select, when the router's
+own score ratio between the two clears a threshold (0.35 by default). The substituted entry keeps the router's
+weight for its position and the GPU computes the resident expert from a slot that is already in VRAM, so the CPU
+expert (or the PCIe copy) the original would have taken does not happen. Ideas from
+[fomoe](https://github.com/pmerolla/fomoe) (MIT), whose three-tier NVMe design is not what this is: here the
+misses are CPU experts, not blocking disk reads.
+
+Measured on this machine's line (RX 7700 XT, 10 GiB share, Swift 1.5 IQ3_XXS, `./run.sh` with no flags, a 4K-8K
+prompt, 8 trials per arm, `bench/results/2026-10-05-car-decode/`): decode **30.5 -> 35.3 tokens/s (+15.5%)**, the
+window 86.0 -> 75.3 ms, the CPU expert pool's share of the window **-28%** (20.4 -> 14.7 ms per layer-window) at
+**30.8% of the decode's misses substituted** (mean accepted ratio 0.598); the VRAM hit kernel grows threefold
+because that is where the work moved. The card stayed inside its 10 GiB contract (peak share 9,931 MiB off the
+default, 10,155 MiB on the t=1.0 arm). `tools/car_estimate.py` replays an offline trace against the same rules:
+at 0.35 30.6% of misses (2.7 per token), at 0.25 42.9%, at 0.5 18.3%, at 0.7 8.3%; **94.5% of them are ranks 5-9
+of the ten** - the tail the model ranks lowest.
+
+- **It changes the answer, so it is a switch and not a hidden default.** `--car-threshold 1.0` turns it off and
+  restores the stock model's tokens byte for byte (verified against the build before it existed).
+- `--car-threshold F` (also `STRATA_CAR_THRESHOLD`): the ratio a substitute must clear. Lower substitutes more
+  and matches worse (0.25: 42.9% of misses, mean ratio 0.505).
+- `--car-warmup N` / `STRATA_CAR_WARMUP`: no substitution for the first N tokens of a session.
+- `--car-budget N` / `STRATA_CAR_BUDGET`: at most N substitutions per token (0 = unlimited), with
+  `--car-free-ratio F`: substitutions whose ratio is at least F cost none of that budget.
+- `--car-dampen on` is **refused**: it would scale the substitute's weight by the ratio (fomoe's `car.h` mode)
+  and is not implemented - a substituted entry keeps the router's weight.
+- `STRATA_DUMP_ROUTER_SCORES=<path>` writes the run's router score rows as a `STRCS1` trace (ids and the whole
+  score row per token, before any substitution) for `tools/car_estimate.py`. A probe: it changes no decision.
+- It runs on the **verify window decode path** only: a prompt is untouched, and a run that cannot support it
+  (no pool, `--spec 0`, `--batch`, `--layer-split`, a peer or helper-GPU tier, `STRATA_VERIFY_DEVICE_PLAN=1`)
+  gets a line saying CAR is off. Asking for it explicitly on such a path is an error instead, not a silent no-op.
+- **Not measured here:** the perplexity/KL cost against it off, and the other shipped lines (Qwen IQ3_S, the
+  Coder). The quality evidence so far is the coding smoke (205/205), needles 9 of 9 at 1k/4k/32k, and the bounded
+  rule above (a substitute's score is at least 0.35 of the replaced one's, in the tail ranks).
 
 **Where a decode window's time goes (profiling, #610):** start the server with `STRATA_DECODE_TIMING=1` (and
 `STRATA_VERIFY_PROFILE=1` for the GPU's side) in the environment. After each request the engine log then has one

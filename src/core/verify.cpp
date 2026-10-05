@@ -293,7 +293,7 @@ Verifier::~Verifier() {
     if (ev_join_) cudaEventDestroy(ev_join_);
     if (arena_) cudaFree(arena_);
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_commit_, h_ple_, h_out_, h_x_, h_ids_, h_w_, h_seq_, h_flag_, h_ymiss_,
-                     h_flagA_, h_plan_, h_flagB_};
+                     h_flagA_, h_plan_, h_flagB_, h_car_};
     for (void* h : hosts)
         if (h) cudaFreeHost(h);
 }
@@ -376,7 +376,10 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
               mapped(64, (void**) &h_flag_, (void**) &m_flag_) &&
               mapped(64, (void**) &h_flagA_, (void**) &m_flagA_) &&
               mapped(64, (void**) &h_flagB_, (void**) &m_flagB_) &&
-              mapped(T * K * N * 4, (void**) &h_ymiss_, (void**) &m_ymiss_);
+              mapped(T * K * N * 4, (void**) &h_ymiss_, (void**) &m_ymiss_) &&
+              // cache-aware routing's router score rows: allocated only when the run asks for them (a CAR scan
+              // or the trace probe), so a run with neither allocates nothing extra.
+              (publish_scores_ ? mapped(T * (int64_t) g.n_expert * 4, (void**) &h_car_, (void**) &m_car_) : true);
     if (!ok) { err = "verify: mapped staging allocation failed"; return false; }
     // the GPU plan: counts(4) | start(cap+1) | dst(cap) | tok(cap) | pad | ptr(cap u64) | ptr2(cap u64) | start2(cap+1)
     {
@@ -955,8 +958,16 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                  m_ids_ + tb * K, m_w_ + tb * K, m_seq_, cs);
             else {
                 const int32_t* layer_res = hits_.d_res != nullptr ? (hits_.d_res + l * g.n_expert) : nullptr;
+                // `publish_scores_` adds the group's weights and its whole router score row to the same
+                // publication (cache-aware routing needs both; the ring is still the last thing the kernel does,
+                // so a host that sees it knows every byte above is in place).  Off: the identical call to before.
                 doorbell_publish_res(xm, ids_ + tb * K, layer_res, (int) g.n_expert, (int64_t) n * N, (int64_t) n * K,
-                                     m_x_ + tb * N, m_ids_ + tb * K, m_seq_, cs);
+                                     m_x_ + tb * N, m_ids_ + tb * K, m_seq_, cs,
+                                     publish_scores_ ? (w_ + tb * K) : nullptr,
+                                     publish_scores_ ? (m_w_ + tb * K) : nullptr,
+                                     publish_scores_ ? (logits_ + tb * NE) : nullptr,
+                                     publish_scores_ ? (m_car_ + (int64_t) tb * g.n_expert) : nullptr,
+                                     publish_scores_ ? (int64_t) n * g.n_expert : 0);
             }
         }
         stamp(l, 17, grp);
@@ -1485,6 +1496,12 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         set_plan_slot(grp);
         const int tb = gtb[grp], n = gte[grp] - gtb[grp];
         progress_at("verify window: the CPU experts of layer", l);
+        // ---- CACHE-AWARE ROUTING, BEFORE the pool and before the plan: the hook may replace an uncached pick
+        // in `h_ids_` with a resident expert, and everything downstream (the pool's miss list, the GPU plan, the
+        // combine) then reads ONE list.  It is the same contract `hits` has, one phase earlier.
+        if (car_fn_ != nullptr)
+            car_fn_(car_user_, h_ids_ + (size_t) tb * ss.k, h_w_ + (size_t) tb * ss.k,
+                    h_car_ + (size_t) tb * g.n_expert, n, ss.k, l);
         if (remote_opt_) remote_opt_->begin(h_w_ + (size_t) tb * ss.k, tb, n);
         if (pool != nullptr)
             pool(user, h_x_ + (size_t) tb * g.n_embd, h_ids_ + (size_t) tb * ss.k, n, ss.k,
@@ -1958,6 +1975,13 @@ bool Verifier::run_slots(int S, const int32_t* tokens, const int64_t* pos, PoolM
 bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, const int64_t* pos, PoolMultiFn pool,
                              void* user, int32_t* out, std::string& err) {
     using namespace strata::kernels;
+    // **CACHE-AWARE ROUTING IS NOT WIRED INTO THIS PATH, AND SAYING SO IS THE POINT.**  A batch window publishes
+    // no ids and no score rows (its ids reach the pool through `stage_batch`'s own staging), so there is nothing
+    // for the decision to read; substituting nothing while reporting success is the failure mode this refuses.
+    if (car_fn_ != nullptr) {
+        err = "cache-aware routing is not wired into the batch verify path (--batch/--slots)";
+        return false;
+    }
     const OnDevice on_device(device_);
     const ModelGeometry& g = *g_;
     if (!stage_batch(rows, S, 0, tokens, pos, err)) return false;

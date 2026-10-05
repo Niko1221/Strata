@@ -2982,4 +2982,71 @@ const uint8_t* ArenaExpertSource::blob(int64_t layer, int64_t expert) {
     return base_ + strata::kernels::cpu::expert_layout().blob_offset(layer, expert);
 }
 
+// ================================ CACHE-AWARE ROUTING ================================
+//
+// **THE DECISION IS MADE ON THE IDS THE WINDOW JUST PUBLISHED, IN THE ONE PLACE EVERY OTHER CONSUMER READS
+// THEM FROM.**  `expert_pool_dispatch_multi` later asks `host_res` for each id to split it between the GPU and
+// the CPU, and the GPU plan is built from the same ids, so a substitution written into this array here is a
+// resident hit everywhere - no second list, no second decision, nothing for the two to disagree about.
+//
+// **WHAT A SUBSTITUTION COSTS AND BUYS.**  The entry keeps the router's own weight for its position (the
+// documented rule in `car.hpp`), the resident expert's FFN is computed by the GPU from a slot that is already
+// in VRAM, and the CPU pool (or the PCIe copy) that would have produced the original expert does not happen.
+void car_apply(void* user, int32_t* ids, const float* weights, const float* scores, int64_t n_tok, int64_t k,
+               int64_t layer) {
+    ExpertDispatch& d = *(ExpertDispatch*) user;
+    if (d.failed || ids == nullptr) return;
+
+    // ---- the trace probe (`STRATA_DUMP_ROUTER_SCORES`): the ids and the whole score row, before any
+    // substitution, because the estimator has to see what the ROUTER asked for.
+    if (d.car_dump != nullptr && scores != nullptr) {
+        const uint32_t rec[3] = {(uint32_t) layer, (uint32_t) n_tok, (uint32_t) k};
+        std::fwrite(rec, sizeof rec, 1, d.car_dump);
+        std::fwrite(ids, sizeof(int32_t), (size_t) (n_tok * k), d.car_dump);
+        // the score row of every token in the group, as published (row-major, `n_expert` per token).  The
+        // engine's own `n_expert` is what the trace's header was written with; a mismatch is a bug, not a frame.
+        std::fwrite(scores, sizeof(float), (size_t) (n_tok * (int64_t) d.n_expert), d.car_dump);
+        ++d.car_dump_records;
+    }
+
+    if (!(d.car_cfg.threshold < 1.0f)) return;   // off
+    if (d.host_res == nullptr) return;           // no residency table: nothing can be a substitute
+
+    std::vector<int32_t>& kept = d.car_kept;    // scratch: the ids the router asked for, before substitution
+    kept.assign(ids, ids + (size_t) (n_tok * k));
+    const int64_t subs = strata::core::car::substitute(
+        d.car_cfg, d.car_token_index, n_tok, k, d.n_expert, ids, scores,
+        d.host_res + (size_t) layer * (size_t) d.n_expert, nullptr, d.car_scratch, d.car_stats);
+    if (subs <= 0) return;
+
+    // ---- THE BACKFILL RULE.  `expert_pool_dispatch_multi` counts the ids it is handed as "used", which after a
+    // substitution is the SUBSTITUTE.  The expert the router actually wanted is the one the adaptive swap should
+    // bring in, so it is counted here as well: without this the cache converges on what CAR used, not on what
+    // the router asks for (fomoe's measured failure mode: up to 80% of its quality cost came back).
+    if (!d.usage.empty()) {
+        const size_t base = (size_t) layer * (size_t) d.n_expert;
+        for (int64_t i = 0; i < n_tok * k; ++i) {
+            const int32_t was = kept[(size_t) i];
+            if (was != ids[i] && was >= 0 && was < d.n_expert && base + (size_t) was < d.usage.size()) {
+                d.usage[base + (size_t) was] += 1.0f;
+                ++d.car_backfilled;
+            }
+        }
+    }
+    (void) weights;
+}
+
+std::string car_report(const ExpertDispatch& d) {
+    const strata::core::car::Stats& s = d.car_stats;
+    if (s.groups == 0) return std::string();
+    char buf[256];
+    const double miss_rate = s.misses > 0 ? 100.0 * (double) s.substitutions / (double) s.misses : 0.0;
+    std::snprintf(buf, sizeof buf,
+                  "car: %lld of %lld misses substituted (%.1f%%), mean ratio %.3f, budget-skipped %lld, "
+                  "backfilled %lld",
+                  (long long) s.substitutions, (long long) s.misses, miss_rate, s.mean_ratio(),
+                  (long long) s.budget_skipped, (long long) d.car_backfilled);
+    return std::string(buf);
+}
+
 }  // namespace strata::core

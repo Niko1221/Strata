@@ -305,13 +305,22 @@ __global__ void doorbell_publish_kernel(const float* __restrict__ x, const int32
     }
 }
 
+/// **`weights_out` AND `router_scores_out` ARE CACHE-AWARE ROUTING'S, AND THEY ARE OPTIONAL ON PURPOSE.**
+/// The default call passes neither, so the bytes published (and the kernel's whole behaviour) are exactly what
+/// they were before CAR existed.  With them, the same kernel also copies the group's router weights (k) and the
+/// `n_router_scores` raw router scores (a whole score row per token, so the host can weigh any RESIDENT expert
+/// against the pick it might replace) - the ring stays last, so a host that sees it knows every byte is in place.
 __global__ void doorbell_publish_res_kernel(const float* __restrict__ x, const int32_t* __restrict__ ids,
                                             const int32_t* __restrict__ d_res, int n_expert, int n, int k,
-                                            float* x_out, int32_t* ids_out, uint32_t* seq) {
+                                            float* x_out, int32_t* ids_out, uint32_t* seq,
+                                            const float* __restrict__ w, float* w_out,
+                                            const float* __restrict__ router, float* router_out,
+                                            int n_router_scores) {
     int any_miss = 0;
     if ((int) threadIdx.x < k) {
         const int32_t id = ids[threadIdx.x];
         ids_out[threadIdx.x] = id;
+        if (w != nullptr && w_out != nullptr) w_out[threadIdx.x] = w[threadIdx.x];
         if (d_res == nullptr || id < 0 || id >= n_expert || d_res[id] < 0) any_miss = 1;
     }
     if (__syncthreads_or(any_miss)) {
@@ -319,6 +328,10 @@ __global__ void doorbell_publish_res_kernel(const float* __restrict__ x, const i
         __threadfence_system();
     } else if ((int) threadIdx.x < k) {
         __threadfence_system();
+    }
+    if (router != nullptr && router_out != nullptr) {
+        for (int i = threadIdx.x; i < n_router_scores; i += blockDim.x) router_out[i] = router[i];
+        if (n_router_scores > 0) __threadfence_system();
     }
     __syncthreads();
     if (threadIdx.x == 0) {
@@ -359,10 +372,15 @@ void doorbell_publish(const float* x, const int32_t* ids, const float* weights, 
 }
 
 void doorbell_publish_res(const float* x, const int32_t* ids, const int32_t* d_res, int n_expert, int64_t n, int64_t k,
-                          float* x_out, int32_t* ids_out, uint32_t* d_seq, void* stream) {
+                          float* x_out, int32_t* ids_out, uint32_t* d_seq, void* stream, const float* weights,
+                          float* weights_out, const float* router_scores, float* router_scores_out,
+                          int64_t n_router_scores) {
     if (k > 1024) { std::fprintf(stderr, "doorbell_publish_res: k too large\n"); std::exit(1); }
+    if (n_router_scores > (int64_t) 1 << 20) { std::fprintf(stderr, "doorbell_publish_res: router scores too many\n"); std::exit(1); }
     doorbell_publish_res_kernel<<<1, 1024, 0, (cudaStream_t) stream>>>(x, ids, d_res, n_expert, (int) n, (int) k,
-                                                                        x_out, ids_out, d_seq);
+                                                                        x_out, ids_out, d_seq, weights, weights_out,
+                                                                        router_scores, router_scores_out,
+                                                                        (int) n_router_scores);
     check_launch("doorbell_publish_res");
 }
 
