@@ -30,6 +30,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <condition_variable>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -84,8 +85,19 @@ bool host_available_memory(HostMemory& m, const std::string& meminfo = "/proc/me
                            const std::string& cgroup_root = "/sys/fs/cgroup");
 
 /// Bound a resident budget by RAM and commit capacity after headroom; leave 256 MiB more when clamping.
-/// Pass UINT64_MAX for commit when the platform does not report it.
+/// Pass UINT64_MAX for the initial RAM-only attempt or when the platform does not report commit capacity.
 uint64_t clamp_resident_budget(uint64_t requested, uint64_t physical, uint64_t commit, uint64_t headroom);
+
+struct ResidentRetry {
+    HostMemory memory;
+    uint64_t limit = 0;
+};
+
+/// The first attempt uses RAM alone. Only a host allocation failure (failed_bytes > 0) permits one smaller retry.
+/// An empty memory probe disables retries. Callbacks allow failure and page-file growth tests without large allocations.
+using ResidentAttempt = std::function<bool(const ResidentRetry*, uint64_t& failed_bytes, std::string& err)>;
+bool try_resident_allocation(const ResidentAttempt& attempt, const std::function<bool(HostMemory&)>& read_memory,
+                             uint64_t headroom, std::string& err);
 
 /// Build compact offsets for experts absent from both the primary GPU cache and an optional second GPU tier.
 /// Kept CPU-only so selection and byte accounting can be tested without initializing a GPU.
@@ -468,7 +480,8 @@ public:
     /// CS-T, `budget_bytes` > 0 (`--resident-budget-gib`): only as many of those experts as fit `budget_bytes`, taken
     /// in `rank` order (the expert profile: the hottest after the GPU cache's), are copied; the rest stay on the
     /// mapped files (the SSD tier).  No lend region then (a lent slot's expert is read from the files).
-    /// Available memory is limited by both RAM and commit capacity on Windows.
+    /// The first attempt uses available RAM. After host allocation failure, Windows retries once with a smaller
+    /// budget limited by a fresh RAM/commit snapshot. A strict whole complement must still fit; only lending shrinks.
     /// #467: `budget_bytes` = `kResidentWhatFits` sizes that path from available memory minus headroom and the #403
     /// margin - the soft --resident-experts mode's second try when the whole complement does not fit;
     /// false when not even one expert fits.  On Windows the mapped experts leave the working set before any reading.
@@ -586,6 +599,11 @@ public:
     int64_t reads() const override { return reads_; }
 
 private:
+    bool pin_cache_complement_attempt(
+        const ExpertCache& cache, std::string& err, bool pin,
+        const std::vector<std::pair<int32_t, int32_t>>& additional_gpu_pairs, int64_t lend_from_slot,
+        uint64_t headroom_bytes, uint64_t budget_bytes, const std::vector<std::pair<int32_t, int32_t>>* rank,
+        const detail::ResidentRetry* retry, uint64_t& failed_bytes);
     const uint8_t* resident_blob(size_t index) const;
     const uint8_t* mapped_blob(int64_t layer, int64_t expert) const;
     /// The blob's bytes from the mapped file(s) - experts.bin, or the three GGUF role slices - into `dst`.

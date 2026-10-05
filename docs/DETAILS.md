@@ -197,8 +197,12 @@ engine fetches a layer's missing experts on 8 threads (`STRATA_FETCH_THREADS`) w
 **A RAM budget (engine 0.1.31, `--resident-budget-gib N`):** the resident variant for a model whose experts do not all
 fit: the N GiB of experts the GPU cache does not hold that the expert profile ranks hottest are copied into RAM at
 start (locked; page-locked when the driver allows the whole budget), and the rest are read from the files.
-It implies `--mmap-experts` and leaves 4 GiB of headroom. On Windows, available commit capacity also
-limits the budget; a larger N is clamped to the smaller limit less 4 GiB and a 256 MiB margin, with a message.
+It implies `--mmap-experts`. The first allocation is sized against available RAM, leaving 4 GiB of headroom
+(`STRATA_RESIDENT_HEADROOM_GIB` overrides it), so Windows can grow a system-managed page file to satisfy the request.
+If the pinned allocation and ordinary-memory fallback fail on Windows, the engine reads RAM and commit capacity
+again and retries once with a smaller positive budget. The retry applies headroom to the smaller limit; a clamped
+budget leaves another 256 MiB. A successful first allocation does not enforce a separate commit reserve. Page-file
+growth and allocation success are not guaranteed; other programs can consume memory after the snapshot.
 A clamped budget no longer fails the safety check that follows (#403). A budget that cannot be kept at all is a
 warning, with every expert read from the files. Setup sets N with `--resident-budget-gib N`. With
 the GGUF read in place it also warms the next layer's likely experts: while the CPU works on a layer, a thread applies

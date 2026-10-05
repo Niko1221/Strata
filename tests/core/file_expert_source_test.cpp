@@ -326,6 +326,8 @@ void test_resident_memory_budget() {
     using strata::core::detail::clamp_resident_budget;
     constexpr uint64_t GiB = 1ull << 30, margin = 256ull << 20, headroom = 4 * GiB;
     constexpr uint64_t unlimited = std::numeric_limits<uint64_t>::max();
+    require(clamp_resident_budget(66 * GiB, 69 * GiB, unlimited, headroom) == 65 * GiB - margin,
+            "the initial allocation did not retain the RAM-only budget");
     // #730: RAM can hold the requested cache, but Windows cannot commit it.
     require(clamp_resident_budget(66 * GiB, 69 * GiB, 47 * GiB, headroom) == 43 * GiB - margin,
             "a RAM budget exceeded available commit capacity");
@@ -349,6 +351,94 @@ void test_resident_memory_budget() {
     require(clamp_resident_budget(66 * GiB, 69 * GiB, headroom + margin - 1, headroom) == 0 &&
                 clamp_resident_budget(66 * GiB, 69 * GiB, headroom + margin, headroom) == 0,
             "subtracting the clamping margin underflowed");
+}
+
+void test_resident_allocation_retry() {
+    using namespace strata::core::detail;
+    constexpr uint64_t GiB = 1ull << 30, headroom = 4 * GiB, margin = 256ull << 20;
+    int attempts = 0, probes = 0;
+    std::string err = "stale error";
+    HostMemory current;
+    current.available = 69 * GiB;
+    current.commit = 20 * GiB;
+    const auto probe = [&](HostMemory& m) { ++probes; m = current; return true; };
+
+    // A successful initial allocation may have grown the page file: do not cap or retry it.
+    require(try_resident_allocation([&](const ResidentRetry* retry, uint64_t&, std::string& reason) {
+        ++attempts;
+        require(retry == nullptr && reason.empty(), "initial attempt was constrained by a retry or stale error");
+        return true;
+    }, probe, headroom, err), "successful initial allocation was refused");
+    require(attempts == 1 && probes == 0 && err.empty(), "success read commit capacity or retried");
+
+    attempts = probes = 0;
+    require(try_resident_allocation([&](const ResidentRetry* retry, uint64_t& failed_bytes, std::string& reason) {
+        ++attempts;
+        if (retry == nullptr) {
+            require(probes == 0, "commit was read before the allocation failed");
+            current.commit = 47 * GiB;   // changed during the unsuccessful allocation
+            failed_bytes = 65 * GiB;
+            reason = "initial allocation failed";
+            return false;
+        }
+        require(failed_bytes == 0 && reason.empty(), "retry inherited failure state");
+        require(retry->memory.available == 69 * GiB && retry->memory.commit == 47 * GiB &&
+                    retry->limit == 43 * GiB - margin, "retry did not use the fresh snapshot and headroom");
+        return true;
+    }, probe, headroom, err), "smaller allocation was not retried");
+    require(attempts == 2 && probes == 1 && err.empty(), "successful retry left stale errors or read memory twice");
+
+    const auto fail_allocation = [&](const ResidentRetry* retry, uint64_t& failed_bytes, std::string& reason) {
+        ++attempts;
+        failed_bytes = retry ? retry->limit : 65 * GiB;
+        reason = retry ? "retry allocation failed" : "initial allocation failed";
+        return false;
+    };
+    attempts = probes = 0;
+    require(!try_resident_allocation(fail_allocation, probe, headroom, err), "two failed allocations succeeded");
+    require(attempts == 2 && probes == 1 && err.find("initial allocation failed") != std::string::npos &&
+                err.find("retry allocation failed") != std::string::npos, "retry was unbounded or lost an error");
+
+    attempts = probes = 0;
+    require(!try_resident_allocation([&](const ResidentRetry*, uint64_t&, std::string& reason) {
+        ++attempts;
+        reason = "file read failed";
+        return false;
+    }, probe, headroom, err), "a file-read error succeeded");
+    require(attempts == 1 && probes == 0 && err == "file read failed", "a non-allocation error triggered a retry");
+
+    attempts = probes = 0;
+    require(!try_resident_allocation(fail_allocation, [&](HostMemory&) { ++probes; return false; }, headroom, err),
+            "a failed memory probe succeeded");
+    require(attempts == 1 && probes == 1 && err == "initial allocation failed", "failed probe retried or lost the error");
+
+    // No room, only headroom/margin, or enough commit already: do not retry zero or the same size.
+    current.available = 80 * GiB;
+    for (uint64_t commit : {uint64_t{0}, headroom, headroom + margin, 70 * GiB}) {
+        current.commit = commit;
+        attempts = probes = 0;
+        require(!try_resident_allocation(fail_allocation, probe, headroom, err), "an unusable retry succeeded");
+        require(attempts == 1 && probes == 1 && err == "initial allocation failed", "zero or unchanged size was retried");
+    }
+    attempts = probes = 0;
+    require(!try_resident_allocation(fail_allocation, {}, headroom, err) && attempts == 1 && probes == 0,
+            "a platform without a commit retry attempted one");
+
+    current.commit = 47 * GiB;
+    attempts = probes = 0;
+    require(!try_resident_allocation([&](const ResidentRetry* retry, uint64_t& failed_bytes, std::string& reason) {
+        ++attempts;
+        if (retry == nullptr) {
+            failed_bytes = 65 * GiB;
+            reason = "initial allocation failed";
+        } else {
+            require(retry->limit < 45 * GiB, "retry unexpectedly fit the mandatory complement");
+            reason = "mandatory complement does not fit";
+        }
+        return false;
+    }, probe, headroom, err), "a strict complement silently became partial");
+    require(attempts == 2 && probes == 1 && err.find("mandatory complement does not fit") != std::string::npos,
+            "strict retry did not preserve its failure");
 }
 
 void test_cgroup_memory_budget() {
@@ -609,6 +699,7 @@ int main(int argc, char** argv) {
         test_resident_lend_region();
         test_resident_exchange();
         test_resident_memory_budget();
+        test_resident_allocation_retry();
         test_cgroup_memory_budget();
         test_host_memory();
         test_canonical_layout();
