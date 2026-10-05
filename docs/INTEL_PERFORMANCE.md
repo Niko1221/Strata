@@ -34,7 +34,8 @@ why things are the way they are; this file holds the numbers. It has three parts
 
 ## Current numbers (engine 0.1.39-sycl, 2026-10-04)
 
-The tables of the earlier host that this host has not re-run yet are under "On the earlier host" below.
+The engine runs in the dev image under rootless Podman (INTEL.md, "With Podman instead of Docker"). The earlier
+host's numbers are in History.
 
 ### Benchy v1 on our B70 (the served configs, 2026-10-04)
 
@@ -212,13 +213,155 @@ Caveats:
   (130-160 W against 195-235 W): about the same tokens per watt.
 - Load time, peak VRAM and draft acceptance are the same: both have 32 GB, so every model fits the same way.
 
-## On the earlier host (Ryzen 7 1700X, 23 GB of RAM, the B70 at PCIe Gen3 x8)
+### At a 32K context (the engine's test config, 2026-10-04)
 
-The current numbers of that host when it was replaced (2026-10-04), engine 0.1.38-0.1.39. The tables above
-supersede them where they overlap; the rest are re-run on this host and move up.
+benchy v1 with the served configs changed to `--max-context 32768 --vram-reserve-mib 1024` and no `--kv-resident`:
+no borrowing (the default up to 32K), cold page cache.
+
+| model | prompt | decode | prompt reading |
+|---|---|---|---|
+| Coder IQ1_M (32K, INT8 KV) | 20 tokens | **76.7 tok/s** | - |
+| Coder IQ1_M (32K, INT8 KV) | 2,185 tokens | **74.9 tok/s** | **980-984 tok/s** (three runs) |
+| original IQ2_XS (32K) | 20 tokens | 69.7 tok/s | - |
+| original IQ2_XS (32K) | 2,185 tokens | 77.4 tok/s | 772 tok/s |
+| Swift 1.5 IQ2_XS (32K) | 20 tokens | 76.1 tok/s | - |
+| Swift 1.5 IQ2_XS (32K) | 2,185 tokens | 75.0 tok/s | 768 tok/s |
+
+- **Where the experts live** at this config:
+  - Coder: 11,733 of 12,288 in VRAM, 555 in the pinned host mirror (1.1 GiB). The served 256K config
+    (`--vram-reserve-mib 2048 --kv-resident 32768`, borrowing on) holds all 12,288.
+  - IQ2_XS and Swift: 7,365 in the host mirror (9.9 GiB), against 6,164 (8.3 GiB) with the served config.
+
+### Long contexts, Coder IQ1_M (2026-10-04)
+
+The served config (`--max-context 262144 --kv-resident 32768 --vram-reserve-mib 2048 --prefill 4096`, borrowing
+and stream-all on), its KV format changed; prompts of 128K and 256K tokens, 256 greedy tokens after them. k8v4 has
+no KV streaming, so its KV stays in VRAM (no `--kv-resident`).
+
+| prompt | KV | prompt reading | decode after | peak VRAM | experts in the host mirror |
+|---|---|---|---|---|---|
+| 40K | int8, KV streaming | 1,392 tok/s | 67.6 tok/s | 29.9 GB | none |
+| 128K | int8, KV streaming | 1,327 tok/s | 63.9 tok/s | 30.0 GB | none |
+| 128K | k8v4, KV in VRAM | **1,506 tok/s** | **65.1 tok/s** | 30.3 GB | 989 (1.9 GiB) |
+| 128K | q4_0, KV streaming | 1,257 tok/s | 61.1 tok/s | 29.8 GB | none |
+| 256K | int8, KV streaming | 1,271 tok/s | 56.0 tok/s | 30.0 GB | none |
+| 256K | k8v4, KV in VRAM | **1,445 tok/s** | **57.3 tok/s** | 30.4 GB | 989 (1.9 GiB) |
+| 256K | q4_0, KV streaming | 1,212 tok/s | 55.3 tok/s | 29.8 GB | none |
+
+- **k8v4 is the fastest format on this host,** on both counts, although it moves 989 experts to the host mirror.
+  On the earlier host (Gen3 x8) it read prompts faster but decoded slower than int8.
+
+### Stream-all against routed-only (Coder, 2026-10-04)
+
+`STRATA_PREFILL_STREAM_ALL=0` keeps routed-only staging. The served config, prompt reading in tok/s:
+
+| prompt | routed-only | stream-all (the default when the VRAM holds more than 90% of the experts) |
+|---|---|---|
+| 40K int8 | 1,396 | 1,392 |
+| 128K int8, KV streaming | 1,329 | 1,327 |
+| 128K k8v4 | 1,503 | 1,506 |
+| 256K int8, KV streaming | 1,275 | 1,271 |
+
+The two read the prompt at the same rate now (within 0.5%), and decode after it is the same. On the earlier host,
+before the lend mirror, stream-all was 3-5% faster.
+
+### Prompt-slot borrowing (2026-10-04)
+
+Borrowing lends VRAM cache slots to the prompt path and refills them after the prompt.
+
+| | prompt | decode after |
+|---|---|---|
+| 40K, borrowing (default above 32K) | 1,392 tok/s | **67.6 tok/s** |
+| 40K, `--no-prefill-borrow` | 1,374 tok/s | 66.2 tok/s |
+| 2,185 tokens, borrowing (the served 256K config) | 875 tok/s | - |
+| 2,185 tokens, no borrowing (the 32K config, the default up to 32K) | 980-984 tok/s | - |
+
+- **Without borrowing, by KV format** (the served config with `--no-prefill-borrow`): 1,182-2,457 experts move to
+  the host mirror. The prompt reads within 2% of the borrowing rate and decode after it is 2-4% slower:
+
+  | prompt | int8 | q4_0 | k8v4 |
+  |---|---|---|---|
+  | 128K | 1,324 / 62.5 | 1,266 / 60.0 | 1,482 / 63.1 |
+  | 256K | 1,261 / 55.0 | 1,215 / 54.3 | 1,418 / 55.2 |
+  | experts in the host mirror | 1,282 (2.5 GiB) | 1,182 (2.3 GiB) | 2,457 (4.7 GiB) |
+
+  Each cell is prompt reading / decode after, in tok/s.
+
+### Through the API (served model, sampling on, 2026-10-04)
+
+The served Coder IQ1_M (256K config) through `/v1/chat/completions` with its sampling defaults; tok/s is completion
+tokens over the request's wall time, prompt included.
+
+| | |
+|---|---|
+| a 400-token chat answer (thinking included) | 70-72 tok/s; the first request after a start 61 |
+| a 12,000-token answer (a small SQL engine in Python) | 59 tok/s |
+| code (continuing the Fibonacci function, 1,500 tokens) | 63 tok/s |
+| a prose answer (a 400-word story, 1,500 tokens) | 68 tok/s |
+| logprobs on (`"logprobs": true, "top_logprobs": 3`, IQ2_XS uncensored, a 37-token answer) | 74.7 tok/s against 79.5 without (~6%); "Paris" at -0.00009 |
+
+### Start time (cold page cache, 2026-10-04)
+
+From benchy's 20-token runs (load: launch to "session is up", plus the lend mirror):
+
+| | |
+|---|---|
+| Coder: expert cache fill (23.4 GiB) | **17.7 s** (1.42 GB/s, pipelined) |
+| Coder: load, then the first token | 33 s, then 0.4 s |
+| IQ2_XS: expert cache fill (24.7 GiB), then the host mirror (8.3 GiB) | 20.3 s (1.31 GB/s), then 5.4 s |
+| IQ2_XS: load, then the first token | 38 s, then 0.4 s |
+
+### VRAM and RAM (2026-10-04)
+
+| | |
+|---|---|
+| Coder, the served 256K config | all 12,288 experts resident; peak VRAM 29.9-30.0 GB; RAM 8.6-9.1 GB (pinned memory included) |
+| Coder, 32K with `--vram-reserve-mib 1024` | 555 experts in the host mirror; peak VRAM 30.4 GB; RAM 4.3 GB |
+| IQ2_XS, the served config | 18,412 of 24,576 experts in VRAM (24.7 GiB), 6,164 in the host mirror (8.3 GiB); RAM 14.5-14.7 GB; ~1.9 GB of VRAM free with everything loaded |
+| host RAM | no host copy of the experts (`--stream-experts`): the Coder needs under 10 GB of RAM; upstream needs 32 GB for this model |
+
+### Where the time goes (2026-10-04)
+
+`STRATA_PREFILL_TIMING=1` with the served Coder config: shares of the GPU timeline.
+
+| prompt | expert dequant | expert GEMMs | attention | QSA projections | other |
+|---|---|---|---|---|---|
+| 2,184 tokens | 31.8% | 22.8% | 4.5% | 10.0% | host grouping 8.5%, hyper-connection reads 4.9%, DeltaNet 4.4% + recurrence 4.0% |
+| 8,000 tokens | 22.4% | 20.2% | 10.1% | 14.7% | DeltaNet recurrence 6.4%, host grouping 5.8%, hyper-connection reads 5.7% |
+| 40K tokens | 19.4% | 18.3% | 12.5% | 15.7% | DeltaNet recurrence 7.0%, hyper-connection reads 5.7%, host grouping 4.9%, DeltaNet 4.0%, combine 2.9%, QSA select 1.8% |
+
+- **The "host grouping" share is mostly the profiler:** at 40K, its event fold takes 1,412 ms of the 1,527, the
+  loops 14 ms and the uploads 5 ms. With the profiler on, the 40K prompt reads at 1,280 tok/s against 1,392.
+- Attention and QSA selection shrank with the 2026-10-04 kernels (40K: 19.2% and 6.8% on the earlier host).
+
+## llama.cpp on the same card (2026-09-29, Coder IQ1_M, 32K context, q8_0 KV)
+
+This is the comparison point: llama.cpp's SYCL backend serving the same GGUF.
+
+| | llama.cpp SYCL | Strata SYCL port (32K test config) |
+|---|---|---|
+| load | ~100 s | 26 s |
+| decode | 23-25 tok/s; GPU 92% busy at 165 W, CPU idle | 76-78 tok/s |
+| prompt reading | 149 tok/s on 2,701 tokens; 424 tok/s on 104,798 tokens (131K context, read in 247 s) | 784-799 tok/s on 2,184; 920 at 128K |
+| VRAM | 28.4 of 32 GB | ~30 of 32 GB (every expert resident) |
+| longest context measured | 131K | 256K |
+
+- **llama.cpp's speed by prompt size:** prompt reading speeds up with size, because the work batches better. A full
+  128K window costs about five minutes to read.
+- **llama.cpp's VRAM by context:** see INTEL.md, "How much context fits".
+- **Quality:** correct code on every test.
+
+## History
+
+The numbers below are dated. Each was the state of the port at the time, and later rows supersede earlier ones.
+
+### The earlier host (Ryzen 7 1700X, 23 GB of RAM, the B70 at PCIe Gen3 x8, until 2026-10-04)
+
+The current numbers of that host when it was replaced (2026-10-04), engine 0.1.38-0.1.39, all since re-run on
+the new host ("Current numbers").
 
 
-### Benchy v1 on the B70, engine 0.1.38 (the served configs, 2026-10-04)
+#### Benchy v1 on the B70, engine 0.1.38 (the served configs, 2026-10-04)
 
 `sycl/benchy.sh`, unchanged ("Submitting numbers" below): each model with the serve config it is actually served
 with, from a cold page cache. Its report, as written:
@@ -300,7 +443,7 @@ Decode is unchanged. RAM is ~2 GB higher (the lend mirror) and start-up ~2 s lon
 - **The Swift config's `--ple-gguf`** names shard 1 of its GGUF. Swift's shards split differently from the other two
   models, and the engine finds its per-layer embedding table (320,001,536 rows) in shard 1.
 
-### At a 32K context (the engine's test config, 2026-10-03)
+#### At a 32K context (the engine's test config, 2026-10-03)
 
 The engine's own test runs ("How the engine numbers are measured" above): 32K context, `--vram-reserve-mib 1024`, no
 borrowing, warm page cache.
@@ -318,7 +461,7 @@ borrowing, warm page cache.
   - IQ2_XS: 18,329 of 24,576 in VRAM (24.6 GiB); the other 6,247 in the pinned host mirror (8.4 GiB).
 - **Swift 1.5:** setup's `swift` family. Correct answers, 51-118 words of thinking on short questions.
 
-### Long contexts, Coder IQ1_M
+#### Long contexts, Coder IQ1_M
 
 Setup's flags: `--kv-resident 32768 --vram-reserve-mib 2048 --prefill 4096`. The prompt path borrows cache slots,
 which is the default above 32K, and stream-all is on. 256 greedy tokens follow the prompt.
@@ -339,7 +482,7 @@ which is the default above 32K, and stream-all is on. 256 greedy tokens follow t
     changes the prompt column.
 - **k8v4:** keeps its KV in VRAM, because it has no KV streaming yet. That pushes experts into the host mirror.
 
-### Stream-all against routed-only (Coder, 2026-10-03)
+#### Stream-all against routed-only (Coder, 2026-10-03)
 
 Outputs are identical either way.
 
@@ -353,7 +496,7 @@ Outputs are identical either way.
 The IQ2_XS keeps a quarter of its experts in the RAM mirror. With stream-all forced on, its 2,184-token prompt fell
 from ~560 to 254 tok/s, which is why stream-all is gated.
 
-### Prompt-slot borrowing
+#### Prompt-slot borrowing
 
 Borrowing lends VRAM cache slots to the prompt path and refills them after the prompt.
 
@@ -375,7 +518,7 @@ Borrowing lends VRAM cache slots to the prompt path and refills them after the p
 
   Each cell is prompt reading / decode after, in tok/s.
 
-### Through the API (served model, sampling on)
+#### Through the API (served model, sampling on)
 
 | | |
 |---|---|
@@ -387,7 +530,7 @@ Borrowing lends VRAM cache slots to the prompt path and refills them after the p
 
 Sampling and the repetition penalty cost nothing measurable.
 
-### Start time (cold page cache, 2026-10-02)
+#### Start time (cold page cache, 2026-10-02)
 
 | | before (serial fill) | now (pipelined fill) |
 |---|---|---|
@@ -395,7 +538,7 @@ Sampling and the repetition penalty cost nothing measurable.
 | Coder: launch to first token | 82 s | **26 s** |
 | IQ2_XS: launch to first token | 120 s | **41 s** (its 8.2 GB host mirror is ~9 s of that) |
 
-### VRAM and RAM
+#### VRAM and RAM
 
 | | |
 |---|---|
@@ -404,7 +547,7 @@ Sampling and the repetition penalty cost nothing measurable.
 | host RAM | no host copy of the experts (`--stream-experts`): the engine runs in 23 GiB; upstream needs 32 GB for this model |
 | IQ2_XS | host RAM never below 12 GB free with an 8.4 GiB host mirror |
 
-### Where the time goes
+#### Where the time goes
 
 | prompt | expert dequant | expert GEMMs | attention | other |
 |---|---|---|---|---|
@@ -423,27 +566,6 @@ Sampling and the repetition penalty cost nothing measurable.
 - **A decode round** (2026-09-30): 80-85% kernel time, with ~5 us of launch gap per node over 2,400-2,600 nodes.
   - The expert dot kernels are ALU-bound (77% XVE active).
   - The dense projections are memory-latency bound (92-128 GB/s at 84-93% occupancy).
-
-## llama.cpp on the same card (2026-09-29, Coder IQ1_M, 32K context, q8_0 KV)
-
-This is the comparison point: llama.cpp's SYCL backend serving the same GGUF.
-
-| | llama.cpp SYCL | Strata SYCL port (32K test config) |
-|---|---|---|
-| load | ~100 s | 26 s |
-| decode | 23-25 tok/s; GPU 92% busy at 165 W, CPU idle | 76-78 tok/s |
-| prompt reading | 149 tok/s on 2,701 tokens; 424 tok/s on 104,798 tokens (131K context, read in 247 s) | 784-799 tok/s on 2,184; 920 at 128K |
-| VRAM | 28.4 of 32 GB | ~30 of 32 GB (every expert resident) |
-| longest context measured | 131K | 256K |
-
-- **llama.cpp's speed by prompt size:** prompt reading speeds up with size, because the work batches better. A full
-  128K window costs about five minutes to read.
-- **llama.cpp's VRAM by context:** see INTEL.md, "How much context fits".
-- **Quality:** correct code on every test.
-
-## History
-
-The numbers below are dated. Each was the state of the port at the time, and later rows supersede earlier ones.
 
 ### First end-to-end run (2026-09-29)
 
