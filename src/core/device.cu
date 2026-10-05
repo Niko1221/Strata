@@ -161,22 +161,52 @@ IDXGIAdapter3* budget_adapter(int device) {
 }  // namespace
 
 hipError_t mem_get_info(size_t* free_bytes, size_t* total_bytes) {
-    const hipError_t e = hipMemGetInfo(free_bytes, total_bytes);
+    if (free_bytes == nullptr || total_bytes == nullptr) return hipErrorInvalidValue;
+    hipError_t e = hipMemGetInfo(free_bytes, total_bytes);
     static const bool off = [] {
         const char* v = std::getenv("STRATA_WDDM_BUDGET");
         return v != nullptr && std::atoi(v) == 0;
     }();
-    if (e != hipSuccess || off || free_bytes == nullptr || total_bytes == nullptr) return e;
     int device = 0;
     if (hipGetDevice(&device) != hipSuccess) {
         (void) hipGetLastError();
         return e;
     }
     IDXGIAdapter3* adapter = budget_adapter(device);
+    if (adapter == nullptr) return e;
     DXGI_QUERY_VIDEO_MEMORY_INFO local{};
-    if (adapter == nullptr || FAILED(adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &local)) ||
-        local.Budget == 0 || local.Budget >= *total_bytes)
-        return e;
+    if (FAILED(adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &local))) return e;
+    if (e != hipSuccess) {
+        // The base hipMemGetInfo failed (it returns hipErrorInvalidValue on some WDDM setups, e.g. a discrete
+        // gfx1100 card).  On this machine that failure is a symptom of the ROCm runtime racing the Adrenalin
+        // WDDM driver during initialisation: when it fails, the driver is in a bad state that CRASHES the first
+        // kernel launch (0xC0000005 in amdhip64_7.dll).  The old DXGI-budget fallback did not avoid the crash -
+        // it only delayed it, because it still proceeded to the kernel launch in the bad state.  Instead, retry
+        // a few times, giving the driver time to settle; if it still fails, return the error so the caller fails
+        // cleanly rather than crashing.
+        for (int attempt = 0; attempt < 8; ++attempt) {
+            Sleep(250);
+            const hipError_t e2 = hipMemGetInfo(free_bytes, total_bytes);
+            if (e2 == hipSuccess) {
+                static std::atomic<bool> said_retry{false};
+                if (!said_retry.exchange(true))
+                    std::fprintf(stderr, "strata: hipMemGetInfo failed at first, succeeded on retry %d\n",
+                                attempt + 1);
+                e = e2;
+                break;
+            }
+        }
+        if (e != hipSuccess) {
+            static std::atomic<bool> said_fail{false};
+            if (!said_fail.exchange(true))
+                std::fprintf(stderr, "strata: hipMemGetInfo still failing after retries; the ROCm runtime is "
+                                     "racing the Adrenalin WDDM driver.  Failing cleanly instead of crashing at "
+                                     "the first kernel launch.\n");
+            return e;
+        }
+    }
+    if (off) return e;
+    if (local.Budget == 0 || local.Budget >= *total_bytes) return e;
     const size_t withheld = *total_bytes - (size_t) local.Budget;   // the desktop's and other programs' share
     static std::atomic<bool> said{false};
     if (!said.exchange(true)) {
@@ -251,7 +281,11 @@ DeviceInfo device_info(int ordinal) {
     d.multi_processor_count = p.multiProcessorCount;
 
     size_t free_b = 0, total_b = 0;
+#if defined(STRATA_USE_HIP) && defined(_WIN32)
+    check(hip_compat::mem_get_info(&free_b, &total_b), "cudaMemGetInfo");
+#else
     check(cudaMemGetInfo(&free_b, &total_b), "cudaMemGetInfo");
+#endif
     d.free_bytes = free_b;
     d.total_bytes = total_b;
 

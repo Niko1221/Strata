@@ -6,9 +6,11 @@
 #include "strata/core/device.hpp"
 #include "strata/plan/plan.hpp"
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <thread>
 #if defined(STRATA_USE_HIP) && defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -62,6 +64,14 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    // The ROCm runtime can race the Adrenalin WDDM driver at startup: when it loses the race, hipMemGetInfo
+    // fails and device_info() throws a clean error (it used to crash at the first kernel launch instead).  Retry
+    // the whole thing a few times, giving the driver time to settle.
+    for (int attempt = 0; attempt < 5; ++attempt) {
+    if (attempt > 0) {
+        std::fprintf(stderr, "strata-device: retry %d after a clean failure\n", attempt);
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
     try {
         const strata::core::DeviceInfo d = strata::core::device_info(0);
         std::printf("device %d: %s\n", d.ordinal, d.name.c_str());
@@ -117,6 +127,8 @@ int main(int argc, char** argv) {
         return 0;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "strata-device: %s\n", e.what());
-        return 1;
+        if (attempt == 4) return 1;
     }
+    }
+    return 1;
 }
