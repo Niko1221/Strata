@@ -1,0 +1,139 @@
+/* Strata launcher — the model and preset picker.
+   Uses the chat page's design tokens (serve/web/tokens.css, served here as /ui/tokens.css): same colours, type and
+   spacing as the chat page and the Monitor, so the three look like one product. */
+
+*{box-sizing:border-box}
+body{margin:0;background:var(--st-bg);color:var(--st-ink);font:15px/1.55 var(--st-font)}
+h1{margin:0;font-size:26px;letter-spacing:-.5px}
+/* a preset's name is often a whole phrase, so it sits a step under the page's h1 and may break anywhere */
+#preset-name{font-size:21px;line-height:1.25;overflow-wrap:anywhere}
+h2{margin:0;font-size:15px;letter-spacing:-.2px}
+h3{margin:0 0 6px;font-size:13px;color:var(--st-ink-muted);text-transform:uppercase;letter-spacing:.7px;font-weight:600}
+p{margin:0}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer;background:var(--st-surface);border:1px solid var(--st-line);border-radius:var(--st-r-sm);
+  padding:7px 12px;transition:border-color var(--st-dur) var(--st-ease),background var(--st-dur) var(--st-ease)}
+button:hover:not(:disabled){border-color:var(--st-accent)}
+button:disabled{opacity:.4;cursor:default}
+button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid var(--st-focus);outline-offset:2px}
+button.primary{background:var(--st-accent);border-color:transparent;color:var(--st-accent-ink)}
+button.primary:hover:not(:disabled){background:var(--st-accent-hover)}
+button.ghost{background:transparent;border-color:transparent}
+button.danger{color:var(--st-danger-text)}
+[hidden]{display:none!important}
+a{color:var(--st-info-text)}
+code,.mono{font:12px/1.6 var(--st-font-mono)}
+
+header{display:flex;align-items:center;gap:20px;padding:0 26px;height:64px;background:var(--st-surface);
+  border-bottom:1px solid var(--st-line)}
+.brand{font-size:21px;font-weight:700;letter-spacing:-.4px;white-space:nowrap}
+.brand span{font-size:12px;font-weight:400;color:var(--st-ink-muted);margin-left:12px;letter-spacing:0}
+.pc{margin-left:auto;font-size:12px;color:var(--st-ink-muted);text-align:right;overflow-wrap:anywhere}
+.pc b{color:var(--st-ink-soft);font-weight:500}
+.controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+
+.status{display:flex;align-items:center;gap:10px;padding:12px 26px;background:var(--st-surface);
+  border-bottom:1px solid var(--st-line);font-size:14px}
+.status .controls{margin-left:auto}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--st-ink-muted);flex:none}
+.status.running .dot{background:var(--st-accent)}
+.status.busy .dot{background:var(--st-warn)}
+.status.loading .dot,.status.installing .dot{background:var(--st-info);animation:pulse 1.4s infinite}
+.status.failed .dot{background:var(--st-danger)}
+@keyframes pulse{50%{opacity:.35}}
+
+main{display:flex;flex-direction:column;gap:16px;padding:20px 26px;max-width:1720px;margin:auto}
+/* the three columns live in their own box: that is what keeps the sticky ones from sliding over the Logs panel,
+   whose full width would otherwise pass under them */
+.cols{display:grid;grid-template-columns:300px minmax(420px,1fr) 400px;gap:16px;align-items:start}
+.col-left,.col-right{display:flex;flex-direction:column;gap:16px;position:sticky;top:16px}
+.panel{background:var(--st-surface);border:1px solid var(--st-line);border-radius:var(--st-r-md);
+  box-shadow:var(--st-sh-card);overflow:hidden}
+.panel-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 16px;
+  border-bottom:1px solid var(--st-line-soft)}
+.list{max-height:330px;overflow:auto}
+.group{padding:9px 16px 3px;font-size:11px;color:var(--st-ink-muted);text-transform:uppercase;letter-spacing:.7px}
+.foot{padding:10px 16px;font-size:12px;color:var(--st-ink-muted);border-top:1px solid var(--st-line-soft)}
+.list+.foot{border-top:1px solid var(--st-line-soft)}
+.empty{padding:26px 16px;text-align:center;color:var(--st-ink-muted);font-size:13px}
+
+.item{display:block;width:100%;text-align:left;background:transparent;border:0;border-bottom:1px solid var(--st-line-soft);
+  border-radius:0;padding:11px 16px;cursor:pointer}
+.item:hover{background:var(--st-surface-2)}
+.item.selected{background:var(--st-accent-tint);box-shadow:inset 3px 0 var(--st-accent)}
+.item .row{display:flex;align-items:center;gap:8px}
+.item strong{font-weight:500;font-size:14px}
+.item .sub{font-size:12px;color:var(--st-ink-muted);margin-top:2px;overflow-wrap:anywhere}
+.item .tag{margin-left:auto}
+.item .del{margin-left:auto;padding:2px 7px;border-radius:5px;font-size:12px;line-height:1.4;
+  color:var(--st-ink-muted)}
+.item .tag + .del{margin-left:0}
+.item .del:hover{color:var(--st-danger-text);background:var(--st-danger-tint)}
+.tag{font-size:11px;padding:2px 7px;border-radius:5px;background:var(--st-surface-2);color:var(--st-ink-muted);white-space:nowrap}
+.tag.ok{color:var(--st-accent-text);background:var(--st-accent-tint)}
+.tag.warn{color:var(--st-warn-text);background:var(--st-warn-tint)}
+.tag.bad{color:var(--st-danger-text);background:var(--st-danger-tint)}
+.tag.info{color:var(--st-info-text);background:var(--st-info-tint)}
+.tag.builtin{font-style:normal}
+
+.preset{padding:0}
+.preset-head{display:flex;gap:12px 16px;align-items:flex-start;flex-wrap:wrap;padding:18px 20px;
+  border-bottom:1px solid var(--st-line-soft)}
+/* the six buttons are wider than the middle column: without the wrap they left the title about 100px and it broke
+   one word per line, so the title now takes a line of its own when they do not fit beside it */
+.preset-head>div:first-child{flex:1 1 240px;min-width:0}
+.preset-head .controls{flex:0 1 auto}
+.sub{color:var(--st-ink-muted);font-size:13px;margin-top:4px}
+.note{padding:12px 20px;font-size:13px;color:var(--st-ink-soft);background:var(--st-surface-2);
+  border-bottom:1px solid var(--st-line-soft)}
+.notice{margin:14px 20px;padding:11px 14px;border-radius:var(--st-r-sm);background:var(--st-danger-tint);
+  color:var(--st-danger-text);font-size:13px;white-space:pre-wrap}
+.notice.info{background:var(--st-info-tint);color:var(--st-info-text)}
+.notice.warn{background:var(--st-warn-tint);color:var(--st-warn-text)}
+.plan .notice{margin:14px 0}
+.notice ul{margin:7px 0 0 18px;padding:0}
+.notice .sub{color:inherit;opacity:.8}
+
+.form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 18px;padding:20px}
+.field{display:flex;flex-direction:column;gap:5px;min-width:0}
+.field.wide{grid-column:1/-1}
+.field label{font-size:12px;color:var(--st-ink-muted);text-transform:uppercase;letter-spacing:.6px}
+.field input,.field select,.field textarea{background:var(--st-bg);border:1px solid var(--st-line);
+  border-radius:var(--st-r-sm);padding:8px 10px;min-width:0}
+.field textarea{min-height:56px;resize:vertical}
+.field .help{font-size:12px;color:var(--st-ink-muted)}
+.field.flag{opacity:.9}
+.field .flagname{font:11px var(--st-font-mono);color:var(--st-ink-muted)}
+
+.plan{margin:0;padding:16px 20px;border-top:1px solid var(--st-line);background:var(--st-surface-2)}
+.plan h3{margin-bottom:8px}
+dl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 14px;margin:0}
+dl.one{grid-template-columns:1fr}
+/* the Model card is a narrow column: an even split left the value about 90px and broke a base URL in the middle of
+   the host, so the label takes the smaller share and the value the larger one */
+.kv{display:grid;grid-template-columns:minmax(0,38%) minmax(0,62%);gap:2px 10px;font-size:13px;
+  background:var(--st-bg);border-radius:var(--st-r-sm);padding:8px 10px}
+.kv span{color:var(--st-ink-muted)}
+.kv b{font-weight:500;text-align:right;overflow-wrap:break-word}
+pre.log,pre.cmd{margin:0;padding:12px 14px;background:var(--st-code-bg);color:var(--st-code-ink);border-radius:var(--st-r-sm);
+  font:12px/1.55 var(--st-font-mono);white-space:pre-wrap;overflow-wrap:anywhere;max-height:260px;overflow:auto}
+pre.cmd{margin-top:8px}
+
+.tabs{display:flex;gap:4px}
+.tabs button{border-color:transparent;background:transparent;font-size:13px;padding:6px 9px}
+.tabs button[aria-selected=true]{background:var(--st-surface-2);color:var(--st-accent-text)}
+.logs .log{border-radius:0;border:0;border-top:1px solid var(--st-line-soft);min-height:300px;
+  max-height:46vh;font-size:12.5px;line-height:1.6}
+.tabs button.live{font-weight:600}
+.tabs button.live::after{content:"\2022";color:var(--st-accent);margin-left:6px}
+
+.toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);max-width:min(720px,92vw);
+  background:var(--st-ink);color:var(--st-bg);padding:11px 16px;border-radius:var(--st-r-md);font-size:13px;
+  box-shadow:var(--st-sh-pop);white-space:pre-wrap;overflow-wrap:anywhere;z-index:20}
+.toast.bad{background:var(--st-danger);color:#fff}
+
+@media(max-width:1280px){.cols{grid-template-columns:280px minmax(0,1fr)}.col-right{grid-column:1/-1;position:static;
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}}
+@media(max-width:900px){.cols{grid-template-columns:1fr}main{padding:14px}.col-left,.col-right{position:static}
+  header{padding:0 14px;gap:10px}.pc{display:none}.status{padding:10px 14px}.form{grid-template-columns:1fr}
+  dl{grid-template-columns:1fr}.logs .log{min-height:220px;max-height:40vh}}
