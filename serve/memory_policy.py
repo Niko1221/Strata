@@ -29,6 +29,9 @@ class MemoryPolicy:
         self.ram_target = self._setting(config, "ram_target_percent", 95, 50, 95) / 100
         self.vram_target = self._setting(config, "vram_target_percent", 99, 50, 99) / 100
         self.headroom = self._setting(config, "min_ram_headroom_gib", 5.5, 2, 128)
+        self.configured_headroom = self.headroom
+        self.configured_reserve_floor = self.reserve_floor
+        self.fixed_resource_limits = False
         self.overhead = self._setting(config, "overhead_ram_gib", 2, 2, 128)
         self.cooldown = self._setting(config, "cooldown_seconds", 600, 600, 86400)
         self.pressure_duration = self._setting(config, "pressure_seconds", 60, 2, 3600)
@@ -78,9 +81,39 @@ class MemoryPolicy:
         self.gpu_growth_since = None
         self.recovery_since = None
 
+    def update_resource_limits(self, headroom_gib=None, vram_reserve_mib=None):
+        """Retarget reserves in place; native acknowledgements still own actual sizes.
+
+        Both omitted limits restore the original configured percentage policy.
+        Validate the complete pair before changing either limit or its windows.
+        """
+        fixed = headroom_gib is not None or vram_reserve_mib is not None
+        if fixed:
+            if (not _number(headroom_gib) or not 2 <= headroom_gib <= 128
+                    or not _number(vram_reserve_mib) or vram_reserve_mib < 0
+                    or int(vram_reserve_mib) != vram_reserve_mib):
+                raise ValueError("invalid fixed resource limits")
+            headroom, reserve = float(headroom_gib), int(vram_reserve_mib)
+        else:
+            headroom, reserve = self.configured_headroom, self.configured_reserve_floor
+        if (fixed == self.fixed_resource_limits and headroom == self.headroom
+                and reserve == self.reserve_floor):
+            return
+        self.fixed_resource_limits = fixed
+        self.headroom, self.reserve_floor = headroom, reserve
+        self.reconcile_after_load = False
+        self.pressure_recovery_ceiling_gib = None
+        self.gpu_baseline = None
+        self._reset_windows()
+
+    def _required_headroom(self, reading):
+        if self.fixed_resource_limits:
+            return self.headroom
+        return max(self.headroom, reading["ram_total"] / GIB * (1 - self.ram_target))
+
     def _budget(self, reading, arena_gib=0, loaded=False):
         free_ram = (reading["ram_total"] - reading["ram_used"]) / GIB
-        headroom = max(self.headroom, reading["ram_total"] / GIB * (1 - self.ram_target))
+        headroom = self._required_headroom(reading)
         # Loaded telemetry already includes dense/vision/runtime allocations.
         # Charge the startup allowance only before those allocations exist.
         startup_allowance = 0 if loaded else self.overhead
@@ -89,17 +122,21 @@ class MemoryPolicy:
         if loaded:
             reserve = self.current["vram_reserve_mib"]
             free_vram = (reading["gpu_mem_total"] - reading["gpu_mem_used"]) / MIB
-            desired_free = reading["gpu_mem_total"] / MIB * (1 - self.vram_target)
+            desired_free = (self.reserve_floor if self.fixed_resource_limits else
+                            reading["gpu_mem_total"] / MIB * (1 - self.vram_target))
             # Native auto sizing owns the GPU cache. Reserve changes only reclaim
             # external pressure, or give stable recovered space back to that cache.
             if free_vram < desired_free:
                 reserve += math.ceil(desired_free - free_vram)
-            elif free_vram - desired_free >= 512:
+            elif free_vram - desired_free >= (32 if self.fixed_resource_limits else 512):
                 reserve = max(self.reserve_floor, reserve - math.floor(free_vram - desired_free))
+            if self.fixed_resource_limits:
+                reserve = max(self.reserve_floor, reserve)
         else:
             # At load time the native floor is retained even when the caller asks
             # for a high utilization target; GPU workspace must still fit.
-            reserve = max(reserve, math.ceil(reading["gpu_mem_total"] / MIB * (1 - self.vram_target)))
+            if not self.fixed_resource_limits:
+                reserve = max(reserve, math.ceil(reading["gpu_mem_total"] / MIB * (1 - self.vram_target)))
         return {"resident_budget_gib": round(resident, 3), "vram_reserve_mib": reserve}
 
     def plan_for_load(self, snapshot, now):
@@ -150,7 +187,8 @@ class MemoryPolicy:
         The service calls this after recording a matching terminal applied ACK.
         Proposals, progress, errors and failed writes never arm recovery.
         """
-        if self.mode != "live" or not self.recovery_duration or self.current is None:
+        if (self.fixed_resource_limits or self.mode != "live" or not self.recovery_duration
+                or self.current is None):
             self.pressure_recovery_ceiling_gib = None
             return
         actual = self.current["resident_budget_gib"]
@@ -178,7 +216,8 @@ class MemoryPolicy:
         fixed until the next successful allocation, never follow free-space
         oscillations. A pre-load sample cannot establish a loaded baseline.
         """
-        if not self.enabled or self.current is None or self.gpu_baseline is not None:
+        if (not self.enabled or self.fixed_resource_limits or self.current is None
+                or self.gpu_baseline is not None):
             return False
         reading = self._reading(snapshot, now)
         if reading is None or reading["sampled_at"] < self.last_applied:
@@ -217,15 +256,18 @@ class MemoryPolicy:
                 self.pressure_recovery_ceiling_gib = None
             self.last_reason = "awaiting_allocation" if loaded else "unloaded"
             return None
-        if self.reconcile_after_load and stamp <= self.last_applied:
+        if ((self.reconcile_after_load or self.fixed_resource_limits)
+                and self.last_applied is not None and stamp <= self.last_applied):
             self._reset_windows()
             self.last_reason = "awaiting_post_load_telemetry"
             return None
         plan = self._budget(reading, arena / 1024, loaded=True)
+        if self.fixed_resource_limits:
+            return self._observe_fixed(reading, plan, stamp)
         ram_delta = plan["resident_budget_gib"] - self.current["resident_budget_gib"]
         vram_delta = plan["vram_reserve_mib"] - self.current["vram_reserve_mib"]
         free_ram = (reading["ram_total"] - reading["ram_used"]) / GIB
-        required_free_ram = max(self.headroom, reading["ram_total"] / GIB * (1 - self.ram_target))
+        required_free_ram = self._required_headroom(reading)
         pressure = (reading["ram_used"] / reading["ram_total"] > self.ram_target
                     or free_ram < required_free_ram
                     or reading["gpu_mem_used"] / reading["gpu_mem_total"] > self.vram_target)
@@ -295,12 +337,53 @@ class MemoryPolicy:
         self.last_reason = reason
         return plan
 
+    def _observe_fixed(self, reading, plan, stamp):
+        """Fixed targets use bounded fresh growth and the existing pressure window."""
+        self.reconcile_after_load = False
+        ram_delta = plan["resident_budget_gib"] - self.current["resident_budget_gib"]
+        vram_delta = plan["vram_reserve_mib"] - self.current["vram_reserve_mib"]
+        free_ram = (reading["ram_total"] - reading["ram_used"]) / GIB
+        free_vram = (reading["gpu_mem_total"] - reading["gpu_mem_used"]) / MIB
+        pressure = (free_ram < self.headroom or free_vram < self.reserve_floor
+                    or self.current["vram_reserve_mib"] < self.reserve_floor)
+        shrink = pressure and (ram_delta <= -1 or vram_delta >= 32)
+        # Use raw headroom as well as the rounded budget: rounding cannot earn
+        # a two-GiB expansion from slightly less safe space.
+        ram_grow = ram_delta >= 2 and free_ram - self.headroom >= 2
+        vram_grow = vram_delta <= -32
+        grow = not pressure and (ram_grow or vram_grow)
+        self.pressure_since = (stamp if self.pressure_since is None else self.pressure_since) if shrink else None
+        self.growth_since = (stamp if self.growth_since is None else self.growth_since) if not pressure and ram_grow else None
+        self.gpu_growth_since = (stamp if self.gpu_growth_since is None else self.gpu_growth_since) if not pressure and vram_grow else None
+        ram_ready = self.growth_since is not None and stamp - self.growth_since >= 30
+        vram_ready = self.gpu_growth_since is not None and stamp - self.gpu_growth_since >= 30
+        if self.pressure_since is not None and stamp - self.pressure_since >= self.pressure_duration:
+            # Reclamation must not grow the other cache, even after retargeting.
+            plan["resident_budget_gib"] = min(plan["resident_budget_gib"], self.current["resident_budget_gib"])
+            plan["vram_reserve_mib"] = max(plan["vram_reserve_mib"], self.current["vram_reserve_mib"])
+            reason = "sustained_pressure"
+        elif ram_ready or vram_ready:
+            plan = {"resident_budget_gib": self.current["resident_budget_gib"] + 2 if ram_ready else
+                    self.current["resident_budget_gib"],
+                    "vram_reserve_mib": max(plan["vram_reserve_mib"],
+                                            self.current["vram_reserve_mib"] - 128) if vram_ready else
+                    self.current["vram_reserve_mib"]}
+            reason = "stable_headroom"
+        else:
+            self.last_reason = "pressure_debounce" if shrink else "growth_debounce" if grow else "stable"
+            return None
+        plan["reason"] = self.last_reason = reason
+        return plan
+
     def status(self):
         return {"enabled": self.enabled, "mode": self.mode, "current": dict(self.current) if self.current else None,
                 "reason": self.last_reason, "last_applied_at": self.last_applied,
                 "resident_cap_gib": self.cap, "vram_reserve_floor_mib": self.reserve_floor,
                 "ram_target_percent": self.ram_target * 100, "vram_target_percent": self.vram_target * 100,
                 "min_ram_headroom_gib": self.headroom, "cooldown_seconds": self.cooldown,
+                "fixed_resource_limits": self.fixed_resource_limits,
+                "resource_targets": {"headroom_gib": self.headroom,
+                                     "vram_reserve_mib": self.reserve_floor} if self.fixed_resource_limits else None,
                 "recovery_seconds": self.recovery_duration,
                 "pressure_recovery_ceiling_gib": self.pressure_recovery_ceiling_gib,
                 "gpu_baseline_free_mib": self.gpu_baseline[1] if self.gpu_baseline is not None else None}

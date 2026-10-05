@@ -77,6 +77,38 @@ retry delay. Pressure never grows the other cache. A failed control write starts
 another shrink attempt; pending native work remains single-flight. Pressure relief retains the growth retry
 deadline, so a briefly freed budget cannot immediately start another expansion.
 
+## Three desktop resource presets
+
+An optional component selects fixed reserve targets for a shared desktop. It requires enabled live memory
+policy. Add `"resource_presets": {"enabled": true, "selection": "auto"}` to the run config. Missing or disabled
+presets retain the percentage policy and do not sample application processes.
+
+| Preset | Free RAM target | Free VRAM target |
+| --- | --- | --- |
+| Full | 2 GiB | 256 MiB |
+| Daily | 4 GiB | 700 MiB |
+| Busy | 8 GiB | 1,536 MiB |
+
+Automatic starts in Daily. Codex or ChatGPT present selects Daily; external application CPU at least20% of
+the machine or aggregate process RSS at least8 GiB selects Busy; confirmed absence of Codex/ChatGPT otherwise
+selects Full. More conservative transitions require8 seconds; relaxing requires60 seconds. Incomplete or
+stale readings cannot earn a transition. RSS is a workload signal and can count shared pages more than once;
+the allocation policy separately uses measured system available RAM. Sampling excludes Strata/server descendants
+and reads only process identity, CPU counters and RSS. It runs in the existing telemetry loop.
+
+The full Monitor exposes Automatic, Full, Daily, Busy and Off. Manual selections persist
+until Automatic is selected again. `GET /v1/resources` reports selection, effective preset, targets and actual
+memory state. `POST /v1/resources` accepts only the complete `enabled` and `selection` block, retains API-key
+and own-page checks, and saves only that block atomically before changing targets. Guest accounts cannot use
+these controls. Off restores the original configured percentage limits.
+
+Targets are not allocations or throughput guarantees. Native acknowledgements report actual capacity, pending
+work and limitations. Retargeting keeps the model process, KV cache and any pending allocation; it waits for that
+allocation's acknowledgement before another proposal. Pressure uses the configured debounce. Growth in fixed
+mode requires30 seconds of fresh headroom and adds at most2 GiB RAM or reduces reserve by at most128 MiB per
+completed step. It retains the native-error retry deadline. The resident cap and native admission guards still
+limit growth. Ordinary idle unload remains independent.
+
 ## What stays stable
 
 VRAM uses a reserved virtual address range with independently mapped physical blocks. Slot addresses and

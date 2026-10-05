@@ -264,13 +264,16 @@ class _CpuRamFallback:
 
 # ------------------------------------------------------------------------------------------------ the sampler
 class Telemetry:
-    def __init__(self, extra=None, gpu_index=0, gpu_indices=None, amd=False):
+    def __init__(self, extra=None, gpu_index=0, gpu_indices=None, amd=False, workload_sampler=None):
         """`extra()` -> dict of more series to record each second (the server's tok/s).  `gpu_index`: the card the
         engine runs on, numbered as nvidia-smi and NVML number them (by PCI bus); `gpu_indices`: all of them when
         the model is split across several (issue #112) - the gpu_* readings are then their total (memory, power,
         PCIe traffic), mean (load) or hottest (temperature), and "gpus" has each card's own.  `amd`: the AMD backend's
         cards, numbered as HIP numbers them, read from sysfs (#301)."""
         self.extra = extra
+        # Opt-in private aggregate; runs on this same 1s thread before extra().
+        # Accept an object with sample(now), or a callable binding server/native exclusions.
+        self.workload_sampler = workload_sampler
         self.lock = threading.Lock()
         self.now: dict = {}
         self.hist = collections.defaultdict(lambda: collections.deque(maxlen=HISTORY))
@@ -378,6 +381,14 @@ class Telemetry:
             s["cpu"] = self.fallback.cpu()
             s["ram_used"], s["ram_total"] = self.fallback.ram()
         s["disk_read_mb"], s["disk_write_mb"] = self._disk()
+        sampler = getattr(self, "workload_sampler", None)
+        if sampler is not None:
+            try:
+                sample = sampler.sample if hasattr(sampler, "sample") else sampler
+                s["workload"] = sample(s["sampled_at"])
+            except Exception:  # noqa: BLE001 - no failed workload sensor can stop telemetry
+                s["workload"] = {"complete": False, "codex_present": False,
+                                 "cpu_percent": None, "rss_bytes": None}
         if self.extra:
             try:
                 s.update(self.extra())

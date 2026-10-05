@@ -94,7 +94,11 @@ function headers(json = false) {
   return h;
 }
 $("api-key").value = store.get("apikey", "");
-$("api-key").onchange = () => { store.set("apikey", $("api-key").value.trim()); toast("success", "API key saved", "Kept in this browser only."); };
+$("api-key").onchange = () => {
+  store.set("apikey", $("api-key").value.trim());
+  toast("success", "API key saved", "Kept in this browser only.");
+  resourceControls.refresh();
+};
 
 let health = {model: "strata", images: false, max_context: 0};
 async function loadHealth() {
@@ -151,21 +155,39 @@ function setMetric(key, value, unit, sub) {
 }
 
 let lastMetrics = null, metricsFailures = 0, keyWarned = false, mcpTick = 0;
+const resourceControls = StrataResourceControls.create({
+  containers: [$("monitor-resources")],
+  async request(path, body) {
+    const r = await fetch(path, {cache: "no-store", headers: headers(body !== undefined),
+      ...(body !== undefined ? {method: "POST", body: JSON.stringify(body)} : {})});
+    if (r.status === 404) throw new Error("Resource presets are unavailable on this server.");
+    if (r.status === 401) throw new Error("Add the server API key under About to change resource presets.");
+    const value = await r.json();
+    if (!r.ok || value.error) throw new Error(value.error?.message || `HTTP ${r.status}`);
+    return value;
+  },
+});
+resourceControls.refresh();
 let reqShowAll = false;   // the Monitor's request table: the last 12, or every one the server keeps (issue #35)
 async function poll() {
+  const resourceVersion = resourceControls.version();
   try {
     const r = await fetch(reqShowAll ? "metrics?requests=all" : "metrics", {headers: headers()});
     if (r.status === 401) {
+      metricsFailures++;
+      resourceControls.offline(resourceVersion);
       setPill("error", "API key needed");
       if (!keyWarned) { keyWarned = true; toast("warn", "API key needed", "This server needs a key: add it under About > Settings.", 6000); }
     } else if (r.ok) {
       lastMetrics = await r.json();
       metricsFailures = 0;
+      resourceControls.update(lastMetrics.resources, resourceVersion);
       render(lastMetrics);
     } else {
       throw new Error(`HTTP ${r.status}`);
     }
   } catch (e) {
+    resourceControls.offline(resourceVersion);
     if (++metricsFailures === 3) setPill("error", "Server not reachable");
   }
   if (tab === "monitor" && ++mcpTick % 10 === 0) loadMcp();       // server states change rarely: every 10 s

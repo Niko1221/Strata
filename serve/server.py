@@ -57,6 +57,7 @@ from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve import runconfig  # noqa: E402
 from serve.winjob import contain  # noqa: E402
 from serve.memory_policy import MemoryPolicy  # noqa: E402
+from serve.resource_presets import ResourcePresets, WorkloadSampler, clean_config as clean_resource_config  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
@@ -1781,6 +1782,10 @@ class Service:
         self.memory_retry_at = 0
         self.memory_error = None
         self.memory_limitation = None
+        self.resource_presets = ResourcePresets()
+        self.resource_limits = None
+        self.resource_generation = 0
+        self.resource_sampler = None
         self.min_free_vram_mib = 0
         self.before_load = None
         self.vram_reserve = None                         # #533: the last POST /v1/vram reserve (None: the start's)
@@ -1989,6 +1994,63 @@ class Service:
         self.memory_error = None
         self.memory_limitation = None
 
+    def configure_resources(self, config):
+        """Startup configuration or validated live selection; never reinitialize allocation state."""
+        config = clean_resource_config(config)
+        if config["enabled"] and (self.memory_policy is None or self.memory_policy.mode != "live"):
+            raise ValueError("resource presets require enabled live memory policy")
+        with self.memory_lock:
+            self.resource_presets.configure(config)
+            self._retarget_resources()
+            self._sync_resource_sampler()
+
+    def _retarget_resources(self):
+        limits = self.resource_presets.limits()
+        if limits != self.resource_limits:
+            self.memory_policy.update_resource_limits(*(limits if limits is not None else (None, None)))
+            self.resource_limits = limits
+            self.resource_generation += 1
+
+    def _resource_exclusions(self):
+        pid = getattr(getattr(self.engine, "proc", None), "pid", None)
+        return (os.getpid(), pid) if isinstance(pid, int) else (os.getpid(),)
+
+    def _sync_resource_sampler(self):
+        telemetry = getattr(self, "telemetry", None)
+        if telemetry is None:
+            return
+        if self.resource_presets.enabled and self.resource_presets.selection == "auto":
+            if self.resource_sampler is None:
+                self.resource_sampler = WorkloadSampler(getattr(telemetry, "ps", None))
+            telemetry.workload_sampler = lambda now: self.resource_sampler.sample(now, self._resource_exclusions())
+        else:
+            telemetry.workload_sampler = None
+            self.resource_sampler = None
+
+    def resource_status(self):
+        with self.memory_lock:
+            status = self.resource_presets.status()
+            targets = status.get("targets") or {}
+            return {**status, **targets,
+                    "available": bool(self.config_path and self.memory_policy and self.memory_policy.mode == "live"),
+                    "memory": self.memory_status()}
+
+    def set_resources(self, config):
+        """Persist only the preset block before changing the live desired targets."""
+        if not isinstance(config, dict) or set(config) != {"enabled", "selection"}:
+            raise ValueError("send only enabled and selection for resource presets")
+        config = clean_resource_config(config)
+        if config["enabled"] and (self.memory_policy is None or self.memory_policy.mode != "live"):
+            raise ValueError("resource presets require enabled live memory policy")
+        if not self.config_path:
+            raise OSError("configure a run config file to save resource presets")
+        with self.config_lock:
+            cfg = runconfig.load(self.config_path)
+            if cfg.get("resource_presets") != config:
+                runconfig.save(self.config_path, {**cfg, "resource_presets": config}, preserve_backup=True)
+            self.configure_resources(config)
+        return self.resource_status()
+
     def _invalidate_live_memory(self):
         self.memory_live_pending = None
         self.memory_pending = None
@@ -2030,8 +2092,9 @@ class Service:
             elif status == "applied":
                 self.memory_error = None
                 self.memory_limitation = ack.get("error") if ack.get("error") not in (None, "none", "") else None
-                self.memory_policy.complete_live_plan(pending["plan"], pending["resident_before_gib"],
-                                                      self.memory_limitation)
+                if pending.get("resource_generation", 0) == self.resource_generation:
+                    self.memory_policy.complete_live_plan(pending["plan"], pending["resident_before_gib"],
+                                                          self.memory_limitation)
 
     def memory_snapshot(self, fresh=False):
         telemetry = getattr(self, "telemetry", None)
@@ -2046,6 +2109,8 @@ class Service:
             if self.memory_loading:
                 return
             snapshot, now = self.memory_snapshot(), time.time()
+            if self.resource_presets.observe(snapshot, now):
+                self._retarget_resources()
             live = self.memory_policy.mode == "live"
             if live:
                 if not self.loaded():
@@ -2077,7 +2142,8 @@ class Service:
                 self.memory_request_id += 1
                 self.memory_limitation = None
                 pending = {"id": self.memory_request_id, "proc": self.engine.proc, "plan": plan,
-                           "resident_before_gib": self.memory_policy.current["resident_budget_gib"]}
+                           "resident_before_gib": self.memory_policy.current["resident_budget_gib"],
+                           "resource_generation": self.resource_generation}
                 self.memory_live_pending = pending
                 try:
                     self.engine.request_memory(pending["id"], int(plan["resident_budget_gib"] * 1024),
@@ -2260,6 +2326,7 @@ class Service:
                                        gpu_index=int(getattr(self, "gpu_index", 0) or 0),
                                        gpu_indices=getattr(self, "gpu_indices", None),
                                        amd=getattr(self, "backend", None) == "hip")
+            self._sync_resource_sampler()
 
     def _tok_s(self):
         """tok/s over the last RATE_WINDOW_S seconds.  Returns 0.0 while nothing is generating.  With parallel requests:
@@ -2375,9 +2442,11 @@ class Service:
         parked = self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
                 "conversation_cache": conversation_cache_view(engine, hist, totals, parked),
-                "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
+                "requests_kept": len(hist), "totals": totals,
+                "resources": self.resource_status(),
+                "hardware": {k: v for k, v in tel["now"].items() if k != "workload"},
                 "hardware_static":
-                tel["static"], "history": tel["history"], "time": now}
+                tel["static"], "history": {k: v for k, v in tel["history"].items() if k != "workload"}, "time": now}
 
     def v1_status(self) -> dict:
         """GET /v1/status: what this server is and does, for a client that would rather ask than guess (a front-end
@@ -2397,6 +2466,7 @@ class Service:
         return {
             "service": "strata", "model": self.model,
             "memory_policy": self.memory_status(),
+            "resources": self.resource_status(),
             "loaded": self.loaded(), "auto_load": hasattr(self.engine, "restart"),
             "structured_output": {"formats": ["json_object", "json_schema"], "method": "prompt_and_validate",
                                   "constrained_decoding": False, "stream_buffered": True},
@@ -3214,6 +3284,8 @@ def make_handler(svc: Service):
         def _cors(self):
             """#321: CORS headers for an API path (/v1/*) and an origin the config lists in cors_origins - nothing
             otherwise, so a browser keeps every other page away from the API, /settings, /unload and the MCP tools."""
+            if self.path.split("?")[0].rstrip("/") == "/v1/resources":
+                return                                  # resource controls never inherit API wildcard CORS
             if not svc.cors_origins or not self.path.split("?")[0].startswith("/v1/"):
                 return
             origin = (self.headers.get("Origin") or "").rstrip("/")
@@ -3268,6 +3340,10 @@ def make_handler(svc: Service):
 
         def do_GET(self):
             path = self.path.split("?")[0].rstrip("/")
+            if path == "/v1/resources":
+                if self._authorized():
+                    self._json(200, svc.resource_status())
+                return
             if path.startswith("/fonts/"):
                 # the web app's font (Outfit, OFL: serve/web/fonts); the page falls back to the system font
                 name = path[len("/fonts/"):]
@@ -3388,6 +3464,9 @@ def make_handler(svc: Service):
                 return
             path = self.path.split("?")[0].rstrip("/")   # issue #55: Claude Code posts /v1/messages?beta=true
             if path.startswith("/v1/") and self._foreign_page():
+                return
+            if path == "/v1/resources":
+                self._resources_post()
                 return
             if path == "/settings":
                 self._settings()
@@ -3559,6 +3638,33 @@ def make_handler(svc: Service):
             if not complete:
                 self._json(400, {"error": {"message": "incomplete control request body"}})
             return complete
+
+        def _resources_post(self):
+            if not self._own_page("resource presets can be changed"):
+                return
+            lengths = self.headers.get_all("Content-Length", [])
+            if (len(lengths) != 1 or not lengths[0].isascii() or not lengths[0].isdigit()
+                    or len(lengths[0]) > 4 or int(lengths[0]) > 4096
+                    or self.headers.get("Transfer-Encoding")):
+                self._json(400, {"error": {"message": "resource selection needs one JSON body of at most 4096 bytes"}})
+                return
+            timeout = self.connection.gettimeout()
+            try:
+                self.connection.settimeout(2.0)
+                body = self.rfile.read(int(lengths[0]))
+                if len(body) != int(lengths[0]):
+                    raise ValueError("incomplete resource selection body")
+                config = json.loads(body)
+                result = svc.set_resources(config)
+            except (ValueError, TypeError) as e:
+                self._json(400, {"error": {"message": str(e)}})
+                return
+            except OSError as e:
+                self._json(503, {"error": {"message": str(e)}})
+                return
+            finally:
+                self.connection.settimeout(timeout)
+            self._json(200, result)
 
         def _own_page(self, what) -> bool:
             """Only JSON (a form or a "simple" cross-site request can't send it without a CORS preflight, which this
@@ -4373,6 +4479,7 @@ def main() -> int:
     svc.before_load = a.before_load or cfg.get("before_load") or None
     try:
         svc.configure_memory(cfg.get("memory_policy"))
+        svc.configure_resources(cfg.get("resource_presets"))
     except (ValueError, TypeError) as e:
         raise SystemExit(f"[strata] config {e}")
     mode = str(cfg.get("anthropic_thinking") or "model")   # #278: "on_request" = only when the request asks

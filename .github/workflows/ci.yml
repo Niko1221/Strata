@@ -39,6 +39,8 @@ jobs:
         run: python -m unittest discover -s serve -p "test_*.py" -v
       - name: Parallel setup regression tests
         run: python -m unittest tools.test_setup_parallel -v
+      - name: Browser resource preset controls
+        run: node --test tools/test_resource_controls.cjs
 
   native:
     name: Native CPU (${{ matrix.os }})

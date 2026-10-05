@@ -471,6 +471,12 @@ borrower, prefers GPU-backed duplicates, then colder measured RAM occupants; una
 fallback. Total capacity stays unchanged, but an evicted RAM donor can cost a later read.
 A small mapped cache floor preserves fresh prompt support;
 an unreachable reserve reports `prefill_cache_floor` with actual sizes.
+An optional `"resource_presets": {"enabled": true, "selection": "auto"}` component replaces percentage targets
+with fixed Full/Daily/Busy reserves for shared desktop use. Monitor allows persistent manual override and Off;
+selection is saved before live retargeting, while native acknowledgements still own actual allocation. Absent
+or disabled presets retain the existing policy without process sampling. See the catalog and timing rules in
+[three desktop resource presets](LIVE_MEMORY.md#three-desktop-resource-presets).
+
 Free space alone does not guarantee faster inference: routing, file reads, host-to-device copies and fixed
 model/KV buffers still matter. See [live-memory control and validation](LIVE_MEMORY.md).
 

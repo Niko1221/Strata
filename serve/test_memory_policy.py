@@ -367,6 +367,242 @@ class PostLoadPolicyTests(unittest.TestCase):
         self.assertEqual(self.observe(policy, 700)["reason"], "stable_headroom")
 
 
+class FixedResourcePolicyTests(unittest.TestCase):
+    def policy(self, resident=32, reserve=1536, headroom=4, target_reserve=700, loaded=False):
+        policy = MemoryPolicy({"enabled": True, "mode": "live", "pressure_seconds": 4,
+                               "recovery_seconds": 30}, resident_cap_gib=55)
+        policy.live_actual(resident * 1024, reserve, 100, "initial_budget",
+                           completed=True, loaded=loaded)
+        policy.update_resource_limits(headroom, target_reserve)
+        return policy
+
+    def observe(self, policy, now, used=40, gpu_used=20, stamp=None, info=None):
+        if info is None:
+            info = {"arena_mib": policy.current["resident_budget_gib"] * 1024,
+                    "expert_cache_mib": 8192}
+        return policy.observe(sample(now if stamp is None else stamp, used=used, gpu_used=gpu_used),
+                              True, info, now)
+
+    def quiet(self, policy, start, stop, **kwargs):
+        for now in range(start, stop + 1):
+            self.assertIsNone(self.observe(policy, now, **kwargs), f"unexpected plan at {now}")
+
+    def test_fixed_ram_budget_does_not_keep_legacy_percentage_headroom(self):
+        policy = MemoryPolicy({"enabled": True, "mode": "live"})
+        policy.update_resource_limits(2, 256)
+        self.assertEqual(policy.plan_for_load(sample(0, used=20), 0),
+                         {"resident_budget_gib": 40, "vram_reserve_mib": 256,
+                          "reason": "load_budget"})
+
+    def test_fixed_growth_waits_thirty_seconds_and_is_bounded(self):
+        policy = self.policy()
+        self.quiet(policy, 101, 130)
+        self.assertEqual(self.observe(policy, 131),
+                         {"resident_budget_gib": 34, "vram_reserve_mib": 1408,
+                          "reason": "stable_headroom"})
+        self.assertEqual(policy.current, {"resident_budget_gib": 32, "vram_reserve_mib": 1536})
+        self.assertEqual(policy.last_applied, 100)
+
+    def test_cold_targets_use_fixed_ram_and_gpu_reserves_without_allocation(self):
+        policy = MemoryPolicy({"enabled": True, "mode": "live"}, resident_cap_gib=55)
+        for headroom, reserve, resident in ((2, 256, 40), (4, 700, 38), (8, 1536, 34)):
+            with self.subTest(headroom=headroom, reserve=reserve):
+                policy.update_resource_limits(headroom, reserve)
+                plan = policy.plan_for_load(sample(0, used=20, gpu_used=4, gpu_total=64), 0)
+                self.assertEqual(plan, {"resident_budget_gib": resident,
+                                       "vram_reserve_mib": reserve, "reason": "load_budget"})
+                self.assertIsNone(policy.current)
+                self.assertIsNone(policy.last_applied)
+        disabled = MemoryPolicy()
+        disabled.update_resource_limits(2, 256)
+        self.assertIsNone(disabled.plan_for_load(sample(0), 0))
+        self.assertFalse(disabled.enabled)
+
+    def test_fixed_targets_suppress_independent_ram_and_gpu_percent_pressure(self):
+        policy = self.policy(reserve=256, headroom=2, target_reserve=256)
+        # 2.6 GiB free RAM and 512 MiB free VRAM meet both fixed targets,
+        # despite exceeding the legacy 95% RAM and 99% GPU ceilings.
+        for now in range(101, 140):
+            self.assertIsNone(policy.observe(sample(now, used=61.4, gpu_used=63.5, gpu_total=64),
+                                             True, {"arena_mib": 32 * 1024}, now))
+        self.assertEqual(policy.last_reason, "stable")
+        self.assertIsNone(policy.pressure_since)
+
+    def test_raised_targets_reset_windows_and_shrink_before_old_cooldown(self):
+        policy = self.policy(reserve=256, headroom=2, target_reserve=256)
+        self.quiet(policy, 101, 129, used=58)
+        policy.update_resource_limits(8, 1536)
+        self.assertIsNone(policy.growth_since)
+        self.assertIsNone(policy.gpu_growth_since)
+        self.quiet(policy, 130, 133, used=58)
+        self.assertEqual(self.observe(policy, 134, used=58),
+                         {"resident_budget_gib": 30, "vram_reserve_mib": 1536,
+                          "reason": "sustained_pressure"})
+        self.assertEqual(policy.current, {"resident_budget_gib": 32, "vram_reserve_mib": 256})
+        self.assertEqual(policy.last_applied, 100)
+
+    def test_reserve_floor_retarget_can_reclaim_without_ram_growth(self):
+        policy = self.policy(reserve=256)
+        # The native allocation still reports the old 256 MiB target. Retarget
+        # to 700 MiB even if external free VRAM already exceeds that target.
+        gpu_used = 24 - 800 / 1024
+        self.quiet(policy, 101, 104, gpu_used=gpu_used)
+        self.assertEqual(self.observe(policy, 105, gpu_used=gpu_used),
+                         {"resident_budget_gib": 32, "vram_reserve_mib": 700,
+                          "reason": "sustained_pressure"})
+
+    def test_pressure_uses_fixed_gpu_deficit_and_never_grows_ram(self):
+        policy = self.policy(reserve=700)
+        gpu_used = 24 - 300 / 1024
+        self.quiet(policy, 101, 104, gpu_used=gpu_used)
+        self.assertEqual(self.observe(policy, 105, gpu_used=gpu_used),
+                         {"resident_budget_gib": 32, "vram_reserve_mib": 1100,
+                          "reason": "sustained_pressure"})
+
+    def test_small_renewed_pressure_cancels_both_growth_windows(self):
+        policy = self.policy()
+        self.quiet(policy, 101, 129)
+        # This RAM deficit cannot earn a material shrink; it still cancels growth.
+        self.assertIsNone(self.observe(policy, 130, used=60.1))
+        self.quiet(policy, 131, 160)
+        self.assertEqual(self.observe(policy, 161)["reason"], "stable_headroom")
+
+    def test_raw_two_gib_ram_margin_and_material_gpu_difference_are_required(self):
+        policy = self.policy(reserve=700)
+        gpu_used = 24 - 700 / 1024
+        # The rounded budget has 2 GiB room, but raw RAM headroom has only 1.9996.
+        self.quiet(policy, 101, 135, used=58.0004, gpu_used=gpu_used)
+        self.quiet(policy, 136, 165, used=58, gpu_used=gpu_used)
+        self.assertEqual(self.observe(policy, 166, used=58, gpu_used=gpu_used),
+                         {"resident_budget_gib": 34, "vram_reserve_mib": 700,
+                          "reason": "stable_headroom"})
+        policy = self.policy(reserve=732)
+        self.quiet(policy, 101, 135, used=60, gpu_used=24 - 731 / 1024)
+        self.quiet(policy, 136, 165, used=60, gpu_used=24 - 732 / 1024)
+        self.assertEqual(self.observe(policy, 166, used=60, gpu_used=24 - 732 / 1024),
+                         {"resident_budget_gib": 32, "vram_reserve_mib": 700,
+                          "reason": "stable_headroom"})
+
+    def test_each_cache_earns_its_own_fresh_growth_window(self):
+        # Stable GPU room must not lend thirty seconds to newly available RAM.
+        policy = self.policy()
+        self.quiet(policy, 101, 130, used=60)
+        self.assertEqual(self.observe(policy, 131),
+                         {"resident_budget_gib": 32, "vram_reserve_mib": 1408,
+                          "reason": "stable_headroom"})
+        # Stable RAM room must not lend its window to newly available GPU room.
+        policy = self.policy()
+        gpu_used = 24 - 700 / 1024
+        self.quiet(policy, 101, 130, gpu_used=gpu_used)
+        self.assertEqual(self.observe(policy, 131),
+                         {"resident_budget_gib": 34, "vram_reserve_mib": 1536,
+                          "reason": "stable_headroom"})
+
+    def test_completed_or_limited_actual_ack_starts_a_new_post_ack_window(self):
+        for actual, reserve in ((34, 1408), (33.999, 1408), (33, 128)):
+            with self.subTest(actual=actual, reserve=reserve):
+                policy = self.policy()
+                self.quiet(policy, 101, 130)
+                plan = self.observe(policy, 131)
+                policy.live_actual(actual * 1024, reserve, 132, plan["reason"], completed=True)
+                policy.complete_live_plan(plan, 32, "ram_capacity_or_rounding")
+                self.assertEqual(policy.current["resident_budget_gib"], actual)
+                self.assertEqual(policy.current["vram_reserve_mib"], reserve)
+                self.assertEqual(policy.last_applied, 132)
+                self.assertIsNone(policy.pressure_recovery_ceiling_gib)
+                self.assertIsNone(self.observe(policy, 133, stamp=132))
+                if reserve < 700:
+                    self.quiet(policy, 134, 137)
+                    next_plan = self.observe(policy, 138)
+                    self.assertEqual(next_plan["reason"], "sustained_pressure")
+                    self.assertEqual(next_plan["resident_budget_gib"], actual)
+                else:
+                    self.quiet(policy, 134, 163)
+                    next_plan = self.observe(policy, 164)
+                    self.assertEqual(next_plan["resident_budget_gib"], actual + 2)
+                    self.assertEqual(next_plan["vram_reserve_mib"], reserve - 128)
+
+    def test_loaded_ack_has_no_unbounded_immediate_reconciliation(self):
+        policy = self.policy(loaded=True)
+        self.quiet(policy, 101, 130)
+        self.assertEqual(self.observe(policy, 131)["resident_budget_gib"], 34)
+        # Loading again while fixed targets remain selected uses the same window.
+        policy.live_actual(20 * 1024, 1536, 132, "load_budget", completed=True, loaded=True)
+        self.quiet(policy, 133, 162)
+        self.assertEqual(self.observe(policy, 163)["resident_budget_gib"], 22)
+
+    def test_replay_staleness_gap_and_unknown_arena_reset_fixed_growth(self):
+        cases = ((125, 124, None, False), (134, 125, None, False),
+                 (130, 130, None, True), (125, 125, {}, False),
+                 (125, 125, {"arena_mib": 0}, False))
+        for now, stamp, info, fresh_gap in cases:
+            with self.subTest(now=now, stamp=stamp, info=info):
+                policy = self.policy()
+                self.quiet(policy, 101, 124)
+                self.assertIsNone(self.observe(policy, now, stamp=stamp, info=info))
+                due = now + 30 if fresh_gap else now + 31
+                self.quiet(policy, now + 1, due - 1)
+                self.assertEqual(self.observe(policy, due)["reason"], "stable_headroom")
+
+    def test_changed_limits_clear_old_episode_without_falsifying_actual_state(self):
+        policy = MemoryPolicy({"enabled": True, "mode": "live", "min_ram_headroom_gib": 7.5,
+                               "pressure_seconds": 4, "recovery_seconds": 30},
+                              resident_cap_gib=55, vram_reserve_mib=2048)
+        policy.live_actual(42 * 1024, 2048, 100, "initial_budget", completed=True)
+        self.quiet(policy, 101, 104, used=63.5)
+        pressure = self.observe(policy, 105, used=63.5)
+        policy.live_actual(pressure["resident_budget_gib"] * 1024, 2048, 106,
+                           "sustained_pressure", completed=True)
+        policy.complete_live_plan(pressure, 42)
+        self.assertEqual(policy.pressure_recovery_ceiling_gib, 42)
+        self.quiet(policy, 107, 135)
+        self.assertIsNotNone(policy.recovery_since)
+        before = dict(policy.current), policy.last_applied, policy.last_sample
+        policy.update_resource_limits(2, 256)
+        self.assertEqual((policy.current, policy.last_applied, policy.last_sample), before)
+        self.assertIsNone(policy.recovery_since)
+        self.assertIsNone(policy.pressure_recovery_ceiling_gib)
+        self.assertEqual(policy.status()["resource_targets"],
+                         {"headroom_gib": 2, "vram_reserve_mib": 256})
+        # Old pressure ACKs may still report actual sizes; they cannot arm a
+        # legacy pressure episode under newly selected fixed limits.
+        policy.complete_live_plan(pressure, 42)
+        self.assertIsNone(policy.pressure_recovery_ceiling_gib)
+        policy.live_actual(30 * 1024, 256, 136, "stable_headroom", completed=True)
+        policy.update_resource_limits()
+        self.assertFalse(policy.status()["fixed_resource_limits"])
+        self.assertIsNone(policy.status()["resource_targets"])
+        self.assertEqual(policy.headroom, 7.5)
+        self.assertEqual(policy.reserve_floor, 2048)
+        self.assertEqual(policy.current, {"resident_budget_gib": 30, "vram_reserve_mib": 256})
+        self.assertEqual(policy.last_applied, 136)
+
+    def test_same_targets_preserve_window_and_invalid_pairs_are_atomic(self):
+        policy = self.policy()
+        self.quiet(policy, 101, 129)
+        window = policy.growth_since, policy.gpu_growth_since
+        before = policy.status()
+        for headroom, reserve in ((None, 700), (4, None), (True, 700), (1.9, 700),
+                                  (129, 700), (float("nan"), 700), (4, True),
+                                  (4, -1), (4, 700.5), (4, "700"), (4, float("inf"))):
+            with self.subTest(headroom=headroom, reserve=reserve), self.assertRaises(ValueError):
+                policy.update_resource_limits(headroom, reserve)
+            self.assertEqual(policy.status(), before)
+            self.assertEqual((policy.growth_since, policy.gpu_growth_since), window)
+        policy.update_resource_limits(4, 700)
+        self.assertEqual((policy.growth_since, policy.gpu_growth_since), window)
+        self.assertIsNone(self.observe(policy, 130))
+        self.assertEqual(self.observe(policy, 131)["reason"], "stable_headroom")
+
+    def test_fixed_gpu_space_does_not_replan_same_arguments_or_follow_oscillation(self):
+        policy = self.policy(resident=55, reserve=256, headroom=2, target_reserve=256)
+        self.assertFalse(policy.record_loaded(sample(101, gpu_used=22), 101))
+        for now in range(101, 400):
+            self.assertIsNone(self.observe(policy, now, gpu_used=20 if now % 2 else 22))
+        self.assertEqual(policy.last_reason, "stable")
+        self.assertIsNone(policy.gpu_baseline)
+
+
 class PressureRecoveryPolicyTests(unittest.TestCase):
     def policy(self, recovery=30, mode="live", reserve=1536):
         config = {"enabled": True, "mode": mode, "pressure_seconds": 4}
