@@ -1374,6 +1374,11 @@ bool Prefill::set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& e
                  pp->compact ? (pp->ps_frac > 0.0 ? (", compact group buffers, streams " + std::to_string((int) (pp->ps_frac * 100 + 0.5)) +
                                                     "% of the primary's streamed experts through a " + std::to_string(pp->RP) + "-slot ring").c_str()
                                                  : ", compact group buffers") : "", fb >> 20);
+    // APR: this path rotates on the peer too (peer_had_signs), but no P2P pair has run it end to end with a
+    // Hadamard-folded pack yet (the validated two-GPU runs had no P2P, so their prompts stayed on the first GPU)
+    if (strata::kernels::cpu::hadamard_spec().any())
+        std::fprintf(stderr, "strata prefill: warning: prompt processing on a P2P peer GPU is not validated end to end "
+                             "with Hadamard-folded experts yet\n");
     m.pp = std::move(pp);
     return true;
 }

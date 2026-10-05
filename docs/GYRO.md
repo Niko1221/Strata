@@ -11,7 +11,7 @@ The targets are the published files of `agentionai/Qwen3.8-Flash-Next-Gyro-GGUF`
 | `Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf` (92.0 GB) | TQ2_T, block-128 Hadamard | 29.9 GiB | validated end to end (RTX 5090, RTX 3090); the experts do not all fit a 32 GB card, `auto` streams the rest |
 
 Both files carry their own experts in the trellis types TQ2_T/TQK6/TQK7 and record the activation rotation in
-`prism.hadamard.*` metadata. Strata reads both natively (set `STRATA_APR=1`). About half of each file is the
+`prism.hadamard.*` metadata. Strata reads both natively. About half of each file is the
 n-gram (PLE) table, which stays on disk and is read row by row; it is not loaded into RAM or VRAM.
 
 The draft head is Strata's own MTP runtime, prepared from the original model's MTP weights as for the other
@@ -97,7 +97,7 @@ Save as `strata-gyro-s.json` at the repository root:
 ```
 
 ```sh
-STRATA_APR=1 .venv/bin/python -m serve.server --engine strata --config strata-gyro-s.json --port 8080
+.venv/bin/python -m serve.server --engine strata --config strata-gyro-s.json --port 8080
 ```
 
 The web interface is at `http://127.0.0.1:8080`; API clients use `http://127.0.0.1:8080/v1` (OpenAI) or
@@ -181,3 +181,5 @@ Single RTX 4090 smoke run (Gyro-S, MTP draft, greedy): code 107.5, prose 84.3, J
 - **AMD:** the trellis kernels pass parity on gfx1151 (ROCm 7.2.1) and a short end-to-end run there generated
   correctly (~28-31 tokens/s); no speed tuning or RDNA4 run yet.
 - **Gyro-M:** 29.9 GiB of experts do not all fit a 32 GB card next to the KV cache; `auto` streams the rest.
+- **Not validated end to end yet** (Strata runs them and logs a warning): an AMD GPU other than gfx1151, and
+  prompt processing on a peer GPU over P2P.

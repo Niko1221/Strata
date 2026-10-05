@@ -34,7 +34,7 @@ if [ "$BACKEND" = cuda ]; then
   cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON \
     -DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCH" -DSTRATA_GGML_DIR="$LLAMA"
 elif [ "$BACKEND" = hip ]; then
-  echo "note: AMD is experimental for Gyro (kernel parity validated on gfx1151, no end-to-end run yet)"
+  echo "note: AMD is experimental for Gyro (kernel parity and an end-to-end run validated on gfx1151 only)"
   cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_HIP=ON -DSTRATA_PREFILL_MMQ=ON \
     -DCMAKE_HIP_ARCHITECTURES="$HIP_ARCH" -DSTRATA_GGML_DIR="$LLAMA" \
     -DCMAKE_PREFIX_PATH="${ROCM_PATH:-/opt/rocm}"
@@ -81,5 +81,5 @@ cat > "strata-$P.json" <<JSON
 JSON
 
 step "done. Start the server with:"
-echo "  STRATA_APR=1 .venv/bin/python -m serve.server --engine strata --config strata-$P.json --port $PORT"
+echo "  .venv/bin/python -m serve.server --engine strata --config strata-$P.json --port $PORT"
 echo "  web: http://127.0.0.1:$PORT   API: http://127.0.0.1:$PORT/v1"

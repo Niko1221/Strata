@@ -2014,18 +2014,26 @@ int main(int argc, char** argv) {
             }
         }
         // APR (prism.hadamard) packs: every expert path rotates its activations (CPU pool: native_quant_act / _h;
-        // GPU verify, remote GPUs, prompt FP16 path: hadamard_rows), but the GPU side has been checked
-        // by native_expert_parity only, not end to end on a GPU: opt-in until it has (STRATA_APR=1).
+        // GPU verify, remote GPUs, prompt FP16 path: hadamard_rows).  Validated end to end on CUDA (sm_86, sm_89 with
+        // a two-GPU layer split and peer decode, sm_120) and on HIP gfx1151.  Other HIP architectures run the same
+        // kernels but have not been run end to end with such a pack: said here, not refused (the P2P prompt peer
+        // says the same in Prefill::set_peer).  The former opt-in STRATA_APR is no longer read.
         if (strata::kernels::cpu::hadamard_spec().any()) {
-            const char* apr = std::getenv("STRATA_APR");
-            if (apr == nullptr || apr[0] != '1') {
-                std::fprintf(stderr, "strata generate: this pack's experts are Hadamard-folded (hadamard.txt, an APR "
-                                     "model), whose GPU path is not validated end to end yet; set STRATA_APR=1 to "
-                                     "run it anyway\n");
-                return 1;
-            }
-            std::fprintf(stderr, "strata generate: APR pack: Hadamard-folded experts (block %d), experimental\n",
+            std::fprintf(stderr, "strata generate: APR pack: Hadamard-folded experts (block %d)\n",
                          strata::kernels::cpu::hadamard_spec().block);
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
+            int dev = 0;
+            cudaDeviceProp p{};
+            if (cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&p, dev) == cudaSuccess) {
+                std::string arch(p.gcnArchName);
+                if (const size_t colon = arch.find(':'); colon != std::string::npos) arch.resize(colon);
+                if (arch != "gfx1151")
+                    std::fprintf(stderr, "strata generate: warning: Hadamard-folded experts are validated end to end "
+                                         "on gfx1151 among AMD GPUs, not yet on %s\n", arch.c_str());
+            } else {
+                (void) cudaGetLastError();
+            }
+#endif
         }
     }
     const bool native_pack = strata::kernels::cpu::expert_layout().native;
