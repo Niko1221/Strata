@@ -108,6 +108,21 @@ void KvPool::shrink(const SessionState& ss, int64_t cells) {
     }
 }
 
+bool KvPool::swap(const SessionState& a, const SessionState& b) {
+    Table* ta = find(a);
+    Table* tb = find(b);
+    if (ta == nullptr || tb == nullptr || ta == tb || ta->host.size() != tb->host.size()) return false;
+    // element by element: the states point at these buffers (chunk_host), so they must stay where they are
+    std::swap_ranges(ta->host.begin(), ta->host.end(), tb->host.begin());
+    std::swap(ta->held, tb->held);
+    if (!upload(*ta) || !upload(*tb)) {
+        std::fprintf(stderr, "strata: kv pool: chunk table upload failed\n");
+        std::exit(1);
+    }
+    ++version_;
+    return true;
+}
+
 int64_t KvPool::reserved_cells(const SessionState& ss) const {
     const Table* t = find(ss);
     return t != nullptr ? t->held * chunk_cells() : 0;
