@@ -1348,3 +1348,21 @@ with **262,144 characters per input/output/reasoning/response field** and visibl
 responses are unaffected. Headers are not recorded, and the monitor key is kept in this tab's session storage.
 Treat request history as sensitive input/output when exposing Strata on a network: set an API key as above.
 The page uses relative URLs and works through the existing host binding or a reverse proxy.
+
+### Metrics log
+
+To see how the Monitor tab's values changed during a task, turn on the metrics log with `"metrics_log":
+"logs/metrics.jsonl"` in `strata-<model>.json` (or `serve/server.py --metrics-log [FILE]`, default
+`logs/metrics.jsonl`). It is off by default. The server appends JSON lines to the file, one object per line:
+
+- `"type": "start"` once per server start: the model, context size, GPU and CPU names, cores and threads.
+- `"type": "sample"` every second (`--metrics-log-every SECONDS` / `"metrics_log_every_s"`): the time (`t` in Unix
+  seconds, `ts` in local ISO time), the model state and its progress, decode and prefill tok/s, GPU load, VRAM, GPU
+  temperature, power and its limit, PCIe generation and width with the MB/s in each direction, CPU, disk read and
+  write, system RAM, context fill, and the expert slots in VRAM. With several GPUs it also has each card's own values.
+  The units are the Monitor's (GB, MB/s, W, °C, %).
+- `"type": "request"` once for each finished request: its prompt, reused and output tokens, decode and prefill
+  tok/s, the VRAM hit rate with the PCIe share, and its duration.
+
+No prompts or answers are written. A line is about 0.8 KB, so a sample every second comes to about 3 MB an hour.
+For example, `pandas.read_json("logs/metrics.jsonl", lines=True)` loads the file into a table.

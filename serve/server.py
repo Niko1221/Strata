@@ -28,6 +28,7 @@ import hashlib
 import hmac
 import codecs
 import ctypes
+import datetime
 import json
 import math
 import os
@@ -511,6 +512,69 @@ def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict) 
             "reused_tokens": totals.get("reused", 0), "prompt_tokens": totals.get("prompt_tokens", 0),
             "last_reused": last.get("reused") if last else None,
             "last_prompt": last.get("prompt_tokens") if last else None}
+
+
+def metrics_log_lines(m: dict, done_before: int) -> tuple[list[dict], int]:
+    """--metrics-log: what the Monitor tab shows, from a /metrics answer `m`, as JSONL records in the page's units:
+    one "sample" (the state, the eight cards, context fill, experts in VRAM, system RAM), then a "request" for each
+    request finished since `done_before` (the totals' request count at the last call).  Returns them and the count."""
+    live, hw, eng = m["live"], m["hardware"], m["engine"]
+    reqs = m["requests"]                                # newest first
+    last = reqs[0] if reqs else None
+
+    def r(v, d=1):
+        return round(v, d) if isinstance(v, (int, float)) else None
+
+    def gb(v):
+        return round(v / 2**30, 2) if isinstance(v, (int, float)) else None
+
+    def prefill_of(q):                                  # the page's "Prefill last request"
+        return r(max(0, q["prompt_tokens"] - (q.get("reused") or 0)) / (q["prompt_ms"] / 1000), 0) \
+            if q and q.get("prompt_ms") and q.get("prompt_tokens") is not None else None
+
+    state = live["state"]
+    if state != "idle":
+        used = (live.get("prompt_tokens") or 0) + (live.get("generated") or 0)
+    else:
+        used = ((last.get("prompt_tokens") or 0) + (last.get("output_tokens") or 0)) if last else 0
+    ctx = eng.get("max_context") or 0
+    t = m["time"]
+    sample = {
+        "type": "sample", "t": round(t, 3),
+        "ts": datetime.datetime.fromtimestamp(t).astimezone().isoformat(timespec="milliseconds"),
+        "state": state, "queued": live.get("queued"), "phase": live.get("phase"),
+        "prompt_read": live.get("prompt_read"), "prompt_total": live.get("prompt_total"),
+        "generated": live.get("generated"), "max_tokens": live.get("max_tokens"), "elapsed_s": live.get("elapsed_s"),
+        "decode_tok_s": live.get("tok_s") if state == "generating" else (last or {}).get("decode_tok_s"),
+        "prefill_tok_s": r(live.get("prefill_tok_s_mean"), 0) if state != "idle" else prefill_of(last),
+        "gpu_util_pct": r(hw.get("gpu_util")),
+        "vram_used_gb": gb(hw.get("gpu_mem_used")), "vram_total_gb": gb(hw.get("gpu_mem_total")),
+        "gpu_temp_c": r(hw.get("gpu_temp")),
+        "power_w": r(hw.get("gpu_power")), "power_limit_w": r(hw.get("gpu_power_limit")),
+        "pcie_gen": hw.get("gpu_pcie_gen"), "pcie_gen_max": hw.get("gpu_pcie_gen_max"),
+        "pcie_width": hw.get("gpu_pcie_width"),
+        "pcie_to_gpu_mb_s": r(hw.get("gpu_pcie_rx_mb")), "pcie_from_gpu_mb_s": r(hw.get("gpu_pcie_tx_mb")),
+        "cpu_pct": r(hw.get("cpu")),
+        "disk_read_mb_s": r(hw.get("disk_read_mb")), "disk_write_mb_s": r(hw.get("disk_write_mb")),
+        "ram_used_gb": gb(hw.get("ram_used")), "ram_total_gb": gb(hw.get("ram_total")),
+        "context_used": used, "context_max": ctx, "context_pct": r(100 * used / ctx) if ctx else None,
+        "expert_slots": eng.get("expert_slots"), "expert_cache_gb": gb((eng.get("expert_cache_mib") or 0) * 2**20),
+    }
+    if "parallel" in live:
+        sample.update(parallel=live["parallel"], running=live.get("running"), waiting=live.get("waiting"))
+    if len(hw.get("gpus") or []) > 1:                   # a model split across cards: each card's own
+        sample["gpus"] = [{"index": g["index"], "util_pct": r(g.get("util")), "vram_used_gb": gb(g.get("mem_used")),
+                           "temp_c": r(g.get("temp")), "power_w": r(g.get("power"))} for g in hw["gpus"]]
+    done = m["totals"].get("requests", 0)
+    new = max(0, min(done - done_before, len(reqs)))
+    out = [sample]
+    for q in reversed(reqs[:new]):                      # oldest first
+        out.append({"type": "request", "t": round(t, 3), "ts": sample["ts"],
+                    "started": datetime.datetime.fromtimestamp(q["time"]).astimezone().isoformat(timespec="seconds"),
+                    **{k: q.get(k) for k in ("finish", "duration_s", "prompt_tokens", "reused", "output_tokens",
+                                             "decode_tok_s", "prompt_ms", "decode_ms", "hit_rate", "pcie_share")},
+                    "prefill_tok_s": prefill_of(q)})
+    return out, done
 
 
 _BTRACE = bool(os.environ.get("STRATA_BATCH_TRACE"))
@@ -2514,6 +2578,39 @@ class Service:
                                        gpu_index=int(getattr(self, "gpu_index", 0) or 0),
                                        gpu_indices=getattr(self, "gpu_indices", None),
                                        amd=getattr(self, "backend", None) == "hip")
+
+    def start_metrics_log(self, path, every_s=1.0):
+        """--metrics-log: append what the Monitor tab shows to the JSONL file `path` every `every_s` seconds (a
+        "sample" line), and a "request" line for each finished request, so a task's run can be looked at afterwards.
+        A write that fails is reported once and retried; it never stops the server."""
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with self.status_lock:
+            done = self.totals.get("requests", 0)
+        static = (getattr(self, "telemetry", None).snapshot()["static"]
+                  if getattr(self, "telemetry", None) else {})
+        start = {"type": "start", "t": round(time.time(), 3),
+                 "ts": datetime.datetime.now().astimezone().isoformat(timespec="milliseconds"),
+                 "model": self.model, "max_context": self.engine.max_context, **static}
+
+        def loop():
+            nonlocal done
+            lines, failed = [start], False
+            while True:
+                try:
+                    recs, done = metrics_log_lines(self.metrics(), done)
+                    lines += recs
+                    with open(p, "a", encoding="utf-8") as f:
+                        f.write("".join(json.dumps(x, ensure_ascii=False) + "\n" for x in lines))
+                    lines, failed = [], False
+                except Exception as e:  # noqa: BLE001 - the log must never take the server down
+                    if not failed:
+                        print(f"[strata] metrics log: cannot write {p}: {e}", file=sys.stderr, flush=True)
+                    failed, lines = True, lines[-600:]
+                time.sleep(every_s)
+
+        threading.Thread(target=loop, daemon=True, name="metrics-log").start()
+        print(f"[strata] metrics log: the Monitor's values every {every_s:g} s to {p.resolve()}", flush=True)
 
     def _tok_s(self):
         """tok/s over the last RATE_WINDOW_S seconds.  Returns 0.0 while nothing is generating.  With parallel requests:
@@ -4621,6 +4718,8 @@ def origin_allowed(origin: str, host, names, origins=()) -> bool:
 def serve(svc: Service, host="127.0.0.1", port=8095) -> ThreadingHTTPServer:
     svc.host_names = host_names_for(host, svc.allowed_hosts, svc.trusted_origins)
     svc.start_telemetry()
+    if getattr(svc, "metrics_log", None):
+        svc.start_metrics_log(svc.metrics_log, getattr(svc, "metrics_log_every_s", 1.0))
     httpd = Server((host, port), make_handler(svc))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd
@@ -4775,6 +4874,12 @@ def main() -> int:
     ap.add_argument("--api-monitor", action="store_true",
                     help="the API request monitor at /api-monitor: keeps the last 100 requests' prompts and answers in "
                          "memory (also \"api_monitor\": true in the config; off by default)")
+    ap.add_argument("--metrics-log", nargs="?", const="logs/metrics.jsonl", default=None, metavar="FILE",
+                    help="append the Monitor tab's values (speed, GPU, VRAM, power, PCIe, CPU, disk, RAM, context) to "
+                         "this JSONL file every second, and a line per finished request (default file: "
+                         "logs/metrics.jsonl; also \"metrics_log\" in the config; off by default)")
+    ap.add_argument("--metrics-log-every", type=float, default=None, metavar="SECONDS",
+                    help="seconds between the metrics log's samples (default 1; also \"metrics_log_every_s\")")
     ap.add_argument("--idle-unload", type=float, default=None, metavar="SECONDS",
                     help="unload the model after this many seconds without requests, so other programs (games, other "
                          "model servers) can use the VRAM; the next request loads it again (also \"idle_unload_s\" "
@@ -4900,6 +5005,9 @@ def main() -> int:
         print(f"[strata] CORS on /v1/* for {', '.join(svc.cors_origins)}"
               + ("" if svc.api_key or "*" not in svc.cors_origins else
                  " - WARNING: any web page may use the model (no API key)"), flush=True)
+    svc.metrics_log = a.metrics_log or cfg.get("metrics_log") or None
+    svc.metrics_log_every_s = max(0.2, a.metrics_log_every if a.metrics_log_every is not None else
+                                  float(cfg.get("metrics_log_every_s") or 1.0))
     svc.idle_unload_s = a.idle_unload if a.idle_unload is not None else float(cfg.get("idle_unload_s") or 0)
     svc.min_free_vram_mib = a.min_free_vram_mib if a.min_free_vram_mib is not None else \
         int(cfg.get("min_free_vram_mib") or 0)

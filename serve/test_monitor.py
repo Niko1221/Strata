@@ -257,5 +257,46 @@ class ConversationCacheCard(unittest.TestCase):
             self.assertIn(f'"{el}"', js)
 
 
+class MetricsLog(unittest.TestCase):
+    """--metrics-log: the Monitor's values as JSONL, a "sample" line per interval and a "request" line per request."""
+
+    def test_samples_and_requests(self):
+        import tempfile
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, "Thought.</think>\nHello.", max_context=4096), tok,
+                      ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+        with tempfile.TemporaryDirectory() as d:
+            svc.metrics_log, svc.metrics_log_every_s = str(Path(d) / "sub" / "m.jsonl"), 0.2
+            httpd = serve(svc, port=0)
+            base = f"http://127.0.0.1:{httpd.server_address[1]}"
+            try:
+                req = urllib.request.Request(base + "/v1/chat/completions", headers={"Content-Type": "application/json"},
+                                             data=json.dumps({"messages": [{"role": "user", "content": "hi"}]}).encode())
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    r.read()
+                deadline = time.monotonic() + 5
+                lines = []
+                while time.monotonic() < deadline:
+                    p = Path(svc.metrics_log)
+                    lines = [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines()] if p.exists() else []
+                    if any(x["type"] == "request" for x in lines):
+                        break
+                    time.sleep(0.1)
+            finally:
+                httpd.shutdown()
+                httpd.server_close()
+            self.assertEqual(lines[0]["type"], "start")
+            self.assertEqual(lines[0]["max_context"], 4096)
+            samples = [x for x in lines if x["type"] == "sample"]
+            self.assertTrue(samples)
+            for k in ("ts", "state", "decode_tok_s", "prefill_tok_s", "gpu_util_pct", "vram_used_gb", "gpu_temp_c",
+                      "power_w", "pcie_gen", "cpu_pct", "disk_read_mb_s", "ram_used_gb", "context_pct", "expert_slots"):
+                self.assertIn(k, samples[-1])
+            done = [x for x in lines if x["type"] == "request"]
+            self.assertEqual(len(done), 1)                # once, not on every sample after it
+            self.assertGreater(done[0]["prompt_tokens"], 0)
+            self.assertGreater(samples[-1]["context_used"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
