@@ -295,13 +295,14 @@ and compare the prompt speed with and without it).
   64K context, MTP, with a table the owner calibrated: fresh prompts of 4K-9K tokens at 898-953 tok/s, decode
   38-44 tok/s (128 tokens).
 - **gfx1102, RX 7600 8 GB** (nexus2905, #192; engine 0.1.39, Ryzen 5 5600 (AVX2, no AVX-512), 64 GiB DDR4,
-  B450 board (PCIe 3.0 x8, 7.0 GB/s probed), Ubuntu 26.04, system ROCm with hipBLASLt 1.4.1, no tuning table):
+  B450 board (PCIe 3.0 x8, 7.0 GB/s probed), Ubuntu 26.04, system ROCm with hipBLASLt 1.4.1):
   `./setup.sh --backend hip` detected the card and compiled the engine; `strata-device --selftest` passed; ctest
   62/63 (without `ple_parity` and `platform_memory_test`; `expert_multi_test` needs AVX-512). IQ2_XS, 32K context,
   `--kv int8`, MTP `--spec 4 --spec-min-p 0.5`, `--vram-reserve-mib 2560` (the card also drives the GNOME desktop,
   which takes up to ~1.9 GiB; with the auto reserve GNOME Shell's command submissions failed and the session ended):
   347 expert slots, decode 24.0 tok/s (320-token replies, greedy, thinking off; 14.2 on engine 0.1.27), prompts of
-  4.7K and 16.5K tokens at 59 and 57 tok/s (256-token chunks: too few cache slots to borrow). The Coder IQ1_M leaves
+  4.7K and 16.5K tokens at 59 and 57 tok/s without a tuning table (256-token chunks: too few cache slots to
+  borrow); 67.5 tok/s for the 4.7K prompt with `gfx1102-hipblaslt-100401.txt`. The Coder IQ1_M leaves
   2.34 GiB after its dense weights and did not fit beside the desktop with a safe reserve.
 - **gfx1200, RX 9060 XT 16 GB** (Efeisot, #256 after #176; engine 0.1.29, Ryzen 9 7950X, 64 GiB RAM, ROCm 7.2 with
   hipBLASLt 1.2.2): ctest 32/32 (without `ple_parity` and `platform_memory_test`). Coder IQ1_M, greedy, MTP
@@ -441,6 +442,10 @@ prompt speed with and without it before keeping it.
 Shipped tables:
 
 - `gfx1100-hipblaslt-100100.txt`, `gfx1100-hipblaslt-100200.txt`: RX 7900 XTX.
+- `gfx1102-hipblaslt-100401.txt`: RX 7600 (gfx1102, 8 GB), calibrated with system ROCm 10 (hipBLASLt 1.4.1) by
+  `tune_hipblaslt` on the gfx1100 table's 26 cases; all rows within the tuner's tolerances, 3.2-20x faster than
+  hipBLASEx per GEMM, `hip_prefill_hipblaslt_gemm` passes. In the engine: a 4,716-token prompt at 67.5 tok/s with the
+  table vs 59.1 without (+14%; 256-token chunks on 8 GB, so the dense GEMMs are a small part of the prompt time).
 - `gfx1201-hipblaslt-100500.txt`: Radeon AI PRO R9700 (gfx1201, 32 GB), calibrated with ROCm 10.2.0a20260914
   (AMD's `gfx120X-all` nightly, hipBLASLt 1.5.0, library build `d3164197`). 16 dense GEMM geometries at T=4096 and
   T=8192, 32 rows. setup uses it only when the installed hipBLASLt reports 1.5.0 (it is found in `/opt/rocm`
