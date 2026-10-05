@@ -5458,13 +5458,19 @@ int main(int argc, char** argv) {
         std::vector<void*> pin_live;   // the swaps' locked arena pages (pin_blob), unlocked once they have landed
         cudaEvent_t adapt_ev = nullptr;
         cudaEventCreateWithFlags(&adapt_ev, cudaEventDisableTiming);
-        // a layer split's later stages keep a copy of the residency table on their devices, and swap on their own
+        // a layer split's later stages keep a copy of the residency table on their devices, and swap on their own.
+        // #871: each copy is waited for.  A cudaMemcpy from pageable memory may return before its DMA lands, and the
+        // windows run on non-blocking streams that do not wait for it: a zero-doorbell window right after a refill
+        // planned from the lent entries (-1, no plan written) and answered `!!!!`.
         auto res_upload = [&]() {
-            if (d_res != nullptr)
+            if (d_res != nullptr) {
                 cudaMemcpy(d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
+                cudaStreamSynchronize(0);
+            }
             for (auto& st : stages) {
                 const strata::core::OnDevice on(st->dev);
                 cudaMemcpy(st->d_res, host_res.data(), host_res.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
+                cudaStreamSynchronize(0);
             }
         };
         auto apply_pending = [&](bool wait) {
