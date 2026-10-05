@@ -1,0 +1,377 @@
+{
+ "_about": "Every specimen of the --format-fixes family in one collection, each carrying its own expectation: the calls the fixes must deliver with the flag on (an empty list: none), whether the flag-off run raises the fail-loud hint, and whether the fixes change anything at all (a normal-path call is the same with them off).  serve/test_server.py's FormatFixCorpus runs all of them (plus the four live failures of #804, from stranded_tool_call_failures.json) at three chunk sizes with stream_tools on and off, and asserts nothing that already streamed differs with the fixes on.  A new shape is a data append here, not new test code - and a change to any trigger re-runs the whole recorded world, so fixing one case cannot silently break another.  'class' is the shape's kind (act / mention / envelope / cut / known-miss / same); 'source' is where it was seen; class known-miss documents a real shape no fix covers today.",
+ "specimens": [
+  {
+   "name": "act-natural-stop",
+   "class": "act",
+   "source": "#804 shape",
+   "input": "planning.\n\n<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>",
+   "finish": "stop",
+   "tools": [
+    "execute_code"
+   ],
+   "expect": {
+    "calls": [
+     "execute_code"
+    ],
+    "hint": true,
+    "differs": true
+   }
+  },
+  {
+   "name": "act-first-text",
+   "class": "act",
+   "source": "#970",
+   "input": "<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>",
+   "finish": "stop",
+   "tools": [
+    "execute_code"
+   ],
+   "expect": {
+    "calls": [
+     "execute_code"
+    ],
+    "hint": true,
+    "differs": true
+   }
+  },
+  {
+   "name": "act-two-adjacent",
+   "class": "act",
+   "source": "#525",
+   "input": "a\n<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>",
+   "finish": "stop",
+   "tools": [
+    "execute_code"
+   ],
+   "expect": {
+    "calls": [
+     "execute_code",
+     "execute_code"
+    ],
+    "hint": true,
+    "differs": true
+   }
+  },
+  {
+   "name": "envelope-undeclared",
+   "class": "envelope",
+   "source": "#804 live shape",
+   "input": "Plan.\n\n<tool_call>\n<function=tool_call>\n<parameter=calls>\n[{\"name\": \"execute_code\", \"arguments\": {\"code\": \"print(1)\"}}]\n</parameter>\n</function>\n</tool_call>",
+   "finish": "stop",
+   "tools": [
+    "execute_code"
+   ],
+   "expect": {
+    "calls": [],
+    "hint": false,
+    "differs": true
+   }
+  },
+  {
+   "name": "envelope-declared",
+   "class": "envelope",
+   "source": "#980 meta-tool",
+   "input": "Plan.\n\n<tool_call>\n<function=tool_call>\n<parameter=calls>\n[{\"name\": \"execute_code\", \"arguments\": {\"code\": \"print(1)\"}}]\n</parameter>\n</function>\n</tool_call>",
+   "finish": "stop",
+   "tools": [
+    "execute_code",
+    "tool_call"
+   ],
+   "expect": {
+    "calls": [
+     "tool_call"
+    ],
+    "hint": true,
+    "differs": true
+   }
+  },
+  {
+   "name": "ctl-backticks-midsentence",
+   "class": "mention",
+   "source": "#970",
+   "input": "I must emit `<tool_call>` then `<function=execute_code>` - the format.\n",
+   "finish": "stop",
+   "tools": [
+    "execute_code"
+   ],
+   "expect": {
+    "calls": [],
+    "hint": false,
+    "differs": true
+   }
+  },
+  {
+   "name": "ctl-midsentence-whole-call",
+   "class": "mention",
+   "source": "#970",
+   "input": "The format is <tool_call>\n<function=execute_code>\n</function>\n</tool_call> ok.\n",
+   "finish": "stop",
+   "tools": [
+    "execute_code"
+   ],
+   "expect": {
+    "calls": [],
+    "hint": false,
+    "differs": true
+   }
+  },
+  {
+   "name": "ctl-backticks-line-start",
+   "class": "mention",
+   "source": "#970",
+   "input": "Plan:\n`<tool_call>\n<function=execute_code>` comes next.\n",
+   "finish": "stop",
+   "tools": [
+    "execute_code"
+   ],
+   "expect": {
+    "calls": [],
+    "hint": false,
+    "differs": true
+   }
+  },
+  {
+   "name": "ctl-line-start-no-function",
+   "class": "mention",
+   "source": "#970",
+   "input": "Next step:\n<tool_call> is the tag the format starts with.\n",
+   "finish": "stop",
+   "tools": [
+    "execute_code"
+   ],
+   "expect": {
+    "calls": [],
+    "hint": false,
+    "differs": true
+   }
+  },
+  {
+   "name": "ctl-line-start-other-tag",
+   "class": "mention",
+   "source": "#970",
+   "input": "Example:\n<tool_call>\n<parameter=code>\nx\n</parameter>\n",
+   "finish": "stop",
+   "tools": [
+    "execute_code"
+   ],
+   "expect": {
+    "calls": [],
+    "hint": false,
+    "differs": true
+   }
+  },
+  {
+   "name": "ctl-indented",
+   "class": "mention",
+   "source": "#970",
+   "input": "As a list:\n  <tool_call>\n  <function=execute_code>\n",
+   "finish": "stop",
+   "tools": [
+    "execute_code"
+   ],
+   "expect": {
+    "calls": [],
+    "hint": false,
+    "differs": true
+   }
+  },
+  {
+   "name": "ctl-markdown-quote",
+   "class": "mention",
+   "source": "#970",
+   "input": "The doc says:\n> <tool_call>\n> <function=execute_code>\n",
+   "finish": "stop",
+   "tools": [
+    "execute_code"
+   ],
+   "expect": {
+    "calls": [],
+    "hint": false,
+    "differs": true
+   }
+  },
+  {
+   "name": "ctl-backtick-block",
+   "class": "mention",
+   "source": "#970",
+   "input": "Format:\n```xml\n<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>\n```\nThat is how a call looks.\n",
+   "finish": "stop",
+   "tools": [
+    "execute_code"
+   ],
+   "expect": {
+    "calls": [],
+    "hint": false,
+    "differs": true
+   }
+  },
+  {
+   "name": "ctl-tilde-block",
+   "class": "mention",
+   "source": "#970",
+   "input": "Format:\n~~~\n<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>\n~~~\nDone.\n",
+   "finish": "stop",
+   "tools": [
+    "execute_code"
+   ],
+   "expect": {
+    "calls": [],
+    "hint": false,
+    "differs": true
+   }
+  },
+  {
+   "name": "ctl-tag-before-think-end",
+   "class": "mention",
+   "source": "#970",
+   "input": "So I call it:\n<tool_call>\n</think>Here is the answer.",
+   "finish": "stop",
+   "tools": [
+    "execute_code"
+   ],
+   "expect": {
+    "calls": [],
+    "hint": false,
+    "differs": true
+   }
+  },
+  {
+   "name": "closed-span-fenced",
+   "class": "mention",
+   "source": "#525 review",
+   "input": "This is a documentation example, not an action:\n```xml\n<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>\n```\nI should explain it without calling any tool.\n</think>Here is the explanation.",
+   "finish": "stop",
+   "tools": [
+    "execute_code"
+   ],
+   "expect": {
+    "calls": [],
+    "hint": false,
+    "differs": true
+   }
+  },
+  {
+   "name": "unclosed-disclaimed",
+   "class": "mention",
+   "source": "#525 review",
+   "input": "This is a documentation example, not an action:\n```xml\n<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>\n```\nI should explain it without calling any tool.",
+   "finish": "stop",
+   "tools": [
+    "execute_code"
+   ],
+   "expect": {
+    "calls": [],
+    "hint": false,
+    "differs": true
+   }
+  },
+  {
+   "name": "length-cut",
+   "class": "cut",
+   "source": "#525 review",
+   "input": "I could run\n<tool_call>\n<function=execute_code>\n<parameter=code>\nrm -rf build\n</parameter>\n</function>\n</tool_call>\nbut first let me check what build holds...",
+   "finish": "length",
+   "tools": [
+    "execute_code"
+   ],
+   "expect": {
+    "calls": [],
+    "hint": false,
+    "differs": true
+   }
+  },
+  {
+   "name": "midsentence-declared",
+   "class": "mention",
+   "source": "#525 review, vLLM #58147",
+   "input": "I could run <tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>",
+   "finish": "stop",
+   "tools": [
+    "execute_code"
+   ],
+   "expect": {
+    "calls": [],
+    "hint": false,
+    "differs": true
+   }
+  },
+  {
+   "name": "trailing-prose",
+   "class": "mention",
+   "source": "#525",
+   "input": "planning\n<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>\nlet me see what comes back.",
+   "finish": "stop",
+   "tools": [
+    "execute_code"
+   ],
+   "expect": {
+    "calls": [],
+    "hint": false,
+    "differs": true
+   }
+  },
+  {
+   "name": "prose-between-calls",
+   "class": "mention",
+   "source": "#525",
+   "input": "a\n<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>b<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>",
+   "finish": "stop",
+   "tools": [
+    "execute_code"
+   ],
+   "expect": {
+    "calls": [],
+    "hint": false,
+    "differs": true
+   }
+  },
+  {
+   "name": "empty-span",
+   "class": "mention",
+   "source": "vLLM #59821",
+   "input": "Next:\n<tool_call>\n</tool_call>",
+   "finish": "stop",
+   "tools": [
+    "execute_code"
+   ],
+   "expect": {
+    "calls": [],
+    "hint": false,
+    "differs": true
+   }
+  },
+  {
+   "name": "bare-function-opener",
+   "class": "known-miss",
+   "source": "vLLM #59928",
+   "input": "Let me run it.\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>",
+   "finish": "stop",
+   "tools": [
+    "execute_code"
+   ],
+   "expect": {
+    "calls": [],
+    "hint": false,
+    "differs": true
+   }
+  },
+  {
+   "name": "mention-then-real-call",
+   "class": "same",
+   "source": "#970",
+   "input": "I must emit `<tool_call>` then `<function=execute_code>` - the format.\n</think>\n\n<tool_call>\n<function=execute_code>\n<parameter=code>\nprint(1)\n</parameter>\n</function>\n</tool_call>",
+   "finish": "stop",
+   "tools": [
+    "execute_code"
+   ],
+   "expect": {
+    "calls": [
+     "execute_code"
+    ],
+    "hint": false,
+    "differs": false
+   }
+  }
+ ]
+}

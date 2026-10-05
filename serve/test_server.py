@@ -3019,5 +3019,60 @@ class FormatFixesOption(unittest.TestCase):
                 self.parse(bad)
 
 
+class FormatFixCorpus(unittest.TestCase):
+    """Every specimen of the format-fix family, run the same way: the collection in
+    serve/fixtures/format_fix_specimens.json, plus the four live failures recorded in
+    serve/fixtures/stranded_tool_call_failures.json (#804).  A specimen carries its own
+    expectation - the calls the fixes must deliver, whether the off-run raises the fail-loud
+    hint, and whether the fixes change anything at all (a normal-path call is the same with
+    them off) - so a new shape is a data append, not new test code, and a change to any
+    trigger re-runs the whole recorded world: fixing one case cannot silently break another.
+    Nothing that already streamed may differ between fixes on and off, whatever the specimen."""
+
+    def specimens(self):
+        from pathlib import Path
+        root = Path(__file__).resolve().parents[1]
+        corpus = json.loads((root / "serve" / "fixtures" / "format_fix_specimens.json")
+                             .read_text(encoding="utf-8"))
+        live = json.loads((root / "serve" / "fixtures" / "stranded_tool_call_failures.json")
+                          .read_text(encoding="utf-8"))
+        tools = ["execute_code", "read_file", "write_file", "mcp__unreal_engine__list_toolsets"]
+        out = list(corpus["specimens"])
+        for case in live["failures"]:
+            text = case["reasoning_content"] + case["content"]
+            envelope = "<function=tool_call>" in text
+            out.append({"name": f"live {case['when']}", "class": "envelope" if envelope else "act",
+                        "source": "#804 live", "input": text, "finish": "stop", "tools": tools,
+                        "expect": ({"calls": [], "hint": False, "differs": True} if envelope else
+                                   {"calls": ["execute_code"], "hint": True, "differs": True})})
+        return out
+
+    def test_corpus(self):
+        from serve.frontend import OutputParser
+        for sp in self.specimens():
+            exp = sp["expect"]
+            for step in (1, 7, 10 ** 9):
+                for st in (False, True):
+                    with self.subTest(name=sp["name"], step=step, stream_tools=st):
+                        runs = []
+                        for fixes in ((), ("stranded-call",)):
+                            p = OutputParser(thinking=True, stream_tools=st, fixes=fixes,
+                                             tools=[{"name": n, "parameters": {"properties":
+                                                     {"code": {"type": "string"}}}} for n in sp["tools"]])
+                            evs, text = [], sp["input"]
+                            for i in range(0, len(text), step):
+                                evs += p.feed(text[i:i + step])
+                            evs += p.finish(sp.get("finish", "stop"))
+                            runs.append((p, evs))
+                        (p_off, evs_off), (p_on, evs_on) = runs
+                        names = [e.call.name for e in evs_on if e.kind == "tool_call"]
+                        self.assertEqual(names, exp["calls"])
+                        off = [] if exp.get("differs", True) else exp["calls"]
+                        self.assertEqual([e.call.name for e in evs_off if e.kind == "tool_call"], off)
+                        self.assertEqual(p_off.format_hint, "stranded-call" if exp.get("hint") else None)
+                        self.assertEqual("".join(e.text for e in evs_on if e.kind == "reasoning"),
+                                         "".join(e.text for e in evs_off if e.kind == "reasoning"))
+
+
 if __name__ == "__main__":
     unittest.main()
