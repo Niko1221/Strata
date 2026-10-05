@@ -172,6 +172,22 @@ available. The existing `--mmap-experts` path avoids allocating the full pinned
 expert arena; it still depends on OS file-cache residency and may stall on
 storage reads. It does not make SSD access equivalent to RAM.
 
+**`--mmap-experts` stalls: `verify: timed out at layer N` or "no progress for 60 s" (#267 #649).**
+On one RX 6800 (gfx1030, ROCm 7.2.4, 31 GiB RAM, IQ3_XXS) every run stalled this way until the server
+JSON carried
+
+```json
+"env": { "GPU_PINNED_MIN_XFER_SIZE": "1048576" }
+```
+
+and none has stalled since. The likely cause (not confirmed) is that HIP pins pageable source pages
+(a KFD userptr) for large copies, here the mmapped expert file, and page reclaim then pauses the GPU
+queues. Only gfx1030 is reported; other cards are untested.
+
+If the engine runs in a systemd unit, limit it with `MemoryMax`, never `MemoryHigh`: `MemoryHigh` counts
+the page cache that `--mmap-experts` reads from, and a 16K prompt stalled in `pread` for 8 minutes under
+it until the watchdog stopped the engine.
+
 Starting args for the original GSQ-RCO IQ3_XXS model (replace the paths):
 
 ```sh
@@ -348,6 +364,9 @@ run it; the report below is from a community machine: an RX 6900 XT 16 GB (gfx10
   [AMD_HIP_PERFORMANCE.md](AMD_HIP_PERFORMANCE.md) cost 8.6 and 13.6 tok/s here (30 with the defaults): keep the
   defaults on a 16 GB card.
 - **hipBLASLt:** ROCm's hipBLASLt ships no gfx1030 kernels, so there is no table and the plain hipBLAS path runs.
+- **`--mmap-experts` verify timeouts (#267 #649):** an RX 6800 report found
+  `GPU_PINNED_MIN_XFER_SIZE=1048576` in the config's `env` stopped them; see
+  [Model and serving configuration](#model-and-serving-configuration).
 - **gfx1031** (RX 6700 XT, #524): setup knows it (the `gfx103X-all` wheels, unvalidated); its reporter runs it daily
   on one card.
 - **Not validated:** gfx1032 (the same `dp4a` path, no hardware report), setup's own build path and the
