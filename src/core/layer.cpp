@@ -516,6 +516,7 @@ namespace {
 // KV streaming (docs/kv-streaming-design.md): 0 keeps every cell in VRAM.
 int64_t g_kv_resident = 0;
 uint64_t g_kv_host_bytes = 0;
+bool g_kv_shared_host = false;
 
 // ---- the elastic K/V (--kv-grow): one VMM range per state, each pool array at a chunk boundary in it
 bool g_kv_elastic = false;
@@ -666,6 +667,45 @@ void qsa_set_kv_resident(int64_t cells) { g_kv_resident = cells > 0 ? cells : 0;
 int64_t qsa_kv_resident() { return g_kv_resident; }
 int64_t qsa_kv_resident_min() { return 20480; }
 uint64_t qsa_kv_host_bytes() { return g_kv_host_bytes; }
+void qsa_set_kv_shared_host(bool enabled) { g_kv_shared_host = enabled; }
+
+bool qsa_host_alloc(const ModelGeometry& g, const QsaState& st, int64_t pages, strata::kernels::KvHostPools& out) {
+    const QsaShapes s = qsa_shapes(g);
+    const uint64_t hrows = (uint64_t) pages * s.n_head_kv * s.page_size;
+    const uint64_t q4_row = strata::kernels::kv_q4_bytes_per_head((int) s.head_dim);
+    const uint64_t bytes = (uint64_t) pages * strata::kernels::kv_block_bytes(s, qsa_kv_format(st)) + 4 * 256;
+    uint8_t* h = nullptr;
+    uint8_t* d = nullptr;
+    if (cudaHostAlloc((void**) &h, bytes, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess ||
+        cudaHostGetDevicePointer((void**) &d, h, 0) != cudaSuccess) {
+        // under WSL the NVIDIA driver pins only ~1 GiB in all, which is less than 128K of 8-bit KV needs
+        if (st.kv_mode == 1) std::fprintf(stderr, "strata: KV streaming: cannot pin %.2f GiB of RAM for a layer's KV copy "
+                                 "(%.2f GiB pinned so far) - lower the context, or run without --kv-resident (under "
+                                 "WSL the driver pins only about 1 GiB in all)\n", (double) bytes / 1073741824.0,
+                                 (double) g_kv_host_bytes / 1073741824.0);
+        return false;
+    }
+    g_kv_host_bytes += bytes;
+    Cursor hc{d};
+    out = strata::kernels::KvHostPools{};
+    if (st.kv_hybrid) {   // K8V4: the same three runs as the VRAM pools (kv_stream.cu, kKvHybrid)
+        out.k_q = hc.take<int8_t>(hrows * s.head_dim);
+        out.k_scale = hc.take<uint16_t>(hrows * (s.head_dim / strata::kernels::KV_Q8_GROUP));
+        out.v_q4 = hc.take<uint8_t>(hrows * q4_row);
+    } else if (st.kv_q4) {
+        out.k_q4 = hc.take<uint8_t>(hrows * q4_row);
+        out.v_q4 = hc.take<uint8_t>(hrows * q4_row);
+    } else if (st.kv_int8) {
+        out.k_q = hc.take<int8_t>(hrows * s.head_dim);
+        out.v_q = hc.take<int8_t>(hrows * s.head_dim);
+        out.k_scale = hc.take<uint16_t>(hrows * (s.head_dim / strata::kernels::KV_Q8_GROUP));
+        out.v_scale = hc.take<uint16_t>(hrows * (s.head_dim / strata::kernels::KV_Q8_GROUP));
+    } else {
+        out.k_pool = hc.take<uint16_t>(hrows * s.head_dim);
+        out.v_pool = hc.take<uint16_t>(hrows * s.head_dim);
+    }
+    return true;
+}
 
 uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_rope, int64_t ring_cells) {
     const QsaShapes s = qsa_shapes(g);
@@ -796,41 +836,10 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
         return 0;   // the caller sees a zero byte count; a half-built state is worse than none
     }
     st.host_step[strata::kernels::kStepCount] = 0;
-    // KV streaming: the authoritative K/V of every cell, pinned and device-mapped, in the identity layout
+    // KV streaming: the authoritative K/V of every cell, pinned and device-mapped, in the identity layout; with a
+    // shared KV pool a streamed state's copy is the pool's (KvPool::attach), the drafter's ring keeps its own
     st.host = strata::kernels::KvHostPools{};
-    if (p.mode != 0) {
-        const uint64_t hrows = (uint64_t) pages * s.n_head_kv * s.page_size;
-        const uint64_t bytes = (uint64_t) pages * strata::kernels::kv_block_bytes(s, qsa_kv_format(st)) + 4 * 256;
-        uint8_t* h = nullptr;
-        uint8_t* d = nullptr;
-        if (cudaHostAlloc((void**) &h, bytes, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess ||
-            cudaHostGetDevicePointer((void**) &d, h, 0) != cudaSuccess) {
-            // under WSL the NVIDIA driver pins only ~1 GiB in all, which is less than 128K of 8-bit KV needs
-            if (p.mode == 1) std::fprintf(stderr, "strata: KV streaming: cannot pin %.2f GiB of RAM for a layer's KV copy "
-                                 "(%.2f GiB pinned so far) - lower the context, or run without --kv-resident (under "
-                                 "WSL the driver pins only about 1 GiB in all)\n", (double) bytes / 1073741824.0,
-                                 (double) g_kv_host_bytes / 1073741824.0);
-            return 0;
-        }
-        g_kv_host_bytes += bytes;
-        Cursor hc{d};
-        if (st.kv_hybrid) {
-            st.host.k_q = hc.take<int8_t>(hrows * s.head_dim);
-            st.host.k_scale = hc.take<uint16_t>(hrows * (s.head_dim / strata::kernels::KV_Q8_GROUP));
-            st.host.v_q4 = hc.take<uint8_t>(hrows * q4_row);
-        } else if (st.kv_q4) {
-            st.host.k_q4 = hc.take<uint8_t>(hrows * q4_row);
-            st.host.v_q4 = hc.take<uint8_t>(hrows * q4_row);
-        } else if (st.kv_int8) {
-            st.host.k_q = hc.take<int8_t>(hrows * s.head_dim);
-            st.host.v_q = hc.take<int8_t>(hrows * s.head_dim);
-            st.host.k_scale = hc.take<uint16_t>(hrows * (s.head_dim / strata::kernels::KV_Q8_GROUP));
-            st.host.v_scale = hc.take<uint16_t>(hrows * (s.head_dim / strata::kernels::KV_Q8_GROUP));
-        } else {
-            st.host.k_pool = hc.take<uint16_t>(hrows * s.head_dim);
-            st.host.v_pool = hc.take<uint16_t>(hrows * s.head_dim);
-        }
-    }
+    if (p.mode != 0 && !(p.mode == 1 && g_kv_shared_host) && !qsa_host_alloc(g, st, pages, st.host)) return 0;
     // THE ROPE TABLE IS BUILT ON THE HOST IN FLOAT64 and uploaded once, because the reference computes its
     // frequencies in float64 and reproducing that on device means double-precision `pow`/`cos` that need not
     // agree with the host's libm.  A table shorter than the sequence would have the rotation read past it.

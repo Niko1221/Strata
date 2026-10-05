@@ -29,6 +29,10 @@ namespace strata::kernels {
 
 /// The host copy of one layer's K/V: device-mapped pointers (UVA) into pinned memory, identity layout
 /// `[block][kv_head][page_size][head_dim]`. All null when the layer is fully resident.
+///
+/// A shared KV pool (core/kv_pool.hpp) points every session's host copy at the same arrays and gives each session
+/// a chunk table: block b of the session is block `block(b)` of the arrays, where a chunk is `1 << chunk_shift`
+/// consecutive blocks. Without a table (`chunk == nullptr`) the layout is the identity, as above.
 struct KvHostPools {
     uint16_t* k_pool = nullptr;   ///< fp16 mode
     uint16_t* v_pool = nullptr;
@@ -38,7 +42,28 @@ struct KvHostPools {
     uint16_t* v_scale = nullptr;
     uint8_t* k_q4 = nullptr;      ///< q4_0 mode (kv_q4.hpp): block_q4_0 codes, 144 B per cell and head
     uint8_t* v_q4 = nullptr;
+    const int32_t* chunk = nullptr;       ///< pool: logical chunk -> physical chunk, device memory (kernels read it)
+    const int32_t* chunk_host = nullptr;  ///< the same table in host memory (the DMA movers read it)
+    int chunk_shift = 0;                  ///< log2 of the blocks in a chunk
     bool present() const { return k_pool != nullptr || k_q != nullptr || k_q4 != nullptr; }
+#if defined(__CUDACC__) || defined(__HIPCC__)
+    /// Block `b` of this session in the arrays (device code).
+    __device__ __forceinline__ long long block(long long b) const {
+        if (chunk == nullptr) return b;
+        return ((long long) chunk[b >> chunk_shift] << chunk_shift) | (b & ((1ll << chunk_shift) - 1));
+    }
+#endif
+    /// Block `b` of this session in the arrays (host code).
+    long long block_host(long long b) const {
+        if (chunk_host == nullptr) return b;
+        return ((long long) chunk_host[b >> chunk_shift] << chunk_shift) | (b & ((1ll << chunk_shift) - 1));
+    }
+    /// Consecutive blocks from `b` that stay consecutive in the arrays (to the end of b's chunk), at most `n`.
+    long long contiguous(long long b, long long n) const {
+        if (chunk_host == nullptr) return n;
+        const long long left = (1ll << chunk_shift) - (b & ((1ll << chunk_shift) - 1));
+        return left < n ? left : n;
+    }
 };
 
 /// The KV storage format, for the functions below that move whole blocks (`fmt`): fp16, int8 (+ scales), q4_0, and
