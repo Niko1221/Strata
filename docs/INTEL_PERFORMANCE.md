@@ -750,7 +750,7 @@ sycl/TODO.md (none faster).
 
 | experiment | result |
 |---|---|
-| oneMKL FP16 GEMM (the path in use) | 30-60 TFLOP/s in `xmx_gemm_bench` |
+| oneMKL FP16 GEMM (the path in use) | 30-60 TFLOP/s in `xmx_gemm_bench` (expert shapes); 128-147 on the dense projections (`onednn_gemm_bench`) |
 | `xmx_gemm_iq`: fused dequant + FP16 GEMM | 4-5x slower than dequant + oneMKL (0.15-0.19x at 32-256 rows, IQ4_NL down) |
 | `qsa_prompt_attn_xmx` v1 | 3x slower than the FP32 fallback per chunk |
 | `qsa_prompt_attn_xmx` v2 | 1.4-1.5x faster than v1, still ~2x slower (13.4 vs 5.5 ms per chunk, INT8, 32K) |
@@ -759,6 +759,7 @@ sycl/TODO.md (none faster).
 | prompt attention, the tree's v2 (`attn_bench`, 2026-10-04) | 1.68 ms against 0.37 for the per-cell vector kernel (120 KB of local memory: one work-group per core) |
 | prompt attention, a lean fp16 XMX values pass (`attn_bench`, 2026-10-04) | 1.6-2.1 ms against 0.37 (sub-group 16 alone: 0.42) |
 | int8 DPAS GEMM straight from IQ4_NL (`xmx_int8_bench`, 2026-10-03) | within 0.5% of exact; vs dequant + oneMKL: 0.94-0.98x at 16-32 rows, 0.49-0.73x at 64-128, 0.37-0.55x at 256, 0.25-0.38x at 512 |
+| oneDNN against oneMKL, the prompt path's shapes (`onednn_gemm_bench`, 2026-10-05, B70) | dense projections at 4,096 rows: oneMKL fp16 128-147 TFLOP/s, oneDNN fp16 1.00-1.14x of it, oneDNN int8 1.6-2.4x; expert gate/up at 256-512 rows: oneMKL 28-32, oneDNN fp16 1.8-1.9x, int8 1.9-3.2x; below 64 rows oneDNN fp16 is slower (0.6x) |
 
 - **Grouped prompt attention, never built:** measured on the last chunk of an 80K prompt, 8 consecutive positions
   select 3.3x one position's 2,051 cells (16 positions: 5.1x). Only 12% of a selection is shared by all 8.
