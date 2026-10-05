@@ -115,10 +115,10 @@ if [ -n "${STRATA_NATIVE:-}" ]; then
 else
   eval "$("$PY" "$DIR/hfmodel.py" --model "$MODEL" --cache "$STRATA_HF_CACHE" --print shell \
           ${STRATA_HF_REPO:+--repo "$STRATA_HF_REPO"})"
-  NATIVE="$STRATA_SHARD1"; PLE="$STRATA_SHARD2"; REPO_ID="$STRATA_REPO"
+  NATIVE="$STRATA_SHARD1"; PLE="${STRATA_PLE_FILE:-$STRATA_SHARD2}"; REPO_ID="$STRATA_REPO"
 fi
 [ -n "$NATIVE" ] && [ -e "$NATIVE" ] || die "shard 1 is still missing ('$NATIVE')"
-[ -n "$PLE" ] && [ -e "$PLE" ] || die "shard 2 (the PLE table) is missing ('$PLE')"
+[ -n "$PLE" ] && [ -e "$PLE" ] || die "the PLE table file is missing ('$PLE')"
 case "$MODEL" in
   IQ1_M) EXPERT_PROFILE="${STRATA_EXPERT_PROFILE:-$REPO/data/expert-profile-coder.bin}" ;;
   *)     EXPERT_PROFILE="${STRATA_EXPERT_PROFILE:-$REPO/data/expert-profile.bin}" ;;

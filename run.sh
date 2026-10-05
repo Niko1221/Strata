@@ -8,12 +8,14 @@
 #   ./run.sh --offline            never download: fail with the command to run instead
 #   ./run.sh --dry-run            print the docker command and the reasoning, change nothing
 #
-# The IQ3_S tuning below is measured on this machine's card (bench/results/2026-10-04-iq3s-tuning/):
-# `auto` expert-cache sizing under the guard, the 700 MiB later-allowance floor, and a 48-slot prefill
-# ring keep the prompt path on its 2,048-token chunk instead of halving to 1,024: coding fresh prefill
-# 173 -> 233 tok/s, TTFT at 4,096 tokens 21.1 -> 16.3 s, decode 30.5 -> 30.1 tok/s (within noise), and
-# Strata's own VRAM share 8,656 -> 8,723 MiB - all under the same 10 GiB ceiling, which is NOT raised
-# (the 12 272 MiB card keeps its ~2 GiB for the desktop and the GUI).
+# The IQ3_S tuning below is measured on this machine's card (bench/results/2026-10-04-iq3s-tuning/,
+# README there has the matrix): the 48-slot prefill ring is the lever - the default 384-slot ring
+# does not fit beside the cache, so the engine halves its prompt chunk - and it keeps the prompt
+# path on 2,048-token chunks: coding fresh prefill 171-173 -> 231-235 tok/s, TTFT at 4,096 tokens
+# 21.1 -> 16.3 s, decode 30.0-30.4 vs 30.5 tok/s (within noise). `auto` expert-cache sizing under
+# the 700 MiB later-allowance floor keeps the same speed with the cache sized from measured free
+# room. Strata's own VRAM share peaks at 8,723 MiB - all under the same 10 GiB ceiling, which is
+# NOT raised (the 12 272 MiB card keeps its ~2 GiB for the desktop and the GUI).
 #
 # Models are read from, and downloaded into, a Hugging Face cache in ~/Development/models (mounted
 # at /hf-cache) - the big filesystem, not the root disk that holds ~/.cache/huggingface.  One download

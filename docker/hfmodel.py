@@ -28,14 +28,18 @@ import os
 import sys
 from pathlib import Path
 
-# setup.py:83-105.  "subdir" = the GGUFs live under <quant>/ inside the repo.
+# setup.py:83-105.  "subdir" = the GGUFs live under <quant>/ inside the repo.  "ple" is the file
+# holding per_layer_token_embd.weight (default 2); the Swift repo packs that table into file 1 and
+# puts expert continuation in file 2 (measured on Swift IQ3_XXS on this host, 2026-10-04:
+# bench/results/2026-10-04-iq3s-tuning/swift-launch.log - the engine finds the 320,001,536-row
+# table in 00001 and fatal-errors that the tensor "is not in" 00002).
 FAMILIES = {
     "qwen": {"repo": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
              "file": "Qwen3.8-Flash-Next-GSQ-RCO-{q}-0000{i}-of-00002.gguf", "subdir": True,
              "title": "Qwen3.8-Flash-Next"},
     "swift": {"repo": "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
               "file": "Swift-Qwen3.8-Flash-Next-GSQ-RCO-{q}-0000{i}-of-00002.gguf", "subdir": False,
-              "title": "Swift 1.5"},
+              "title": "Swift 1.5", "ple": 1},
     "coder": {"repo": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF",
               "file": "Qwen3.8-Flash-Next-GSQ-RCO-{q}-0000{i}-of-00002.gguf", "subdir": True,
               "title": "Qwen3.8-Flash-Next Coder"},
@@ -107,6 +111,11 @@ def n_files(fam: dict) -> int:
     """How many GGUF files this release has: 2 for the Qwen3.8 family (experts + PLE), 1 for a
     single-file release."""
     return int(fam.get("files", 2))
+
+
+def ple_index(fam: dict) -> int:
+    """Which 1-based file of the release holds per_layer_token_embd.weight (Swift: 1, others: 2)."""
+    return int(fam.get("ple", 2))
 
 
 def _find_in_snapshot(snap: Path, model: str, i: int, fam: dict) -> Path | None:
@@ -216,7 +225,7 @@ def main() -> int:
     ap.add_argument("--repo", default="", help="override the repo id for a release not in setup.py")
     ap.add_argument("--rev", default="", help="revision/commit (default: refs/main or newest snapshot)")
     ap.add_argument("--print", dest="what", default="both",
-                    choices=["shard1", "shard2", "both", "json", "shell", "available", "mtp"])
+                    choices=["shard1", "shard2", "both", "json", "shell", "available", "mtp", "ple"])
     ap.add_argument("--allow-missing", action="store_true",
                     help="with shell/json: exit 0 and empty paths when the shards are not cached yet")
     ap.add_argument("--resolve", action="store_true", help="print resolved blob paths instead of snapshot paths")
@@ -241,8 +250,12 @@ def main() -> int:
                 return 1
         return 0
 
-    want = {"shard1": [1], "shard2": [2], "both": [1, 2], "json": [1, 2], "shell": [1, 2]}[a.what]
     fam = family_of(a.model, a.repo) or FAMILIES["qwen"]
+    if a.what == "ple":
+        p = shard_path(root, a.model, min(ple_index(fam), n_files(fam)), a.rev, a.repo)
+        print("" if p is None else str(p.resolve() if a.resolve else p))
+        return 0 if p is not None or a.allow_missing else 1
+    want = {"shard1": [1], "shard2": [2], "both": [1, 2], "json": [1, 2], "shell": [1, 2]}[a.what]
     info = MODELS.get(a.model, {"download_gb": "?", "ram_gb": "?", "arena_gb": "?"})
     paths = {i: shard_path(root, a.model, i, a.rev, a.repo) for i in want}
     if n_files(fam) == 1 and fam.get("single_name") and fam.get("file"):
@@ -275,6 +288,7 @@ def main() -> int:
         mp = mtp_path(root, a.model, a.rev, a.repo)
         for key, value in {"MODEL": a.model, "CACHED": int(not missing), "REPO": fam["repo"],
                            "HF_CACHE": str(root), "SHARD1": shown(1), "SHARD2": shown(2),
+                           "PLE_FILE": shown(min(ple_index(fam), n_files(fam))),
                            "FILES": n_files(fam),
                            "DOWNLOAD_GB": info["download_gb"], "ARENA_GB": info["arena_gb"],
                            "RAM_GB": info["ram_gb"], "HF_INCLUDE": include,
