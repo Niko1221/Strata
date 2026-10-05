@@ -56,7 +56,21 @@ After a successful live-mode load, the first fresh hardware reading can reclaim 
 allowance once, without waiting for the ordinary growth debounce or cooldown. It requires at least 2 GiB of
 additional safe RAM capacity and no RAM or GPU pressure; the GPU reserve stays unchanged. Native admission and
 bounded safe-point allocation still apply. Missing, stale or pre-load readings cannot trigger it. Later growth,
-including recovery after a partial allocation or error, keeps the configured debounce and cooldown.
+including growth after a partial allocation or error, keeps the configured debounce and cooldown.
+
+An optional `recovery_seconds` enables faster RAM recovery after an applied pressure shrink in live mode.
+It defaults to 0 (disabled); nonzero values range from 30 to 3,600 seconds. With 30, fresh readings must
+continuously show no RAM or GPU pressure, at least 2 GiB of safe RAM capacity and at least 2 GiB below the
+allocation admitted before that shrink. The next proposal restores only 2 GiB of RAM and leaves the GPU
+reserve unchanged. Each applied step starts a new stability window. Recovery stops at the former actual
+capacity; larger expansion still needs the ordinary growth debounce and cooldown. Repeated pressure does
+not raise that ceiling, and fresh pressure takes precedence over recovery.
+
+Missing, stale, replayed and pre-ACK readings cannot advance recovery. Progress is not completion: the
+server remembers the actual capacity before dispatch and only a matching applied RAM shrink arms it.
+A native error, reload, ordinary allocation or capacity-limited recovery clears the episode. Limited ACKs
+retain their actual sizes, and recovery never bypasses the native-error growth retry deadline. It does not
+guarantee throughput; measure complete Thinking and Answering together under comparable resource load.
 
 A native allocation error delays further growth, but sustained pressure can still shrink a cache during that
 retry delay. Pressure never grows the other cache. A failed control write starts a new pressure window before

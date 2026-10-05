@@ -367,5 +367,184 @@ class PostLoadPolicyTests(unittest.TestCase):
         self.assertEqual(self.observe(policy, 700)["reason"], "stable_headroom")
 
 
+class PressureRecoveryPolicyTests(unittest.TestCase):
+    def policy(self, recovery=30, mode="live", reserve=1536):
+        config = {"enabled": True, "mode": mode, "pressure_seconds": 4}
+        if recovery is not None:
+            config["recovery_seconds"] = recovery
+        policy = MemoryPolicy(config, resident_cap_gib=55)
+        policy.live_actual(42 * 1024, reserve, 100, "load_budget", completed=True, loaded=True)
+        return policy
+
+    def observe(self, policy, now, used=40, gpu_used=20, stamp=None, info=None):
+        if info is None:
+            info = {"arena_mib": policy.current["resident_budget_gib"] * 1024,
+                    "expert_cache_mib": 8192}
+        return policy.observe(sample(now if stamp is None else stamp, used=used, gpu_used=gpu_used),
+                              True, info, now)
+
+    def quiet(self, policy, start, stop, **kwargs):
+        for now in range(start, stop + 1):
+            self.assertIsNone(self.observe(policy, now, **kwargs), f"unexpected plan at {now}")
+
+    def complete(self, policy, plan, now, actual=None, limitation=None):
+        before = policy.current["resident_budget_gib"]
+        actual = plan["resident_budget_gib"] if actual is None else actual
+        policy.live_actual(actual * 1024, plan["vram_reserve_mib"], now,
+                           plan["reason"], completed=True)
+        policy.complete_live_plan(plan, before, limitation)
+
+    def shrunk(self, recovery=30, mode="live", reserve=1536):
+        policy = self.policy(recovery, mode, reserve)
+        self.quiet(policy, 101, 104, used=63.5)
+        plan = self.observe(policy, 105, used=63.5)
+        self.assertEqual(plan["reason"], "sustained_pressure")
+        self.assertEqual(plan["resident_budget_gib"], 37)
+        self.complete(policy, plan, 106)
+        return policy
+
+    def test_recovery_setting_is_optional_and_bounded(self):
+        for recovery in (None, 0, 30, 3600):
+            with self.subTest(recovery=recovery):
+                policy = self.policy(recovery)
+                self.assertEqual(policy.status()["recovery_seconds"], recovery or 0)
+        for recovery in (-1, 1, 29.999, 3601, True, "30", float("nan")):
+            with self.subTest(recovery=recovery), self.assertRaises(ValueError):
+                self.policy(recovery)
+
+    def test_live_recovery_waits_thirty_fresh_seconds_then_restores_two_gib(self):
+        policy = self.shrunk()
+        self.quiet(policy, 107, 136)
+        plan = self.observe(policy, 137)
+        self.assertEqual(plan, {"resident_budget_gib": 39, "vram_reserve_mib": 1536,
+                                "reason": "pressure_recovery"})
+        self.assertEqual(policy.current["resident_budget_gib"], 37)
+        self.assertEqual(policy.last_applied, 106)
+        self.assertLess(137 - policy.last_applied, policy.cooldown)
+        # A GPU sizing limitation does not invalidate a completed RAM-only step.
+        self.complete(policy, plan, 138, limitation="gpu_pressure_cap")
+        self.quiet(policy, 139, 168)
+        self.assertEqual(self.observe(policy, 169)["resident_budget_gib"], 41)
+
+    def test_repeated_shrinks_keep_first_actual_ceiling_and_each_step_waits_again(self):
+        policy = self.shrunk()
+        self.quiet(policy, 107, 110, used=63.5)
+        pressure = self.observe(policy, 111, used=63.5)
+        self.assertEqual(pressure["resident_budget_gib"], 32)
+        self.complete(policy, pressure, 112)
+        start = 113
+        for actual in (34, 36, 38, 40, 42):
+            self.quiet(policy, start, start + 29)
+            recovery = self.observe(policy, start + 30)
+            self.assertEqual(recovery["reason"], "pressure_recovery")
+            self.assertEqual(recovery["resident_budget_gib"], actual)
+            self.assertEqual(recovery["vram_reserve_mib"], 1536)
+            self.complete(policy, recovery, start + 31)
+            start += 32
+        # Extra available capacity cannot raise the old pressure episode's ceiling.
+        self.quiet(policy, start, start + 119)
+        self.assertEqual(policy.current["resident_budget_gib"], 42)
+
+    def test_material_safe_gain_and_ceiling_gain_are_required_without_gpu_growth(self):
+        policy = self.shrunk(reserve=2560)
+        # 7.499 GiB free minus the 5.5 GiB headroom permits only 1.999 GiB.
+        self.quiet(policy, 107, 140, used=56.501, gpu_used=2)
+        # _budget rounds this 1.9996 GiB room to 2.000; raw room remains too small.
+        # Keep advancing samples with no gap so freshness cannot hide the boundary.
+        self.quiet(policy, 141, 174, used=56.5004, gpu_used=2)
+        self.quiet(policy, 175, 204, used=56.5, gpu_used=2)
+        plan = self.observe(policy, 205, used=56.5, gpu_used=2)
+        self.assertEqual(plan["resident_budget_gib"], 39)
+        self.assertEqual(plan["vram_reserve_mib"], 2560)
+        self.complete(policy, plan, 206)
+        self.quiet(policy, 207, 236)
+        plan = self.observe(policy, 237)
+        self.assertEqual(plan["resident_budget_gib"], 41)
+        self.complete(policy, plan, 238)
+        # The last 1 GiB to the ceiling does not qualify for a fast step.
+        self.quiet(policy, 239, 274)
+
+    def test_replayed_stale_gap_and_unknown_arena_restart_recovery_window(self):
+        cases = ((127, 126, None, False), (137, 127, None, False),
+                 (132, 132, None, True), (127, 127, {}, False),
+                 (127, 127, {"arena_mib": 0}, False))
+        for now, stamp, info, fresh_gap in cases:
+            with self.subTest(now=now, stamp=stamp, info=info):
+                policy = self.shrunk()
+                self.quiet(policy, 107, 126)
+                self.assertIsNone(self.observe(policy, now, stamp=stamp, info=info))
+                # A valid sample after a gap may itself start the new window.
+                due = now + 30 if fresh_gap else now + 31
+                self.quiet(policy, now + 1, due - 1)
+                self.assertEqual(self.observe(policy, due)["reason"], "pressure_recovery")
+        policy = self.shrunk()
+        self.assertIsNone(self.observe(policy, 107, stamp=106))
+        self.quiet(policy, 108, 137)
+        self.assertEqual(self.observe(policy, 138)["reason"], "pressure_recovery")
+
+    def test_even_small_renewed_pressure_resets_and_material_pressure_has_priority(self):
+        policy = self.shrunk()
+        self.quiet(policy, 107, 135)
+        # Free RAM falls below headroom, but the 0.1 GiB deficit is not a shrink.
+        self.assertIsNone(self.observe(policy, 136, used=58.6))
+        self.quiet(policy, 137, 166)
+        self.assertEqual(self.observe(policy, 167)["reason"], "pressure_recovery")
+        for used, gpu_used in ((63.5, 20), (40, 23.99)):
+            with self.subTest(used=used, gpu_used=gpu_used):
+                policy = self.shrunk()
+                self.quiet(policy, 107, 135)
+                self.quiet(policy, 136, 139, used=used, gpu_used=gpu_used)
+                pressure = self.observe(policy, 140, used=used, gpu_used=gpu_used)
+                self.assertEqual(pressure["reason"], "sustained_pressure")
+                self.assertLessEqual(pressure["resident_budget_gib"], 37)
+                self.assertGreaterEqual(pressure["vram_reserve_mib"], 1536)
+
+    def test_partial_error_and_capacity_limited_completion_do_not_credit_full_recovery(self):
+        for completion in ("error", "undershoot", "capacity_limit"):
+            with self.subTest(completion=completion):
+                policy = self.shrunk()
+                self.quiet(policy, 107, 136)
+                plan = self.observe(policy, 137)
+                if completion == "error":
+                    policy.live_actual(38 * 1024, 1536, 138, "native_error")
+                    self.assertEqual(policy.last_applied, 106)
+                else:
+                    actual = 39 - 1 / 1024 if completion == "undershoot" else 39
+                    limitation = "ram_capacity_or_rounding" if completion == "capacity_limit" else None
+                    self.complete(policy, plan, 138, actual, limitation)
+                self.assertEqual(policy.current["resident_budget_gib"],
+                                 38 if completion == "error" else actual)
+                self.quiet(policy, 139, 170)
+
+    def test_load_ordinary_completion_and_gpu_only_shrink_do_not_arm_old_episode(self):
+        for completion in ("load", "ordinary", "gpu_only"):
+            with self.subTest(completion=completion):
+                policy = self.shrunk()
+                if completion == "load":
+                    policy.live_actual(30 * 1024, 1536, 110, "load_budget", completed=True, loaded=True)
+                    # Consume the distinct post-load reconciliation with no RAM gain.
+                    self.assertIsNone(self.observe(policy, 111, used=58.5))
+                    start = 112
+                else:
+                    plan = {"resident_budget_gib": 37, "vram_reserve_mib": 2048,
+                            "reason": "stable_headroom"}
+                    self.complete(policy, plan, 110)
+                    if completion == "gpu_only":
+                        plan = {"resident_budget_gib": 37, "vram_reserve_mib": 2560,
+                                "reason": "sustained_pressure"}
+                        self.complete(policy, plan, 111)
+                    start = 112
+                self.quiet(policy, start, start + 31)
+
+    def test_default_disabled_and_reload_mode_keep_normal_growth_limits(self):
+        for recovery, mode in ((None, "live"), (0, "live"), (30, "reload")):
+            with self.subTest(recovery=recovery, mode=mode):
+                policy = self.shrunk(recovery, mode)
+                self.quiet(policy, 107, 705)
+                plan = self.observe(policy, 706)
+                self.assertEqual(plan["reason"], "stable_headroom")
+                self.assertEqual(plan["resident_budget_gib"], 55)
+
+
 if __name__ == "__main__":
     unittest.main()

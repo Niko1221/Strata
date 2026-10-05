@@ -579,5 +579,122 @@ class LiveMemoryTests(unittest.TestCase):
         self.assertIsNone(svc.memory_pending)
 
 
+class PressureRecoveryServiceTests(unittest.TestCase):
+    def service(self):
+        e = engine()
+        svc = Service(e, ByteTokenizer(), None)
+        with mock.patch("serve.server.time.time", return_value=100):
+            svc.configure_memory({"enabled": True, "mode": "live", "pressure_seconds": 4,
+                                  "recovery_seconds": 30})
+        svc.status["busy"] = True
+        e.unload = mock.Mock()
+        e.restart = mock.Mock()
+        svc.memory_snapshot = mock.Mock()
+        for now in range(101, 106):
+            self.observe(svc, now, used=63.5)
+        self.assertEqual(e.proc.stdin.getvalue(), "MEMORY 1 37888 1536\n")
+        return svc
+
+    def observe(self, svc, now, used=40):
+        svc.memory_snapshot.return_value = sample(now, used=used)
+        with mock.patch("serve.server.time.time", return_value=now):
+            svc.observe_memory()
+
+    def deliver(self, svc, now, request_id=1, resident=37888, status="applied", error=None, proc=None):
+        line = ack(request_id=request_id, status=status, resident=resident)
+        if error:
+            line = line.rstrip() + " error=" + error + "\n"
+        svc.engine.memory_acks.put((proc or svc.engine.proc, StrataEngine._memory_ack(line)))
+        self.observe(svc, now)
+
+    def test_busy_progress_is_one_plan_and_dispatch_ceiling_survives_partial_updates(self):
+        svc = self.service()
+        self.deliver(svc, 106, resident=39936, status="progress")
+        self.deliver(svc, 107, request_id=99, resident=32768)
+        self.deliver(svc, 108, resident=32768, proc=engine().proc)
+        for now in range(109, 141):
+            self.observe(svc, now)
+        self.assertEqual(svc.engine.proc.stdin.getvalue().count("MEMORY"), 1)
+        self.assertTrue(svc.memory_status()["pending"])
+        self.assertEqual(svc.memory_policy.last_applied, 100)
+        self.deliver(svc, 141)
+        for now in range(142, 172):
+            self.observe(svc, now)
+            self.assertEqual(svc.engine.proc.stdin.getvalue().count("MEMORY"), 1)
+        self.observe(svc, 172)
+        self.assertEqual(svc.engine.proc.stdin.getvalue().splitlines(),
+                         ["MEMORY 1 37888 1536", "MEMORY 2 39936 1536"])
+        self.deliver(svc, 173, request_id=2, resident=38912, status="progress")
+        for now in range(174, 201):
+            self.observe(svc, now)
+        self.assertEqual(svc.engine.proc.stdin.getvalue().count("MEMORY"), 2)
+        self.deliver(svc, 201, request_id=2, resident=39936)
+        for now in range(202, 232):
+            self.observe(svc, now)
+            self.assertEqual(svc.engine.proc.stdin.getvalue().count("MEMORY"), 2)
+        self.observe(svc, 232)
+        # A progress sample's 39 GiB must not replace the original 42 GiB ceiling.
+        self.assertEqual(svc.engine.proc.stdin.getvalue().splitlines()[-1], "MEMORY 3 41984 1536")
+        self.deliver(svc, 233, request_id=3, resident=41984)
+        for now in range(234, 265):
+            self.observe(svc, now)
+        self.assertEqual(svc.engine.proc.stdin.getvalue().count("MEMORY"), 3)
+        svc.engine.unload.assert_not_called()
+        svc.engine.restart.assert_not_called()
+        self.assertEqual(svc.memory_status()["pressure_recovery_ceiling_gib"], 42)
+        svc.engine.ended = True
+        self.observe(svc, 265)
+        self.assertIsNone(svc.memory_policy.current)
+        self.assertIsNone(svc.memory_status()["pressure_recovery_ceiling_gib"])
+        self.assertFalse(svc.memory_status()["pending"])
+
+    def test_partial_recovery_error_keeps_actual_and_blocks_growth_until_retry_deadline(self):
+        svc = self.service()
+        self.deliver(svc, 106)
+        for now in range(107, 138):
+            self.observe(svc, now)
+        self.assertEqual(svc.engine.proc.stdin.getvalue().count("MEMORY"), 2)
+        self.deliver(svc, 138, request_id=2, resident=38912, status="progress")
+        self.assertEqual(svc.memory_policy.last_applied, 106)
+        self.deliver(svc, 139, request_id=2, resident=38912, status="error", error="ram_resize")
+        self.assertEqual(svc.memory_policy.current["resident_budget_gib"], 38)
+        self.assertEqual(svc.memory_policy.last_applied, 106)
+        self.assertEqual(svc.memory_status()["error"], "ram_resize")
+        self.assertEqual(svc.memory_retry_at, 739)
+        for now in range(140, 739):
+            self.observe(svc, now)
+            self.assertEqual(svc.engine.proc.stdin.getvalue().count("MEMORY"), 2)
+        self.observe(svc, 739)
+        self.assertEqual(svc.engine.proc.stdin.getvalue().splitlines()[-1], "MEMORY 3 43008 1536")
+        self.assertEqual(svc.memory_live_pending["plan"]["reason"], "stable_headroom")
+        svc.engine.unload.assert_not_called()
+        svc.engine.restart.assert_not_called()
+
+    def test_recovery_write_failure_retains_growth_gate_but_allows_fresh_pressure_relief(self):
+        svc = self.service()
+        self.deliver(svc, 106)
+        svc.engine.request_memory = mock.Mock(side_effect=[OSError("pipe write failed"), None])
+        for now in range(107, 138):
+            self.observe(svc, now)
+        self.assertEqual(svc.engine.request_memory.call_count, 1)
+        self.assertFalse(svc.memory_status()["pending"])
+        self.assertEqual(svc.memory_retry_at, 737)
+        for now in range(138, 169):
+            self.observe(svc, now)
+            self.assertEqual(svc.engine.request_memory.call_count, 1)
+        for now in range(169, 173):
+            self.observe(svc, now, used=63.5)
+            self.assertEqual(svc.engine.request_memory.call_count, 1)
+        self.observe(svc, 173, used=63.5)
+        self.assertEqual(svc.engine.request_memory.call_count, 2)
+        self.assertEqual(svc.memory_live_pending["plan"]["reason"], "sustained_pressure")
+        self.assertLessEqual(svc.memory_live_pending["plan"]["resident_budget_gib"], 37)
+        for now in range(174, 205):
+            self.observe(svc, now, used=63.5)
+        self.assertEqual(svc.engine.request_memory.call_count, 2)
+        svc.engine.unload.assert_not_called()
+        svc.engine.restart.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

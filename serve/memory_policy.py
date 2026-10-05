@@ -33,6 +33,9 @@ class MemoryPolicy:
         self.cooldown = self._setting(config, "cooldown_seconds", 600, 600, 86400)
         self.pressure_duration = self._setting(config, "pressure_seconds", 60, 2, 3600)
         self.growth_duration = self._setting(config, "growth_seconds", 120, 120, 3600)
+        self.recovery_duration = self._setting(config, "recovery_seconds", 0, 0, 3600)
+        if 0 < self.recovery_duration < 30:
+            raise ValueError("invalid memory policy setting: recovery_seconds")
         self.max_age = self._setting(config, "max_sample_age_seconds", 5, 1, 60)
         if not _number(self.cap) or self.cap < 1 or not _number(vram_reserve_mib) or self.reserve_floor < 0:
             raise ValueError("memory policy requires a positive resident cap and nonnegative VRAM reserve")
@@ -44,6 +47,8 @@ class MemoryPolicy:
         self.gpu_growth_since = None
         self.gpu_baseline = None
         self.reconcile_after_load = False
+        self.pressure_recovery_ceiling_gib = None
+        self.recovery_since = None
         self.last_reason = "disabled" if not self.enabled else "awaiting_telemetry"
 
     @staticmethod
@@ -71,6 +76,7 @@ class MemoryPolicy:
     def _reset_windows(self):
         self.pressure_since = self.growth_since = None
         self.gpu_growth_since = None
+        self.recovery_since = None
 
     def _budget(self, reading, arena_gib=0, loaded=False):
         free_ram = (reading["ram_total"] - reading["ram_used"]) / GIB
@@ -118,6 +124,7 @@ class MemoryPolicy:
         self.last_applied = now
         self.last_reason = plan.get("reason", "applied")
         self.reconcile_after_load = False
+        self.pressure_recovery_ceiling_gib = None
         self.gpu_baseline = None
         self._reset_windows()
 
@@ -132,8 +139,36 @@ class MemoryPolicy:
         if completed:
             self.last_applied = now
         self.reconcile_after_load = self.mode == "live" and completed and loaded
+        if loaded or reason == "native_error":
+            self.pressure_recovery_ceiling_gib = None
         self.gpu_baseline = None
         self._reset_windows()
+
+    def complete_live_plan(self, plan, resident_before_gib, limitation=None):
+        """Remember only applied pressure capacity, captured before any progress ACK.
+
+        The service calls this after recording a matching terminal applied ACK.
+        Proposals, progress, errors and failed writes never arm recovery.
+        """
+        if self.mode != "live" or not self.recovery_duration or self.current is None:
+            self.pressure_recovery_ceiling_gib = None
+            return
+        actual = self.current["resident_budget_gib"]
+        reason = plan.get("reason")
+        if reason == "sustained_pressure":
+            if (_number(resident_before_gib) and 0 < resident_before_gib <= self.cap
+                    and plan["resident_budget_gib"] < resident_before_gib
+                    and actual < resident_before_gib
+                    and self.pressure_recovery_ceiling_gib is None):
+                self.pressure_recovery_ceiling_gib = resident_before_gib
+        elif reason == "pressure_recovery":
+            requested = int(plan["resident_budget_gib"] * 1024) / 1024
+            if (actual < requested or limitation == "ram_capacity_or_rounding"
+                    or self.pressure_recovery_ceiling_gib is None
+                    or actual >= self.pressure_recovery_ceiling_gib):
+                self.pressure_recovery_ceiling_gib = None
+        else:
+            self.pressure_recovery_ceiling_gib = None
 
     def record_loaded(self, snapshot, now):
         """Record the first fresh *idle* GPU reading after successful load.
@@ -178,6 +213,8 @@ class MemoryPolicy:
         arena = info.get("arena_mib") if isinstance(info, dict) else None
         if not loaded or self.current is None or not _number(arena) or arena <= 0:
             self._reset_windows()
+            if not loaded:
+                self.pressure_recovery_ceiling_gib = None
             self.last_reason = "awaiting_allocation" if loaded else "unloaded"
             return None
         if self.reconcile_after_load and stamp <= self.last_applied:
@@ -218,12 +255,24 @@ class MemoryPolicy:
         self.pressure_since = (stamp if self.pressure_since is None else self.pressure_since) if shrink else None
         self.growth_since = (stamp if self.growth_since is None else self.growth_since) if grow else None
         self.gpu_growth_since = (stamp if self.gpu_growth_since is None else self.gpu_growth_since) if gpu_grow else None
+        recover = (self.mode == "live" and self.recovery_duration > 0
+                   and self.pressure_recovery_ceiling_gib is not None
+                   and not pressure and stamp > self.last_applied and ram_delta >= 2
+                   and free_ram - required_free_ram >= 2
+                   and self.pressure_recovery_ceiling_gib - self.current["resident_budget_gib"] >= 2)
+        self.recovery_since = (stamp if self.recovery_since is None else self.recovery_since) if recover else None
         reason = None
         if self.pressure_since is not None and stamp - self.pressure_since >= self.pressure_duration:
             reason = "sustained_pressure"
             # Pressure must never grow a different cache during the same reload.
             plan["resident_budget_gib"] = min(plan["resident_budget_gib"], self.current["resident_budget_gib"])
             plan["vram_reserve_mib"] = max(plan["vram_reserve_mib"], self.current["vram_reserve_mib"])
+        elif self.recovery_since is not None and stamp - self.recovery_since >= self.recovery_duration:
+            reason = "pressure_recovery"
+            # Only restore previously admitted RAM, in material two-GiB steps.
+            # Keep exact MiB arithmetic and leave GPU sizing to ordinary growth.
+            plan = {"resident_budget_gib": self.current["resident_budget_gib"] + 2,
+                    "vram_reserve_mib": self.current["vram_reserve_mib"]}
         elif self.growth_since is not None and stamp - self.growth_since >= self.growth_duration:
             reason = "stable_headroom"
             # Growth must not shrink a different cache without pressure.
@@ -237,10 +286,9 @@ class MemoryPolicy:
         if reason is None:
             self.last_reason = "pressure_debounce" if shrink else "growth_debounce" if grow or gpu_grow else "stable"
             return None
-        # Allocation growth must wait for its long cooldown. Sustained material
-        # pressure uses its own debounce so newly opened apps cannot force the
-        # OS to page for ten minutes before the next safe request-boundary shrink.
-        if reason != "sustained_pressure" and now - self.last_applied < self.cooldown:
+        # Ordinary growth waits for the long cooldown. Pressure relief and
+        # bounded restoration of previously admitted RAM earn separate windows.
+        if reason not in ("sustained_pressure", "pressure_recovery") and now - self.last_applied < self.cooldown:
             self.last_reason = "cooldown"
             return None
         plan["reason"] = reason
@@ -253,4 +301,6 @@ class MemoryPolicy:
                 "resident_cap_gib": self.cap, "vram_reserve_floor_mib": self.reserve_floor,
                 "ram_target_percent": self.ram_target * 100, "vram_target_percent": self.vram_target * 100,
                 "min_ram_headroom_gib": self.headroom, "cooldown_seconds": self.cooldown,
+                "recovery_seconds": self.recovery_duration,
+                "pressure_recovery_ceiling_gib": self.pressure_recovery_ceiling_gib,
                 "gpu_baseline_free_mib": self.gpu_baseline[1] if self.gpu_baseline is not None else None}

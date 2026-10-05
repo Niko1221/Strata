@@ -1994,6 +1994,7 @@ class Service:
         self.memory_pending = None
         self.memory_policy.current = None
         self.memory_policy.reconcile_after_load = False
+        self.memory_policy.pressure_recovery_ceiling_gib = None
         self.memory_policy.gpu_baseline = None
         self.memory_policy._reset_windows()
         self.memory_last_reason = "engine_unavailable"
@@ -2029,6 +2030,8 @@ class Service:
             elif status == "applied":
                 self.memory_error = None
                 self.memory_limitation = ack.get("error") if ack.get("error") not in (None, "none", "") else None
+                self.memory_policy.complete_live_plan(pending["plan"], pending["resident_before_gib"],
+                                                      self.memory_limitation)
 
     def memory_snapshot(self, fresh=False):
         telemetry = getattr(self, "telemetry", None)
@@ -2073,7 +2076,8 @@ class Service:
                     return
                 self.memory_request_id += 1
                 self.memory_limitation = None
-                pending = {"id": self.memory_request_id, "proc": self.engine.proc, "plan": plan}
+                pending = {"id": self.memory_request_id, "proc": self.engine.proc, "plan": plan,
+                           "resident_before_gib": self.memory_policy.current["resident_budget_gib"]}
                 self.memory_live_pending = pending
                 try:
                     self.engine.request_memory(pending["id"], int(plan["resident_budget_gib"] * 1024),
