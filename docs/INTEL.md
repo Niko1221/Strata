@@ -13,7 +13,8 @@ Everything Intel-specific lives in `sycl/`. No shared file of upstream's is chan
 `sycl/setup_intel.py` and `sycl/serve/server_intel.py` wrap upstream's `setup.py` and `serve/server.py` from
 outside.
 
-Written for and tested on an **Arc Pro B70 (32 GB)** running the Coder (IQ1_M) on Ubuntu 24.04.
+Written for and tested on an **Arc Pro B70 (32 GB)** running the Coder (IQ1_M), on Ubuntu 24.04 (in the dev image)
+and on Fedora Silverblue 44 (in a Debian 13 distrobox); an Arc Pro B65 (32 GB) runs the same build.
 
 ## What you get
 
@@ -167,10 +168,27 @@ docker run --rm -e AOT=bmg-g31 -e BUILD_DIR=/work/<checkout>/build-sycl-aot -e R
     -v <data root>:/work strata-sycl-dev "bash /work/<checkout>/sycl/tools/build.sh"
 ```
 
-- `AOT` is the card's device target: `bmg-g31` for the B70 (what everything here was measured on). The B580 report
+**Without Docker: a toolbox with oneAPI** (Fedora Silverblue, where tools live in a distrobox). Measured with a
+Debian 13 distrobox, Intel's compute runtime 26.35 and oneAPI 2026.1.1:
+
+- Install `intel-oneapi-compiler-dpcpp-cpp-2026.1` and `intel-oneapi-mkl-devel-2026.1` from Intel's apt repository
+  (the dpct helpers are vendored, so SYCLomatic is not needed).
+- **The Level Zero loader must be 1.21 or newer.** Debian 13's `libze1` is 1.20.6; with it the engine stops at its
+  first KV allocation with `UR_RESULT_ERROR_UNSUPPORTED_FEATURE` (`layer.cpp`). The `libze1` deb from
+  github.com/oneapi-src/level-zero releases (1.34.0, the Ubuntu 24.04 build) fixes it.
+- Link the data root to `/work` inside the toolbox (`sudo ln -s <data root> /work`), so configs keep the image's
+  paths, then build as above without the container:
+  `AOT=bmg-g31 REPO=/work/<checkout> BUILD_DIR=/work/<checkout>/build-sycl-aot bash sycl/tools/build.sh strata`.
+- Running: `STRATA_SYCL_RUNNER=native` makes `sycl/serve/strata-sycl.sh` start the engine in place (the server runs
+  in the toolbox too); `STRATA_SYCL_RUNNER=distrobox:<name>` starts it in that distrobox from the host. benchy takes
+  the same variable (`STRATA_SYCL_RUNNER=distrobox:<name> sycl/benchy.sh`), and pins `level_zero:0` as the image
+  does unless `ONEAPI_DEVICE_SELECTOR` is set.
+
+- `AOT` is the card's device target: `bmg-g31` for the B70 (what everything here was measured on) and the B65
+  (the same G31 die). The B580 report
   in INTEL_PERFORMANCE.md used `bmg-g21`. `ocloc compile --help` in the image lists the targets (`-device`).
   Cards of different dies in one layer split need every die's code: a comma list, e.g. `AOT=bmg-g21,bmg-g31`.
-- `JOBS` (default 12) caps the parallel compiles; the B70 machine (23 GB of RAM) builds with `JOBS=8`.
+- `JOBS` (default 12) caps the parallel compiles: 23 GB of RAM builds with `JOBS=8`, 61 GB with `JOBS=16`.
 - `sycl/tools/build.sh <target>` builds one target (`strata`, a parity test, a bench).
 
 **How to run it by hand.** This is a greedy test run, the way the engine numbers are measured. Run it inside the

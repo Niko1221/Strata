@@ -31,6 +31,10 @@ REPO = HERE.parents[1]
 ROOT = Path(os.environ.get("STRATA_SYCL_ROOT", REPO.parent))      # mounted at /work, as in strata-sycl.sh
 IMAGE = os.environ.get("STRATA_SYCL_IMAGE", "strata-sycl-dev")
 BIN = os.environ.get("STRATA_SYCL_BIN", "build-sycl-aot/strata")
+# docker (the strata-sycl-dev image), or distrobox:<name> - a toolbox with oneAPI where ROOT is /work, for hosts
+# such as Fedora Silverblue that keep the toolchain in a container
+RUNNER = os.environ.get("STRATA_SYCL_RUNNER", "docker")
+BOX = RUNNER.split(":", 1)[1] if RUNNER.startswith("distrobox:") else None
 PROMPTS = REPO / "sycl" / "bench" / VERSION
 SIZES = [20, 2185, 8000, 40000, 128000, 256000]
 NEW = 256
@@ -85,6 +89,14 @@ def vram_used_mb(root):
         return None
 
 
+def vram_by_card_mb():
+    """{pci: resident VRAM of every client on that card} (root: fdinfo)"""
+    out = {}
+    for c in gs.clients().values():
+        out[c["pdev"]] = out.get(c["pdev"], 0) + c["vram_kb"] / 1024
+    return out
+
+
 def disk_of(path):
     src = subprocess.run(["findmnt", "-no", "SOURCE", "--target", str(path)], capture_output=True, text=True).stdout.strip()
     name = os.path.basename(src.split("[")[0])
@@ -102,18 +114,53 @@ def disk_read_bytes(dev):
 def machine(dev, cold, root):
     cpu = next((l.split(":", 1)[1].strip() for l in open("/proc/cpuinfo") if l.startswith("model name")), "?")
     git = lambda *a: subprocess.run(["git", "-C", str(REPO), *a], capture_output=True, text=True).stdout.strip()
-    img = subprocess.run(["docker", "image", "inspect", "-f", "{{.Id}}", IMAGE], capture_output=True, text=True).stdout.strip()
+    if BOX:
+        icpx = subprocess.run(box_cmd(". /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; icpx --version | head -1"),
+                              capture_output=True, text=True).stdout.strip().splitlines()
+        image = f"distrobox {BOX}, {icpx[-1] if icpx else 'oneAPI ?'}"
+    else:
+        img = subprocess.run(["docker", "image", "inspect", "-f", "{{.Id}}", IMAGE], capture_output=True, text=True).stdout.strip()
+        image = f"{IMAGE} {img[7:19]}"
     return {
         "bench": f"benchy {VERSION}", "date": time.strftime("%Y-%m-%d"),
         "cards": intel_cards(), "cpu": cpu, "threads": os.cpu_count(), "ram_gib": round(meminfo("MemTotal") / 2**30, 1),
         "ssd": f"{dev} ({rd(f'/sys/block/{dev}/device/model', '?')})", "kernel": os.uname().release,
         "os": next((l.split("=", 1)[1].strip().strip('"') for l in open("/etc/os-release") if l.startswith("PRETTY_NAME")), "?"),
         "commit": (git("rev-parse", "--short=12", "HEAD") or "?") + (" + local changes" if git("status", "--porcelain", "--untracked-files=no") else ""),
-        "image": f"{IMAGE} {img[7:19]}", "binary": BIN, "cold_cache": cold, "vram_source": "fdinfo" if root else "gpustat.json",
+        "image": image, "binary": BIN, "cold_cache": cold, "vram_source": "fdinfo" if root else "gpustat.json",
     }
 
 
 # ---------------------------------------------------------------- one run
+
+
+def box_cmd(script):
+    """a command line that runs script in the distrobox, as the user who owns it (benchy runs as root via sudo)"""
+    cmd = ["distrobox", "enter", BOX, "--", "bash", "-c", script]
+    uid = os.environ.get("SUDO_UID")
+    if os.geteuid() == 0 and uid:
+        user = os.environ.get("SUDO_USER") or uid
+        cmd = ["runuser", "-u", user, "--", "env", f"XDG_RUNTIME_DIR=/run/user/{uid}", f"HOME={Path('~' + user).expanduser()}"] + cmd
+    return cmd
+
+
+def engine_cmd(args, sel):
+    run = f"cd /work/{REPO.name} && exec {BIN} " + " ".join(shlex.quote(a) for a in args)
+    if BOX:   # the image's environment: its single-card selector, oneAPI's libraries, the OOM killer's first pick
+        env = ENV + [f"ONEAPI_DEVICE_SELECTOR={sel or 'level_zero:0'}"]
+        return box_cmd("echo 1000 > /proc/self/oom_score_adj; . /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; export "
+                       + " ".join(shlex.quote(e) for e in env) + "; " + run)
+    subprocess.run(["docker", "rm", "-f", CONTAINER], capture_output=True)
+    return ["docker", "run", "--rm", "--name", CONTAINER, "--device", "/dev/dri", "--oom-score-adj", "1000",
+            "-v", f"{ROOT}:/work"] + sum((["-e", e] for e in ENV), []) + (["-e", f"ONEAPI_DEVICE_SELECTOR={sel}"] if sel else []) + \
+           [IMAGE, run]
+
+
+def kill_engine():
+    if BOX:   # the engine is the container's child, not ours
+        subprocess.run(["pkill", "-KILL", "-x", Path(BIN).name[:15]] + (["-U", os.environ["SUDO_UID"]] if os.environ.get("SUDO_UID") else []))
+    else:
+        subprocess.run(["docker", "kill", CONTAINER], capture_output=True)
 def prompt_file(n, outdir):
     """the v1 prompt of n tokens, written under the data root so the container sees it"""
     short = (PROMPTS / "short.ids").read_text().strip().split(",")
@@ -168,13 +215,11 @@ def run_one(name, cfg, n, outdir, cold, root, dev, timeout):
     if cold:
         subprocess.run(["sync"]); Path("/proc/sys/vm/drop_caches").write_text("3\n"); time.sleep(2)
     log_path = outdir / f"{name}-{n}.log"
-    subprocess.run(["docker", "rm", "-f", CONTAINER], capture_output=True)
     sel = os.environ.get("ONEAPI_DEVICE_SELECTOR") or ("level_zero:gpu" if "--layer-split" in args0 else None)   # as strata-sycl.sh
-    cmd = ["docker", "run", "--rm", "--name", CONTAINER, "--device", "/dev/dri", "--oom-score-adj", "1000",
-           "-v", f"{ROOT}:/work"] + sum((["-e", e] for e in ENV), []) + (["-e", f"ONEAPI_DEVICE_SELECTOR={sel}"] if sel else []) + \
-          [IMAGE, f"cd /work/{REPO.name} && exec {BIN} " + " ".join(shlex.quote(a) for a in args)]
+    cmd = engine_cmd(args, sel)
     base_avail, base_disk, base_vram = meminfo(), disk_read_bytes(dev), vram_used_mb(root) or 0
     t0 = time.time(); peak_vram = 0.0; min_avail = base_avail
+    base_cards = vram_by_card_mb() if root else {}; peak_cards = {}   # which card the engine ran on
     load_s = load_disk = t_up = e_up = t_end = e_end = None
     with open(log_path, "w") as lf:
         p = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT)
@@ -183,6 +228,8 @@ def run_one(name, cfg, n, outdir, cold, root, dev, timeout):
             v = vram_used_mb(root)
             if v is not None:
                 peak_vram = max(peak_vram, v - base_vram)
+            for pci, mb in (vram_by_card_mb() if root else {}).items():
+                peak_cards[pci] = max(peak_cards.get(pci, 0.0), mb - base_cards.get(pci, 0.0))
             min_avail = min(min_avail, meminfo())
             text = log_path.read_text(errors="replace")
             if load_s is None and "session is up" in text:
@@ -190,7 +237,7 @@ def run_one(name, cfg, n, outdir, cold, root, dev, timeout):
             if t_end is None and re.search(r"^decode\s+\d+ tokens", text, re.M):
                 t_end, e_end = time.time(), xe_energy_uj()
             if time.time() - t0 > timeout:   # a hang, not a slow run: the timeout is several times the expected time
-                subprocess.run(["docker", "kill", CONTAINER], capture_output=True)
+                kill_engine()
                 lf.write("\nBENCHY TIMEOUT\n")
                 break
         p.wait()
@@ -204,6 +251,7 @@ def run_one(name, cfg, n, outdir, cold, root, dev, timeout):
     if load_s is not None:   # start-up work the engine does after "session is up" (serve mode: before READY)
         load_s += parsed["lend_mirror_s"]
     return {"config": name, "prompt": n, "new": NEW, "ctx": ctx, **parsed,
+            "cards_used": sorted(c for c, mb in peak_cards.items() if mb > 1024),
             "peak_vram_gb": peak_vram / 1024 if (root or peak_vram) else None, "ram_gb": (base_avail - min_avail) / 2**30,
             "avg_power_w": avg_w, "load_s": load_s, "ssd_load_gb": (load_disk or 0) / 1e9,
             "ssd_request_gb": (total_disk - (load_disk or 0)) / 1e9, "wall_s": time.time() - t0,
@@ -237,8 +285,11 @@ def table(rows, m):
     failed = [f"{r['config']} {r['prompt']:,} (exit {r.get('exit')}{', timeout' if r.get('timeout') else ''})" for r in done if not ok(r)]
     skipped = [f"{r['config']} {r['prompt']:,} ({r['skipped']})" for r in rows if "skipped" in r]
     cards = "; ".join(f"{c['name']}, {c['vram_gb']} GB, PCIe {c['link']} (card max {c['link_max']})" for c in m["cards"]) or "?"
+    names = {c["pci"]: c["name"] for c in m["cards"]}
+    used = sorted({p for r in done for p in r.get("cards_used", [])})
     out += ["", "System and build:",
             f"- {cards}.",
+            *([f"- Ran on: {', '.join(f'{names.get(p, p)} ({p})' for p in used)} (the card(s) holding the engine's VRAM)."] if used else []),
             f"- {m['cpu']} ({m['threads']} threads), {m['ram_gib']} GiB RAM; models on {m['ssd']}.",
             f"- {m['os']}, kernel {m['kernel']}.",
             f"- Engine {next((r['engine'] for r in rows if r.get('engine')), '?')}, commit `{m['commit']}`, image `{m['image']}`, "
@@ -248,7 +299,8 @@ def table(rows, m):
             + ("the page cache dropped before every run (cold start)." if m["cold_cache"] else "a WARM page cache (not run as root)."),
             "- TG includes speculative decoding (the MTP draft layer): it depends on the text, and on how often drafts are accepted.",
             "- RAM is the drop in the host's available memory (pinned memory included); VRAM is "
-            + ("every client's resident VRAM from fdinfo, less what was in use before." if m["vram_source"] == "fdinfo" else "from /run/gpustat.json.")]
+            + ("every client's resident VRAM from fdinfo, less what was in use before." if m["vram_source"] == "fdinfo" else "from /run/gpustat.json."),
+            *(["- Avg power sums every Intel card's energy counter, so an idle second card's draw is included."] if len(m["cards"]) > 1 else [])]
     if failed:
         out.append("- Did not complete: " + ", ".join(failed) + ".")
     if skipped:
