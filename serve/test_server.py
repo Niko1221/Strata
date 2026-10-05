@@ -2760,6 +2760,16 @@ class AnswerBeforeTheBody(unittest.TestCase):
         self.assertEqual(self.status("POST", "/unload"), "HTTP/1.0 200 OK")
         self.assertEqual(self.status("POST", "/load"), "HTTP/1.0 200 OK")
 
+    def test_a_body_a_handler_read_is_not_read_again(self):
+        """/load, /unload and /config read their body themselves: the answer and the close follow at once, instead of
+        a second read that waits DRAIN_SECONDS for bytes that will never come."""
+        with mock.patch.object(self.httpd.RequestHandlerClass, "DRAIN_SECONDS", 3):
+            for path in ("/unload", "/load", "/config"):
+                with self.subTest(path=path):
+                    started = time.monotonic()
+                    self.status("POST", path)
+                    self.assertLess(time.monotonic() - started, 2)
+
     def test_not_the_apps_own_page(self):
         self.assertEqual(self.status("POST", "/load", {"Origin": "https://example.com"}), "HTTP/1.0 403 Forbidden")
 

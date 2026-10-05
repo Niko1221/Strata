@@ -2838,12 +2838,13 @@ def make_handler(svc: Service):
             super().handle_one_request()
             self._drain_body()
 
-        def _body(self) -> bytes:
+        def _body(self, length=None) -> bytes:
+            """The request body, read by its handler (the drain then leaves it alone)."""
             self.body_read = True
-            return self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            return self.rfile.read(int(self.headers.get("Content-Length", 0)) if length is None else length)
 
         def _drain_body(self):
-            """An answer sent before the body was read (a 401, a 403, /load, a method with no handler) must not close
+            """An answer sent before the body was read (a 401, a 403, a 413, a method with no handler) must not close
             the connection on unread bytes: the close then sends a reset, and a client that sends its body after the
             headers (http.client, urllib, requests) gets a connection error instead of the answer.  So the body is
             read and dropped here, once, after an answer, in pieces so that its size is never held in memory.  What
@@ -3268,7 +3269,7 @@ def make_handler(svc: Service):
             timeout = self.connection.gettimeout()
             try:
                 self.connection.settimeout(2.0)
-                complete = len(self.rfile.read(length)) == length
+                complete = len(self._body(length)) == length
             except OSError:
                 complete = False
             finally:
@@ -3308,7 +3309,7 @@ def make_handler(svc: Service):
         def _config_post(self):
             """#564: change a few documented keys of the run config - JSON from Strata's own page only, as
             /settings (the key is checked before); every other key of the file stays as it is."""
-            body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            body = self._body()
             if not self._own_page("the run config can be changed"):
                 return
             if not svc.config_path:
