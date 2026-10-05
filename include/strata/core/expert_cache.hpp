@@ -16,14 +16,10 @@
 //   * `h_layer` held-out is **0.0456** - only 4.6% of (layer, token) pairs have all ten experts resident - so
 //     this cannot be a per-layer grouped kernel and the three-way split is not an optimisation.
 //
-// **WHAT THIS FILE IS AND IS NOT, TODAY.** It is the SLOT STORAGE and the RESIDENCY TABLE: it allocates the
-// VRAM, fills it from the host arena, and answers `(layer, expert) -> slot or -1`. It does **not** yet compute
-// anything - `moe_hit_grouped_s2` does not exist and the hit/miss split is not wired into the graph - so with
-// the cache on and nothing consuming it, **the engine is slower by the fill cost and faster by nothing.**
-// That is stated here rather than discovered from a benchmark, and it is why `--expert-cache` defaults to 0.
-//
-// The order of work is `Memory/R4-design-note.md` §7: slots and residency first, then the split, then the
-// kernel. This is that first step, and the step it unblocks is the one that can be measured.
+// **WHAT THIS FILE IS.** The SLOT STORAGE and the RESIDENCY TABLE: it allocates the VRAM, fills it from the host
+// arena, and answers `(layer, expert) -> slot or -1`. It computes nothing itself: the GPU computes the experts it
+// holds in the verify window's grouped kernels and the prompt path (the hit/miss split), and the CPU pool the rest.
+// (Written when nothing consumed the slots yet and `--expert-cache` defaulted to 0; setup's configs use `auto`.)
 #pragma once
 
 #include <cstddef>
@@ -55,6 +51,24 @@ inline constexpr int32_t kNotResident = -1;
 bool read_expert_profile(const std::string& path, int64_t n_layers, int64_t n_expert,
                          std::vector<std::pair<int32_t, int32_t>>& ranked, int64_t& slots, std::string& err);
 
+/// #477 (--expert-profile-save): what the adaptive tier learned, as a profile ranking EVERY (layer, expert) pair -
+/// the experts resident in VRAM now first (where the swaps left the cache), then the rest; within each, by `heat`
+/// (the routing the adaptive tier counted since the start, descending), then by `prior` (the profile the engine
+/// started from: an expert this run never routed keeps its old place), then by index.  A start from it begins
+/// where this one ended; one with more slots adds the hottest of the rest, one with fewer keeps the hottest.
+/// `resident` and `heat`: n_layers x n_expert entries (`heat` may be empty: no counts, the prior decides).
+std::vector<std::pair<int32_t, int32_t>> rank_learned_profile(int64_t n_layers, int64_t n_expert,
+                                                              const std::vector<uint8_t>& resident,
+                                                              const std::vector<double>& heat,
+                                                              const std::vector<std::pair<int32_t, int32_t>>& prior);
+
+/// #477: writes `ranked` in tools/make_profile.py's format, byte for byte: `STRP`, `1, n_layers, n_expert,
+/// n_ranked, n_ranked` (uint32), the pairs (uint16 layer, uint16 expert), then the n_layers x n_expert int32 table
+/// of each pair's rank (-1: not ranked).  Atomically: a `<path>.tmp` beside it, renamed over `path` once complete,
+/// so a reader (the next start) never sees half a file.  False with `err` when it could not be written.
+bool write_expert_profile(const std::string& path, int64_t n_layers, int64_t n_expert,
+                          const std::vector<std::pair<int32_t, int32_t>>& ranked, std::string& err);
+
 class ExpertCache {
 public:
     ExpertCache() = default;
@@ -75,12 +89,43 @@ public:
     void close();
 
     bool valid() const { return base_ != nullptr; }
-    int64_t slots() const { return slots_; }
+    /// The slots usable now: all of them, unless `shrink` gave the tail's VRAM back (#533) - then the ones wholly
+    /// inside the VRAM still backed, always a prefix.  The prompt path's loan (the last slots) and every report
+    /// follow this; `full_slots()` is what `open` allocated.
+    int64_t slots() const { return live_slots_; }
+    int64_t full_slots() const { return slots_; }
     /// Slots actually claimed.  Not the same as `slots()` - the cache does not evict, so a run that routes
     /// fewer distinct experts than there are slots leaves the rest empty.
     int64_t resident() const { return per_layer_ ? admitted_ : next_free_; }
-    int64_t bytes() const { return off_.empty() ? slots_ * blob_ : (int64_t) off_.back(); }
+    /// The bytes of `slots()` (all of the arena unless shrunk); `full_bytes()`: of every slot.
+    int64_t bytes() const { return slot_end(live_slots_); }
+    int64_t full_bytes() const { return slot_end(slots_); }
     double gib() const { return (double) bytes() / 1073741824.0; }
+
+    /// **#533: HOT VRAM RESIZE, OPT-IN (--vram-elastic).**  With a segment size set before `open`/`open_sized`, the
+    /// arena is one reserved address range backed by physical segments of that size (CUDA virtual memory
+    /// management) instead of one cudaMalloc, so `shrink` can give the tail's VRAM back to the driver - for another
+    /// program - and `grow` can take it again, while every slot keeps its address (the captured graphs, the verify
+    /// plan's pointers and the prompt path's loan all hold addresses into it).  0 (the default): one cudaMalloc, as
+    /// always.  CUDA only: a HIP build refuses it at open.  The slots past `slots()` after a shrink must hold no
+    /// resident expert and no loan: the CALLER evicts them first (they become CPU misses).
+    void set_segment_bytes(int64_t seg_bytes) { seg_req_ = seg_bytes > 0 ? seg_bytes : 0; }
+    bool segmented() const { return !segs_.empty(); }
+    int64_t segment_bytes() const { return seg_; }
+    /// Bytes of the arena backed by VRAM now (a whole number of segments; the arena when not segmented).
+    int64_t mapped_bytes() const;
+    /// Unmaps every segment past the first `keep_bytes` (rounded UP to a segment boundary): `slots()` becomes the
+    /// slots wholly inside what stays.  Waits for the device first.  False with `err` when not segmented or a driver
+    /// call failed.
+    bool shrink(int64_t keep_bytes, std::string& err);
+    /// Maps segments again up to `want_bytes` (rounded DOWN to a segment, at most the arena; the last, shorter
+    /// segment only when `want_bytes` covers the arena).  Stops at the first segment the driver cannot back (false,
+    /// `err`: what was mapped by then stays).  The new slots are empty until the caller fills them.
+    bool grow(int64_t want_bytes, std::string& err);
+    /// The number of leading slots that fit wholly inside the first `bytes` bytes.
+    int64_t slots_within(int64_t bytes) const;
+    /// The bytes the first `n` slots span.
+    int64_t bytes_of(int64_t n) const { return slot_end(n < 0 ? 0 : n > slots_ ? slots_ : n); }
 
     /// `(layer, expert)` -> slot index, or `kNotResident`.  Bounds-checked: a bad layer or expert returns
     /// `kNotResident` rather than reading whatever is adjacent in the table.
@@ -89,6 +134,13 @@ public:
     /// full - **it never evicts**, because eviction policy is a measured question (`R4.1`'s LFU-decay vs LRU
     /// sweep) and a placeholder policy would set the hit rate that everything downstream is then sized against.
     int32_t admit(int64_t layer, int64_t expert);
+
+    /// Publish a same-layer replacement after its slot copy has completed.
+    void replace(int64_t layer, int32_t old_expert, int32_t new_expert) {
+        auto& old = residency_[(size_t) layer * n_expert_ + old_expert];
+        residency_[(size_t) layer * n_expert_ + new_expert] = old;
+        old = kNotResident;
+    }
 
     /// **R4.2g: GIVE EACH LAYER ITS OWN SLOTS.  ROUND 328 MEASURED WHY THE GLOBAL FORM CANNOT WORK.**
     ///
@@ -146,7 +198,17 @@ private:
     uint8_t* blocking_staging_ = nullptr;
     std::size_t blocking_staging_bytes_ = 0;
 #endif
+    int64_t slot_end(int64_t n) const { return off_.empty() ? n * blob_ : (int64_t) off_[(size_t) n]; }
+    bool open_segmented(uint64_t want, std::string& err);
+    void release_segmented();
     uint8_t* base_ = nullptr;
+    int64_t live_slots_ = 0;            ///< #533: slots() - all of them unless shrunk
+    int64_t seg_req_ = 0;               ///< #533: the segment size asked for (0: one cudaMalloc)
+    int64_t seg_ = 0;                   ///< #533: the segment size used (a multiple of the driver's granularity)
+    uint64_t reserved_ = 0;             ///< #533: the reserved address range's size
+    std::vector<unsigned long long> segs_;   ///< #533: each segment's physical handle (0: unmapped)
+    std::vector<int64_t> seg_size_;     ///< #533: each segment's size (the last one may be shorter)
+    int64_t mapped_segs_ = 0;           ///< #533: segments [0, mapped_segs_) are backed
     std::vector<int32_t> residency_;   ///< [n_layers * n_expert] -> slot or kNotResident
     int64_t slots_ = 0;
     int64_t n_layers_ = 0;

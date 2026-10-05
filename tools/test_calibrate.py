@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -91,6 +92,53 @@ class Calibrate(unittest.TestCase):
         self.assertIsNone(CAL.arg_value(b, "--pool-workers"))
         self.assertEqual(b.count("--spec-min-p"), 1)
 
+    def test_engine_args_are_the_servers(self):
+        # #447: a "gpu" list is a layer split only with two or more cards; "0,2" is one too; split_skip_if_fits counts
+        helper = {"args": BASE + ["--expert-cache-device1", "1800"], "gpu": [0], "env": {"CUDA_VISIBLE_DEVICES": "0,1"}}
+        self.assertEqual(CAL.engine_args(helper), helper["args"])                 # one stage + a helper card: no split
+        self.assertEqual(CAL.engine_args({"args": BASE, "gpu": 1}), BASE)
+        self.assertEqual(CAL.engine_args({"args": BASE, "gpu": [0, 2]}), BASE + ["--layer-split", "auto"])
+        self.assertEqual(CAL.engine_args({"args": BASE, "gpu": "0,2", "layer_split": "18"}),
+                         BASE + ["--layer-split", "18"])
+        self.assertEqual(CAL.engine_args({"args": BASE, "gpu": [0, 1], "split_skip_if_fits": True}),
+                         BASE + ["--layer-split", "auto", "--split-skip-if-fits"])
+        own = BASE + ["--layer-split", ""]                                       # the config's own value wins
+        self.assertEqual(CAL.engine_args({"args": own, "gpu": [0, 1]}), own)
+
+    def test_run_measures_with_the_servers_args(self):
+        with tempfile.TemporaryDirectory() as d:
+            tok = Path(d)
+            (tok / "vocab.json").write_text(json.dumps({"a": 0, "b": 1}))
+            (tok / "merges.txt").write_text("")
+            (tok / "token_type.json").write_text(json.dumps([1, 1]))
+            seen = []
+            saved = CAL.measure
+            CAL.measure = lambda args, ids_list, start_engine, say=print: seen.append(args) or {}
+            fake = type("ST", (), {"Tokenizer": lambda *a: type("T", (), {"encode": lambda s, t, **k: [0]})()})
+            try:
+                with mock.patch.dict(sys.modules, {"strata_tokenizer": fake}):
+                    CAL.run({"tokenizer": d, "args": list(BASE), "gpu": [0]}, start_engine=lambda a: None)
+            finally:
+                CAL.measure = saved
+        self.assertEqual(seen, [BASE])
+
+    def test_engine_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "strata-x.log"
+            log.write_text("strata generate: an old error\n", encoding="utf-8")
+            since = log.stat().st_size
+            with open(log, "a", encoding="utf-8") as f:
+                f.write("loading ...\nstrata generate: --expert-cache-remote with a layer split needs a GPU that runs "
+                        "no stage (2 visible, 2 used by the split)\n\n")
+            self.assertEqual(CAL.engine_error(str(log), since), "strata generate: --expert-cache-remote with a layer "
+                             "split needs a GPU that runs no stage (2 visible, 2 used by the split)")
+            with open(log, "a", encoding="utf-8") as f:
+                f.write("Segmentation fault\n")
+            self.assertIn("--expert-cache-remote", CAL.engine_error(str(log), since))   # the engine's own line first
+            self.assertEqual(CAL.engine_error(str(log), log.stat().st_size), None)   # nothing new since
+            self.assertIsNone(CAL.engine_error(None))
+            self.assertIsNone(CAL.engine_error(str(Path(d) / "missing.log")))
+
     def test_worker_candidates(self):
         self.assertEqual(CAL.worker_candidates(6), [6, 4, 3])
         self.assertEqual(CAL.worker_candidates(23), [23, 15, 12])
@@ -151,6 +199,35 @@ class SetupIntegration(unittest.TestCase):
         self.assertFalse(self.S.calibrate_config(cfg_path))
         self.assertEqual(json.loads(cfg_path.read_text())["args"], BASE)
         self.assertIsNone(self.S.saved_calibration({"args": BASE, "model_name": "m"}))
+
+    def test_failed_calibration_says_the_engines_reason(self):
+        # #447: the engine's last error line is printed, and the --calibrate run repeats the failure before it starts
+        import contextlib
+        import io
+        log = Path(self.tmp.name) / "strata-q2_0.log"
+        log.write_text("strata generate: an error of an earlier start\n", encoding="utf-8")
+        cfg_path = Path(self.tmp.name) / "strata-q2_0.json"
+        cfg_path.write_text(json.dumps({"exe": "x", "args": list(BASE), "model_name": "m", "log": str(log)}))
+
+        def boom(*a, **k):
+            with open(log, "a", encoding="utf-8") as f:
+                f.write("strata generate: --expert-cache-remote with a layer split needs a GPU that runs no stage\n")
+            raise RuntimeError(f"the engine exited before it was ready (see {log})")
+        CAL.run = boom
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertFalse(self.S.calibrate_config(cfg_path))
+        self.assertIn("the engine said: strata generate: --expert-cache-remote with a layer split", out.getvalue())
+        self.assertNotIn("an earlier start", out.getvalue())
+        out = io.StringIO()
+        with mock.patch.object(self.S, "ROOT", Path(self.tmp.name)), \
+                mock.patch.object(self.S, "data_folder", lambda d: (Path(self.tmp.name) / "data", [])), \
+                mock.patch.object(self.S, "update_installed_engine", lambda *a: None), \
+                mock.patch.object(sys, "argv", ["setup.py", "--calibrate", "--no-start"]), \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(self.S.main(), 0)
+        self.assertIn("this PC is NOT tuned: the tuning failed (the reason is above); the model keeps the default "
+                      "settings", out.getvalue())
 
 
 if __name__ == "__main__":

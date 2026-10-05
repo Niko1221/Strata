@@ -36,6 +36,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <string>
 #include <cstring>
 #include <random>
 #include <vector>
@@ -236,6 +238,16 @@ int main() {
     }
     // THE NEGATIVE CONTROL, asserted where it can see something: past T = 4 the generic layout is a different one,
     // so if it still finds no difference the comparison cannot tell the layouts apart and the pass proves nothing.
+#if defined(STRATA_HIP_GFX906)
+    // gfx906: the wave64 layout (one wavefront per row) is the same kernel for every column count, so multi_exact
+    // has nothing to switch and the control cannot see a difference.  The control with power is the CUDA layout:
+    // ctest's mmvq_multi_parity_cuda_layout runs this with STRATA_MMVQ_WAVE=0.
+    if (off.powerless_cases != 0 && !(std::getenv("STRATA_MMVQ_WAVE") && std::string(std::getenv("STRATA_MMVQ_WAVE")) == "0")) {
+        std::printf("\nmmvq_multi_parity: ok (gfx906 wave64 layout: every column count runs the same exact kernel, "
+                    "so the negative control has no other layout to find; mmvq_multi_parity_cuda_layout checks it).\n");
+        return 0;
+    }
+#endif
     if (off.powerless_cases != 0) {
         std::printf("\nmmvq_multi_parity: FAILED (no power). In %d case(s) no output differs with multi_exact off at "
                     "any T > %d, where the generic layout is not the exact one: for those cases this comparison "

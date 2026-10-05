@@ -33,6 +33,7 @@ namespace strata::kernels {
 /// Opt in to pinned CUDA BF16/F32 MMVF for the PLE value projection only (default false).
 /// Configure before session capture; captured graphs retain their selected projection kernels.
 void ple_set_native_bf16(bool enabled);
+bool ple_native_bf16_enabled();
 
 /// Opt in to pinned CUDA postprojection norms, gate, convolution and residual
 /// arithmetic (default false). Set before capture; existing graphs keep their
@@ -106,6 +107,9 @@ uint64_t ple_block_scratch_bytes();
 
 void ple_block(const float* emb, const float* hidden, const float* hist_rows, const PleWeights& w,
                PleOut& out, void* scratch, void* stream);
+
+void ple_block_projected(const float* projected_key, const float* projected_value, const float* hidden,
+                         const float* hist_rows, const PleWeights& w, PleOut& out, void* scratch, void* stream);
 
 /// Advance the row-fastest normalized history by one token: hist[r,c] = old_hist[r+1,c], then append
 /// normalized[c] at row NG_HIST-1. One thread owns each channel, making the in-place shift well-defined.

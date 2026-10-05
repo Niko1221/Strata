@@ -98,6 +98,48 @@ class HuggingFacePins(unittest.TestCase):
         finally:
             mtp_fetch.REPO = pinned
 
+    def test_hf_endpoint(self):
+        # #495: HF_ENDPOINT (a mirror) serves the same pinned revision; a trailing slash and blanks are dropped
+        repo = "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF"
+        with mock.patch.dict(setup.os.environ, {}, clear=False):
+            setup.os.environ.pop("HF_ENDPOINT", None)
+            self.assertEqual(setup.hf(repo), f"https://huggingface.co/{repo}/resolve/{setup.HF_REVISIONS[repo]}/")
+            for value in ("https://hf-mirror.com", "https://hf-mirror.com/", " https://hf-mirror.com/ "):
+                setup.os.environ["HF_ENDPOINT"] = value
+                url = setup.hf(repo)
+                self.assertEqual(url, f"https://hf-mirror.com/{repo}/resolve/{setup.HF_REVISIONS[repo]}/")
+                self.assertRegex(url, SHA)
+                self.assertEqual(setup.hf_unpinned(url + "x.gguf"), f"https://hf-mirror.com/{repo}/resolve/main/x.gguf")
+            setup.os.environ["HF_ENDPOINT"] = ""
+            self.assertEqual(setup.hf_endpoint(), "https://huggingface.co")
+
+    def test_mtp_fetch_honours_hf_endpoint(self):
+        import importlib
+        import mtp_fetch
+        try:
+            with mock.patch.dict(mtp_fetch.os.environ, {"HF_ENDPOINT": "https://hf-mirror.com/"}):
+                importlib.reload(mtp_fetch)
+                self.assertTrue(mtp_fetch.REPO.startswith("https://hf-mirror.com/Qwen/Qwen3.8-Flash-Next/resolve/"))
+                self.assertRegex(mtp_fetch.REPO, SHA)
+                self.assertTrue(mtp_fetch.pinned())                 # the tensors' SHA-256 checks still apply
+        finally:
+            importlib.reload(mtp_fetch)
+        self.assertTrue(mtp_fetch.REPO.startswith("https://huggingface.co/"))
+
+    def test_step5_names_the_folder(self):
+        # #495: where setup expects the model files, and how to give it files downloaded by hand
+        from test_setup_golden import PROFILES, install
+        ram, found = PROFILES["96GB-1x16GB"]
+        with mock.patch.dict(setup.os.environ, {"HF_ENDPOINT": "https://hf-mirror.com"}):
+            code, out, cfg, _ = install(ram, found, ["--family", "qwen", "--model", "IQ3_XXS", "--no-start"])
+        self.assertEqual(code, 0)
+        text = out.replace("\\", "/")
+        self.assertRegex(text, r"The model files go in .*/models/IQ3_XXS")
+        self.assertIn("put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+                      text)
+        self.assertIn("--gguf-dir", text)
+        self.assertIn("Downloading from https://hf-mirror.com (HF_ENDPOINT)", text)
+
 
 class Engine(unittest.TestCase):
     def setUp(self):

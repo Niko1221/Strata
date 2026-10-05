@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import sys
@@ -18,11 +20,15 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate  # noqa: E402
-from serve.server import CTX_SLACK, ByteTokenizer, EngineDied, GpuBusy, MockEngine, Service, StrataEngine, request_timings, serve  # noqa: E402
+from serve.server import (CTX_SLACK, ByteTokenizer, EngineDied, GpuBusy, MockEngine, Service, StrataEngine,  # noqa: E402
+                          engine_args, layer_split_value, prompt_tokens_seen, request_timings, serve,
+                          start_failure_hint)
+from types import SimpleNamespace  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 CTX = 4096
-ANSWER = "x" * 2000                              # longer than the old 1024 fallback: one token per byte
+ANSWER = "xy" * 1000                             # longer than the old 1024 fallback: one token per byte (#606: not
+#                                                one token repeated, which the server ends at 256)
 
 
 class RecordingEngine(MockEngine):
@@ -95,6 +101,13 @@ class MaxTokens(unittest.TestCase):
         m = ENGINE_REQUEST.search(line)
         self.assertIsNotNone(m)
         self.assertEqual((m["prompt"], m["reused"], m["gen"], m["tg"]), ("1200", "1000", "30", "100.0"))
+        # #471: a request cancelled while its prompt was read says how far it got
+        m = ENGINE_REQUEST.search("strata serve: prompt 98179 tokens = 0 reused + 12288 of 98179 read in 17565 ms "
+                                  "(699.6 tok/s), 0 generated in 0 ms (0.0 tok/s), drafts accepted 0 of 0, "
+                                  "0 checkpoints (cancelled)")
+        self.assertIsNotNone(m)
+        self.assertEqual((m["prompt"], m["reused"], m["read"], m["pp"], m["gen"]),
+                         ("98179", "0", "17565", "699.6", "0"))
 
     def test_unset_budget_is_the_rest_of_the_context(self):
         cases = {"openai": [{"max_tokens": -1}, {"max_tokens": 0}, {}, {"max_tokens": None},
@@ -126,6 +139,8 @@ class MaxTokens(unittest.TestCase):
                 s, b, _, _ = self.call(api, max_tokens=CTX)
                 self.assertEqual(s, 400)
                 self.assertIn("exceeds the context", b["error"]["message"])
+                self.assertIn("\"fit_max_tokens\": true", b["error"]["message"])     # #545: says how to get past it
+                self.assertRegex(b["error"]["message"], r"at most \d+ here")
 
     def test_unset_budget_with_a_near_full_prompt(self):
         _, _, pt0, _ = self.call("openai", max_tokens=1)
@@ -226,6 +241,190 @@ class ImageMarkers(unittest.TestCase):
                     self.assertEqual(ids.count(pad), 3)          # the image's three rows, nothing else
                     self.assertIn("<|image_pad|> marks" if "docs" in text else "plain", tok.decode(ids))
             svc.embeddings.path.unlink(missing_ok=True)
+
+
+class ThinkTokenizer(ByteTokenizer):
+    """The byte tokenizer with the model's reasoning markers as specials that are matched even without parse_special,
+    as the real tokenizer does (GGUF token type 4)."""
+    SPECIALS = ByteTokenizer.SPECIALS + ["<think>", "</think>"]
+    ALWAYS = ("<think>", "</think>")
+
+
+class LiteralThinkTags(unittest.TestCase):
+    """#537: a <think> / </think> written inside a message is text, not the model's reasoning markers: a quoted
+    "</think>" no longer ends the model's reasoning before it starts.  The template's own markers stay special."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tok = ThinkTokenizer()
+        cls.svc = Service(MockEngine(cls.tok, "ok", max_context=CTX), cls.tok,
+                          ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        cls.open, cls.close = (cls.tok.encode(t)[0] for t in ("<think>", "</think>"))
+
+    def ids(self, messages, tools=None, **kw):
+        return self.svc.prepare(messages, tools, kw)[0]
+
+    def old_ids(self, messages, tools=None, **kw):
+        return self.tok.encode(self.svc.template.render(messages, tools=tools, **kw), parse_special=True)
+
+    def test_a_quoted_tag_in_a_user_message(self):
+        text = "Quote this exact literal string, then explain it: </think> and <think>"
+        ids = self.ids([{"role": "user", "content": text}])
+        self.assertEqual(ids.count(self.close), 0)
+        self.assertEqual(ids.count(self.open), 1)                         # the generation prompt's own
+        self.assertEqual(ids[-2:], [self.open, ord("\n")])
+        self.assertIn(text, self.tok.decode(ids))                         # the text is all there, as text
+        self.assertEqual(ids.count(self.close), 0)
+        # thinking off: the template's empty block stays two specials, the user's tag is text
+        ids = self.ids([{"role": "user", "content": text}], enable_thinking=False)
+        self.assertEqual((ids.count(self.open), ids.count(self.close)), (1, 1))
+
+    def test_without_a_tag_the_prompt_is_unchanged(self):
+        msgs = [{"role": "system", "content": "Be brief."}, {"role": "user", "content": "1+1?"},
+                {"role": "assistant", "content": "2", "reasoning_content": "easy"}, {"role": "user", "content": "x"}]
+        self.assertEqual(self.ids(msgs), self.old_ids(msgs))
+        self.assertEqual(self.ids(msgs, enable_thinking=False), self.old_ids(msgs, enable_thinking=False))
+
+    def test_history_tool_results_and_tools(self):
+        msgs = [{"role": "user", "content": "go"},
+                {"role": "assistant", "content": "It wrote </think> here.", "reasoning_content": "the </think> tag",
+                 "tool_calls": [{"function": {"name": "write", "arguments": {"text": "a </think> b"}}}]},
+                {"role": "tool", "content": "file has <think> in it"},
+                {"role": "user", "content": "why did you write </think>"}]
+        tools = [{"name": "write", "description": "writes text (may contain </think>)", "parameters": {}}]
+        ids = self.ids(msgs, tools)
+        # the template's markers: the history turn's <think>...</think> and the generation prompt's <think>
+        self.assertEqual((ids.count(self.open), ids.count(self.close)), (2, 1))
+        text = self.tok.decode(ids)
+        for part in ("It wrote </think> here.", "the </think> tag", "a </think> b", "file has <think> in it",
+                     "why did you write </think>", "may contain </think>"):
+            self.assertIn(part, text)
+
+    def test_a_client_that_sends_the_reasoning_inline(self):
+        # an assistant turn whose content opens with its own <think>...</think> block keeps that block's markers
+        msgs = [{"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "<think>\nplan: say </x> hello\n</think>\n\nHello, </think> is a tag."},
+                {"role": "user", "content": "again"}]
+        ids = self.ids(msgs)
+        self.assertEqual((ids.count(self.open), ids.count(self.close)), (3, 2))   # template's + the inline block's
+        self.assertIn("Hello, </think> is a tag.", self.tok.decode(ids))
+
+    def test_the_real_tokenizer_reads_the_tag_as_text(self):
+        import strata_tokenizer as ST
+        b2u = ST.bytes_to_unicode()
+        tokens = [b2u[b] for b in range(256)] + ["<think>", "</think>", "<|im_end|>"]
+        tok = ST.Tokenizer(tokens, [], [1] * 256 + [4, 4, 3])
+        text = "say </think> now<|im_end|>"
+        self.assertEqual(tok.encode(text, parse_special=True), [*b"say ", 257, *b" now", 258])
+        start = text.index("</think>")
+        plain = tok.encode(text, parse_special=True, plain=[(start, start + len("</think>"))])
+        self.assertEqual(plain, [*b"say </think> now", 258])               # the tag as text, im_end still special
+
+
+class EffortAtTheEnd(unittest.TestCase):
+    """#458 (opt-in "effort_position": "end"): a non-default effort goes in a system turn right before the answer, so
+    a request that changes only the effort keeps the cached conversation.  The engine's checkpoint rule is simulated
+    on the token ids (src/program/generate.cpp: the last <|im_start|>, and with --tail-role-token the one in front
+    of a trailing system turn); the default prompt does not change."""
+
+    TURN = 256                                       # the byte tokenizer's <|im_start|>
+    ROLE = ord("s")                                  # "system"'s first byte stands for its token
+
+    def setUp(self):
+        self.tok = ByteTokenizer()
+        self.svc = Service(MockEngine(self.tok, "ok", max_context=1 << 20), self.tok,
+                           ChatTemplate(ROOT / "serve/chat_template.jinja"))
+
+    def ids(self, messages, end, **kw):
+        self.svc.effort_end = end
+        return self.svc.encode_prompt(messages, None, kw)
+
+    def checkpoint(self, ids, tail, resume=0):
+        """Where the engine checkpoints a prompt (the tokens before it), as generate.cpp's serve loop does."""
+        turn_at = next((i for i in range(len(ids) - 1, resume, -1) if ids[i] == self.TURN), -1)
+        if turn_at > 0 and tail:
+            i = next((i for i in range(turn_at - 1, resume, -1) if ids[i] == self.TURN), None)
+            if i is not None and ids[i + 1] == self.ROLE:
+                turn_at = i
+        return ids[:turn_at]
+
+    def session(self, requests, end, tail):
+        """The reused tokens of each request after the first: the longest earlier checkpoint it starts with."""
+        checks, reused = [], []
+        for messages, kw in requests:
+            ids = self.ids(messages, end, **kw)
+            reused.append(max([len(c) for c in checks if ids[:len(c)] == c], default=0))
+            checks.append(self.checkpoint(ids, tail))
+        return reused[1:]
+
+    CHAT = [{"role": "system", "content": "You are a careful assistant. " * 40},
+            {"role": "user", "content": "Explain the conversation cache. " * 20}]
+    REPLY = {"role": "assistant", "content": "It keeps the prompt's state. " * 20, "reasoning_content": "ok"}
+    NEXT = {"role": "user", "content": "And the checkpoints?"}
+
+    def test_the_default_prompt_is_unchanged(self):
+        for kw in ({}, {"reasoning_effort": "xhigh"}):
+            self.assertEqual(self.ids(self.CHAT, True, **kw), self.ids(self.CHAT, False, **kw))
+            self.assertEqual(self.ids(self.CHAT, True, **kw),
+                             self.tok.encode(self.svc.template.render(self.CHAT, **kw), parse_special=True))
+        for kw in ({"reasoning_effort": "low"}, {"reasoning_effort": "medium"}, {"enable_thinking": False}):
+            self.assertEqual(self.ids(self.CHAT, False, **kw),        # off: every effort renders as before
+                             self.tok.encode(self.svc.template.render(self.CHAT, **kw), parse_special=True))
+
+    def test_the_trailing_turn(self):
+        text = self.tok.decode(self.ids(self.CHAT, True, reasoning_effort="low"))
+        self.assertTrue(text.endswith("<|im_end|>\n<|im_start|>system\nReasoning effort is set to low. Keep your "
+                                      "thinking brief and focused, moving directly to the conclusion without "
+                                      "unnecessary elaboration.<|im_end|>\n<|im_start|>assistant\n<think>\n"), text[-300:])
+        self.assertIn("Reasoning effort is set to xhigh", text)          # the top stays the default's
+        text = self.tok.decode(self.ids(self.CHAT, True, enable_thinking=False))
+        self.assertTrue(text.endswith("<|im_start|>assistant\n<think>\n\n</think>\n\n"))
+        self.assertNotIn("<|im_start|>system\nReasoning effort", text[-200:])
+        default = self.ids(self.CHAT, True)
+        for kw in ({"reasoning_effort": "low"}, {"reasoning_effort": "medium"}, {"enable_thinking": False}):
+            ids = self.ids(self.CHAT, True, **kw)
+            head = len(self.checkpoint(default, False))                       # all before the answer's turn
+            self.assertEqual(ids[:head], default[:head], kw)                 # the same prompt up to the answer
+
+    def test_changing_the_effort_keeps_the_conversation(self):
+        efforts = [{}, {"reasoning_effort": "low"}, {"enable_thinking": False}, {"reasoning_effort": "medium"}, {}]
+        history = len(self.checkpoint(self.ids(self.CHAT, False), False))
+        # at the top (the default): another effort differs a few tokens in, and the whole prompt is read again
+        self.assertEqual(self.session([(self.CHAT, kw) for kw in efforts], False, False)[:2], [0, 0])
+        # at the end, with the engine's rule: every request reuses the whole conversation
+        self.assertEqual(self.session([(self.CHAT, kw) for kw in efforts], True, True), [history] * 4)
+
+    def test_the_next_turn_reuses_the_checkpoint(self):
+        turn1, turn2 = self.CHAT, self.CHAT + [self.REPLY, self.NEXT]
+        low = {"reasoning_effort": "low"}
+        first = len(self.checkpoint(self.ids(turn1, True, **low), True))
+        # the engine's rule: the next turn (the same effort) reuses the first turn's whole conversation
+        self.assertEqual(self.session([(turn1, low), (turn2, low)], True, True), [first])
+        # without it the checkpoint held the effort turn and the next turn reused nothing (what #458 measured)
+        self.assertEqual(self.session([(turn1, low), (turn2, low)], True, False), [0])
+
+    def test_the_config(self):
+        from serve.server import effort_end_args
+
+        class Tok:
+            def encode(self, text, parse_special=False):
+                return [8678] if text == "system" else [1, 2]
+
+        with tempfile.TemporaryDirectory() as d:
+            new, old = Path(d) / "new.exe", Path(d) / "old.exe"
+            new.write_bytes(b"...  --tail-role-token ID --serve: ...")
+            old.write_bytes(b"... --turn-token ID ...")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertIsNone(effort_end_args({}, str(new), Tok()))
+                self.assertIsNone(effort_end_args({"effort_position": "start"}, str(new), Tok()))
+                self.assertEqual(effort_end_args({"effort_position": "end"}, str(new), Tok()),
+                                 ["--tail-role-token", "8678"])
+                self.assertIsNone(effort_end_args({"effort_position": "end"}, str(old), Tok()))
+                self.assertIsNone(effort_end_args({"effort_position": "end"}, str(new), ByteTokenizer()))
+            self.assertIn("needs engine 0.1.39 or newer", out.getvalue())
+            with self.assertRaises(ValueError):
+                effort_end_args({"effort_position": "middle"}, str(new), Tok())
 
 
 class StatusNeedsTheKey(unittest.TestCase):
@@ -474,6 +673,48 @@ class ClientShapes(unittest.TestCase):
                                                        "messages": [{"role": "user", "content": "hi"}]})
         self.assertEqual(status, 200, b)                            # the server goes on
 
+    def test_messages_as_a_json_string_over_http(self):
+        # #460: a double-encoded "messages" is answered; one that is not a list of objects is a 400, not a 500
+        encoded = json.dumps([{"role": "user", "content": "1+1?"}])
+        for path in ("/v1/chat/completions", "/v1/messages"):
+            with self.subTest(path=path):
+                status, b = self.post(path, {"model": "x", "max_tokens": 20, "messages": encoded})
+                self.assertEqual(status, 200, b)
+                self.assertIn("1+1?", self.prompt_text())
+                status, b = self.post(path, {"model": "x", "max_tokens": 20, "messages": ["hi"]})
+                self.assertEqual(status, 400, b)
+                self.assertIn("messages must be a list of objects", b["error"]["message"])
+
+    def test_malformed_tools_are_a_400(self):
+        # #592: a "tools" value that is not a list of named tool objects is a 400 naming the field, on both APIs,
+        # not a dropped connection (an AttributeError/TypeError in the request thread)
+        msgs = [{"role": "user", "content": "hi"}]
+        bad = ("auto", ["get_weather"], [{"description": "no name"}], {"name": "x"},
+               [{"type": "function", "function": "get_weather"}], [{"type": "function", "function": {"name": ""}}])
+        for path in ("/v1/chat/completions", "/v1/messages"):
+            for tools in bad:
+                with self.subTest(path=path, tools=tools):
+                    status, b = self.post(path, {"model": "x", "max_tokens": 8, "messages": msgs, "tools": tools})
+                    self.assertEqual(status, 400, b)
+                    self.assertIn("tools", b["error"]["message"])
+        status, b = self.post("/v1/chat/completions", {"model": "x", "max_tokens": 8, "messages": msgs})
+        self.assertEqual(status, 200, b)                            # the server goes on
+
+    def test_well_formed_tools_still_work(self):
+        msgs = [{"role": "user", "content": "hi"}]
+        fn = {"name": "get_weather", "description": "the weather", "parameters": {"type": "object", "properties": {}}}
+        for path, tools in (("/v1/chat/completions", [{"type": "function", "function": fn}]),
+                            ("/v1/chat/completions", [fn]),                 # the bare shape some clients send
+                            ("/v1/chat/completions", json.dumps([{"type": "function", "function": fn}])),
+                            ("/v1/chat/completions", []), ("/v1/chat/completions", None),
+                            ("/v1/messages", [{"name": "get_weather", "input_schema": {"type": "object"}}]),
+                            ("/v1/messages", [])):
+            with self.subTest(path=path, tools=tools):
+                status, b = self.post(path, {"model": "x", "max_tokens": 8, "messages": msgs, "tools": tools})
+                self.assertEqual(status, 200, b)
+                if tools:
+                    self.assertIn("get_weather", self.prompt_text())
+
     def test_vision_temp_image_removed_when_the_pipe_fails(self):
         # #352: the temporary image goes even when the encoder's pipe raises
         from serve.server import Vision
@@ -498,6 +739,32 @@ class ClientShapes(unittest.TestCase):
         self.assertEqual([m["role"] for m in msgs], ["system", "user"])
         msgs, _, _ = anthropic_to_messages({"system": "S", "messages": [{"role": "user", "content": "u"}]})
         self.assertEqual([m["role"] for m in msgs], ["system", "user"])
+
+    def test_messages_sent_as_a_json_string(self):
+        # #460: a client that double-encodes "messages" (and "tool_calls") as a JSON string gets them decoded; what is
+        # still not a list of objects is a ValueError (the server's 400), not an AttributeError on m.get
+        from serve.frontend import anthropic_to_messages, openai_to_messages
+        call = [{"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{\"x\": 1}"}}]
+        listed = [{"role": "user", "content": "u"}, {"role": "assistant", "content": "", "tool_calls": call}]
+        encoded = [listed[0], dict(listed[1], tool_calls=json.dumps(call))]
+        want = openai_to_messages({"messages": listed})[0]
+        self.assertEqual(want[1]["tool_calls"], [{"function": {"name": "f", "arguments": {"x": 1}}}])
+        self.assertEqual(openai_to_messages({"messages": json.dumps(listed)})[0], want)
+        self.assertEqual(openai_to_messages({"messages": json.dumps(encoded)})[0], want)
+        anth = [{"role": "user", "content": "u"}]
+        self.assertEqual(anthropic_to_messages({"messages": json.dumps(anth)})[0],
+                         anthropic_to_messages({"messages": anth})[0])
+        self.assertEqual(openai_to_messages({})[0], [])                     # no field: nothing, as before
+        self.assertEqual(openai_to_messages({"messages": None})[0], [])
+        for bad in ("not json", "\"a string\"", json.dumps({"role": "user"}), ["hi"], [{"role": "user"}, 3], 5,
+                    {"role": "user", "content": "u"}):
+            for fn in (openai_to_messages, anthropic_to_messages):
+                with self.subTest(bad=bad, fn=fn.__name__):
+                    with self.assertRaisesRegex(ValueError, "messages must be a list of objects"):
+                        fn({"messages": bad})
+        for calls in (["f"], "[1]", [{"function": "f"}], "{"):
+            with self.subTest(calls=calls), self.assertRaisesRegex(ValueError, "tool_calls must be a list of objects"):
+                openai_to_messages({"messages": [{"role": "assistant", "content": "", "tool_calls": calls}]})
 
 
 class SamplingKeys(unittest.TestCase):
@@ -629,7 +896,7 @@ class ClientHangUp(unittest.TestCase):
         body = json.dumps({"model": "x", "max_tokens": 20, "stream": stream,
                            "messages": [{"role": "user", "content": "a long prompt"}]}).encode()
         c = so.create_connection(("127.0.0.1", self.port))
-        c.sendall(b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+        c.sendall(b"POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
                   b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
         time.sleep(1.0)
         c.close()
@@ -707,6 +974,365 @@ class EngineDeath(unittest.TestCase):
         finally:
             httpd.shutdown()
             httpd.server_close()
+
+
+class DoneLineEngine(MockEngine):
+    """The mock engine whose `last` comes from a DONE line, parsed as StrataEngine parses it."""
+
+    def __init__(self, *a, done_lines=(), **kw):
+        super().__init__(*a, **kw)
+        self.done_lines = list(done_lines)
+
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+        try:
+            yield from super().generate(ids, max_new, sampling, cancel, embeddings)
+        finally:
+            StrataEngine._parse_done(self, self.done_lines.pop(0))
+
+
+class DraftCounts(unittest.TestCase):
+    """#457: GET /metrics gives each request's speculative draft counts (offered / accepted, from the engine's DONE
+    line; None when the line has no such fields) and their running sums in the totals."""
+
+    def test_drafts_in_history_and_totals(self):
+        tok = ByteTokenizer()
+        engine = DoneLineEngine(tok, "</think>\n\nok", max_context=CTX, done_lines=[
+            "DONE 4 20 40.0 30.0 stop 7 12 0",                  # 7 of 12 drafts accepted
+            "DONE 4 20 40.0 30.0 stop",                          # an engine that reports no drafts
+            "DONE 4 20 40.0 30.0 stop 3 5 0 9 10"])
+        svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        self.assertEqual((svc.totals["drafts_offered"], svc.totals["drafts_accepted"]), (0, 0))
+        httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        try:
+            for _ in range(3):
+                body = json.dumps({"model": "m", "max_tokens": 10, "messages": [{"role": "user", "content": "hi"}]})
+                with urllib.request.urlopen(urllib.request.Request(base + "/v1/chat/completions", data=body.encode(),
+                                                                   headers={"Content-Type": "application/json"}),
+                                            timeout=30) as r:
+                    self.assertEqual(r.status, 200)
+            with urllib.request.urlopen(base + "/metrics", timeout=10) as r:
+                m = json.loads(r.read())
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+        rows = m["requests"]                                      # newest first
+        self.assertEqual([(r["drafts_offered"], r["drafts_accepted"]) for r in rows], [(5, 3), (None, None), (12, 7)])
+        self.assertEqual((m["totals"]["drafts_offered"], m["totals"]["drafts_accepted"]), (17, 10))
+
+
+class PcieShare(unittest.TestCase):
+    """#588: the hit rate stays the VRAM share of the lookups; the routed experts the GPU read over PCIe (the DONE
+    line's 16th field, engine 0.1.39+) are given as their own share of all routed experts."""
+
+    def test_history(self):
+        tok = ByteTokenizer()
+        engine = DoneLineEngine(tok, "</think>\n\nok", max_context=CTX, done_lines=[
+            "DONE 4 20 40.0 30.0 stop 3 5 0 60 100 0 0 0.0 20 25",     # 25 more over PCIe: 20% of 125 routed
+            "DONE 4 20 40.0 30.0 stop 3 5 0 60 100 0 0 0.0 20 0",
+            "DONE 4 20 40.0 30.0 stop 3 5 0 60 100 0 0 0.0 20"])       # an older engine
+        svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            for _ in range(3):
+                list(svc.run(tok.encode("hi"), False, None, 10, {}, threading.Event()))
+        rows = list(svc.history)
+        self.assertEqual([r["hit_rate"] for r in rows], [0.6, 0.6, 0.6])
+        self.assertEqual([r["pcie_share"] for r in rows], [0.2, 0.0, None])
+        self.assertIn("expert cache 60.0% hit (+20.0% of the routed experts over PCIe)", out.getvalue())
+
+
+class LearnedProfile(unittest.TestCase):
+    """#477: "expert_profile_save" in the config: the engine saves its learned profile there, and the next start
+    begins from it when it is a profile of the same model; without the key the arguments are unchanged."""
+
+    def write(self, path, nl=48, ne=512, n=4):
+        sys.path.insert(0, str(ROOT / "tools"))
+        import make_profile
+        old = make_profile.N_LAYER
+        make_profile.N_LAYER = nl
+        try:
+            make_profile.write_profile(path, [(i % nl, i // nl) for i in range(n)], n_expert=ne)
+        finally:
+            make_profile.N_LAYER = old
+
+    def test_without_the_key_nothing_changes(self):
+        args = ["--native", "x", "--expert-profile", "data/expert-profile.bin", "--adapt-every", "4"]
+        self.assertEqual(engine_args({"args": list(args)}), args)
+        self.assertEqual(engine_args({"args": list(args), "expert_profile_save": ""}), args)
+
+    def test_save_and_start_from_it(self):
+        d = Path(tempfile.mkdtemp())
+        self.write(d / "base.bin")
+        cfg = {"args": ["--expert-profile", "base.bin"], "cwd": str(d), "expert_profile_save": "learned.bin",
+               "expert_profile_save_every": 5}
+        # nothing saved yet: the config's profile, and the engine is told where to save
+        self.assertEqual(engine_args(cfg), ["--expert-profile", "base.bin", "--expert-profile-save", "learned.bin",
+                                            "--expert-profile-save-every", "5"])
+        self.write(d / "learned.bin")
+        self.assertEqual(engine_args(cfg)[:2], ["--expert-profile", "learned.bin"])
+        self.write(d / "learned.bin", ne=256)                    # another model's: not used
+        self.assertEqual(engine_args(cfg)[:2], ["--expert-profile", "base.bin"])
+        (d / "learned.bin").write_bytes(b"STRP" + bytes(20))     # not a whole profile
+        self.assertEqual(engine_args(cfg)[:2], ["--expert-profile", "base.bin"])
+        self.write(d / "learned.bin")
+        (d / "learned.bin").write_bytes((d / "learned.bin").read_bytes()[:30])   # truncated
+        self.assertEqual(engine_args(cfg)[:2], ["--expert-profile", "base.bin"])
+
+    def test_no_profile_in_the_args(self):
+        cfg = {"args": ["--native", "x"], "expert_profile_save": "learned.bin"}
+        self.assertEqual(engine_args(cfg), ["--native", "x", "--expert-profile-save", "learned.bin"])
+
+
+class RepeatStop(unittest.TestCase):
+    """#606: one token repeated repeat_stop_tokens times in a row ends the reply as "length"; 0 turns it off."""
+
+    def run_reply(self, script, limit=None):
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, script, max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        if limit is not None:
+            svc.repeat_stop_tokens = limit
+        ids = tok.encode("hi")
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            done = [x for kind, x in svc.run(ids, False, None, 3000, {}, threading.Event()) if kind == "done"][0]
+        return done, out.getvalue()
+
+    def test_a_long_run_is_ended(self):
+        done, log = self.run_reply("ok " + "!" * 1000 + " never")
+        self.assertEqual(done["finish"], "length")
+        self.assertEqual(done["completion_tokens"], 3 + 256)
+        self.assertIn("repeated one token ('!') 256 times", log)
+
+    def test_short_runs_and_off(self):
+        done, _ = self.run_reply("=" * 255 + " fine")
+        self.assertEqual(done["finish"], "stop")
+        done, log = self.run_reply("!" * 1000, limit=0)
+        self.assertEqual((done["finish"], done["completion_tokens"]), ("stop", 1001))
+        self.assertNotIn("repeated one token", log)
+        done, _ = self.run_reply("ab" * 400, limit=8)       # alternating tokens are not one run
+        self.assertEqual(done["finish"], "stop")
+
+
+class LayerSplit(unittest.TestCase):
+    """#644: "layer_split" is the first layer of each later GPU; a list is accepted, counts per card are not."""
+
+    def cfg(self, split, gpus=(2, 0, 1, 3)):
+        c = {"args": ["--native", "x"], "gpu": list(gpus)}
+        if split is not ...:
+            c["layer_split"] = split
+        return c
+
+    def test_auto_and_absent(self):
+        for v in (..., None, "", "auto", "AUTO"):
+            self.assertEqual(engine_args(self.cfg(v))[-2:], ["--layer-split", "auto"])
+
+    def test_string_and_list(self):
+        self.assertEqual(engine_args(self.cfg("24,36,42"))[-2:], ["--layer-split", "24,36,42"])
+        self.assertEqual(engine_args(self.cfg(" 24, 36 ,42 "))[-2:], ["--layer-split", "24,36,42"])
+        self.assertEqual(engine_args(self.cfg([24, 36, 42]))[-2:], ["--layer-split", "24,36,42"])
+        self.assertEqual(engine_args(self.cfg(18, gpus=(0, 1)))[-2:], ["--layer-split", "18"])
+        self.assertEqual(engine_args(self.cfg([18], gpus=(0, 1)))[-2:], ["--layer-split", "18"])
+
+    def test_counts_per_card_are_refused_with_the_format(self):
+        for bad in ("24,16,12,12", [24, 16, 12, 12], "24,16,12", "24,36", "x", [24.5, 30, 40], "1,20,30", [True]):
+            with self.assertRaises(ValueError) as e:
+                layer_split_value(self.cfg(bad))
+            self.assertIn("first layer of each later GPU", str(e.exception))
+            self.assertIn('"12,24,36"', str(e.exception))   # the example for 4 GPUs
+
+    def test_one_gpu_ignores_it(self):
+        self.assertEqual(engine_args({"args": ["--native", "x"], "gpu": [0], "layer_split": "24,16"}),
+                         ["--native", "x"])
+
+
+class DraftHeadHint(unittest.TestCase):
+    """#474: a start that stopped at "the draft head does not fit" says what to change, from this start's log lines."""
+
+    def log(self, text, before=""):
+        d = tempfile.mkdtemp()
+        p = Path(d) / "engine.log"
+        p.write_text(before + text, encoding="utf-8")
+        return str(p), len(before.encode())
+
+    def test_the_engines_hint_is_relayed(self):
+        p, off = self.log("strata mtp: the draft head over 106299 tokens needs 348 MiB of VRAM and 120 MiB is free.\n"
+                          "strata mtp: hint: a smaller draft vocabulary needs less VRAM: --draft-vocab en (...)\n"
+                          "strata serve: mtp: the draft head does not fit\n")
+        h = start_failure_hint(p, off)
+        self.assertIn("the draft head does not fit", h)
+        self.assertIn("348 MiB", h)
+        self.assertIn("--draft-vocab en", h)
+
+    def test_an_older_engine_gets_the_advice_in_words(self):
+        p, off = self.log("strata serve: mtp: the draft head does not fit\n")
+        self.assertIn("--draft-vocab en", start_failure_hint(p, off))
+
+    def test_other_failures_and_earlier_starts_add_nothing(self):
+        p, off = self.log("strata serve: cannot open the pack\n")
+        self.assertEqual(start_failure_hint(p, off), "")
+        # an earlier start's failure (before this start's offset) is not this one's
+        p, off = self.log("strata serve: cannot open the pack\n",
+                          before="strata serve: mtp: the draft head does not fit\n")
+        self.assertEqual(start_failure_hint(p, off), "")
+        self.assertEqual(start_failure_hint(None, 0), "")
+        self.assertEqual(start_failure_hint(str(Path(tempfile.mkdtemp()) / "missing.log"), 0), "")
+
+
+class DesktopVramNote(unittest.TestCase):
+    """#560 #516: an AMD card on a Linux desktop with little VRAM left after the start gets a recommended reserve."""
+
+    def test_when_it_applies(self):
+        from serve.server import desktop_vram_note
+        note = desktop_vram_note("hip", 624, ["--kv", "int8"], True)
+        self.assertIn("624 MiB of VRAM free", note)
+        self.assertIn("--vram-reserve-mib 3072", note)
+        self.assertIn("2.3 GB less", note)
+
+    def test_when_it_does_not(self):
+        from serve.server import desktop_vram_note
+        self.assertEqual(desktop_vram_note(None, 624, [], True), "")               # NVIDIA
+        self.assertEqual(desktop_vram_note("hip", 624, [], False), "")             # no desktop session
+        self.assertEqual(desktop_vram_note("hip", 2994, [], True), "")             # room left
+        self.assertEqual(desktop_vram_note("hip", None, [], True), "")             # lazy start: no INFO yet
+        self.assertEqual(desktop_vram_note("hip", 900, ["--vram-reserve-mib", "4000"], True), "")   # already raised
+
+    def test_desktop_detection(self):
+        from serve import server
+        with mock.patch.object(server.os, "name", "posix"), mock.patch.object(server.sys, "platform", "linux"):
+            self.assertTrue(server.linux_desktop({"WAYLAND_DISPLAY": "wayland-0"}))
+            self.assertFalse(server.linux_desktop({}))
+
+
+class StartFailureLog(unittest.TestCase):
+    """#496: whatever stopped the engine before READY, the error carries this start's last log lines."""
+
+    def test_the_last_lines_of_this_start(self):
+        from serve.server import start_log_tail
+        d = tempfile.mkdtemp()
+        p = Path(d) / "engine.log"
+        before = "strata serve: an earlier start's line\n"
+        p.write_text(before + "".join(f"strata serve: line {i}\n" for i in range(30)) + "\n"
+                     "strata serve: cannot open the pack\n", encoding="utf-8")
+        tail = start_log_tail(str(p), len(before.encode()))
+        self.assertIn("the engine log's last lines:", tail)
+        self.assertIn("cannot open the pack", tail)
+        self.assertIn("line 29", tail)
+        self.assertNotIn("line 10\n", tail + "\n")                 # 20 lines: 11..29 and the last one
+        self.assertIn("line 11", tail)
+        self.assertNotIn("earlier start", tail)
+        short = start_log_tail(str(p), len(before.encode()), n=3)
+        self.assertEqual(short.count("\n  "), 3)
+        self.assertEqual(start_log_tail(str(p), p.stat().st_size), "")   # nothing from this start
+        self.assertEqual(start_log_tail(None, 0), "")
+        self.assertEqual(start_log_tail(str(Path(d) / "missing.log"), 0), "")
+
+    def test_the_start_error_has_them(self):
+        import serve.server as server
+        fake = "import sys\nsys.stderr.write('strata serve: cannot open the pack packs/x\\n')\nsys.exit(2)\n"
+        with tempfile.TemporaryDirectory() as d:
+            script, log = Path(d) / "fake_strata.py", Path(d) / "strata.log"
+            script.write_text(fake, encoding="utf-8")
+            log.write_text("an earlier start\n", encoding="utf-8")
+            real = server.subprocess.Popen
+            with mock.patch.object(server.subprocess, "Popen",
+                                   lambda cmd, **kw: real([sys.executable, str(script), *cmd[1:]], **kw)), \
+                    mock.patch.object(server, "narrate_start", lambda *a, **k: None):
+                with self.assertRaises(RuntimeError) as cm:
+                    StrataEngine("strata", [], log=str(log))
+            text = str(cm.exception)
+            self.assertIn("exited before it was ready", text)
+            self.assertIn("cannot open the pack packs/x", text)
+            self.assertNotIn("an earlier start", text)
+
+
+class StartNarrator(unittest.TestCase):
+    """#505: the start's words say what happens to the experts - --mmap-experts loads nothing into RAM up front."""
+
+    def test_the_words_follow_the_flags(self):
+        from serve.server import experts_loading_words
+        self.assertIn("loading the experts into RAM (about 38 GB)", experts_loading_words([], "about 38 GB"))
+        mapped = experts_loading_words(["--mmap-experts"], "about 47 GB")
+        self.assertIn("mapping the experts from the model files (about 47 GB", mapped)
+        self.assertIn("not loaded into RAM", mapped)
+        self.assertIn("the GPU does not hold", experts_loading_words(["--resident-experts"], "about 47 GB"))
+        budget = experts_loading_words(["--mmap-experts", "--resident-budget-gib", "71"], "about 50 GB")
+        self.assertIn("up to 71 GiB", budget)
+        self.assertNotIn("about 50 GB", budget)
+
+    def narrate(self, args, lines):
+        import contextlib
+        import io
+        from serve.server import narrate_start
+        d = tempfile.mkdtemp()
+        log = Path(d) / "engine.log"
+        log.write_text("".join(x + "\n" for x in lines), encoding="utf-8")
+        done, out = threading.Event(), io.StringIO()
+        with contextlib.redirect_stdout(out):
+            t = threading.Thread(target=narrate_start, args=(str(log), 0, args, done))
+            t.start()
+            time.sleep(0.8)
+            done.set()
+            t.join(5)
+        return out.getvalue()
+
+    def test_a_mapped_start(self):
+        said = self.narrate(["--mmap-experts"], ["strata generate: experts via mmap (--mmap-experts; the GGUF shards "
+                                                 "in place, no experts.bin)"])
+        self.assertIn("mapping the experts from the model files", said)
+        self.assertNotIn("loading the experts into RAM", said)
+
+    def test_an_arena_start(self):
+        said = self.narrate([], ["strata generate: expert arena: resident, 31.64 GiB",
+                                 "strata generate: loaded 31.64 GiB at 3.17 GiB/s"])
+        self.assertIn("loading the experts into RAM (tens of GB)", said)
+        self.assertIn("experts loaded: 31.64 GiB at 3.17 GiB/s", said)
+
+
+class CancelledRead(unittest.TestCase):
+    """#471: a request cancelled while its prompt was read is recorded with the tokens the engine read (the DONE
+    line's 15th field), not the whole prompt; an older engine's line (no such field) keeps the whole prompt."""
+
+    def test_parse_done_read_field(self):
+        e = SimpleNamespace()
+        StrataEngine._parse_done(e, "DONE 0 98179 17565.0 0.0 cancel 0 0 0 0 0 0 0 0.0 12288")
+        self.assertEqual((e.last["prompt_tokens"], e.last["prompt_read"], e.last["finish"]), (98179, 12288, "cancel"))
+        StrataEngine._parse_done(e, "DONE 0 98179 17565.0 0.0 cancel 0 0 0 0 0 0 0 0.0")
+        self.assertNotIn("prompt_read", e.last)
+
+    def test_prompt_tokens_seen(self):
+        last = {"finish": "cancel", "reused": 1000, "prompt_read": 2000}
+        self.assertEqual(prompt_tokens_seen(98179, last), 3000)
+        self.assertEqual(prompt_tokens_seen(98179, {**last, "finish": "stop"}), 98179)   # read in full: all of it
+        self.assertEqual(prompt_tokens_seen(98179, {"finish": "cancel", "reused": 0}), 98179)   # an older engine
+        self.assertEqual(prompt_tokens_seen(98179, {}), 98179)                          # no DONE at all
+        self.assertEqual(prompt_tokens_seen(10, {**last, "prompt_read": 50}), 10)       # never past the prompt
+
+    def test_history_and_totals(self):
+        tok = ByteTokenizer()
+        engine = DoneLineEngine(tok, "</think>\n\nok", max_context=CTX, done_lines=[
+            "DONE 0 20 400.0 0.0 cancel 0 0 0 0 0 0 0 0.0 8",      # stopped after 8 prompt tokens
+            "DONE 4 20 40.0 30.0 stop 0 0 0 0 0 0 0 0.0 20",
+            "DONE 0 20 400.0 0.0 cancel 0 0 0"])                   # an older engine: no read count
+        svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        try:
+            for _ in range(3):
+                body = json.dumps({"model": "m", "max_tokens": 10, "messages": [{"role": "user", "content": "hi"}]})
+                with urllib.request.urlopen(urllib.request.Request(base + "/v1/chat/completions", data=body.encode(),
+                                                                   headers={"Content-Type": "application/json"}),
+                                            timeout=30) as r:
+                    self.assertEqual(r.status, 200)
+            with urllib.request.urlopen(base + "/metrics", timeout=10) as r:
+                m = json.loads(r.read())
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+        rows = m["requests"][::-1]                                # oldest first
+        total = rows[0]["prompt_total"]
+        self.assertGreater(total, 8)
+        self.assertEqual([r["prompt_total"] for r in rows], [total] * 3)
+        self.assertEqual([(r["prompt_tokens"], r["prompt_read"]) for r in rows], [(8, 8), (total, 20), (total, None)])
+        self.assertEqual(m["totals"]["prompt_tokens"], 8 + 2 * total)
 
 
 class LiveRate(unittest.TestCase):
@@ -1511,6 +2137,20 @@ class ThinkingBudget(unittest.TestCase):
         self.assertEqual(len(self.engine.prompts), 1)
         self.assertEqual(b["choices"][0]["message"]["reasoning_content"], ThinkingEngine.THOUGHT[:20])
 
+    def test_a_reply_cut_while_thinking_is_named_in_the_log(self):
+        """#530: max tokens reached inside the thinking gives an empty answer; the server log says what helps."""
+        hint = "reached max tokens while still thinking"
+        for extra, said in (({"max_tokens": 10}, True), ({}, False)):
+            with self.subTest(extra=extra):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    code, b = self.openai(**extra)
+                self.assertEqual(code, 200, b)
+                self.assertEqual(b["choices"][0]["finish_reason"], "length" if said else "stop")
+                self.assertEqual(hint in out.getvalue(), said, out.getvalue())
+                if said:
+                    self.assertIn("reasoning_budget_tokens", out.getvalue())
+
     def test_a_bad_value_is_a_400(self):
         for bad in ("lots", 2.5, True, [1]):
             with self.subTest(value=bad):
@@ -1612,6 +2252,13 @@ for line in sys.stdin:
         break
 '''
 
+FAKE_STRATA_FAIL_ONCE = '''import pathlib, sys, time
+fail = pathlib.Path(sys.argv[sys.argv.index("--fail") + 1])
+if fail.exists():                            # this start fails before READY (as one next to a dying engine did)
+    fail.unlink()
+    sys.exit(1)
+''' + FAKE_STRATA.split("\n", 1)[1]
+
 
 class RestartWindow(unittest.TestCase):
     """#344: while the engine restarts it is not alive (a request waits for the restart instead of reading
@@ -1662,6 +2309,54 @@ class RestartWindow(unittest.TestCase):
                 finally:
                     gate.touch()
                     eng.unload()
+
+    def test_restart_retries_a_start_that_fails(self):
+        """A dead engine's VRAM is freed only when its process is gone, so a new engine started at once can exit
+        before READY; restart() tries again (3 times) instead of leaving the server with max_context 0."""
+        from unittest import mock
+        import serve.server as server
+        with tempfile.TemporaryDirectory() as d:
+            script, gate, fail = Path(d) / "fake_strata.py", Path(d) / "ready", Path(d) / "fail_once"
+            script.write_text(FAKE_STRATA_FAIL_ONCE, encoding="utf-8")
+            real = server.subprocess.Popen
+            with mock.patch.object(server.subprocess, "Popen",
+                                   lambda cmd, **kw: real([sys.executable, str(script), *cmd[1:]], **kw)), \
+                 mock.patch.object(StrataEngine, "RESTART_RETRY_S", 0.0):
+                gate.touch()
+                eng = StrataEngine("strata", ["--gate", str(gate), "--fail", str(fail)])
+                try:
+                    self.assertEqual(eng.max_context, 4096)
+                    self.assertEqual(eng.known_ctx, 4096)
+                    fail.touch()                          # the next start exits before READY, the one after works
+                    eng.proc.kill()
+                    eng.proc.wait(10)
+                    eng.restart()
+                    self.assertFalse(fail.exists(), "the failing start never ran")
+                    self.assertTrue(eng.alive())
+                    self.assertEqual(eng.max_context, 4096)
+                    self.assertFalse(eng.starting)
+                finally:
+                    gate.touch()
+                    eng.unload()
+
+    def test_failed_restart_keeps_the_known_context(self):
+        """After a restart that failed, max_context is 0 but the engine is not starting: a request is checked against
+        the last known context and reaches run() (which starts the engine again), not a 400 about context 0."""
+        tok = ByteTokenizer()
+        eng = MockEngine(tok, "</think>\n\nok", max_context=0)
+        eng.known_ctx, eng.starting = 4096, False
+        svc = Service(eng, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        try:
+            req = urllib.request.Request(base + "/v1/chat/completions",
+                                         data=json.dumps({"model": "m", "max_tokens": 16,
+                                                          "messages": [{"role": "user", "content": "hi"}]}).encode(),
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                self.assertEqual(r.status, 200)
+        finally:
+            httpd.shutdown()
 
     def test_context_zero_is_503(self):
         tok = ByteTokenizer()
@@ -1826,6 +2521,164 @@ class AmdTelemetry(unittest.TestCase):
             self.tree(d)
             with mock.patch.object(telemetry, "SYSFS", d):
                 self.assertEqual(svc.free_vram_mib(), 26 << 10)
+
+
+class SilentEngine(unittest.TestCase):
+    """#481: an engine that prints nothing for engine_silence_s during a request (or never acknowledges a STOP) has
+    lost step with the server: it is ended and the request fails with EngineDied, instead of waiting forever."""
+
+    def bare(self, silence, can_stop=False):
+        import io
+        import queue
+        engine = StrataEngine.__new__(StrataEngine)
+        engine.proc = mock.Mock()
+        engine.proc.stdin = io.StringIO()
+        engine.proc.poll.return_value = None
+        engine.lines, engine.can_stop, engine.max_context = queue.Queue(), can_stop, 4096
+        engine.silence_s, engine.log_path = silence, None
+        return engine
+
+    def later(self, engine, delay, *lines):
+        def put():
+            time.sleep(delay)
+            for x in lines:
+                engine.lines.put(x)
+        threading.Thread(target=put, daemon=True).start()
+
+    def test_silence_mid_answer_ends_the_engine(self):
+        from serve.server import EngineSilent
+        engine = self.bare(0.3)
+        engine.lines.put("T 5")
+        gen = engine.generate([1], 10, {}, threading.Event())
+        self.assertEqual(next(gen), 5)
+        t0 = time.monotonic()
+        with self.assertRaises(EngineSilent) as cm:
+            next(gen)
+        self.assertIsInstance(cm.exception, EngineDied)          # every EngineDied path handles it
+        self.assertLess(time.monotonic() - t0, 5)
+        engine.proc.kill.assert_called_once()
+        self.assertFalse(engine.alive())                          # the next request restarts it
+        self.assertIn("#481", engine.death_note())
+        self.assertNotIn("STOP", engine.proc.stdin.getvalue())    # nothing is listening: no STOP, no drain
+
+    def test_prompt_chunks_set_the_wait(self):
+        # a PP line every second, at 100 tok/s: far over a 0.3 s silence, but each chunk is on time for its size
+        engine = self.bare(0.3)
+        engine.lines.put("RESUME 0")
+        engine.lines.put("PP 100 300 1000 100.0")
+        self.later(engine, 1.0, "PP 200 300 2000 100.0", "T 7", "DONE 1 300 2000 1 length")
+        self.assertEqual(list(engine.generate([1], 10, {}, threading.Event())), [None, None, 7])
+        engine.proc.kill.assert_not_called()
+
+    def test_a_long_first_chunk_is_allowed(self):
+        # 100 prompt tokens at the slowest prompt reading (50 tok/s): 2 s on top of the silence before the first PP
+        engine = self.bare(0.3)
+        self.later(engine, 1.0, "PP 100 100 1000 100.0", "DONE 0 100 1000 0 length")
+        self.assertEqual(list(engine.generate([1] * 100, 10, {}, threading.Event())), [None])
+        engine.proc.kill.assert_not_called()
+
+    def test_a_stop_never_acknowledged(self):
+        from serve.server import EngineSilent
+        engine = self.bare(0.3, can_stop=True)
+        engine.lines.put("T 5")
+        gen = engine.generate([1], 10, {}, threading.Event())
+        self.assertEqual(next(gen), 5)
+        with self.assertRaises(EngineSilent):
+            gen.close()                                           # the consumer stopped: STOP, then the drain
+        self.assertIn("STOP", engine.proc.stdin.getvalue())
+        engine.proc.kill.assert_called_once()
+        self.assertFalse(engine.alive())
+
+    def test_zero_waits_as_before(self):
+        engine = self.bare(0)
+        self.later(engine, 0.5, "T 5", "DONE 1 1 1 1 length")
+        self.assertEqual(list(engine.generate([1], 10, {}, threading.Event())), [5])
+
+    def test_config(self):
+        from serve.server import ENGINE_SILENCE_S, engine_silence_s
+        self.assertEqual(engine_silence_s({}), ENGINE_SILENCE_S)
+        self.assertEqual(engine_silence_s({"engine_silence_s": 0}), 0.0)
+        self.assertEqual(engine_silence_s({"engine_silence_s": 900}), 900.0)
+        for bad in (-1, "300", True):
+            with self.assertRaises(ValueError):
+                engine_silence_s({"engine_silence_s": bad})
+
+
+FAKE_LOST_STEP = '''import pathlib, sys, time
+mark = pathlib.Path(sys.argv[sys.argv.index("--mark") + 1])
+mode = sys.argv[sys.argv.index("--mode") + 1]
+print("READY 4096 stop", flush=True)
+for line in sys.stdin:
+    if line.startswith("QUIT"):
+        break
+    if line.startswith("GEN"):
+        if not mark.exists():                    # the first engine loses step (#481): it never says DONE
+            mark.touch()
+            print("T 104", flush=True)
+            if mode == "stop":
+                print("T 257", flush=True)       # <|im_end|>: the server STOPs and drains, and the engine is silent
+            time.sleep(3600)
+        print("T 111", flush=True)
+        print("T 107", flush=True)
+        print("DONE 2 5 1.0 1.0 length", flush=True)
+'''
+
+
+class LostStep(unittest.TestCase):
+    """#481 over HTTP, with a real process: the request with the silent engine ends with an error, and the next one
+    starts the engine again and is answered (the server used to wait forever, holding the request FIFO)."""
+
+    def run_mode(self, mode, stream):
+        import serve.server as server
+        with tempfile.TemporaryDirectory() as d:
+            script, mark = Path(d) / "fake_strata.py", Path(d) / "lost"
+            script.write_text(FAKE_LOST_STEP, encoding="utf-8")
+            real = server.subprocess.Popen
+            with mock.patch.object(server.subprocess, "Popen",
+                                   lambda cmd, **kw: real([sys.executable, str(script), *cmd[1:]], **kw)):
+                eng = StrataEngine("strata", ["--mark", str(mark), "--mode", mode])
+                eng.silence_s = 0.5
+                tok = ByteTokenizer()
+                svc = Service(eng, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+                httpd = serve(svc, port=0)
+                base = f"http://127.0.0.1:{httpd.server_address[1]}"
+                body = {"model": "m", "max_tokens": 2, "reasoning_effort": "none", "stream": stream,
+                        "messages": [{"role": "user", "content": "hi"}]}
+                try:
+                    first = eng.proc
+                    req = urllib.request.Request(base + "/v1/chat/completions", data=json.dumps(body).encode(),
+                                                 headers={"Content-Type": "application/json"})
+                    try:
+                        with urllib.request.urlopen(req, timeout=60) as r:
+                            text = r.read().decode()
+                    except urllib.error.HTTPError as e:
+                        self.assertEqual(e.code, 503)
+                        text = e.read().decode()
+                    self.assertIn("the next request restarts it", text)
+                    self.assertIsNotNone(first.poll(), "the silent engine still runs")
+                    self.assertEqual(svc.history[-1]["finish"], "error")
+                    with urllib.request.urlopen(req, timeout=60) as r:
+                        text = r.read().decode()
+                    self.assertIsNot(eng.proc, first)
+                    if stream:
+                        answer = "".join(json.loads(x[6:])["choices"][0]["delta"].get("content") or ""
+                                         for x in text.splitlines() if x.startswith("data: {") and "choices" in x)
+                    else:
+                        answer = json.loads(text)["choices"][0]["message"]["content"]
+                    self.assertEqual(answer, "ok")
+                finally:
+                    httpd.shutdown()
+                    httpd.server_close()
+                    eng.unload()
+
+    def test_silent_mid_answer(self):
+        self.run_mode("silent", stream=False)
+
+    def test_silent_mid_stream(self):
+        self.run_mode("silent", stream=True)
+
+    def test_stop_never_acknowledged(self):
+        self.run_mode("stop", stream=False)
 
 
 if __name__ == "__main__":

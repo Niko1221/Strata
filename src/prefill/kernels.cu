@@ -5,6 +5,7 @@
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
+#include <algorithm>
 
 #include <cfloat>
 #include <cmath>
@@ -433,8 +434,172 @@ __global__ void __launch_bounds__(CB * RG) gdn_rec_cols_pipe_kernel(float* __res
 #pragma unroll
     for (int r = 0; r < RPG; ++r) base[r * rs] = s[r];
 }
+#if !defined(__HIPCC__)
+// The recurrence with one thread for the three value heads that share a key head (head % HK): column c of heads
+// qh, qh + 16 and qh + 32, row group rg.  gdn_rec_cols_pipe_kernel spends its time in shared memory, not in
+// arithmetic: every thread of a warp needs the same 32 q and k values per token (the k twice), and a warp receives one
+// such broadcast value per clock however wide the load.  Here every q/k value a thread loads feeds three heads, and a
+// token's k row goes into registers once for both of its uses.  The inputs come in blocks of GDN_TB tokens, copied to
+// shared memory by cp.async while the block before computes (one token ahead is shorter than a load from L2 takes),
+// and the two cross-row-group sums have their own arrays, so a token needs 2 __syncthreads instead of 5: the second
+// one of a token orders every read of rkv before the next token's writes, the next token's first one every read of ro
+// before the writes after it.  64 blocks instead of 192.  Per value head and column the same arithmetic in the same
+// order: the same bits (src/prefill/gdn_rec_parity.cu checks them and times the variants: 1.41x on a 4080 Super).
+// sm_80+ cards that hold its 64 blocks at once (gdn_keyhead_ok); STRATA_GDN_KEYHEAD=0: gdn_rec_cols_pipe_kernel.
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800
+#define STRATA_GDN_CP_ASYNC 0   // Turing builds: plain copies (never launched there, see gdn_keyhead_ok)
+#else
+#define STRATA_GDN_CP_ASYNC 1
+#endif
+__device__ __forceinline__ void gdn_cp4(float* smem, const float* gmem) {
+#if STRATA_GDN_CP_ASYNC
+    asm volatile("cp.async.ca.shared.global [%0], [%1], 4;\n" ::"r"((unsigned) __cvta_generic_to_shared(smem)), "l"(gmem));
+#else
+    *smem = *gmem;
+#endif
+}
+__device__ __forceinline__ void gdn_cp16(float* smem, const float* gmem) {
+#if STRATA_GDN_CP_ASYNC
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::"r"((unsigned) __cvta_generic_to_shared(smem)), "l"(gmem));
+#else
+    *reinterpret_cast<float4*>(smem) = *reinterpret_cast<const float4*>(gmem);
+#endif
+}
+__device__ __forceinline__ void gdn_cp_commit() {
+#if STRATA_GDN_CP_ASYNC
+    asm volatile("cp.async.commit_group;\n" ::);
+#endif
+}
+__device__ __forceinline__ void gdn_cp_wait_prev() {   // every group but the newest has landed
+#if STRATA_GDN_CP_ASYNC
+    asm volatile("cp.async.wait_group 1;\n" ::);
+#endif
+}
+constexpr int GDN_TB = 8, VPK = HV / HK;   // tokens per staged block, value heads per key head
+__global__ void __launch_bounds__(CB * RG) gdn_rec_kh_kernel(float* __restrict__ state, const float* __restrict__ h,
+                                                               const float* __restrict__ gate,
+                                                               const float* __restrict__ beta,
+                                                               float* __restrict__ oc_out, int64_t T) {
+    constexpr int TB = GDN_TB, NT = CB * RG, QKP = S / 4, VP = CB / 4;   // threads, 16-byte pieces of a q/k row, of v
+    __shared__ __align__(16) float sq[2][TB][S];
+    __shared__ __align__(16) float sk[2][TB][S];
+    __shared__ __align__(16) float sv[2][TB][VPK][CB];
+    __shared__ float sg[2][TB][VPK], sb[2][TB][VPK], rkv[VPK][RG][CB], ro[VPK][RG][CB];
+    const int qh = blockIdx.x / NCB, cb = blockIdx.x % NCB;
+    const int c = threadIdx.x, rg = threadIdx.y, tid = rg * CB + c, col = cb * CB + c;
+    float s[VPK][RPG];
+    const size_t rs = (size_t) HV * S;
+#pragma unroll
+    for (int j = 0; j < VPK; ++j) {
+        const float* base = state + ((size_t) (rg * RPG) * HV + qh + j * HK) * S + col;
+#pragma unroll
+        for (int r = 0; r < RPG; ++r) s[j][r] = base[r * rs];
+    }
+    const int64_t nblk = (T + TB - 1) / TB;
+    auto stage = [&](int64_t k) {   // tokens [k * TB, k * TB + TB) into buffer k & 1
+        const int bb = (int) (k & 1);
+        const int64_t t0 = k * TB;
+        for (int p = tid; p < TB * 2 * QKP; p += NT) {
+            const int i = p / (2 * QKP), w = p % (2 * QKP), isk = w / QKP, jj = (w % QKP) * 4;
+            if (t0 + i < T)
+                gdn_cp16(isk ? &sk[bb][i][jj] : &sq[bb][i][jj], h + (t0 + i) * C + (isk ? HK * S : 0) + qh * S + jj);
+        }
+        for (int p = tid; p < TB * VPK * VP; p += NT) {
+            const int i = p / (VPK * VP), w = p % (VPK * VP), j = w / VP, jj = (w % VP) * 4;
+            if (t0 + i < T)
+                gdn_cp16(&sv[bb][i][j][jj], h + (t0 + i) * C + 2 * HK * S + (qh + j * HK) * S + cb * CB + jj);
+        }
+        for (int p = tid; p < 2 * TB * VPK; p += NT) {
+            const int isb = p / (TB * VPK), w = p % (TB * VPK), i = w / VPK, j = w % VPK;
+            if (t0 + i < T)
+                gdn_cp4(isb ? &sb[bb][i][j] : &sg[bb][i][j], (isb ? beta : gate) + (t0 + i) * HV + qh + j * HK);
+        }
+    };
+    if (nblk > 0) stage(0);
+    gdn_cp_commit();
+    for (int64_t k = 0; k < nblk; ++k) {
+        // buffer (k + 1) & 1 was read by block k - 1, whose last token's second __syncthreads every thread has passed
+        if (k + 1 < nblk) stage(k + 1);
+        gdn_cp_commit();
+        gdn_cp_wait_prev();
+        __syncthreads();
+        const int bb = (int) (k & 1);
+        const int n = (int) ((T - k * TB) < TB ? (T - k * TB) : TB);
+        for (int i = 0; i < n; ++i) {
+            const int64_t t = k * TB + i;
+            float kc[RPG];
+#pragma unroll
+            for (int r = 0; r < RPG; ++r) kc[r] = sk[bb][i][rg * RPG + r];
+            float g[VPK], kv[VPK], delta[VPK], o[VPK];
+#pragma unroll
+            for (int j = 0; j < VPK; ++j) { g[j] = __expf(sg[bb][i][j]); kv[j] = 0.0f; o[j] = 0.0f; }
+#pragma unroll
+            for (int r = 0; r < RPG; ++r)
+#pragma unroll
+                for (int j = 0; j < VPK; ++j) kv[j] = fmaf(s[j][r], kc[r], kv[j]);
+#pragma unroll
+            for (int j = 0; j < VPK; ++j) rkv[j][rg][c] = kv[j];
+            __syncthreads();
+#pragma unroll
+            for (int j = 0; j < VPK; ++j) {
+                const float kv_col = rkv[j][0][c] + rkv[j][1][c] + rkv[j][2][c] + rkv[j][3][c];
+                delta[j] = (sv[bb][i][j][c] - g[j] * kv_col) * sb[bb][i][j];
+            }
+#pragma unroll
+            for (int r = 0; r < RPG; ++r) {
+                const float qr = sq[bb][i][rg * RPG + r];
+#pragma unroll
+                for (int j = 0; j < VPK; ++j) {
+                    s[j][r] = fmaf(g[j], s[j][r], kc[r] * delta[j]);
+                    o[j] = fmaf(s[j][r], qr, o[j]);
+                }
+            }
+#pragma unroll
+            for (int j = 0; j < VPK; ++j) ro[j][rg][c] = o[j];
+            __syncthreads();
+            if (rg < VPK)   // row group j writes head j's output
+                oc_out[t * HV * S + (qh + rg * HK) * S + col] =
+                    (ro[rg][0][c] + ro[rg][1][c] + ro[rg][2][c] + ro[rg][3][c]) * rsqrtf((float) S);
+        }
+    }
+#pragma unroll
+    for (int j = 0; j < VPK; ++j) {
+        float* base = state + ((size_t) (rg * RPG) * HV + qh + j * HK) * S + col;
+#pragma unroll
+        for (int r = 0; r < RPG; ++r) base[r * rs] = s[j][r];
+    }
+}
+// gdn_rec_kh_kernel where it pays: a CUDA card with cp.async (sm_80+) that holds all 64 of its blocks at once (each
+// walks the whole chunk, so blocks left for a second wave would double the time).  The busiest SM sets the pace: from
+// 64 SMs up this kernel has one block per SM, below that two on some SMs, while the kernel before has ceil(192 / SMs).
+// With the engine's grids on fewer SMs (gdn_rec_parity --bench), on a 4080 SUPER / a 3090: 1.40-1.42x / 1.28-1.29x at
+// 64 SMs and more, 1.02-1.04x / 1.03-1.06x at 48 to 63 (two blocks against four: a draw, slower on neither),
+// 1.28-1.31x / 1.28-1.30x at 39 to 47, 1.53-1.57x / 1.54-1.55x at 32 to 38.  Per call, from the current device (a
+// layer split can mix cards).
+bool gdn_keyhead_ok() {
+    static const bool off = [] { const char* v = std::getenv("STRATA_GDN_KEYHEAD"); return v != nullptr && std::atoi(v) == 0; }();
+    if (off) return false;
+    static int known[64] = {};   // per device: 0 not asked yet, 1 yes, 2 no
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return false; }
+    if (known[dev] == 0) {
+        int major = 0, sms = 0, per_sm = 0;
+        const bool yes = cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
+                         cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev) == cudaSuccess && major >= 8 &&
+                         cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, gdn_rec_kh_kernel, CB * RG, 0) ==
+                             cudaSuccess &&
+                         (int64_t) per_sm * sms >= (int64_t) HK * NCB;
+        if (!yes) cudaGetLastError();
+        known[dev] = yes ? 1 : 2;
+    }
+    return known[dev] == 1;
+}
+#endif
+// the output norm over a head's 128 columns, into the FP16 copy the out projection reads (the FP32 output before the
+// norm stays in its scratch buffer)
 __global__ void __launch_bounds__(S) gdn_out_norm_kernel(const float* __restrict__ z, const float* __restrict__ gamma,
-                                                         float eps, float* __restrict__ y, uint16_t* __restrict__ y16) {
+                                                         float eps, const float* __restrict__ y,
+                                                         uint16_t* __restrict__ y16) {
     __shared__ float wsum[4];
     const int64_t t = blockIdx.x;
     const int head = blockIdx.y, col = threadIdx.x;
@@ -445,7 +610,6 @@ __global__ void __launch_bounds__(S) gdn_out_norm_kernel(const float* __restrict
     __syncthreads();
     const float ss = wsum[0] + wsum[1] + wsum[2] + wsum[3];
     const float v = oc * rsqrtf(ss / (float) S + eps) * gamma[col] * sigm(z[t * HV * S + head * S + col]);
-    y[at] = v;
     y16[at] = hf(v);
 }
 
@@ -748,6 +912,11 @@ void gdn_recurrence(float* state, const float* h, const float* gate, const float
         gdn_rec_kernel<<<HV, dim3(S, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, z, gamma, eps, y, y16, T);
     } else {
         static const bool pipe = [] { const char* v = std::getenv("STRATA_GDN_PIPELINE"); return v == nullptr || std::atoi(v) != 0; }();
+#if !defined(__HIPCC__)
+        if (pipe && gdn_keyhead_ok())   // the value heads of a key head in one thread (same bits)
+            gdn_rec_kh_kernel<<<HK * NCB, dim3(CB, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
+        else
+#endif
         if (pipe)   // the software-pipelined loads (same bits)
             gdn_rec_cols_pipe_kernel<<<HV * NCB, dim3(CB, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
         else
@@ -788,6 +957,19 @@ __global__ void copy_i32_kernel(int32_t* __restrict__ dst, const int32_t* __rest
         dst[i] = src[i];
 }
 }  // namespace
+namespace {
+__global__ void copy_f4_kernel(float4* __restrict__ dst, const float4* __restrict__ src, int64_t n4) {
+    for (int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x; i < n4; i += (int64_t) gridDim.x * blockDim.x)
+        dst[i] = src[i];
+}
+}  // namespace
+void copy_f32_wide(float* dst, const float* src, int64_t n, void* stream) {
+    if (n <= 0) return;
+    const int64_t n4 = n / 4, b = std::min<int64_t>((n4 + 255) / 256, 4096);
+    if (n4 > 0) copy_f4_kernel<<<(unsigned) b, 256, 0, (cudaStream_t) stream>>>((float4*) dst, (const float4*) src, n4);
+    if (n % 4) copy_i32((int32_t*) dst + n4 * 4, (const int32_t*) src + n4 * 4, n % 4, stream);
+    check("copy_f32_wide");
+}
 void copy_i32(int32_t* dst, const int32_t* src, int64_t n, void* stream) {
     if (n <= 0) return;
     const int64_t b = (n + 255) / 256;

@@ -114,7 +114,7 @@ enum class PleIo { Direct, Mmap };
 
 struct PleIoOptions {
     PleIo mode = PleIo::Direct;
-    uint32_t max_inflight = 64;      ///< outstanding SSD reads (decode needs 16; prefill chunks use more)
+    uint32_t max_inflight = 256;     ///< outstanding SSD reads (decode needs 16; a prompt chunk saturates the SSD at 256)
     uint64_t cache_rows = 1u << 20;  ///< bounded row cache: 1,048,576 rows x 90 B ~ 95 MB; 0 disables
     bool io_thread = true;           ///< reads submitted by a worker thread, not the caller
     /// Mmap mode only (`--ple-io ram`): lock the whole mapped table in RAM at open, so no SSD read ever sits on
@@ -143,6 +143,9 @@ public:
     /// needs the rows. `gather` is `issue` followed by `collect`. In Mmap mode `issue` only prefetches.
     bool issue(const uint32_t* rows16);
     bool collect(float* out2560, std::string& err);
+    /// Non-blocking prefetch of 16 rows for one token into the reader's row cache while the GPU is busy.
+    void prefetch_rows(const uint32_t* rows16);
+    void wait_prefetches();
     /// Plan v0.3 P5: the rows of `n_tokens` tokens (16 each, `rows` token-major) into `out` (2560 floats per token),
     /// as ONE reader request - page dedupe and sort across the whole batch, the reader's full queue depth.  Not
     /// while a single-token `issue` is pending.  The mapped mode gathers row by row.

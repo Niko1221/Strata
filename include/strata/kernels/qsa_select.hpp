@@ -11,7 +11,8 @@
 //                      a chunk it may already hold a block completed later, so it is not read).
 //   qsa_block_topk   : one block per query; a 4-pass radix select over the query's n_bid + 1 blocks, each
 //                      weighted by its cell count, then the cells emitted in ascending order with ties to the
-//                      lowest index - the same selection as topk_kernel, over a quarter of the elements.
+//                      lowest index - the same selection as topk_kernel, over a quarter of the elements.  On sm_90+
+//                      a call of up to 16 queries runs it on a cluster of 8 CTAs per query: the same ids.
 //
 // Queries carry their own step record (pos, n_kv, n_bid, width) as everywhere else in QSA.
 #pragma once
@@ -40,8 +41,16 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
                     int64_t active_blocks = -1);   ///< > 0: no query of the call has more than this many blocks (n_bid + 1;
                                                    ///< the same contract as qsa_block_scores's). The register kernel is
                                                    ///< chosen by this, not by the capacity max_blocks (a long
-                                                   ///< --max-context otherwise sends every short prompt to the slow one)
-/// The original kernel (keys read from memory on every radix pass), for tests: the same ids.
+                                                   ///< --max-context otherwise sends every short prompt to the slow one).
+                                                   ///< CUDA uses the bound only on sm_75; HIP keeps its existing policy.
+                                                   ///< Omit it for captured graphs whose context can grow after capture.
+/// The same ids on a thread-block cluster of 8 CTAs per query (sm_90+, CUDA; S19). qsa_block_topk takes it for calls
+/// of up to 16 queries unless STRATA_QSA_CLUSTER=0. False (nothing launched) where it cannot run: HIP, a card or a
+/// build below sm_90, or a capacity whose keys do not fit one cluster's shared memory. Capturable.
+bool qsa_block_topk_cluster(const float* scores, const int32_t* steps, int64_t nq, int64_t max_blocks, int64_t cap,
+                            const QsaShapes& s, int32_t* ids, void* stream);
+/// The original kernel (256 threads, one shared histogram, keys read from memory on every radix pass), for tests and
+/// STRATA_TOPK_OLD=1: the same ids.
 void qsa_block_topk_ref(const float* scores, const int32_t* steps, int64_t nq, int64_t max_blocks, int64_t cap,
                         const QsaShapes& s, int32_t* ids, void* stream);
 
