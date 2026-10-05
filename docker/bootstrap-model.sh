@@ -37,6 +37,39 @@ RESOLVE=("$PY" "$DIR/hfmodel.py" --model "$MODEL" --cache "$HF_CACHE" --print sh
 [ -n "${STRATA_HF_REV:-}" ] && RESOLVE+=(--rev "$STRATA_HF_REV")
 
 resolve() { eval "$("${RESOLVE[@]}")"; }
+
+check_pack_provenance() {   # a pack belongs to exactly one release; never load another's experts
+  # experts.bin.src.json (written by iq_pack.py since it landed) names the GGUF shards the pack
+  # was built from.  Compared against the shards resolved for THIS selection, a mismatch is a
+  # hard stop: the quant vocabulary is shared between releases, so a quant-only pack directory
+  # would otherwise happily serve Qwen experts to Swift (or the reverse) - silent quality
+  # corruption with no crash.  A pack without the file (predates it) is trusted only by its
+  # directory name and warns.
+  local src="$PACK/experts.bin.src.json"
+  if [ ! -f "$src" ]; then
+    [ -f "$PACK/experts.bin" ] \
+      && warn "pack $PACK predates experts.bin.src.json: provenance is its directory name only"
+    return 0
+  fi
+  local expected="$STRATA_SHARD1 $STRATA_SHARD2 ${STRATA_PLE_FILE:-} ${STRATA_NATIVE:-} ${STRATA_PLE_GGUF:-}"
+  if ! "$PY" - "$src" "$expected" <<'PY'
+import json, os, sys
+src, expected = sys.argv[1], sys.argv[2].split()
+want = {os.path.basename(p) for p in expected if p}
+names = {s["name"] for s in json.load(open(src))["shards"]}
+bad = sorted(n for n in names if n not in want)
+for n in bad:
+    print(f"  built from '{n}', which is not a file of this release", file=sys.stderr)
+sys.exit(1 if bad else 0)
+PY
+  then
+    die "pack $PACK was built from another release's shards - refusing to start (its
+       experts.bin.src.json names files this selection does not use, listed above).
+       Pack directories are release-tagged (packs/swift-<quant> beside packs/<quant>):
+       select the right --release/--model, or delete $PACK to rebuild it from the right files."
+  fi
+  log "pack provenance: ok"
+}
 gate_space() {   # gate_space <path> <gib needed> <what>
   local path="$1" need="$2" what="$3" avail
   avail="$(df -BG --output=avail "$path" 2>/dev/null | tail -1 | tr -dc '0-9' || echo 0)"
@@ -79,6 +112,7 @@ log "shard 2 (PLE table): $STRATA_SHARD2"
 if [ "$MODE" = check ]; then log "model: ok"; fi
 
 # ---------------------------------------------------------------- 2-3. the pack the engine starts from
+check_pack_provenance     # before anything reads the pack, and in check mode too
 need_pack=0
 [ -f "$PACK/native_experts.txt" ] || need_pack=1
 [ -f "$PACK/tokenizer/vocab.json" ] || need_pack=1
