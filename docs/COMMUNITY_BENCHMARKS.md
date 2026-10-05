@@ -18,6 +18,9 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-03: 2x AMD Instinct MI50 16 GB (gfx906), Xeon E5-2666 v3, 32 GB RAM](../bench/results/2026-10-03-community-2x-mi50/README.md):
   the gfx906 build (#638) with #639 and #640, Coder IQ1_M, 131,072-token context, layer split across both cards;
   three runs each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.
+- [2026-10-05: 2x RTX 4060 Ti 16 GB, Threadripper PRO 3975WX, 128 GB RAM](../bench/results/2026-10-05-community-2x-rtx-4060ti/README.md):
+  Strata 0.1.39, Unsloth UD-IQ4_XS, 131,072-token context, layer split across both cards; the default and an
+  Italian-built MTP draft vocabulary, three runs each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.
 
 ## What to record
 
