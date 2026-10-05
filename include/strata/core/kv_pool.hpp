@@ -43,13 +43,16 @@ public:
     void release(const SessionState& ss) { shrink(ss, 0); }
     /// The session's chunks past the one holding cell `cells - 1` back to the pool.
     void shrink(const SessionState& ss, int64_t cells);
+    /// Exchanges the chunks of two sessions (the same context length): a conversation's K/V changes session without a
+    /// byte copied. Their VRAM residency maps still name the old blocks - reset both (kv_stream_reset).
+    bool swap(const SessionState& a, const SessionState& b);
 
     int64_t reserved_cells(const SessionState& ss) const;
     int64_t free_cells() const { return (int64_t) free_.size() * chunk_cells(); }
     int64_t total_cells() const { return n_chunks_ * chunk_cells(); }
     int64_t chunk_cells() const { return page_size_ << kChunkShift; }
     uint64_t pinned_bytes() const { return pinned_bytes_; }
-    /// Counts the reservations and releases that moved a chunk (the server reports the pool when it changes).
+    /// Counts the changes to the chunk tables (the server reports the pool when it changes).
     uint64_t version() const { return version_; }
 
 private:
