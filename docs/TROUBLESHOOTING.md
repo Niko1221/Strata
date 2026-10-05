@@ -95,6 +95,11 @@ The engine was compiled for another card (for example after moving the Strata fo
 **Large pinned host allocations fail on ROCm although RAM is free.**
 See [AMD_HIP.md](AMD_HIP.md#model-and-serving-configuration): the mapped expert mode avoids the full pinned arena.
 
+**"verify: timed out at layer N" or "no progress for 60 s" with `--mmap-experts`.**
+Add `"GPU_PINNED_MIN_XFER_SIZE": "1048576"` to the `env` block of your server JSON and restart. On a
+systemd unit, use `MemoryMax` and not `MemoryHigh`. Details:
+[AMD_HIP.md](AMD_HIP.md#model-and-serving-configuration).
+
 ## Still stuck?
 
 Look in the [full troubleshooting table](DETAILS.md#troubleshooting), or open an
