@@ -574,5 +574,52 @@ class HadamardTests(unittest.TestCase):
         self.assertIn("Q2_0", got)
 
 
+class NativeExpertsV5Tests(unittest.TestCase):
+    """The v5 mark (Hadamard-folded experts) rewrites only the tables the packer writes, v3 and v4."""
+    ROWS = "0 145 146 0 100 1 2 3\n1 145 146 100 100 4 5 6\n"
+
+    def table(self, version, tail="(n_expert 2, total 200)"):
+        return "# strata native experts v%s: layer gu_type d_type offset ... %s\n" % (version, tail) + self.ROWS
+
+    def test_v3_and_v4_become_v5(self):
+        for v in ("3", "4"):
+            with self.subTest(v):
+                got = iq_pack.native_experts_v5(self.table(v))
+                head, rest = got.split("\n", 1)
+                self.assertTrue(head.startswith("# strata native experts v5: layer gu_type"))
+                self.assertTrue(head.endswith("(n_expert 2, total 200) - v5: Hadamard-folded experts, see hadamard.txt"))
+                self.assertEqual(rest, self.ROWS)
+
+    def test_other_versions_are_refused_by_name(self):
+        for v in ("2", "5", "6", "10"):
+            with self.subTest(v):
+                got = iq_pack.native_experts_v5(self.table(v))
+                self.assertFalse(got.startswith("# strata native experts"))
+                self.assertIn("v%s" % v, got)
+                self.assertIn("v3 and v4", got)
+        got = iq_pack.native_experts_v5("# something else\n" + self.ROWS)
+        self.assertIn("without a version header", got)
+
+    def test_packer_refuses_before_writing(self):
+        real = iq_pack.expert_layout
+
+        def v6_layout(model, src):
+            layout, text, n_expert, offset = real(model, src)
+            return layout, text.replace("native experts v3:", "native experts v6:", 1), n_expert, offset
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            paths = split_model(root, split_layer=False)
+            out = root / "pack"
+            with patch.object(iq_pack, "expert_layout", v6_layout), \
+                    patch.object(iq_pack, "hadamard_spec", return_value="# strata hadamard v1\nblock 32\n"):
+                rc, log = run_pack(paths[0], out)
+            self.assertEqual(rc, 1)
+            self.assertIn("native_experts.txt v6", log)
+            self.assertIn("only v3 and v4", log)
+            self.assertFalse((out / "native_experts.txt").exists())
+            self.assertFalse((out / "hadamard.txt").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

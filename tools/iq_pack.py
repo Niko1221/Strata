@@ -473,6 +473,21 @@ def expert_layout(model: Model, src: pathlib.Path):
     return layout, head + "".join(line + "\n" for line in lines), n_expert, offset
 
 
+NATIVE_HEAD = re.compile(r"^# strata native experts v(\d+):")
+
+
+def native_experts_v5(text: str) -> str:
+    """native_experts.txt as expert_layout writes it (v3, or v4 with per-role shards) -> the same table marked v5
+    (Hadamard-folded experts, hadamard.txt beside it), or an error string naming the version it cannot mark."""
+    head, rest = text.split("\n", 1) if "\n" in text else (text, "")
+    m = NATIVE_HEAD.match(head)
+    if not m or m.group(1) not in ("3", "4"):
+        found = "v" + m.group(1) if m else "without a version header (%r)" % head[:40]
+        return ("cannot mark native_experts.txt %s as v5 for Hadamard-folded experts: only v3 and v4 tables are "
+                "supported" % found)
+    return "# strata native experts v5:" + head[m.end():] + " - v5: Hadamard-folded experts, see hadamard.txt\n" + rest
+
+
 HADAMARD_ROLE = re.compile(r"^blk\.(\d+)\.ffn_(gate|up|down)_exps\.weight$")
 
 
@@ -601,9 +616,10 @@ def main() -> int:
         print("prism.hadamard: " + had)
         return 1
     if had is not None:
-        head, rest = text.split("\n", 1)
-        head = re.sub(r"^# strata native experts v[34]:", "# strata native experts v5:", head)
-        text = head + " - v5: Hadamard-folded experts, see hadamard.txt\n" + rest
+        text = native_experts_v5(text)
+        if not text.startswith("# strata native experts v5:"):
+            print("prism.hadamard: " + text)
+            return 1
         print("prism.hadamard: %d layer(s) of Hadamard-folded experts (block %s, %s signs): hadamard.txt, "
               "native_experts.txt v5" % (sum(1 for ln in had.splitlines() if ln.startswith("layer ")),
                                          g.metadata["prism.hadamard.block_size"],
