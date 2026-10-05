@@ -46,8 +46,11 @@ def load_tokenizer():
         return ST.Tokenizer(tokens, (t / "merges.txt").read_text(encoding="utf-8").split("\n"),
                             json.loads((t / "token_type.json").read_text()))
     path = vocab_gguf()
-    if path is None:
-        return None
+    return None if path is None else gguf_tokenizer(path)
+
+
+def gguf_tokenizer(path):
+    """llama.cpp's qwen35 vocabulary with the template's added tokens: the one its test vectors were made with."""
     from gguf_reader import GGUFFile
     md = GGUFFile(path).metadata
     tokens, types = list(md["tokenizer.ggml.tokens"]), list(md["tokenizer.ggml.token_type"])
@@ -143,7 +146,7 @@ class Oracle(unittest.TestCase):
         path = vocab_gguf()
         if path is None or not path.with_suffix(".gguf.inp").is_file():
             self.skipTest("llama.cpp's ggml-vocab-qwen35.gguf test vectors are not here")
-        tk = load_tokenizer()
+        tk = gguf_tokenizer(path)                  # not $STRATA_TOKENIZER: the vectors belong to this vocabulary
         inp = path.with_suffix(".gguf.inp").read_text(encoding="utf-8").split("\n__ggml_vocab_test__\n")
         out = path.with_suffix(".gguf.out").read_text(encoding="utf-8").split("\n")
         n = 0
