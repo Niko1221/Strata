@@ -1910,10 +1910,10 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: --stage-server and --remote-stage are the two SIDES: one per engine\n");
             return 2;
         }
-        if (sv_on && (!o.serve || !o.layer_split.empty() || o.stage_server.rfind(':') == std::string::npos ||
+        if (sv_on && (!o.serve || o.layer_split == "auto" || o.stage_server.rfind(':') == std::string::npos ||
                       !pair_of(o.stage_layers, sv_lb, sv_le))) {
-            std::fprintf(stderr, "strata generate: --stage-server HOST:PORT needs --serve, --stage-layers A,B (2 <= A < B) "
-                                 "and no --layer-split (one card for now)\n");
+            std::fprintf(stderr, "strata generate: --stage-server HOST:PORT needs --serve and --stage-layers A,B (2 <= A < B); "
+                                 "with several cards an explicit --layer-split M (A < M < B), not auto\n");
             return 2;
         }
         if (rs_on && (!o.serve || o.layer_split.empty() || o.layer_split == "auto" || !pair_of(o.remote_layers, rs_lb, rs_le))) {
@@ -3044,7 +3044,7 @@ int main(int argc, char** argv) {
         // the split search (see late_weights), so `auto` can trim them too.
         if (!late_weights) {
             const int64_t lb = stage_trim ? split_at[i] : 0;
-            const int64_t le = stage_trim ? (i + 1 < split_at.size() ? split_at[i + 1] : g.n_layers) : 0;
+            const int64_t le = stage_trim ? (i + 1 < split_at.size() ? split_at[i + 1] : sv_on ? sv_le : g.n_layers) : 0;
             if (!load_stage_weights(st, lb, le, stage_trim)) return 1;
         }
         // THE SESSION AND THE HEAD WAIT FOR THE SPLIT SEARCH.  `session_bytes` prices a stage's session by its
@@ -3431,6 +3431,11 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: --stage-layers: layer %lld is past the last\n", (long long) sv_le);
         return 2;
     }
+    if (sv_on && !split_at.empty() && (split_at.front() <= sv_lb || split_at.back() >= sv_le)) {
+        std::fprintf(stderr, "strata generate: --stage-server: --layer-split must lie inside --stage-layers %lld,%lld\n",
+                     (long long) sv_lb, (long long) sv_le);
+        return 2;
+    }
     // the profile's pairs nobody on THIS PC runs: outside the stage's layers / inside the remote ones
     if (sv_on || rs_on)
         profile.erase(std::remove_if(profile.begin(), profile.end(), [&](const std::pair<int32_t, int32_t>& pr) {
@@ -3462,7 +3467,7 @@ int main(int argc, char** argv) {
         profile.swap(mine);
         for (size_t i = 0; i < stages.size(); ++i) {
             stages[i]->lb = split_at[i];
-            stages[i]->le = i + 1 < stages.size() ? split_at[i + 1] : g.n_layers;
+            stages[i]->le = i + 1 < stages.size() ? split_at[i + 1] : sv_on ? sv_le : g.n_layers;
         }
     }
 
@@ -3488,7 +3493,7 @@ int main(int argc, char** argv) {
     {
         const strata::core::OnDevice on0(0);
         const int64_t lo0 = sv_on ? sv_lb : 0;
-        const int64_t hi0 = sv_on ? sv_le : rs_on ? rs_lb : multi_gpu ? split_at[0] : -1;
+        const int64_t hi0 = sv_on && !multi_gpu ? sv_le : rs_on ? rs_lb : multi_gpu ? split_at[0] : -1;
         // the elastic K/V (--kv-grow, see kvg_ensure): one GPU, the whole K/V in VRAM (no streaming), a profiled cache
         // that can give slots up, and every expert in RAM for the CPU to compute the ones it gives up
         {
@@ -6133,6 +6138,20 @@ int main(int argc, char** argv) {
                 v->set_always_publish(true);
             }
         }
+        float* sv_d_in = nullptr;    // two-PC stage: the hand-off from / to the driver, as the device sees them
+        float* sv_d_out = nullptr;
+        if (sv_on) {
+            sv_hb = (size_t) strata::kernels::kVerifyMaxT * (size_t) strata::core::Verifier::handoff_floats(g) * sizeof(float);
+            if (cudaHostAlloc((void**) &sv_in_host, sv_hb, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess ||
+                cudaHostAlloc((void**) &sv_out_host, sv_hb, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess ||
+                cudaHostGetDevicePointer((void**) &sv_d_in, sv_in_host, 0) != cudaSuccess ||
+                cudaHostGetDevicePointer((void**) &sv_d_out, sv_out_host, 0) != cudaSuccess) {
+                std::fprintf(stderr, "strata serve: two-PC stage: the hand-off allocation failed\n");
+                return 1;
+            }
+            std::memset(sv_in_host, 0, sv_hb);
+            std::memset(sv_out_host, 0, sv_hb);
+        }
         if (n_stages > 1) {
             const size_t hb = (size_t) strata::kernels::kVerifyMaxT *
                               (size_t) strata::core::Verifier::handoff_floats(g) * sizeof(float);
@@ -6196,9 +6215,12 @@ int main(int argc, char** argv) {
             split_drive.base = &drive;
             split_drive.n = n_stages;
             for (int st = 0; st < n_stages; ++st) {
-                stage_ver(st).set_stage(st == 0 ? 0 : split_at[(size_t) st - 1],
-                                        st == 0 && rs_on ? rs_lb : st + 1 < n_stages ? split_at[(size_t) st] : -1,
-                                        st == 0 ? nullptr : hand_in[(size_t) st - 1], st + 1 < n_stages ? hand[(size_t) st] : nullptr);
+                // two-PC stage: the first local stage reads the driver's hand-off, the last writes the one going back
+                stage_ver(st).set_stage(st == 0 ? (sv_on ? sv_lb : 0) : split_at[(size_t) st - 1],
+                                        st == 0 && rs_on ? rs_lb : st + 1 < n_stages ? split_at[(size_t) st] : sv_on ? sv_le : -1,
+                                        st == 0 ? (sv_on ? sv_d_in : nullptr) : hand_in[(size_t) st - 1],
+                                        st + 1 < n_stages ? hand[(size_t) st]
+                                                          : sv_on && sv_le < g.n_layers ? sv_d_out : nullptr);
                 split_drive.end[st] = st == 0 && rs_on ? rs_lb : st + 1 < n_stages ? split_at[(size_t) st] : g.n_layers;
                 split_drive.cache_base[st] = drive.d.cache_base;
                 split_drive.cache_slot_off[st] = drive.d.cache_slot_off;
@@ -6282,21 +6304,7 @@ int main(int argc, char** argv) {
             }
             ver_b.set_next(&gs.ver_b, &split_drive_b);   // the setters reach it; the pipeline never chains run/commit
         }
-        if (sv_on) {
-            sv_hb = (size_t) strata::kernels::kVerifyMaxT * (size_t) strata::core::Verifier::handoff_floats(g) * sizeof(float);
-            float* d_in = nullptr;
-            float* d_out = nullptr;
-            if (cudaHostAlloc((void**) &sv_in_host, sv_hb, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess ||
-                cudaHostAlloc((void**) &sv_out_host, sv_hb, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess ||
-                cudaHostGetDevicePointer((void**) &d_in, sv_in_host, 0) != cudaSuccess ||
-                cudaHostGetDevicePointer((void**) &d_out, sv_out_host, 0) != cudaSuccess) {
-                std::fprintf(stderr, "strata serve: two-PC stage: the hand-off allocation failed\n");
-                return 1;
-            }
-            std::memset(sv_in_host, 0, sv_hb);
-            std::memset(sv_out_host, 0, sv_hb);
-            ver.set_stage(sv_lb, sv_le, d_in, sv_le < g.n_layers ? d_out : nullptr);
-        }
+        if (sv_on && n_stages == 1) ver.set_stage(sv_lb, sv_le, sv_d_in, sv_le < g.n_layers ? sv_d_out : nullptr);
         ver.set_remote_expert_opt(remote_opt.get());
         if (batch_mtp) ver.set_batch_graph_limit(64);   // --batch-mtp only: slot rotation makes many layouts (LRU); 0.1.39 keeps all
         if (!ver.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr,
@@ -7465,6 +7473,11 @@ int main(int argc, char** argv) {
                     if (ok) {
                         strata::core::session_zero(ss, g, nullptr, main_cs);
                         cudaStreamSynchronize(main_stream);
+                        for (auto& st : stages) {
+                            const strata::core::OnDevice on(st->dev);
+                            strata::core::session_zero(st->ss, g, nullptr, (void*) st->stream);
+                            cudaStreamSynchronize(st->stream);
+                        }
                     }
                 } else {
                     e = "an unknown request";
