@@ -2697,16 +2697,17 @@ class AnswerBeforeTheBody(unittest.TestCase):
         self.httpd.shutdown()
         self.httpd.server_close()
 
-    def status(self, method, path, headers=None, body=b'{"x": 1}'):
-        """The status line of the answer to a request whose body follows the headers after a pause."""
+    def status(self, method, path, headers=None, body=b'{"x": 1}', early=0, pause=0.3):
+        """The status line of the answer to a request whose body (but its first `early` bytes) follows the headers
+        after a pause."""
         head = {"Host": f"127.0.0.1:{self.port}", "Content-Type": "application/json", "Content-Length": str(len(body)),
                 **(headers or {})}
         with socket.create_connection(("127.0.0.1", self.port), timeout=10) as s:
             s.sendall((f"{method} {path} HTTP/1.1\r\n" + "".join(f"{k}: {v}\r\n" for k, v in head.items()) +
-                       "\r\n").encode())
-            time.sleep(0.3)                                  # the server answers (and, unfixed, closes) meanwhile
+                       "\r\n").encode() + body[:early])
+            time.sleep(pause)                                # the server answers (and, unfixed, closes) meanwhile
             try:
-                s.sendall(body)
+                s.sendall(body[early:])
             except OSError:
                 pass
             answer = b""
@@ -2774,6 +2775,11 @@ class AnswerBeforeTheBody(unittest.TestCase):
         """/load answers 413 to a body over 64 KiB without reading it: the drain takes it."""
         status = self.status("POST", "/load", body=b'{"x": "' + b"a" * (70 << 10) + b'"}')
         self.assertTrue(status.startswith("HTTP/1.0 413 "), status)   # the reason phrase depends on Python
+
+    def test_a_control_body_that_comes_late(self):
+        """/load gives up on a body still missing after 2 s and answers 400: what comes later is drained, not reset."""
+        body = b'{"x": "' + b"a" * 60000 + b'"}'
+        self.assertEqual(self.status("POST", "/load", body=body, early=30000, pause=3), "HTTP/1.0 400 Bad Request")
 
     def test_not_the_apps_own_page(self):
         self.assertEqual(self.status("POST", "/load", {"Origin": "https://example.com"}), "HTTP/1.0 403 Forbidden")

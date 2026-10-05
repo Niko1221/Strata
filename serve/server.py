@@ -2839,9 +2839,12 @@ def make_handler(svc: Service):
             self._drain_body()
 
         def _body(self, length=None) -> bytes:
-            """The request body, read by its handler (the drain then leaves it alone)."""
-            self.body_read = True
-            return self.rfile.read(int(self.headers.get("Content-Length", 0)) if length is None else length)
+            """The request body, read by its handler.  Read whole, the drain leaves it alone; cut short, the drain
+            takes what is left."""
+            length = int(self.headers.get("Content-Length", 0)) if length is None else length
+            body = self.rfile.read(length)
+            self.body_read = len(body) == length
+            return body
 
         def _drain_body(self):
             """An answer sent before the body was read (a 401, a 403, a 413, a method with no handler) must not close
@@ -2860,15 +2863,24 @@ def make_handler(svc: Service):
             if left <= 0:
                 return
             deadline = time.monotonic() + self.DRAIN_SECONDS
-            try:
-                while left > 0 and (wait := deadline - time.monotonic()) > 0:
+            # One socket read at a time: read() would wait for it all.  A handler read that timed out leaves rfile
+            # refusing every read ("cannot read from timed out object"); the socket itself still reads, so the rest
+            # comes from there (what that read had taken is not known, so this one can run to the deadline).
+            read = self.rfile.read1
+            while left > 0 and (wait := deadline - time.monotonic()) > 0:
+                try:
                     self.connection.settimeout(wait)         # a client that never sends what it announced
-                    piece = self.rfile.read1(min(left, 1 << 20))   # one socket read: read() would wait for it all
-                    if not piece:
+                    piece = read(min(left, 1 << 20))
+                except TimeoutError:
+                    break
+                except OSError:
+                    if read == self.connection.recv:
                         break
-                    left -= len(piece)
-            except OSError:
-                pass
+                    read = self.connection.recv
+                    continue
+                if not piece:
+                    break
+                left -= len(piece)
 
         def parse_request(self):
             """Without an API key, every request (any method) first passes the Host check: DNS rebinding protection
