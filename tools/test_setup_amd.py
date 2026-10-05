@@ -154,6 +154,38 @@ class GpuLists(unittest.TestCase):
                         cfg.unlink()
                         (sysroot / "include/hip/hip_runtime.h").unlink()
 
+    def test_distro_rocm_in_usr(self):
+        """Fedora's and openSUSE's own ROCm packages build it into the distro prefix instead of /opt/rocm: hipcc in
+        /usr/bin, HIP in /usr/lib64 and /usr/include, rocm_version.h flat in /usr/include, ROCm's clang in
+        /usr/lib64/rocm/llvm/bin (amdclang++), the AMDGPU bitcode inside clang's own folder.  setup must find all of
+        it, and say what is missing when the card families need it (a runtime-only dnf install has hipcc but no
+        hipBLAS)."""
+        said = []
+        setup.say = lambda msg="": said.append(msg)
+        with tempfile.TemporaryDirectory() as d:
+            sysroot = Path(d)
+            for rel in ("bin/hipcc", "lib64/libhipblas.so.7", "lib64/cmake/hip-lang/hip-lang-config.cmake",
+                        "include/hip/hip_runtime.h", "lib64/rocm/llvm/bin/amdclang++",
+                        "lib64/rocm/llvm/lib/clang/20/lib/amdgcn/bitcode/hip.bc"):
+                (sysroot / rel).parent.mkdir(parents=True, exist_ok=True)
+                (sysroot / rel).write_text("")
+            (sysroot / "include/rocm_version.h").write_text("#define ROCM_VERSION_MAJOR 7\n"
+                                                             "#define ROCM_VERSION_MINOR 1\n")
+            with mock.patch.object(setup, "rocm_sys", lambda: [(sysroot, sysroot / "bin", sysroot / "lib64")]):
+                self.assertEqual(setup.rocm_root(["gfx1100", "gfx1201"]), (sysroot, [str(sysroot / "lib64")]))
+                self.assertIn(f"ROCm: {sysroot} (the ROCm installed on this PC)", "\n".join(said))
+                self.assertEqual(setup.hip_compiler(sysroot), sysroot / "lib64/rocm/llvm/bin/amdclang++")
+                self.assertEqual(setup.hip_bitcode(sysroot),
+                                 sysroot / "lib64/rocm/llvm/lib/clang/20/lib/amdgcn/bitcode")
+                said.clear()
+                (sysroot / "lib64/libhipblas.so.7").unlink()      # dnf install hipblas-devel is missing
+                with self.assertRaises(SystemExit):
+                    setup.rocm_root(["gfx1100", "gfx1201"])
+                text = "\n".join(said)
+                self.assertIn("two GPU families", text)
+                self.assertIn(f"the ROCm in {sysroot} has hipcc but no hipBLAS library", text)
+                self.assertIn("sudo dnf install rocm-hip-devel hipblas-devel hipblaslt-devel", text)
+
     def test_build_for_every_arch(self):
         """build_engine_hip compiles for the set of the chosen cards' archs and records it in BUILD.json."""
         calls = {}

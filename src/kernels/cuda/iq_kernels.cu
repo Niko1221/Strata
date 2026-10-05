@@ -1036,7 +1036,9 @@ template<int TY, int NC, bool STAGE_GRID = kStageIqGrid<TY>>
 __global__ void __launch_bounds__(128) mmvq_multi_kernel(const uint8_t* __restrict__ w, size_t row_bytes,
                                                          const block_q8_1* __restrict__ x, float* __restrict__ y,
                                                          int n_in, int n_out, int ncols) {
-    __shared__ alignas(16) uint32_t s_grid_buf[IqGridWords<TY, STAGE_GRID>::value];
+    // `__align__`, not `alignas`: HIP spells `__shared__` `__attribute__((shared))`, and clang rejects an
+    // `alignas` that follows another attribute in the declaration - "'alignas' attribute cannot be applied to types".
+    __shared__ __align__(16) uint32_t s_grid_buf[IqGridWords<TY, STAGE_GRID>::value];
     const uint32_t* s_grid = stage_iq_grid<TY, STAGE_GRID>(s_grid_buf, threadIdx.y * 32 + threadIdx.x, 128);
     const int row = blockIdx.x * 4 + threadIdx.y;
     if (row >= n_out) return;
@@ -1104,7 +1106,7 @@ __global__ void __launch_bounds__(256) native_gu_multi_kernel(const unsigned lon
                                                               float* __restrict__ gate, float* __restrict__ up) {
     const int ng = *n_groups;
     if (blockIdx.y >= ng) return;
-    __shared__ alignas(16) uint32_t s_grid_buf[IqGridWords<TG, STAGE_GRID>::value];
+    __shared__ __align__(16) uint32_t s_grid_buf[IqGridWords<TG, STAGE_GRID>::value];
     const uint32_t* s_grid = stage_iq_grid<TG, STAGE_GRID>(s_grid_buf, threadIdx.x, 256);
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
     const int row = blockIdx.x * GU_ROWS + warp;             // 0 .. 2*n_ff

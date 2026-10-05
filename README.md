@@ -60,7 +60,9 @@ about 100-140 tokens per second. Long chats and other cards: [speed of each mode
 | **Disk** | About 80 GB free. Use an SSD if you can: the first start is much faster. |
 | **System** | Windows 10 / 11 or Linux, and a current graphics driver from NVIDIA or AMD. |
 
-The installer sets up everything else. Two or three cards can share the model ([multi-GPU](docs/MULTI_GPU.md)).
+The installer sets up everything else. Two or three cards can share the model ([multi-GPU](docs/MULTI_GPU.md)); two
+AMD cards of different families on Bazzite or another read-only-image Fedora need one extra step
+([BAZZITE.md](docs/BAZZITE.md)).
 
 Experimental, written and tested by community members on their own machines:
 

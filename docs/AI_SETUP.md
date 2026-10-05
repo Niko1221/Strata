@@ -113,7 +113,9 @@ Notes:
   `build-essential` and `git`. You cannot type the user's password: if a `sudo` step is needed, ask the user to run it
   (e.g. `sudo apt install python3-venv build-essential git`) and then rerun setup.
 - **AMD on Linux:** setup installs ROCm into `.venv` (~10 GB, no sudo) unless a system ROCm 7 exists, and compiles the
-  engine for the card (10-20 minutes, once).
+  engine for the card (10-20 minutes, once). A system ROCm is needed when the PC has AMD cards of two GPU families;
+  on Bazzite, Silverblue and the other read-only-image Fedoras its `-devel` packages go in with `rpm-ostree`, not
+  `dnf` ([BAZZITE.md](BAZZITE.md)).
 - **AMD on Windows (new in 0.1.34):** setup downloads the ready-made AMD engine (~550 MB, ROCm included) - nothing
   is compiled and only the AMD driver is needed. Before the model download it runs `engine\strata-device.exe
   --list-devices`; if that does not list the card, the driver is the problem (tell the user to update AMD Software).

@@ -1750,13 +1750,30 @@ def get_prebuilt_hip(url_base, gpu, updating=False) -> Path | None:
     return eng
 
 
+def rocm_sys() -> list:
+    """System ROCm installs to look at, as (prefix, hipcc folder, library folder).  AMD's own packages put everything
+    under /opt/rocm; Fedora's and openSUSE's packages build ROCm into the distro prefix instead (dnf install
+    rocm-hip-devel hipblas-devel hipblaslt-devel): hipcc in /usr/bin, HIP in /usr/lib64 and /usr/include, ROCm's
+    clang in /usr/lib64/rocm/llvm.  ROCM_PATH names one install instead of looking."""
+    env = os.environ.get("ROCM_PATH")
+    if env:
+        return [(Path(env), Path(env) / "bin", Path(env) / "lib")]
+    return [(Path("/opt/rocm"), Path("/opt/rocm") / "bin", Path("/opt/rocm") / "lib"),
+            (Path("/usr"), Path("/usr") / "bin", Path("/usr") / "lib64"),
+            (Path("/usr"), Path("/usr") / "bin", Path("/usr") / "lib")]
+
+
 def rocm_version(root):
-    """(major, minor) of a ROCm install, from rocm-core's header; None when it has none."""
-    try:
-        text = (Path(root) / "include" / "rocm-core" / "rocm_version.h").read_text()
-        return tuple(int(re.search(rf"#define\s+ROCM_VERSION_{k}\s+(\d+)", text).group(1)) for k in ("MAJOR", "MINOR"))
-    except (OSError, AttributeError, ValueError):
-        return None
+    """(major, minor) of a ROCm install, from rocm-core's header; None when it has none.  AMD's packages put it in
+    <root>/include/rocm-core, Fedora's install it flat in /usr/include (rocm-core-devel)."""
+    for p in (Path(root) / "include" / "rocm-core" / "rocm_version.h", Path(root) / "include" / "rocm_version.h"):
+        try:
+            text = p.read_text()
+            return tuple(int(re.search(rf"#define\s+ROCM_VERSION_{k}\s+(\d+)", text).group(1))
+                         for k in ("MAJOR", "MINOR"))
+        except (OSError, AttributeError, ValueError):
+            continue
+    return None
 
 
 def rocm_dev_missing(sysroot: Path) -> list:
@@ -1770,25 +1787,36 @@ def rocm_dev_missing(sysroot: Path) -> list:
 
 def rocm_root(archs):
     """ROCm for compiling and running the HIP engine for `archs` (one arch or a list: the cards of a layer split):
-    (root, library folders).  A system ROCm 7 with hipcc, hipBLAS and the HIP development files (#446), else AMD's
-    TheRock wheels (ROCM_VERSION, from the card family's index) installed into .venv."""
+    (root, library folders).  A system ROCm 7 with hipcc, hipBLAS and the HIP development files (#446) - AMD's
+    packages in /opt/rocm or a distro's own in /usr (rocm_sys) - else AMD's TheRock wheels (ROCM_VERSION, from the
+    card family's index) installed into .venv."""
     archs = [archs] if isinstance(archs, str) else list(archs)
-    sysroot = Path(os.environ.get("ROCM_PATH") or "/opt/rocm")
-    if (sysroot / "bin" / "hipcc").exists() and list((sysroot / "lib").glob("libhipblas.so*")):
+    partial = []                                       # a system ROCm that is there but cannot build the engine
+    for sysroot, bindir, libdir in rocm_sys():
+        if not (bindir / "hipcc").exists():
+            continue
+        if not list(libdir.glob("libhipblas.so*")):
+            partial.append(f"the ROCm in {sysroot} has hipcc but no hipBLAS library")
+            continue
         ver = rocm_version(sysroot)
         missing = rocm_dev_missing(sysroot)
         if (ver is None or ver >= ROCM_SYSTEM_MIN) and not missing:
-            return sysroot, [str(sysroot / "lib")]
+            ok(f"ROCm: {sysroot} (the ROCm installed on this PC)")
+            return sysroot, [str(libdir)]
         if ver is not None and ver < ROCM_SYSTEM_MIN:
             warn(f"the ROCm in {sysroot} is {ver[0]}.{ver[1]}; Strata needs {ROCM_SYSTEM_MIN[0]}.{ROCM_SYSTEM_MIN[1]} "
                  "or newer: using AMD's wheels in .venv instead")
         else:                                          # #446: a runtime-only ROCm (no -dev packages): cmake would fail
             warn(f"the ROCm in {sysroot} has no HIP development files ({', '.join(missing)}): using AMD's wheels in "
-                 ".venv instead (or install them, e.g. AMD's amdrocm-core-dev package for your ROCm and card)")
+                 ".venv instead (or install them, e.g. AMD's amdrocm-core-dev package for your ROCm and card; "
+                 "docs/BAZZITE.md on an immutable Fedora)")
     indexes = list(dict.fromkeys(rocm_index(a) for a in archs))
     if len(indexes) > 1:                               # TheRock's wheels hold one GPU family's libraries
-        fail(f"cards of two GPU families ({', '.join(archs)}) need a system ROCm 7 (in /opt/rocm): AMD's Python "
-             "wheels come per family", "install ROCm 7 system-wide, or use cards of one family (--gpu N for one card)")
+        fail(f"cards of two GPU families ({', '.join(archs)}) need a system ROCm {ROCM_SYSTEM_MIN[0]}: AMD's Python "
+             "wheels come per family" + (f" ({'; '.join(dict.fromkeys(partial))})" if partial else ""),
+             "install ROCm 7 system-wide (Fedora: sudo dnf install rocm-hip-devel hipblas-devel hipblaslt-devel, on "
+             "Bazzite/Silverblue with rpm-ostree instead of dnf - docs/BAZZITE.md; Ubuntu/Debian: AMD's "
+             "amdrocm-core-dev package - docs/AMD_HIP.md), or use cards of one family (--gpu N for one card)")
     index = indexes[0]
     stamp = Path(sys.prefix) / ".strata-rocm.json"
     have = json.loads(stamp.read_text()) if stamp.exists() else {}
@@ -1849,6 +1877,28 @@ def hipblaslt_table(arch, lib_dirs, ver=None):
     return None
 
 
+def hip_compiler(root) -> Path:
+    """The clang++ that compiles HIP in this ROCm install: <root>/llvm/bin/clang++ in AMD's packages and in TheRock's
+    wheels, <root>/lib64/rocm/llvm/bin in Fedora's (dnf's rocm-llvm package, which also names it amdclang++)."""
+    for d in (Path(root) / "llvm" / "bin", Path(root) / "lib64" / "rocm" / "llvm" / "bin",
+              Path(root) / "lib" / "rocm" / "llvm" / "bin"):
+        for name in ("clang++", "amdclang++"):
+            if (d / name).is_file():
+                return d / name
+    return Path(root) / "llvm" / "bin" / "clang++"
+
+
+def hip_bitcode(root) -> Path:
+    """The AMDGPU bitcode clang links into every HIP kernel: <root>/lib/llvm/amdgcn/bitcode or <root>/amdgcn/bitcode
+    in AMD's install, inside clang's own folder in a distro's (Fedora: /usr/lib64/rocm/llvm/lib/clang/<version>/lib)."""
+    root = Path(root)
+    cands = [root / "lib" / "llvm" / "amdgcn" / "bitcode", root / "amdgcn" / "bitcode"]
+    for d in (root / "lib64" / "rocm" / "llvm" / "lib" / "clang", root / "lib" / "rocm" / "llvm" / "lib" / "clang"):
+        cands += sorted(p / "lib" / "amdgcn" / "bitcode" for p in d.glob("*")
+                        if (p / "lib" / "amdgcn" / "bitcode").is_dir())
+    return next((p for p in cands if p.is_dir()), root / "amdgcn" / "bitcode")
+
+
 def build_engine_hip(gpu, llama, vision="none") -> Path:
     """Compile the HIP engine for this AMD GPU into engine/ (again only when its source changed: a `git pull`).
     gpu["archs"]: every architecture it needs code for (the cards of a layer split), else gpu["arch"].  vision "cpu"
@@ -1871,15 +1921,15 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
         return build_vision_cpu(eng, stamp, meta, llama, vsrc)
     if not (shutil.which("c++") or shutil.which("g++")) or not shutil.which("git"):
         fail("a C++ compiler and git are needed to compile the AMD engine",
-             "Ubuntu/Debian: sudo apt install build-essential git   Fedora: sudo dnf install gcc-c++ git")
+             "Ubuntu/Debian: sudo apt install build-essential git   Fedora: sudo dnf install gcc-c++ git   "
+             "Bazzite/Silverblue: rpm-ostree install gcc-c++ cmake git --reboot")
     root, dirs = rocm_root(archs)
     libs = [str(Path(d).parent) for d in dirs[1:]]
-    bitcode = next((p for p in (root / "lib" / "llvm" / "amdgcn" / "bitcode", root / "amdgcn" / "bitcode") if p.is_dir()),
-                   root / "amdgcn" / "bitcode")
+    bitcode, hipxx = hip_bitcode(root), hip_compiler(root)
     os.environ.update({"HIP_PLATFORM": "amd", "HIP_COMPILER": "clang", "HIP_RUNTIME": "rocclr", "ROCM_PATH": str(root),
                        "HIP_PATH": str(root)})
     os.environ["LD_LIBRARY_PATH"] = os.pathsep.join(dirs + [os.environ.get("LD_LIBRARY_PATH", "")]).rstrip(os.pathsep)
-    os.environ["PATH"] = os.pathsep.join([str(root / "bin"), str(root / "llvm" / "bin"), os.environ.get("PATH", "")])
+    os.environ["PATH"] = os.pathsep.join([str(root / "bin"), str(hipxx.parent), os.environ.get("PATH", "")])
     say("  The engine's source changed: compiling it again (only what changed, a few minutes) ..."
         if meta.get("backend") == "hip" and (eng / EXE).exists() and has_archs
         else f"  Compiling the Strata engine for your AMD GPU{'s' if len(archs) > 1 else ''} ({', '.join(archs)}; "
@@ -1887,7 +1937,7 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
     cmake_build(ROOT, ROOT / "build-hip", "strata",
                 ["-DSTRATA_ENABLE_HIP=ON", "-DSTRATA_ENABLE_CUDA=OFF", "-DSTRATA_BUILD_TESTS=OFF",
                  "-DSTRATA_PREFILL_MMQ=ON", "-DCMAKE_HIP_ARCHITECTURES=" + ";".join(archs),
-                 f"-DCMAKE_HIP_COMPILER={root / 'llvm' / 'bin' / 'clang++'}", f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={root}",
+                 f"-DCMAKE_HIP_COMPILER={hipxx}", f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={root}",
                  "-DCMAKE_PREFIX_PATH=" + ";".join([str(root), *libs]),
                  f"-DCMAKE_HIP_FLAGS=--rocm-path={root} --rocm-device-lib-path={bitcode}",
                  f"-DSTRATA_GGML_DIR={llama}", *isa_floor_defs(floor, ROOT / "build-hip", meta)], None, "")

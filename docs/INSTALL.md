@@ -67,7 +67,9 @@ Radeon GPUs are listed as not supported.
 
 On Linux setup uses a system ROCm 7 when there is one, or installs ROCm into `.venv` from AMD's wheels (~10 GB, no
 sudo), and compiles the engine on your PC for the card (10-20 minutes, once; it needs a C++ compiler and git:
-`sudo apt install build-essential git`). Several AMD cards share the model with `--gpus`, as on NVIDIA.
+`sudo apt install build-essential git`). Several AMD cards share the model with `--gpus`, as on NVIDIA. Two cards of
+different GPU families need the system ROCm 7, and on Bazzite or another read-only-image Fedora its development
+packages are layered with `rpm-ostree`: [BAZZITE.md](BAZZITE.md).
 
 What differs from NVIDIA for now: pictures are read by the image encoder on the CPU (`--vision cpu`, 10-30 s per
 picture), `--calibrate` is NVIDIA-only, and Unsloth's 4-bit model needs an NVIDIA card. Measurements per card, the
@@ -84,7 +86,9 @@ Every card must be an RTX 20 series or newer with 8 GB or more. See [MULTI_GPU.m
 
 **Several AMD cards:** setup takes one card (the one with the most VRAM, or `--gpu N`) unless you name more:
 `--gpus 1,0` splits the model's layers across them, the first one the main card (numbers as setup lists them). A
-split pays only when no single card holds the model's experts ([AMD_HIP.md](AMD_HIP.md#rdna4-gfx1201)).
+split pays only when no single card holds the model's experts ([AMD_HIP.md](AMD_HIP.md#rdna4-gfx1201)). Cards of two
+different families (gfx1100 + gfx1201) need a system ROCm 7 - on an immutable Fedora:
+[BAZZITE.md](BAZZITE.md).
 
 ## Docker (Linux)
 
