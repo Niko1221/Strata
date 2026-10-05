@@ -1066,6 +1066,16 @@ if(STRATA_NATIVE_EXPERTS)
     target_include_directories(strata_mmq PRIVATE ${_strata_gg}/include ${_strata_gg}/src ${_strata_mmq}
                                PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_compile_options(strata_mmq PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda -use_fast_math>)
+
+  # the fused-int8 MoE kernels' WMMA translation fixture (the moe-fused-wmma campaign): IQ3_S
+  # gate/up decode -> LDS int8 tiles -> rocWMMA 16x16x16 int8->i32 -> per-half scale fold, vs a
+  # double reference on the same quantized activations; bounds 1e-4 RMS / 1e-3 worst row
+  add_executable(prefill_fused_iq_wmma_test tests/hip/prefill_fused_iq_wmma.cu)
+  target_include_directories(prefill_fused_iq_wmma_test PRIVATE ${_strata_gpu_include_directories}
+                            ${_strata_gg}/include ${_strata_gg}/src ${_strata_gg}/src/ggml-cuda)
+  target_compile_definitions(prefill_fused_iq_wmma_test PRIVATE GGML_USE_HIP=1)
+  target_link_libraries(prefill_fused_iq_wmma_test PRIVATE strata_mmq ${_strata_gpu_runtime_target})
+  add_test(NAME prefill_fused_iq_wmma_test COMMAND prefill_fused_iq_wmma_test)
     if(MSVC)
       target_compile_options(strata_mmq PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/bigobj>)
     endif()

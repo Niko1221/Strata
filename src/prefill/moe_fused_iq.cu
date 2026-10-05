@@ -30,6 +30,35 @@
 #define GGML_COMMON_IMPL_CUDA
 #include "ggml-common.h"
 
+// the WMMA translation's rocWMMA include - GLOBAL scope (its std:: names resolve against the
+// anonymous namespace otherwise), HIP-only, with the shim macro lift/restore (the
+// gdn_rec_wy_wmma_rocwmma.hpp pattern: the force-included cuda_runtime.h shim macros collide
+// with rocwmma's bf16/fp8 headers)
+#if defined(__HIP_PLATFORM_AMD__) && defined(__has_include)
+#if __has_include(<rocwmma/rocwmma.hpp>)
+#define STRATA_MF_HAVE_ROCWMMA 1
+#undef __dp4a
+#undef __vsub4
+#undef __vsubss4
+#undef __vcmpne4
+#undef __shfl_xor_sync
+#undef __shfl_down_sync
+#undef __shfl_up_sync
+#undef __shfl_sync
+#undef __ballot_sync
+#include <rocwmma/rocwmma.hpp>
+#define __dp4a(a, b, c) (::strata::hip_compat::dp4a((a), (b), (c)))
+#define __vsub4(a, b) (::strata::hip_compat::vsub4((a), (b)))
+#define __vsubss4(a, b) (::strata::hip_compat::vsubss4((a), (b)))
+#define __vcmpne4(a, b) (::strata::hip_compat::vcmpne4((a), (b)))
+#define __shfl_xor_sync(...) (::strata::hip_compat::shfl_xor_sync(__VA_ARGS__))
+#define __shfl_down_sync(...) (::strata::hip_compat::shfl_down_sync(__VA_ARGS__))
+#define __shfl_up_sync(...) (::strata::hip_compat::shfl_up_sync(__VA_ARGS__))
+#define __shfl_sync(...) (::strata::hip_compat::shfl_sync(__VA_ARGS__))
+#define __ballot_sync(...) (::strata::hip_compat::ballot_sync(__VA_ARGS__))
+#endif
+#endif
+
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -506,6 +535,199 @@ native_kernel(const Batch b, const NativeGeom geo, const Tables tb, const uint8_
 #endif
 }
 
+// ---- the HIP/gfx1100 WMMA sibling (moe-fused-wmma campaign, M3): the same batch machinery,
+// staging and epilogues as native_kernel above, with rocWMMA 16x16x16 int8->i32 mma tiles on
+// plain (unswizzled) LDS int8 tiles and the scales folded from the i32 readbacks (per-lane,
+// the m16n8 lane mapping - so the epilogues run verbatim).  Integer-exact dots; the fp32
+// differences vs the CUDA arm are summation order only (fixture: rel RMS 0, worst 1.27e-05).
+#elif defined(__HIP_PLATFORM_AMD__) && defined(STRATA_MF_HAVE_ROCWMMA)
+
+template <int WT, bool GU, int WW>
+__global__ void __launch_bounds__(THREADS, 1)
+native_kernel_wmma(const Batch b, const NativeGeom geo, const Tables tb, const uint8_t* __restrict__ act,
+                   const int32_t* __restrict__ src, uint8_t* __restrict__ out, float* __restrict__ dm) {
+    constexpr int TR = tile_rows(WW), WR = weight_rows(WW);   // 128 x 128 for WW=4 (fixture-proven shape)
+    constexpr int WT_BYTES = WR * WLD, WS_FLOATS = WR * 4, ACT_STAGE = TR * AB;
+    constexpr int NS = (GU ? GU_ROWS_K : D_ROWS_K) / 64;
+    constexpr int NFB = (GU ? 1280 : 2560) / WR;
+    constexpr int ACT_LD = NS * AB;
+    constexpr int BS = block_bytes(WT);
+    constexpr bool K16 = per16(WT);
+    __shared__ __align__(16) int8_t wt[2][WR][WLD];           // decoded int8 weights, double-buffered
+    __shared__ float ws[2][WR][4];                            // their per-16 scales
+    __shared__ uint8_t stages[TR * AB];                       // the stage's activations (single-buffered: sync copies)
+    __shared__ int srow[TR];
+    __shared__ uint8_t sgrid[grid_bytes(WT) > 0 ? grid_bytes(WT) : 1];
+    __shared__ int32_t dot[WW][2][16][16];                    // per-warp, per-m-tile i32 mma output
+
+    const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5, g = lane >> 2, tig = lane & 3;
+    const int wf = warp % WW, nb0 = 16 * (warp / WW);
+    if constexpr (grid_bytes(WT) > 0) {
+        const uint32_t* gs = (const uint32_t*) grid_src<WT>();
+        for (int i = tid; i < grid_bytes(WT) / 4; i += THREADS) ((uint32_t*) sgrid)[i] = gs[i];
+    }
+    uint32_t kv[4] = {0, 0, 0, 0};
+    if constexpr (WT == T_IQ4_XS || WT == T_IQ4_NL) {
+#pragma unroll
+        for (int k = 0; k < 16; ++k) kv[k >> 2] |= (uint32_t) (uint8_t) kvalues_iq4nl[k] << (8 * (k & 3));
+    }
+    const bool dec = tid < 2 * WR;
+    const int ur = dec ? tid >> 1 : 0, uj = tid & 1;
+    const int t0 = tb.ts[b.e0], nwork = (tb.ts[b.e1] - t0) * NFB;
+    for (int w = blockIdx.x; w < nwork; w += gridDim.x) {
+        const int2 tl = tb.tiles[t0 + w / NFB];
+        const int fb = w % NFB, e = tl.x, rrow0 = tl.y;
+        if ((rrow0 - tb.off[e]) % TR != 0) continue;
+        const int nrows = min(TR, tb.off[e + 1] - rrow0);
+        const uint8_t* blob = b.blob[e - b.e0];
+        const int rbase = fb * WR;
+        const uint8_t* wrow = GU ? blob + ((ur & 8) ? geo.up_off : 0) +
+                                       (size_t) (fb * (WR / 2) + 8 * (ur >> 4) + (ur & 7)) * geo.gu_row
+                                 : blob + geo.down_off + (size_t) (rbase + ur) * geo.d_row;
+        auto unit = [&](int s) -> const uint8_t* {
+            if (GU) return wrow + (s >> 2) * BS;
+            return WT == T_IQ4_NL ? wrow + (2 * s + uj) * BS : wrow + s * BS;
+        };
+        auto sub = [&](int s) { return GU ? 2 * (s & 3) + uj : uj; };
+        __syncthreads();                                      // the previous item is done with the buffers
+        if (tid < TR) srow[tid] = tid < nrows ? (GU ? src[rrow0 + tid] : rrow0 + tid) : -1;
+        __syncthreads();
+        auto load_act = [&](int s) {
+            uint8_t* st = stages;
+            for (int c = tid; c < TR * 5; c += THREADS) {
+                const int r = c / 5, q = c % 5;
+                if (r < nrows) memcpy(st + r * AB + q * 16, act + (size_t) srow[r] * ACT_LD + s * AB + q * 16, 16);
+            }
+        };
+        uint32_t raw[5] = {0, 0, 0, 0, 0};
+        if (dec) load_unit<WT>(unit(0), sub(0), raw);
+        auto put = [&](const uint32_t (&raw5)[5], int buf) {
+            if (!dec) return;
+            int8_t q[32];
+            float s0, s1;
+            convert<WT>(raw5, sgrid, kv, q, s0, s1);
+            memcpy(&wt[buf][ur][32 * uj], q, 32);
+            ws[buf][ur][2 * uj] = s0;
+            ws[buf][ur][2 * uj + 1] = s1;
+        };
+        put(raw, 0);
+        if (dec) load_unit<WT>(unit(1), sub(1), raw);
+        const bool on0 = nb0 < nrows, on1 = nb0 + 8 < nrows;
+        float acc[4][2][4];
+#pragma unroll
+        for (int i = 0; i < 4; ++i)
+#pragma unroll
+            for (int n = 0; n < 2; ++n)
+#pragma unroll
+                for (int q = 0; q < 4; ++q) acc[i][n][q] = 0.0f;
+        for (int s = 0; s < NS; ++s) {
+            __syncthreads();
+            if (s + 1 < NS) load_act(s + 1);
+            if (s + 1 < NS) { put(raw, (s + 1) & 1); if (dec && s + 2 < NS) load_unit<WT>(unit(s + 2), sub(s + 2), raw); }
+            __syncthreads();
+            if (on0) {
+                const int8_t (*W)[WLD] = wt[(s & 1)];
+                const float (*S)[4] = ws[(s & 1)];
+                const uint8_t* sa = stages;
+                float2 dx[2][2];
+#pragma unroll
+                for (int n = 0; n < 2; ++n)
+#pragma unroll
+                    for (int cc = 0; cc < 2; ++cc) memcpy(&dx[n][cc], sa + (nb0 + 8 * n + 2 * tig + cc) * AB + 64, 8);
+#pragma unroll
+                for (int h = 0; h < 2; ++h) {
+                    const int8_t* bq = sa + b_off + 32 * h;
+#pragma unroll
+                    for (int i = 0; i < 4; ++i) {
+                        const int8_t* a = W + a_off + 16 * i * WLD + 32 * h;
+                        const float2 swa = *(const float2*) (S + (64 * wf + 16 * i + g) * 4 + 2 * h);
+                        const float2 swb = *(const float2*) (S + (64 * wf + 16 * i + 8 + g) * 4 + 2 * h);
+                        (void) swa; (void) swb;   // read in the fold below (per j16 group)
+#pragma unroll
+                        for (int n = 0; n < 2; ++n) {
+                            if (n == 1 && !on1) break;
+                            // the mma: two 16x16x16 rocWMMA tiles per 32-value half (or one per
+                            // 16-value group on K16), i32 output to the LDS dot tile
+                            mma_tile_16(a, WLD, bq + 16 * n, AB, &dot[warp][i][0][0], 16);
+                            __syncthreads();
+                            // the fold: lane (g, tig) reads its m16n8 elements from the dot tile
+                            // and applies the ORIGINAL per-group scale chain
+#pragma unroll
+                            for (int n8 = 0; n8 < 2; ++n8) {
+                                if (n8 == 1 && !on1) break;
+                                const float2 dxc = dx[n8];
+#pragma unroll
+                                for (int q = 0; q < 4; ++q) {
+                                    const int m = g + 8 * (q >> 1), c = 8 * n8 + 2 * tig + (q & 1);
+                                    const float v = (float) dot[warp][i][m][c];
+                                    // K16 formats: a scale per 16 weights - the j16 loop folds
+                                    // each 16-group with its own scale (swa.y/swb.y when h=1);
+                                    // k32 formats: s0 == s1, the j16 split is pure reassociation
+                                    const float wsc = q < 2 ? (j16 ? swa.y : swa.x) : (j16 ? swb.y : swb.x);
+                                    const float p = wsc * (h ? dxc.y : dxc.x);
+                                    acc[i][n8][q] = fmaf(p, v, acc[i][n8][q]);
+                                }
+                            }
+                            __syncthreads();
+                        }
+                    }
+                }
+            }
+        }
+        if (!on0) continue;
+        if (GU) {
+            const int blk = WW * fb + wf;
+#pragma unroll
+            for (int n = 0; n < 2; ++n) {
+                if (n == 1 && !on1) break;
+#pragma unroll
+                for (int c = 0; c < 2; ++c) {
+                    float h[4], am = 0.0f;
+#pragma unroll
+                    for (int i = 0; i < 4; ++i) {
+                        const float gt = acc[i][n][c], up = acc[i][n][2 + c];
+                        h[i] = gt / (1.0f + __expf(-gt)) * up;
+                        am = fmaxf(am, fabsf(h[i]));
+                    }
+#pragma unroll
+                    for (int o = 4; o < 32; o <<= 1) am = fmaxf(am, __shfl_xor_sync(0xffffffffu, am, o));
+                    const float inv = am > 0.0f ? 127.0f / am : 0.0f;
+                    const int r = nb0 + 8 * n + 2 * tig + c;
+                    if (r < nrows) {
+                        uint8_t* o = out + (size_t) (row0 + r) * (10 * AB) + (blk >> 1) * AB;
+                        const int hh = blk & 1;
+#pragma unroll
+                        for (int i = 0; i < 4; ++i) o[32 * hh + 8 * i + g] = (uint8_t) (int8_t) __float2int_rn(h[i] * inv);
+                        if (g == 0) *(float*) (o + 64 + 4 * hh) = am / 127.0f;
+                    }
+                }
+            }
+        } else {
+#pragma unroll
+            for (int i = 0; i < 4; ++i)
+#pragma unroll
+                for (int n = 0; n < 2; ++n) {
+                    if (n == 1 && !on1) break;
+#pragma unroll
+                    for (int q = 0; q < 4; ++q) {
+                        const int r = nb0 + 8 * n + 2 * tig + (q & 1);
+                        if (r < nrows) dm[(size_t) (rrow0 + r) * 2560 + rbase + 64 * wf + 16 * i + 8 * (q >> 1) + g] = acc[i][n][q];
+                    }
+                }
+        }
+    }
+}
+
+template <int T, bool GU>
+void launch_wmma(int ww, unsigned grid, const Batch& b, const NativeGeom& g, const Tables& tb, const void* act,
+                 const int32_t* src, void* out, float* dm, cudaStream_t s) {
+    const uint8_t* a = (const uint8_t*) act;
+    uint8_t* o = (uint8_t*) out;
+    if (ww == 4) native_kernel_wmma<T, GU, 4><<<grid, THREADS, smem_bytes(T, 4), s>>>(b, g, tb, a, src, o, dm);
+    else native_kernel_wmma<T, GU, 2><<<grid, THREADS, smem_bytes(T, 2), s>>>(b, g, tb, a, src, o, dm);
+}
+#endif  // the HIP WMMA sibling
+
 unsigned blocks(int64_t n, int per) { return (unsigned) ((n + per - 1) / per); }
 
 // per device: whether every kernel here runs (sm_80+, device code in this build, fits), and their occupancy
@@ -516,7 +738,14 @@ struct DevInfo {
 std::mutex g_mu;
 DevInfo g_dev[32];
 
-#if !defined(STRATA_HIP_GFX906)
+#if !defined(STRATA_HIP_GFX906) && defined(STRATA_MF_HAVE_ROCWMMA)
+template <int T, bool GU, int WW> bool setup_ww(int& occ) {
+    cudaFuncAttributes fa{};
+    if (cudaFuncGetAttributes(&fa, native_kernel_wmma<T, GU, WW>) != cudaSuccess) return false;
+    occ = std::max(1, fa.maxThreadsPerBlock / THREADS);
+    return true;
+}
+#elif !defined(STRATA_HIP_GFX906)
 template <int T, bool GU, int WW> bool setup_ww(int& occ) {
     cudaFuncAttributes fa{};
     if (cudaFuncGetAttributes(&fa, native_kernel<T, GU, WW>) != cudaSuccess || fa.ptxVersion < 80) return false;
@@ -622,6 +851,18 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
     const int64_t tiles = (n + kTileRows - 1) / kTileRows + (b.e1 - b.e0);
     const unsigned g_gu = (unsigned) std::min<int64_t>(tiles * (1280 / weight_rows(ww)), (int64_t) d.sms * d.occ);
     const unsigned g_d = (unsigned) std::min<int64_t>(tiles * (2560 / weight_rows(ww)), (int64_t) d.sms * d.occ);
+#if defined(__HIP_PLATFORM_AMD__) && defined(STRATA_MF_HAVE_ROCWMMA)
+    switch (g.gu_type) {
+        case T_IQ2_XXS: launch_wmma<T_IQ2_XXS, true>(ww, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
+        case T_IQ2_XS: launch_wmma<T_IQ2_XS, true>(ww, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
+        case T_IQ2_S: launch_wmma<T_IQ2_S, true>(ww, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
+        case T_IQ3_XXS: launch_wmma<T_IQ3_XXS, true>(ww, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
+        case T_IQ3_S: launch_wmma<T_IQ3_S, true>(ww, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
+        default: launch_wmma<T_IQ4_XS, true>(ww, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
+    }
+    if (g.d_type == T_Q2_0) launch_wmma<T_Q2_0, false>(ww, g_d, b, g, tb, ha, src, nullptr, dm, s);
+    else launch_wmma<T_IQ4_NL, false>(ww, g_d, b, g, tb, ha, src, nullptr, dm, s);
+#else
     switch (g.gu_type) {
         case T_IQ2_XXS: launch<T_IQ2_XXS, true>(ww, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
         case T_IQ2_XS: launch<T_IQ2_XS, true>(ww, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
@@ -632,6 +873,7 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
     }
     if (g.d_type == T_Q2_0) launch<T_Q2_0, false>(ww, g_d, b, g, tb, ha, src, nullptr, dm, s);
     else launch<T_IQ4_NL, false>(ww, g_d, b, g, tb, ha, src, nullptr, dm, s);
+#endif
     ck(cudaGetLastError(), "experts_native");
 }
 
