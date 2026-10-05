@@ -15,8 +15,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate  # noqa: E402
-from serve.responses import (ENCRYPTED_PREFIX, ResponsesError, input_messages, request_tools,  # noqa: E402
-                             template_kwargs, text_format)
+from serve.responses import (ENCRYPTED_PREFIX, ResponsesError, collect, input_messages, request_tools,  # noqa: E402
+                             template_kwargs, text_format, thread_title_events)
 from serve.server import ByteTokenizer, MockEngine, Service, serve  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -355,6 +355,30 @@ class ToolRoundTrip(Server):
                                           "output": "2"}]})
         self.assertEqual([c["function"]["name"] for c in msgs[1]["tool_calls"]],
                          ["multi_agent_v1.spawn_agent", "apply_patch"])
+
+
+class ThreadTitle(Server):
+    def test_a_thread_title_is_answered_without_the_engine(self):
+        user = {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "what is in a.txt?"}]}
+        code, r = self.post({"model": "m", "instructions": "You are a coding agent.", "input": [user], "tools": TOOLS})
+        self.assertEqual(code, 200, r)
+        seen = list(self.engine.last_prompt)
+        self.assertTrue(seen)
+        meta = {"session_id": "019a-title", "thread_id": "019a-title", "request_kind": "turn",
+                "thread_source": "thread_title"}
+        code, r = self.post({
+            "model": "m", "instructions": "You are Codex", "tools": [],
+            "client_metadata": {"x-codex-turn-metadata": json.dumps(meta)},
+            "input": [{"type": "message", "role": "user", "content": [
+                {"type": "input_text", "text": "Generate a concise title.\n\nUser prompt:\n只回四個字然後停：傾印測試"}]}]})
+        self.assertEqual(code, 200, r)
+        self.assertEqual(self.engine.last_prompt, seen)
+        self.assertEqual(json.loads(r["output"][0]["content"][0]["text"]), {"title": "只回四個字然後停：傾印測試"})
+        long = {"model": "m", "instructions": "You are Codex", "tools": [],
+                "client_metadata": {"x-codex-turn-metadata": json.dumps(meta)},
+                "input": "User prompt:\n" + ("甲" * 40) + "。"}
+        self.assertEqual(json.loads(collect(thread_title_events(long, "m"))["output"][0]["content"][0]["text"]),
+                         {"title": "甲" * 36})
 
 
 if __name__ == "__main__":
