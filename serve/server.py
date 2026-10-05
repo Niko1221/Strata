@@ -1983,7 +1983,7 @@ class Service:
             raise ValueError("live memory engine did not report its actual arena_mib")
         args = self.engine.spawn[1]
         reserve = info.get("vram_reserve_mib", int(args[args.index("--vram-reserve-mib") + 1]))
-        self.memory_policy.live_actual(arena, reserve, time.time(), reason, completed=True)
+        self.memory_policy.live_actual(arena, reserve, time.time(), reason, completed=True, loaded=True)
         self.memory_live_pending = None
         self.memory_retry_at = 0
         self.memory_error = None
@@ -1993,6 +1993,7 @@ class Service:
         self.memory_live_pending = None
         self.memory_pending = None
         self.memory_policy.current = None
+        self.memory_policy.reconcile_after_load = False
         self.memory_policy.gpu_baseline = None
         self.memory_policy._reset_windows()
         self.memory_last_reason = "engine_unavailable"
@@ -2052,7 +2053,7 @@ class Service:
                     self._invalidate_live_memory()
                     return
                 self._drain_memory_acks(now)
-                if self.memory_live_pending is not None or now < self.memory_retry_at:
+                if self.memory_live_pending is not None:
                     return
             with self.status_lock:
                 idle = not self.status.get("busy") and not self.status.get("queued")
@@ -2061,6 +2062,11 @@ class Service:
             plan = self.memory_policy.observe(snapshot, self.loaded(), getattr(self.engine, "info", {}), now)
             if live:
                 if plan is None:
+                    return
+                # A failed allocation delays growth, not relief for other apps.
+                # The policy requires sustained pressure and forbids either
+                # cache from growing in a pressure plan.
+                if now < self.memory_retry_at and plan["reason"] != "sustained_pressure":
                     return
                 if self.memory_request_id >= 2**53:
                     self.memory_error = "request_id_exhausted"
@@ -2077,6 +2083,9 @@ class Service:
                     self.memory_error = str(e)
                     self.memory_last_reason = "command_failed"
                     self.memory_retry_at = now + self.memory_policy.cooldown
+                    # Pressure may bypass the growth retry deadline; a failed
+                    # write must earn a new stability window before retrying.
+                    self.memory_policy._reset_windows()
                 return
             self.memory_pending = plan
 

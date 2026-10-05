@@ -210,5 +210,91 @@ class PolicyTests(unittest.TestCase):
             self.assertIsNone(policy.observe(sample(now, gpu_used=21.6), True, info, now))
 
 
+class PostLoadPolicyTests(unittest.TestCase):
+    def loaded_policy(self, mode="live", reserve=1536):
+        policy = MemoryPolicy({"enabled": True, "mode": mode, "overhead_ram_gib": 4})
+        policy.context_ram_gib = 1.538
+        policy.context_startup_reserve_gib = 4
+        policy.live_actual(17144, reserve, 100, "load_budget", completed=True, loaded=True)
+        return policy
+
+    def observe(self, policy, now, used=43.7421875, gpu_used=20, arena=17144, stamp=None):
+        return policy.observe(sample(now if stamp is None else stamp, used=used, gpu_used=gpu_used),
+                              True, {"arena_mib": arena, "expert_cache_mib": 5344}, now)
+
+    def test_cold_load_reclaims_safe_ram_before_growth_cooldown(self):
+        policy = self.loaded_policy()
+        plan = self.observe(policy, 101)
+        self.assertEqual(plan, {"resident_budget_gib": 31.5, "vram_reserve_mib": 1536,
+                                "reason": "post_load_headroom"})
+        self.assertEqual(policy.current["resident_budget_gib"], 17144 / 1024)
+        self.assertEqual(policy.last_applied, 100)
+
+    def test_reconciliation_keeps_gpu_reserve_even_when_gpu_has_room(self):
+        policy = self.loaded_policy(reserve=2560)
+        plan = self.observe(policy, 101)
+        self.assertEqual(plan["resident_budget_gib"], 31.5)
+        self.assertEqual(plan["vram_reserve_mib"], 2560)
+
+    def test_completed_reconciliation_does_not_bypass_later_growth_limits(self):
+        policy = self.loaded_policy()
+        self.assertEqual(self.observe(policy, 101)["reason"], "post_load_headroom")
+        policy.live_actual(32256, 1536, 102, "post_load_headroom", completed=True)
+        for now in range(103, 224):
+            self.assertIsNone(self.observe(policy, now, used=25, arena=32256))
+        self.assertEqual(policy.status()["reason"], "cooldown")
+        for now in range(224, 702):
+            self.assertIsNone(self.observe(policy, now, used=25, arena=32256))
+        plan = self.observe(policy, 702, used=25, arena=32256)
+        self.assertEqual(plan["reason"], "stable_headroom")
+        self.assertEqual(plan["resident_budget_gib"], 42)
+
+    def test_progress_error_and_ordinary_apply_do_not_rearm_reconciliation(self):
+        for reason, completed in (("native_progress", False), ("native_error", False),
+                                  ("sustained_pressure", True)):
+            with self.subTest(reason=reason):
+                policy = self.loaded_policy()
+                self.assertEqual(self.observe(policy, 101)["reason"], "post_load_headroom")
+                policy.live_actual(20000, 1536, 102, reason, completed=completed)
+                self.assertIsNone(self.observe(policy, 103, arena=20000))
+                self.assertEqual(policy.status()["reason"], "growth_debounce")
+
+    def test_invalid_or_preload_samples_preserve_first_loaded_observation(self):
+        cases = ((101, {}, 17144), (110, sample(99), 17144),
+                 (101, sample(100), 17144), (101, sample(99), 17144),
+                 (101, sample(101), None), (101, sample(101), 0))
+        for now, reading, arena in cases:
+            with self.subTest(now=now, reading=reading, arena=arena):
+                policy = self.loaded_policy()
+                self.assertIsNone(policy.observe(reading, True, {"arena_mib": arena}, now))
+                plan = self.observe(policy, now + 1)
+                self.assertEqual(plan["reason"], "post_load_headroom")
+
+    def test_replayed_sample_cannot_consume_loaded_reconciliation(self):
+        policy = MemoryPolicy({"enabled": True, "mode": "live"})
+        reading = sample(101, used=43.7421875)
+        self.assertIsNone(policy.observe(reading, False, {}, 101))
+        policy.live_actual(17144, 1536, 100, "load_budget", completed=True, loaded=True)
+        self.assertIsNone(policy.observe(reading, True, {"arena_mib": 17144}, 101))
+        self.assertEqual(self.observe(policy, 102)["reason"], "post_load_headroom")
+
+    def test_first_pressure_or_small_ram_gain_consumes_reconciliation(self):
+        for first_used, first_gpu in ((60, 20), (57.5, 20), (43.7421875, 23.99)):
+            with self.subTest(used=first_used, gpu_used=first_gpu):
+                policy = self.loaded_policy()
+                self.assertIsNone(self.observe(policy, 101, used=first_used, gpu_used=first_gpu))
+                self.assertIsNone(self.observe(policy, 102))
+                self.assertEqual(policy.status()["reason"], "growth_debounce")
+
+    def test_reload_mode_keeps_existing_debounce_and_cooldown(self):
+        policy = self.loaded_policy(mode="reload")
+        for now in range(101, 222):
+            self.assertIsNone(self.observe(policy, now))
+        self.assertEqual(policy.status()["reason"], "cooldown")
+        for now in range(222, 700):
+            self.assertIsNone(self.observe(policy, now))
+        self.assertEqual(self.observe(policy, 700)["reason"], "stable_headroom")
+
+
 if __name__ == "__main__":
     unittest.main()

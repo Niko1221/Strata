@@ -225,6 +225,170 @@ class LiveMemoryTests(unittest.TestCase):
         self.assertEqual(svc.engine.proc.stdin.getvalue().splitlines()[-1], "MEMORY 2 43008 1536")
         self.assertTrue(svc.memory_status()["pending"])
 
+    def test_eager_load_reconciles_ram_once_while_busy_without_reload(self):
+        e = engine()
+        e.info["arena_mib"] = 17144
+        svc = Service(e, ByteTokenizer(), None)
+        with mock.patch("serve.server.time.time", return_value=100):
+            svc.configure_memory({"enabled": True, "mode": "live"})
+        svc.memory_snapshot = mock.Mock(return_value=sample(101, used=43.7421875))
+        svc.status["busy"] = True
+        e.unload = mock.Mock()
+        e.restart = mock.Mock()
+        with mock.patch("serve.server.time.time", return_value=101):
+            svc.observe_memory()
+        self.assertEqual(e.proc.stdin.getvalue(), "MEMORY 1 32256 1536\n")
+        self.assertEqual(svc.memory_status()["reason"], "post_load_headroom")
+        self.assertEqual(svc.memory_policy.current["resident_budget_gib"], 17144 / 1024)
+        e.memory_acks.put((e.proc, StrataEngine._memory_ack(ack(resident=32256))))
+        svc.memory_snapshot.return_value = sample(102, used=25)
+        with mock.patch("serve.server.time.time", return_value=102):
+            svc.observe_memory()
+        self.assertEqual(svc.memory_policy.current["resident_budget_gib"], 31.5)
+        self.assertEqual(svc.memory_status()["last_reason"], "post_load_headroom")
+        self.assertFalse(svc.memory_status()["pending"])
+        self.assertEqual(e.proc.stdin.getvalue().count("MEMORY"), 1)
+        e.unload.assert_not_called()
+        e.restart.assert_not_called()
+
+    def test_successful_cold_reload_rearms_loaded_ram_reconciliation(self):
+        svc = service()
+        svc.memory_snapshot.return_value = sample(1, used=50)
+        with mock.patch("serve.server.time.time", return_value=1):
+            svc.observe_memory()
+        self.assertEqual(svc.engine.proc.stdin.getvalue(), "")
+        svc.engine.ended = True
+        svc.memory_snapshot.return_value = sample(100, used=35)
+        def restart():
+            svc.engine.proc = engine().proc
+            svc.engine.ended = False
+            svc.engine.info["arena_mib"] = 17144
+        svc.engine.restart = mock.Mock(side_effect=restart)
+        with mock.patch("serve.server.time.time", return_value=100):
+            svc.ensure_loaded()
+        self.assertEqual(svc.memory_policy.current["resident_budget_gib"], 17144 / 1024)
+        self.assertEqual(svc.memory_status()["last_reason"], "load_budget")
+        svc.memory_snapshot.return_value = sample(101, used=43.7421875)
+        with mock.patch("serve.server.time.time", return_value=101):
+            svc.observe_memory()
+        self.assertEqual(svc.engine.proc.stdin.getvalue(), "MEMORY 1 32256 1536\n")
+        svc.engine.restart.assert_called_once()
+
+    def test_partial_native_failure_keeps_retry_delay_after_loaded_reconciliation(self):
+        e = engine()
+        e.info["arena_mib"] = 17144
+        svc = Service(e, ByteTokenizer(), None)
+        with mock.patch("serve.server.time.time", return_value=100):
+            svc.configure_memory({"enabled": True, "mode": "live"})
+        svc.memory_snapshot = mock.Mock(return_value=sample(101, used=43.7421875))
+        with mock.patch("serve.server.time.time", return_value=101):
+            svc.observe_memory()
+        self.assertEqual(e.proc.stdin.getvalue(), "MEMORY 1 32256 1536\n")
+        e.memory_acks.put((e.proc, StrataEngine._memory_ack(
+            ack(status="error", resident=20000).rstrip() + " error=ram_resize\n")))
+        svc.memory_snapshot.return_value = sample(102, used=43.7421875)
+        with mock.patch("serve.server.time.time", return_value=102):
+            svc.observe_memory()
+        self.assertEqual(svc.memory_policy.current["resident_budget_gib"], 20000 / 1024)
+        self.assertEqual(svc.memory_status()["error"], "ram_resize")
+        self.assertEqual(svc.memory_status()["retry_at"], 702)
+        self.assertEqual(svc.memory_policy.last_applied, 100)
+        svc.memory_snapshot.return_value = sample(103, used=43.7421875)
+        with mock.patch("serve.server.time.time", return_value=103):
+            svc.observe_memory()
+        self.assertEqual(e.proc.stdin.getvalue().count("MEMORY"), 1)
+
+    def test_partial_growth_error_allows_pressure_shrink_before_growth_retry(self):
+        e = engine()
+        e.info["arena_mib"] = 17144
+        svc = Service(e, ByteTokenizer(), None)
+        with mock.patch("serve.server.time.time", return_value=100):
+            svc.configure_memory({"enabled": True, "mode": "live"})
+        svc.status["busy"] = True
+        e.unload = mock.Mock()
+        e.restart = mock.Mock()
+        svc.memory_snapshot = mock.Mock(return_value=sample(101, used=43.7421875))
+        with mock.patch("serve.server.time.time", return_value=101):
+            svc.observe_memory()
+        self.assertEqual(e.proc.stdin.getvalue(), "MEMORY 1 32256 1536\n")
+        e.memory_acks.put((e.proc, StrataEngine._memory_ack(ack(status="progress", resident=24576))))
+        svc.memory_snapshot.return_value = sample(102, used=61)
+        with mock.patch("serve.server.time.time", return_value=102):
+            svc.observe_memory()
+        self.assertTrue(svc.memory_status()["pending"])
+        self.assertEqual(e.proc.stdin.getvalue().count("MEMORY"), 1)
+        e.memory_acks.put((e.proc, StrataEngine._memory_ack(
+            ack(status="error", resident=24576).rstrip() + " error=ram_resize\n")))
+        for now in range(103, 164):
+            svc.memory_snapshot.return_value = sample(now, used=61)
+            with mock.patch("serve.server.time.time", return_value=now):
+                svc.observe_memory()
+            if now < 163:
+                self.assertEqual(e.proc.stdin.getvalue().count("MEMORY"), 1)
+        self.assertEqual(svc.memory_retry_at, 703)
+        self.assertEqual(e.proc.stdin.getvalue().splitlines(),
+                         ["MEMORY 1 32256 1536", "MEMORY 2 22016 1536"])
+        self.assertEqual(svc.memory_live_pending["plan"]["reason"], "sustained_pressure")
+        e.memory_acks.put((e.proc, StrataEngine._memory_ack(ack(request_id=2, resident=22016))))
+        for now in range(164, 703):
+            svc.memory_snapshot.return_value = sample(now, used=25)
+            with mock.patch("serve.server.time.time", return_value=now):
+                svc.observe_memory()
+        self.assertEqual(e.proc.stdin.getvalue().count("MEMORY"), 2)
+        self.assertEqual(svc.memory_policy.current["resident_budget_gib"], 21.5)
+        self.assertFalse(svc.memory_status()["pending"])
+        e.unload.assert_not_called()
+        e.restart.assert_not_called()
+
+    def test_pressure_write_failure_requires_new_pressure_window_before_retry(self):
+        svc = service()
+        svc.status["busy"] = True
+        svc.engine.request_memory = mock.Mock(side_effect=OSError("pipe write failed"))
+        for now in range(1, 62):
+            svc.memory_snapshot.return_value = sample(now, used=61)
+            with mock.patch("serve.server.time.time", return_value=now):
+                svc.observe_memory()
+        self.assertEqual(svc.engine.request_memory.call_count, 1)
+        self.assertEqual(svc.memory_retry_at, 661)
+        self.assertFalse(svc.memory_status()["pending"])
+        for now in range(62, 122):
+            svc.memory_snapshot.return_value = sample(now, used=61)
+            with mock.patch("serve.server.time.time", return_value=now):
+                svc.observe_memory()
+            self.assertEqual(svc.engine.request_memory.call_count, 1)
+        svc.memory_snapshot.return_value = sample(122, used=61)
+        with mock.patch("serve.server.time.time", return_value=122):
+            svc.observe_memory()
+        self.assertEqual(svc.engine.request_memory.call_count, 2)
+        self.assertEqual(svc.memory_retry_at, 722)
+        self.assertFalse(svc.memory_status()["pending"])
+        for now in range(123, 182):
+            svc.memory_snapshot.return_value = sample(now, used=61)
+            with mock.patch("serve.server.time.time", return_value=now):
+                svc.observe_memory()
+            self.assertEqual(svc.engine.request_memory.call_count, 2)
+        self.assertEqual([call.args[1:3] for call in svc.engine.request_memory.call_args_list],
+                         [(40448, 1536), (40448, 1536)])
+
+    def test_real_pressure_cannot_supersede_pending_native_operation(self):
+        svc = service()
+        svc.status["busy"] = True
+        svc.engine.unload = mock.Mock()
+        for now in range(1, 62):
+            svc.memory_snapshot.return_value = sample(now, used=61)
+            with mock.patch("serve.server.time.time", return_value=now):
+                svc.observe_memory()
+        svc.engine.memory_acks.put((svc.engine.proc, StrataEngine._memory_ack(
+            ack(status="progress", resident=40960))))
+        for now in range(62, 124):
+            svc.memory_snapshot.return_value = sample(now, used=63)
+            with mock.patch("serve.server.time.time", return_value=now):
+                svc.observe_memory()
+        self.assertEqual(svc.engine.proc.stdin.getvalue(), "MEMORY 1 40448 1536\n")
+        self.assertEqual(svc.memory_status()["request_id"], 1)
+        self.assertTrue(svc.memory_status()["pending"])
+        svc.engine.unload.assert_not_called()
+
     def test_busy_proposal_writes_control_without_reload_or_apply(self):
         svc = service()
         svc.status["busy"] = True
@@ -276,7 +440,11 @@ class LiveMemoryTests(unittest.TestCase):
         self.assertEqual(svc.memory_status()["error"], "allocation_failed")
         self.assertFalse(svc.memory_status()["pending"])
         self.assertEqual(svc.memory_retry_at, 1203)
-        propose(svc, 604)
+        svc.memory_policy.observe.return_value = {"resident_budget_gib": 42,
+                                                  "vram_reserve_mib": 1536,
+                                                  "reason": "stable_headroom"}
+        with mock.patch("serve.server.time.time", return_value=604):
+            svc.observe_memory()
         self.assertEqual(svc.engine.proc.stdin.getvalue().count("MEMORY"), 1)
 
     def test_telemetry_error_unknown_free_vram_keeps_actual_allocations(self):

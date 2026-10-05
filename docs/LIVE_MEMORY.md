@@ -30,6 +30,17 @@ The policy can observe pressure while an answer is running. Resizing runs only w
 work have reached a safe boundary. A large change takes several steps and may briefly pause generation.
 Idle unload is independent: set `idle_unload_s` according to how long the model should remain loaded.
 
+After a successful live-mode load, the first fresh hardware reading can reclaim an overestimated startup RAM
+allowance once, without waiting for the ordinary growth debounce or cooldown. It requires at least 2 GiB of
+additional safe RAM capacity and no RAM or GPU pressure; the GPU reserve stays unchanged. Native admission and
+bounded safe-point allocation still apply. Missing, stale or pre-load readings cannot trigger it. Later growth,
+including recovery after a partial allocation or error, keeps the configured debounce and cooldown.
+
+A native allocation error delays further growth, but sustained pressure can still shrink a cache during that
+retry delay. Pressure never grows the other cache. A failed control write starts a new pressure window before
+another shrink attempt; pending native work remains single-flight. Pressure relief retains the growth retry
+deadline, so a briefly freed budget cannot immediately start another expansion.
+
 ## What stays stable
 
 VRAM uses a reserved virtual address range with independently mapped physical blocks. Slot addresses and

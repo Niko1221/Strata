@@ -43,6 +43,7 @@ class MemoryPolicy:
         self.growth_since = None
         self.gpu_growth_since = None
         self.gpu_baseline = None
+        self.reconcile_after_load = False
         self.last_reason = "disabled" if not self.enabled else "awaiting_telemetry"
 
     @staticmethod
@@ -116,10 +117,11 @@ class MemoryPolicy:
         self.current = {"resident_budget_gib": resident, "vram_reserve_mib": int(reserve)}
         self.last_applied = now
         self.last_reason = plan.get("reason", "applied")
+        self.reconcile_after_load = False
         self.gpu_baseline = None
         self._reset_windows()
 
-    def live_actual(self, resident_mib, reserve_mib, now, reason, completed=False):
+    def live_actual(self, resident_mib, reserve_mib, now, reason, completed=False, loaded=False):
         """Native committed sizes can be below the requested minimum after rounding or partial failure."""
         if (not _number(resident_mib) or resident_mib < 0 or resident_mib > self.cap * 1024
                 or not _number(reserve_mib) or reserve_mib < 0):
@@ -129,6 +131,7 @@ class MemoryPolicy:
         self.last_reason = reason
         if completed:
             self.last_applied = now
+        self.reconcile_after_load = self.mode == "live" and completed and loaded
         self.gpu_baseline = None
         self._reset_windows()
 
@@ -177,6 +180,10 @@ class MemoryPolicy:
             self._reset_windows()
             self.last_reason = "awaiting_allocation" if loaded else "unloaded"
             return None
+        if self.reconcile_after_load and stamp <= self.last_applied:
+            self._reset_windows()
+            self.last_reason = "awaiting_post_load_telemetry"
+            return None
         plan = self._budget(reading, arena / 1024, loaded=True)
         ram_delta = plan["resident_budget_gib"] - self.current["resident_budget_gib"]
         vram_delta = plan["vram_reserve_mib"] - self.current["vram_reserve_mib"]
@@ -185,6 +192,16 @@ class MemoryPolicy:
         pressure = (reading["ram_used"] / reading["ram_total"] > self.ram_target
                     or free_ram < required_free_ram
                     or reading["gpu_mem_used"] / reading["gpu_mem_total"] > self.vram_target)
+        if self.reconcile_after_load:
+            # READY includes startup allocations. Reclaim an overestimated RAM
+            # allowance once from a fresh reading, without lowering the GPU reserve.
+            # Later growth and partial/error ACKs retain the ordinary cooldown.
+            self.reconcile_after_load = False
+            if not pressure and ram_delta >= 2:
+                plan["vram_reserve_mib"] = self.current["vram_reserve_mib"]
+                plan["reason"] = self.last_reason = "post_load_headroom"
+                self._reset_windows()
+                return plan
         # Live CUDA cache mappings commit in 32 MiB blocks. At the 99% target,
         # a 16 GiB card's entire pressure deficit is only 164 MiB; the legacy
         # reload threshold would make GPU-only reclamation unreachable there.
