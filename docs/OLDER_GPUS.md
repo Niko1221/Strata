@@ -23,7 +23,7 @@ capability 6.1 too, and cannot hold any of the model).
 
 | Cards | Architecture | How it runs | Reported |
 | --- | --- | --- | --- |
-| RX 6800 / 6900 series | gfx1030 | setup (`--backend hip`), unvalidated | [AMD_HIP.md](AMD_HIP.md#rdna2-gfx1030) |
+| RX 6800 / 6900 series | gfx1030 | setup (`--backend hip`), unvalidated; #540's attention kernel is the default there, with 8 cells per step and DPP lane exchanges (bit-exact; `STRATA_ATTN_PRE75=0` runs the standard kernel) | [AMD_HIP.md](AMD_HIP.md#rdna2-gfx1030); RX 6900 XT, IQ3_S: prompts +4-6% alone, +7-12% with #835 ([bench/results/2026-10-04-rdna2-pre75-attention](../bench/results/2026-10-04-rdna2-pre75-attention/README.md)) |
 | RX 6700 XT | gfx1031 | setup (`--backend hip`), unvalidated (#524) | used daily by its reporter, one card |
 | RX 5500 XT (RDNA1) | gfx1012 | built by hand: `-DCMAKE_HIP_ARCHITECTURES=gfx1012` (HIP 5.7 or 7) | 8 GB card, IQ3_S, 8K prompt: 15.3 tok/s decode (#442) |
 | Instinct MI50 / MI60, Radeon VII | gfx906 (wave64) | built by hand: `-DSTRATA_HIP_GFX906=ON` | 2x MI50, Coder IQ1_M, 128K context: decode 50.1 / 47.8 / 45.7 tok/s at 4K / 32K / 128K prompt tokens, prompt ~520 tok/s (#677) |
@@ -90,7 +90,8 @@ sums round differently): #540 measured a mean KL of 8.4e-3 on the next-token dis
 product on an RTX 2080 Ti.
 
 A/B switches: `STRATA_BF16_TC=0|1`, `STRATA_PROMPT_ATTN_OLD=1` (the decode kernel for prompts), `STRATA_ATTN_PRE75=0`
-(#540's kernel off). [NVIDIA_V100.md](NVIDIA_V100.md) has the V100 build, its measurements and the parity test.
+(#540's kernel off; on gfx103x with HIP that kernel is the default, see the AMD table above, and `=1` turns it on for
+another wave32 AMD card). [NVIDIA_V100.md](NVIDIA_V100.md) has the V100 build, its measurements and the parity test.
 
 ## AMD: building gfx906 and gfx1012
 
