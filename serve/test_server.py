@@ -858,13 +858,15 @@ class IncrementalPrompts(unittest.TestCase):
 
     def test_turns(self):
         self.assertIsNotNone(self.svc.prompts)
+        full = Service(self.engine, self.svc.tok, self.svc.template)
+        full.prompts = None                                  # the reference: the same prompt, encoded in full
         msgs = [{"role": "system", "content": "Be brief."}]
         for turn in range(6):
             msgs.append({"role": "user", "content": f"question {turn} <|im_end|> é你 " * (turn + 1)})
             status, b = self.post("/v1/chat/completions", {"model": "m", "max_tokens": 64, "messages": msgs})
             self.assertEqual(status, 200, b)
             prompt = self.svc.template.render(msgs)
-            self.assertEqual(self.engine.last_ids, self.svc.tok.encode(prompt, parse_special=True))
+            self.assertEqual(self.engine.last_ids, full.encode_prompt(msgs, None, {}))
             if turn:
                 self.assertGreater(self.svc.prompts.last_reused, len(prompt) // 3)
             msgs.append({"role": "assistant", "content": b["choices"][0]["message"]["content"]})
@@ -885,7 +887,11 @@ class IncrementalPrompts(unittest.TestCase):
 
     def test_a_tokenizer_without_resume_points_encodes_in_full(self):
         class Plain:
-            encode = ByteTokenizer().encode
+            """ByteTokenizer without the resume points."""
+            def __getattr__(self, name):
+                if name in ("encode_marked", "max_special_len"):
+                    raise AttributeError(name)
+                return getattr(ByteTokenizer(), name)
         svc = Service(self.engine, Plain(), self.svc.template)
         self.assertIsNone(svc.prompts)
         msgs = [{"role": "user", "content": "hi"}]
