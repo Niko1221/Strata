@@ -1,6 +1,6 @@
-# Community benchmark on RTX 5090 + Ryzen 9 5950X (AVX2): UD-Q4_K_XL, IQ3_S and Swift IQ3_XXS, engines 0.1.31 to 0.1.38
+# Community benchmark on RTX 5090 + Ryzen 9 5950X (AVX2): UD-Q4_K_XL, IQ3_S and Swift IQ3_XXS, engines 0.1.31 to 0.1.39
 
-Measured on 2026-10-01 to 2026-10-03 by [brenoperucchi](https://github.com/brenoperucchi). The same machine and prompts
+Measured on 2026-10-01 to 2026-10-04 by [brenoperucchi](https://github.com/brenoperucchi). The same machine and prompts
 across engine versions. Findings:
 
 - UD-Q4_K_XL, every expert in VRAM + RAM: 0.1.32 to 0.1.34 read prompts 4-10% slower than 0.1.31, and the 0.1.31 stager
@@ -11,6 +11,10 @@ across engine versions. Findings:
   IQ3_S at 14.7-28.9K (0.1.34 and 0.1.38). Prompts of 2.7K do not change, and neither does decode.
 - 0.1.38 reads prompts 11-20% faster than earlier versions on the packs (IQ3_S at 14.7-28.9K, Swift IQ3_XXS at every
   size), with the same decode.
+- UD-Q4_K_XL on 0.1.39: the file tier fix (#577) brings both budgets back without the variable (14.7K prompt: 2,043
+  tok/s at 72 GiB and 1,896 at 40 GiB, within 2% of 0.1.38 with `STRATA_UNBUFFERED_LOAD=0`).
+- On 0.1.39 `--prefill auto:32768` still reads IQ3_S's 14.7K and 28.9K prompts 14% and 25% faster than `auto`, the same
+  gain as on 0.1.38, so the new ring sizing (#583) does not change it on this PC.
 
 Main limitation: one machine, 3 runs per cell, and the 40 GiB budget does not reproduce a 64 GB PC (see below).
 
@@ -22,7 +26,7 @@ Main limitation: one machine, 3 runs per cell, and the 40 GiB budget does not re
 - AMD Ryzen 9 5950X, 16 cores / 32 threads, AVX2 only (no AVX-512); the engine chose AVX2 and 15 expert-pool workers.
 - 96 GB DDR4-3200 (2x32 + 2x16, dual channel); models on an NVMe SSD.
 - Windows 11 (build 26200), NVIDIA driver 616.64.
-- Engines 0.1.32 to 0.1.38: release binaries (`BUILD-0.1.3x.json` here), each with `serve/server.py` from its own tag's
+- Engines 0.1.32 to 0.1.39: release binaries (`BUILD-0.1.3x.json` here), each with `serve/server.py` from its own tag's
   checkout. Engine 0.1.31: the release binary that setup installed, run with the 0.1.32 `server.py`.
 - Background: nothing else on the GPU; normal desktop use. No power limit changes.
 
@@ -45,14 +49,19 @@ strata.exe --serve --pack <packs>\ud-q4_k_xl --native <UD-Q4_K_XL shard 1> --res
   --spec-min-p 0.5 --mtp <mtp>\rt --max-context 32768 --kv int8
 ```
 
-IQ3_S (0.1.34 and 0.1.38): ISTA-DASLab Flash-Next GSQ-RCO IQ3_S (2 shards + PLE): `--expert-cache auto
+IQ3_S (0.1.34, 0.1.38 and 0.1.39): ISTA-DASLab Flash-Next GSQ-RCO IQ3_S (2 shards + PLE): `--expert-cache auto
 --prefill auto|auto:32768 --spec 4 --spec-min-p 0.70 --mtp <mtp>\rt --max-context 65536 --kv int8 --pcie-frac 0.55` and
 `STRATA_IQ_MT_MIN=1` in `env`.
 
-Swift IQ3_XXS (0.1.34 to 0.1.38): Swift 1.5 IQ3_XXS pack, with the config this PC serves in production:
+Swift IQ3_XXS (0.1.34 to 0.1.39): Swift 1.5 IQ3_XXS pack, with the config this PC serves in production:
 `--expert-cache auto --prefill auto:32768 --spec 4 --spec-min-p 0.70 --mtp <mtp>\rt --max-context 32768 --kv int8
 --pcie-frac 0.20` and `STRATA_IQ_MT_MIN=1` (expert cache 14,864 of the 24,576 experts). The `STRATA_PF_FUSED=1` row is
 for speed only: with that flag the answers change, see #519.
+
+The "setup's defaults" rows (0.1.39, IQ3_S and Swift IQ3_XXS) use the arguments setup 0.1.39 writes for this PC, read
+from its `setup.py` (setup itself was not run): `--expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp
+<mtp>\rt --max-context 32768 --kv int8`, no `--pcie-frac` and no `env`. UD-Q4_K_XL's 72 GiB rows already match
+setup's defaults for 96 GB.
 
 Every server config is in [configs/](configs/) (paths as on this PC). The `stager4` configs add
 `STRATA_STAGER_THREADS=4` and `STRATA_STAGER_RING=16` to `env`, the `buffered` ones `STRATA_UNBUFFERED_LOAD=0`.
@@ -103,6 +112,11 @@ UD-Q4_K_XL:
 | 0.1.38, 72 GiB | long | 14,685 | 0 | 256, 256, 256 | 3 | 1,658 [1,645-1,681] | 87.9 [84.4-93.8] | not measured |
 | 0.1.38, 72 GiB, `STRATA_UNBUFFERED_LOAD=0` | medium | 2,682 | 0 | 256, 256, 256 | 3 | 899 [891-916] | 67.9 [53.7-69.3] | not measured |
 | 0.1.38, 72 GiB, `STRATA_UNBUFFERED_LOAD=0` | long | 14,687 | 0 | 256, 256, 256 | 3 | 2,038 [2,010-2,065] | 78.3 [77.0-82.3] | not measured |
+| 0.1.39, 72 GiB | short | 99 | 0 | 222, 227, 210 | 3 | 87.3 [81.1-87.4] | 65.9 [59.4-68.5] | not measured |
+| 0.1.39, 72 GiB | medium | 2,680 | 0 | 256, 256, 256 | 3 | 916 [914-961] | 74.2 [67.9-87.6] | not measured |
+| 0.1.39, 72 GiB | long | 14,685 | 0 | 256, 256, 256 | 3 | 2,043 [2,040-2,059] | 81.3 [77.8-92.0] | not measured |
+| 0.1.39, 72 GiB, `STRATA_UNBUFFERED_LOAD=0` | medium | 2,682 | 0 | 256, 256, 256 | 3 | 941 [911-943] | 67.2 [66.2-75.3] | not measured |
+| 0.1.39, 72 GiB, `STRATA_UNBUFFERED_LOAD=0` | long | 14,687 | 0 | 256, 256, 256 | 3 | 2,062 [2,002-2,106] | 86.0 [84.8-87.2] | not measured |
 | 0.1.32, 72 GiB, old stager values | medium | 2,687 | 0 | 256, 256, 256 | 3 | 942 [931-945] | 70.7 [60.1-71.3] | not measured |
 | 0.1.32, 72 GiB, old stager values | long | 14,692 | 0 | 256, 256, 256 | 3 | 2,116 [2,059-2,137] | 79.6 [72.0-81.0] | not measured |
 | 0.1.33, 72 GiB, old stager values | medium | 2,687 | 0 | 256, 256, 256 | 3 | 947 [943-947] | 69.5 [57.5-72.7] | not measured |
@@ -111,12 +125,17 @@ UD-Q4_K_XL:
 | 0.1.34, 72 GiB, old stager values | long | 14,688 | 0 | 256, 256, 256 | 3 | 2,133 [2,133-2,148] | 79.9 [78.5-81.8] | not measured |
 | 0.1.38, 72 GiB, old stager values | medium | 2,683 | 0 | 256, 256, 256 | 3 | 772 [766-772] | 78.1 [64.5-82.8] | not measured |
 | 0.1.38, 72 GiB, old stager values | long | 14,688 | 0 | 256, 256, 256 | 3 | 1,704 [1,699-1,709] | 80.6 [78.2-82.8] | not measured |
+| 0.1.39, 72 GiB, old stager values | medium | 2,683 | 0 | 256, 256, 256 | 3 | 988 [987-998] | 71.4 [66.7-75.8] | not measured |
+| 0.1.39, 72 GiB, old stager values | long | 14,688 | 0 | 256, 256, 256 | 3 | 2,169 [2,166-2,187] | 81.9 [76.4-83.1] | not measured |
 | 0.1.34, 72 GiB, `--prefill auto:32768` | short | 103 | 0 | 210, 225, 229 | 3 | 85.5 [85.0-88.0] | 66.2 [62.0-71.8] | not measured |
 | 0.1.34, 72 GiB, `--prefill auto:32768` | medium | 2,684 | 0 | 256, 256, 256 | 3 | 900 [881-912] | 67.0 [64.6-79.3] | not measured |
 | 0.1.34, 72 GiB, `--prefill auto:32768` | long | 14,689 | 0 | 256, 256, 256 | 3 | 2,623 [2,527-2,680] | 79.9 [71.2-80.9] | not measured |
 | 0.1.38, 72 GiB, `--prefill auto:32768` | short | 103 | 0 | 228, 233, 231 | 3 | 101.9 [99.3-102.7] | 72.8 [71.9-73.0] | not measured |
 | 0.1.38, 72 GiB, `--prefill auto:32768` | medium | 2,684 | 0 | 256, 256, 256 | 3 | 738 [642-743] | 74.6 [71.8-83.0] | not measured |
 | 0.1.38, 72 GiB, `--prefill auto:32768` | long | 14,689 | 0 | 256, 256, 256 | 3 | 1,802 [1,796-1,819] | 77.2 [70.6-77.9] | not measured |
+| 0.1.39, 72 GiB, `--prefill auto:32768` | short | 103 | 0 | 235, 165, 105 | 3 | 88.4 [82.6-94.1] | 65.9 [62.0-91.9] | not measured |
+| 0.1.39, 72 GiB, `--prefill auto:32768` | medium | 2,684 | 0 | 256, 256, 256 | 3 | 948 [939-949] | 62.4 [56.7-76.5] | not measured |
+| 0.1.39, 72 GiB, `--prefill auto:32768` | long | 14,689 | 0 | 256, 256, 256 | 3 | 2,736 [2,645-2,777] | 83.3 [74.8-84.7] | not measured |
 | 0.1.32, 40 GiB | short | 103 | 0 | 149, 160, 231 | 3 | 95.6 [83.1-100.3] | 54.8 [50.2-65.1] | not measured |
 | 0.1.32, 40 GiB | medium | 2,684 | 0 | 256, 256, 256 | 3 | 797 [785-799] | 54.4 [54.1-59.8] | not measured |
 | 0.1.32, 40 GiB | long | 14,689 | 0 | 256, 256, 256 | 3 | 1,839 [1,810-1,856] | 73.5 [72.3-79.5] | not measured |
@@ -131,6 +150,11 @@ UD-Q4_K_XL:
 | 0.1.38, 40 GiB | long | 14,685 | 0 | 256, 256, 256 | 3 | 1,105 [1,103-1,105] | 68.0 [56.0-68.6] | not measured |
 | 0.1.38, 40 GiB, `STRATA_UNBUFFERED_LOAD=0` | medium | 2,682 | 0 | 256, 256, 256 | 3 | 844 [818-846] | 62.0 [61.8-66.4] | not measured |
 | 0.1.38, 40 GiB, `STRATA_UNBUFFERED_LOAD=0` | long | 14,687 | 0 | 256, 256, 256 | 3 | 1,913 [1,887-1,930] | 72.9 [66.9-73.9] | not measured |
+| 0.1.39, 40 GiB | short | 99 | 0 | 160, 233, 208 | 3 | 89.9 [79.4-92.2] | 60.4 [58.9-60.8] | not measured |
+| 0.1.39, 40 GiB | medium | 2,680 | 0 | 256, 256, 256 | 3 | 857 [822-866] | 70.8 [69.1-79.1] | not measured |
+| 0.1.39, 40 GiB | long | 14,685 | 0 | 256, 256, 256 | 3 | 1,896 [1,888-1,953] | 78.3 [74.5-80.4] | not measured |
+| 0.1.39, 40 GiB, `STRATA_UNBUFFERED_LOAD=0` | medium | 2,682 | 0 | 256, 256, 256 | 3 | 842 [814-860] | 68.5 [61.9-69.7] | not measured |
+| 0.1.39, 40 GiB, `STRATA_UNBUFFERED_LOAD=0` | long | 14,687 | 0 | 256, 256, 256 | 3 | 1,954 [1,927-1,968] | 80.3 [73.0-83.1] | not measured |
 
 IQ3_S:
 
@@ -148,6 +172,15 @@ IQ3_S:
 | 0.1.38, `--prefill auto:32768` | medium | 2,683 | 0 | 256, 256, 256 | 3 | 2,353 [2,351-2,357] | 148.6 [122.2-150.6] | not measured |
 | 0.1.38, `--prefill auto:32768` | long | 14,688 | 0 | 256, 256, 256 | 3 | 6,287 [6,283-6,290] | 168.8 [159.8-177.1] | not measured |
 | 0.1.38, `--prefill auto:32768` | xlong | 28,886 | 0 | 256, 256, 256 | 3 | 6,870 [6,869-6,870] | 147.9 [144.1-154.4] | not measured |
+| 0.1.39, `--prefill auto` | medium | 2,680 | 0 | 256, 256, 256 | 3 | 2,373 [2,366-2,374] | 148.8 [147.5-174.5] | not measured |
+| 0.1.39, `--prefill auto` | long | 14,685 | 0 | 256, 256, 256 | 3 | 5,573 [5,567-5,583] | 175.2 [158.3-188.1] | not measured |
+| 0.1.39, `--prefill auto` | xlong | 28,883 | 0 | 256, 256, 256 | 3 | 5,533 [5,517-5,537] | 156.5 [154.8-158.4] | not measured |
+| 0.1.39, `--prefill auto:32768` | medium | 2,683 | 0 | 256, 256, 256 | 3 | 2,372 [2,369-2,374] | 178.5 [165.3-182.9] | not measured |
+| 0.1.39, `--prefill auto:32768` | long | 14,688 | 0 | 256, 256, 256 | 3 | 6,362 [6,332-6,380] | 169.2 [167.0-175.9] | not measured |
+| 0.1.39, `--prefill auto:32768` | xlong | 28,886 | 0 | 256, 256, 256 | 3 | 6,941 [6,929-6,950] | 159.8 [159.6-163.0] | not measured |
+| 0.1.39, setup's defaults | medium | 2,680 | 0 | 256, 256, 256 | 3 | 2,407 [2,402-2,407] | 158.2 [147.4-165.0] | not measured |
+| 0.1.39, setup's defaults | long | 14,685 | 0 | 256, 256, 256 | 3 | 5,605 [5,528-5,605] | 177.9 [177.6-181.2] | not measured |
+| 0.1.39, setup's defaults | xlong | 28,883 | 0 | 256, 256, 256 | 3 | 5,565 [5,541-5,565] | 170.2 [160.9-172.2] | not measured |
 
 Swift IQ3_XXS:
 
@@ -167,6 +200,12 @@ Swift IQ3_XXS:
 | 0.1.38 | medium | 2,677 | 0 | 256, 256, 256 | 3 | 3,148 [3,144-3,152] | 165.1 [154.8-191.9] | not measured |
 | 0.1.38 | long | 14,682 | 0 | 256, 256, 256 | 3 | 6,374 [6,279-6,397] | 174.5 [165.4-176.7] | not measured |
 | 0.1.38 | xlong | 28,880 | 0 | 256, 256, 256 | 3 | 6,908 [6,900-6,912] | 160.8 [159.3-165.5] | not measured |
+| 0.1.39 | medium | 2,677 | 0 | 256, 256, 256 | 3 | 3,187 [3,179-3,195] | 177.8 [176.2-190.5] | not measured |
+| 0.1.39 | long | 14,682 | 0 | 256, 256, 256 | 3 | 6,454 [6,430-6,462] | 186.9 [171.8-201.2] | not measured |
+| 0.1.39 | xlong | 28,880 | 0 | 256, 256, 256 | 3 | 6,999 [6,977-7,000] | 164.3 [163.5-176.7] | not measured |
+| 0.1.39, setup's defaults | medium | 2,678 | 0 | 256, 256, 256 | 3 | 3,195 [3,195-3,203] | 215.4 [215.0-215.8] | not measured |
+| 0.1.39, setup's defaults | long | 14,683 | 0 | 256, 256, 256 | 3 | 5,853 [5,846-5,856] | 188.1 [174.4-209.5] | not measured |
+| 0.1.39, setup's defaults | xlong | 28,881 | 0 | 256, 256, 256 | 3 | 5,941 [5,930-5,943] | 183.2 [181.6-187.2] | not measured |
 
 The short prompt's output length varied between runs, so its decode numbers are less comparable. Decode expert-cache
 hit rate on the first UD-Q4_K_XL requests: 81-96%.
@@ -190,14 +229,21 @@ IQ3_S goes from 4,610 to 5,406 at 14.7K (+17%) and from 4,682 to 6,150 at 28.9K 
 2,690 / 5,534 / 6,231 on 0.1.36 (+17% / +15% / +11%); 0.1.36 and 0.1.37 are the same as 0.1.34 within 2%. IQ3_S with
 `auto` reads 14.7K and 28.9K 20% and 17% faster than on 0.1.34. Decode is unchanged.
 
+0.1.39: UD-Q4_K_XL reads the 2.7K / 14.7K prompts at 916 / 2,043 tok/s (72 GiB) and 857 / 1,896 (40 GiB) with no
+variable, where 0.1.38 needed `STRATA_UNBUFFERED_LOAD=0` for 899 / 2,038 and 844 / 1,913; the variable now changes
+nothing beyond the run-to-run range. Swift IQ3_XXS reads within 1-2% of 0.1.38 (3,187 / 6,454 / 6,999 tok/s). IQ3_S
+with `--prefill auto:32768` reads 14.7K and 28.9K at 6,362 and 6,941 tok/s against 5,573 and 5,533 with `auto`.
+Against setup's defaults, this PC's Swift config (which also sets `--pcie-frac 0.20`, `--spec-min-p 0.70` and
+`STRATA_IQ_MT_MIN=1`) reads 14.7K and 28.9K 10% and 18% faster and 2.7K the same; setup's defaults decode as fast or
+faster in these runs (215 against 178 tok/s at 2.7K), within wide ranges.
+
 Decode does not show a consistent difference between the engines or prefill settings; its run-to-run range is wide
 (for example 72.4-95.3 tok/s on the long prompt in the second 0.1.32 run). No failed or cancelled requests.
 
 ## Correctness and limitations
 
 No quality checks here: answers were only hashed (for Swift with `STRATA_PF_FUSED=1`, see #519). One machine, one
-request at a time, greedy decoding, 3 runs per cell, one 72 GiB configuration for 0.1.31, IQ3_S on 0.1.34 and 0.1.38
-only, Windows with the GPU also driving the display. Time to first token was not measured separately; the engine's
+request at a time, greedy decoding, 3 runs per cell, one 72 GiB configuration for 0.1.31, IQ3_S on 0.1.34, 0.1.38 and
+0.1.39 only, Windows with the GPU also driving the display. Time to first token was not measured separately; the engine's
 prompt time (`prompt_ms`) is in the run JSON.
 
-I ran these measurements with Claude Code on my machine and checked the numbers.
