@@ -100,6 +100,7 @@ let health = {model: "strata", images: false, max_context: 0};
 async function loadHealth() {
   try {
     health = await (await fetch("health")).json();
+    updateContextPill();
     $("attach-btn").title = health.images ? "Attach a text file or a picture (or drop it here)"
                                           : "Attach a text file (or drop it here)";
     $("chat-empty-sub").textContent = `${health.model} runs on this PC. Nothing leaves it.`;
@@ -149,7 +150,6 @@ function setMetric(key, value, unit, sub) {
   $(`mv-${key}`).innerHTML = value == null ? "–" : `${esc(value)}${unit ? `<small>${esc(unit)}</small>` : ""}`;
   $(`ms-${key}`).textContent = sub || "";
 }
-
 let lastMetrics = null, metricsFailures = 0, keyWarned = false, mcpTick = 0;
 let reqShowAll = false;   // the Monitor's request table: the last 12, or every one the server keeps (issue #35)
 async function poll() {
@@ -560,6 +560,22 @@ let messages = store.get("chat", []);
 let attachments = [];                 // {name, url}
 let busy = null;                      // {controller, msg}
 
+function updateContextPill() {
+  const el = $("ctx-pill");
+  if (!el) return;
+  let ctx = null;
+  for (const m of messages) if (m.ctx != null) ctx = m.ctx;
+  const total = health.max_context || 0;
+  if (ctx == null || !total) { el.hidden = !total; el.classList.remove("warn", "hot"); return; }
+  const pct = Math.min(100, 100 * ctx / total);
+  el.hidden = false;
+  el.classList.toggle("warn", pct >= 70 && pct < 90);
+  el.classList.toggle("hot", pct >= 90);
+  el.querySelector(".st-ctx__fill").style.width = `${pct}%`;
+  el.querySelector(".st-ctx__text").textContent = `${kfmt(ctx)}/${ctxfmt(total)}`;
+  el.title = `Context window: ${fmt(ctx)} of ${fmt(total)} tokens`;
+}
+
 function saveChat() {
   store.set("chat", messages.map((m) => ({...m, images: (m.images || []).map((i) => ({name: i.name})),
                                            files: (m.files || []).map((f) => ({name: f.name}))})));
@@ -688,6 +704,7 @@ function renderChat() {
   const chat = $("chat");
   chat.querySelectorAll(".st-msg").forEach((e) => e.remove());
   $("chat-empty").hidden = messages.length > 0;
+  updateContextPill();
   messages.forEach((m, i) => chat.appendChild(msgEl(m, i)));
   scrollDown(true);
 }
@@ -846,6 +863,7 @@ async function send() {
   }
   if (thinkStart && m.thinkSecs == null) m.thinkSecs = (performance.now() - thinkStart) / 1000;
   const n = usage ? usage.completion_tokens : null;
+  if (usage && usage.prompt_tokens != null) m.ctx = usage.prompt_tokens + (n || 0);   // the context pill's reading
   if (n && firstAt) {
     const secs = (performance.now() - firstAt) / 1000;
     m.meta = `${fmt(n)} tokens${secs > 0.25 ? ` · ${fmt(n / secs, 1)} tok/s` : ""}${m.stopped ? " · stopped" : ""}` +
@@ -861,6 +879,7 @@ async function send() {
   setBusy(false);
   if (frame) cancelAnimationFrame(frame);
   updateAssistant(el, m, false);
+  updateContextPill();   // renderChat is not called here, and the fresh m.ctx is the newest measurement
   saveChat();
   scrollDown();
 }
