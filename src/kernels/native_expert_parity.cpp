@@ -3,6 +3,7 @@
 //     build/native_expert_parity <shard.gguf> [layer ...]     real rows (a split model's shards are found by name)
 //     build/native_expert_parity --synthetic GU/DOWN ...      random weights quantized by ggml (e.g. q4_K/q5_1)
 //     build/native_expert_parity --q5_1-min                   the Q5_1 min term on crafted activations
+//     (the CPU-only checks of the trellis kernels, AVX2 / AVX-512 / scalar, are in tq_cpu_parity)
 //
 // (a) float reference: ggml's own dequantizer (`to_float`) and a float SwiGLU expert, (b) the CPU path
 // (ggml-cpu vec_dot with its quantized activations), (c) the GPU path (`native_expert_grouped`, q8_1
@@ -20,6 +21,7 @@
 #include "strata/kernels/cpu/kq_avx2.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/cpu/hadamard.hpp"
+#include "strata/kernels/cpu/tq_cpu.hpp"
 #include "ggml-cpu.h"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/ngram.hpp"
@@ -190,6 +192,42 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
             std::printf("          width invariance (1 vs %d tokens): gate/up %zu, down %zu rows differ\n", NT,
                         gu_diff, dn_diff);
             if (gu_diff || dn_diff) ++failures;
+        }
+        // the trellis types (tq_cpu.hpp, which native_gu_rows / native_down_rows above used): every ISA this CPU has
+        // against the scalar kernel BIT FOR BIT, and against ggml-cpu's vec_dot (float summation order only)
+        for (int role = 0; role < 2; ++role) {
+            const int type = role == 0 ? f.gu_type : f.d_type;
+            if (!cpu::tq_supported(type)) continue;
+            const int n = role == 0 ? (int) H : (int) FF, rows = role == 0 ? (int) FF : (int) H;
+            const size_t rb = role == 0 ? f.gu_row : f.d_row;
+            const uint8_t* w = blob.data() + (role == 0 ? 0 : f.down_off);
+            const void* const* acts = role == 0 ? a : hp;
+            std::vector<float> ref((size_t) NT * rows), got((size_t) NT * rows);
+            float* rp[NT];
+            float* gp[NT];
+            for (int k = 0; k < NT; ++k) { rp[k] = ref.data() + (size_t) k * rows; gp[k] = got.data() + (size_t) k * rows; }
+            cpu::tq_rows(cpu::TqIsa::scalar, type, w, rb, n, acts, NT, rp, 0, rows);
+            const auto* tc = ggml_get_type_traits_cpu((ggml_type) type);
+            double num = 0, den = 0;
+            for (int k = 0; k < NT; ++k)
+                for (int r = 0; r < rows; ++r) {
+                    float v = 0;
+                    tc->vec_dot(n, &v, 0, w + (size_t) r * rb, 0, acts[k], 0, 1);
+                    num += std::pow((double) v - ref[(size_t) k * rows + r], 2);
+                    den += (double) v * v;
+                }
+            const double rg = std::sqrt(num / (den + 1e-30));
+            std::printf("          %s %s rows: scalar kernel vs ggml vec_dot rel %.2e", ggml_type_name((ggml_type) type),
+                        role == 0 ? "gate" : "down", rg);
+            if (rg > 1e-5) ++failures;
+            for (cpu::TqIsa isa : {cpu::TqIsa::avx2, cpu::TqIsa::avx512}) {
+                if (!cpu::tq_isa_ok(isa)) continue;
+                cpu::tq_rows(isa, type, w, rb, n, acts, NT, gp, 0, rows);
+                const bool same = std::memcmp(got.data(), ref.data(), got.size() * sizeof(float)) == 0;
+                std::printf(" | %s %s", cpu::tq_isa_name(isa), same ? "bitwise equal" : "DIFFERENT");
+                if (!same) ++failures;
+            }
+            std::printf("\n");
         }
         // UD-Q4_K_XL's formats: the multi-token AVX2 kernels (kq_avx2.cpp) against ggml-cpu's vec_dot per token,
         // BIT FOR BIT, for 1..8 tokens; then the time of 4 tokens (a verify window) both ways
