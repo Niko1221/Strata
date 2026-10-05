@@ -187,6 +187,47 @@ void full_session(int fmt, int mode, int experts) {
         check(conversation_kv_verify(incremental.kv.back(),draft.state,g,70,false,fingerprint,err),"incremental draft authoritative and ring read-back");
         ids.resize(65);
     }
+    {
+        // a layer split's later stage: the same image WITHOUT the draft layer's K/V (draft == nullptr)
+        check(conversation_snapshot_restore(a,ss,g,draft.state,err)==ConversationRestore::restored,"restore A before stage images");
+        size_t with_draft=0,without=0;
+        check(conversation_snapshot_bytes(view,ss,g,draft.state,with_draft,err) &&
+              conversation_snapshot_bytes(view,ss,g,nullptr,without,err) && without<with_draft,
+              "a stage image's estimate leaves the draft out");
+        SavedConversation stage,stage_b,stage_back;
+        check(conversation_snapshot_save(stage,view,ss,g,nullptr,err),"capture a stage image");
+        check(stage.kv.size()==a.kv.size()-1 && equal(stage.kv[0],a.kv[0]) && stage.live.gdn==a.live.gdn,
+              "a stage image holds the session's own layers, no draft");
+        check(stage.bytes()<a.bytes(),"a stage image is smaller by the draft ring");
+        check(conversation_snapshot_validate(stage,ss,g,nullptr,err),"validate a stage image without a draft");
+        check(!conversation_snapshot_validate(stage,ss,g,draft.state,err),"a stage image is refused where a draft is expected");
+        check(!conversation_snapshot_validate(a,ss,g,nullptr,err),"an image with a draft is refused where none is expected");
+        fill(201);
+        check(conversation_snapshot_save(stage_b,view,ss,g,nullptr,err),"capture another stage state");
+        check(conversation_snapshot_restore(a,ss,g,nullptr,err)==ConversationRestore::invalid,
+              "restoring a draft image as a stage image is refused before any write");
+        check(conversation_snapshot_save(stage_back,view,ss,g,nullptr,err) && stage_back.live.gdn==stage_b.live.gdn &&
+              equal(stage_back.kv[0],stage_b.kv[0]),"the refusal left the stage untouched");
+        check(conversation_snapshot_restore(stage,ss,g,nullptr,err)==ConversationRestore::restored,"restore a stage image");
+        check(conversation_snapshot_save(stage_back,view,ss,g,nullptr,err) && stage_back.live.gdn==stage.live.gdn &&
+              stage_back.live.dead==stage.live.dead && equal(stage_back.kv[0],stage.kv[0]),"stage A/B/A exactness");
+        // its retained K/V: the next park copies only what changed, and equals a full capture
+        ConversationKvReuse reuse{stage.kv,65,65,{}};
+        SavedConversation fresh,incremental;
+        size_t peak=0,reused=0;
+        check(conversation_snapshot_save(fresh,view,ss,g,nullptr,err),"full stage capture reference");
+        check(conversation_snapshot_capture_bytes(reuse,view,ss,g,nullptr,peak,err),"admit an incremental stage capture");
+        check(conversation_snapshot_save(incremental,view,ss,g,nullptr,err,std::move(reuse),&reused),"incremental stage capture");
+        check(reused>0 && incremental.bytes()<=peak && equal(incremental.kv[0],fresh.kv[0]) &&
+              incremental.live.gdn==fresh.live.gdn,"an incremental stage capture reuses pages and equals a full one");
+        SavedConversation split_image=stage;
+        split_image.stage_images.push_back(stage);
+        check(!conversation_snapshot_validate(split_image,ss,g,draft.state,err),
+              "a layer split's image is refused by the whole-session form");
+        ConversationKvReuse wrong{a.kv,65,65,{}};
+        check(!conversation_snapshot_capture_bytes(wrong,view,ss,g,nullptr,peak,err),"a draft image's K/V is not a stage's reuse");
+    }
+    check(conversation_snapshot_restore(a,ss,g,draft.state,err)==ConversationRestore::restored,"restore A after stage images");
     check(conversation_checkpoint_restore(a.checkpoints[0],ss,g,err),"restore early running checkpoint");
     std::vector<uint8_t> spare(sizes.dead);
     cuda_check(cudaMemcpy(spare.data(),main.state.idx_pooled,sizes.dead,cudaMemcpyDeviceToHost));
@@ -259,6 +300,17 @@ int main() {
             }
             auto bad=a; bad.head_dim++;
             check(!conversation_kv_restore(bad,f.state,f.g,upto,index,err),"reject incompatible geometry");
+            if (fmt==kKvInt8) {
+                // #293: INT8 K/V saved through the Hadamard rotation (STRATA_KV_ROT=1) never restores into a state
+                // without it, nor the reverse
+                f.state.kv_rot=true;
+                ConversationKv rotated;
+                check(conversation_kv_save(rotated,f.state,f.g,upto,index,err),"save rotated INT8");
+                check(!conversation_kv_restore(a,f.state,f.g,upto,index,err),"unrotated image into a rotated state rejected");
+                f.state.kv_rot=false;
+                check(!conversation_kv_restore(rotated,f.state,f.g,upto,index,err),"rotated image into an unrotated state rejected");
+                check(conversation_kv_restore(a,f.state,f.g,upto,index,err),"unrotated image still restores");
+            }
             if (!a.k.empty()) {
                 bad=a; bad.k.pop_back();
                 check(!conversation_kv_restore(bad,f.state,f.g,upto,index,err),"reject malformed payload");

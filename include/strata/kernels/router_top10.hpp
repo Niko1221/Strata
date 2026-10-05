@@ -17,4 +17,10 @@ namespace strata::kernels {
 void router_top10(const float* logits, int n_tokens, int n_expert, int k, int* ids, float* weights,
                   void* stream);
 
+/// Tests (S6, HIP only): one router kernel by name - 0 the portable kernel, 1 the AMD fast kernel (the default there
+/// for 64 < n_expert <= 512, k <= 32; bitwise the same results), 2 the fast kernel forced onto its serial-sum path.
+/// False (nothing launched) on CUDA builds or outside that geometry.
+bool router_top10_variant(const float* logits, int n_tokens, int n_expert, int k, int* ids, float* weights,
+                          void* stream, int variant);
+
 }  // namespace strata::kernels

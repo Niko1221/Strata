@@ -94,7 +94,9 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
             ffp[k] = ff[k].data();
         }
         cpu::native_gu_rows(f, blob.data(), a, NT, ffp, 0, (int) FF);
-        if (cpu::iq512_supported(f.gu_type)) {
+        // either multi-token kernel: IQ4_XS has an AVX-2 one and no AVX-512 one, so the gate cannot be
+        // iq512_supported alone - that would leave the format untested on every CPU.
+        if (cpu::iq512_supported(f.gu_type) || cpu::iq256_supported(f.gu_type)) {
             // ggml's own vec_dot, same Q8_K activations: the reference for both multi-token kernels
             // (float-order differences only)
             const auto* tc = ggml_get_type_traits_cpu((ggml_type) f.gu_type);
@@ -143,8 +145,9 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
                             tag, us1, 2.0 * f.up_off / us1 / 1e3, usg, 2.0 * f.up_off / usg / 1e3);
                 std::printf("          gate+up %d tokens one thread: %s %.0f us vs ggml %d x %.0f us\n", NT, tag, usn, NT, usg);
             };
-            if (cpu::cpu_avx512_ok()) check("avx512", true);   // guarded: the binary runs on AVX-2 CPUs too
-            check("avx2", false);
+            // guarded: the binary runs on AVX-2 CPUs too, and IQ4_XS has no AVX-512 kernel (an empty switch)
+            if (cpu::cpu_avx512_ok() && cpu::iq512_supported(f.gu_type)) check("avx512", true);
+            if (cpu::cpu_avx2_ok() && cpu::iq256_supported(f.gu_type)) check("avx2", false);   // no AVX2: ggml-cpu only
         }
         for (int k = 0; k < NT; ++k) {
             cpu::native_quant_h(f, ff[k].data(), hq[k].data());
@@ -177,7 +180,7 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
         // BIT FOR BIT, for 1..8 tokens; then the time of 4 tokens (a verify window) both ways
         for (int role = 0; role < 2; ++role) {
             const int type = role == 0 ? f.gu_type : f.d_type;
-            if (!cpu::kq256_supported(type) || (role == 0 && type != 12)) continue;
+            if (!cpu::cpu_avx2_ok() || !cpu::kq256_supported(type) || (role == 0 && type != 12)) continue;
             const int n = role == 0 ? (int) H : (int) FF, rows = role == 0 ? (int) FF : (int) H;
             const size_t rb = role == 0 ? f.gu_row : f.d_row;
             const uint8_t* w = blob.data() + (role == 0 ? 0 : f.down_off);
@@ -220,7 +223,7 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
                         role == 0 ? "gate" : "down", differ, us_k, us_g, us_g / us_k);
             if (differ) ++failures;
         }
-        if (f.d_type == 42) {
+        if (cpu::q2_native_kernels(f.d_type)) {
             // (b2) the GGUF-layout Q2_0 kernel the pool uses for Q2_0 down projections - the AVX-512 one
             // where the CPU has it, the AVX-2 one (q2_avx2.cpp) where it does not.  Calling the AVX-512
             // kernel unconditionally faults on a Zen 2/3 CPU.
@@ -237,7 +240,7 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
             std::printf("          q2_0 %s down vs ggml down: rel %.2e\n",
                         cpu::cpu_avx512_ok() ? "AVX-512" : "AVX-2", rel(alt, got_c));
         }
-        if (f.d_type == 20) {
+        if (f.d_type == 20 && cpu::cpu_avx2_ok()) {
             // (b3) the IQ4_NL multi-token AVX-2 kernel the pool now uses for IQ4_NL down projections,
             // against ggml-cpu's single-token vec_dot on the SAME Q8_0 activations (h), plus timing.
             std::vector<float> alt((size_t) NT * H), refd((size_t) NT * H);
@@ -467,6 +470,59 @@ int check_q5_1_min(cudaStream_t s) {
                 "(largest per-block sum shift %.3g)  %s\n", e_q, e_s, shift, ok ? "ok" : "FAIL");
     return ok ? 0 : 1;
 }
+// #290: the BF16 token embedding (--embd-gguf) - iq_embed_rows and iq_dequant_f32 on a random BF16 table against
+// the exact widening (bits << 16), every bit; rows gathered out of order, with repeats
+int check_bf16_embd(cudaStream_t s) {
+    constexpr int kBf16 = 30;
+    const int64_t H = 2560, V = 61, NT = 97;
+    int failures = 0;
+    if (!strata::kernels::embed_type_supported(kBf16) || strata::kernels::iq_supported(kBf16) ||
+        strata::kernels::iq_row_bytes(kBf16, H) != (size_t) H * 2) {
+        std::printf("bf16 embedding: type support / row bytes wrong\n");
+        return 1;
+    }
+    std::mt19937 rng(290);
+    std::vector<uint16_t> table((size_t) (V * H));
+    for (auto& v : table) {   // any bit pattern but NaN (a NaN's payload is not what the test is about)
+        do v = (uint16_t) (rng() & 0xffff); while ((v & 0x7f80) == 0x7f80 && (v & 0x7f));
+    }
+    std::vector<int32_t> tok((size_t) NT);
+    for (auto& t : tok) t = (int32_t) (rng() % V);
+    void* dt = nullptr;
+    int32_t* dtok = nullptr;
+    float* dout = nullptr;
+    cudaMalloc(&dt, table.size() * 2);
+    cudaMalloc((void**) &dtok, tok.size() * 4);
+    const int64_t out_rows = NT > V ? NT : V;   // the gathered rows (NT) and the whole table (V) share the buffer
+    cudaMalloc((void**) &dout, (size_t) (out_rows * H) * 4);
+    cudaMemcpy(dt, table.data(), table.size() * 2, cudaMemcpyHostToDevice);
+    cudaMemcpy(dtok, tok.data(), tok.size() * 4, cudaMemcpyHostToDevice);
+    auto widen = [](uint16_t b) { const uint32_t u = (uint32_t) b << 16; float f; std::memcpy(&f, &u, 4); return f; };
+    std::vector<float> got((size_t) (out_rows * H));
+    strata::kernels::iq_embed_rows(kBf16, dt, (size_t) H * 2, dtok, NT, H, dout, s);
+    cudaStreamSynchronize(s);
+    cudaMemcpy(got.data(), dout, (size_t) (NT * H) * 4, cudaMemcpyDeviceToHost);
+    size_t rows_differ = 0;
+    for (int64_t r = 0; r < NT; ++r)
+        for (int64_t d = 0; d < H; ++d) {
+            const float want = widen(table[(size_t) (tok[(size_t) r] * H + d)]);
+            if (std::memcmp(&got[(size_t) (r * H + d)], &want, 4) != 0) { ++rows_differ; break; }
+        }
+    strata::kernels::iq_dequant_f32(kBf16, dt, V * H, dout, s);
+    cudaStreamSynchronize(s);
+    cudaMemcpy(got.data(), dout, table.size() * 4, cudaMemcpyDeviceToHost);
+    size_t values_differ = 0;
+    for (size_t i = 0; i < table.size(); ++i) {
+        const float want = widen(table[i]);
+        values_differ += std::memcmp(&got[i], &want, 4) != 0;
+    }
+    cudaFree(dt); cudaFree(dtok); cudaFree(dout);
+    std::printf("bf16 embedding: %lld gathered rows, %zu differ; dequant of %lld values, %zu differ in any bit\n",
+                (long long) NT, rows_differ, (long long) (V * H), values_differ);
+    if (rows_differ || values_differ) ++failures;
+    return failures;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -474,7 +530,8 @@ int main(int argc, char** argv) {
     if (argc < 2) {
         std::fprintf(stderr, "usage: native_expert_parity <shard.gguf> [layer ...]\n"
                              "       native_expert_parity --synthetic GU/DOWN ...   (ggml type names, e.g. q4_K/q5_1)\n"
-                             "       native_expert_parity --q5_1-min\n");
+                             "       native_expert_parity --q5_1-min\n"
+                             "       native_expert_parity --bf16-embd\n");
         return 2;
     }
     // #152's width check tests the opt-in rule (the multi-token kernels from one token on)
@@ -491,6 +548,8 @@ int main(int argc, char** argv) {
     const std::string mode = argv[1];
     if (mode == "--q5_1-min") {
         failures += check_q5_1_min(s);
+    } else if (mode == "--bf16-embd") {
+        failures += check_bf16_embd(s);
     } else if (mode == "--synthetic") {
         for (int i = 2; i < argc; ++i) {
             const std::string arg = argv[i];

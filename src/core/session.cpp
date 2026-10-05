@@ -1,5 +1,6 @@
 // src/core/session.cpp - one token through all 48 layers.  See the header for why the graphs are per-layer.
 #include "strata/core/session.hpp"
+#include "strata/kernels/mrope.hpp"
 #include "strata/core/progress.hpp"
 
 #include "strata/kernels/qsa.hpp"
@@ -125,6 +126,14 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
     s.ple_hist = (float*) take(ple_hist_bytes());
     s.R = s.block.R;
     return used;
+}
+
+void session_release(SessionState& s) {
+    for (int64_t j = 0; s.qsa_states != nullptr && j < s.qsa_alloc; ++j)
+        if (s.qsa_states[j].owns_rope) {
+            strata::kernels::rope_table_release(s.qsa_states[j].cos_tab);
+            s.qsa_states[j].owns_rope = false;
+        }
 }
 
 void session_zero(SessionState& s, const ModelGeometry& g, const float* R_init, void* stream) {
@@ -538,7 +547,7 @@ bool SessionLoopScratch::init(size_t parts_bytes_in, std::string& err) {
     const std::vector<int> cores = strata::kernels::cpu::physical_cores(false);
     if (!cores.empty()) {
         pinned_core = strata::kernels::cpu::pin_current_thread(cores[0]);
-        pinned = true;
+        pinned = pinned_core.valid;
     }
     return true;
 }
@@ -549,7 +558,7 @@ void SessionLoopScratch::free() {
     if (pinned) {
         strata::kernels::cpu::restore_thread_affinity(pinned_core);
         pinned = false;
-        pinned_core = -1;
+        pinned_core = {};
     }
     if (probe != nullptr) { cudaEventDestroy(probe); probe = nullptr; }
     if (y_miss != nullptr) { cudaFreeHost(y_miss); y_miss = nullptr; }

@@ -16,6 +16,7 @@
 
 #include "strata/core/hit_hook.hpp"
 #include "strata/core/layer.hpp"
+#include "strata/kernels/cpu/pool.hpp"
 
 #include <cuda_runtime.h>
 
@@ -99,6 +100,9 @@ uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int
 /// Carves `base` (DEVICE memory) into `s`.  Returns the bytes used.  Same range convention as `session_bytes`.
 uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void* base, SessionState& s,
                       int64_t layer_lo = 0, int64_t layer_hi = -1);
+/// Before the memory `session_init` carved is freed: forgets what points into it from outside the session (the
+/// rope kernels' registered angle table, #280), so a later session never rotates by freed memory.
+void session_release(SessionState& s);
 /// Zeroes every layer's state - the residual to `R_init`, everything else to zero, so a fresh sequence starts
 /// from the reference's own `zeros()`.
 void session_zero(SessionState& s, const ModelGeometry& g, const float* R_init, void* stream);
@@ -366,7 +370,7 @@ struct SessionLoopScratch {
     float* y_miss = nullptr;        ///< pinned host staging for the pool's answer, `parts_bytes` long
     size_t parts_bytes = 0;
     cudaEvent_t probe = nullptr;
-    long long pinned_core = -1;     ///< the affinity to restore, or -1 if the host was never pinned
+    strata::kernels::cpu::ThreadAffinity pinned_core{};  ///< affinity to restore, or invalid if the host was not pinned
     bool pinned = false;
 
     /// Allocates the buffers and pins the host thread.  Call ONCE, at session setup.

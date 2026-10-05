@@ -83,3 +83,80 @@ short decode requests.
 The existing warning about the CUDA0 expert-cache GPU hit path still applies:
 its outputs diverge from cache-off runs. Treat performance as experimental
 until the generated tokens have been validated.
+
+## Optional helper decode optimization
+
+`--remote-expert-opt` (`--serve` only) optimizes the CUDA1-3 helper caches
+above. The engine's default is off; since 0.1.39b setup adds it to a config on
+two or more GPUs (`--gpus`, or "use both" at start). It acts only when a helper
+cache is configured; a layer split runs exactly as before. To leave it out:
+setup's `--no-remote-expert-opt`, or `"remote_expert_opt": false` in the
+model's `strata-*.json` (kept when setup runs again). Measured by the PR's
+author: dual RTX 4090 +63% mixed / +132% code decode over the plain helper
+path; RTX 5090 + 4090 +28% / +63%. The primary cache avoids admitting experts already held
+by a helper, and helpers replace cold experts with frequently routed CPU
+misses using their existing same-layer slots. Each helper reduces its expert
+outputs to a weighted partial sum on its GPU before returning one vector per
+token. Tokens with no CPU expert work skip CPU activation quantization.
+
+For an existing server configuration with CUDA0 as the primary and CUDA1 as a
+helper, use these engine arguments alongside the model and profile arguments:
+
+```text
+--expert-cache auto --expert-cache-device1 auto --remote-expert-opt
+```
+
+`--expert-cache-device1`, `--expert-cache-device2` and
+`--expert-cache-device3` now also accept `auto`: fill each helper from its
+assigned ranking using actual aligned expert bytes and free VRAM, retaining
+the existing 512 MiB allowance. Explicit numeric budgets still work. This is
+startup capacity sizing, not throughput balancing; with several helpers a
+card's truncated candidate tail is not redistributed to another card.
+
+The optimization uses the existing host scheduling and pinned-host transport,
+not P2P or tensor parallelism. Each layer still waits for its participating
+helpers. It changes floating-point summation order, so enabled output is not
+claimed to be bitwise identical. Only two-card CUDA operation has been measured;
+three/four cards and HIP have not been validated. Without the switch, the
+existing decode path remains in use. This does not optimize the separate
+`--peer-device` path below or change its existing incompatibility with helper
+caches.
+
+## Peer tier (`--peer-device`)
+
+`--peer-device N` puts a second adaptive expert cache on CUDA device N. It
+takes the ranked pairs CUDA0's cache does not hold, as many as fit. The peer
+computes the rows of its own experts, for decode windows and for prompt
+chunks; the activations and the results cross NVLink or another P2P path. The
+tier adapts while the server runs, like the primary cache. It is an
+alternative to the CUDA1-3 caches above, not a third tier beside them.
+
+- `--peer-device N` (default off): enable the tier on CUDA device N (N >= 1).
+- `--peer-reserve-mib M` (default 600): leave M MiB free on the peer card; the
+  cache takes what remains. The prompt-path buffers need this headroom.
+- `--peer-slots N` (default 0): cap the tier at N experts; 0 = as many as fit.
+- `--peer-adapt-swaps N` (default -1): swaps per adaptive round on the peer;
+  -1 uses the primary's `--adapt-swaps`.
+- `--peer-prefill-rows N` (default -1): the share of each prompt chunk's rows
+  the peer computes; -1 is half of chunk x top-k, 0 keeps prompt rows on the
+  primary.
+
+`--peer-device` requires `--expert-profile` and an enabled expert cache, and
+the device must be visible; it refuses otherwise. It also refuses
+`--layer-split` (a different second-GPU mode: use one or the other) and
+`--expert-cache-device1..3` (the peer tier already caches experts on that card):
+
+    strata generate: --peer-device cannot be combined with --layer-split (use one or the other)
+    strata generate: --peer-device cannot be combined with --expert-cache-device1..3 (the peer tier already caches experts there)
+
+Without `--peer-device` the binary is unchanged; its output is byte-identical
+to the release. With `--peer-device` and the same expert set split across the
+two cards, the generated tokens are byte-identical to the single-GPU run under
+the exactness gate.
+
+With a peer the prompt path keeps the MMQ path; the fused int8 prompt path is
+not yet combined with the peer's rows. Mapped host buffers gain
+`cudaHostAllocPortable` only with a peer, since only then does a second
+context write them. The tier size is manual for now (`--peer-reserve-mib`,
+`--peer-slots`); automatic sizing on small cards wants the buffer lending of
+#216 and is a follow-up.

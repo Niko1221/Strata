@@ -12,8 +12,13 @@ namespace strata::prefill::mmq {
 
 /// This build has the MMQ path (the ggml sources were available to the build).
 bool built();
-/// MMQ covers this ggml type (the i-quants and Q2_0 the packs use; IQ1_M is not covered).
+/// MMQ covers this ggml type (the i-quants and Q2_0 the packs use, Q8_0, and in a CUDA build with STRATA_MMQ_KQUANTS
+/// the Q4_K / Q5_K / Q5_1 of Unsloth's UD-Q4_K_XL; IQ1_M is not covered).
 bool supported(int ggml_type);
+/// #420: `supported`, and on every visible GPU llama.cpp's MMQ has a tile for this type and a weight matrix of
+/// `w_rows` rows that fits the card's shared memory - the same test its tile choice makes, which aborts the process
+/// ("J_best=0") when nothing fits.  false (said once per type) keeps that product on the non-MMQ path.
+bool fits(int ggml_type, int64_t w_rows);
 /// Bytes of one expert's gate+up ([2*n_ff, n_embd]) or down ([n_embd, n_ff]) weights in `ggml_type`.
 size_t matrix_bytes(int ggml_type, int64_t rows, int64_t cols);
 /// Bytes of `rows` activation rows of `cols` values quantized for MMQ (the row padded to 512 values).
@@ -59,6 +64,16 @@ private:
 /// slot: gate rows then up rows at `gu_dst`, down at `d_dst`.
 void gather_native(const void* gate, const void* up, size_t gu_half_bytes, const void* down, size_t d_bytes,
                    void* gu_dst, void* d_dst, void* stream);
+/// gather_native for an MMQ group's experts [first, n) in ONE launch: expert q's blob (`blob[q]`; gate at +0, up at
+/// +up_off, down at +down_off) to gu_dst + q * gu_stride and d_dst + q * d_stride - the same bytes as one gather_native
+/// each.  Every pointer, offset and size 16-byte aligned (false otherwise: nothing launched, gather one at a time).
+constexpr int kGatherGroupMax = 16;
+struct GatherGroup {
+    const uint8_t* blob[kGatherGroupMax] = {};
+    int first = 0, n = 0;
+};
+bool gather_native_group(const GatherGroup& g, size_t up_off, size_t gu_half_bytes, size_t down_off, size_t d_bytes,
+                         void* gu_dst, size_t gu_stride, void* d_dst, size_t d_stride, void* stream);
 /// A Strata-pack Q2_0 expert blob (codes and fp16 scales in separate planes, gate/up rows interleaved) into GGUF
 /// Q2_0 blocks: gate/up [1280, 2560] at `gu_dst` (rows stay interleaved), down [2560, 640] at `d_dst`.  Same values.
 void gather_strata_q2(const uint8_t* blob, void* gu_dst, void* d_dst, void* stream);

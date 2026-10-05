@@ -53,12 +53,71 @@ struct ConversationKvReuse {
     std::vector<ConversationKv> kv;
     // Original image extent for validation, and the earliest subsequent rewrite.
     int64_t captured_tokens = 0, unchanged_tokens = 0;
+    // With a layer split: the later stages' own retained K/V, one per stage, same extents (empty: none)
+    std::vector<ConversationKvReuse> stages;
     size_t bytes() const {
-        size_t n = kv.capacity() * sizeof(ConversationKv);
+        size_t n = kv.capacity() * sizeof(ConversationKv) + stages.capacity() * sizeof(ConversationKvReuse);
         for (const auto& layer : kv) n += layer.bytes();
+        for (const auto& s : stages) n += s.bytes();
         return n;
     }
 };
+
+/// Layer-split parking: each running checkpoint holds the first stage's state and, in `stage_parts`, one part per
+/// later stage; a parked conversation keeps them in one image per stage.  `split` MOVES the checkpoints apart (no
+/// running state is copied): the complete ones (a part for each of `stages` stages) into `stage0` and `parts[k]`,
+/// every part carrying the checkpoint's ids / images / LRU stamp, the others aside; `merge` puts them back in their
+/// original order.  merge(split(x)) == x.
+struct ConversationCheckpointSplit {
+    std::vector<ConversationCheckpoint> stage0;
+    std::vector<std::vector<ConversationCheckpoint>> parts;   ///< [stage][checkpoint]
+    std::vector<ConversationCheckpoint> rest;                 ///< not split (no complete set of stage parts)
+    std::vector<bool> complete;                               ///< per original position: in stage0/parts or in rest
+};
+
+inline ConversationCheckpointSplit conversation_checkpoints_split(std::vector<ConversationCheckpoint>&& checks,
+                                                                  size_t stages) {
+    ConversationCheckpointSplit out;
+    out.parts.resize(stages);
+    for (auto& c : checks) {
+        const bool whole = c.stage_parts.size() == stages;
+        out.complete.push_back(whole);
+        if (!whole) { out.rest.push_back(std::move(c)); continue; }
+        for (size_t k = 0; k < stages; ++k) {
+            ConversationCheckpoint part = std::move(c.stage_parts[k]);
+            part.ids = c.ids; part.imgs = c.imgs; part.used = c.used; part.stage_parts.clear();
+            out.parts[k].push_back(std::move(part));
+        }
+        c.stage_parts.clear();
+        out.stage0.push_back(std::move(c));
+    }
+    checks.clear();
+    return out;
+}
+
+/// false (and `out` empty) when the parts do not line up: a stage with another number of checkpoints, or a part
+/// whose ids differ from its checkpoint's.
+inline bool conversation_checkpoints_merge(ConversationCheckpointSplit&& split, std::vector<ConversationCheckpoint>& out) {
+    out.clear();
+    for (const auto& p : split.parts)
+        if (p.size() != split.stage0.size()) return false;
+    size_t whole = 0, other = 0;
+    for (bool c : split.complete) (c ? whole : other) += 1;
+    if (!split.complete.empty() && (whole != split.stage0.size() || other != split.rest.size())) return false;
+    if (split.complete.empty()) split.complete.assign(split.stage0.size(), true);   // a restored image: all whole
+    for (size_t j = 0; j < split.stage0.size(); ++j)
+        for (const auto& p : split.parts)
+            if (p[j].ids != split.stage0[j].ids) return false;
+    size_t w = 0, r = 0;
+    for (bool c : split.complete) {
+        if (!c) { out.push_back(std::move(split.rest[r++])); continue; }
+        ConversationCheckpoint cp = std::move(split.stage0[w]);
+        for (auto& p : split.parts) cp.stage_parts.push_back(std::move(p[w]));
+        ++w;
+        out.push_back(std::move(cp));
+    }
+    return true;
+}
 
 struct SavedConversation {
     // Runtime compatibility only; NOT a model/weights identity or disk schema.
@@ -69,10 +128,13 @@ struct SavedConversation {
     std::vector<ConversationCheckpoint> checkpoints;
     std::vector<ConversationKv> kv; // main layers followed by the draft layer
     bool cvec = true;
+    // with a layer split, the later stages' own images, one per stage, in stage order
+    std::vector<SavedConversation> stage_images;
 
     size_t bytes() const {
         size_t n = live.bytes() + checkpoints.capacity() * sizeof(ConversationCheckpoint) +
                    kv.capacity() * sizeof(ConversationKv);
+        for (const auto& s : stage_images) n += s.bytes();
         for (const auto& c : checkpoints) n += c.bytes();
         for (const auto& k : kv) n += k.bytes();
         return n;
@@ -110,13 +172,17 @@ public:
 
     // Retain only the restored K/V buffers, not duplicate running checkpoints.
     // This optimization never evicts a parked conversation to make itself fit.
-    void retain(std::vector<ConversationKv>&& kv, int64_t tokens) {
+    // `stage_kv`: with a layer split, the later stages' restored K/V (one per stage), retained with the first's.
+    void retain(std::vector<ConversationKv>&& kv, int64_t tokens,
+                std::vector<std::vector<ConversationKv>>&& stage_kv = {}) {
         reuse_ = {};
-        ConversationKvReuse candidate{std::move(kv), tokens, tokens};
+        ConversationKvReuse candidate{std::move(kv), tokens, tokens, {}};
+        for (auto& k : stage_kv) candidate.stages.push_back(ConversationKvReuse{std::move(k), tokens, tokens, {}});
         if (enabled() && candidate.bytes() <= budget_ - bytes_) reuse_ = std::move(candidate);
     }
     void limit_reuse(int64_t first_dirty) {
         reuse_.unchanged_tokens = std::min(reuse_.unchanged_tokens, first_dirty);
+        for (auto& s : reuse_.stages) s.unchanged_tokens = std::min(s.unchanged_tokens, first_dirty);
         if (reuse_.unchanged_tokens <= 0) reuse_ = {};
     }
     ConversationKvReuse take_reuse() { return std::exchange(reuse_, {}); }
@@ -164,8 +230,44 @@ public:
         return true;
     }
 
+    // #342: drop the parked entries an outgoing conversation (its live tokens and checkpoint chain) supersedes:
+    // the same conversation a turn back, whose DEEPEST checkpoint the outgoing chain still holds, so all it adds
+    // is the tail the client rewrote (the reply as it was generated, before the next request re-rendered it) and
+    // checkpoints older than that one.  A subagent's successive turns parked one such copy each, and make_room's
+    // oldest-first eviction then pushed the parent conversation out after `slots` turns.  An entry without
+    // checkpoints, or whose deepest checkpoint the outgoing chain does not hold (another conversation that only
+    // shares the system prompt's root with it), is kept.  Returns how many were dropped.
+    size_t drop_superseded(const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& images,
+                           const std::vector<ConversationCheckpoint>& checkpoints, bool cvec) {
+        auto held = [&](const ConversationCheckpoint& c) {
+            if (c.ids == ids && c.imgs == images) return true;
+            for (const auto& k : checkpoints)
+                if (k.ids == c.ids && k.imgs == c.imgs) return true;
+            return false;
+        };
+        size_t dropped = 0;
+        for (size_t i = 0; i < entries_.size();) {
+            const auto& e = entries_[i];
+            const ConversationCheckpoint* deepest = nullptr;
+            for (const auto& c : e.checkpoints)
+                if (!deepest || c.ids.size() > deepest->ids.size()) deepest = &c;
+            if (e.cvec == cvec && deepest && !deepest->ids.empty() && held(*deepest)) {
+                bytes_ -= e.bytes();
+                entries_.erase(entries_.begin() + (std::ptrdiff_t) i);
+                ++dropped;
+                continue;
+            }
+            ++i;
+        }
+        superseded_ += dropped;
+        return dropped;
+    }
+    size_t superseded() const { return superseded_; }
+
     bool put(SavedConversation&& image, size_t held = 0) {
         const size_t n = image.bytes();
+        if (!enabled() || held > budget_ || n > budget_ - held) return false;   // make_room's refusal, first
+        drop_superseded(image.live.ids, image.live.imgs, image.checkpoints, image.cvec);
         if (!make_room(n, held)) return false;
         entries_.push_back(std::move(image));
         bytes_ += n;
@@ -173,7 +275,7 @@ public:
     }
 
 private:
-    size_t budget_ = 0, slots_ = 0, bytes_ = 0, evictions_ = 0;
+    size_t budget_ = 0, slots_ = 0, bytes_ = 0, evictions_ = 0, superseded_ = 0;
     std::deque<SavedConversation> entries_; // least recently active first
     ConversationKvReuse reuse_;
 };

@@ -4,6 +4,7 @@
 #include "strata/core/on_device.hpp"
 
 #include "strata/core/native_head.hpp"
+#include "strata/core/peer_experts.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/elementwise.hpp"
@@ -25,16 +26,23 @@
 #include "strata/kernels/sampler.hpp"
 #include "strata/kernels/shared_expert.hpp"
 #include "strata/kernels/verify_kernels.hpp"
+#include "strata/kernels/ngram.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <fstream>
 #include <sstream>
 #include <vector>
+#if defined(_WIN32)
+#include <intrin.h>
+#elif defined(__x86_64__)
+#include <immintrin.h>
+#endif
 
 namespace strata::core {
 namespace {
@@ -55,7 +63,7 @@ struct Bump {
 };
 
 bool mapped(size_t bytes, void** h, void** d) {
-    if (cudaHostAlloc(h, bytes, cudaHostAllocMapped) != cudaSuccess) return false;
+    if (cudaHostAlloc(h, bytes, cudaHostAllocMapped | (peer_portable() ? cudaHostAllocPortable : 0)) != cudaSuccess) return false;
     std::memset(*h, 0, bytes);
     return cudaHostGetDevicePointer(d, *h, 0) == cudaSuccess;
 }
@@ -144,6 +152,7 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     cudaGetDevice(&device_);   // a layer split's last stage on another GPU: the drafter lives there
     g_ = &g;
     ss_ = &ss;
+    if (ple_ss_ == nullptr) ple_ss_ = &ss;
     max_t_ = max_t;
     rt_dir_ = rt_dir;
     if (max_t < 1 || max_t > strata::kernels::kVerifyMaxT) { err = "mtp: max_t out of range"; return false; }
@@ -372,6 +381,45 @@ void MtpDrafter::set_draft_history(const int32_t* tail, int64_t n_tail, int32_t 
     coupled_hist_base(tail, n_tail, next, h, h_chist_ + (kCoupledHistCap - h));
 }
 
+namespace {
+// #474: what to change when the draft head's token subset does not fit the VRAM left - a smaller subset that setup
+// ships (data/draft_vocab_*.bin; their token counts below), and how to pick it.  The start used to stop at "the draft
+// head does not fit" with no hint.  Text only, after the failure: nothing changes for a start that fits.
+void draft_head_hint(int64_t n_tokens, int64_t row_bytes) {
+    size_t free_b = 0, total_b = 0;
+    const bool have_free = cudaMemGetInfo(&free_b, &total_b) == cudaSuccess;
+    auto mib = [&](int64_t n) { return (double) (n * row_bytes) / 1048576.0; };
+    std::string free_s;
+    if (have_free) {
+        char b[64];
+        std::snprintf(b, sizeof(b), " and %.0f MiB is free", (double) free_b / 1048576.0);
+        free_s = b;
+    }
+    std::fprintf(stderr, "strata mtp: the draft head over %lld tokens needs %.0f MiB of VRAM%s.\n",
+                 (long long) n_tokens, mib(n_tokens), free_s.c_str());
+    struct Subset { const char* name; int64_t tokens; const char* what; };
+    static const Subset smaller[] = {{"cyrillic", 58963, "English, code and the Cyrillic script"},
+                                     {"en", 40525, "English and code"}};
+    std::string opts;
+    for (const Subset& s : smaller)
+        if (s.tokens < n_tokens) {
+            char b[160];
+            std::snprintf(b, sizeof(b), "%s--draft-vocab %s (%s, ~%.0f MiB)", opts.empty() ? "" : " or ", s.name,
+                          s.what, mib(s.tokens));
+            opts += b;
+        }
+    if (!opts.empty())
+        std::fprintf(stderr, "strata mtp: hint: a smaller draft vocabulary needs less VRAM: %s. Start once with it - "
+                             "START-HERE.bat --draft-vocab en (Windows) or ./setup.sh --draft-vocab en - and the model "
+                             "keeps it (\"draft_vocab\" in its strata-*.json config); or a smaller --context in "
+                             "setup.\n",
+                     opts.c_str());
+    else
+        std::fprintf(stderr, "strata mtp: hint: this is already the smallest shipped draft vocabulary: a smaller "
+                             "--context (or closing what else uses the GPU) leaves it room.\n");
+}
+}  // namespace
+
 bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float* window_R, std::string& err) {
     const OnDevice on_device(device_);
     wt_ = &wt;
@@ -395,6 +443,7 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
             if (cudaMalloc((void**) &dvocab_, raw.size()) != cudaSuccess ||
                 cudaMalloc((void**) &dhead_, (size_t) (n_dvocab_ * row_bytes)) != cudaSuccess) {
                 err = "mtp: the draft head does not fit";
+                draft_head_hint(n_dvocab_, row_bytes);
                 return false;
             }
             cudaMemcpy(dvocab_, raw.data(), raw.size(), cudaMemcpyHostToDevice);
@@ -471,12 +520,15 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
         native_mmvq(GGML_Q8_0, q8("self_attn.v_proj.weight"), xq_, vcur_, (int) N, (int) (NKV * HD), T, cs);
         for (int t = 0; t < T; ++t) {
             norm_rope(kcur_ + t * NKV * HD, f32("self_attn.k_norm.weight"), (int) NKV, (int) HD, pos + t * NH);
-            if (st_.kv_q4) {   // Q4_0 KV (kv_q4.hpp): rotated K and V
+            if (st_.kv_rot) {   // rotated K and V (kv_q4.hpp): Q4_0, and INT8 with STRATA_KV_ROT=1
                 fwht256_inplace_cuda(kcur_ + t * NKV * HD, NKV, cs);
                 fwht256_inplace_cuda(vcur_ + t * NKV * HD, NKV, cs);
+            }
+            // stored in the state's own format (#293 appended rotated INT8 K/V as Q4_0, into pools INT8 never has)
+            if (st_.kv_q4)
                 kv_append_q4_step(st_.k_q4, st_.v_q4, st_.page_table, step + t * 4, kcur_ + t * NKV * HD,
                                   vcur_ + t * NKV * HD, s, cs, &st_.host);
-            } else if (st_.kv_int8)
+            else if (st_.kv_int8)
                 kv_append_q8_step(st_.k_q, st_.v_q, st_.k_scale, st_.v_scale, st_.page_table, step + t * 4,
                                   kcur_ + t * NKV * HD, vcur_ + t * NKV * HD, s, cs, &st_.host);
             else
@@ -493,12 +545,12 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
                 return false;
             }
             norm_rope(qc, f32("self_attn.q_norm.weight"), (int) NH, (int) HD, pos + t * NH);
-            if (st_.kv_q4) fwht256_inplace_cuda(qc, NH, cs);
+            if (st_.kv_rot) fwht256_inplace_cuda(qc, NH, cs);
         }
         const QsaAttnPools pools = qsa_attn_pools(st_);
         if (window_ > 0) window_ids(const_cast<int32_t*>(step), T, (int) window_, ident_, cap_, cs);
         qsa_decode_attn_batch(qcur_, pools, ident_, step, cap_, s, attn_scratch_, attn_, T, cs);
-        if (st_.kv_q4) fwht256_inplace_cuda(attn_, (int64_t) T * NH, cs);
+        if (st_.kv_rot) fwht256_inplace_cuda(attn_, (int64_t) T * NH, cs);
         for (int t = 0; t < T; ++t)
             native_qsa_gate_apply(attn_ + t * NH * HD, qfull_ + t * NH * 2 * HD, attn32_ + t * NH * HD, (int) NH, (int) HD, cs);
         native_quantize_q8_1(attn32_, xq_, (int) (NH * HD), T, cs);
@@ -535,8 +587,13 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
         nsw.down_type = GGML_Q8_0; nsw.down_data = q8("mlp.shared_expert.down_proj.weight");
         nsw.q8_1 = xq_;
         const SForm none{};
+        const bool need_bf16_x = !shared_expert_native_bf16_enabled();
+        static const bool fuse_head_gr = [] {
+            const char* v = std::getenv("STRATA_FUSE_HEAD_GR");
+            return v != nullptr && std::atoi(v) != 0;
+        }();
         for (int t = 0; t < T; ++t) {
-            f32_to_bf16_bulk(mixed_ + t * N, x_bf16_, N, cs);
+            if (need_bf16_x) f32_to_bf16_bulk(mixed_ + t * N, x_bf16_, N, cs);
             shared_expert(nullptr, nullptr, x_bf16_, none, nullptr, nullptr, nullptr, none, nullptr, nullptr, nullptr, none,
                           nullptr, nullptr, nullptr, bf16("mlp.shared_expert_gate.weight"), sh_scratch_, shared_ + t * N,
                           N, g.n_ff, 32, cs, mixed_ + t * N, &nsw);
@@ -544,14 +601,30 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
                 native_moe_combine(parts_ + (size_t) t * K * N, w_ + t * K, shared_ + t * N, y_ + t * N, N, K, cs);
             else
                 moe_combine(parts_ + (size_t) t * K * N, w_ + t * K, shared_ + t * N, y_ + t * N, N, K, cs);
-            gr_write(R_ + (size_t) t * HC * N, y_ + t * N, inj2_ + t * HC, gs, R_ + (size_t) t * HC * N, cs);
+            if (!fuse_head_gr)
+                gr_write(R_ + (size_t) t * HC * N, y_ + t * N, inj2_ + t * HC, gs, R_ + (size_t) t * HC * N, cs);
         }
         // ---- the final mixer and the main model's head
-        for (int t = 0; t < T; ++t)
-            gr_read(R_ + (size_t) t * HC * N, f32("hyper_connection_mixer.hc_norm.weight"),
-                    bf16("hyper_connection_mixer.input_mix_weight_down.weight"),
-                    bf16("hyper_connection_mixer.input_mix_weight_up.weight"), nullptr, EPS, gs, ss.block.gr,
-                    sample_ + t * N, dummy_inj_, cs);
+        if (fuse_head_gr) {
+            FusedGrArgs fa[kFusedGrMaxT];
+            for (int t = 0; t < T; ++t) {
+                fa[t].R = R_ + (size_t) t * HC * N; fa[t].R_out = R_ + (size_t) t * HC * N; fa[t].apply = true;
+                fa[t].bo_prev = y_ + t * N; fa[t].inj_prev = inj2_ + t * HC;
+                fa[t].w_norm = f32("hyper_connection_mixer.hc_norm.weight");
+                fa[t].w_down = bf16("hyper_connection_mixer.input_mix_weight_down.weight");
+                fa[t].w_up = bf16("hyper_connection_mixer.input_mix_weight_up.weight");
+                fa[t].w_inject = nullptr;
+                fa[t].eps = EPS; fa[t].lo = lo_ + t * g.hc_lr; fa[t].rs = rs_ + t * HC;
+                fa[t].inject_out = dummy_inj_; fa[t].mixed = sample_ + t * N;
+            }
+            fused_gr_read_multi(fa, T, xn_, cs);
+        } else {
+            for (int t = 0; t < T; ++t)
+                gr_read(R_ + (size_t) t * HC * N, f32("hyper_connection_mixer.hc_norm.weight"),
+                        bf16("hyper_connection_mixer.input_mix_weight_down.weight"),
+                        bf16("hyper_connection_mixer.input_mix_weight_up.weight"), nullptr, EPS, gs, ss.block.gr,
+                        sample_ + t * N, dummy_inj_, cs);
+        }
         native_quantize_q8_1(sample_, xq_, (int) N, T, cs);
         const bool sub = dhead_ != nullptr;
         const int64_t nv = sub ? n_dvocab_ : n_vocab_;
@@ -685,8 +758,21 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
     // E-4: every group's token / step / position records uploaded at once; each group is then device copies and a
     // graph on the one stream, with a single sync at the end (a group of <= max_t rows used to be staged in mapped
     // memory and synced before the next: ~5,500 host round trips on a 32K prompt).  The same work in the same
-    // order.  STRATA_MTP_PREFILL_SYNC=1 keeps the old loop.
-    static const bool per_group_sync = std::getenv("STRATA_MTP_PREFILL_SYNC") != nullptr;
+    // order.  STRATA_MTP_PREFILL_SYNC=1 keeps the old loop, =0 forces E-4.
+    // HIP defaults to the old loop.  This pass runs whenever E-9 (Prefill::draft_kv) declines, which it does for the
+    // drafter's ring (KV streaming, --kv-resident), and on gfx1201 / ROCm 7.2.4 the E-4 queue (a graph launch and four
+    // device copies per group, ~2,000 groups per 8192-token chunk, no sync) sometimes never completes: the prompt hangs
+    // in hipGraphLaunch or the final sync until the watchdog ends the engine.  R9700, full IQ3_XXS, --kv-resident
+    // 32768, mixed load (chats, 32K and 7K prompts, deep follow-ups): E-4 hung in the first round on 2 of 2 tries,
+    // the old loop ran 30 of 30 rounds clean, prompt speed unchanged.
+    static const bool per_group_sync = [] {
+        if (const char* v = std::getenv("STRATA_MTP_PREFILL_SYNC")) return std::atoi(v) != 0;
+#if defined(STRATA_USE_HIP)
+        return true;
+#else
+        return false;
+#endif
+    }();
     const int64_t NHp = g_->n_head, per_row = 1 + 4 + NHp;
     if (!per_group_sync && n > 0) {
         if (pf_cap_ < n * per_row) {
@@ -771,6 +857,9 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
     if (T < 1 || T > max_t_ || a < 0 || a >= T) { err = "mtp: draft arguments out of range"; return false; }
     const bool cp = coupled_active_;   // coupled draft sampling for this request: its own graphs
     if (!capture_round(T, cp, err)) return false;
+    const int max_steps = std::min(max_t_ - 1, max_drafts_);
+    for (int j = 1; j < max_steps; ++j)
+        if (!capture_step(j, cp, err)) return false;
     const Clock::time_point t0 = Clock::now();
     const int64_t NH = g_->n_head;
     auto put = [&](int row, int64_t cell) {
@@ -785,32 +874,99 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
         put(t, p + t);
     }
     put(2 * max_t_ - 1, coupled_draft_cell(p, a, 0));   // p + a: draft 0's cell
+    for (int j = 1; j < max_steps; ++j)
+        put(max_t_ + j - 1, coupled_draft_cell(p, a, j));
+    for (int j = 0; j < max_steps; ++j) ((volatile int32_t*) h_out_)[j] = -1;
     h_row_[0] = a;
     h_row_[1] = 0;
     std::atomic_thread_fence(std::memory_order_seq_cst);
-    if (cudaGraphLaunch(cp ? round_exec_c_[T] : round_exec_[T], cs_) != cudaSuccess ||
-        cudaStreamSynchronize(cs_) != cudaSuccess) {
-        err = std::string("mtp draft: ") + cudaGetErrorString(cudaGetLastError());
-        return false;
-    }
-    drafts[0] = ((volatile int32_t*) h_out_)[0];
-    float pj = ((volatile float*) h_prob_)[0];
-    if (probs) probs[0] = pj;
-    int n = 1;
-    // the chain continues while the last draft is likely enough to be verified
-    for (int j = 1; j < std::min(max_t_ - 1, max_drafts_) && pj >= min_p; ++j) {
-        if (!capture_step(j, cp, err)) return false;
-        put(max_t_ + j - 1, coupled_draft_cell(p, a, j));   // p + a + j; coupled: drawn at counter cell + 1
-        std::atomic_thread_fence(std::memory_order_seq_cst);
-        if (cudaGraphLaunch(cp ? step_exec_c_[j] : step_exec_[j], cs_) != cudaSuccess ||
-            cudaStreamSynchronize(cs_) != cudaSuccess) {
-            err = std::string("mtp draft step: ") + cudaGetErrorString(cudaGetLastError());
+
+    SessionState* const pss = ple_ss_ ? ple_ss_ : ss_;
+    const bool do_ple = pss != nullptr && pss->ple.ready() && pss->ple.table != nullptr;
+    int32_t ple_prev[2] = {do_ple ? pss->ple_prev[0] : 0, do_ple ? pss->ple_prev[1] : 0};
+    auto prefetch_ple = [&](int32_t tok) {
+        if (!do_ple || tok < 0) return;
+        uint32_t rows16[strata::kernels::PLE_N_HEADS];
+        strata::kernels::ngram_rows(&tok, ple_prev, 1, pss->ple.consts, rows16);
+        ple_prev[0] = ple_prev[1];
+        ple_prev[1] = tok;
+        pss->ple.table->prefetch_rows(rows16);
+    };
+
+    int n = 0;
+    if (min_p <= 0.0f && max_steps > 0) {
+        if (cudaGraphLaunch(cp ? round_exec_c_[T] : round_exec_[T], cs_) != cudaSuccess) {
+            err = std::string("mtp draft: ") + cudaGetErrorString(cudaGetLastError());
             return false;
         }
-        drafts[j] = ((volatile int32_t*) h_out_)[j];
-        pj = ((volatile float*) h_prob_)[j];
-        if (probs) probs[j] = pj;
-        ++n;
+        for (int j = 1; j < max_steps; ++j) {
+            if (cudaGraphLaunch(cp ? step_exec_c_[j] : step_exec_[j], cs_) != cudaSuccess) {
+                err = std::string("mtp draft step: ") + cudaGetErrorString(cudaGetLastError());
+                return false;
+            }
+        }
+        (void) cudaStreamQuery(cs_);
+        prefetch_ple(tokens[a]);
+        for (int j = 0; j + 1 < max_steps; ++j) {
+            uint32_t spins = 0;
+            while (((volatile int32_t*) h_out_)[j] < 0) {
+#if defined(_WIN32) || defined(__x86_64__)
+                _mm_pause();
+#endif
+                if ((++spins & 1023u) == 0 && cudaStreamQuery(cs_) != cudaErrorNotReady) break;
+            }
+            drafts[j] = ((volatile int32_t*) h_out_)[j];
+            if (probs) probs[j] = ((volatile float*) h_prob_)[j];
+            prefetch_ple(drafts[j]);
+        }
+        if (cudaStreamSynchronize(cs_) != cudaSuccess) {
+            err = std::string("mtp draft: ") + cudaGetErrorString(cudaGetLastError());
+            return false;
+        }
+        const int last = max_steps - 1;
+        drafts[last] = ((volatile int32_t*) h_out_)[last];
+        if (probs) probs[last] = ((volatile float*) h_prob_)[last];
+        prefetch_ple(drafts[last]);
+        n = max_steps;
+    } else if (max_steps > 0) {
+        if (cudaGraphLaunch(cp ? round_exec_c_[T] : round_exec_[T], cs_) != cudaSuccess) {
+            err = std::string("mtp draft: ") + cudaGetErrorString(cudaGetLastError());
+            return false;
+        }
+        (void) cudaStreamQuery(cs_);
+        prefetch_ple(tokens[a]);
+        auto wait_step = [&](int j) {
+            uint32_t spins = 0;
+            while (((volatile int32_t*) h_out_)[j] < 0) {
+#if defined(_WIN32) || defined(__x86_64__)
+                _mm_pause();
+#endif
+                if ((++spins & 1023u) == 0 && cudaStreamQuery(cs_) != cudaErrorNotReady) break;
+            }
+        };
+        wait_step(0);
+        drafts[0] = ((volatile int32_t*) h_out_)[0];
+        float pj = ((volatile float*) h_prob_)[0];
+        if (probs) probs[0] = pj;
+        n = 1;
+        for (int j = 1; j < max_steps && pj >= min_p; ++j) {
+            if (cudaGraphLaunch(cp ? step_exec_c_[j] : step_exec_[j], cs_) != cudaSuccess) {
+                err = std::string("mtp draft step: ") + cudaGetErrorString(cudaGetLastError());
+                return false;
+            }
+            (void) cudaStreamQuery(cs_);
+            prefetch_ple(drafts[j - 1]);
+            wait_step(j);
+            drafts[j] = ((volatile int32_t*) h_out_)[j];
+            pj = ((volatile float*) h_prob_)[j];
+            if (probs) probs[j] = pj;
+            ++n;
+        }
+        prefetch_ple(drafts[n - 1]);
+        if (cudaStreamSynchronize(cs_) != cudaSuccess) {
+            err = std::string("mtp draft: ") + cudaGetErrorString(cudaGetLastError());
+            return false;
+        }
     }
     for (int j = n; j < max_t_ - 1; ++j) { drafts[j] = 0; if (probs) probs[j] = 0.0f; }
     if (n_drafts) *n_drafts = n;

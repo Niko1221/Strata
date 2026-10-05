@@ -37,15 +37,22 @@ td.log
 /strata-*.json
 /strata-*.log
 /build-strata.bat
+/build-strata-cuda12.bat
+/build-cuda12/
+/.strata-mcp/
 
 # image encoder (setup.py --vision): build output and the generated build script
 build-vision*/
 build-vision.bat
+build-vision-cuda12.bat
 
 # setup.py outputs (engine, downloads) and release builds
 /engine/
+/engine-cuda12/
 /build-release*/
 /dist/
 *.done
 /third_party/*.zip
 
+/.ccache/
+/.rocm-win/

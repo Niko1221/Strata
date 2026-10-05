@@ -1,5 +1,6 @@
 // src/prefill/ggml_cuda_host.cu - prompt-speed plan step 2b: the host-side symbols of llama.cpp's ggml-cuda that its MMQ
 // and quantize code reference, for the MMQ kernels compiled into strata_mmq without the rest of ggml-cuda.cu.
+#include "strata/core/emulate.hpp"
 #include "common.cuh"
 
 #include <cstdio>
@@ -79,17 +80,30 @@ const ggml_cuda_device_info & ggml_cuda_info() {
             d.smpbo = prop.sharedMemPerBlock;
             d.integrated = false;
             d.supports_cooperative_launch = false;
-#else
-            d.cc = 100 * prop.major + 10 * prop.minor;
-            d.smpbo = prop.sharedMemPerBlockOptin;
-            d.integrated = prop.integrated != 0;
-            d.supports_cooperative_launch = prop.cooperativeLaunch != 0;
-#endif
             d.nsm = prop.multiProcessorCount;
             d.smpb = prop.sharedMemPerBlock;
+            d.warp_size = prop.warpSize;
+#else
+            // #542: the fields MMQ's choices read come from cudaDeviceGetAttribute, which is ABI-stable: a
+            // cudaDeviceProp filled by an older libcudart than the headers (a CUDA 13 build that links a CUDA 12
+            // libcudart.so) is shifted - sharedMemPerBlockOptin read 1 there, and every i-quant lost MMQ (#420's
+            // fits()).  In a matched build both give the same values.
+            auto attr = [id](cudaDeviceAttr a) {
+                int v = 0;
+                CUDA_CHECK(cudaDeviceGetAttribute(&v, a, id));
+                return v;
+            };
+            d.cc = 100 * strata::cc_major_of(attr(cudaDevAttrComputeCapabilityMajor)) +
+                   10 * strata::cc_minor_of(attr(cudaDevAttrComputeCapabilityMinor));   // STRATA_EMULATE_CC
+            d.smpbo = strata::smem_optin_of(attr(cudaDevAttrMaxSharedMemoryPerBlockOptin));
+            d.integrated = attr(cudaDevAttrIntegrated) != 0;
+            d.supports_cooperative_launch = attr(cudaDevAttrCooperativeLaunch) != 0;
+            d.nsm = attr(cudaDevAttrMultiProcessorCount);
+            d.smpb = (size_t) attr(cudaDevAttrMaxSharedMemoryPerBlock);
+            d.warp_size = attr(cudaDevAttrWarpSize);
+#endif
             d.vmm = false;
             d.total_vram = prop.totalGlobalMem;
-            d.warp_size = prop.warpSize;
             d.physical_device = id;
             d.physical_share_count = 1;
             d.virtual_index = 0;

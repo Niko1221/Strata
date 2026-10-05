@@ -14,7 +14,8 @@
 //   * q and p are split into FP16 hi + lo parts (two MMAs each), so they keep ~22 bits: the result differs from
 //     the FP32 kernel by summation order and the exp2 rounding, not by an FP16 cast.
 // Not bitwise equal to `qsa_decode_attn_batch`; `qsa_prompt_attn_parity` bounds the difference and the prompt
-// quality gate (needles, teacher-forced top-1) checks it end to end. Q4_0 KV is not handled (returns false).
+// quality gate (needles, teacher-forced top-1) checks it end to end. Q4_0 KV (mode 4): each block's codes enter
+// exactly as int8 and its scale (one per 32 values) in FP32, as int8 KV's do (STRATA_PROMPT_ATTN_Q4=0: the old kernel).
 #pragma once
 
 #include "strata/kernels/qsa_decode_attn.hpp"
@@ -24,7 +25,7 @@
 namespace strata::kernels {
 
 /// Same arguments and output as `qsa_decode_attn_batch` minus the scratch. Returns false (nothing launched) when the
-/// pools are Q4_0 or the geometry is not 24 heads / 2 KV heads / 256: the caller then uses the old kernel.
+/// geometry is not 24 heads / 2 KV heads / 256: the caller then uses the old kernel.
 bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                            int64_t cap, const QsaShapes& s, float* attn, int64_t n_q, void* stream);
 
