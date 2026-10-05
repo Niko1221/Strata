@@ -18,6 +18,11 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-03: 2x AMD Instinct MI50 16 GB (gfx906), Xeon E5-2666 v3, 32 GB RAM](../bench/results/2026-10-03-community-2x-mi50/README.md):
   the gfx906 build (#638) with #639 and #640, Coder IQ1_M, 131,072-token context, layer split across both cards;
   three runs each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.
+- [2026-10-05: NVIDIA RTX 4070 Ti SUPER 16 GiB (sm_89), Ryzen 7 9800X3D, 94 GB RAM](../bench/results/2026-10-05-community-rtx-4070-ti-super/README.md):
+  Strata at upstream-main commit `6f32ec07`, locally compiled sm_89 fat-binary;
+  Flash-Next IQ2_XS (KV=int8 across all four contexts) and IQ3_XXS (KV=int8/q4_0/k8v4 by context);
+  context ladder 32k/64k/128k/256k; one cold-prefill probe + three SSE runs per row;
+  six needle-in-haystack recall checks at 32k (3 of 3 FOUND on each model).
 
 ## What to record
 
