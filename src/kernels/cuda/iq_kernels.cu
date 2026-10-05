@@ -2056,12 +2056,22 @@ void iq_dequant_gu_f16(int t, const void* gate, const void* up, int64_t n_ff, in
     check("iq_dequant_gu_f16");
 }
 
+// A bad block is a pack or caller error (expert_layout_load already refuses a block that does not divide the expert
+// widths): it exits with a message, like check() does for a failed launch.
+namespace {
+void hadamard_bad_block(const char* what, int block, int64_t width) {
+    std::fprintf(stderr, "%s: Hadamard block %d is not a power of two in [2, 1024] dividing the row width %lld "
+                         "(hadamard.txt's block and the expert widths disagree)\n", what, block, (long long) width);
+    std::exit(1);
+}
+bool hadamard_block_ok(int block, int64_t width) {
+    return block >= 2 && block <= 1024 && (block & (block - 1)) == 0 && width % block == 0;
+}
+}  // namespace
+
 void hadamard_rows(const float* x, float* y, int64_t rows, int64_t width, int block, const float* signs, void* stream) {
     if (rows <= 0) return;
-    if (block < 2 || block > 1024 || (block & (block - 1)) || width % block) {
-        std::fprintf(stderr, "hadamard_rows: block %d, width %lld\n", block, (long long) width);
-        std::exit(1);
-    }
+    if (!hadamard_block_ok(block, width)) hadamard_bad_block("hadamard_rows", block, width);
     hadamard_rows_kernel<float><<<dim3((unsigned) (width / block), (unsigned) rows), block, block * sizeof(float),
                                   (cudaStream_t) stream>>>(x, y, width, signs, 1.0f / std::sqrt((float) block));
     check("hadamard_rows");
@@ -2069,10 +2079,7 @@ void hadamard_rows(const float* x, float* y, int64_t rows, int64_t width, int bl
 
 void hadamard_rows_f16(uint16_t* x, int64_t rows, int64_t width, int block, const float* signs, void* stream) {
     if (rows <= 0) return;
-    if (block < 2 || block > 1024 || (block & (block - 1)) || width % block) {
-        std::fprintf(stderr, "hadamard_rows_f16: block %d, width %lld\n", block, (long long) width);
-        std::exit(1);
-    }
+    if (!hadamard_block_ok(block, width)) hadamard_bad_block("hadamard_rows_f16", block, width);
     hadamard_rows_kernel<__half><<<dim3((unsigned) (width / block), (unsigned) rows), block, block * sizeof(float),
                                    (cudaStream_t) stream>>>((const __half*) x, (__half*) x, width, signs,
                                                             1.0f / std::sqrt((float) block));
