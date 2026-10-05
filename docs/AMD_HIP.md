@@ -1,9 +1,9 @@
-# AMD Radeon: the HIP backend (gfx1100, gfx1101, gfx1200, gfx1201, gfx1030)
+# AMD Radeon: the HIP backend (gfx1100, gfx1101, gfx1102, gfx1200, gfx1201, gfx1030)
 
 Strata runs on AMD Radeon cards through its HIP backend, the same engine as on NVIDIA compiled for AMD. This page
 covers the build on Linux (on Windows a ready-made engine, see [Windows](#windows)) for the RX 7900 XT / XTX (RDNA3, gfx1100) and the
 RX 9070 / 9070 XT / Radeon AI PRO R9700 (RDNA4, gfx1201; see [RDNA4](#rdna4-gfx1201)). The RX 7800 XT / 7700 XT
-(gfx1101) and the RX 9060 XT (gfx1200) were validated by their owners (see [Community-validated
+(gfx1101), the RX 7600 (gfx1102) and the RX 9060 XT (gfx1200) were validated by their owners (see [Community-validated
 cards](#community-validated-cards)); the RX 6800 / 6900 series (RDNA2, gfx1030) builds and runs too, reported by a community machine and not yet validated by the maintainers (see [RDNA2](#rdna2-gfx1030)). Setup chooses it by itself on a PC with no NVIDIA card Strata can use (`--backend hip` on a PC with both); the
 install steps for users are in [INSTALL.md](INSTALL.md#amd-cards). gfx906 (Instinct MI50 / MI60, Radeon VII; wave64) has a separate
 opt-in build, see [gfx906](#gfx906-instinct-mi50--mi60-radeon-vii-wave64-built-from-source). Other AMD architectures and mixed
@@ -134,9 +134,8 @@ cmake -S . -B build-hip \
 cmake --build build-hip --target strata -j2
 ```
 
-`CMAKE_HIP_ARCHITECTURES` is `gfx1100`, `gfx1101`, `gfx1200`, `gfx1201`, or a list such as `"gfx1100;gfx1201"`
-(one binary for both). gfx1102 (the same wave32, 64 KiB LDS and dot4 instruction) builds with a warning: it passed
-ctest (#192) but no model run has been reported; so does gfx1030 (RDNA2: the older `v_dot4_i32_i8`, a community run in #311). At startup the engine and `strata-device` compare each GPU they use
+`CMAKE_HIP_ARCHITECTURES` is `gfx1100`, `gfx1101`, `gfx1102`, `gfx1200`, `gfx1201`, or a list such as
+`"gfx1100;gfx1201"` (one binary for both). gfx1030 builds with a warning (RDNA2: the older `v_dot4_i32_i8`, a community run in #311). At startup the engine and `strata-device` compare each GPU they use
 (`gcnArchName` up to the `:` feature suffix) with the architectures the binary was compiled for, and require
 wave32. A binary carried to another card stops with the card's name, its architecture and the build's list,
 instead of failing later with "invalid device function".
@@ -295,6 +294,15 @@ and compare the prompt speed with and without it).
   passed; ctest 30/32 (`ple_parity` needs the Q2_0 fixture, `platform_memory_test` the memlock limit). Coder IQ1_M,
   64K context, MTP, with a table the owner calibrated: fresh prompts of 4K-9K tokens at 898-953 tok/s, decode
   38-44 tok/s (128 tokens).
+- **gfx1102, RX 7600 8 GB** (nexus2905, #192; engine 0.1.39, Ryzen 5 5600 (AVX2, no AVX-512), 64 GiB DDR4,
+  B450 board (PCIe 3.0 x8, 7.0 GB/s probed), Ubuntu 26.04, system ROCm with hipBLASLt 1.4.1, no tuning table):
+  `./setup.sh --backend hip` detected the card and compiled the engine; `strata-device --selftest` passed; ctest
+  62/63 (without `ple_parity` and `platform_memory_test`; `expert_multi_test` needs AVX-512). IQ2_XS, 32K context,
+  `--kv int8`, MTP `--spec 4 --spec-min-p 0.5`, `--vram-reserve-mib 2560` (the card also drives the GNOME desktop,
+  which takes up to ~1.9 GiB; with the auto reserve GNOME Shell's command submissions failed and the session ended):
+  347 expert slots, decode 24.0 tok/s (320-token replies, greedy, thinking off; 14.2 on engine 0.1.27), prompts of
+  4.7K and 16.5K tokens at 59 and 57 tok/s (256-token chunks: too few cache slots to borrow). The Coder IQ1_M leaves
+  2.34 GiB after its dense weights and did not fit beside the desktop with a safe reserve.
 - **gfx1200, RX 9060 XT 16 GB** (Efeisot, #256 after #176; engine 0.1.29, Ryzen 9 7950X, 64 GiB RAM, ROCm 7.2 with
   hipBLASLt 1.2.2): ctest 32/32 (without `ple_parity` and `platform_memory_test`). Coder IQ1_M, greedy, MTP
   `--spec 4 --spec-min-p 0.5`, with a table the owner calibrated:
