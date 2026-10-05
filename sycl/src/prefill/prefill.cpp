@@ -550,6 +550,9 @@ struct Prefill::Impl {
     uint16_t* dq_d[DQ] = {};
     uint8_t* stage_dev[RING_MAX] = {};
     int ring = STAGE;                        // the slots of this layout's ring (ring_slots)
+    // this layout's GU, H and Xq are the fused path's (moe_bufs' `fused`), so a layer that runs MMQ or the FP16 path
+    // may only write stream_all_min() - 1 of its rows into them - `fused_layout` is what keeps the two in step (#583)
+    bool fused_bufs = false;
     std::unique_ptr<Stager> stager;          // the unpinned experts' host copies (step 4)
     dpct::event_ptr copied[RING_MAX] = {}, used[RING_MAX] = {};
     bool stage_live[RING_MAX] = {};
@@ -714,6 +717,20 @@ const MmqPlan& mmq_plan() {
     }();
     return plan;
 }
+// EVERY layer's experts go through MMQ (none keeps the FP16 path), which is what the fused layout's smaller buffers
+// need: `mmq_plan().any` only says ONE layer does, and a layer that does not runs the FP16 path at the FULL chunk -
+// `m.gemm.f16(..., m.GU + o0 * 1280, ne, ...)` over the layer's routed rows - while the fused layout sizes GU for
+// stream_all_min() - 1 tokens of them (#583: on an IQ3_XXS pack with a layer the FUSED kernels do not cover either,
+// that overflow is a 16384/1023 = 16x write past the buffer: garbage, an illegal access, or a kernel that never
+// returns - the first `ck()` to see it is `prefill mmq: iota`, one prompt later).  The shrink is therefore all-or-
+// nothing: a pack with one such layer keeps MMQ's buffers, as `fused_ring()` already does for the native kernels.
+inline bool mmq_all() {
+    const MmqPlan& mp = mmq_plan();
+    if (!mp.any) return false;
+    for (const char v : mp.layer)
+        if (!v) return false;
+    return true;
+}
 // #136 P3: a layout whose chunks run the fused experts (STRATA_PF_FUSED=1, the Q2_0 pack, a streamed chunk of
 // stream_all_min() tokens or more).  Its GU, H and Xq hold only the fused path's grouping tables, int8 H and per-token
 // int8 activations, and Hq nothing: ~100 KB a token less than MMQ's FP32 GU / H and per-slot q8_1 rows, which is what
@@ -721,7 +738,7 @@ const MmqPlan& mmq_plan() {
 // MMQ in the same buffers, so each keeps MMQ's size for stream_all_min() - 1 tokens.  `src`: the layout streams experts
 // (Prefill::init got an ExpertSource; without one no chunk takes the streamed walk, so no chunk is fused).
 bool fused_layout(size_t T, bool src) {
-    return src && fused_ring() && mmq_plan().any && ring_slots(T) > STAGE && (int64_t) T >= stream_all_min();
+    return src && fused_ring() && mmq_all() && ring_slots(T) > STAGE && (int64_t) T >= stream_all_min();
 }
 // The MoE buffers MMQ and the fused path share: GU and H in floats, Xq and Hq in bytes.  Without `fused` (the
 // default): MMQ's, for T tokens.
@@ -972,6 +989,7 @@ bool Prefill::carve(size_t T, void* alloc) {
     {
         // one region for the attention half's and the MoE half's scratch (see gdn_set_bytes)
         const bool fz = fused_layout(T, m.src != nullptr);
+        m.fused_bufs = fz;
         const MoeBufs mb = moe_bufs(T, m.g->n_expert, fz);
         const uint64_t region = std::max({gdn_set_bytes(T), qsa_set_bytes(T, m.cap, m.max_blocks, m.sel_batch,
                                                                            m.attn_batch, s), moe_set_bytes(T, m.g->n_expert, fz)});
@@ -2557,6 +2575,16 @@ bool Prefill::run(const int64_t *tokens, int64_t n, int64_t pos0,
                     const bool no_peer = !core::peer_portable();
                     const bool fused_nat = use_mmq && stream_all && no_peer && lay.native && fused::native_supported(mmq_gt, mmq_dt);
                     const bool fused_l = (use_mmq && stream_all && no_peer && !lay.native && fused::enabled()) || fused_nat;
+                    // #583: the fused layout's GU/H/Xq hold the grouping tables and the int8 rows, sized for
+                    // stream_all_min() - 1 tokens of MMQ's rows - so a layer that takes MMQ or the FP16 path at the
+                    // FULL chunk writes T*K rows into a (stream_all_min() - 1)*K-row buffer.  fused_layout() keeps the
+                    // shrink and this decision in step (see mmq_all); the check below is the backstop for anything
+                    // that drifts: a clear error, never a hang.
+                    if (!fused_l && m.fused_bufs && T >= stream_all_min()) {
+                        err = "prefill: the fused layout's MoE buffers are too small for layer " + std::to_string(l) +
+                              "'s expert path at a chunk of " + std::to_string(T) + " tokens";
+                        return false;
+                    }
                     size_t n_order = 0;                   // the routed experts (the debug report; unknown when fused)
                     bool peer_now = false;                // multi-GPU: the peer computed rows of this layer (MMQ path only)
                     if (fused_l) {
