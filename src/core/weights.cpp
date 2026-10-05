@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 
 #if defined(_WIN32)
 #include <io.h>
@@ -110,7 +111,11 @@ bool WeightTable::pool_bytes(const std::string& pack_dir, uint64_t& out, std::st
             continue;
         if (skip->count(name)) continue;
         const uint64_t a = align > 0 ? (uint64_t) align : 256;
-        compact += (dst_bytes + a - 1) / a * a;
+        const uint64_t max = (std::numeric_limits<uint64_t>::max)();
+        if (dst_bytes > max - (a - 1)) { std::fclose(f); err = "index.txt: size overflows"; return false; }
+        const uint64_t slot = (dst_bytes + a - 1) / a * a;
+        if (slot > max - compact) { std::fclose(f); err = "index.txt: size overflows"; return false; }
+        compact += slot;
     }
     std::fclose(f);
     if (pool == 0) { err = "no '# align ... pool ...' header in " + path; return false; }
@@ -189,6 +194,17 @@ bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t a
     std::fclose(idx);
 
     if (pool == 0 || rows.empty()) { err = "index.txt has no header or no rows"; return false; }
+    for (const auto& r : rows) {
+        if (r.ne0 <= 0 || r.ne1 <= 0) { err = "index.txt: bad shape for " + r.name; return false; }
+        if (r.ne1 > 0 && r.ne0 > (std::numeric_limits<int64_t>::max)() / r.ne1) {
+            err = "index.txt: shape overflows for " + r.name;
+            return false;
+        }
+        if (r.dst_bytes > pool || r.dst_off > pool - r.dst_bytes) {
+            err = "index.txt: " + r.name + " lies outside the arena";
+            return false;
+        }
+    }
     // Plan v0.3 P1: a skip set compacts the arena.  Kept rows are re-placed in index order at the index's
     // alignment; skipped rows keep their metadata and get no bytes.
     std::vector<bool> skipped(rows.size(), false);
@@ -198,7 +214,11 @@ bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t a
         for (size_t i = 0; i < rows.size(); ++i) {
             if (skip->count(rows[i].name)) { skipped[i] = true; continue; }
             rows[i].dst_off = at;
-            at += (rows[i].dst_bytes + a - 1) / a * a;
+            const uint64_t max = (std::numeric_limits<uint64_t>::max)();
+            if (rows[i].dst_bytes > max - (a - 1)) { err = "index.txt: size overflows"; return false; }
+            const uint64_t slot = (rows[i].dst_bytes + a - 1) / a * a;
+            if (slot > max - at) { err = "index.txt: size overflows"; return false; }
+            at += slot;
         }
         pool = at;
     }

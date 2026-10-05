@@ -228,10 +228,17 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
     // assumed.  A wrong data offset would leave a different remainder.
     // A shard may hold other tensors too (Swift 1.5's shard 1 holds layers 0-12 and the table): the table must
     // then fit inside the file at its own offset; alone in its shard (the original's shard 2) it fills it exactly.
-    const uint64_t need = impl_->n_rows * (uint64_t) impl_->rb;
+    uint64_t need = 0;
+    if (impl_->rb == 0 || impl_->n_rows > (std::numeric_limits<uint64_t>::max)() / (uint64_t) impl_->rb) {
+        err = "PLE table size overflows";
+        close();
+        return false;
+    }
+    need = impl_->n_rows * (uint64_t) impl_->rb;
     const uint64_t have = impl_->file->file_size() - impl_->file->data_start();
     const bool alone = impl_->file->tensors().size() == 1;
-    if (alone ? need != have : t->offset + need > have) {
+    const bool over = need > have || t->offset > have - need;
+    if (alone ? need != have : over) {
         char buf[256];
         std::snprintf(buf, sizeof buf,
                       "PLE table size mismatch: %llu rows x %d B = %llu at offset %llu, but the file holds %llu from "

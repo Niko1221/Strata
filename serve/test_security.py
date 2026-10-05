@@ -78,19 +78,21 @@ class OriginCheck(unittest.TestCase):
         names = LOCAL | {"box"}
         self.assertTrue(origin_allowed("http://127.0.0.1:8095", "127.0.0.1:8095", names))      # Strata's own page
         self.assertTrue(origin_allowed("http://192.168.1.20:8095", "192.168.1.20:8095", names))  # ... by LAN IP
-        self.assertTrue(origin_allowed("http://localhost:3000", "127.0.0.1:8095", names))      # a local app
-        self.assertTrue(origin_allowed("http://[::1]:3000/", "127.0.0.1:8095", names))
-        self.assertTrue(origin_allowed("https://box", "127.0.0.1:8095", names))
+        self.assertTrue(origin_allowed("https://box", "box", names))
         self.assertTrue(origin_allowed("https://chat.example.com", "x", names, ["https://chat.example.com"]))
         self.assertTrue(origin_allowed("https://any.example.com", "x", names, ["*"]))           # cors_origins ["*"]
-        # browser extensions and desktop apps: no web site can send another scheme than http(s) (or "null")
-        for origin in ("chrome-extension://abcdef", "moz-extension://1234-5678", "app://."):
-            self.assertTrue(origin_allowed(origin, "127.0.0.1:8095", names), origin)
+        # a local dev page or extension passes only when listed (no keyless trust for any local app)
+        self.assertTrue(origin_allowed("http://localhost:3000", "127.0.0.1:8095", names,
+                                       ["http://localhost:3000"]))
+        self.assertTrue(origin_allowed("chrome-extension://abcdef", "127.0.0.1:8095", names,
+                                       ["chrome-extension://abcdef"]))
 
     def test_refused(self):
         names = LOCAL | {"box"}
         for origin in ("http://evil.example.com", "http://1.2.3.4", "http://192.168.1.99:8095", "null", "",
-                       "http://localhost.evil.com", "https://box.evil.com", "://x"):
+                       "http://localhost.evil.com", "https://box.evil.com", "://x",
+                       "http://localhost:3000", "http://127.0.0.1:3000", "http://[::1]:3000/",
+                       "chrome-extension://abcdef", "moz-extension://1234-5678", "app://."):
             self.assertFalse(origin_allowed(origin, "127.0.0.1:8095", names, ["https://chat.example.com"]), origin)
 
 
@@ -216,9 +218,13 @@ class OverHttp(unittest.TestCase):
     def test_own_and_local_pages_pass(self):
         self.start()
         json_type = {"Content-Type": "application/json"}
-        for origin in (f"http://127.0.0.1:{self.port}", "http://localhost:3000", "chrome-extension://abcdef"):
+        for origin in (f"http://127.0.0.1:{self.port}",):
             self.assertEqual(self.req("POST", "/v1/chat/completions", self.chat_body(),
                                       {**json_type, "Origin": origin})[0], 200, origin)
+        # any other local page or extension needs listing (no keyless trust)
+        for origin in ("http://localhost:3000", "chrome-extension://abcdef"):
+            self.assertEqual(self.req("POST", "/v1/chat/completions", self.chat_body(),
+                                      {**json_type, "Origin": origin})[0], 403, origin)
         # a browser page sends JSON; text/plain from a page is the cross-site "simple request" shape
         self.assertEqual(self.req("POST", "/v1/chat/completions", self.chat_body(),
                                   {"Content-Type": "text/plain", "Origin": f"http://127.0.0.1:{self.port}"})[0], 415)
@@ -227,6 +233,10 @@ class OverHttp(unittest.TestCase):
         self.start(cors_origins=["https://chat.example.com"], trusted_origins=["https://strata.example.com"],
                    allowed_hosts=["webui.lan"])
         for origin in ("https://chat.example.com", "https://strata.example.com", "http://webui.lan:3000"):
+            self.assertEqual(self.req("POST", "/v1/chat/completions", self.chat_body(),
+                                      {"Content-Type": "application/json", "Origin": origin})[0], 200, origin)
+        self.start(cors_origins=["http://localhost:3000", "chrome-extension://abcdef"])
+        for origin in ("http://localhost:3000", "chrome-extension://abcdef"):
             self.assertEqual(self.req("POST", "/v1/chat/completions", self.chat_body(),
                                       {"Content-Type": "application/json", "Origin": origin})[0], 200, origin)
 

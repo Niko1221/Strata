@@ -276,10 +276,12 @@ catch (sycl::exception const &exc) {
 }
 
 void NativeEmbed::gather_dev(const int32_t* tokens, int64_t n_tok, float* out, void* stream) const {
+    if (!tokens || !out || n_tok <= 0 || n_vocab_ <= 0) return;
     strata::kernels::iq_embed_rows(type_, dev_, row_, tokens, n_tok, n_embd_, out, stream);
 }
 
 void NativeEmbed::gather_one(int64_t token, float* out, void* stream) const {
+    if (token < 0 || token >= n_vocab_ || !out) return;
     strata::kernels::iq_dequant_f32(type_, (const uint8_t*) dev_ + (size_t) token * row_, n_embd_, out, stream);
 }
 
