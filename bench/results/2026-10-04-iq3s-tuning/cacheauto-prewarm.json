@@ -1,0 +1,147 @@
+[
+  {
+    "label": "cacheauto-prewarm",
+    "kind": "warmup",
+    "trial": 0,
+    "wall_s": 0.571110452990979,
+    "metrics": {
+      "prompt_tokens": 15.0,
+      "reused": 0.0,
+      "fresh": 15.0,
+      "prefill_ms": 407.0,
+      "prefill_tps": 36.8,
+      "generated": 2.0,
+      "decode_ms": 156.0,
+      "decode_tps": 12.8
+    },
+    "usage": {
+      "prompt_tokens": 15,
+      "completion_tokens": 2,
+      "total_tokens": 17,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "stop",
+    "message": {
+      "role": "assistant",
+      "content": "READY"
+    }
+  },
+  {
+    "label": "cacheauto-prewarm",
+    "kind": "fresh",
+    "trial": 90,
+    "wall_s": 53.520262475009076,
+    "metrics": {
+      "prompt_tokens": 8831.0,
+      "reused": 0.0,
+      "fresh": 8831.0,
+      "prefill_ms": 48892.0,
+      "prefill_tps": 180.6,
+      "generated": 128.0,
+      "decode_ms": 4612.0,
+      "decode_tps": 27.8
+    },
+    "usage": {
+      "prompt_tokens": 8831,
+      "completion_tokens": 128,
+      "total_tokens": 8959,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "This source code defines a collection of 280 exported JavaScript functions, named `rule0` through `rule279`, each implementing a specific conditional arithmetic transformation on a numeric input `x`. Every function follows an identical logical pattern: it checks if the input `x` is strictly equal to the integer `n` corresponding to the function's name (e.g., `rule5` checks if `x === 5`). If the condition is true, the function returns `x + (n + 1)`; otherwise, it returns `x - n`. Consequently, for any given function `ruleN`, the output"
+    }
+  },
+  {
+    "label": "cacheauto-prewarm",
+    "kind": "followup",
+    "trial": 90,
+    "wall_s": 7.057257445994765,
+    "metrics": {
+      "prompt_tokens": 9072.0,
+      "reused": 8958.0,
+      "fresh": 114.0,
+      "prefill_ms": 2150.0,
+      "prefill_tps": 53.0,
+      "generated": 128.0,
+      "decode_ms": 4888.0,
+      "decode_tps": 26.2
+    },
+    "usage": {
+      "prompt_tokens": 9072,
+      "completion_tokens": 128,
+      "total_tokens": 9200,
+      "prompt_tokens_details": {
+        "cached_tokens": 8958
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The most relevant boundary case is the **exact integer match** (e.g., calling `rule5(5)`), which triggers the unique \"addition\" branch (`x + n + 1`) rather than the default \"subtraction\" branch (`x - n`). This is critical because the function's behavior changes discontinuously at this single point; for `rule5`, inputs `4` and `6` both result in subtraction (`-1` and `1` respectively), but input `5` results in addition (`10`). A subtle but important edge case is **zero** in `rule0`: since `x"
+    }
+  },
+  {
+    "label": "cacheauto-prewarm",
+    "kind": "fresh",
+    "trial": 91,
+    "wall_s": 28.91976860293653,
+    "metrics": {
+      "prompt_tokens": 4211.0,
+      "reused": 0.0,
+      "fresh": 4211.0,
+      "prefill_ms": 24454.0,
+      "prefill_tps": 172.2,
+      "generated": 128.0,
+      "decode_ms": 4456.0,
+      "decode_tps": 28.7
+    },
+    "usage": {
+      "prompt_tokens": 4211,
+      "completion_tokens": 128,
+      "total_tokens": 4339,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "This source code defines a collection of 140 exported JavaScript functions, named `rule0` through `rule139`, each implementing a specific conditional arithmetic transformation on a single numeric input `x`. Every function follows an identical logical pattern: it checks if the input `x` is strictly equal to the integer `n` corresponding to the function's name (e.g., `rule91` checks if `x === 91`). If the condition is true, the function returns `x + (n + 1)`; otherwise, it returns `x - n`. Consequently, for any given function `ruleN"
+    }
+  },
+  {
+    "label": "cacheauto-prewarm",
+    "kind": "followup",
+    "trial": 91,
+    "wall_s": 6.802183374064043,
+    "metrics": {
+      "prompt_tokens": 4452.0,
+      "reused": 4339.0,
+      "fresh": 113.0,
+      "prefill_ms": 2206.0,
+      "prefill_tps": 51.2,
+      "generated": 128.0,
+      "decode_ms": 4586.0,
+      "decode_tps": 27.9
+    },
+    "usage": {
+      "prompt_tokens": 4452,
+      "completion_tokens": 128,
+      "total_tokens": 4580,
+      "prompt_tokens_details": {
+        "cached_tokens": 4339
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The most relevant boundary case is the **exact integer match** (e.g., `rule91(91)`), which triggers the unique \"addition\" branch (`x + n + 1`) rather than the default \"subtraction\" branch (`x - n`); this is critical because the behavior flips discontinuously at this single point, and off-by-one errors in the condition (`===`) or the arithmetic constants (`n+1` vs `n`) would silently corrupt data for that specific input. The smallest useful regression test is a **two-case assertion per function**: one verifying the identity-like behavior for a non-m"
+    }
+  }
+]
