@@ -59,7 +59,32 @@ At 40K: expert GEMMs 23%, attention 19%, dequant 16%, QSA select 7%, host groupi
       - XMX: the tree's v2 kernel 1.68 ms (120 KB of local memory: one work-group per core), a lean fp16 XMX values
         pass 1.6-2.1 ms; sub-group 16 alone costs only 0.05 ms, so the joint_matrix path itself loses here.
 
+## 4. From another SYCL project on the same card (a video model's port, 2026-10-05)
+
+Its measurements on the B70, which Strata's own benches never matched:
+
+- [ ] **oneDNN against oneMKL for the prompt path's GEMMs (bench first, ~30 min).** oneDNN's matmul reached ~180 T
+      multiply-adds/s in fp16 and 320-350 T in int8 (1.8-2.0x) at its linears' shapes (5376 -> 21504 and similar);
+      `xmx_gemm_bench` saw 30-60 TFLOP/s from oneMKL fp16 here, at expert shapes. Expert GEMMs are 18-23% of a
+      long prompt and the dense QSA projections 10-16% (INTEL_PERFORMANCE.md, "Where the time goes"). Bench this
+      port's real shapes (each expert's gate/up and down at 16-512 rows; the QSA, DeltaNet and hyper-connection
+      projections at the 4,096-row chunk) in oneMKL fp16/bf16, oneDNN fp16/bf16, and oneDNN int8 with activations
+      quantized per row.
+- [ ] **If oneDNN int8 wins on the dense projections:** its int8 linear as built there - a Hadamard rotation of
+      activations and weights (groups of up to 256) so int8 keeps the outliers, activations quantized on the fly, the
+      int8 GEMM, one rescale per row after it (fused). Strata's earlier int8 DPAS kernel lost because it rescaled
+      after every 32-element block inside the GEMM; this rescales once. Error there: 0.17% (rotations in fp32).
+      Parity: a tolerance, not bitwise (as the GEMM block scores, 2026-10-04).
+- [ ] **Fused small kernels for decode** (the item below, with working references): there, per-head RMS norm +
+      rotary in one kernel (22.7 -> 6.2 ms against separate ops), SwiGLU, gated residual add, norm + scale/shift.
+      Here they would cut decode graph nodes (~2,500 per round, launch gaps 15-20% of a round). Their kernels are
+      shaped for thousands of rows; decode has 1-6, so the fusion carries over, not the kernels.
+- [ ] **int8 scores in the prompt attention** (lower confidence): its attention quantizes q and k to int8 (k's
+      sequence mean taken out first) and gains 1.6x at long sequences. This port's KV is already int8 and the
+      per-cell kernel is arithmetic-bound; if it widens K to float for q.k, a per-head int8 q with dp4a would cut
+      the scores half (the values pass, ~60% of the kernel, unchanged). Check what the kernel does first.
+
 ## Later
 
-- Fewer decode graph nodes (norm+rope, scores+top-k, gate+quantize fused): launch gaps are 15-20% of a round.
+- Fewer decode graph nodes (norm+rope, scores+top-k, gate+quantize fused): launch gaps are 15-20% of a round. See 4.
 - Two draft branches per verify window (decode is latency-bound).
