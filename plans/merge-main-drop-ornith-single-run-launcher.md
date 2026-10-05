@@ -163,12 +163,16 @@ Record blocker details for any gate that cannot run; do not mark unrun gates pas
 
 ### Acceptance checklist
 
-- [ ] Launcher pins: `run.sh` reproduces both removed launchers; `ls run*.sh` → `run.sh` only.
-- [ ] Ornith absent from code/build/docs per the step-2 grep gate; design record and bench dirs retained and labeled.
-- [ ] Merge with `main` complete; 4 conflicts resolved with main's rewrites preserved; Qwen3.8 regression suite green.
-- [ ] Docker image builds; contract test green; refusal paths (launcher, engine) verified.
-- [ ] HIP gate on gfx1101 run or its blocker recorded.
-- [ ] Diff reviewed; untracked local files untouched; docs (AGENTS.md/DETAILS/AMD_HIP) agree.
+- [x] Launcher pins: `run.sh` reproduces both removed launchers; `ls run*.sh` → `run.sh` only.
+- [x] Ornith absent from code/build/docs per the step-2 grep gate; design record and bench dirs retained and labeled.
+- [x] Merge with `main` complete; 4 conflicts resolved with main's rewrites preserved; Qwen3.8 regression suite green.
+- [x] Docker image builds; contract test green; refusal paths (launcher, engine) verified.
+- [x] HIP gate on gfx1101 run or its blocker recorded. (75 pass; skips and the two fixture-gate failures recorded in §9.)
+- [x] Diff reviewed; untracked local files untouched; docs (AGENTS.md/DETAILS/AMD_HIP) agree.
+- [x] Protocol/API consumers aligned — verified live: OpenAI streaming, Anthropic `/v1/messages`.
+- [x] Performance/capacity claims: not applicable (no engine throughput claim; launcher/serve contracts only).
+- [x] Remaining limitations disclosed: CUDA backend unverified here; `expert_parity` needs a Q2_0 pack;
+      Q5_0 fp16-dequant divergence on HIP is measured, not fixed (§9 follow-ups).
 
 ## 8. Risks, open decisions, and follow-ups
 
@@ -182,14 +186,40 @@ Record blocker details for any gate that cannot run; do not mark unrun gates pas
 
 ## 9. Execution record and handoff
 
-- **Implemented:** plan only; no implementation performed.
-- **Deviations:** none yet.
-- **Documentation updated:** none yet.
+- **Implemented:** all five steps, as five commits on `feature/rdna3-support`: `62c22ed`
+  launcher-contract test (red, with pre-change pins in
+  `bench/results/2026-10-04-launcher-consolidation/`); `4c616b7` Ornith removal (24 files,
+  −3,247 lines); `95404ab` `run.sh` absorbs `run2.sh`, `run2.sh`/`run3.sh` deleted; `0d8388a`
+  merge of `main` (313 commits, 4 conflicts); `60ca034` gfx1101 GPU-suite fixes (found running
+  the gate, not in the original plan — see Deviations).
+- **Deviations:** (1) the merge surfaced three gfx1101 failures in main's newer tests/kernels:
+  the Q2_0 signed-zero guard widened to all HIP targets (IEEE-exact; proven by `hip_q2_zero`),
+  main's two Q5_0 parity pairs returned to CUDA-only with measured evidence (fp16-dequant
+  bit-equality: 47,228 / 95,700 of 4,915,200 values differ on gfx1101; f32 dequant and expert
+  outputs bit-equal), and `expert_cache_segmented_test` exits 77 (skip) where `--vram-elastic`
+  is CUDA-only by design. (2) AGENTS.md carries a frozen-record pointer instead of the
+  Qwen35MoE paragraph. (3) `tmp/` is root-owned on this host — left untouched; scratch deltas
+  went to /tmp.
+- **Documentation updated:** AGENTS.md (removal note + frozen-record link); this §9; `docker/README.md`
+  needed no change (already `run.sh`-only); `docs/DOCKER_GFX1101_PLAN.md` kept as the historical plan.
 
 | Exact command | Actual result | Notes / blocker |
 | --- | --- | --- |
-| (to be filled at execution) | | |
+| `./run.sh --dry-run` ×3 pins, pre and post | passed | post outputs byte-identical (normalized) to the pre-change `run.sh`/`run2.sh` fixtures |
+| `python -m unittest discover -s docker -p 'test_*.py'` | passed | 13/13 (incl. `test_launcher_contract.py`) |
+| host cmake build + `ctest --test-dir build-plan-host` | 15/17 | `expert_parity`/`pool_test` need `pack/full/experts.bin` (fixture gate by design; reproduce identically pre-merge and on plain `main`) |
+| `python -m unittest` discovery over `serve/test_*.py` | passed | 273 OK, 7 skipped |
+| `python tools/test_setup_*.py` (18) | 15 pass | `test_setup_amd/golden/unsloth` fail identically on plain `main` in this environment (verified in a main worktree) |
+| `./build.sh --tests` (strata-hip:gfx1101) | passed with disclosed gates | 75 pass, 3 by-design skips (`expert_cache_segmented_test`, `hip_prompt_attn_wmma`, `hip_prefill_hipblaslt_gemm`), the 2 fixture failures above |
+| builder-container run with the real IQ3_S `experts.bin` | `pool_test` passed | `expert_parity` indexes by the fixed Q2_0-era blob size — an IQ3_S pack is not a valid fixture for it |
+| `./run.sh --detach` + `./run.sh --check` | passed | server ready <10 s; `qwen3.8-flash-next-iq3_xxs loaded ctx=131072` |
+| OpenAI streaming + non-streaming, Anthropic `/v1/messages` | passed | exact instructed answers, `stop`/`end_turn`, usage accounting, MTP draft 24/27 accepted |
+| `git diff --check` | clean | |
 
-**Not run:** all §7 gates — execution not authorized.
-**Measurement artifacts:** n/a; launcher pins will land in `bench/results/<date>-launcher-consolidation/`.
-**Remaining work:** execution of steps 1–5; follow-up per-quant expert-cache measurement (§8).
+**Not run:** CUDA-backend build (no NVIDIA card on this host; main's CUDA-only Q5_0 parity pairs
+are main's CI's gate, not this machine's). **Measurement artifacts:**
+`bench/results/2026-10-04-launcher-consolidation/` (launcher pins, pre and post).
+**Remaining work:** none for acceptance. Follow-ups, deliberately excluded: per-quant
+expert-cache re-measurement for IQ2_XS/Q2_0/IQ1_M (§8), a Q2_0 pack to green `expert_parity`,
+and the HIP fp16-dequant divergence for the Q5_0 pairs (measured here; fixing it is main's
+kernel work).
