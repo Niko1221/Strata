@@ -26,7 +26,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
 ARCH=""                                        # empty: whatever this machine actually has
-MODEL="${STRATA_MODEL:-IQ3_XXS}"                  # the shipped default quant
+MODEL="${STRATA_MODEL:-IQ3_S}"                 # the shipped default quant
 IMAGE="${STRATA_IMAGE:-}"
 NAME=""
 export STRATA_VRAM_LATER_MIB="${STRATA_VRAM_LATER_MIB:-768}"
