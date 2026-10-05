@@ -412,7 +412,11 @@ def cpu_info():
     else:
         try:
             txt = open("/proc/cpuinfo").read()
-            flags = set(re.search(r"^flags\s*:\s*(.*)$", txt, re.M).group(1).split())
+            # x86 exposes `flags`; ARM Linux exposes the equivalent as
+            # `Features`.  Strata's fast CPU kernels still use x86 AVX, but the
+            # probe must report that cleanly instead of crashing on ARM64.
+            mflags = re.search(r"^(?:flags|Features)\s*:\s*(.*)$", txt, re.M)
+            flags = set(mflags.group(1).split()) if mflags else set()
             avx2 = "avx2" in flags
             avx512 = {"avx512f", "avx512bw", "avx512vl", "avx512_vnni", "avx512vbmi"} <= flags
             m = re.search(r"^model name\s*:\s*(.*)$", txt, re.M)
@@ -457,7 +461,8 @@ def cpu_floor(avx2: bool) -> str:
     else:
         try:
             txt = open("/proc/cpuinfo").read()
-            flags = set(re.search(r"^flags\s*:\s*(.*)$", txt, re.M).group(1).split())
+            mflags = re.search(r"^(?:flags|Features)\s*:\s*(.*)$", txt, re.M)
+            flags = set(mflags.group(1).split()) if mflags else set()
         except (OSError, AttributeError):
             flags = set()
         f = "avx" if "avx" in flags else "sse4.2" if {"sse4_2", "popcnt"} <= flags else ""
@@ -534,7 +539,15 @@ def gpus():
     for line in s.strip().splitlines():
         try:
             idx, name, mem, cc, drv = [x.strip() for x in line.split(",")]
-            found.append({"index": int(idx), "name": name, "vram_gb": float(mem) / 1024.0, "arch": cc.replace(".", ""),
+            # NVIDIA GB10 (DGX Spark / GX10) uses CPU-GPU unified memory and reports
+            # memory.total as [N/A] through NVML.  Its usable GPU pool is the host's
+            # physical memory; keep this conservative and let the model fit checks
+            # account for the rest of the system.
+            if mem.lower() in ("[n/a]", "n/a", "-") and "gb10" in name.lower():
+                mem_gb = ram_gb()
+            else:
+                mem_gb = float(mem) / 1024.0
+            found.append({"index": int(idx), "name": name, "vram_gb": mem_gb, "arch": cc.replace(".", ""),
                           "driver": drv})
         except ValueError:
             continue
