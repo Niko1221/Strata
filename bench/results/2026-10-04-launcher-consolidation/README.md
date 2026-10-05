@@ -19,3 +19,10 @@ Post-change contract (enforced by docker/test_launcher_contract.py):
 - `ls run*.sh` -> only `run.sh`.
 - `./run.sh` (IQ3_XXS) keeps STRATA_EXPERT_CACHE=800.
 - `./run.sh --model IQ3_S` reproduces the run2.sh IQ3_S line (STRATA_EXPERT_CACHE=680).
+
+Post-change captures (same host, after run2.sh/run3.sh removal):
+- post-run-iq3xxs.txt    `./run.sh --dry-run`                  -> byte-identical to pre-run-iq3xxs (normalized)
+- post-run-iq3s.txt      `./run.sh --model IQ3_S --dry-run`    -> byte-identical to pre-run2-iq3s (normalized)
+- post-run-iq3xxs2.txt   `./run.sh --model IQ3_XXS --dry-run`  -> byte-identical to pre-run2-iq3xxs (normalized)
+Also checked on the host: `--expert-cache 900` on IQ3_S warns "tuned 680" and passes 900 through;
+`--model ornith` is refused (exit 1) before docker; `python -m unittest discover -s docker` 13/13 OK.

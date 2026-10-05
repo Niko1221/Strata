@@ -2,10 +2,16 @@
 # Run the Strata server container on this machine's AMD GPU.
 #
 #   ./run.sh                      IQ3_XXS, 10 GiB VRAM budget, http://127.0.0.1:9931
+#   ./run.sh --model IQ3_S        the best-quality quant this card's 10 GiB slice still takes
 #   ./run.sh --model IQ2_XS       a smaller quant (fetched into your HF cache on first start)
 #   ./run.sh --detach             background;  ./run.sh --check  asks it afterwards whether it is up
 #   ./run.sh --offline            never download: fail with the command to run instead
 #   ./run.sh --dry-run            print the docker command and the reasoning, change nothing
+#
+# The expert-cache budget is tuned per quant: IQ3_S is the tightest fit (its experts.bin is ~50 GB
+# against IQ3_XXS's ~43 GB, so every slot holds ~17% more bytes), and the budget below scales it
+# down (680 largest-blob slots instead of 800) so each quant spends the same VRAM: the 10 GiB
+# ceiling is NOT raised, and the engine still caps the cache to the free room under the guard.
 #
 # Models are read from, and downloaded into, a Hugging Face cache in ~/Development/models (mounted
 # at /hf-cache) - the big filesystem, not the root disk that holds ~/.cache/huggingface.  One download
@@ -20,7 +26,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
 ARCH=""                                        # empty: whatever this machine actually has
-MODEL="${STRATA_MODEL:-IQ3_XXS}"
+MODEL="${STRATA_MODEL:-IQ3_XXS}"                  # the shipped default quant
 IMAGE="${STRATA_IMAGE:-}"
 NAME=""
 export STRATA_VRAM_LATER_MIB="${STRATA_VRAM_LATER_MIB:-768}"
@@ -35,7 +41,7 @@ PORT="${STRATA_PORT_HOST:-9931}"
 BIND="${STRATA_BIND:-127.0.0.1}"
 MEMORY="${STRATA_CONTAINER_MEMORY:-96g}"
 MAX_CONTEXT="${STRATA_MAX_CONTEXT:-131072}"          # 128K; preserves an explicit environment override
-DETACH=0 CHECK=0 FRESH=0 OFFLINE=0 DRY=0 CHECK_ONLY=0
+DETACH=0 CHECK=0 FRESH=0 OFFLINE=0 DRY=0 CHECK_ONLY=0 EXPLICIT_CACHE=""
 EXTRA_ENV=()
 EXTRA_ARGS=()
 
@@ -71,7 +77,10 @@ Options:
       --reasoning-effort L reasoning level a request gets when it names none: off, minimal, low,
                            medium, high (default high; the request's own value always wins)
       --prefill N          prefill chunk (default: 2048; engine reduces it if borrowing cannot fit)
-      --expert-cache N     expert slot budget (default: 800; native slots are sized per pair)
+      --expert-cache N     expert slot budget (default: 800 on IQ3_XXS, 680 on the other quants;
+                           native slots are sized per pair, and IQ3_S's blobs are ~17% larger, so
+                           680 on IQ3_S holds what 800 holds on IQ3_XXS - both stay inside the
+                           10 GiB ceiling)
       --pool-workers N     CPU expert workers (default: 0, physical cores minus the host's)
   -e, --env KEY=VALUE      pass extra environment through (repeatable)
       --image NAME:TAG     override the image (default strata-hip:<arch>-latest)
@@ -98,7 +107,7 @@ while [ $# -gt 0 ]; do
     --max-tokens)      EXTRA_ENV+=(-e "STRATA_MAX_TOKENS=${2:?}"); shift 2 ;;
     --reasoning-effort) EXTRA_ENV+=(-e "STRATA_REASONING_EFFORT=${2:?}"); shift 2 ;;
     --prefill)         EXTRA_ENV+=(-e "STRATA_PREFILL=${2:?}"); shift 2 ;;
-    --expert-cache)    EXTRA_ENV+=(-e "STRATA_EXPERT_CACHE=${2:?}"); shift 2 ;;
+    --expert-cache)    EXPLICIT_CACHE="${2:?--expert-cache needs a value}"; EXTRA_ENV+=(-e "STRATA_EXPERT_CACHE=$EXPLICIT_CACHE"); shift 2 ;;
     --pool-workers)    EXTRA_ENV+=(-e "STRATA_POOL_WORKERS=${2:?}"); shift 2 ;;
     -e|--env)          EXTRA_ENV+=(-e "${2:?--env needs KEY=VALUE}"); shift 2 ;;
     --image)           IMAGE="${2:?}"; shift 2 ;;
@@ -112,6 +121,20 @@ done
 [[ "$BUDGET" =~ ^[0-9]+$ ]] && [ "$BUDGET" -gt 1280 ] && [ "$BUDGET" -le 10240 ] \
   || die "budget must be 1281..10240 MiB; 10 GiB is the hard ceiling"
 [ "$MAX_CONTEXT" = 131072 ] || die "this deployment keeps exactly 131072 tokens (128K context)"
+# IQ3_S stores its experts ~17% wider than IQ3_XXS (arena 50.3 GB vs 42.9 GB), so the same VRAM
+# holds fewer of them: 680 slots on IQ3_S spend what 800 IQ3_XXS slots spent.  This is the tuned
+# budget per quant - not a bigger VRAM slice, which stays capped at $BUDGET MiB.
+case "$MODEL" in
+  IQ3_XXS) EXPERT_CACHE_DEFAULT=800 ;;   # the shipped default quant
+  *)       EXPERT_CACHE_DEFAULT=680 ;;   # the other quants, IQ3_S included
+esac
+# A slot budget above the tuned value buys nothing under the same 10 GiB ceiling: the engine would
+# only cut it back to the free room.  Say so rather than let an explicit number look like more VRAM.
+wanted="${STRATA_EXPERT_CACHE:-${EXPLICIT_CACHE:-$EXPERT_CACHE_DEFAULT}}"
+if [ "$wanted" != auto ] && [[ "$wanted" =~ ^[0-9]+$ ]] && [ "$wanted" -gt "$EXPERT_CACHE_DEFAULT" ]; then
+  warn "expert cache budget $wanted exceeds the tuned $EXPERT_CACHE_DEFAULT for $MODEL; VRAM stays
+      capped at $BUDGET MiB, so the engine will cut it back to what fits - raise quality by no other means"
+fi
 
 PY="${PYTHON:-python3}"
 HIPINFO="$ROOT/docker/hipinfo.py"
@@ -212,7 +235,7 @@ if [ "${STRATA_CACHED:-0}" != 1 ]; then
 else
   note "$MODEL is cached (both shards)"
 fi
-need_pack="$(awk -v a="${STRATA_ARENA_GB:-43}" 'BEGIN{printf "%d", a + 6}')"; have_work="$(free_gib "$WORK")"
+need_pack="$(awk -v a="${STRATA_ARENA_GB:-51}" 'BEGIN{printf "%d", a + 6}')"; have_work="$(free_gib "$WORK")"
 if [ "${have_work:-0}" != 0 ] && [ "${have_work:-0}" -lt "$need_pack" ] && [ ! -f "$WORK/packs/$(printf '%s' "$MODEL" | tr '[:upper:]' '[:lower:]')/experts.bin" ]; then
   warn "$WORK has ${have_work} GB free; the pack writes ~${STRATA_ARENA_GB} GB of experts.bin."
   warn "Pass --work /somewhere/bigger if the packing step fails for space."
@@ -287,7 +310,7 @@ ARGS=(docker run --rm --name "$NAME$CHECK_ONLY_SUFFIX"
       -e "STRATA_MAX_CONTEXT=$MAX_CONTEXT"
       -e "STRATA_POOL_WORKERS=${STRATA_POOL_WORKERS:-0}"
       -e "STRATA_PREFILL=${STRATA_PREFILL:-2048}"
-      -e "STRATA_EXPERT_CACHE=${STRATA_EXPERT_CACHE:-800}"
+      -e "STRATA_EXPERT_CACHE=${STRATA_EXPERT_CACHE:-$EXPERT_CACHE_DEFAULT}"
       -e "STRATA_VRAM_LATER_MIB=$STRATA_VRAM_LATER_MIB"
       -e "STRATA_VRAM_RUNTIME_RESERVE_MIB=${STRATA_VRAM_RUNTIME_RESERVE_MIB:-1024}"
       -e "STRATA_VRAM_SLACK_MIB=${STRATA_VRAM_SLACK_MIB:-256}"
