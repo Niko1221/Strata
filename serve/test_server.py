@@ -517,6 +517,91 @@ class ToolCallTagInProse(unittest.TestCase):
                                  ([], "The format starts with <tool_call>"))
 
 
+class ToolCallDrift(unittest.TestCase):
+    """The model sometimes writes a call in a form next to the template's.  These shapes are from a corpus of 1,462
+    agent turns (Qwen3.8 under Claude Code, signalnine/q27): a declared tool's call in one of them is the call; each
+    used to end the request with a "malformed tool call" ValueError or reach the client as text.  Anything else stays
+    content, verbatim - never an error."""
+    SCHEMA = ToolCallTerminators.SCHEMA
+    PARAMS = "<parameter=path>\na.md\n</parameter>\n<parameter=content>\nhi\n</parameter>\n</function>"
+    CALL = {"path": "a.md", "content": "hi"}
+
+    def parse(self, text, stream_tools, step):
+        from serve.frontend import OutputParser
+        p = OutputParser(thinking=True, tools=self.SCHEMA, stream_tools=stream_tools)
+        evs = []
+        for i in range(0, len(text), step):
+            evs += p.feed(text[i:i + step])
+        evs += p.finish()
+        calls = [(e.call.name, e.call.arguments) for e in evs if e.kind == "tool_call"]
+        if stream_tools:      # every announced call's streamed JSON is its final arguments
+            for c in [e for e in evs if e.kind == "tool_call"]:
+                streamed = "".join(e.text for e in evs if e.kind == "tool_args" and e.call is not None
+                                   and e.call.id == c.call.id)
+                if streamed:
+                    self.assertEqual(json.loads(streamed), c.call.arguments)
+        return calls, "".join(e.text for e in evs if e.kind == "content").strip()
+
+    def check(self, text, calls, content):
+        for stream_tools in (False, True):
+            for step in (1, 7, 10_000):
+                with self.subTest(stream_tools=stream_tools, step=step):
+                    self.assertEqual(self.parse("</think>\n\n" + text, stream_tools, step), (calls, content))
+
+    def test_parameter_as_the_opener(self):
+        # corpus 300dfba2 (x11): the tool's name written as a parameter tag
+        self.check(f"<tool_call>\n<parameter=write>\n{self.PARAMS}\n</tool_call>", [("write", self.CALL)], "")
+
+    def test_parameter_opener_that_is_not_a_tool_is_content(self):
+        text = "<tool_call>\n<parameter=path>\na.md\n</parameter>\n</function>\n</tool_call>"
+        self.check(text, [], text)
+
+    def test_json_in_the_wrapper(self):
+        # corpus 5e847539 (x6): the JSON form inside the XML wrapper
+        for key in ("arguments", "parameters"):
+            with self.subTest(key=key):
+                self.check('<tool_call>\n{"name": "write", "%s": {"path": "a.md", "content": "hi"}}\n</tool_call>'
+                           % key, [("write", self.CALL)], "")
+        self.check('<tool_call>\n{"name": "write", "arguments": "{\\"path\\": \\"a.md\\", \\"content\\": \\"hi\\"}"}'
+                   '\n</tool_call>', [("write", self.CALL)], "")
+
+    def test_json_of_an_unknown_tool_is_content(self):
+        text = '<tool_call>\n{"name": "format_disk", "arguments": {}}\n</tool_call>'
+        self.check(text, [], text)
+
+    def test_broken_json_is_content_not_an_error(self):
+        text = '<tool_call>\n{"name": "write", "arguments": {"path": \n</tool_call>'
+        self.check(text, [], text)
+
+    def test_json_never_closed_is_content(self):
+        text = '<tool_call>\n{"name": "write", "arguments": {"path": "a.md"}}'
+        self.check(text, [], text)
+
+    def test_bare_function_without_the_wrapper(self):
+        # corpus 395efd4c / 6e71eed4 (x5 each): <function=...> with no <tool_call> around it
+        self.check(f"Writing it now.\n\n<function=write>\n{self.PARAMS}", [("write", self.CALL)], "Writing it now.")
+        self.check(f"<function=write>\n{self.PARAMS}\n</tool_call>", [("write", self.CALL)], "")   # stray closer
+        self.check(f"<function=write>\n{self.PARAMS}\nDone.", [("write", self.CALL)], "Done.")
+
+    def test_two_calls_in_one_wrapper(self):
+        # corpus 0912870b / 51b155c9: a batch inside one <tool_call> - the second call's parameters were merged into
+        # the first (wrong arguments, one call); also with the second opened as <parameter=NAME> (03a8a851)
+        two = {"path": "b.md", "content": "yo"}
+        second = "<parameter=path>\nb.md\n</parameter>\n<parameter=content>\nyo\n</parameter>\n</function>"
+        for opener in ("<function=write>", "<parameter=write>"):
+            with self.subTest(opener=opener):
+                self.check(f"<tool_call>\n<function=write>\n{self.PARAMS}\n{opener}\n{second}\n</tool_call>",
+                           [("write", self.CALL), ("write", two)], "")
+
+    def test_bare_function_stays_text_where_it_is_not_a_call(self):
+        fenced = f"Example:\n```\n<function=write>\n{self.PARAMS}\n```"
+        self.check(fenced, [], fenced)
+        inline = "Call it as <function=write> with a path."
+        self.check(inline, [], inline)
+        unknown = "<function=format_disk>\n<parameter=x>\n1\n</parameter>\n</function>"
+        self.check(unknown, [], unknown)
+
+
 class UnfinishedToolCall(unittest.TestCase):
     """#211: a call the output ends inside is not reported as a whole one - its streamed JSON is not closed and the
     finish reason is not "tool_calls" / "tool_use" - so a client can tell it from a call to run."""
