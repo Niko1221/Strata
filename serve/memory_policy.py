@@ -28,7 +28,7 @@ class MemoryPolicy:
         self.reserve_floor = int(vram_reserve_mib)
         self.ram_target = self._setting(config, "ram_target_percent", 95, 50, 95) / 100
         self.vram_target = self._setting(config, "vram_target_percent", 99, 50, 99) / 100
-        self.headroom = self._setting(config, "min_ram_headroom_gib", 5.5, 5.5, 128)
+        self.headroom = self._setting(config, "min_ram_headroom_gib", 5.5, 2, 128)
         self.overhead = self._setting(config, "overhead_ram_gib", 2, 2, 128)
         self.cooldown = self._setting(config, "cooldown_seconds", 600, 600, 86400)
         self.pressure_duration = self._setting(config, "pressure_seconds", 60, 60, 3600)

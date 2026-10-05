@@ -166,6 +166,7 @@ class PolicyTests(unittest.TestCase):
 
     def test_unsafe_configuration_rejected(self):
         for config in ({"ram_target_percent": 99}, {"min_ram_headroom_gib": 1},
+                       {"min_ram_headroom_gib": 1.999},
                        {"cooldown_seconds": 2}, {"vram_target_percent": 100}):
             with self.assertRaises(ValueError):
                 MemoryPolicy(config)
@@ -208,6 +209,38 @@ class PolicyTests(unittest.TestCase):
         self.assertIsNone(policy.observe(sample(719, gpu_used=22), True, info, 719))
         for now in range(720, 1000):
             self.assertIsNone(policy.observe(sample(now, gpu_used=21.6), True, info, now))
+
+
+class HeadroomPolicyTests(unittest.TestCase):
+    def test_explicit_two_gib_minimum_retains_five_percent_on_large_host(self):
+        policy = MemoryPolicy({"enabled": True, "min_ram_headroom_gib": 2})
+        # 44 GiB free, minus 3.2 GiB (5% of 64) and the 2 GiB startup allowance.
+        self.assertEqual(policy.plan_for_load(sample(0, used=20), 0)["resident_budget_gib"], 38.8)
+
+    def test_explicit_two_gib_minimum_bounds_small_host(self):
+        policy = MemoryPolicy({"enabled": True, "min_ram_headroom_gib": 2})
+        # On a 16 GiB host the absolute floor exceeds the 0.8 GiB percentage.
+        self.assertEqual(policy.plan_for_load(sample(0, used=4, total=16), 0)["resident_budget_gib"], 8)
+
+    def test_omitted_minimum_preserves_five_point_five_gib_default(self):
+        policy = MemoryPolicy({"enabled": True})
+        self.assertEqual(policy.plan_for_load(sample(0, used=20), 0)["resident_budget_gib"], 36.5)
+        self.assertEqual(policy.status()["min_ram_headroom_gib"], 5.5)
+
+    def test_loaded_percentage_pressure_shrinks_after_full_debounce(self):
+        policy = MemoryPolicy({"enabled": True, "mode": "live", "min_ram_headroom_gib": 2})
+        policy.live_actual(32 * 1024, 1536, 0, "load_budget", completed=True, loaded=True)
+        info = {"arena_mib": 32 * 1024}
+        self.assertIsNone(policy.observe(sample(1, used=64 * .95), True, info, 1))
+        self.assertEqual(policy.status()["reason"], "stable")
+        # 2.125 GiB free exceeds the absolute 2 GiB floor, but misses 5% by
+        # a material amount. Pressure can reclaim RAM before growth cooldown.
+        for now in range(2, 62):
+            self.assertIsNone(policy.observe(sample(now, used=61.875), True, info, now))
+        plan = policy.observe(sample(62, used=61.875), True, info, 62)
+        self.assertEqual(plan, {"resident_budget_gib": 30.925, "vram_reserve_mib": 1536,
+                                "reason": "sustained_pressure"})
+        self.assertEqual(policy.current["resident_budget_gib"], 32)
 
 
 class PostLoadPolicyTests(unittest.TestCase):

@@ -26,6 +26,21 @@ to both live and request-boundary reload policy. The upstream elastic VRAM contr
 the memory policy is disabled.
 
 The existing percentage ceilings, RAM headroom, reserve floor and debounce/cooldown settings still apply.
+RAM headroom is the larger of `min_ram_headroom_gib` and the unused percentage selected by
+`ram_target_percent`. The default absolute minimum remains 5.5 GiB; an explicit minimum from 2 GiB is
+accepted. To target five percent free RAM with a 2 GiB absolute floor, merge these values into the existing
+configuration, retaining its other policy and environment settings:
+
+```json
+"memory_policy": {"enabled": true, "mode": "live", "ram_target_percent": 95, "min_ram_headroom_gib": 2},
+"env": {"STRATA_RESIDENT_HEADROOM_GIB": "2"}
+```
+
+On a 64 GiB host this policy targets 3.2 GiB; on a smaller host the 2 GiB floor can be stronger. Native
+admission independently enforces its configured absolute floor, so a larger native floor can limit cache
+growth. The resident cap remains an upper bound. These are capacity targets, not a performance guarantee
+or immediate reclamation: pressure still needs its debounce and native resizing proceeds in bounded steps.
+
 The policy can observe pressure while an answer is running. Resizing runs only when native readers and GPU
 work have reached a safe boundary. A large change takes several steps and may briefly pause generation.
 Idle unload is independent: set `idle_unload_s` according to how long the model should remain loaded.
