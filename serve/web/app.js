@@ -554,8 +554,11 @@ function markdown(text) {
 }
 
 // ------------------------------------------------------------------ Chat
+const NATIVE_DEEPMOE = document.documentElement.dataset.engine === "deepmoe";
 const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true};
+if (NATIVE_DEEPMOE) Object.assign(DEFAULTS, {top_k: 0, esp: false, mcp: false});
 let settings = {...DEFAULTS, ...store.get("sampling", {})};
+if (NATIVE_DEEPMOE) settings.top_k = 0; // Qwen's cached top-k preference cannot change DeepSeek's sampler.
 let messages = store.get("chat", []);
 let attachments = [];                 // {name, url}
 let busy = null;                      // {controller, msg}
@@ -986,6 +989,7 @@ function loadDrawer(s = settings) {
   $("esp-row").hidden = !projectionLoaded();
   $("s-mcp").setAttribute("aria-checked", String(s.mcp !== false));
   $("s-share").setAttribute("aria-checked", String(sharedOn));
+  if (NATIVE_DEEPMOE) { $("s-topk").value = "0"; $("s-topk").disabled = true; }
   outputs();
 }
 // "Use for other apps too": the server keeps these settings as every client's defaults (GET/POST /settings)
@@ -996,6 +1000,7 @@ async function loadShared() {
     if (r.ok) sharedOn = !!(await r.json()).shared;
   } catch (e) { /* an older server: the switch just stays off */ }
   $("s-share").setAttribute("aria-checked", String(sharedOn));
+  if (NATIVE_DEEPMOE) { $("s-topk").value = "0"; $("s-topk").disabled = true; }
 }
 function sharedDefaults(s) {
   const d = {reasoning_effort: s.thinking, temperature: +s.temperature};

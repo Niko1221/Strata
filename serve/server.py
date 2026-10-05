@@ -1706,8 +1706,8 @@ class Service:
         self.reasoning_budget_tokens = 0                 # #123: the config's default thinking budget (0: none)
         self.repeat_stop_tokens = REPEAT_STOP_TOKENS     # #606: one token this many times in a row ends a reply (0: off)
         self.anthropic_think_unasked = True               # #278: "anthropic_thinking": "on_request" -> False
-        self.stop_ids = set(tokenizer.encode(IM_END, parse_special=True) +
-                            tokenizer.encode("<|endoftext|>", parse_special=True))
+        self.stop_ids = set(engine.stop_ids) if hasattr(engine, "stop_ids") else set(
+            tokenizer.encode(IM_END, parse_special=True) + tokenizer.encode("<|endoftext|>", parse_special=True))
 
     def loaded(self) -> bool:
         return not hasattr(self.engine, "alive") or self.engine.alive()
@@ -1756,7 +1756,7 @@ class Service:
         """Free VRAM on the engine's (first) GPU, from NVML (AMD backend: amdgpu's sysfs files, #301); None when it can't
         be read (then nothing is refused)."""
         try:
-            if getattr(self, "backend", None) == "hip":
+            if getattr(self, "backend", None) in ("hip", "vulkan"):
                 from serve.telemetry import free_vram_mib
                 return free_vram_mib(int(getattr(self, "gpu_index", 0) or 0), amd=True)
             from serve.telemetry import _Nvml
@@ -1952,7 +1952,7 @@ class Service:
                                                     "prefill_tok_s_mean": self._prefill_tok_s_mean()},
                                        gpu_index=int(getattr(self, "gpu_index", 0) or 0),
                                        gpu_indices=getattr(self, "gpu_indices", None),
-                                       amd=getattr(self, "backend", None) == "hip")
+                                       amd=getattr(self, "backend", None) in ("hip", "vulkan"))
 
     def _tok_s(self):
         """tok/s over the last RATE_WINDOW_S seconds.  Returns 0.0 while nothing is generating.  With parallel requests:
@@ -3022,6 +3022,8 @@ def make_handler(svc: Service):
                 return
             if path == "" or (path == "/api-monitor" and svc.api_monitor):
                 body = (ROOT / "serve" / "web" / ("monitor.html" if path else "index.html")).read_bytes()
+                if getattr(svc.engine, "info", {}).get("model_family") == "deepseek-v4.1-flash":
+                    body = body.replace(b"<html", b'<html data-engine="deepmoe"', 1)
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
@@ -3897,7 +3899,7 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--engine", choices=["mock", "strata"], default="mock")
+    ap.add_argument("--engine", choices=["mock", "strata", "deepmoe"], default="mock")
     ap.add_argument("--config", help="strata engine config (JSON: exe, args, cwd, tokenizer, model_name), "
                                      "written by setup.py")
     ap.add_argument("--host", default=None,
@@ -3949,7 +3951,7 @@ def main() -> int:
     tpath = Path(a.tokenizer)
     if a.engine == "strata" and not (tpath / "vocab.json").exists():
         ap.error(f"the model's tokenizer is missing ({tpath / 'vocab.json'}); run setup again")
-    if (tpath / "vocab.json").exists():
+    if a.engine != "deepmoe" and (tpath / "vocab.json").exists():
         import strata_tokenizer as ST
         vocab = json.loads((tpath / "vocab.json").read_text(encoding="utf-8"))
         tokens = [None] * len(vocab)
@@ -4006,13 +4008,26 @@ def main() -> int:
                                  linux_desktop())
         if note:                                        # #560 #516: before --open starts a browser on that card
             print(note, flush=True)
+    elif a.engine == "deepmoe":
+        from serve.deepmoe import backend_from_config
+        if a.lazy or a.mcp_config:
+            ap.error("deepmoe currently supports eager text-only inference without MCP")
+        try:
+            engine, tok, template = backend_from_config(cfg, EngineDied)
+        except (ValueError, OSError) as e:
+            ap.error(str(e))
+        cfg.setdefault("model_name", "deepseek-v4.1-flash")
+        cfg.setdefault("backend", "vulkan")
+        vision, effort_end = None, None
+        sampling_defaults = sampling_defaults_from_config(cfg)
     else:
         effort_end = None
         engine, vision, sampling_defaults = MockEngine(tok, a.script or [
             "Thinking about it.</think>\n\nHello from the mock engine."]), None, {}
     # the model's own chat template (exported with its tokenizer), else the original model's
     tpl = tpath / "chat_template.jinja"
-    svc = Service(engine, tok, ChatTemplate(tpl if tpl.exists() else ROOT / "serve/chat_template.jinja"),
+    template = template if a.engine == "deepmoe" else ChatTemplate(tpl if tpl.exists() else ROOT / "serve/chat_template.jinja")
+    svc = Service(engine, tok, template,
                   model_name=cfg.get("model_name", "qwen3.8-flash-next"), vision=vision,
                   sampling_defaults=sampling_defaults,
                   fit_max_tokens=a.fit_max_tokens or cfg.get("fit_max_tokens") is True)

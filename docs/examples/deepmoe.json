@@ -1,0 +1,11 @@
+{
+  "exe": "/path/to/cachedMoE/build/deepmoe",
+  "cwd": "/path/to/cachedMoE",
+  "model": "/path/to/models/DeepSeek-V4.1-Flash",
+  "model_name": "deepseek-v4.1-flash",
+  "backend": "vulkan",
+  "args": ["--max-context", "4096", "--cache-slots", "5000", "--no-kv-disk"],
+  "sampling": {"temperature": 1.0, "top_p": 0.95, "top_k": 0},
+  "anthropic_thinking": "on_request",
+  "log": "deepmoe-engine.log"
+}

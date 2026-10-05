@@ -175,6 +175,13 @@ More problems and their fixes: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md
 [issue](https://github.com/Niko1221/Strata/issues) and attach `strata-<model>.log` from the Strata folder. Found a
 security problem? Report it privately: [SECURITY.md](SECURITY.md).
 
+## Optional DeepSeek backend
+
+For a Linux/RADV **128 GB AMD Strix Halo** PC, an experimental
+[deepMoE backend](docs/DEEPMOE.md) connects Strata's web app and APIs to a separately
+built Vulkan engine for the native 510 GB DeepSeek-V4.1-Flash checkpoint.
+It supports text chat; tools, images, and the one-click installer are not integrated.
+
 ## How does it work?
 
 Models like this one usually run on servers with hundreds of gigabytes of graphics memory. Your graphics card has
