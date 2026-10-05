@@ -369,6 +369,16 @@ install; `START-HERE.bat --calibrate` (Linux: `./setup.sh --calibrate`) does it 
 speed with each setting and keeps one only when it is more than 3% faster. The result is remembered per PC and model
 (in the settings file next to the data folder's record), so updates keep it.
 
+**Manual CPU task granularity.** `--pool-tasks N` sets the target total number of row tasks in each batched
+CPU expert Gate/Up and Down phase, not the number of threads or tasks per expert. The default `0` keeps
+three tasks per participating thread (including the host when enabled). Values `1..4096` are capped by
+each phase's row count; native batches larger than the pool's capacity apply the target to each sub-batch.
+For example, `--pool-workers 13 --pool-tasks 192` uses 14 participating threads with the default host worker.
+More tasks can reduce imbalance between cores, but also add scheduling overhead: compare against `0` with
+the same worker count and workload. This does not change kernels, phase barriers, or PCIe placement, and
+does not affect the legacy single-token/oracle fallback. Setup's `--calibrate` does not tune it yet.
+For the server, add `"--pool-tasks", "192"` to the existing `args` list in its configuration, then restart it.
+
 ### Running it at startup (Task Scheduler)
 
 To have the model up at logon, people start the serve from **Task Scheduler** (or a service). Beware: Windows
