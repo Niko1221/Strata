@@ -538,8 +538,10 @@ print(r.choices[0].message.content)
     silently mid-task. With the fix on, a complete, well-formed call left in an unclosed thinking span by a
     reply that ended by itself is delivered as a real tool call at end of turn. It is a rescue of the act, not
     a guess at one: a call inside a span that closes is a mention and is never acted on, a reply cut by
-    `max_tokens` is never rescued (a call quoted in that reasoning was something the model considered), and
-    prose between or after the blocks - the shape of a disclaimed example - leaves them as reasoning.
+    `max_tokens` is never rescued (a call quoted in that reasoning was something the model considered), the
+    `<tool_call>` must begin a line outside any code fence (all four live sightings, in #804, begin the call
+    on its own line; an opener woven into a sentence is the model narrating), and prose between or after the
+    blocks - the shape of a disclaimed example - leaves them as reasoning.
   Nothing that already streamed ever changes, and a fix that fires says so twice: in the server window and in
   the reply's `"adaptations"` (OpenAI streaming and non-streaming). With the fix off, the same detection still
   logs - a complete tool call was left in reasoning, and which fix would have delivered it - so the failure is

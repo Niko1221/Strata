@@ -498,6 +498,11 @@ class OutputParser:
         # the reply's "adaptations"), and the name of a detected shape no enabled fix covers
         self.adaptations: list[str] = []
         self.format_hint: str | None = None
+        # line/fence state ahead of the tail (see _track_reasoning): the partial line carried across
+        # chunks ("" = the next text starts a line / nothing seen yet), and whether a line-start ``` or
+        # ~~~ has the reasoning inside a quoted code block
+        self._pre_tail_line = ""
+        self._in_fence = False
         self._reset_scan()
 
     def _reset_scan(self):
@@ -622,13 +627,36 @@ class OutputParser:
 
     def _track_reasoning(self, text: str) -> None:
         """Keep the reasoning tail used by _rescue_unclosed_call: everything emitted as reasoning from the
-        first <tool_call> opener, while the thinking span is still open."""
+        first <tool_call> opener, while the thinking span is still open.  An opener only starts a tail at
+        the start of a line, outside a fenced code block: every live sighting of the bug (#804, four real
+        failures) has the call beginning on its own line, while an opener woven into a sentence ("I could
+        run <tool_call>") or quoted inside a fence is the model narrating, and never starts a rescue."""
         if self.reasoning_tail is not None:
             self.reasoning_tail += text
-        else:
-            c = text.find(CALL_START)
-            if c >= 0:
+            return
+        at = 0
+        while self.reasoning_tail is None:
+            c = text.find(CALL_START, at)
+            if c < 0:
+                break
+            self._tail_track(text[at:c])               # brings the line/fence state up to the opener
+            if self._pre_tail_line == "" and not self._in_fence:
                 self.reasoning_tail = text[c:]
+                return
+            at = c + 1                                  # in a sentence or a fence: keep scanning
+        self._tail_track(text[at:])
+
+    def _tail_track(self, text: str) -> None:
+        """The line/fence state of the reasoning before a tail starts (see _track_reasoning): the current
+        line carried across chunks - "" once a "\\n" ends it, so an opener at the start of a chunk is at
+        the start of a line - and whether a line-start ``` or ~~~ opened a quoted code block that has not
+        closed yet.  Deliberately simple: any line-start fence marker toggles, with no indent or length
+        matching."""
+        parts = (self._pre_tail_line + text).split("\n")
+        self._pre_tail_line = parts.pop()
+        for p in parts:
+            if p.startswith(("```", "~~~")):
+                self._in_fence = not self._in_fence
 
     def _rescue_calls(self, tail: str) -> "list[ToolCall] | None":
         """The kept tail as a list of calls, or None when the tail is not ONLY complete, well-formed calls
@@ -658,9 +686,11 @@ class OutputParser:
         """End of generation inside a thinking span that never closed, gated on the "stranded-call" format
         fix.  A template that renders a call after the reasoning block never emits </think> before it, so
         the whole call streams out as reasoning_content and a client that runs tools from the content
-        channel ends its turn with nothing to execute.  Three things must hold before a tail counts as a
+        channel ends its turn with nothing to execute.  Four things must hold before a tail counts as a
         stranded act: the turn ended by itself ("length" most often leaves the span open mid-thought, and a
-        complete call quoted in that reasoning was something the model CONSIDERED, not did), the tail is
+        complete call quoted in that reasoning was something the model CONSIDERED, not did), the opener
+        began a line outside any code fence (see _track_reasoning - all four live sightings in #804 are
+        "\\n\\n<tool_call>\\n<function=", while a mid-sentence opener is narration), the tail is
         only complete, well-formed calls separated by whitespace (see _rescue_calls - prose after the last
         block is a mention's shape; every live sighting of the bug ends ON the block), and every body parses
         against the request's schemas.  A </think> after the opener clears the tail (a mention inside genuine

@@ -2687,7 +2687,10 @@ class ReasoningToolCall(unittest.TestCase):
     renders a call after the reasoning block never emits </think> before it, so the call streamed out as
     reasoning_content and the client's turn ended with nothing to run.  A <tool_call> inside a span that
     DOES close is a mention, however well-formed, and is never acted on; so is a tail that is not only
-    calls - prose between or after the blocks is the model narrating a call it considered."""
+    calls - prose between or after the blocks is the model narrating a call it considered - and an
+    opener that does not begin a line, or that sits inside a code fence, never starts a rescue at
+    all (#804's four live sightings all begin the call on its own line; a mid-sentence opener is
+    narration)."""
 
     SCHEMA = [{"name": "Read", "parameters": {"properties": {"file_path": {"type": "string"},
                                                              "offset": {"type": "integer"}}}}]
@@ -2739,7 +2742,7 @@ class ReasoningToolCall(unittest.TestCase):
         # The tail contract, with the fix ON: prose after the last complete block is a mention's shape (the
         # model narrated past a call it considered); every live sighting of the bug ends ON the block.  This
         # flips the first version of this fix, which rescued this shape (the trailing-thought test).
-        text = ("planning<tool_call>\n<function=Read>\n<parameter=file_path>\n/a\n</parameter>\n"
+        text = ("planning\n<tool_call>\n<function=Read>\n<parameter=file_path>\n/a\n</parameter>\n"
                 "</function>\n</tool_call>\nlet me see what comes back.")
         evs = self.run_parser(text, False, 7)
         self.assertFalse([e for e in evs if e.kind == "tool_call"])
@@ -2767,7 +2770,7 @@ class ReasoningToolCall(unittest.TestCase):
         # open mid-thought - a complete call quoted inside that reasoning was something the
         # model CONSIDERED ("but first let me check..."), not did.  A turn that did not end
         # by itself never rescues.
-        text = ("I could run <tool_call>\n<function=Bash>\n<parameter=command>\nrm -rf build\n"
+        text = ("I could run\n<tool_call>\n<function=Bash>\n<parameter=command>\nrm -rf build\n"
                 "</parameter>\n</function>\n</tool_call>\nbut first let me check what build holds...")
         evs = self.run_parser(text, False, 7, finish_reason="length")
         self.assertFalse([e for e in evs if e.kind == "tool_call"])
@@ -2777,7 +2780,7 @@ class ReasoningToolCall(unittest.TestCase):
     def test_a_natural_stop_still_rescues_the_same_shape(self):
         # The same text ending BY ITSELF is the live bug's shape - the model went from
         # thought to call with no </think> and stopped.  The gate must not lose it.
-        text = ("planning <tool_call>\n<function=Read>\n<parameter=file_path>\n/a\n</parameter>\n"
+        text = ("planning.\n\n<tool_call>\n<function=Read>\n<parameter=file_path>\n/a\n</parameter>\n"
                 "</function>\n</tool_call>")
         evs = self.run_parser(text, False, 7, finish_reason="stop")
         calls = [e.call for e in evs if e.kind == "tool_call"]
@@ -2799,7 +2802,7 @@ class ReasoningToolCall(unittest.TestCase):
         # An applied fix records its name: the serve logs it and lists it in the reply's "adaptations",
         # so a rescued turn is always distinguishable from a clean one.
         from serve.frontend import OutputParser
-        text = ("planning <tool_call>\n<function=Read>\n<parameter=file_path>\n/a\n</parameter>\n"
+        text = ("planning.\n\n<tool_call>\n<function=Read>\n<parameter=file_path>\n/a\n</parameter>\n"
                 "</function>\n</tool_call>")
         p = OutputParser(thinking=True, tools=self.SCHEMA, stream_tools=False, fixes=("stranded-call",))
         evs = p.feed(text) + p.finish("stop")
@@ -2808,7 +2811,7 @@ class ReasoningToolCall(unittest.TestCase):
         self.assertIsNone(p.format_hint)
 
     def test_two_stranded_calls_are_both_rescued(self):
-        text = ("a<tool_call>\n<function=Read>\n<parameter=file_path>\n/a\n</parameter>\n</function>\n"
+        text = ("a\n<tool_call>\n<function=Read>\n<parameter=file_path>\n/a\n</parameter>\n</function>\n"
                 "</tool_call>\n<tool_call>\n<function=Read>\n<parameter=file_path>\n/b\n</parameter>\n"
                 "</function>\n</tool_call>")
         evs = self.run_parser(text, False, 7)
@@ -2818,14 +2821,57 @@ class ReasoningToolCall(unittest.TestCase):
     def test_prose_between_two_calls_is_a_mention_not_two_acts(self):
         # The tail contract between blocks: only whitespace may separate them - "b" here is the model
         # narrating between two calls it considered.
-        text = ("a<tool_call>\n<function=Read>\n<parameter=file_path>\n/a\n</parameter>\n</function>\n"
+        text = ("a\n<tool_call>\n<function=Read>\n<parameter=file_path>\n/a\n</parameter>\n</function>\n"
                 "</tool_call>b<tool_call>\n<function=Read>\n<parameter=file_path>\n/b\n</parameter>\n"
                 "</function>\n</tool_call>")
         evs = self.run_parser(text, False, 7)
         self.assertFalse([e for e in evs if e.kind == "tool_call"])
 
+    def test_midsentence_opener_is_a_mention_not_an_act(self):
+        # The review's residual case, with the fix ON: a complete, unfenced call as the last thing of an
+        # unclosed span that stops by itself, but written MID-SENTENCE - narration grammar, not an act.
+        # Only the opener's position tells them apart, and all four live sightings (#804) begin the call
+        # on its own line, so an opener that continues a sentence never starts a rescue.
+        from serve.frontend import OutputParser
+        text = ("I could run <tool_call>\n<function=Bash>\n<parameter=command>\nrm -rf build\n"
+                "</parameter>\n</function>\n</tool_call>")
+        for step in (1, 7, 10_000):
+            with self.subTest(step=step):
+                p = OutputParser(thinking=True, tools=[{"name": "Bash", "parameters": {"properties":
+                    {"command": {"type": "string"}}}}], stream_tools=False, fixes=("stranded-call",))
+                evs = []
+                for i in range(0, len(text), step):
+                    evs += p.feed(text[i:i + step])
+                evs += p.finish("stop")
+                self.assertFalse([e for e in evs if e.kind == "tool_call"])
+                self.assertIn("rm -rf build", "".join(e.text for e in evs if e.kind == "reasoning"))
+                self.assertEqual(p.adaptations, [])
+                self.assertIsNone(p.format_hint)      # not even the stranded shape: no tail ever started
+
+    def test_opener_inside_a_code_fence_never_starts_a_tail(self):
+        # A quoted example in a fence is a mention even when it is the very last thing before the stop
+        # (the model stopped before closing the fence, so no trailing ``` exists to reject it) - the open
+        # fence alone is the tell.  The same call after the fence CLOSES is a stranded act again.
+        from serve.frontend import OutputParser
+        TOOLS = self.SCHEMA
+        fenced = ("For example:\n```\n<tool_call>\n<function=Read>\n<parameter=file_path>\n/a\n"
+                  "</parameter>\n</function>\n</tool_call>")
+        after = ("For example:\n```\nan example of the format\n```\n\n<tool_call>\n"
+                 "<function=Read>\n<parameter=file_path>\n/a\n</parameter>\n</function>\n</tool_call>")
+        for label, text, rescued in (("fence open at the stop", fenced, False),
+                                     ("fence closed, then a real call", after, True)):
+            with self.subTest(case=label):
+                p = OutputParser(thinking=True, tools=TOOLS, stream_tools=False, fixes=("stranded-call",))
+                evs = p.feed(text) + p.finish("stop")
+                calls = [e.call for e in evs if e.kind == "tool_call"]
+                if rescued:
+                    self.assertEqual([(c.name, c.arguments) for c in calls],
+                                     [("Read", {"file_path": "/a"})])
+                else:
+                    self.assertFalse(calls)
+
     def test_malformed_mention_in_unclosed_thinking_stays_reasoning(self):
-        text = "the format is<tool_call>\nnot a call body at all\n</tool_call>"
+        text = "the format is\n<tool_call>\nnot a call body at all\n</tool_call>"
         for step in (1, 7, 10_000):
             with self.subTest(step=step):
                 evs = self.run_parser(text, False, step)
@@ -2847,7 +2893,7 @@ class ReasoningToolCall(unittest.TestCase):
 
     def test_unfinished_stranded_call_is_not_rescued(self):
         # An output cut by max tokens mid-call stays reasoning (the #530 log names the cause).
-        text = "planning<tool_call>\n<function=Read>\n<parameter=file_path>\n/sr"
+        text = "planning\n<tool_call>\n<function=Read>\n<parameter=file_path>\n/sr"
         evs = self.run_parser(text, False, 7)
         self.assertFalse([e for e in evs if e.kind == "tool_call"])
 
