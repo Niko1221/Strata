@@ -283,6 +283,13 @@ class WindowsDetection(unittest.TestCase):
                 mock.patch.object(setup, "amd_gpus_windows", lambda adapters=None, registry=None: g):
             later = setup.amd_gpus_win()                # a later run: HIP's numbering, the registry's VRAM
         self.assertEqual((later[0]["arch"], later[0]["vram_gb"], later[0]["shared_memory"]), ("gfx1151", 16.0, True))
+        # the low-RAM estimate: the carve-out (16 GB less the dense weights and 64K's KV) plus RAM the cache borrows -
+        # all of IQ2_XS's experts, as the engine measured there (24,576 slots, 9.6 GiB of them in the carve-out)
+        held, carve = setup.apu_gpu_gb("IQ2_XS", card, 48, 65536, "int8")
+        self.assertAlmostEqual(held, setup.MODELS["IQ2_XS"]["arena_gb"])
+        self.assertTrue(9 < carve < 11.5, carve)
+        self.assertLess(setup.MODELS["IQ2_XS"]["arena_gb"] - carve + setup.LOW_RAM_HEADROOM_GB, 48)   # resident fits
+        self.assertEqual(setup.low_ram_gpu_share("IQ2_XS", setup.independent_vram_gb(card), 65536), 0.0)   # the old ~0%
 
     def test_arch_names(self):
         for name, arch in (("AMD Radeon RX 9070 GRE", "gfx1201"), ("AMD Radeon AI PRO R9700", "gfx1201"),

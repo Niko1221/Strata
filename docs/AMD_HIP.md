@@ -67,7 +67,7 @@ On a PC with no NVIDIA card Strata can use, the AMD card is chosen by itself; wi
   install, no compiler, no admin rights.
 - **Detection:** setup reads the display adapters Windows lists (their PCI ids; the VRAM size from the display
   driver's registry entry). An integrated Radeon is listed as not supported, except the Radeon 8060S / 8050S
-  (gfx1151, not model-tested on Windows yet: see [gfx1151](#rdna-35-gfx1151)).
+  (gfx1151, see [gfx1151](#rdna-35-gfx1151)).
 - **Engine:** the ready-made `strata-windows-x64-hip.zip` from the release (built by `tools\hip\build_windows.bat`
   for gfx1100, gfx1101, gfx1102, gfx1200, gfx1201 and gfx1030; gfx1151 from the next build on) goes into
   `engine\`. It carries the ROCm libraries the engine loads (`engine\rocm\bin`: the HIP runtime, hipBLAS / rocBLAS / hipBLASLt with their kernels for these cards,
@@ -240,24 +240,52 @@ and two 100-token capped replies at 46.2 and 62.0 tok/s. A reasoning-enabled req
 measurements used plain hipBLAS, before the gfx1151 hipBLASLt 1.5.0 table below was calibrated. Windows is not
 included in this validation: the ready-made Windows HIP archive is not built with gfx1151 yet.
 
-**Windows (not model-tested yet).** `tools\hip\build_windows.bat` now builds gfx1151 by default, and setup knows the
-Radeon 8060S / 8050S by its PCI id (`0x1586`) or its name. On Windows the GPU's memory is split in two: the firmware
-carve-out (set in the BIOS or AMD Software), which Windows keeps outside system RAM, and shared system RAM. On a
-Ryzen AI Max+ 395 with 64 GB and a 16 GB carve-out, Windows reports 47.8 GB of RAM, the registry 16 GB of VRAM and
-the HIP runtime 43.8 GiB (carve-out plus shared). Setup treats both figures as shared, so neither adds to the RAM in
-its model choice, and takes the carve-out (the "dedicated GPU memory" Task Manager shows) as the VRAM that sizes the
-default context: 64K on that PC, not the 128K HIP's figure would give. The engine sizes its automatic expert cache from host memory as on Linux, plus what is left of the
-carve-out (DXGI's dedicated video memory less this process's local usage; logged as `integrated AMD GPU: N GiB of
-its carve-out free`). Checked on that PC (Windows 11, AMD driver 32.0.22018.5, TheRock ROCm 10.2.0a20260930):
-`tools\hip\build_windows.bat tests` builds and packages the archive with gfx1151 (rocBLAS ships gfx1151's kernels
-as a folder, which the packager now copies), `strata-device --selftest` passes, and the HIP ctest passes 60 of 65:
-`hip_handoff` (Windows, above), `ple_parity`, `expert_parity` and `pool_test` (they need model fixtures) and
-`expert_cache_segmented_test` (`--vram-elastic` is CUDA-only) fail as on other cards; two are skipped.
-`hip_prefill_mmq_parity` failed there at first: its output sentinel was written by a null-stream `hipMemset`
-that landed after the MMQ kernel on the non-blocking stream. The kernels were right (the same instructions as
-gfx1100's but for `s_delay_alu` hints; 0.05-0.13% relative L2 once ordered); the test now sets the sentinel on the
-product's stream. A model run on Windows is still to come; a self-built archive is installed with
-`START-HERE.bat --backend hip --prebuilt dist\`.
+**Windows.** `tools\hip\build_windows.bat` builds gfx1151 by default, and setup knows the Radeon 8060S / 8050S by
+its PCI id (`0x1586`) or its name. On Windows the GPU's memory is split in two: the firmware carve-out (set in the
+BIOS or AMD Software), which Windows keeps outside system RAM, and shared system RAM. On a Ryzen AI Max+ 395 with
+64 GB and a 16 GB carve-out, Windows reports 47.8 GB of RAM, the registry 16 GB of VRAM and the HIP runtime 43.8 GiB
+(carve-out plus shared). Setup treats both figures as shared, so neither adds to the RAM in its model choice, and
+takes the carve-out (the "dedicated GPU memory" Task Manager shows) as the VRAM that sizes the default context: 64K
+on that PC, not the 128K HIP's figure would give.
+
+Setup puts an APU in the low-RAM mode's resident variant (`--resident-experts`) by itself: its GPU cache is RAM too,
+so the usual full copy of the experts in RAM beside it would hold most of them twice. On that PC the full copy
+(IQ2_XS, 31.6 GiB) left no RAM to read the experts with, and the engine stopped at its first start with
+`short unbuffered read ... (error 1450)` (Windows' "insufficient system resources"). The engine sizes its automatic
+expert cache from host memory as on Linux, plus what is left of the carve-out (DXGI's dedicated video memory less
+this process's local usage), and logs both:
+
+```
+strata generate: integrated AMD GPU: 9.62 GiB of its carve-out free
+strata generate: integrated AMD GPU shares system RAM: limiting the expert cache's 37.44 GiB device-free figure to 37.07 GiB of host memory
+strata generate: expert cache auto: 37.07 GiB free, 700 MiB reserved (+143 MiB for the draft head) -> 24576 slots
+FileExpertSource: allocating 3.33 GiB pageable resident cache complement
+```
+
+All 24,576 experts are then in GPU memory and computed on the GPU, beside a 3.3 GiB RAM copy for the slots the
+prompt path borrows.
+
+Measured on that PC (Windows 11, AMD driver 32.0.22018.5, TheRock ROCm 10.2.0a20260930, Qwen3.8-Flash-Next
+IQ2_XS, 64K context, `--kv int8`, MTP on, reasoning off, temperature 0), one run each:
+
+| Request | Prompt | Prompt read | Output | Drafts accepted |
+| --- | ---: | ---: | ---: | ---: |
+| short question + one-liner | 42 tokens (35 reused) | 56.6 tok/s | 24 tokens, 35.4 tok/s | 17 of 20 |
+| palindrome function with asserts | 43 tokens | 57.3 tok/s | 102 tokens, 32.3 tok/s | 66 of 92 |
+| 900 lines of `setup.py` + a question about two constants | 17,116 tokens | 291.4 tok/s | 78 tokens, 32.6 tok/s | 55 of 65 |
+
+The answers were right, including both constants from the 17K-token prompt (`MIN_ENGINE`, `CONTEXTS`). These are
+single runs with other programs open, not a benchmark.
+
+Build and tests on that PC: `tools\hip\build_windows.bat tests` builds and packages the archive with gfx1151
+(rocBLAS ships gfx1151's kernels as a folder, which the packager now copies), `strata-device --selftest` passes,
+and the HIP ctest passes 60 of 65: `hip_handoff` (Windows, above), `ple_parity`, `expert_parity` and `pool_test`
+(they need model fixtures) and `expert_cache_segmented_test` (`--vram-elastic` is CUDA-only) fail as on other
+cards; two are skipped. `hip_prefill_mmq_parity` failed there at first: its output sentinel was written by a
+null-stream `hipMemset` that landed after the MMQ kernel on the non-blocking stream. The kernels were right (the
+same instructions as gfx1100's but for `s_delay_alu` hints; 0.05-0.13% relative L2 once ordered); the test now
+sets the sentinel on the product's stream. Until a release archive carries gfx1151, a self-built one is installed
+with `START-HERE.bat --backend hip --prebuilt dist\`.
 
 Do not use TheRock `7.14.0a20260612` on gfx1151. The complete Strata tree compiles with it, but both its own
 `rocminfo` and `strata-device` segfault in `rocr::AMD::GpuAgent::InitDma()` during `hsa_init`, before a kernel can

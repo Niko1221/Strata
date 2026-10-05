@@ -2415,6 +2415,16 @@ def low_ram_gpu_gb(model, vram_gb, ctx=32768, kv="int8") -> float:
     return max(0.0, min(MODELS[model]["arena_gb"], vram_gb - 5 - longer))
 
 
+def apu_gpu_gb(model, gpu, ram, ctx=32768, kv="int8") -> tuple[float, float]:
+    """An APU (gfx1151): (GB of the model's experts its GPU cache holds, GB of that in the firmware carve-out).  The
+    cache fills the carve-out (vram_gb, less the dense weights and KV as on a card) and then borrows system RAM; the
+    engine caps it at the RAM it finds available less 4 GiB, so the OS's share of the RAM is left out here too.
+    Measured on a Ryzen AI Max+ 395 (64 GB, 16 GB carve-out, Windows): all 24,576 IQ2_XS experts in GPU memory,
+    9.6 GiB of them in the carve-out."""
+    carve = low_ram_gpu_gb(model, gpu["vram_gb"], ctx, kv)
+    return min(MODELS[model]["arena_gb"], carve + max(0.0, ram - LOW_RAM_HEADROOM_GB)), carve
+
+
 def low_ram_gpu_share(model, vram_gb, ctx=32768, kv="int8") -> float:
     """About how much of the model's experts the GPU holds."""
     return low_ram_gpu_gb(model, vram_gb, ctx, kv) / MODELS[model]["arena_gb"]
@@ -3990,8 +4000,11 @@ def main() -> int:
     elif a.resident_budget_gib is not None:
         warn(f"--resident-budget-gib is for UD-Q4_K_XL and UD-IQ4_XS: {model} keeps all of its experts in RAM or in "
              "the low-RAM mode")
+    # an APU's GPU cache is RAM too: a full RAM copy beside it would hold most experts twice (on a 64 GB Ryzen AI
+    # Max+ 395 with a 16 GB carve-out the full copy left no RAM to read the experts with: Windows error 1450)
+    apu = bool(gpu.get("shared_memory"))
     low_ram = budget is None and (a.low_ram in ("on", "resident", "mmap") or
-                                  (a.low_ram == "auto" and low_ram_needed(model, ram)))
+                                  (a.low_ram == "auto" and (low_ram_needed(model, ram) or apu)))
     if low_ram and multi and not low_ram_together(a, model, ram, gpu, chosen):
         multi, sel, chosen = [], [gpu["index"]], [gpu]
     # (the low-RAM mode's variant is decided once the context is known, below; on several GPUs it is the mapped one)
@@ -4084,6 +4097,11 @@ def main() -> int:
         share = low_ram_gpu_share(model, vram, ctx, kv)
         rest = arena - low_ram_gpu_gb(model, vram, ctx, kv)
         resident = a.low_ram == "resident" or (a.low_ram != "mmap" and low_ram_resident(model, ram, vram, ctx, kv))
+        if gpu.get("shared_memory") and not multi:     # an APU: the carve-out, then borrowed RAM (fit_vram is 0)
+            held, carve = apu_gpu_gb(model, gpu, ram, ctx, kv)
+            share, rest = held / arena, arena - held
+            # the RAM holds the cache's borrowed part and the rest: everything but the carve-out's share
+            resident = a.low_ram == "resident" or (a.low_ram != "mmap" and ram >= arena - carve + LOW_RAM_HEADROOM_GB)
         if multi:      # #364 #384: every chosen card's share (the image encoder on the main one), the mapped variant
             held = min(arena, low_ram_gpu_gb(model, vram, ctx, kv) +
                        sum(low_ram_gpu_gb(model, x["vram_gb"], ctx, kv) for x in chosen[1:]))
@@ -4094,6 +4112,10 @@ def main() -> int:
             if share < 0.6:
                 warn("most of the experts are read from the SSD while it answers: expect it to be much slower than "
                      "with enough RAM (a faster SSD and a smaller size help)")
+        elif resident and gpu.get("shared_memory"):
+            ok(f"low-RAM mode (an APU: GPU memory is RAM too): the GPU's cache holds ~{100 * share:.0f}% of {model}'s "
+               f"experts ({arena:.0f} GB): ~{min(carve, held):.0f} GB in the carve-out, the rest borrowed from RAM "
+               f"({ram:.0f} GB); no full second copy in RAM")
         elif resident:
             ok(f"low-RAM mode: the GPU holds ~{100 * share:.0f}% of {model}'s experts ({arena:.0f} GB) and the other "
                f"~{rest:.0f} GB stay in RAM ({ram:.0f} GB), read once from a copy in the model folder")
