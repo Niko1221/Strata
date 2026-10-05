@@ -51,7 +51,7 @@ three layer formats, 1/4/17 workers, host participation on/off, 1/2/4 tokens,
 1/2/7/18/97 jobs, and three repeats. An independent serial row reference
 also passed. This is not a ThreadSanitizer or general model-quality result.
 
-The included Linux real-model test can be run as:
+The included real-model test can be run as:
 
 ```sh
 pool_pipeline_parity /path/to/native/pack /path/to/corresponding/model-shard.gguf
@@ -76,3 +76,29 @@ and should be coordinated rather than merged blindly.
 Keep draft until the independent upstream port completes end-to-end performance
 and concurrency validation. No ThreadSanitizer run has been performed.
 Other CPU architectures are unvalidated.
+
+## 0.1.39 follow-up
+
+The branch now includes official 0.1.39 (`6f32ec0`). Its refactored row and
+quantization helpers retain upstream `q2_native_kernels(...)` ISA dispatch
+instead of choosing kernels from the format number alone. The parity reference
+uses the same dispatch. The test is registered on Windows and Unix, with Windows
+environment-variable and 64-bit file-offset equivalents.
+
+A contributor reported 810/810 comparisons passing on Ryzen 9 7940HS with
+Windows/MSVC, but no convincing speedup: pipeline-on decode was 31.8 tokens/s
+against off controls of 33.4 and 30.6. That was a combined build, not this exact
+updated branch. The report is linked in PR #733; credit belongs to @midhatn.
+
+Our combined custom 0.1.39 build passed a five-arm, 240-request HTTP suite. Its
+whole-build gains cannot be attributed to this small scheduling change. Neither
+that suite nor bitwise parity is a ThreadSanitizer result. Keep the PR draft
+until isolated performance and concurrency validation is convincing.
+
+The exact revised branch compiled and linked independently against official
+0.1.39 on our Linux host. All known expert-pool header consumers were rebuilt.
+Using the matching SC117 abliterated IQ3_S pack and shard, the updated parity
+test passed 810/810 comparisons, including the independent serial reference,
+1/4/17 workers, host participation on/off, repeated calls and 97-job batches.
+We did not run the revised branch on Windows or launch a model server for this
+check. The contributor's Windows result is separate evidence, not our own run.

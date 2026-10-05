@@ -16,6 +16,7 @@
 
 #include "strata/core/hit_hook.hpp"
 #include "strata/core/layer.hpp"
+#include "strata/kernels/cpu/pool.hpp"
 
 #include <cuda_runtime.h>
 
@@ -369,7 +370,7 @@ struct SessionLoopScratch {
     float* y_miss = nullptr;        ///< pinned host staging for the pool's answer, `parts_bytes` long
     size_t parts_bytes = 0;
     cudaEvent_t probe = nullptr;
-    long long pinned_core = -1;     ///< the affinity to restore, or -1 if the host was never pinned
+    strata::kernels::cpu::ThreadAffinity pinned_core{};  ///< affinity to restore, or invalid if the host was not pinned
     bool pinned = false;
 
     /// Allocates the buffers and pins the host thread.  Call ONCE, at session setup.

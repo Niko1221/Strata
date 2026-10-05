@@ -117,12 +117,24 @@
           <div class="table-wrap" id="req-wrap">
             <table class="st-table">
               <thead><tr><th>Time</th><th>Status</th><th class="num">Prompt</th><th class="num">Reused</th><th class="num">Output</th>
-                <th class="num">Tok/s</th><th class="num" title="While writing the answer: the share of the experts looked up that were already in VRAM (experts copied over PCIe are not counted)">Hit rate</th><th class="num">Duration</th></tr></thead>
+                <th class="num">Tok/s</th><th class="num" title="While writing the answer: the share of the experts looked up that were already in VRAM. Experts the GPU read over PCIe (--pcie-frac) are not counted in it; their share of all routed experts is shown after it (+N% PCIe)">VRAM hit rate</th><th class="num">Duration</th></tr></thead>
               <tbody id="req-body"><tr><td colspan="8" class="muted">No requests yet</td></tr></tbody>
             </table>
           </div>
           <p class="muted req-totals" id="req-totals"></p>
         </div>
+      </div>
+
+      <div class="st-card cc-card" id="cc-card">
+        <div class="req-head"><span class="card-title">Conversation cache</span><span class="muted small" id="cc-sum"></span></div>
+        <div class="cc-bars" id="cc-bars" hidden>
+          <div><div class="bar-row"><span>Parked conversations</span><span class="muted" id="cc-slots-text">&ndash;</span></div>
+            <div class="st-progress"><div class="st-progress__bar" id="cc-slots-bar" style="width:0%"></div></div></div>
+          <div><div class="bar-row"><span>Their memory (RAM)</span><span class="muted" id="cc-mem-text">&ndash;</span></div>
+            <div class="st-progress"><div class="st-progress__bar" id="cc-mem-bar" style="width:0%"></div></div></div>
+        </div>
+        <dl class="facts" id="cc-facts"></dl>
+        <p class="muted small cc-note" id="cc-note"></p>
       </div>
 
       <div class="st-card mcp-card" id="mcp-card" hidden>
@@ -160,6 +172,14 @@
           <button class="st-toggle" id="dark-toggle" role="switch" aria-checked="false" aria-label="Dark theme"></button></div>
         <p class="muted small">Chats, settings and the key are kept in this browser only.
           <a href="https://github.com/Niko1221/Strata" target="_blank" rel="noopener noreferrer">Strata on GitHub</a></p>
+      </div>
+      <div class="st-card cfg-card" id="cfg-card" hidden>
+        <div class="req-head"><span class="card-title">Model settings</span><span class="muted small" id="cfg-file"></span></div>
+        <p class="muted small">Kept in the model's run config for every client. An empty field is the default. They
+          take effect the next time the model starts (close Strata's window and start it again).</p>
+        <form class="cfg-form" id="cfg-form"></form>
+        <div class="cfg-actions"><button class="st-btn st-btn--primary" id="cfg-save" type="button">Save</button>
+          <span class="muted small" id="cfg-msg" role="status"></span></div>
       </div>
     </div>
   </section>

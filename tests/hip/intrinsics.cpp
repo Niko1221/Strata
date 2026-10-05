@@ -18,7 +18,7 @@
 namespace {
 
 constexpr int kLanes = 32;
-constexpr int kIntegerResults = 7;
+constexpr int kIntegerResults = 10;
 
 __global__ void intrinsic_probe(int* integer_results, float* float_shuffle, double* double_shuffle,
                                 unsigned* ballot, const uint32_t* dot_inputs) {
@@ -36,6 +36,20 @@ __global__ void intrinsic_probe(int* integer_results, float* float_shuffle, doub
     integer_results[lane * kIntegerResults + 6] =
         __dp4a(static_cast<int>(dot_inputs[lane * 2]), static_cast<int>(dot_inputs[lane * 2 + 1]),
                0x7fffffff - lane);
+
+    __shared__ int exchanged[kLanes];
+    int sum = 0;
+    for (int iteration = 0; iteration < 64; ++iteration) {
+        exchanged[lane] = static_cast<int>(dot_inputs[lane * 2] & 255u) + iteration;
+        __syncwarp();
+        sum += exchanged[lane ^ 1];
+        __syncwarp();
+    }
+    integer_results[lane * kIntegerResults + 7] = sum;
+    const int input_a = static_cast<int>(dot_inputs[lane * 2]);
+    const int input_b = static_cast<int>(dot_inputs[lane * 2 + 1]);
+    integer_results[lane * kIntegerResults + 8] = __dp4a(input_a, input_b, input_a);
+    integer_results[lane * kIntegerResults + 9] = __dp4a(input_a, input_b, input_b);
 
     float_shuffle[lane * 4 + 0] = __shfl_xor_sync(mask, static_cast<float>(lane), 1);
     float_shuffle[lane * 4 + 1] = static_cast<float>(__shfl_down_sync(mask, lane, 4, 8));
@@ -153,7 +167,7 @@ int main() {
     CHECK(hipMemcpy(&ballot, device_ballot, sizeof(ballot), hipMemcpyDeviceToHost));
 
     constexpr uint32_t a = 0x80ff017fu, b = 0x0203fe81u;
-    const uint32_t expected_integer[kIntegerResults - 1] = {
+    const uint32_t expected_integer[6] = {
         static_cast<uint32_t>(dp4a_reference(a, b, 7)),
         static_cast<uint32_t>(dp4a_reference(0x7f7f7f7fu, 0x7f7f7f7fu, std::numeric_limits<int>::max())),
         byte_sub_reference(0x00ff0102u, 0x01010103u),
@@ -163,11 +177,17 @@ int main() {
     };
     bool ok = ballot == 0x55555555u;
     for (int lane = 0; lane < kLanes; ++lane) {
-        for (int i = 0; i < kIntegerResults - 1; ++i)
+        for (int i = 0; i < 6; ++i)
             ok = ok && static_cast<uint32_t>(integers[lane * kIntegerResults + i]) == expected_integer[i];
-        ok = ok && static_cast<uint32_t>(integers[lane * kIntegerResults + kIntegerResults - 1]) ==
+        ok = ok && static_cast<uint32_t>(integers[lane * kIntegerResults + 6]) ==
                      static_cast<uint32_t>(dp4a_reference(dot_inputs[lane * 2], dot_inputs[lane * 2 + 1],
                                                           0x7fffffff - lane));
+        ok = ok && integers[lane * kIntegerResults + 7] ==
+                     64 * static_cast<int>(dot_inputs[(lane ^ 1) * 2] & 255u) + 2016;
+        for (int alias = 0; alias < 2; ++alias)
+            ok = ok && static_cast<uint32_t>(integers[lane * kIntegerResults + 8 + alias]) ==
+                static_cast<uint32_t>(dp4a_reference(dot_inputs[lane * 2], dot_inputs[lane * 2 + 1],
+                    static_cast<int>(dot_inputs[lane * 2 + alias])));
         ok = ok && float_shuffle[lane * 4 + 0] == static_cast<float>(lane ^ 1);
         const int down = lane % 8 < 4 ? lane + 4 : lane;
         ok = ok && float_shuffle[lane * 4 + 1] == static_cast<float>(down);
@@ -211,6 +231,6 @@ int main() {
         std::fprintf(stderr, "HIP intrinsic parity failed (ballot 0x%08x)\n", ballot);
         return 1;
     }
-    std::puts("HIP intrinsics parity OK: dynamic signed dot4/overflow, byte permute, packed integer boundaries, wave32 shuffles, ballot and sleep");
+    std::puts("HIP intrinsics parity OK: dynamic signed dot4/overflow, byte permute, packed integer boundaries, wave32 shuffles, shared-memory exchange, ballot and sleep");
     return 0;
 }

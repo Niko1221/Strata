@@ -13,6 +13,22 @@
 
 namespace cpu = strata::kernels::cpu;
 
+static bool set_pipeline(const char* value) {
+#ifdef _WIN32
+    return _putenv_s("STRATA_POOL_PIPELINE", value) == 0;
+#else
+    return setenv("STRATA_POOL_PIPELINE", value, 1) == 0;
+#endif
+}
+
+static bool seek_shard(std::FILE* shard, int64_t offset) {
+#ifdef _WIN32
+    return _fseeki64(shard, offset, SEEK_SET) == 0;
+#else
+    return fseeko(shard, (off_t) offset, SEEK_SET) == 0;
+#endif
+}
+
 int main(int argc, char** argv) {
     if (argc != 3) {
         std::fprintf(stderr, "usage: pool_pipeline_parity PACK GGUF_SHARD (real-model test)\n");
@@ -36,7 +52,7 @@ int main(int argc, char** argv) {
             const size_t dst[] = {0, fmt.up_off, fmt.down_off};
             for (int role = 0; role < 3; ++role) {
                 const auto offset = layout.gguf_off[(size_t) layer * 3 + role] + e * sizes[role];
-                if (fseeko(shard, (off_t) offset, SEEK_SET) != 0 ||
+                if (!seek_shard(shard, (int64_t) offset) ||
                     std::fread(blobs[e].data() + dst[role], 1, sizes[role], shard) != sizes[role]) return 2;
             }
         }
@@ -61,9 +77,9 @@ int main(int argc, char** argv) {
             }
         }
         for (int workers : {1, 4, 17}) for (bool host : {false, true}) {
-            setenv("STRATA_POOL_PIPELINE", "0", 1);
+            if (!set_pipeline("0")) return 2;
             cpu::ExpertPool baseline(workers, true, host);
-            setenv("STRATA_POOL_PIPELINE", "1", 1);
+            if (!set_pipeline("1")) return 2;
             cpu::ExpertPool pipeline(workers, true, host);
             for (int nt : {1, 2, 4}) for (int count : {1, 2, 7, 18, 97}) {
                 for (auto& j : jobs) j.nt = nt;
@@ -88,9 +104,9 @@ int main(int argc, char** argv) {
                         }
                         cpu::native_gu_rows(fmt, jobs[e].blob, jobs[e].nact, nt, fp, 0, cpu::FF);
                         for (int t = 0; t < nt; ++t)
-                            if (fmt.d_type == 42) cpu::act_quant_any(fp[t], cpu::FF, aq[t]);
+                            if (cpu::q2_native_kernels(fmt.d_type)) cpu::act_quant_any(fp[t], cpu::FF, aq[t]);
                             else cpu::native_quant_h(fmt, fp[t], hq[t].data());
-                        if (fmt.d_type == 42)
+                        if (cpu::q2_native_kernels(fmt.d_type))
                             cpu::q2_rows_any(jobs[e].blob + fmt.down_off, fmt.d_row, cpu::FF / 64,
                                             ap, nt, op, 0, cpu::H);
                         else cpu::native_down_rows(fmt, jobs[e].blob, hp, nt, op, 0, cpu::H);

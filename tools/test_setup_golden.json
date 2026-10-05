@@ -482,7 +482,8 @@
     "--max-context",
     "65536",
     "--kv",
-    "int8"
+    "int8",
+    "--remote-expert-opt"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
@@ -526,7 +527,8 @@
     "--max-context",
     "65536",
     "--kv",
-    "int8"
+    "int8",
+    "--remote-expert-opt"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
