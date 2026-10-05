@@ -955,11 +955,6 @@ target_link_libraries(strata_kernels_cpu PUBLIC Threads::Threads)
 # weight means exactly what it means in llama.cpp.  ggml is built static from a llama.cpp checkout: a local one
 # with -DSTRATA_GGML_DIR=..., otherwise the pinned upstream commit (third_party/ggml/VERSION.txt).
 option(STRATA_NATIVE_EXPERTS "Native (IQ) expert support through ggml-cpu" ON)
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
-  # Native IQ expert translation units are currently x86 AVX based.  Q2_0 is
-  # the portable model path until an ARM/NEON native IQ implementation lands.
-  set(STRATA_NATIVE_EXPERTS OFF CACHE BOOL "Native IQ experts are not yet available on ARM64" FORCE)
-endif()
 set(STRATA_GGML_DIR "" CACHE PATH "llama.cpp checkout to take ggml from (empty: fetch the pinned commit)")
 if(STRATA_PREFILL_MMQ AND NOT STRATA_NATIVE_EXPERTS)
   message(FATAL_ERROR "STRATA_PREFILL_MMQ requires STRATA_NATIVE_EXPERTS=ON for GGML sources")

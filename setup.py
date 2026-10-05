@@ -454,6 +454,10 @@ def cpu_floor(avx2: bool) -> str:
     forced = os.environ.get("STRATA_ISA_FLOOR", "").strip().lower()
     if forced in ("avx", "none"):
         return forced
+    # ARM64 uses the portable scalar expert/router fallbacks and does not need
+    # the x86 SSE4.2/AVX ISA floor used by the legacy CPU path.
+    if platform.machine().lower() in ("aarch64", "arm64"):
+        return ""
     if avx2:
         return ""
     if WIN:
@@ -3834,7 +3838,7 @@ def main() -> int:
              "Advanced system settings > Performance > Advanced > Virtual memory")
     ok(f"CPU: {cpu} ({'AVX-512' if avx512 else 'AVX2' if avx2 else 'no AVX2'})")
     floor = cpu_floor(avx2)
-    if floor == "unsupported":
+    if floor == "unsupported" and platform.machine().lower() not in ("aarch64", "arm64"):
         fail("this CPU has neither AVX2 nor SSE4.2; Strata needs at least SSE4.2 (Intel Nehalem, 2008, or newer)")
     if not avx2:
         # #394 #595 #623: the ready-made engine is AVX2; an older CPU gets one compiled here, whose CPU experts run on
