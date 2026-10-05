@@ -76,6 +76,45 @@ VISION_START = "<|vision_start|>"
 REPEAT_STOP_TOKENS = 256
 # #123: what closes the thinking when it reaches reasoning_budget_tokens (the model's own end-of-thinking tag after it)
 REASONING_WRAP_UP = "\n\nI have thought about this long enough; time to give my answer.\n</think>\n\n"
+# Opt-in recovery for repeated reasoning, independent of a fixed thinking budget.
+HIGH_EFFORT = "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer."
+LOW_EFFORT = "Reasoning effort is set to low. Keep your thinking brief and focused, moving directly to the conclusion without unnecessary elaboration."
+
+
+def reasoning_repeat_coverage(text):
+    """Coverage of recent words by 12-word passages seen at least three times.
+
+    Only reasoning is supplied. Full history detects repeated verification passes
+    separated by long code drafts; the recent window excludes old repetitions.
+    """
+    words = re.findall(r"\w+|[^\w\s]", text.lower())
+    width, window = 12, 2000
+    if len(words) < window:
+        return 0.0
+    grams = [tuple(words[i:i + width]) for i in range(len(words) - width + 1)]
+    counts = collections.Counter(grams)
+    start = max(0, len(words) - window)
+    covered = set()
+    for i in range(start, len(grams)):
+        if counts[grams[i]] >= 3:
+            covered.update(range(i, i + width))
+    return len(covered) / (len(words) - start)
+
+
+def focused_recovery_prompt(tok, ids, generated):
+    """Retain every generated token and task; change only the native effort hint.
+
+    The exact hint must occur in the first system message, never user content.
+    No synthetic reasoning, end-of-thinking marker, or answer is inserted.
+    """
+    original = tok.decode(ids)
+    head, separator, rest = original.partition("<|im_end|>")
+    if not head.startswith("<|im_start|>system\n") or HIGH_EFFORT not in head:
+        return None
+    focused = head.replace(HIGH_EFFORT, LOW_EFFORT, 1) + separator + rest
+    return tok.encode(focused, parse_special=True) + list(generated)
+
+
 LOOPBACK_NAMES = ("localhost", "127.0.0.1", "::1")
 CTX_SLACK = 8               # `strata --serve` rejects prompt + max_new + 8 > context: keep the same margin here
 # The live tok/s is a rate over a window, not a mean since the first token: a mean reads ~1/elapsed at the first
@@ -1703,6 +1742,7 @@ class Service:
         self.min_free_vram_mib = 0
         self.before_load = None
         self.vram_reserve = None                         # #533: the last POST /v1/vram reserve (None: the start's)
+        self.reasoning_loop_recovery = False
         self.reasoning_budget_tokens = 0                 # #123: the config's default thinking budget (0: none)
         self.repeat_stop_tokens = REPEAT_STOP_TOKENS     # #606: one token this many times in a row ends a reply (0: off)
         self.anthropic_think_unasked = True               # #278: "anthropic_thinking": "on_request" -> False
@@ -2253,6 +2293,7 @@ class Service:
         run_tok, run_len, repeated = None, 0, False     # #606: the current run of one repeated token
         thinking_n = 0                                  # tokens written while thinking (Responses' reasoning_tokens)
         timings, before = None, None                    # this request's timings; the engine's `last` before it
+        recovery_count, reasoning_text, repeat_coverage = 0, "", 0.0
         raw_ids = []                                    # every generated id (STRATA_DEBUG: dump raw model text)
         emb = getattr(self.embeddings, "path", None)
         # Identity token: only a DONE line replaces engine.last, so a request that died, errored or was
@@ -2283,7 +2324,7 @@ class Service:
                     with self.status_lock:
                         st.update(busy=True, phase="reading the prompt", prompt_tokens=len(ids),
                                   generated=0, started=time.time(), first_token=None, tool=None, tail="",
-                                  max_tokens=max_new)
+                                  max_tokens=max_new, reasoning_recoveries=0)
                         if par:
                             self.live_reqs[id(st)] = (st, rate)
                             self.status.update(st)
@@ -2295,6 +2336,7 @@ class Service:
                     while True:
                         gen = self.engine.generate(prompt, max_new - n, sampling, cancel, embeddings=emb) if emb \
                             else self.engine.generate(prompt, max_new - n, sampling, cancel)
+                        recover_prompt = None
                         seg, wrap, leaving = [], False, False   # this pass's tokens; the budget is reached; closed
                         try:
                             for t in gen:
@@ -2322,7 +2364,17 @@ class Service:
                                 self._note(n, evs, st, rate)
                                 last_print = self._progress(last_print, st=st)
                                 for ev in evs:
+                                    if self.reasoning_loop_recovery and ev.kind == "reasoning":
+                                        reasoning_text += ev.text or ""
                                     yield "event", ev
+                                if (self.reasoning_loop_recovery and recovery_count == 0
+                                        and not emb and parser.state == "reasoning"
+                                        and n % 512 == 0 and not parser.buf and not detok.pending()):
+                                    repeat_coverage = reasoning_repeat_coverage(reasoning_text)
+                                    if repeat_coverage >= 0.25:
+                                        recover_prompt = focused_recovery_prompt(self.tok, ids, raw_ids)
+                                        if recover_prompt is not None:
+                                            break
                                 if budget and parser.state == "reasoning":
                                     thought += 1
                                     # at a clean point: no tag held back, no character split across tokens
@@ -2350,6 +2402,26 @@ class Service:
                                 self._say_died(e)
                                 if not leaving and not cancel.is_set():
                                     raise
+                        if recover_prompt is not None and not cancel.is_set() and n < max_new:
+                            recovery_count += 1
+                            # A client's explicit low-entropy sampler must not lock the
+                            # preserved prefix in the same literal repetition again.
+                            if tuple((sampling or {}).get(k) for k in
+                                     ("temperature", "top_p", "top_k", "presence_penalty")) != (1.0, 0.95, 20, 1.5):
+                                sampling = dict(sampling or {})
+                                sampling.update(temperature=max(1.0, float(sampling.get("temperature") or 0)),
+                                                top_p=0.95, top_k=20,
+                                                presence_penalty=max(1.5, float(sampling.get("presence_penalty") or 0)))
+                            prompt = recover_prompt
+                            with self.status_lock:
+                                st["reasoning_recoveries"] = recovery_count
+                            if trace is not None:
+                                trace["reasoning_recoveries"] = recovery_count
+                                trace["reasoning_repeat_coverage"] = round(repeat_coverage, 3)
+                            print(f"[strata] repeated reasoning detected at {n} tokens "
+                                  f"(coverage={repeat_coverage:.3f}); resuming preserved prefix "
+                                  "with focused native effort", flush=True)
+                            continue
                         if not wrap or cancel.is_set():
                             break
                         # #123: the thinking reached reasoning_budget_tokens.  Close it the way the model would (a
@@ -2406,6 +2478,8 @@ class Service:
                                 "prompt_tokens": seen, "reused": last.get("reused"), "output_tokens": n,
                                 # the request's whole prompt, and the tokens read of it (None: an older engine)
                                 "prompt_total": len(ids), "prompt_read": last.get("prompt_read"),
+                                "reasoning_recoveries": recovery_count,
+                                "reasoning_repeat_coverage": round(repeat_coverage, 3),
                                 "engine_generated": last.get("generated"),
                                 "prompt_ms": last.get("prompt_ms"), "decode_ms": last.get("decode_ms"),
                                 "decode_tok_s": round(last["generated"] / (last["decode_ms"] / 1000), 1)
@@ -2461,7 +2535,8 @@ class Service:
         for ev in parser.finish():
             yield "event", ev
         yield "done", {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),
-                       "timings": timings, "reasoning_tokens": thinking_n}
+                       "timings": timings, "reasoning_tokens": thinking_n,
+                       "reasoning_recoveries": recovery_count}
 
 
 def prompt_tokens_seen(prompt_tokens: int, last: dict) -> int:
@@ -4069,6 +4144,10 @@ def main() -> int:
         if budget:
             print(f"[strata] thinking budget: {budget} tokens (reasoning_budget_tokens; a request can set its own)",
                   flush=True)
+    recovery = cfg.get("reasoning_loop_recovery", False)
+    if not isinstance(recovery, bool):
+        raise SystemExit("[strata] reasoning_loop_recovery must be a boolean")
+    svc.reasoning_loop_recovery = recovery
     svc.gpu_index = (gpu_list(cfg) or [0])[0]           # the Monitor reads the card the engine runs on (issue #51)
     svc.gpu_indices = gpu_list(cfg)                     # ... or every card of a layer split (issue #112)
     svc.backend = cfg.get("backend")                    # "hip": the AMD cards' readings come from sysfs (#301)

@@ -517,6 +517,19 @@ print(r.choices[0].message.content)
   server ends it there with `finish_reason` `"length"` and says so in its window: a model in a loop, or a broken
   state that answers one token forever (#606 saw 36,689 tokens of `!`). `"repeat_stop_tokens": N` in
   `strata-<model>.json` sets the run length; `0` turns it off (for a request that really wants one token many times).
+- **Recovering repeated reasoning (opt-in).** `"reasoning_loop_recovery": true` in `strata-<model>.json` checks
+  reasoning for repeated passages, which the single-token guard above does not detect. Every 512 output tokens,
+  at a complete character and parser boundary, it measures the last 2,000 words and punctuation marks. If at least
+  25% belong to 12-word passages seen three times in the reasoning history, it stops and drains that generation,
+  then resumes once from all its generated token IDs. Only the native high-effort instruction in the first system
+  message changes to the template's low-effort instruction. The task stays the same; no answer or `</think>` is
+  inserted, and both passes share the original output limit. On recovery only, temperature is raised to at least
+  1.0, presence penalty to at least 1.5, top-p becomes 0.95 and top-k 20; the seed is kept. This can change an
+  explicit client sampler, so it is off by default. `/metrics` records `reasoning_recoveries` and the coverage.
+  This is a recovery policy, not a numerical engine fix or a guarantee of an answer. It needs the exact native
+  high-effort hint in the first system message and skips images; other templates and effort positions have not
+  been validated. Re-reading the modified prefix costs prompt time. It can also mistake repeated useful code or
+  checks for a loop, so keep the recorded answer quality alongside the completion rate when testing it.
 - **Changing the effort without re-reading the prompt (opt-in, 0.1.39, #458).** The effort's instruction is the
   first thing in the prompt, so a request that only changes the effort (an agent's "think harder" switch, `none` for
   a quick tool step) reads the whole conversation again. `"effort_position": "end"` in `strata-<model>.json` renders
