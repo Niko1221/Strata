@@ -2505,6 +2505,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         } else {
                             gather_rows16(m.mixed_h, m.src_dev, m.Xs, T * K, N, m.cs);
                             // APR: Hadamard-folded gate/up take H (s * x); Xs is this layer's private gathered copy
+                            // (rotated in fp16 storage, fp32 arithmetic: see the down projection's note below)
                             if (had_gu) strata::kernels::hadamard_rows_f16(m.Xs, T * K, N, had_block, had_sx, m.cs);
                         }
                         // multi-GPU: the peer's share, enqueued before the primary's own experts so both cards work at once
@@ -2870,6 +2871,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             pt.mark(kPfGemmGU, cs);
                             m.gemm.f16(m.Xs + o0 * N, m.dq_gu[q], m.GU + o0 * 1280, ne, 1280, N);
                             swiglu_interleaved(m.GU + o0 * 1280, m.Hh + o0 * 640, ne, m.cs);
+                            // APR, deliberately in place on the fp16 H: hadamard_rows_f16 reads fp16, runs the
+                            // butterflies in fp32 and rounds once on the store, so against an fp32 rotation the only
+                            // extra error is the one fp16 rounding of the SwiGLU output before it (~2^-11 relative per
+                            // value; the GEMM reads fp16 either way).  An fp32 rotation would need a T*K*640 float
+                            // buffer (~200 MiB at an 8k chunk) or a fused SwiGLU + rotation kernel, for the fallback
+                            // of types and builds without MMQ (the MMQ path rotates fp32 H).  native_expert_parity
+                            // bounds the fp16 rotation against the float one at relative L1 error < 2e-3.  The
+                            // gate/up input (Xs above) is handled the same way.
                             if (had_d) strata::kernels::hadamard_rows_f16(m.Hh + o0 * 640, ne, 640, had_block, had_sh, m.cs);
                             pt.mark(kPfGemmD, cs);
                             m.gemm.f16(m.Hh + o0 * 640, m.dq_d[q], m.Dm + o0 * N, ne, N, 640);
