@@ -1526,9 +1526,11 @@ __device__ void dq_q2_0(const void* vx, int64_t ibs, dst_t* yy, int tid) {
     for (int j = 0; j < 8; ++j) {
         const int i = part * 8 + j;
         const int code = (x[b].qs[i / 4] >> ((i % 4) * 2)) & 3;
-#if defined(__HIPCC__) && defined(__gfx1012__) && HIP_VERSION_MAJOR < 7
-        // HIP 5.7 on RDNA1 folds the half path's negative scale times +0
-        // to +0. Preserve the scale's sign, as the FP32/CPU paths do.
+#if defined(__HIPCC__)
+        // HIP folds the half path's negative scale times +0 to +0 (measured: HIP 5.7/gfx1012 - the
+        // original report - and ROCm 7.2.1/gfx1101, tests/hip/q2_zero.cpp).  The IEEE product d*0
+        // carries d's sign, so this write is bit-exact wherever the compiler folds and where it
+        // does not; it keeps the half path agreeing with the FP32/CPU paths.
         if constexpr (std::is_same_v<dst_t, __half>) {
             if (code == 1) {
                 yy[b * 64 + i] = __ushort_as_half(__half_as_ushort(x[b].d) & 0x8000u);

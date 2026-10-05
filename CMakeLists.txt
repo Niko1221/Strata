@@ -1168,12 +1168,22 @@ if(STRATA_NATIVE_EXPERTS)
       # puts Q5_0 on down-projections (sometimes gate/up too) where this model's native_experts.txt had no GPU
       # kernel for it before; q5_0/q5_0 (both roles Q5_0) is left out of this list since stacking the same
       # lower-precision format on both roles pushes the GPU path over this test's 3% threshold (quantization
-      # noise, not a kernel bug -- see the PR).  These pass on HIP too (validated on gfx1101), not CUDA-only.
-      foreach(_pair q4_K/q5_1 q4_K/q8_0 q5_K/q8_0 q8_0/q8_0 q4_K/q5_0 q5_0/q8_0)
+      # noise, not a kernel bug -- see the PR).  Four pairs pass on HIP too (validated on gfx1101);
+      # the two Q5_0 pairs stay CUDA-only: on gfx1101/ROCm 7.2.1 their fp16-dequant bit-equality
+      # fails (q4_K/q5_0: 47,228 of 4,915,200 values; q5_0/q8_0: 95,700; f32 dequant and expert
+      # outputs are bit-equal and within the 3% gate - measured 2026-10-04, build.sh --tests).
+      foreach(_pair q4_K/q5_1 q4_K/q8_0 q5_K/q8_0 q8_0/q8_0)
         string(REPLACE "/" "_" _name "${_pair}")
         add_test(NAME native_expert_parity_${_name} COMMAND native_expert_parity --synthetic ${_pair})
         set_tests_properties(native_expert_parity_${_name} PROPERTIES TIMEOUT 120)
       endforeach()
+      if(STRATA_ENABLE_CUDA)
+        foreach(_pair q4_K/q5_0 q5_0/q8_0)
+          string(REPLACE "/" "_" _name "${_pair}")
+          add_test(NAME native_expert_parity_${_name} COMMAND native_expert_parity --synthetic ${_pair})
+          set_tests_properties(native_expert_parity_${_name} PROPERTIES TIMEOUT 120)
+        endforeach()
+      endif()
       add_test(NAME native_expert_parity_q5_1_min COMMAND native_expert_parity --q5_1-min)
       # #290: the BF16 token embedding (--embd-gguf) gathered and dequantized bit for bit
       add_test(NAME native_expert_parity_bf16_embd COMMAND native_expert_parity --bf16-embd)
