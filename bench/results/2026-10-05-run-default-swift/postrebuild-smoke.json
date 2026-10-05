@@ -1,0 +1,44 @@
+{
+  "label": "post-rebuild",
+  "prompt": "Return only a Python code block defining merge_intervals(intervals). Input is a list of integer pairs [start,end] with start <= end. Return sorted disjoint intervals as lists, merging overlapping or touching endpoints. Handle empty input and negative endpoints, and do not mutate input. No imports or explanations.",
+  "wall_s": 5.155094726011157,
+  "reply": {
+    "id": "chatcmpl-366b47b509984ff79d5dd0d2",
+    "object": "chat.completion",
+    "created": 1791208279,
+    "model": "swift-1.5-iq3_xxs",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "```python\ndef merge_intervals(intervals):\n    if not intervals:\n        return []\n    sorted_intervals = sorted(intervals, key=lambda x: x[0])\n    merged = [list(sorted_intervals[0])]\n    for start, end in sorted_intervals[1:]:\n        last_start, last_end = merged[-1]\n        if start <= last_end:\n            merged[-1][1] = max(last_end, end)\n        else:\n            merged.append([start, end])\n    return merged\n```"
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 71,
+      "completion_tokens": 115,
+      "total_tokens": 186,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 71,
+      "prompt_ms": 1690.6,
+      "prompt_per_token_ms": 23.811,
+      "prompt_per_second": 42.0,
+      "predicted_n": 115,
+      "predicted_ms": 3455.2,
+      "predicted_per_token_ms": 30.045,
+      "predicted_per_second": 33.3,
+      "draft_n": 97,
+      "draft_n_accepted": 82
+    }
+  },
+  "verdict": "PASS",
+  "cases": 205
+}
