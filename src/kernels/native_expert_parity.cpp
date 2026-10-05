@@ -6,8 +6,10 @@
 //
 // (a) float reference: ggml's own dequantizer (`to_float`) and a float SwiGLU expert, (b) the CPU path
 // (ggml-cpu vec_dot with its quantized activations), (c) the GPU path (`native_expert_grouped`, q8_1
-// activations).  (b) and (c) each differ from (a) by their activation rounding only (a few 1e-3 relative).  (c) runs
-// twice, with the kernels that decode a weight part once for all entries and with the per-entry ones: bitwise equal.
+// activations).  (b) and (c) each differ from (a) by their activation rounding (a few 1e-3 relative) and, for the
+// trellis types on the GPU, by its int8 codebook (tq_lut_i8, see iq_kernels.cu "Numerics"); both must stay within
+// relative L1 error 3e-2 of (a).  (c) runs twice, with the kernels that decode a weight part once for all entries and
+// with the per-entry ones: those two are bitwise equal to each other.
 // (d) the GPU dequantizers of the prompt path and the embedding against `to_float` (Q8_0: bit for bit).
 // The synthetic mode and (d) follow eddoursul/Strata 8029fa9.
 #include "strata/artifact/gguf_reader.hpp"

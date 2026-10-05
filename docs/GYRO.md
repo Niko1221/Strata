@@ -173,6 +173,19 @@ checked. A real chat at 128k context worked through the web interface.
 
 Single RTX 4090 smoke run (Gyro-S, MTP draft, greedy): code 107.5, prose 84.3, JSON 76.3 tokens/s.
 
+## Numerics
+
+- **Decode** (Strata's own expert kernels) reads the trellis weights through an int8 copy of the codebook with one
+  global scale (`tq_lut_i8`, relative RMS error 0.85 % of the codebook's standard deviation, far below the
+  quantization error itself), against q8_1 activations.
+- **Prompt processing** decodes them otherwise: the FP16 path through the fp16 codebook (`tq_lut_f16`, what GGML's
+  own dequantizer reads); the MMQ path through the llama.cpp fork's kernels, which read the int8 codebook as well
+  on the fork's current `main`.
+- So decode and prompt results agree within tolerance, not bit for bit. `native_expert_parity` checks one expert
+  on the decode kernels against GGML's float dequantizer and a float SwiGLU: relative L1 error below 3e-2, the
+  bound every expert type gets there. Its "bitwise equal" lines compare Strata's decode-once and per-entry decode
+  kernels with each other, not with a float reference.
+
 ## Known limits
 
 - **Not measured yet:** token parity against llama.cpp.

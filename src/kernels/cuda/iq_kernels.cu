@@ -538,12 +538,23 @@ __device__ __forceinline__ void tq_states4(const uint8_t* qs, int l, uint32_t s[
 }
 // lane iqs/4 of block kbx against the q8_1 blocks aligned with the block's start (4 per trellis block).  Split in
 // two, like the IQ types' decode-once kernels below: tq_load decodes the lane's 16 codebook values (weight side only),
-// tq_apply does the activation side.  vec_dot_tq_q8_1 is apply(load()), so the per-entry and the decode-once kernels
-// do the same float operations in the same order: bitwise equal.
-// The lane's 16 codebook values as 4 ints of packed int8 (the int8 codebook tq_lut_i8, one global scale
-// TQ_LUT_I8_SCALE; relative RMS error 0.85% of the codebook std, far below the trellis error): a trellis step's
-// 4 weights are two 2-byte entries = one int, so the apply side is 4 dp4a instead of 16 int8->float + 16 FMAs, and
-// a decoded lane takes 5 registers instead of 17.  load/apply split as before: bitwise equal by construction.
+// tq_apply does the activation side.  vec_dot_tq_q8_1 is apply(load()), and the decode-once kernels call tq_load once
+// per weight part and tq_apply per entry: the same integer and float operations in the same order, so the two kernel
+// families are bitwise equal to EACH OTHER (native_expert_parity: "decode-once vs per-entry kernels").  Neither is
+// bitwise equal to a float decode of the weights, see Numerics.
+// The lane's 16 codebook values as 4 ints of packed int8: a trellis step's 4 weights are two 2-byte entries = one
+// int, so the apply side is 4 dp4a instead of 16 int8->float + 16 FMAs, and a decoded lane takes 5 registers
+// instead of 17.
+//
+// Numerics.  Decode (these kernels) reads the int8 codebook tq_lut_i8: one global scale TQ_LUT_I8_SCALE, relative
+// RMS error 0.85% of the codebook std, far below the trellis quantization error.  The prompt path decodes the
+// trellis otherwise: the FP16 path (dq_tq below) through the fp16 codebook tq_lut_f16, which is what ggml's to_float
+// reads, and the MMQ path through the GGML fork's tile loader (the int8 codebook too on the fork's main since
+// 2026-10-03; the fp16 codebook requantized to int8 per 16 weights before that and with GGML_CUDA_TQ_F32_DOT).
+// Decode and prompt therefore agree within tolerance, not bitwise.  native_expert_parity bounds this path: one
+// expert (int8 codebook, q8_1 activations) against ggml's float dequantizer and a float SwiGLU, relative L1 error
+// sum|gpu - ref| / sum|ref| < 3e-2 (the bound every expert type's CPU and GPU paths get there); the prompt path's
+// fp16 dequantizers against to_float at < 1e-6, their fp16 output equal to the fp16 of the float one.
 struct TqLane { int q[4]; float d; };
 template<int TY>
 __device__ __forceinline__ TqLane tq_load(const void* __restrict__ vbq, int kbx, int iqs) {
