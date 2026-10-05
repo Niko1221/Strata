@@ -297,6 +297,48 @@ class MetricsLog(unittest.TestCase):
             self.assertGreater(done[0]["prompt_tokens"], 0)
             self.assertGreater(samples[-1]["context_used"], 0)
 
+    def test_history_endpoint_and_page(self):
+        import tempfile
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, "Hello.", max_context=4096), tok,
+                      ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "m.jsonl"
+            httpd = serve(svc, port=0)
+            base = f"http://127.0.0.1:{httpd.server_address[1]}"
+
+            def get(path):
+                with urllib.request.urlopen(base + path, timeout=10) as r:
+                    return r.read().decode()
+            try:
+                self.assertFalse(json.loads(get("/metrics-log"))["enabled"])     # off: the page says how to turn it on
+                svc.metrics_log = str(log)
+                log.write_text('{"type": "sample", "t": 10.0}\n{"type": "request", "t": 11.0}\n{"type": "sam',
+                               encoding="utf-8")
+                first = json.loads(get("/metrics-log"))
+                self.assertEqual([x["t"] for x in first["lines"]], [10.0, 11.0])   # the cut line waits
+                with open(log, "a", encoding="utf-8") as f:
+                    f.write('ple", "t": 12.0}\n')
+                more = json.loads(get(f"/metrics-log?offset={first['offset']}"))
+                self.assertEqual([x["t"] for x in more["lines"]], [12.0])
+                self.assertEqual(json.loads(get(f"/metrics-log?offset={more['offset']}"))["lines"], [])
+                self.assertEqual([x["t"] for x in json.loads(get("/metrics-log?since=11"))["lines"]], [11.0, 12.0])
+                log.write_text('{"type": "sample", "t": 20.0}\n', encoding="utf-8")   # replaced: read again
+                again = json.loads(get(f"/metrics-log?offset={more['offset']}"))
+                self.assertTrue(again["reset"])
+                self.assertEqual([x["t"] for x in again["lines"]], [20.0])
+                page = get("/metrics-history")
+                self.assertIn('src="/web/history.js"', page)
+                self.assertIn("/metrics-log", get("/web/history.js"))
+                svc.api_key = "secret"
+                with self.assertRaises(urllib.error.HTTPError) as e:
+                    get("/metrics-log")
+                self.assertEqual(e.exception.code, 401)
+                e.exception.close()
+            finally:
+                httpd.shutdown()
+                httpd.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()

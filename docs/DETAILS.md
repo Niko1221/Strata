@@ -1365,4 +1365,11 @@ To see how the Monitor tab's values changed during a task, turn on the metrics l
   tok/s, the VRAM hit rate with the PCIe share, and its duration.
 
 No prompts or answers are written. A line is about 0.8 KB, so a sample every second comes to about 3 MB an hour.
+
+**`/metrics-history`** (linked as "History charts" on the Monitor tab) draws the log as line charts and adds each
+new sample within a second: decode and prefill speed (a line while a request runs, a dot for each finished
+request), model state, context fill, GPU and CPU load, memory, power with its limit, GPU temperature, PCIe and disk.
+It also has tiles with the current values and a table of the finished requests. Choose 5 min to 24 h or All; Live
+off holds the view; hovering shows every chart's values at that moment. The page reads `GET /metrics-log`
+(`?offset=<byte>` for new lines only, `?since=<unix time>`), which uses the API key like `/metrics`.
 For example, `pandas.read_json("logs/metrics.jsonl", lines=True)` loads the file into a table.

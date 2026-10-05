@@ -2612,6 +2612,37 @@ class Service:
         threading.Thread(target=loop, daemon=True, name="metrics-log").start()
         print(f"[strata] metrics log: the Monitor's values every {every_s:g} s to {p.resolve()}", flush=True)
 
+    def metrics_log_read(self, offset=None, since=None, max_bytes=8 << 20) -> dict:
+        """GET /metrics-log: the metrics log's lines for the /metrics-history page.  `offset`: the byte to go on from
+        (the last answer's "offset"; the page polls with it), else from the start; `since`: only lines at or after this
+        Unix time.  At most `max_bytes` per answer, cut at a whole line; "more" says to ask again at once.  A file that
+        got shorter than `offset` (deleted or replaced) is read from its start again, with "reset"."""
+        path = getattr(self, "metrics_log", None)
+        if not path:
+            return {"enabled": False, "lines": [], "offset": 0, "more": False}
+        p = Path(path)
+        size = p.stat().st_size if p.exists() else 0
+        start, reset = int(offset or 0), False
+        if start > size:
+            start, reset = 0, True
+        lines, end = [], start
+        if size > start:
+            with open(p, "rb") as f:
+                f.seek(start)
+                chunk = f.read(min(size - start, max_bytes))
+            cut = chunk.rfind(b"\n") + 1               # a line still being written waits for the next poll
+            end = start + cut
+            for raw in chunk[:cut].splitlines():
+                try:
+                    rec = json.loads(raw)
+                except ValueError:
+                    continue
+                if since is None or rec.get("t", 0) >= since:
+                    lines.append(rec)
+        return {"enabled": True, "path": str(p.resolve()), "lines": lines, "offset": end, "size": size,
+                "more": end < size and end > start, "reset": reset,
+                "every_s": getattr(self, "metrics_log_every_s", 1.0)}
+
     def _tok_s(self):
         """tok/s over the last RATE_WINDOW_S seconds.  Returns 0.0 while nothing is generating.  With parallel requests:
         the sum of theirs."""
@@ -3895,6 +3926,18 @@ def make_handler(svc: Service):
                     # the last 12 requests; `?requests=all` every one kept (the Monitor's "Show all", issue #35)
                     self._json(200, svc.metrics(all_requests="requests=all" in self.path))
                 return
+            if path == "/metrics-log":
+                # the metrics log's lines from a byte offset (the /metrics-history page polls this)
+                if self._authorized():
+                    q = parse_qs(urlsplit(self.path).query)
+                    try:
+                        offset = int(q["offset"][0]) if "offset" in q else None
+                        since = float(q["since"][0]) if "since" in q else None
+                    except ValueError:
+                        self._json(400, {"error": {"message": "offset and since must be numbers"}})
+                        return
+                    self._json(200, svc.metrics_log_read(offset, since))
+                return
             if path == "/api/requests" and svc.api_monitor:
                 if self._authorized():
                     request_id = parse_qs(urlsplit(self.path).query).get("id", [None])[0]
@@ -3917,8 +3960,9 @@ def make_handler(svc: Service):
                 if self._authorized():
                     self._json(200, svc.mcp.status() if svc.mcp else {"servers": [], "tools": 0})
                 return
-            if path == "" or (path == "/api-monitor" and svc.api_monitor):
-                body = (ROOT / "serve" / "web" / ("monitor.html" if path else "index.html")).read_bytes()
+            if path in ("", "/metrics-history") or (path == "/api-monitor" and svc.api_monitor):
+                page = {"": "index.html", "/api-monitor": "monitor.html", "/metrics-history": "history.html"}[path]
+                body = (ROOT / "serve" / "web" / page).read_bytes()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
