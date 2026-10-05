@@ -29,5 +29,28 @@ int main() {
         message_checkpoint_boundary(ids, 0, 33000, token, 8192, 0) != -1 ||
         message_checkpoint_boundary(ids, 0, 33000, token, -1) != -1) return 1;
     checks += 4;
+    using strata::program::message_branch_observed;
+    std::vector<int32_t> live(ids.begin(), ids.end());
+    auto branch = [&](bool expected, int64_t at = 32800, int64_t turn = 33000, bool image = false) {
+        ++checks;
+        return message_branch_observed(ids, live, at, turn, image) == expected;
+    };
+    if (!branch(false) || !branch(true, 32800, 33000, true)) return 1;
+    live[32900] = 8;
+    if (!branch(true)) return 1;
+    live[32000] = 8;
+    if (!branch(false) || !branch(false, 32800, 33000, true)) return 1;
+    live.assign(ids.begin(), ids.end());
+    live.resize(32850);
+    if (!branch(false)) return 1;  // An incomplete prefix is not an edit.
+    live.resize(32800);
+    if (!branch(false, 32800, 33000, true)) return 1;
+    live.assign(ids.begin(), ids.end());
+    live[32800] = 8;
+    if (!branch(false) || !branch(false, -1) || !branch(false, 33000) ||
+        !branch(false, 32800, 33100)) return 1;
+    live.assign(ids.begin(), ids.end());
+    live[33000] = 8;
+    if (!branch(false)) return 1;  // Only the assistant header differs.
     std::printf("message_boundary_test OK (%d checks)\n", checks);
 }

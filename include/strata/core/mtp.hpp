@@ -82,6 +82,7 @@ public:
     /// Coupled mode with penalties: the history the next draft() chain starts from - what the session holds after the
     /// window's commit (`tail`) and the window's pick at its last accepted row (`next`, the next window's row 0).
     void set_draft_history(const int32_t* tail, int64_t n_tail, int32_t next);
+    void set_ple_session(SessionState* s) { ple_ss_ = s; }
     bool coupled() const { return coupled_active_; }
 
     double ms_draft = 0, ms_prefill = 0;
@@ -124,6 +125,7 @@ private:
 
     const ModelGeometry* g_ = nullptr;
     SessionState* ss_ = nullptr;
+    SessionState* ple_ss_ = nullptr;
     const WeightTable* wt_ = nullptr;
     const NativeHead* head_ = nullptr;
     const float* window_R_ = nullptr;

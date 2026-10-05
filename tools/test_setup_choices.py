@@ -122,7 +122,7 @@ class GgufDirUnsupported(unittest.TestCase):
         self.assertEqual(msg, "Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf is UD-IQ3_XXS, a GGUF Strata "
                               "cannot run")
         self.assertIn("ISTA-DASLab's GSQ-RCO files", hint)
-        self.assertIn("Unsloth's UD-Q4_K_XL only", hint)
+        self.assertIn("Unsloth's UD-Q4_K_XL and UD-IQ4_XS only", hint)
 
     def test_a_folder_without_the_choice_names_what_is_there(self):
         gsq = ["Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-%05d-of-00002.gguf" % i for i in (1, 2)]
@@ -145,7 +145,7 @@ class GgufDirUnsupported(unittest.TestCase):
             code, out, _, _ = install(ram, found, ["--gguf-dir", d, "--family", "unsloth", "--model", "IQ3_XXS"])
         self.assertEqual(code, 1)
         self.assertIn("has no IQ3_XXS model file", out)
-        self.assertIn("choose one of: UD-Q4_K_XL (or IQ3_XXS: --family qwen --model IQ3_XXS, --family swift --model "
+        self.assertIn("choose one of: UD-IQ4_XS, UD-Q4_K_XL (or IQ3_XXS: --family qwen --model IQ3_XXS, --family swift --model "
                       "IQ3_XXS)", out)
         self.assertIn("Strata runs ISTA-DASLab's GSQ-RCO files", out)
 
@@ -162,8 +162,8 @@ class ExperimentalSm60(unittest.TestCase):
             for arch in ("60", "61", "70"):
                 p = setup.gpu_problem(self.card(arch))
                 self.assertIn("not supported", p)
-                self.assertIn("STRATA_EXPERIMENTAL_SM60=1", p)
-            self.assertNotIn("STRATA_EXPERIMENTAL_SM60", setup.gpu_problem(self.card("52")))
+                self.assertIn("choose it with --gpu 0", p)              # the CUDA 12 engine (docs/OLDER_GPUS.md)
+            self.assertNotIn("--gpu", setup.gpu_problem(self.card("52")))
             self.assertIsNone(setup.gpu_problem(self.card("75")))
         with mock.patch.dict(os.environ, {"STRATA_EXPERIMENTAL_SM60": "1"}):
             for arch in ("60", "61", "70", "75", "120"):
@@ -189,6 +189,23 @@ class ExperimentalSm60(unittest.TestCase):
                     mock.patch.object(setup, "out", lambda cmd: versions.get(cmd[0], "")):  # #414
                 self.assertEqual(setup.find_nvcc(), (str(new), (13, 0)))
                 self.assertEqual(setup.find_nvcc(below=(13, 0)), (str(old), (12, 9)))
+                # #601: STRATA_NVCC is the only one considered; CUDA_HOME is a candidate like CUDA_PATH
+                with mock.patch.dict(os.environ, {"STRATA_NVCC": str(old)}):
+                    self.assertEqual(setup.find_nvcc(), (str(old), (12, 9)))
+                with mock.patch.dict(os.environ, {"STRATA_NVCC": str(new)}):
+                    got, text = quiet(setup.find_nvcc, below=(13, 0))
+                    self.assertEqual(got, (None, None))
+                    self.assertIn("needs one older than 13.0", text)
+                with mock.patch.dict(os.environ, {"STRATA_NVCC": str(Path(d) / "missing")}):
+                    got, text = quiet(setup.find_nvcc)
+                    self.assertEqual(got, (str(new), (13, 0)))
+                    self.assertIn("no such file", text)
+            with mock.patch.object(setup, "WIN", False), mock.patch.object(setup.shutil, "which", lambda n: None), \
+                    mock.patch.dict(os.environ, {"CUDA_HOME": str(Path(d) / "12")}), \
+                    mock.patch.object(setup, "out", lambda cmd: versions.get(cmd[0], "")):
+                os.environ.pop("CUDA_PATH", None)
+                got = setup.find_nvcc(below=(13, 0))
+                self.assertEqual(got, (str(old), (12, 9)))
 
     def tools(self, archs, nvcc):
         seen = []
@@ -265,6 +282,40 @@ class HipVision(unittest.TestCase):
         built, meta, have = self.build({}, "none")
         self.assertEqual((built, have), ([], False))
         self.assertNotIn("vision_src", meta)
+
+
+class RotationalDisk(unittest.TestCase):
+    """#605: a model on a rotational disk gets --ple-io ram when the n-gram table fits the RAM, else a warning."""
+
+    def install(self, ram, disk):
+        from test_setup_golden import PROFILES, install
+        _, found = PROFILES["64GB-1x32GB"]
+        return install(ram, found, ["--family", "qwen", "--model", "Q2_0", "--no-start"],
+                       extra=[mock.patch.object(setup, "rotational_disk", lambda p: disk)])
+
+    def test_fits(self):
+        code, out, cfg, _ = self.install(127.8, "sdb")
+        self.assertEqual(code, 0, out)
+        a = cfg["args"]
+        self.assertEqual(a[a.index("--ple-io") + 1], "ram")
+        self.assertIn("rotational disk (sdb)", out)
+
+    def test_does_not_fit(self):
+        code, out, cfg, _ = self.install(63.7, "sdb")
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("--ple-io", cfg["args"])
+        self.assertIn("An SSD is recommended", out)
+
+    def test_ssd(self):
+        code, out, cfg, _ = self.install(127.8, None)
+        self.assertNotIn("--ple-io", cfg["args"])
+        self.assertNotIn("rotational", out)
+
+    def test_sysfs(self):
+        if not sys.platform.startswith("linux"):
+            self.assertIsNone(setup.rotational_disk(__file__))   # Windows: never
+            return
+        self.assertIn(setup.rotational_disk(__file__), (None,) + tuple(os.listdir("/sys/block")))
 
 
 class VramReserve(unittest.TestCase):

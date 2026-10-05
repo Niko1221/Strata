@@ -12,11 +12,18 @@ token and image-prefix validation in charge of reuse.
 
 ## Use and limits
 
-Set `STRATA_CACHE_MESSAGE_BOUNDARY=1` before starting the engine.
+Set `STRATA_CACHE_MESSAGE_BOUNDARY=2` for on-demand checkpoints, or `=1` to
+save the checkpoint ahead of a possible edit. Mode 2 requires matching earlier
+history and an observed text or final-message image edit. A first request,
+unchanged retry, or change only to the assistant header adds no checkpoint.
+The first edit can still reread history; the new checkpoint helps later edits.
+The existing token and image-prefix checks still decide whether reuse is safe.
 It is off by default, requires prompt caching and a valid turn token, and
 only selects prefixes of at least 8,192 tokens with a tail of at most 1,024.
 Layer-split execution is excluded (`multi_gpu`); helper-expert GPUs still work.
 It can split prefill chunks and add snapshot cost to a fresh request.
+Mode 1 can also increase snapshot cost on long unchanged requests; mode 2
+avoids that eager checkpoint and is the balanced starting point for long chats.
 
 ## Validation environment
 
@@ -64,3 +71,28 @@ including 120K, image-history isolation, and cancellation/recovery.
   related cases with different cost and numerical tradeoffs.
 - Chunk geometry can change floating-point results. No pure-upstream bitwise
   parity or isolated upstream speedup is claimed. Keep draft until validated.
+
+## 0.1.39 follow-up
+
+The branch now includes official 0.1.39 (`6f32ec0`), keeps the upstream checkpoint
+failure diagnostics, and adds branch-policy tests. Other custom optimizations
+are not included in this PR.
+
+In a combined 0.1.39 build using SC117 abliterated IQ3_S, the same 110,800-token
+request was repeated three times after warm-up. Median hot request time was
+4.735 s with eager checkpoints and 3.810 s with on-demand checkpoints. The
+official build took 4.430 s. All warm requests reused 110,793 tokens.
+Two short tool tasks completed in 2.776 s with eager checkpoints versus 3.327 s
+with on-demand checkpoints: mode 2 is a tradeoff, not a universal improvement.
+
+These runs include CPU-assisted prefill, balanced chunks, expert-cache guards,
+KV prefetch and the CPU pipeline. They are NOT isolated PR results. The five-arm
+suite passed 240 HTTP requests, including structured extraction, cache re-entry,
+mock weather-tool continuation and a basic image check. It did not validate
+the full cancellation/image-isolation suite on this independent branch.
+
+The exact revised branch compiled and linked independently against official
+0.1.39 on the Linux host above. Its standalone policy test passed 33 checks,
+including unchanged requests, text edits, image-only edits, earlier-history
+mismatches, incomplete prefixes and assistant-header-only changes. No model
+server was launched for this branch-specific check.

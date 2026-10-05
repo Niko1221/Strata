@@ -276,7 +276,7 @@ class StartOnSeveralGpus(unittest.TestCase):
         code, out, asked, cfg = self.offer(["--resident-experts"], "y")
         self.assertIn("[n]", asked[0])
         self.assertEqual(cfg["gpu"], [0, 1])
-        self.assertEqual(cfg["args"], ["--mmap-experts"])
+        self.assertEqual(cfg["args"], ["--mmap-experts", "--remote-expert-opt"])   # 0.1.39b: #578 on 2+ GPUs
         code, out, asked, cfg = self.offer(["--mmap-experts"], None)           # other configs: as before
         self.assertEqual(cfg["gpu"], [0, 1])
 
@@ -296,7 +296,7 @@ class StartOnSeveralGpus(unittest.TestCase):
             cfg = json.loads(p.read_text())
         self.assertIsNone(code, out)
         self.assertEqual(cfg["gpu"], [0, 1])
-        self.assertEqual(cfg["args"], ["--mmap-experts"])
+        self.assertEqual(cfg["args"], ["--mmap-experts", "--remote-expert-opt"])   # 0.1.39b: #578 on 2+ GPUs
         self.assertIn("no layer split yet", out)
         self.assertTrue(call.called)
 
