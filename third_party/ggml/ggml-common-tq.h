@@ -1,7 +1,7 @@
 // third_party/ggml/ggml-common-tq.h - the trellis (APR) expert formats of Agention's llama.cpp fork
 // (agentionai/llama.cpp 073bc9e68, ggml/src/ggml-common.h; MIT, the same license as the rest of third_party/ggml).
-// The block structs and the 2048-point "Hyb" codebook, unchanged, for Strata's device kernels.  ggml-cpu takes
-// them from the fork itself (-DSTRATA_GGML_DIR).
+// The block structs and the 2048-point "Hyb" codebook, unchanged, for Strata's device kernels and its CPU trellis
+// kernels (src/kernels/cpu/tq_*.cpp).  ggml-cpu takes them from the fork itself (-DSTRATA_GGML_DIR).
 //
 // TQ2_T / TQK6 / TQK7: 128 weights per block, {fp16 d; qs}.  qs is 32 trellis steps of K bits (K = 8 / 6 / 7;
 // TQ2_T byte-aligned, TQK bit-packed LSB-first, circular, step t's 16-bit window at bit (31 - t)*K; TQ2_T's state
@@ -32,9 +32,14 @@ typedef struct {
 } block_tqk7;
 static_assert(sizeof(block_tqk7) == 30, "wrong tqk7 block size/padding");
 
+// device memory in a CUDA / HIP translation unit, ordinary host data everywhere else
 #if defined(__CUDACC__) || defined(__HIPCC__)
+#define STRATA_TQ_LUT_SPACE __device__
+#else
+#define STRATA_TQ_LUT_SPACE
+#endif
 // point i = (tq_lut_f16[2i], tq_lut_f16[2i+1]) as fp16 bit patterns; 16-byte aligned so a point reads as one u32
-alignas(16) static const __device__ uint16_t tq_lut_f16[4096] = {
+alignas(16) static const STRATA_TQ_LUT_SPACE uint16_t tq_lut_f16[4096] = {
     0xbd4d, 0xb8f7, 0xb6ce, 0x3cd5, 0xbd9e, 0x4368, 0x3dce, 0xb8a6, 0x395e, 0xb430, 0x3bc1, 0x3dbc, 0xb92b, 0x3c9c, 0xbca2, 0x3aaa,
     0x3cdb, 0xb8e1, 0xbb33, 0x3dfb, 0x3a8d, 0xbb18, 0xbd64, 0x3da0, 0xbf1a, 0x3b83, 0xb389, 0x3659, 0xb40f, 0xabd7, 0x40ee, 0x35a2,
     0xc057, 0x3972, 0xbe17, 0x3996, 0xb926, 0xb9b5, 0x393b, 0x3c75, 0x4151, 0xbdef, 0xb5a3, 0xbd09, 0xb408, 0x4012, 0x3b7f, 0x3ece,
@@ -292,4 +297,3 @@ alignas(16) static const __device__ uint16_t tq_lut_f16[4096] = {
     0xa11a, 0xc068, 0x35bb, 0xb82e, 0x3f77, 0xbbb9, 0xb386, 0x3b46, 0xb675, 0x22f3, 0x3e8b, 0xbcb2, 0xb8ba, 0xba29, 0x4235, 0xbd08,
     0x1038, 0x3f9f, 0xade8, 0x399f, 0x3363, 0xb9da, 0x3909, 0x37c8, 0x3c82, 0xbc4c, 0xbc3a, 0xb788, 0xa897, 0x39da, 0xb6d2, 0x3bee,
 };
-#endif
