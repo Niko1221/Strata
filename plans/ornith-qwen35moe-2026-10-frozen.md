@@ -1,4 +1,12 @@
-# Ornith-1.5 (Qwen35MoE) on Strata
+# Ornith-1.5 (Qwen35MoE) on Strata — FROZEN DESIGN RECORD
+
+> **Status: support removed.** This page documented the Qwen35MoE/Ornith backend that
+> `feature/rdna3-support` prototyped in October 2026. The code, launcher and Docker wiring were
+> removed to consolidate the branch on the Qwen3.8 Docker workflow (plan:
+> [merge-main-drop-ornith-single-run-launcher.md](merge-main-drop-ornith-single-run-launcher.md)).
+> The removed work is one revertable commit; the measurements stay in
+> `../bench/results/2026-10-02-ornith-rdna3/` and `../docs/ornith/`. Everything below describes
+> behavior as of commit 05c7fed, not the current tree.
 
 Ornith-1.5-35B-A3B is a Qwen3.5-family mixture-of-experts model. Strata added a separate Qwen35MoE
 architecture path for it rather than teaching the existing Qwen4Exp path a second meaning. This page

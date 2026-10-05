@@ -148,19 +148,6 @@ add_library(strata_artifact INTERFACE)
 target_include_directories(strata_artifact INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(strata_artifact INTERFACE strata_warnings)
 
-# ---- strata_qwen35 (the Qwen35MoE / Ornith forward pass) -------------------
-# The core math and the GGUF loader, plain C++ with no GPU and no ggml.  The quantized matvec and the GGUF
-# reader are header-only or installed at runtime (qwen35_ggml.cpp), so this links anywhere; the executable
-# joins it to ggml-cpu.
-add_library(strata_qwen35 STATIC src/qwen35/qwen35.cpp src/qwen35/loader.cpp src/core/qwen35.cpp)
-target_include_directories(strata_qwen35 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(strata_qwen35 PRIVATE strata_warnings)
-# OpenMP parallelises the quantized matvec (the token's dominant cost); 12 physical cores is ~4-6x on gfx1101's PC.
-find_package(OpenMP QUIET)
-if(OpenMP_CXX_FOUND)
-  target_link_libraries(strata_qwen35 PUBLIC OpenMP::OpenMP_CXX)
-endif()
-
 add_executable(strata-gguf src/artifact/gguf_reader.cpp)
 target_link_libraries(strata-gguf PRIVATE strata_artifact)
 
@@ -177,21 +164,6 @@ if(STRATA_BUILD_TESTS)
   add_executable(gguf_split_test tests/core/gguf_split_test.cpp)
   target_link_libraries(gguf_split_test PRIVATE strata_artifact)
   add_test(NAME gguf_split_test COMMAND gguf_split_test)
-  # the Qwen35MoE / Ornith architecture guard: a synthetic qwen35moe header, then one deliberate break at a
-  # time (wrong architecture, wrong shape, missing tensor, crossing layer families, Qwen4Exp-only tensors,
-  # wrong type, missing metadata, inconsistent lengths).  No model, no GPU, no ggml.
-  add_executable(qwen35_layout_test src/core/qwen35_layout_test.cpp src/core/qwen35.cpp)
-  target_link_libraries(qwen35_layout_test PRIVATE strata_artifact)
-  add_test(NAME qwen35_layout_test COMMAND qwen35_layout_test)
-  # The Qwen35MoE forward pass (GDN, attention, MoE, trunk), plain float, no GPU and no ggml needed.  Each op is
-  # checked against an independent reference: the delta-net recurrence is llama.cpp's own
-  # ggml_compute_forward_gated_delta_net_one_chunk, re-derived in float64 with the natural state layout.
-  add_executable(qwen35_gdn_test src/qwen35/gdn_test.cpp)
-  target_link_libraries(qwen35_gdn_test PRIVATE strata_qwen35)
-  add_test(NAME qwen35_gdn_test COMMAND qwen35_gdn_test)
-  add_executable(qwen35_layers_test src/qwen35/layers_test.cpp)
-  target_link_libraries(qwen35_layers_test PRIVATE strata_qwen35)
-  add_test(NAME qwen35_layers_test COMMAND qwen35_layers_test)
 endif()
 
 # ---- strata_plan ----------------------------------------------------------
@@ -208,7 +180,7 @@ target_link_libraries(strata-plan PRIVATE strata_plan)
 # Only built when a GPU backend is on, so the Phase 1 targets keep working without a toolkit.
 if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_library(strata_core STATIC src/core/device.cu src/core/pinned.cu src/platform/memory.cpp src/core/graph.cpp src/core/weights.cpp
-                               src/core/layout.cpp src/core/qwen35.cpp)
+                               src/core/layout.cpp)
   target_include_directories(strata_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   if(STRATA_ENABLE_CUDA AND STRATA_EXPERIMENTAL_SM60)
     # the runtime device check (src/core/device.cu) admits the cards this build was made for (#236)
@@ -987,19 +959,6 @@ if(STRATA_NATIVE_EXPERTS)
     target_link_libraries(hip_ple_iq4 PRIVATE strata_kernels strata_hip_runtime ggml-base)
   endif()
   if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
-    # The quantized matvec and the runnable Ornith CLI: joins the Qwen35 forward pass to ggml-cpu.  Built only
-    # where ggml-cpu is (native experts), which is every release build.
-    if(STRATA_NATIVE_EXPERTS)
-      add_library(strata_qwen35_ggml STATIC src/qwen35/qwen35_ggml.cpp)
-      target_link_libraries(strata_qwen35_ggml PUBLIC strata_qwen35 strata_kernels_cpu)
-      # The GPU dense tier: Qwen35's dense projections through the engine's native_mmvq kernels.
-      add_library(strata_qwen35_gpu STATIC src/qwen35/qwen35_gpu.cu)
-      target_include_directories(strata_qwen35_gpu PRIVATE ${_strata_gpu_include_directories})
-      target_link_libraries(strata_qwen35_gpu PUBLIC strata_qwen35 strata_kernels ${_strata_gpu_runtime_target})
-      add_executable(strata-qwen35 src/qwen35/qwen35_main.cpp)
-      target_include_directories(strata-qwen35 PRIVATE ${_strata_gpu_include_directories})
-      target_link_libraries(strata-qwen35 PRIVATE strata_qwen35_ggml strata_qwen35_gpu)
-    endif()
     add_executable(native_expert_parity src/kernels/native_expert_parity.cpp)
     target_include_directories(native_expert_parity PRIVATE ${_strata_gpu_include_directories})
     target_link_libraries(native_expert_parity PRIVATE strata_kernels strata_kernels_cpu strata_artifact ${_strata_gpu_runtime_target})
@@ -1018,12 +977,6 @@ if(STRATA_NATIVE_EXPERTS)
       # a pair without GPU kernels (Q6_K gate/up) is refused by native_expert_supported, not run
       add_test(NAME native_expert_parity_refuses_q6_K COMMAND native_expert_parity --synthetic q6_K/q8_0)
       set_tests_properties(native_expert_parity_refuses_q6_K PROPERTIES WILL_FAIL TRUE)
-      # Ornith-1.5's AD-Q4_K-IQ4_XS expert geometry: IQ4_XS gate/up, Q4_K down, at 2048/512.  Q4_K was admitted as
-      # a grouped DOWN format for this model only; this test is what proves the down kernel at that geometry.
-      add_test(NAME native_expert_parity_ornith_iq4_xs_q4_K
-               COMMAND ${CMAKE_COMMAND} -E env STRATA_PARITY_H=2048 STRATA_PARITY_FF=512
-                       $<TARGET_FILE:native_expert_parity> --synthetic iq4_xs/q4_K)
-      set_tests_properties(native_expert_parity_ornith_iq4_xs_q4_K PROPERTIES TIMEOUT 120)
     endif()
   endif()
   # #296's real-weight checks (OrcaRouter Q4_K_S files; docs/ORCA_Q4_K_S.md) - test programs, not part of a release

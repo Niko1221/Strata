@@ -46,7 +46,7 @@ static double rel(const std::vector<float>& a, const std::vector<float>& b) {
 
 namespace {
 constexpr int NT = 3, E = 7;
-// Runtime so the same parity harness can check another model's expert geometry (Ornith-1.5 is 2048/512):
+// Runtime so the same parity harness can check another model's expert geometry (any H/FF pair):
 // `STRATA_PARITY_H` / `STRATA_PARITY_FF`, defaulting to this repository's Qwen3.8 expert geometry.
 int64_t H = 2560, FF = 640;
 

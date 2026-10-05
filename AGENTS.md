@@ -5,9 +5,9 @@ normal PC: one NVIDIA or AMD graphics card plus system RAM, on Windows or Linux.
 (`src/`, `include/`), a Python server with an OpenAI- and Anthropic-compatible API and a web app (`serve/`), and a
 one-click installer (`setup.py`, started by `START-HERE.bat` / `setup.sh`).
 
-A second architecture, Qwen35MoE (Ornith-1.5-35B-A3B), is being added beside Qwen3.8 as its own backend with its
-own `ModelKind`; see [docs/ORNITH_QWEN35MOE.md](docs/ORNITH_QWEN35MOE.md) for its status, geometry and launcher
-(`run3.sh`). Qwen3.8 behavior and `run.sh`/`run2.sh` must not regress when it is worked on.
+The Qwen35MoE/Ornith-1.5 backend that this branch prototyped was removed; its design record and measurements
+are kept at [plans/ornith-qwen35moe-2026-10-frozen.md](plans/ornith-qwen35moe-2026-10-frozen.md) and
+`bench/results/2026-10-02-ornith-rdna3/`. Qwen3.8 behavior must not regress.
 
 ## Installing Strata for a user
 

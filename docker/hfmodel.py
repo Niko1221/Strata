@@ -39,16 +39,6 @@ FAMILIES = {
     "coder": {"repo": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF",
               "file": "Qwen3.8-Flash-Next-GSQ-RCO-{q}-0000{i}-of-00002.gguf", "subdir": True,
               "title": "Qwen3.8-Flash-Next Coder"},
-    # Qwen35MoE / Ornith-1.5: ONE stock GGUF plus a SEPARATE trained Qwen3.6 MTP draft.  There is no PLE
-    # shard and no experts.bin pack on this path (the native expert source reads the GGUF itself), so
-    # `files` is 1 and `arena_gb` is 0.  The MTP draft is its own repository because it is trained and
-    # versioned independently of the target checkpoint; a different compatible Qwen3.5/3.6 MTP-only GGUF
-    # can be named with STRATA_MTP_REPO / STRATA_MTP_FILE without touching this table.
-    "ornith": {"repo": "AtomicChat/Ornith-1.5-35B-A3B-GGUF",
-               "file": "Ornith-1.5-35B-A3B-AD-Q4_K-IQ4_XS.gguf", "subdir": False, "files": 1,
-               "single_name": True, "title": "Ornith-1.5-35B-A3B",
-               "mtp": {"repo": "EryriLabs/Ornith-1.5-35B-A3B-BigBang-MTP-GGUF",
-                       "file": "mtpdraft-Q8_0.gguf", "download_gb": 2.0}},
 }
 # The sizes Strata knows: quant -> family, download GB, RAM GB, experts.bin GB (setup.py:64-79).
 # download_gb is what `hf download` writes into the cache; arena_gb is what iq_pack.py --experts-bin
@@ -61,7 +51,6 @@ MODELS = {
     "Q2_0": {"family": "qwen", "download_gb": 66.4, "ram_gb": 48, "arena_gb": 34.0},
     "IQ2_XS": {"family": "qwen", "download_gb": 68.0, "ram_gb": 48, "arena_gb": 35.5},
     "IQ1_M": {"family": "coder", "download_gb": 58.4, "ram_gb": 32, "arena_gb": 23.4},
-    "ornith": {"family": "ornith", "download_gb": 20.1, "ram_gb": 24, "arena_gb": 0},
 }
 DEFAULT_MODEL = "IQ3_XXS"
 
@@ -115,7 +104,8 @@ def family_of(model: str, repo: str) -> dict | None:
 
 
 def n_files(fam: dict) -> int:
-    """How many GGUF files this release has: 2 for the Qwen3.8 family (experts + PLE), 1 for Ornith."""
+    """How many GGUF files this release has: 2 for the Qwen3.8 family (experts + PLE), 1 for a
+    single-file release."""
     return int(fam.get("files", 2))
 
 
@@ -148,7 +138,7 @@ def _find_in_snapshot(snap: Path, model: str, i: int, fam: dict) -> Path | None:
 def shard_path(root: Path, model: str, i: int, rev: str = "", repo: str = "") -> Path | None:
     """The path of file `i` (1 = the model, 2 = Qwen3.8's PLE shard) inside the cache, or None.
 
-    A one-file release (Ornith) returns its single GGUF for i == 1 and None for i == 2."""
+    A one-file release returns its single GGUF for i == 1 and None for i == 2."""
     fam = family_of(model, repo)
     if fam is None:
         return None
@@ -161,7 +151,7 @@ def shard_path(root: Path, model: str, i: int, rev: str = "", repo: str = "") ->
 
 
 def mtp_path(root: Path, model: str, rev: str = "", repo: str = "") -> Path | None:
-    """The external MTP draft GGUF for a family that has one (Ornith), or None."""
+    """The external MTP draft GGUF for a family that declares one, or None."""
     fam = family_of(model, repo)
     if not fam or not fam.get("mtp"):
         return None

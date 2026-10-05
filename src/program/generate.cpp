@@ -1006,8 +1006,8 @@ int main(int argc, char** argv) {
         bool parsed = true;
         if (a == "--help" || a == "-h") { usage(); return 0; }
         // Which architectures THIS binary can serve.  The launchers read it before starting (and before a
-        // model download): `strata --capabilities` is the single source of truth, so a build without the
-        // Qwen35MoE backend says so instead of accepting an Ornith GGUF and failing at load.
+        // model download): `strata --capabilities` is the single source of truth, so an artifact of any
+        // other architecture is refused explicitly instead of being mis-read as a Qwen4Exp checkpoint.
         else if (a == "--capabilities" || a == "--list-architectures") {
             std::printf("qwen4exp\n");
             return 0;
