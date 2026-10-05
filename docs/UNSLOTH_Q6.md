@@ -27,8 +27,8 @@ Formats, read from the shard headers with `tools/gguf_reader.py` (all six shards
 
 - **Routed experts:** `ffn_gate_exps` and `ffn_up_exps` are Q6_K (seen in every layer of shard 6: blocks 41-47);
   `ffn_down_exps` is Q8_0 (per layer 891.3 MB at 640×2560×512, against Q6_K's 688.1 MB at 2560×640×512 for gate or
-  up). The down experts are Q6_K in 47 of 48 layers and Q8_0 in the odd one out, layer 2 (read from the headers:
-  UD-Q4_K_XL had the same kind of per-layer quirk, its Q5_K in layer 2). Either way Q6_K experts are native: the
+  up). Gate and up are Q6_K in 47 of 48 layers and Q8_0 in layer 2; down is Q8_0 in every layer (the pack's
+  `native_experts.txt`: 47 rows of ggml types 14/8, and layer 2 is 8/8). Q6_K gate/up is native: the
   engine multiplies them directly on the GPU in every path check below, and the CPU has the ggml block layout (210
   bytes per 256 elements); the per-role layout in `native_experts.txt` v4 handles shards whose boundaries cut
   through a layer like UD-Q4_K_XL's layer 11 case does.
@@ -110,8 +110,8 @@ it (the PLE Q8_0 reader is the other half):
 
 Tests: `native_grouped_parity` loops Q6_K/Q8_0 pairs; `prefill_mmq_kquant_test` runs Q6_K gate/up products at
 1280×2560 against a double-precision reference; `native_expert_parity --synthetic q6_K/q8_0` checks GPU and CPU
-against ggml's dequantized weights. All three are built (CUDA, `86;120`) and pending a GPU slot to run on the same
-box as the first real decode.
+against ggml's dequantized weights. All three are built (CUDA, `86;120`). They have not been run on a GPU: the
+card was serving the file below.
 
 ## Status: what is verified and what is not
 
@@ -127,7 +127,11 @@ Verified here (test clone, Linux, NVIDIA GPU, source build):
 - Q6_K expert source support: decode-side MMVQ was already there; the grouped verify-window kernels, the MMQ
   prompt kernels and the `native_expert_supported` gate were not, and are in this branch (section above).
 
-Not yet: running the three Q6_K parity tests on a GPU (the box is serving production), the first real decode run
-on the finished file (speed, quality against llama.cpp, the prompt path's behavior with this table), and the
-measurements that let this page lose "experimental". When the GPU frees up: parity tests, then the server, and
-record the same measurements as [UD-Q4_K_XL's](UNSLOTH_Q4.md#quality-against-llamacpp-on-the-same-file).
+The server has run this file. On 2026-10-04, Linux, an RTX PRO 4500 Blackwell (compute capability 12.0) plus a
+second GPU, a Threadripper PRO 5975WX (AVX2, no AVX-512), 30 expert-pool workers and 499 GB of RAM, engine 0.1.39
+loaded 101.75 GiB of experts (8.43 GiB/s) and served one review. The cold read was 14,915 tokens at 3,176 tok/s.
+Fourteen turns generated 5,799 tokens in 74.1 s (78.3 tok/s) and finished at 44,160 tokens of context; drafts were
+accepted 3,485 of 4,406 (79.1%). The same machine on engine 0.1.38, before this branch was rebased onto 0.1.39,
+read 249,193 tokens cold at 2,802 tok/s and then generated 1,079 tokens at 69.0 tok/s. Quality against llama.cpp
+on this file has not been measured, so the page stays experimental. The three Q6_K parity programs above are the
+remaining GPU check.
