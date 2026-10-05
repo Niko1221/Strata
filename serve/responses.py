@@ -2,8 +2,12 @@
 
 A Responses request becomes the same template messages, tools and kwargs a Chat Completions request does, runs through
 the same Service.run, and its events (reasoning, text, tool calls) come back as Responses output items and typed SSE
-events.  Nothing is stored: the client sends the whole conversation in `input` every time (`store: false`, as Codex CLI
-does), including the reasoning, message and function_call items of earlier answers.
+events.  No response or conversation is stored: the client sends the whole conversation in `input` every time
+(`store: false`, as Codex CLI does), including the reasoning, message and function_call items of earlier answers.  The
+one thing kept between requests is a prompt-cache hint from which no conversation can be rebuilt: which Codex
+conversation sent the last prompt (other than a compaction) and the tools it was rendered with, so that conversation's
+compaction request (sent with `tools: []`) starts with the same prompt (prompt_tools).  Without it (a restart, another
+conversation in between) that request is rendered as sent, as before, and its prompt is read again from the start.
 
 Codex CLI is the first client.  What it needs, and what this does:
   * `instructions` and `developer` messages -> the system message (leading ones merged, so the prompt start is stable
@@ -279,6 +283,67 @@ def request_tools(req: dict):
     if choice == "none":
         return None, names, skipped
     return tools or None, names, skipped
+
+
+# Codex's local compaction (the context is full, or /compact) sends its conversation again with `tools: []`
+# (codex-rs/core/src/compact.rs: `Prompt { input, base_instructions, ..Default::default() }`).  The template writes
+# the tools at the top of the prompt, so that prompt shares almost nothing with the one the engine holds and the whole
+# conversation is read again, at its longest.  So the tools a Codex conversation's last prompt was rendered with are
+# kept, and that conversation's compaction prompt is rendered with them.  Only the prompt: the parser and the response
+# get the request's own tools, which are none.  Codex says what a request is and whose it is in
+# client_metadata["x-codex-turn-metadata"] (a JSON string, Codex 0.140 and later): `request_kind` and the
+# conversation's `session_id` and `thread_id` (a sub-agent shares its parent's session, not its thread; a fork gets
+# its own).  `prompt_cache_key` is not used: it groups requests for caching, and Codex gives sub-agents and ephemeral
+# forks their parent's.  A request without that metadata is rendered as sent and changes nothing.  One entry, replaced
+# by each prompt of a Codex conversation: nothing grows, and a compaction of any other conversation finds a different
+# (session_id, thread_id) and renders its request as sent.  Lost (a restart): the prompt is read again, as without it.
+_kept_prompt_tools = (None, None)                    # ((session_id, thread_id), its prompt's tools as JSON or None)
+
+
+def _codex_turn(req: dict):
+    """-> (request_kind, (session_id, thread_id)) from Codex's turn metadata; the conversation is None without both."""
+    meta = req.get("client_metadata")
+    raw = meta.get("x-codex-turn-metadata") if isinstance(meta, dict) else None
+    try:
+        turn = json.loads(raw) if isinstance(raw, str) else None
+    except ValueError:
+        turn = None
+    if not isinstance(turn, dict):
+        return None, None
+    conversation = (turn.get("session_id"), turn.get("thread_id"))
+    return turn.get("request_kind"), conversation if all(isinstance(x, str) and x for x in conversation) else None
+
+
+def prompt_tools(req: dict, tools):
+    """-> the tools the prompt is rendered with: request_tools' `tools`, or for a Codex compaction request without
+    tools the ones its own conversation's last prompt was rendered with (so its prompt starts as that one did)."""
+    kind, conversation = _codex_turn(req)
+    owner, kept = _kept_prompt_tools
+    if kind != "compaction" or conversation is None or owner != conversation or kept is None or req.get("tools"):
+        return tools
+    return json.loads(kept)                          # a fresh copy: the kept one is nobody's to change
+
+
+def _thread_source(req: dict):
+    meta = req.get("client_metadata")
+    raw = meta.get("x-codex-turn-metadata") if isinstance(meta, dict) else None
+    try:
+        turn = json.loads(raw) if isinstance(raw, str) else None
+    except ValueError:
+        return None
+    return turn.get("thread_source") if isinstance(turn, dict) else None
+
+
+def prompt_made(req: dict, tools):
+    """The prompt of `req` was rendered with `tools` and goes to the engine: a Codex request that is not a compaction
+    leaves its conversation and those tools for that conversation's compaction. A thread-title turn is another
+    session Codex sends beside the real one, and it does not replace this entry."""
+    global _kept_prompt_tools
+    if _thread_source(req) == "thread_title":
+        return
+    kind, conversation = _codex_turn(req)
+    if conversation is not None and kind != "compaction":
+        _kept_prompt_tools = (conversation, json.dumps(tools) if tools else None)
 
 
 def text_format(req: dict):

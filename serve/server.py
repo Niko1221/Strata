@@ -3521,13 +3521,21 @@ def make_handler(svc: Service):
             except ValueError as e:
                 raise ResponsesError(str(e), "reasoning_budget_tokens") from None
             svc.load()
+            shown = responses_api.prompt_tools(req, tools)   # the prompt's tools; the parser gets the request's
             try:
-                ids, thinking, max_new = svc.prepare(messages, tools, kw, req.get("max_output_tokens") or 0)
+                try:
+                    ids, thinking, max_new = svc.prepare(messages, shown, kw, req.get("max_output_tokens") or 0)
+                except ValueError:
+                    if shown is tools:
+                        raise
+                    shown = tools                            # too long with the kept tools: the request as sent
+                    ids, thinking, max_new = svc.prepare(messages, shown, kw, req.get("max_output_tokens") or 0)
             except ResponsesError:
                 raise
             except ValueError as e:                          # too long for the context, an image without vision
                 raise ResponsesError(str(e), "input", "context_length_exceeded" if "context" in str(e) else None) \
                     from None
+            responses_api.prompt_made(req, shown)
             _debug_req("responses", req, messages, tools, max_new, thinking, len(ids))
             include = req.get("include") if isinstance(req.get("include"), list) else []
             asm = responses_api.Assembler(req, svc.model_for(req), len(ids), names,

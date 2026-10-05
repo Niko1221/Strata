@@ -706,9 +706,11 @@ without penalties, so more of its guesses are now rejected. Requests without pen
 speaks Chat Completions). It runs on the same path as `/v1/chat/completions`, so the thinking levels, the thinking
 budget, the conversation cache and the same API key, Host and Origin checks apply.
 
-It is **stateless**: nothing is stored, so the client sends the whole conversation in `input` every time (Codex does,
-with `store: false`). `previous_response_id`, `conversation`, `background` and the retrieve/delete/cancel endpoints
-are refused with an error that says so.
+It is **stateless**: no response and no conversation is stored, so the client sends the whole conversation in `input`
+every time (Codex does, with `store: false`). `previous_response_id`, `conversation`, `background` and the
+retrieve/delete/cancel endpoints are refused with an error that says so. The one thing kept between requests is a
+prompt-cache hint for Codex's compaction (below), from which no conversation can be rebuilt; without it a request is
+read as sent.
 
 | Request | What Strata does |
 | --- | --- |
@@ -758,6 +760,21 @@ name; that is expected. Measured with Codex CLI 0.160.0 and Q2_0 on an RTX 5070:
 tool descriptions) was 9,443 tokens, read in 10 s; in a tool loop, each later turn reused about 96% of the prompt from
 the cache and read only the new part in 1-2 s. On Windows, Codex's sandbox rejected every shell command in that test
 until it was started with `-c 'windows.sandbox="unelevated"'` (a Codex setting, not Strata's).
+
+**Codex's compaction.** When the context fills up (or on `/compact`), Codex sends the conversation once more with a
+request to summarize it, and with `tools: []`. The template writes the tools at the top of the prompt, so that prompt
+would share only its first few tokens with the conversation the engine holds and be read again from the start, at its
+longest. So Strata keeps which Codex conversation sent the last prompt other than a compaction (`session_id` and
+`thread_id` from `client_metadata["x-codex-turn-metadata"]`) and the tools that prompt was rendered with. A request that
+Codex marks `"request_kind": "compaction"`, from that same conversation and without tools of its own, is rendered with
+them. Only the prompt: for the output parser and in the response the request's tools stay what Codex sent, none. It is
+one entry, replaced by each such prompt; a compaction of another conversation, a request without that metadata (Codex
+before 0.140) or a restart renders the request as sent, as before. A thread-title turn (`thread_source` `thread_title`,
+a different session Codex sends next to the user turn, with `tools: []`) is not stored as that conversation's last prompt. Measured with Codex CLI 0.160.0, the server's own
+tokenizer and an engine that only counts the prompt start it shares with the previous prompt: a compaction after an
+85,000-token conversation reused 84,895 of its 84,997 tokens and read 102; without this it reused 41 of 80,683 and read
+the rest again (about 6 minutes at the ~209 tokens/s an RTX 2080 Ti reads a long prompt with IQ3_XXS). On that card an
+earlier build that rendered the same prompt read a 225,970-token compaction as 225,806 reused + 164 read in 5.6 s.
 
 ## Tools from MCP servers
 
