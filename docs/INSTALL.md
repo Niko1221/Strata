@@ -5,7 +5,8 @@ AMD graphics card. The short version is in the [README](../README.md#install); a
 this for you with [AI_SETUP.md](AI_SETUP.md).
 
 > **On this page:** [What you need](#what-you-need) · [Windows](#windows) · [Linux](#linux) ·
-> [AMD cards](#amd-cards) · [Several cards](#two-or-three-cards) · [Docker](#docker-linux) ·
+> [Older NVIDIA GPUs (sm_60, sm_70, sm_86)](#older-nvidia-gpus-sm_60-sm_70-sm_86) · [AMD cards](#amd-cards) ·
+> [Several cards](#two-or-three-cards) · [Docker](#docker-linux) ·
 > [Older CPUs](#older-cpus-experimental) · [Updating](#updating) · [Where things are stored](#where-things-are-stored) ·
 > [Setup's questions](#setups-questions) · [Tuning](#tuning-for-your-pc) · [All options](#options-without-questions)
 
@@ -13,12 +14,12 @@ this for you with [AI_SETUP.md](AI_SETUP.md).
 
 | | |
 | --- | --- |
-| **GPU** | **NVIDIA** RTX 20, 30, 40 or 50 series, **12 GB VRAM or more** (8 GB runs, slowly). Measured on an RTX 5070 and an RTX 3090; RTX 20 (Turing, since 0.1.27) was tested by a contributor on an RTX 2070. **AMD** Radeon RX 7900 XT / XTX, RX 9070 / 9070 XT and Radeon AI PRO R9700 (validated), RX 7800 XT / 7700 XT and RX 9060 XT (validated by their owners), RX 6800 / 6900 series (community-reported), with 12 GB of VRAM or more. See [AMD cards](#amd-cards). |
+| **GPU** | **NVIDIA** RTX 20, 30, 40 or 50 series, **12 GB VRAM or more** (8 GB runs, slowly). Measured on an RTX 5070 and an RTX 3090; RTX 20 (Turing, since 0.1.27) was tested by a contributor on an RTX 2070. Pascal (sm_60 / sm_61) and Volta (sm_70, including Tesla V100) are experimental and need a CUDA 12.6 or 12.8 build; RTX 30 (sm_86) is in that build too. See [Older NVIDIA GPUs](#older-nvidia-gpus-sm_60-sm_70-sm_86). **AMD** Radeon RX 7900 XT / XTX, RX 9070 / 9070 XT and Radeon AI PRO R9700 (validated), RX 7800 XT / 7700 XT and RX 9060 XT (validated by their owners), RX 6800 / 6900 series (community-reported), with 12 GB of VRAM or more. See [AMD cards](#amd-cards). |
 | **RAM** | Enough for the size you pick ([which model](MODELS.md#pick-by-ram)); **64 GB** runs every size. A big GPU makes up for less RAM - the [low-RAM mode](MODELS.md#a-big-graphics-card-and-little-ram). |
 | **CPU** | x86-64 with AVX2 (any Intel/AMD desktop CPU from the last ~8 years). AVX-512 (Ryzen 7000/9000) is a bit faster. Older CPUs without AVX2 are experimental and slow: [Older CPUs](#older-cpus-experimental). |
 | **Disk** | ~70-80 GB free for the model, ~6 GB for the MTP layer (+1 GB with images). **Q2_0 on an AVX-512 CPU** also writes a one-time ~40 GB copy of its experts for the fast CPU kernel. On Linux with an AMD card, ROCm takes ~10 GB more when setup installs it. An NVMe SSD is strongly recommended: it makes the first start much faster. |
 | **OS** | Windows 10/11, or Linux (Ubuntu 22.04/24.04 get everything installed automatically). |
-| **Driver** | **NVIDIA:** a current driver, version 580 or newer ([nvidia.com/drivers](https://www.nvidia.com/drivers) or the NVIDIA App). **AMD:** on Linux the kernel's amdgpu driver (no ROCm install needed); on Windows a current AMD Software: Adrenalin Edition driver ([amd.com/support](https://www.amd.com/en/support)). |
+| **Driver** | **NVIDIA:** a current driver, version 580 or newer ([nvidia.com/drivers](https://www.nvidia.com/drivers) or the NVIDIA App) for the CUDA 13 engine. The CUDA 12.6 / 12.8 engine (sm_60, sm_70, sm_86) runs with an older driver too (Windows 528+, Linux 525+). **AMD:** on Linux the kernel's amdgpu driver (no ROCm install needed); on Windows a current AMD Software: Adrenalin Edition driver ([amd.com/support](https://www.amd.com/en/support)). |
 
 The driver is the only thing you install yourself. Everything else - Python, the engine, the model - is set up for
 you the first time: Python 3.12 if you have none (for your user account, no admin), a private Python environment in
@@ -56,6 +57,32 @@ The same questions, the same automatic install (it uses `sudo apt` for Python an
 the build tools), and the same start: `http://127.0.0.1:8080`. Later runs of `./setup.sh` (or `./run-<model>.sh`)
 start the model directly; `./setup.sh --setup` installs another model or changes the settings. Other distributions,
 WSL and compiling: [details](DETAILS.md#linux).
+
+Pascal, Volta, and an explicit CUDA 12.6 or 12.8 build: [Older NVIDIA GPUs](#older-nvidia-gpus-sm_60-sm_70-sm_86).
+
+## Older NVIDIA GPUs (sm_60, sm_70, sm_86)
+
+CUDA 13 cannot compile Pascal (sm_60 / sm_61) or Volta (sm_70). Those cards, and RTX 30 (sm_86) when you want the
+same engine, use the experimental CUDA 12 engine in `engine-cuda12/`. Setup compiles it for **sm_60, sm_70 and sm_86**
+and passes `-DSTRATA_EXPERIMENTAL_SM60=ON`. CUDA 12.6 and CUDA 12.8 both work. CUDA 12.6 cannot compile sm_100 or
+sm_120; use 12.8 if one of those cards shares the engine.
+
+Install the [CUDA Toolkit 12.6 or 12.8](https://developer.nvidia.com/cuda-toolkit-archive) (it can sit next to CUDA 13),
+then point setup at that `nvcc`:
+
+```bash
+STRATA_NVCC=/usr/local/cuda-12.6/bin/nvcc ./setup.sh --build --cuda 12.6
+STRATA_NVCC=/usr/local/cuda-12.8/bin/nvcc ./setup.sh --build --cuda 12.8
+```
+
+`--cuda 12.6` and `--cuda 12.8` select that toolkit minor. Plain `--cuda 12` accepts either 12.6 or newer 12.x.
+`STRATA_NVCC` is required when another CUDA is first on `PATH`. On a Pascal or Volta card, `./setup.sh` also looks
+for a 12.8 `nvcc`, then 12.6, and compiles if it finds one. The binary is `engine-cuda12/strata`, and the model
+config (`strata-<model>.json`) must name that file, not `engine/strata`. A Tesla V100 is sm_70: use the 12.6 or
+12.8 command above.
+
+Windows is the same flags on `START-HERE.bat`, with `STRATA_NVCC` set to that toolkit's `nvcc.exe`. There is no
+ready-made sm_60 / sm_70 zip; the first build takes about 10–20 minutes. Later starts reuse `engine-cuda12/`.
 
 ## AMD cards
 
@@ -226,6 +253,10 @@ START-HERE.bat --vram-reserve-mib 2048          leave 2 GB of VRAM free for othe
 START-HERE.bat --no-browser                     do not open the chat page when the model is ready (remembered;
                                                 --browser undoes it)
 START-HERE.bat --setup --backend hip            the AMD engine on a PC that also has an NVIDIA card
+STRATA_NVCC=/usr/local/cuda-12.6/bin/nvcc ./setup.sh --build --cuda 12.6
+                                                Pascal (sm_60), Volta (sm_70) or RTX 30 (sm_86), CUDA 12.6
+STRATA_NVCC=/usr/local/cuda-12.8/bin/nvcc ./setup.sh --build --cuda 12.8
+                                                the same cards, CUDA 12.8 (required if sm_100/sm_120 is included)
 START-HERE.bat --setup --host 0.0.0.0 --api-key <secret>     reachable from other devices, with a key
 START-HERE.bat --calibrate                      tune the engine for this PC (about 5-10 minutes), then start
 START-HERE.bat --check                          only check this PC

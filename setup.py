@@ -110,10 +110,22 @@ MIN_DRIVER = 580                       # CUDA 13.0
 # model, so the choice is per model config, by its oldest GPU; --cuda 12|13 overrides it (docs/OLDER_GPUS.md).
 CUDA13_MIN_ARCH = 75                   # the oldest compute capability CUDA 13 compiles for (sm_75, RTX 20)
 CUDA12_ASSET = "strata-windows-x64-cuda12.zip" if WIN else "strata-linux-x64-cuda12.zip"
+# CUDA 12.6 and 12.8 both compile sm_60 (Pascal), sm_70 (Volta) and sm_86 (Ampere, RTX 30).  12.8 is preferred when
+# an sm_100/sm_120 card is in the same engine (12.6 cannot emit those).  The ready-made CUDA 12 zip is still the
+# 12.9 build; a locally compiled engine loads the wheels that match the toolkit it was built with.
 CUDA12_WHEELS = ["nvidia-cublas-cu12==12.9.1.4", "nvidia-cuda-runtime-cu12==12.9.79"]
-# CUDA 12.x minor-version compatibility (NVIDIA's table: Linux 525.60.13, Windows 527.41); the wheels match the 12.9.1
-# toolkit the CUDA 12 zip is built with (cuBLAS 12.9.1.4, runtime 12.9.79).  Not tested on such an old driver here.
+CUDA12_WHEELS_BY_MINOR = {
+    6: ["nvidia-cublas-cu12==12.6.4.1", "nvidia-cuda-runtime-cu12==12.6.77"],
+    8: ["nvidia-cublas-cu12==12.8.4.1", "nvidia-cuda-runtime-cu12==12.8.90"],
+    9: ["nvidia-cublas-cu12==12.9.1.4", "nvidia-cuda-runtime-cu12==12.9.79"],
+}
+# Always emitted by a CUDA 12.6 / 12.8 build so one engine runs Pascal, Volta and RTX 30 (sm_86).
+CUDA12_ARCHS = (60, 70, 86)
+CUDA12_MIN = (12, 6)                   # oldest toolkit this setup compiles the experimental engine with
+# CUDA 12.x minor-version compatibility (NVIDIA's table: Linux 525.60.13, Windows 527.41); the 12.9 wheels match the
+# ready-made zip.  A 12.6 / 12.8 build uses that minor's wheels instead.  Not tested on such an old driver here.
 CUDA12_MIN_DRIVER = 528 if WIN else 525
+CUDA12_REQUESTED = None                # (12, 6) or (12, 8) when --cuda 12.6 / 12.8; else any 12.6+
 ENGINE12_DIR = "engine-cuda12"
 MIN_ENGINE = (0, 1, 39)                # v0.1.39: the #577 file-tier regression fixed, the OpenAI Responses API (#451, Codex), a reply stuck on one token ended (#606), the head before the arena (#620), effort_position (#458), --vram-reserve hot resize opt-in (#533), PR batch; v0.1.38: prompts faster (one gather per expert group #372, the first chunk's PLE rows beside layer 0 #374, DeltaNet three heads per thread #413), --kv q4_0 prompts on tensor cores (#452), Q5_0 experts on the GPU (#473), IQ4_XS on AVX-2 (#415), unbuffered expert loading on Windows (#357 #362), --peer-device (#531), a 6 GB card starts (#496), PR batch; v0.1.37: a silent engine is restarted (#481), Windows AMD counts the desktop's VRAM (#380 #377 #497), a steadier PCIe probe (#485), fixes #496 #495 #498 #505 #493; v0.1.36: a cancelled prompt logged as read so far (#471), the draft-head hint (#474), UPDATE.bat (#475), --expert-profile-save (#477); v0.1.35: Windows AMD uses its bundled HIP runtime (#468 #461), the low-RAM resident mode on Windows 32 GB (#467), fixes #460 #459 #446 #447 #457 #448 #444; v0.1.34: AMD on Windows (a ready-made HIP engine), an MCP server for AI assistants (tools/strata_mcp.py), a shorter README; v0.1.33: a portable image encoder again (#411 #412), setup recommends instead of forcing (#406 #403 #364 #384), fixes #352 #365 #369 #371 #375 #393 #408 #414; v0.1.32: split prompts faster (#340), AMD router +12%, Unsloth Q4 in setup, faster Q4 prompts, #326/#327/#342/#344 fixes, PR batch; v0.1.31: Unsloth UD-Q4_K_XL (experimental), GGUF-in-place low-RAM mode, Windows GGUF load 2x, server race + tokenizer fixes, AMD intrinsics; v0.1.30: short prompts faster (streaming from 1024 tokens), resident low-RAM variant, multi-GPU session carve, RDNA4; v0.1.29: sampled answers faster (split top-k), #154 correctness fixes; v0.1.28: the expert cache reserves the draft head, a cancelled request no longer fails the next; v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
 PY_PACKAGES = ["numpy", "jinja2", "regex", "pyyaml", "tqdm", "requests", "cmake", "ninja", "pillow", "psutil"]
@@ -598,21 +610,35 @@ def named_gpus(gpu, gpus) -> list:
         return []
 
 
+def cuda12_minor(cuda) -> int | None:
+    """12.6 / 12.8 from --cuda, else None (any CUDA 12.6+).  "12" stays unpinned."""
+    s = str(cuda or "")
+    if s in ("12.6", "12.8"):
+        return int(s.split(".")[1])
+    return None
+
+
 def cuda_choice(archs, cuda=None):
     """The CUDA toolkit of one model's engine: (12 or 13, why).  13 (the ready-made engine) unless a card is older
     than CUDA 13 supports (Pascal / Volta: CUDA 13 cannot compile for them) - one engine runs per model, so its oldest
-    card decides.  `cuda` (--cuda 12|13) overrides it; setup recommends, it does not refuse (the caller warns)."""
+    card decides.  `cuda` (--cuda 12|12.6|12.8|13) overrides it; setup recommends, it does not refuse (the caller warns).
+    12.6 and 12.8 both compile sm_60, sm_70 and sm_86; 12.6 cannot compile sm_100 / sm_120."""
     archs = sorted({int(x) for x in archs})
     old = [a for a in archs if a < CUDA13_MIN_ARCH]
+    minor = cuda12_minor(cuda)
     if str(cuda) == "13":
         return 13, ("--cuda 13 (as you chose)" + (f"; CUDA 13 has no code for sm_{old[0]}: the engine will not run "
                                                    "on that card" if old else ""))
-    if str(cuda) == "12":
-        return 12, "--cuda 12 (as you chose" + ("; RTX 50 (sm_120) engines built with CUDA 12.8 crashed on long "
-                                                  "prompts, #220" if archs and archs[-1] >= 120 else "") + ")"
+    if str(cuda) in ("12", "12.6", "12.8"):
+        why = f"--cuda {cuda} (as you chose"
+        if minor == 6 and archs and archs[-1] >= 100:
+            why += "; sm_100/sm_120 need CUDA 12.8 or newer — 12.6 cannot compile them"
+        elif archs and archs[-1] >= 120:
+            why += "; RTX 50 (sm_120) engines built with CUDA 12.8 crashed on long prompts, #220"
+        return 12, why + ")"
     if old:
         return 12, (f"sm_{old[0]} is older than CUDA 13 supports (it dropped Pascal and Volta): this model runs the "
-                    "experimental CUDA 12 engine")
+                    "experimental CUDA 12 engine (CUDA 12.6 or 12.8; sm_60, sm_70 and sm_86)")
     return 13, None
 
 
@@ -630,8 +656,8 @@ def gpu_problem(g, together=False):
     """Why Strata cannot use this card, in plain words (None: it can)."""
     if int(g["arch"]) < 75 and not (sm60_card(g["arch"]) and experimental_sm60()):
         return (f"not supported - older than the RTX 20 series (compute capability {cc(g)}; Strata needs 7.5 or "
-                "newer" + ("; experimental: choose it with --gpu " + str(g["index"]) + " (the CUDA 12 engine, "
-                          "docs/OLDER_GPUS.md)" if sm60_card(g["arch"]) else "") + ")")
+                "newer" + ("; experimental: choose it with --gpu " + str(g["index"]) + " (the CUDA 12.6 or 12.8 "
+                          "engine, sm_60/sm_70; docs/OLDER_GPUS.md)" if sm60_card(g["arch"]) else "") + ")")
     if together and g["vram_gb"] < SPLIT_MIN_VRAM_GB - 0.5:
         return (f"not supported together with other GPUs - {g['vram_gb']:.0f} GB of VRAM (a card sharing the model "
                 f"needs {SPLIT_MIN_VRAM_GB} GB or more)")
@@ -1308,6 +1334,22 @@ def _installed(name: str) -> bool:
         return False
 
 
+def ensure_server_deps() -> None:
+    """The server imports jinja2 (serve/frontend.py). A stamp from another interpreter, or a half-finished venv,
+    used to skip the install and the start then died with ModuleNotFoundError."""
+    missing = []
+    for name in ("jinja2", "numpy", "yaml", "regex", "requests", "PIL", "psutil"):
+        try:
+            __import__(name)
+        except ImportError:
+            missing.append({"yaml": "pyyaml", "PIL": "pillow"}.get(name, name))
+    if missing:
+        warn("server dependencies are not importable from " + sys.executable + ": " + ", ".join(missing))
+        pip_install(missing, "server packages (" + ", ".join(missing) + ")")
+        # the stamp can say installed while this interpreter still cannot import them: install regardless
+        run([sys.executable, "-m", "pip", "install", "--disable-pip-version-check", *missing])
+
+
 def pip_install(packages, what):
     """pip install into .venv, skipped when the same list was installed before.  An install from before the pinned
     requirements (#214) recorded bare names: those packages are kept as they are (nothing is reinstalled), and the
@@ -1898,6 +1940,8 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
         return build_vision_cpu(eng, stamp, meta, llama, vsrc)
     stamp.write_text(json.dumps(meta, indent=1))
     ok(f"engine compiled: {eng / EXE}")
+    if t12:
+        pip_cuda_libs(12, (getattr(install_build_tools, "last_cuda", None) or (12, 8))[1])
     return eng
 
 
@@ -2121,10 +2165,18 @@ def update_installed_engine(url_base, toolkit=None) -> None:
     pip_cuda_libs(toolkit)
 
 
-def pip_cuda_libs(toolkit=13) -> None:
+def cuda12_wheels(minor=None) -> list:
+    """cuBLAS + runtime wheels for the CUDA 12 engine.  A 12.6 / 12.8 build loads that minor; the ready-made zip stays
+    on the 12.9 pins."""
+    # None: the ready-made CUDA 12 zip (built with 12.9).  A local 12.6 / 12.8 build passes its minor.
+    return CUDA12_WHEELS_BY_MINOR.get(int(minor) if minor else 9, CUDA12_WHEELS)
+
+
+def pip_cuda_libs(toolkit=13, minor=None) -> None:
     """NVIDIA's cuBLAS and CUDA runtime for a ready-made engine, from pip: CUDA 13's, or the CUDA 12 engine's."""
     if int(toolkit) == 12:
-        pip_install(CUDA12_WHEELS, "NVIDIA CUDA 12 libraries for the experimental engine (cuBLAS, CUDA runtime; ~0.7 GB)")
+        wheels = cuda12_wheels(minor)
+        pip_install(wheels, "NVIDIA CUDA 12 libraries for the experimental engine (cuBLAS, CUDA runtime; ~0.7 GB)")
     else:
         pip_install(CUDA_WHEELS, "NVIDIA CUDA libraries (cuBLAS, CUDA runtime; ~0.4 GB)")
 
@@ -2135,17 +2187,30 @@ def install_build_tools(gpu, yes):
     # #295: Pascal / Volta need a CUDA 12.x toolkit - CUDA 13 cannot build sm_60/sm_70; gpu["toolkit"] = 12: the
     # experimental CUDA 12 engine for any cards (--cuda 12, docs/OLDER_GPUS.md)
     old = int(gpu.get("toolkit") or (12 if min(archs) < CUDA13_MIN_ARCH else 13)) == 12
-    need12 = (12, 8) if max(archs) >= 120 else (12, 0)     # sm_120 needs CUDA 12.8 or newer
+    # sm_60 / sm_70 / sm_86: CUDA 12.6 or 12.8.  sm_100 / sm_120 need 12.8 (12.6 has no code for them).
+    need12 = (12, 8) if max(archs) >= 100 else CUDA12_MIN
+    if CUDA12_REQUESTED is not None:
+        if CUDA12_REQUESTED == (12, 6) and max(archs) >= 100:
+            fail("CUDA 12.6 cannot compile sm_100 / sm_120",
+                 "install CUDA 12.8 and pass --cuda 12.8 (sm_60, sm_70 and sm_86 are fine on 12.6)")
+        need12 = CUDA12_REQUESTED
     if old and max(archs) >= 120:
         warn("an RTX 50 card (sm_120) in a CUDA 12 engine: engines built with CUDA 12.8 crashed on long prompts there "
              "(#220, #224); the RTX 50 card alone (--gpu N) runs the ready-made CUDA 13 engine")
     nvcc, cuda_v = find_nvcc(below=(13, 0)) if old else find_nvcc()
+    if old and CUDA12_REQUESTED is not None and cuda_v and (cuda_v[0], cuda_v[1]) != CUDA12_REQUESTED:
+        # an exact --cuda 12.6 / 12.8: do not silently build with a different 12.x
+        want = f"{CUDA12_REQUESTED[0]}.{CUDA12_REQUESTED[1]}"
+        fail(f"--cuda {want} needs the CUDA {want} toolkit; found CUDA {cuda_v[0]}.{cuda_v[1]}",
+             f"install CUDA {want} beside it from https://developer.nvidia.com/cuda-toolkit-archive and set "
+             "STRATA_NVCC=<its nvcc>")
     if old and (nvcc is None or cuda_v < need12):
-        fail("the experimental CUDA 12 engine (Pascal / Volta, or --cuda 12) is compiled here with the NVIDIA CUDA "
-             f"Toolkit {need12[0]}.{need12[1]} or a newer 12.x (CUDA 13 cannot compile for these cards)" +
+        fail("the experimental CUDA 12 engine (sm_60 / sm_70 / sm_86, or --cuda 12) is compiled here with the NVIDIA "
+             f"CUDA Toolkit {need12[0]}.{need12[1]} or a newer 12.x (CUDA 13 cannot compile for sm_60 / sm_70)" +
              (f"; found CUDA {cuda_v[0]}.{cuda_v[1]}" if nvcc else ""),
-             "install CUDA 12.9 (it can sit next to a newer one) from https://developer.nvidia.com/cuda-toolkit-archive "
-             "and run it again (STRATA_NVCC=<its nvcc> picks one toolkit)")
+             "install CUDA 12.6 or 12.8 (either can sit next to a newer one) from "
+             "https://developer.nvidia.com/cuda-toolkit-archive and run it again "
+             "(--cuda 12.6 or --cuda 12.8, or STRATA_NVCC=<its nvcc>)")
     # RTX 50 (sm_120): CUDA 13.0 - an engine built with 12.8 crashed in the prompt path on Linux (#220)
     need_cuda = need12 if old else (13, 0) if max(archs) >= 120 else (12, 0)
     vcvars = find_vcvars() if WIN else None
@@ -2157,6 +2222,7 @@ def install_build_tools(gpu, yes):
         missing.append("the NVIDIA CUDA Toolkit 13.0")
     if not missing:
         ok(f"build tools present (CUDA {cuda_v[0]}.{cuda_v[1]})")
+        install_build_tools.last_cuda = cuda_v
         return nvcc, vcvars
     say("  The engine has to be compiled for your PC, which needs: " + " and ".join(missing) + ".")
     say("  They can be installed now (about 8-10 GB, 15-40 minutes" + (", Windows will ask for permission" if WIN else
@@ -2202,6 +2268,7 @@ def install_build_tools(gpu, yes):
     if nvcc is None or cuda_v < need_cuda:
         fail("the CUDA Toolkit did not install", "install it from https://developer.nvidia.com/cuda-downloads, then run it again")
     ok(f"build tools installed (CUDA {cuda_v[0]}.{cuda_v[1]})")
+    install_build_tools.last_cuda = cuda_v
     return nvcc, find_vcvars() if WIN else None
 
 
@@ -2287,6 +2354,9 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
     local = meta.get("source") == "local"
     src, vsrc = source_hash(ENGINE_SOURCES), source_hash(VISION_SOURCES)
     archs = sorted({int(x) for x in gpu.get("archs", [gpu["arch"]])})    # every card the model runs on
+    if t12:
+        # one CUDA 12.6 / 12.8 engine covers Pascal, Volta and RTX 30 even when this PC has only one of them
+        archs = sorted(set(archs) | set(CUDA12_ARCHS))
     built = {int(x) for x in meta.get("archs", [])}
     # a card the engine has no code for (a GPU added with --gpus, #128) needs a compile even when the source is the
     # same; the compile keeps the generations it was built for
@@ -2325,7 +2395,8 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
     bindir = Path(nvcc).parent                            # the toolkit's own libraries (bin, bin/x64, lib64)
     dirs = [str(d) for d in (bindir, bindir / "x64", bindir.parent / "lib64") if d.is_dir()]
     stamp.write_text(json.dumps({"source": "local", "version": source_version(), "archs": archs,
-                                 "vision": vision, **({"toolkit": 12} if t12 else {}),
+                                 "vision": vision, **({"toolkit": 12,
+                                 "cuda_minor": (getattr(install_build_tools, "last_cuda", None) or (12, 8))[1]} if t12 else {}),
                                  "cuda_dirs": dirs, "src": src, "vision_src": vsrc if want_vision else None,
                                  **({"isa_floor": floor} if floor else {})}, indent=1))
     ok(f"engine compiled: {eng / EXE}")
@@ -3088,6 +3159,7 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
             "api key" if k == "api_key" else ("the browser opens" if v else "no browser") if k == "open_browser"
             else f"{k.replace('_', ' ')} {v}" for k, v in keep.items()))
     cfg_path.touch()                                     # the most recently used model
+    ensure_server_deps()
     if "--mtp" in cfg["args"][:-1]:
         refresh_draft_vocab(Path(cfg["args"][cfg["args"].index("--mtp") + 1]), cfg.get("draft_vocab", "cjk"))
     cmd = [sys.executable, str(ROOT / "serve" / "server.py"), "--engine", "strata", "--config", str(cfg_path),
@@ -3585,10 +3657,12 @@ def main() -> int:
                     help="update the installed engine, Python packages and model settings as a start would, without "
                          "starting the model (UPDATE.bat / update.sh run it after a git pull)")
     ap.add_argument("--build", action="store_true", help="compile the engine instead of using the ready-made one")
-    ap.add_argument("--cuda", choices=["12", "13", "auto"], default=os.environ.get("STRATA_CUDA") or None,
+    ap.add_argument("--cuda", choices=["12", "12.6", "12.8", "13", "auto"], default=os.environ.get("STRATA_CUDA") or None,
                     help="NVIDIA: the CUDA toolkit of this model's engine. auto (default): CUDA 13, the ready-made "
-                         "engine; CUDA 12 (experimental) when a chosen card is older than CUDA 13 supports (Pascal, "
-                         "Volta). 12 also runs with an older driver (Windows 528+, Linux 525+). docs/OLDER_GPUS.md")
+                         "engine; CUDA 12 (experimental) when a chosen card is older than CUDA 13 supports (Pascal "
+                         "sm_60, Volta sm_70). 12.6 or 12.8 compile sm_60, sm_70 and sm_86 (RTX 30); 12.6 cannot "
+                         "compile sm_100/sm_120. 12 also runs with an older driver (Windows 528+, Linux 525+). "
+                         "docs/OLDER_GPUS.md")
     ap.add_argument("--prebuilt", default=os.environ.get("STRATA_PREBUILT_URL", PREBUILT_URL),
                     help="where the ready-made engine is (a URL folder or a local folder)")
     ap.add_argument("--check", action="store_true", help="only check this PC and exit")
@@ -3624,6 +3698,10 @@ def main() -> int:
     a = ap.parse_args()
     if a.backend == "sycl":                            # Intel Arc: the SYCL port's own setup (sycl/setup_intel.py)
         return sycl_setup(sys.argv[1:])
+    global CUDA12_REQUESTED
+    if str(a.cuda) in ("12.6", "12.8"):
+        CUDA12_REQUESTED = (12, int(str(a.cuda).split(".")[1]))
+        a.cuda = "12"                                  # the rest of setup treats every CUDA 12 engine as toolkit 12
     if a.resident_budget_gib is not None and not a.resident_budget_gib > 0:
         ap.error("--resident-budget-gib takes a number of GiB above 0, e.g. --resident-budget-gib 32")
     if a.vision_tokens is not None and a.vision_tokens < 1:
@@ -3679,6 +3757,11 @@ def main() -> int:
     # choice, and asked once when the PC has cards that could share the model
     run_gpu = start_gpus(a.gpus) or a.gpu
     port = a.port or 8080                              # a new install's port (issue #32: --port for an existing one)
+    # A new .venv has no packages yet. The already-installed shortcut used to skip step 3 and then
+    # start the server with that empty interpreter (ModuleNotFoundError: jinja2). Install first.
+    if have and not explicit:
+        pip_install(requirement_lines() if REQUIREMENTS.exists() else PY_PACKAGES,
+                    "numpy, jinja2, regex, pyyaml, tqdm, requests, cmake, ninja, pillow, psutil")
     if have and a.calibrate and not (a.setup or a.model or a.family or a.check):
         if not a.build:
             update_installed_engine(a.prebuilt)
