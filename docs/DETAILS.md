@@ -517,6 +517,16 @@ print(r.choices[0].message.content)
   server ends it there with `finish_reason` `"length"` and says so in its window: a model in a loop, or a broken
   state that answers one token forever (#606 saw 36,689 tokens of `!`). `"repeat_stop_tokens": N` in
   `strata-<model>.json` sets the run length; `0` turns it off (for a request that really wants one token many times).
+- **A no-progress tool loop can be stopped (opt-in).** `"tool_loop_max_repeats": N` in
+  `strata-<model>.json` stops before the next model run when the last N completed turns since the latest user message
+  are the same single tool call (`write_stdin` excluded) with the same JSON arguments and the same terminal output;
+  `0` is the default and leaves this off. Use `N >= 2`; `8` is a conservative local-agent setting. The stop is only a
+  safety stop, not task success: the answer says no new progress was made and reports `finish_reason` `"stop"` with 0
+  output tokens. A new user message resets the count, changed arguments or changed actual output continue normally,
+  and running/session tool outputs are ignored. Only Codex wrapper headers (`Chunk ID`, wall time, successful exit,
+  `Output`/`Final output`) are ignored, so timestamps or data inside the real tool output still count as changes. An
+  intentionally repeated identical terminal action over the threshold also stops; set the value back to `0` for that
+  workload.
 - **Changing the effort without re-reading the prompt (opt-in, 0.1.39, #458).** The effort's instruction is the
   first thing in the prompt, so a request that only changes the effort (an agent's "think harder" switch, `none` for
   a quick tool step) reads the whole conversation again. `"effort_position": "end"` in `strata-<model>.json` renders

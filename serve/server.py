@@ -21,13 +21,14 @@ talks to it over stdin/stdout; `MockEngine` is a scripted stand-in that makes ev
 from __future__ import annotations
 
 import argparse
-import contextlib
-import collections
 import base64
+import codecs
+import collections
+import contextlib
+import ctypes
 import hashlib
 import hmac
-import codecs
-import ctypes
+import itertools
 import json
 import os
 import queue
@@ -43,22 +44,36 @@ import threading
 import time
 import urllib.request
 import uuid
+from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Iterator, Protocol
+from typing import ClassVar, Protocol
 from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a module
-from serve.frontend import (ChatTemplate, Event, OutputParser, anthropic_to_messages,  # noqa: E402
-                            images_of, mark_think_literals, openai_to_messages, unmark_think_literals)
-from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
-from serve import runconfig  # noqa: E402
-from serve.winjob import contain  # noqa: E402
-from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
-from serve import responses as responses_api  # noqa: E402
-from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
+from serve import responses as responses_api
+from serve import runconfig
+from serve.frontend import (
+    ChatTemplate,
+    Event,
+    OutputParser,
+    anthropic_to_messages,
+    images_of,
+    mark_think_literals,
+    openai_to_messages,
+    unmark_think_literals,
+)
+from serve.mcp import McpCancelled, hub_from_config
+from serve.responses import ResponsesError
+from serve.responses import error_body as responses_error_body
+from serve.structured import (
+    StructuredOutputError,
+    prepare_format,
+    validated_json,
+)
+from serve.winjob import contain
 
 IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
@@ -92,6 +107,73 @@ ENGINE_SILENCE_S = 300.0
 PP_CHUNK_MAX = 32768
 PP_FLOOR_TOK_S = 50.0
 PP_SLACK = 3.0
+
+
+def tool_loop_max_repeats_from_config(cfg: dict) -> int:
+    v = cfg.get("tool_loop_max_repeats", 0)
+    if isinstance(v, bool) or not isinstance(v, int) or v == 1 or v < 0:
+        raise ValueError(f'"tool_loop_max_repeats" must be 0 or a whole number >= 2, not {v!r}')
+    return v
+
+
+def _canonical_tool_args(args) -> str | None:
+    if not isinstance(args, dict):
+        return None
+    return json.dumps(args, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _actual_tool_output(text) -> str | None:
+    if not isinstance(text, str):
+        return None
+    if text.startswith(("Script running with cell ID", "Process running with session ID")):
+        return None
+    lines = text.splitlines(keepends=True)
+    if lines and lines[0].startswith("Chunk ID:"):
+        exit_line = next((line.strip() for line in lines[:6]
+                          if re.fullmatch(r"Process exited with code -?\d+", line.strip())), None)
+        if exit_line is None:
+            return None
+        i = 1
+        while i < len(lines):
+            line = lines[i].strip()
+            if not (line.startswith(("Wall time:", "Original token count:")) or line == exit_line):
+                break
+            i += 1
+        if i < len(lines) and lines[i].strip() in ("Output:", "Final output:"):
+            return exit_line + "\n" + "".join(lines[i + 1:])
+    return text
+
+
+def tool_loop_notice(messages: list[dict], max_repeats: int) -> str | None:
+    if not max_repeats:
+        return None
+    start = max((i for i, m in enumerate(messages) if m.get("role") == "user"), default=-1) + 1
+    pairs, i = [], len(messages) - 1
+    while i >= start and len(pairs) < max_repeats:
+        if i - 1 < start or messages[i].get("role") != "tool" or messages[i - 1].get("role") != "assistant":
+            break
+        calls = messages[i - 1].get("tool_calls") or []
+        if len(calls) != 1:
+            return None
+        fn = calls[0].get("function") if isinstance(calls[0], dict) else None
+        name = fn.get("name") if isinstance(fn, dict) else None
+        if not isinstance(name, str) or name.rsplit(".", 1)[-1] == "write_stdin":
+            return None
+        args = _canonical_tool_args(fn.get("arguments"))
+        out = _actual_tool_output(messages[i].get("content"))
+        if args is None or out is None:
+            return None
+        pairs.append((name, args, out))
+        i -= 2
+    if len(pairs) < max_repeats:
+        return None
+    tail = pairs[:max_repeats]
+    if len(set(tail)) != 1:
+        return None
+    name = tail[0][0]
+    return (f"Stopped by Strata no-progress guard: {max_repeats} identical {name} tool calls returned no new "
+            "progress. The task is not completed; change approach, ask the user, or set "
+            "tool_loop_max_repeats to 0 to disable this safety stop.")
 
 
 # ------------------------------------------------------------------------------------------------ engines
@@ -229,9 +311,9 @@ def echo_requests(log_path: str, offset: int) -> None:
             m = ENGINE_REQUEST.search(line)
             if m:
                 read_ms, gen_ms = float(m["read"]), float(m["gen_ms"])
-                print("[strata] request prompt %s cached %s output %s prompt_read %.0f ms total %.0f ms prefill %s "
-                      "tok/s decode %s tok/s" % (m["prompt"], m["reused"], m["gen"], read_ms, read_ms + gen_ms, m["pp"],
-                                                 m["tg"]), flush=True)
+                print(f"[strata] request prompt {m['prompt']} cached {m['reused']} output {m['gen']} "
+                      f"prompt_read {read_ms:.0f} ms total {read_ms + gen_ms:.0f} ms prefill {m['pp']} "
+                      f"tok/s decode {m['tg']} tok/s", flush=True)
 
 
 def experts_loading_words(args: list, size: str) -> str:
@@ -421,7 +503,7 @@ class StrataEngine:
     def __init__(self, exe: str, args: list[str], cwd: str | None = None, log: str | None = None,
                  env: dict | None = None, lazy: bool = False):
         self.spawn = (exe, list(args), cwd, log, env)   # to start it again after it died (issue #27)
-        paths = {k: v for k, v in zip(args, args[1:]) if k in ("--native", "--pack")}
+        paths = {k: v for k, v in itertools.pairwise(args) if k in ("--native", "--pack")}
         self.model_path = paths.get("--native") or paths.get("--pack", "pack/full")
         self.log_path = log
         self.proc, self.pump, self.log = None, None, None
@@ -440,7 +522,7 @@ class StrataEngine:
         if lazy:
             return
         self.unloaded = False            # `ended` stays True until READY (below): not alive while starting (#344)
-        self.log = open(log, "a", encoding="utf-8") if log else subprocess.DEVNULL
+        self.log = open(log, "a", encoding="utf-8") if log else subprocess.DEVNULL  # noqa: SIM115 - kept for the child process lifetime
         loading = threading.Event()                     # set once READY: the narrator below stops
         log_start = os.path.getsize(log) if log else 0  # where this start's lines begin (start_failure_hint)
         self.log_start = log_start                      # #596: the Monitor's conversation cache reads from here
@@ -774,7 +856,7 @@ class StrataEngine:
                 return None
             if line.startswith("DONE"):
                 self._parse_done(line)
-            if line.startswith(until) or line.startswith("ERR"):
+            if line.startswith((until, "ERR")):
                 return line
         return None
 
@@ -1313,7 +1395,7 @@ class Vision:
             req = urllib.request.Request(source, headers={"User-Agent": "strata"})
             with urllib.request.urlopen(req, timeout=60) as r:
                 return r.read()
-        path = source[7:] if source.startswith("file://") else source
+        path = source.removeprefix("file://")
         if path and os.path.isfile(path):
             return Path(path).read_bytes()
         raise ValueError("an image must be a data: URL, an http(s) URL or a local file path")
@@ -1326,6 +1408,7 @@ class Vision:
             return data
         try:
             import io
+
             from PIL import Image
         except ImportError:
             raise ValueError("this image format needs Pillow (python -m pip install pillow); JPEG, PNG, BMP and "
@@ -1333,7 +1416,7 @@ class Vision:
         try:
             im = Image.open(io.BytesIO(data))
             im.load()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - Pillow raises plugin-specific errors; API contract is ValueError
             raise ValueError(f"the image could not be read ({e})") from None
         if im.mode in ("RGBA", "LA", "P") and "transparency" in im.info or im.mode in ("RGBA", "LA"):
             im = im.convert("RGBA")
@@ -1375,7 +1458,7 @@ class Vision:
             self.proc.stdin.write("QUIT\n")
             self.proc.stdin.flush()
             self.proc.wait(timeout=10)
-        except Exception:
+        except Exception:  # noqa: BLE001 - cleanup must kill after any failed stdin/wait path
             self.proc.kill()
 
 
@@ -1438,8 +1521,8 @@ def layer_split_value(cfg: dict) -> str:
     vals = []
     for x in items or []:
         try:
-            if isinstance(x, bool) or isinstance(x, float):
-                raise ValueError
+            if isinstance(x, (bool, float)):
+                raise ValueError  # noqa: TRY004 - callers expose config parse failures as ValueError
             vals.append(int(str(x).strip()))
         except ValueError:
             vals = None
@@ -1453,7 +1536,7 @@ def layer_split_value(cfg: dict) -> str:
         raise ValueError(f"{hint}; got {v!r}")
     if n > 1 and len(vals) != n - 1:
         raise ValueError(f"{hint}; got {len(vals)} number(s) ({v!r}) for {n} GPUs")
-    if vals[0] < 2 or any(b <= a for a, b in zip(vals, vals[1:])):
+    if vals[0] < 2 or any(b <= a for a, b in itertools.pairwise(vals)):
         raise ValueError(f"{hint}; got {v!r}, which does not rise from 2 or more")
     return ",".join(str(x) for x in vals)
 
@@ -1593,7 +1676,7 @@ def vision_env(cfg: dict, env: dict) -> dict:
 
 class ByteTokenizer:
     """Tiny stand-in tokenizer for tests without the pack: one id per UTF-8 byte, specials as ids >= 256."""
-    SPECIALS = ["<|im_start|>", "<|im_end|>", "<|endoftext|>", "<|vision_start|>", "<|image_pad|>", "<|vision_end|>"]
+    SPECIALS: ClassVar = ["<|im_start|>", "<|im_end|>", "<|endoftext|>", "<|vision_start|>", "<|image_pad|>", "<|vision_end|>"]
 
     ALWAYS = ()                                     # specials matched without parse_special (type 4, as <think>)
 
@@ -1705,6 +1788,8 @@ class Service:
         self.vram_reserve = None                         # #533: the last POST /v1/vram reserve (None: the start's)
         self.reasoning_budget_tokens = 0                 # #123: the config's default thinking budget (0: none)
         self.repeat_stop_tokens = REPEAT_STOP_TOKENS     # #606: one token this many times in a row ends a reply (0: off)
+        self.tool_loop_max_repeats = 0
+        self.tool_loop_guard = threading.local()
         self.anthropic_think_unasked = True               # #278: "anthropic_thinking": "on_request" -> False
         self.stop_ids = set(tokenizer.encode(IM_END, parse_special=True) +
                             tokenizer.encode("<|endoftext|>", parse_special=True))
@@ -1746,7 +1831,7 @@ class Service:
         if isinstance(value, float) and value.is_integer():
             value = int(value)
         if isinstance(value, bool) or not isinstance(value, int):
-            raise ValueError(f"reasoning_budget_tokens={value!r}: expected a whole number of tokens (0: no budget)")
+            raise ValueError(f"reasoning_budget_tokens={value!r}: expected a whole number of tokens (0: no budget)")  # noqa: TRY004 - HTTP handlers turn this into a 400 ValueError
         return value if value > 0 else None
 
     def _vision_down(self) -> bool:
@@ -1767,7 +1852,7 @@ class Service:
             if nv.lib.nvmlDeviceGetMemoryInfo(nv.dev, ctypes.byref(m)) != 0:
                 return None
             return int(m.free >> 20)
-        except Exception:
+        except Exception:  # noqa: BLE001 - telemetry is best-effort across optional GPU libraries
             return None
 
     def ensure_loaded(self):
@@ -1779,7 +1864,7 @@ class Service:
             cmd = self.before_load
             print(f"[strata] before loading: {cmd if isinstance(cmd, str) else ' '.join(map(str, cmd))}", flush=True)
             try:
-                subprocess.run(cmd, shell=isinstance(cmd, str), timeout=120, stdin=subprocess.DEVNULL)
+                subprocess.run(cmd, shell=isinstance(cmd, str), timeout=120, stdin=subprocess.DEVNULL, check=False)
             except (OSError, subprocess.SubprocessError) as e:
                 print(f"[strata] the before_load command failed ({e}); loading anyway", flush=True)
         if self.min_free_vram_mib:
@@ -2145,6 +2230,9 @@ class Service:
     def prepare(self, messages, tools, kwargs, max_new=None):
         """-> (ids, thinking, max_new). An unset or non-positive max_new (some clients send -1) means "unlimited":
         the rest of the context."""
+        self.tool_loop_guard.notice = tool_loop_notice(messages, self.tool_loop_max_repeats)
+        if self.tool_loop_guard.notice:
+            return [], False, max(1, int(max_new or 1))
         ids = self.encode_prompt(messages, tools, kwargs)
         self.embeddings.path = None
         images = images_of(messages)
@@ -2178,8 +2266,7 @@ class Service:
             ids = out
             combined = self.vision.dir / f"req-{uuid.uuid4().hex[:12]}.sve"
             with open(combined, "wb") as f:
-                for path, _ in encoded:
-                    f.write(path.read_bytes())
+                f.writelines(path.read_bytes() for path, _ in encoded)
             self.embeddings.path = combined
         ctx = self.engine.max_context
         if ctx <= 0:
@@ -2243,6 +2330,13 @@ class Service:
 
     def run(self, ids, thinking, tools, max_new, sampling, cancel) -> Iterator[tuple[str, object]]:
         """Yields ("event", Event) as text arrives, then ("done", {"finish": .., "completion_tokens": ..})."""
+        notice = getattr(self.tool_loop_guard, "notice", None)
+        self.tool_loop_guard.notice = None
+        if notice:
+            yield "event", Event("content", notice)
+            yield "done", {"finish": "stop", "completion_tokens": 0, "reused": 0, "timings": None,
+                           "reasoning_tokens": 0}
+            return
         budget = self.reasoning_budget(sampling) if thinking else None   # #123: opt-in, off by default
         defaults = {**self.sampling_defaults, **self.shared}   # the config's, then the Chat settings shared with apps
         if defaults:                   # the request's own fields win (explicit 0 stays greedy)
@@ -3110,7 +3204,7 @@ def make_handler(svc: Service):
             try:
                 req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
                 if not isinstance(req, dict):
-                    raise ValueError("send a JSON object")
+                    raise ValueError("send a JSON object")  # noqa: TRY004 - request errors are reported through ValueError
                 if path.startswith("/v1/responses/"):        # retrieve/delete/cancel/compact: nothing is stored
                     self._json(404, responses_error_body("this server keeps no responses (stateless); send the "
                                                          "whole conversation to POST /v1/responses", code="not_found"))
@@ -3364,7 +3458,6 @@ def make_handler(svc: Service):
             messages, validator = prepare_format(req.get("response_format"), messages)
             if validator is not None and (tools or req.get("strata_mcp")):
                 raise ValueError("structured response_format with tools/MCP is not supported")
-            svc.load()
             max_req = max_new = int(req.get("max_completion_tokens") or req.get("max_tokens") or 0)   # 0/-1: the rest
             use_mcp = req.get("strata_mcp") is True and svc.mcp is not None      # the web app's opt-in (serve/mcp.py)
             own = {t.get("name") for t in tools or [] if isinstance(t, dict)}   # #592: a second line of defence
@@ -3376,6 +3469,8 @@ def make_handler(svc: Service):
                 use_mcp = bool(extra)
                 tools = (tools or []) + extra or None
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
+            if tool_loop_notice(messages, svc.tool_loop_max_repeats) is None:
+                svc.load()
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new)
             _debug_req("openai", req, messages, tools, max_new, thinking, len(ids))
             cancel = threading.Event()
@@ -3520,8 +3615,9 @@ def make_handler(svc: Service):
                 svc.reasoning_budget(req)                    # a bad value is a 400 before anything is sent
             except ValueError as e:
                 raise ResponsesError(str(e), "reasoning_budget_tokens") from None
-            svc.load()
             try:
+                if tool_loop_notice(messages, svc.tool_loop_max_repeats) is None:
+                    svc.load()
                 ids, thinking, max_new = svc.prepare(messages, tools, kw, req.get("max_output_tokens") or 0)
             except ResponsesError:
                 raise
@@ -3543,11 +3639,12 @@ def make_handler(svc: Service):
             self._json(200, {"input_tokens": len(svc.encode_prompt(messages, tools, kw))})
 
         def _anthropic(self, req):
-            svc.load()
             req = svc.with_shared(req, "anthropic")
             messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked)
             max_new = int(req.get("max_tokens") or 0)                  # 0/-1: the rest of the context
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
+            if tool_loop_notice(messages, svc.tool_loop_max_repeats) is None:
+                svc.load()
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new)
             _debug_req("anthropic", req, messages, tools, max_new, thinking, len(ids))
             cancel = threading.Event()
@@ -3805,7 +3902,7 @@ def clean_shared_defaults(d) -> dict:
     if d is None:
         return {}
     if not isinstance(d, dict):
-        raise ValueError("defaults must be an object")
+        raise ValueError("defaults must be an object")  # noqa: TRY004 - settings endpoint reports ValueError as 400
     out = {}
     for key, value in d.items():
         if value is None or value == "":
@@ -3977,7 +4074,7 @@ def main() -> int:
             vcfg = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))
                         if k in ("exe", "mmproj", "model") and isinstance(v, str) and not os.path.isabs(v) else v)
                     for k, v in cfg["vision"].items()}
-            vision = Vision(vcfg, log=open(cfg["log"], "a", encoding="utf-8") if cfg.get("log") else None,
+            vision = Vision(vcfg, log=open(cfg["log"], "a", encoding="utf-8") if cfg.get("log") else None,  # noqa: SIM115 - Vision owns the long-lived log handle
                             env=vision_env(cfg, env))
         print("model unloaded; the first request loads it ..." if lazy else
               "loading the model (the first start takes a minute or two) ...", flush=True)
@@ -4059,6 +4156,10 @@ def main() -> int:
     if isinstance(rs, bool) or not isinstance(rs, int) or rs < 0:
         raise SystemExit(f"[strata] config \"repeat_stop_tokens\" must be a whole number >= 0 (0 = off), not {rs!r}")
     svc.repeat_stop_tokens = rs
+    try:
+        svc.tool_loop_max_repeats = tool_loop_max_repeats_from_config(cfg)
+    except ValueError as e:
+        raise SystemExit(f"[strata] config {e}")
     svc.effort_end = bool(effort_end)                   # #458: "effort_position": "end" with an engine that has it
     if cfg.get("reasoning_budget_tokens") is not None:  # #123: a default thinking budget for every request
         try:
@@ -4113,7 +4214,7 @@ def main() -> int:
                   "-Direction Inbound -Protocol TCP -LocalPort " + str(a.port) + " -Action Allow -Profile Private\n"
                   "       (and set this network to Private in Windows' network settings)", flush=True)
     if a.open and cfg.get("open_browser") is not False:   # #609: the config's "open_browser": false wins (an older
-        import webbrowser                                  # run-<model>.bat still passes --open)
+        import webbrowser  # run-<model>.bat still passes --open)
         webbrowser.open(f"http://{'127.0.0.1' if a.host in ('0.0.0.0', '') else a.host}:{a.port}/")
     # #96: docker stop sends SIGTERM, which Python ignores by default, so the container's PID 1 would be killed after
     # the grace period with the engine still running. SIGTERM takes Ctrl+C's path below (QUIT to the engine).
