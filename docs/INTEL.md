@@ -341,6 +341,14 @@ continuation parts at a near-tie after tens of tokens, with the same text. Decod
 
 The attempts behind these, and the ones that did not help, are in [sycl/TODO.md](../sycl/TODO.md).
 
+**Q6_K / Q5_K decode options (off by default)**, from maxious/Strata_SYCL (their experiments 27/28/30; the code is
+theirs): `STRATA_MMVQ_PREUNPACK=1` unpacks each Q6_K / Q5_K dense matrix once to signed bytes, so decode skips the
+per-token 6-bit unpack. The kernel alone is 1.1-1.8x on the Coder's shapes, but the copies cost ~2.5 GiB of VRAM: on
+a 32 GB card the expert cache loses 1,313 slots and decode is 4% slower (B70, Coder k8v4: 75.2 -> 72.0 tok/s at 2,185
+tokens). Worth it where VRAM is spare (a card beside a layer split, 48 GB cards). `xmx_mmvq_bench` measures their int8
+DPAS form of the same dot (1.2-1.9x the shipped kernel at decode widths on a B65; not wired into the engine).
+`STRATA_MMVQ_LOOP=1` (their exp 26: the wide Q6_K kernel runs 5+ columns as a loop) is opt-in too.
+
 ### XMX (Intel's matrix engine)
 
 oneMKL's FP16 GEMMs already run on the XMX units, so the prompt path is bound by the dequant that feeds them, not by

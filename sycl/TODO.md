@@ -105,10 +105,19 @@ MMVQ, a fused gate+up, a prompt-width sweep); the host-flag spin priced (an exha
       unpacked copies cost 2.53 GiB of VRAM, the expert cache shrinks (9,478 -> 8,152 slots there) and decode drops
       12.4%; at matched slot counts within 1%. DPAS needs the same bytes (272 per 256 weights), so the same VRAM.
       Worth it only where VRAM is spare (the B65 beside a layer split, a 48 GB card).
-- [ ] Their `STRATA_PREFILL_INT8` / `STRATA_PREFILL_MMQ` (int8 prompt paths) against item 4's oneDNN numbers: A/B
-      with benchy (config `"env"`) on the Coder; their note says MMQ lost on long prompts (FP16 stays default).
-- [ ] `STRATA_GDN_PIPELINE` ("cols_pipe", the value heads of a key head in one thread, same bits): their default;
-      A/B it here.
+- [x] **The Q6_K / Q5_K decode options are in this port, off by default** (2026-10-05; their code, credited):
+      `STRATA_MMVQ_PREUNPACK`, `STRATA_MMVQ_LOOP`, the pre-unpack parity tests (`q6k_preunpack_parity`,
+      `q5k_preunpack_parity`: pass on the B65) and `xmx_mmvq_bench`. Default path unchanged on the B70 (Coder k8v4:
+      916 / 75.2 tok/s at 2,185 against 918 / 75.2 before, the same drafts accepted); `STRATA_MMVQ_PREUNPACK=1`: 1,313
+      fewer cache slots, decode 72.0 (-4%). INTEL.md, "Q6_K / Q5_K decode options".
+- [ ] Their DPAS int8 matvec (exp 42) wired into the engine as a second opt-in, for cards with VRAM to spare.
+- [x] **Their branch's switches A/B'd on the B70** (Coder k8v4, their engine, 2,185 / 40K tokens): none beats this
+      port. Their defaults decode 74.8 / **36.5** tok/s against this port's 75.2 / 69.2: at 40K their build ran one
+      speculation round and then decoded without drafts ("1 rounds of 6", 0 accepted; this port: 91 rounds, 73%) - a
+      regression on their branch worth reporting to them. `STRATA_GDN_PIPELINE=0` changes nothing measurable;
+      `STRATA_PREFILL_MMQ=1` reads prompts at 156 tok/s (6-10x slower); `STRATA_PREFILL_INT8=1` stops at load
+      ("device buffers for a chunk of 2304 tokens do not fit" - its buffers are not sized into the 256K config's
+      budget, like this port's sel_S bug of 2026-10-04).
 - [ ] The spin pricing (exp 46: the handshake ~1.4% of a round, exhaustion-dominant) against this port's doorbell.
 
 ## Later
