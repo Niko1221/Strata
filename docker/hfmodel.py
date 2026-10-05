@@ -141,7 +141,12 @@ def ple_index(fam: dict) -> int:
 
 def _find_in_snapshot(snap: Path, model: str, i: int, fam: dict) -> Path | None:
     """One release file inside a snapshot directory.  The exact name first, then a naming-convention
-    fallback for a release the table has not been taught (or upstream renamed)."""
+    fallback.  A release whose naming the table knows matches ONLY its own files: the quant name
+    must appear in the file name, or the file does not count as this quant (measured 2026-10-05:
+    the old catch-all `*0000{i}-of-00002.gguf` let a request for swift IQ2_XS resolve the swift
+    IQ3_XXS shard, so the launcher reported 'cached' and would have advertised one quantization
+    while loading another).  Only for a release the table has not been taught (no file pattern)
+    is any shard of that position accepted."""
     if n_files(fam) == 1:
         if fam.get("single_name") and fam.get("file"):
             cand = snap / fam["file"]
@@ -158,7 +163,13 @@ def _find_in_snapshot(snap: Path, model: str, i: int, fam: dict) -> Path | None:
         cand = snap / (f"{model}/{name}" if fam["subdir"] else name)
         if cand.is_file():
             return cand
-    for pat in (f"{model}/*{model}*0000{i}*.gguf", f"*{model}*0000{i}*.gguf", f"*0000{i}-of-00002.gguf"):
+        for pat in (f"{model}/*{model}*0000{i}*.gguf", f"*{model}*0000{i}*.gguf"):
+            hits = sorted(h for h in snap.glob(pat) if h.is_file())
+            if hits:
+                return hits[-1]
+        return None
+    for pat in (f"{model}/*{model}*0000{i}*.gguf", f"*{model}*0000{i}*.gguf",
+                f"*0000{i}-of-00002.gguf"):
         hits = sorted(h for h in snap.glob(pat) if h.is_file())
         if hits:
             return hits[-1]

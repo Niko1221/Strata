@@ -45,16 +45,20 @@ class RuntimeContract(unittest.TestCase):
             args = ['bash', str(ROOT / 'run.sh'), '--dry-run', '--image', 'test:guard',
                     '--hf-cache', directory, '--work', directory]
             default = subprocess.run(args, env=env, capture_output=True, text=True, check=True).stdout
-            for setting in ('STRATA_MODEL=IQ3_S', 'STRATA_PREFILL=2048', 'STRATA_EXPERT_CACHE=auto',
+            for setting in ('STRATA_MODEL=IQ3_XXS', 'STRATA_MODEL_NAME=swift-1.5-iq3_xxs',
+                            'STRATA_PACK_DIR=/work/packs/swift-iq3_xxs',
+                            'STRATA_HF_REPO=ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF',
+                            'STRATA_PREFILL=2048', 'STRATA_EXPERT_CACHE=auto',
                             'STRATA_POOL_WORKERS=0', 'STRATA_MAX_CONTEXT=131072',
                             'STRATA_VRAM_LATER_MIB=700', 'STRATA_VRAM_RUNTIME_RESERVE_MIB=1024',
                             'STRATA_PREFILL_RING=48'):
                 self.assertIn(setting, default)
-            xxs = subprocess.run(args + ['--model', 'IQ3_XXS'], env=env,
-                                 capture_output=True, text=True, check=True).stdout
-            self.assertIn('STRATA_EXPERT_CACHE=800', xxs)
-            self.assertIn('STRATA_VRAM_LATER_MIB=768', xxs)
-            self.assertNotIn('STRATA_PREFILL_RING', xxs)   # the ring pin is the IQ3_S measurement's
+            qwen = subprocess.run(args + ['--release', 'qwen', '--model', 'IQ3_XXS'], env=env,
+                                  capture_output=True, text=True, check=True).stdout
+            self.assertIn('STRATA_EXPERT_CACHE=800', qwen)
+            self.assertIn('STRATA_VRAM_LATER_MIB=768', qwen)
+            self.assertNotIn('STRATA_PREFILL_RING', qwen)  # pins belong to their release+quant
+            self.assertNotIn('STRATA_MODEL_NAME', qwen)    # the qwen line gains no -e at all
             override = subprocess.run(args + ['--prefill', '1024', '--expert-cache', '512',
                                              '--pool-workers', '23'], env=env,
                                       capture_output=True, text=True, check=True).stdout

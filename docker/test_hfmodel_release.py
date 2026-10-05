@@ -98,6 +98,21 @@ class HfmodelRelease(unittest.TestCase):
                               "--rev", "abcd1234").strip()
         self.assertIn("models--ukisai--", shard1)
 
+    def test_a_quant_absent_from_a_release_is_never_a_sibling_file(self):
+        """Measured 2026-10-05: asking for a quant the release does not have used to return
+        ANOTHER quant's shard through a name-blind catch-all glob, so the launcher said 'cached'
+        and the engine would have loaded a different quantization than the model id advertised."""
+        for model, repo in (("IQ2_XS", SWIFT), ("IQ2_XS", "")):
+            args = ("--model", model, "--print", "shard1", "--allow-missing")
+            if repo:
+                args += ("--repo", repo)
+            out = self.run_cli(*args).strip()
+            self.assertEqual(out, "", f"{model} under {repo or 'qwen'} resolved a sibling shard")
+            keys = self.run_cli("--model", model, *(('--release', 'swift') if not repo else
+                                                ('--repo', repo)), "--print", "shell",
+                                "--allow-missing")
+            self.assertIn("STRATA_CACHED=0", keys)
+
     def test_json_carries_release(self):
         import json
         out = json.loads(self.run_cli("--model", "IQ3_XXS", "--repo", SWIFT, "--print", "json"))

@@ -1,21 +1,29 @@
 #!/usr/bin/env bash
 # Run the Strata server container on this machine's AMD GPU.
 #
-#   ./run.sh                      IQ3_S, 10 GiB VRAM budget, http://127.0.0.1:9931
-#   ./run.sh --model IQ3_XXS      the previous default quant
-#   ./run.sh --model IQ2_XS       a smaller quant (fetched into your HF cache on first start)
+#   ./run.sh                      Swift 1.5 (IQ3_XXS), 10 GiB VRAM budget, http://127.0.0.1:9931
+#   ./run.sh --release qwen       Qwen3.8-Flash-Next, default quant there IQ3_S
+#   ./run.sh --model IQ3_XXS      choose a quant of the default (Swift) release - fetch it on first
+#                                 start if your HF cache has no Swift file by that name
 #   ./run.sh --detach             background;  ./run.sh --check  asks it afterwards whether it is up
 #   ./run.sh --offline            never download: fail with the command to run instead
 #   ./run.sh --dry-run            print the docker command and the reasoning, change nothing
 #
-# The IQ3_S tuning below is measured on this machine's card (bench/results/2026-10-04-iq3s-tuning/,
-# README there has the matrix): the 48-slot prefill ring is the lever - the default 384-slot ring
-# does not fit beside the cache, so the engine halves its prompt chunk - and it keeps the prompt
-# path on 2,048-token chunks: coding fresh prefill 171-173 -> 231-235 tok/s, TTFT at 4,096 tokens
-# 21.1 -> 16.3 s, decode 30.0-30.4 vs 30.5 tok/s (within noise). `auto` expert-cache sizing under
-# the 700 MiB later-allowance floor keeps the same speed with the cache sized from measured free
-# room. Strata's own VRAM share peaks at 8,723 MiB - all under the same 10 GiB ceiling, which is
-# NOT raised (the 12 272 MiB card keeps its ~2 GiB for the desktop and the GUI).
+# Releases: swift (default, UkisAI's fine-tune - Swift Open License 1.0, logged at every start),
+# qwen (the original Qwen3.8-Flash-Next), coder (expert-pruned).  Each release keeps its own pack
+# directory (packs/swift-iq3_xxs beside packs/iq3_xxs) and a pack is refused if it was built from
+# another release's shards.  Before 2026-10-05 the default was qwen IQ3_S; $STRATA_MODEL alone now
+# names a quant of the DEFAULT release, so pin Qwen quants as `--release qwen --model IQ3_S`.
+#
+# The tuning below is measured on this machine's card (bench/results/2026-10-04-iq3s-tuning/ and
+# 2026-10-05-run-default-swift/, READMEs have the matrices): the 48-slot prefill ring is the lever
+# - the default 384-slot ring does not fit beside the cache, so the engine halves its prompt
+# chunk - and it keeps the prompt path on 2,048-token chunks.  Default line (Swift IQ3_XXS):
+# fresh prefill 255 tok/s, decode 32.9, TTFT at 4,096 tokens 15.7 s, 130,944-token prompts at
+# 230 tok/s, share peak 8,697 MiB.  Qwen IQ3_S measured the same way: 235 / 30.0 / 16.3 s /
+# 8,723 MiB.  All under the same 10 GiB ceiling, which is NOT raised (the 12 272 MiB card keeps
+# its ~2 GiB for the desktop and the GUI).  Unmeasured release+quant combinations run the
+# conservative 0.1.39 pins and say so.
 #
 # Models are read from, and downloaded into, a Hugging Face cache in ~/Development/models (mounted
 # at /hf-cache) - the big filesystem, not the root disk that holds ~/.cache/huggingface.  One download
@@ -30,7 +38,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
 ARCH=""                                        # empty: whatever this machine actually has
-MODEL="${STRATA_MODEL:-IQ3_S}"                 # the shipped default quant
+MODEL="${STRATA_MODEL:-}"                      # empty: the default release's quant (below);
+                                               # $STRATA_MODEL or --model makes it explicit
 RELEASE="${STRATA_RELEASE:-}"                  # qwen|swift|coder; empty: resolved from the quant
                                                # or the repo (see 'the release' below)
 RELEASE_EXPLICIT=0
@@ -62,7 +71,8 @@ usage() {
   cat <<'USAGE'
 
 Options:
-  -m, --model QUANT        IQ3_S (default), IQ3_XXS, IQ2_XS, Q2_0, IQ1_M (the Coder)
+  -m, --model QUANT        quantization of the selected release; default per release:
+                           swift IQ3_XXS, qwen IQ3_S, coder IQ1_M
       --release NAME       which release to serve: qwen (Qwen3.8-Flash-Next), swift (Swift 1.5,
                            UkisAI's fine-tune), coder (expert-pruned); $STRATA_HF_REPO still wins
                            for a release that is not in the table
@@ -132,12 +142,6 @@ done
 [ "$MAX_CONTEXT" = 131072 ] || die "this deployment keeps exactly 131072 tokens (128K context)"
 PY="${PYTHON:-python3}"
 HIPINFO="$ROOT/docker/hipinfo.py"
-case "$MODEL" in
-  IQ3_XXS|IQ3_S|IQ2_XS|Q2_0|IQ1_M) ;;
-  *) { [ -n "$RELEASE" ] || [ -n "${STRATA_HF_REPO:-}" ]; } \
-     || die "unknown quant '$MODEL'.  Strata ships IQ3_XXS, IQ3_S, IQ2_XS, Q2_0 and IQ1_M (the
-       Coder); pass --release <name> or STRATA_HF_REPO=<org/name> for another release's quant." ;;
-esac
 command -v docker >/dev/null || die "docker not found.  Build first: ./build.sh"
 
 # ---------------------------------------------------------------- the card
@@ -171,18 +175,39 @@ fi
 # asks it.  hfmodel also refuses combinations it cannot mean (a coder-only quant under
 # --release qwen) - its message is the die message, no second copy here.
 hf_release_query() {
-  "$PY" "$ROOT/docker/hfmodel.py" --model "$MODEL" \
+  "$PY" "$ROOT/docker/hfmodel.py" ${MODEL:+--model "$MODEL"} \
     ${RELEASE:+--release "$RELEASE"} ${STRATA_HF_REPO:+--repo "$STRATA_HF_REPO"} --print release
 }
+# Default quant per named release - each the line measured for it (bench results cited below);
+# a release named only by STRATA_HF_REPO must be given a --model.
+if [ -z "$MODEL" ]; then
+  case "${RELEASE:-${STRATA_HF_REPO:+repo}}" in
+    qwen)  MODEL=IQ3_S ;;
+    swift) MODEL=IQ3_XXS ;;
+    coder) MODEL=IQ1_M ;;
+    repo)  die "a release named only by STRATA_HF_REPO has no default quant; pass --model QUANT" ;;
+    *)     MODEL=IQ3_XXS ;;                   # nothing named at all: the shipped default line
+  esac
+fi
 RELEASE_RESOLVED="$(hf_release_query)" || die "the release for '$MODEL' is refused or unknown (hfmodel above)"
 if [ -n "${STRATA_HF_REPO:-}" ]; then
   RELEASE="$RELEASE_RESOLVED"          # a repo is its own authority (empty: a release off the table)
 elif [ -z "$RELEASE" ]; then
-  RELEASE="${RELEASE_RESOLVED:-qwen}"  # the quant names its release; unknown quant cannot get here
+  # The named releases share the quant vocabulary, so an unnamed release defaults to Swift 1.5
+  # (the shipping default per plans/run-default-swift-15-iq3xxs-2026-10.md); only a quant that
+  # exists solely for the expert-pruned Coder (IQ1_M) still resolves a release by itself.
+  if [ "$RELEASE_RESOLVED" = coder ]; then RELEASE=coder; else RELEASE=swift; fi
 else
   [ -n "$RELEASE_RESOLVED" ] || die "unknown release '$RELEASE'.  Known: qwen, swift, coder
        (STRATA_HF_REPO=<org/name> still works for a release that is not in the table)"
 fi
+
+case "$MODEL" in
+  IQ3_XXS|IQ3_S|IQ2_XS|Q2_0|IQ1_M) ;;
+  *) { [ "$RELEASE_EXPLICIT" = 1 ] || [ -n "${STRATA_RELEASE:-}" ] || [ -n "${STRATA_HF_REPO:-}" ]; } \
+     || die "unknown quant '$MODEL'.  Strata ships IQ3_XXS, IQ3_S, IQ2_XS, Q2_0 and IQ1_M (the
+       Coder); pass --release <name> or STRATA_HF_REPO=<org/name> for another release's quant." ;;
+esac
 
 # IQ3_S and Swift IQ3_XXS are the combinations MEASURED on this card
 # (bench/results/2026-10-04-iq3s-tuning/, README has the matrix): a 48-slot prefill ring (the

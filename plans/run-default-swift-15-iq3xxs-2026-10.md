@@ -1,6 +1,6 @@
 # Plan — Make ./run.sh start Swift 1.5 (IQ3_XXS) by default on the gfx1101 container
 
-**Status:** Proposed
+**Status:** Implemented (2026-10-05)
 **Scope:** `run.sh`, `docker/hfmodel.py`, `docker/entrypoint-hip.sh`, `docker/bootstrap-model.sh`,
 `docker/Dockerfile.hip`, `docker/test_launcher_contract.py`, `docker/test_runtime_contract.py`,
 `docker/test_hfmodel_ple.py` (extension), docs: `docs/DOCKER_GFX1101_PLAN.md`,
@@ -297,16 +297,80 @@ pre-existing Windows prebuilt-HIP test failure.
 
 ## 9. Execution record and handoff
 
-- **Implemented:** plan only; no implementation performed.
-- **Deviations:** none yet.
-- **Documentation updated:** this file only.
+- **Implemented:** everything in §5, on the gfx1101 host, plus one defect found on the way (§9a).
+  `docker/hfmodel.py`: release axis (`--release`, `--print release`, shell keys
+  `FAMILY`/`PACK_TAG`/`MODEL_NAME_DEFAULT`/`LICENSE`), coder-only quant rule, and a name-blind
+  glob fix. `docker/bootstrap-model.sh`: pack provenance guard against `experts.bin.src.json`.
+  `docker/entrypoint-hip.sh`: release-tagged pack directory, release-derived model id, license log,
+  early resolver eval with the pre-release-axis fallbacks preserved. `run.sh`: `--release`,
+  per-release default quant, release+quant tuning table with an unmeasured-combination warning,
+  release-qualified `STRATA_PACK_DIR`/`STRATA_MODEL_NAME` and real `STRATA_HF_REPO` forwarding,
+  resolver refusals dying instead of being swallowed by `eval "$(...)"`, header/usage rewritten.
+  `docker/Dockerfile.hip` ENV aligned; runtime image rebuilt twice. Default flipped to Swift 1.5
+  IQ3_XXS. Tests: 22 -> 34 in the docker suite (release axis, provenance, launcher fixtures) plus
+  `docker/_stub_runtime.py` shared stub.
+- **Deviations:**
+  1. The plan's step 1 (write today's default line red, then implement) was replaced by per-module
+     commits with the suite green at each step: the default-line fixture test was written when the
+     flag existed, and the final flip re-pinned it in the same commit as the default change. Same
+     coverage, cleaner history.
+  2. Quant/release conflicts are refused by the data rule that actually holds: the quant vocabulary
+     is shared between qwen/swift, so only the expert-pruned Coder's quants are exclusive
+     (`--release qwen --model IQ1_M` dies; `--release swift --model IQ3_XXS` is allowed with a
+     stderr note). The plan's original wording ("quant belongs to coder release") would have wrongly
+     blocked Swift's shared quant names.
+  3. Per-release default quants were added (qwen IQ3_S, swift IQ3_XXS, coder IQ1_M) so
+     `--release qwen` alone still means what the old default did.
+  4. Docs: `docs/AMD_HIP.md` has no container/`run.sh` section to append the planned one-liner to
+     (the container line is documented in `docs/DOCKER_GFX1101_PLAN.md` and the script headers on
+     this branch), so the release/default change is recorded in Part H item 10 and in
+     `bench/results/2026-10-05-run-default-swift/README.md` instead.
+  5. Image ENV alignment and the final runtime rebuild happened once, in the flip change, instead of
+     a separate ENV-only commit; the manual `docker run` gate was run after that rebuild.
+  6. Swift's 128K ladder and cancel probe ("never run for Swift") were run on the release-flag line
+     **before** the default flip, and the no-flag default was then verified to be byte-identical to
+     that line and re-smoked live.
+- **Documentation updated:** `docs/DOCKER_GFX1101_PLAN.md` (Part H item 10),
+  `bench/results/2026-10-05-run-default-swift/README.md` (gate matrix),
+  `bench/results/2026-10-05-run-default-swift/default-swift-explicit.txt` (pinned line);
+  `run.sh` header/usage carries the behavior, the measured numbers and the breaking change.
 
 | Exact command | Actual result | Notes / blocker |
 | --- | --- | --- |
-| — | — | to be filled during execution |
+| `python -m unittest discover -s docker -p 'test_*.py'` | passed, 34/34 | no GPU, no downloads |
+| `python tools/test_setup_choices.py` | passed, 35/35 | unrelated to this change |
+| `python tools/test_setup_amd.py` | failed, 1/28 | pre-existing `WindowsDetection::test_prebuilt_hip_zip`; fails identically at HEAD~3, unrelated |
+| `python -m unittest serve.test_server serve.test_parser_stream serve.test_lifecycle` | passed | no serve changes; run as a courtesy regression |
+| `git diff --check` | passed | whitespace clean |
+| `./run.sh --dry-run` vs `default-swift-explicit.txt` | passed | the flip is byte-identical to the gated line |
+| `./run.sh --release qwen --model IQ3_S --dry-run` vs `post-tune-iq3s.txt` | passed | Qwen pin preserved |
+| `./run.sh --release qwen --model IQ3_XXS --dry-run` vs `pre-run-iq3xxs.txt` | passed | Qwen pin preserved |
+| live: `./run.sh --release swift --model IQ3_XXS --fresh --detach` + arm + gates | passed | prefill 255.0, decode 32.9, TTFT@4K 15.67 s; 130,944-token prompt 229.7 tok/s with follow-up reuse 130,937; cancel/recovery `stop`; smoke 205/205; share peak 8,697 MiB PASS |
+| live: `./run.sh --release qwen --model IQ3_S --fresh --detach` + smoke | passed | tuned shapes (695 slots, 534 borrowed), 205/205 |
+| live: `./run.sh --fresh --detach` (no flags) | passed | READY `swift-1.5-iq3_xxs`, smoke 205/205 |
+| live: `docker run` with no `-e` | passed | READY `swift-1.5-iq3_xxs` from the image ENV |
+| live: `./run.sh --check-only` | passed | model ok, pack provenance ok, pack ok, MTP ok |
+| live: swift launch pointed at `pack/iq3_s` (`-e STRATA_PACK_DIR`) | passed | refused: "was built from another release's shards", listing the offending file |
+| live: `./run.sh --offline --model IQ2_XS` | passed | dies with `hf download ukisai/Swift-1.5-... --include '*IQ2_XS*.gguf'` instead of starting a server |
 
-**Not run:** every §7 gate (planning-only authorization).
-**Measurement artifacts:** `bench/results/2026-10-04-iq3s-tuning/` holds the baseline the
-candidate is measured against; the execution creates
-`bench/results/2026-10-05-run-default-swift/`.
-**Remaining work:** approval, then steps 1-7.
+**Not run:** Windows/CUDA paths (no such machine here; this change touches only the Linux HIP
+container line), other Swift quants (not fetched; the unmeasured-combination warning covers them),
+a fresh-work-dir pack build (the Swift pack already exists on this host - the guard and the
+provenance path were exercised instead), `serve` browser flow (no renderer change).
+**Measurement artifacts:** `bench/results/2026-10-05-run-default-swift/` (arm, gates, guards,
+launcher fixtures, README matrix) against the `2026-10-04-iq3s-tuning/` baseline.
+**Remaining work:** none for acceptance. Deferred: Swift-specific draft layer, other Swift quants'
+measurements, hipBLASLt gfx1101 tuning table, retiring the pre-`src.json` pack format, the
+pre-existing Windows setup test failure.
+
+### 9a. Defect found and fixed during execution (not in the plan)
+
+`docker/hfmodel.py::_find_in_snapshot` ended its known-release search with a name-blind catch-all
+(`*0000{i}-of-00002.gguf`). Asking for a quantization the release does not ship therefore resolved
+a **sibling** shard: `--model IQ2_XS` against Swift returned the Swift IQ3_XXS file, `STRATA_CACHED`
+said 1, and the server would have advertised `swift-1.5-iq2_xs` while loading IQ3_XXS. The
+catch-all is now only for releases the table has not been taught; a table-known release matches
+only file names containing the requested quant, so an absent quant is honestly "not cached" and
+`--offline` prints the right `hf download ... --include '*IQ2_XS*.gguf'`. Regression test
+`test_hfmodel_release.py::test_a_quant_absent_from_a_release_is_never_a_sibling_file`, mutation-
+checked (restoring the old glob fails it).

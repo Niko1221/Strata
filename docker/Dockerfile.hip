@@ -60,7 +60,8 @@ ENV STRATA_VRAM_BUDGET_MIB=10240 \
     STRATA_VRAM_SLACK_MIB=256 \
     HIP_VISIBLE_DEVICES=0 \
     HSA_ENABLE_SDMA=1 \
-    STRATA_MODEL=IQ3_S \
+    STRATA_MODEL=IQ3_XXS \
+    STRATA_HF_REPO=ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF \
     STRATA_HF_CACHE=/hf-cache \
     HF_HUB_CACHE=/hf-cache \
     STRATA_WORK=/work \
@@ -73,9 +74,11 @@ ENV STRATA_VRAM_BUDGET_MIB=10240 \
     STRATA_VRAM_LATER_MIB=700 \
     STRATA_PREFILL_RING=48 \
     STRATA_VRAM_RUNTIME_RESERVE_MIB=1024
-# The IQ3_S tuning above is the one measured on the gfx1101 host
-# (bench/results/2026-10-04-iq3s-tuning/); ./run.sh passes its own per-quant values explicitly,
-# so these ENV defaults are what a container started without them gets.
+# These defaults are the shipping line measured on the gfx1101 host
+# (Swift 1.5 IQ3_XXS: bench/results/2026-10-05-run-default-swift/; the entrypoint derives the
+# swift-iq3_xxs pack directory and the swift-1.5-iq3_xxs model id from the release).  ./run.sh
+# always passes its own per-release values explicitly, so this block is what a plain
+# `docker run` of this image gets.
 # Not a HEALTHCHECK on purpose: the first start maps tens of GB and takes minutes, which would flap
 # red for no reason.  ./run.sh --check asks /v1/models instead, once the engine says it is up.
 EXPOSE 8080

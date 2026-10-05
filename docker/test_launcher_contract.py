@@ -1,13 +1,14 @@
 """Contract for the consolidated ./run.sh launcher (run2.sh/run3.sh removed).
 Run: python -m unittest discover -s docker -p 'test_*.py'.
 
-IQ3_XXS still reproduces the launcher-consolidation pin exactly (fixtures in
-bench/results/2026-10-04-launcher-consolidation/).  IQ3_S - the shipped default since
-11a6026 - carries the tuning measured on the gfx1101 host
-(bench/results/2026-10-04-iq3s-tuning/, post-tune fixtures): expert cache `auto`,
-STRATA_VRAM_LATER_MIB=700, STRATA_PREFILL_RING=48.  Context stays 131072 and the VRAM
-budget stays <= 10240 MiB in every arm.  Stubbed docker/python keep this GPU- and
-download-free, like test_runtime_contract.py.
+The no-argument default is Swift 1.5 IQ3_XXS (plans/run-default-swift-15-iq3xxs-2026-10.md):
+the docker line is pinned against bench/results/2026-10-05-run-default-swift/
+default-swift-explicit.txt, which is byte-identical to what the live gates ran.  Qwen lines are
+pinned too and must stay byte-for-byte what they were before the release axis: --release qwen
+--model IQ3_S equals bench/results/2026-10-04-iq3s-tuning/post-tune-iq3s.txt and
+--release qwen --model IQ3_XXS equals the launcher-consolidation pin.  Context stays 131072 and
+the VRAM budget <= 10240 MiB in every arm.  Stubbed docker/python (see _stub_runtime.py) keep
+this GPU- and download-free, like test_runtime_contract.py.
 """
 from pathlib import Path
 import os
@@ -64,29 +65,37 @@ class LauncherContract(unittest.TestCase):
     def test_launcher_syntax(self):
         subprocess.run(['bash', '-n', str(ROOT / 'run.sh')], check=True)
 
-    def test_iq3_s_default_uses_the_measured_tuning(self):
+    def test_swift_default_is_the_gated_line(self):
         rc, out, err = launch()
         self.assertEqual(rc, 0, err)
-        self.assertEqual(actual_env_pairs(out), pinned_env_pairs('post-tune-iq3s.txt', TUNED))
-        self.assertIn('STRATA_MODEL=IQ3_S', out)
+        self.assertEqual(actual_env_pairs(out),
+                         pinned_env_pairs('default-swift-explicit.txt', SWIFT_DIR))
+        self.assertIn('STRATA_MODEL=IQ3_XXS', out)
+        self.assertIn('STRATA_MODEL_NAME=swift-1.5-iq3_xxs', out)
+        self.assertIn('STRATA_PACK_DIR=/work/packs/swift-iq3_xxs', out)
         self.assertIn('STRATA_EXPERT_CACHE=auto', out)
         self.assertIn('STRATA_VRAM_LATER_MIB=700', out)
         self.assertIn('STRATA_PREFILL_RING=48', out)
         self.assertIn('STRATA_MAX_CONTEXT=131072', out)
 
-    def test_iq3xxs_via_model_flag_keeps_800(self):
-        rc, out, err = launch('--model', 'IQ3_XXS')
+    def test_qwen_iq3_s_pin_survives_under_release_qwen(self):
+        rc, out, err = launch('--release', 'qwen', '--model', 'IQ3_S')
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(actual_env_pairs(out), pinned_env_pairs('post-tune-iq3s.txt', TUNED))
+
+    def test_qwen_iq3xxs_pin_survives_under_release_qwen(self):
+        rc, out, err = launch('--release', 'qwen', '--model', 'IQ3_XXS')
         self.assertEqual(rc, 0, err)
         self.assertEqual(actual_env_pairs(out), pinned_env_pairs('pre-run-iq3xxs.txt'))
 
     def test_expert_cache_numeric_overrides_auto_with_warning(self):
-        rc, out, err = launch('--model', 'IQ3_S', '--expert-cache', '900')
+        rc, out, err = launch('--release', 'qwen', '--model', 'IQ3_S', '--expert-cache', '900')
         self.assertEqual(rc, 0, err)
         self.assertIn('STRATA_EXPERT_CACHE=900', out)
         self.assertIn('overrides the tuned auto sizing', re.sub(r'\x1b\[[0-9;]*m', '', err))
 
     def test_expert_cache_above_iq3xxs_pin_still_warns(self):
-        rc, out, err = launch('--model', 'IQ3_XXS', '--expert-cache', '900')
+        rc, out, err = launch('--release', 'qwen', '--model', 'IQ3_XXS', '--expert-cache', '900')
         self.assertEqual(rc, 0, err)
         self.assertIn('STRATA_EXPERT_CACHE=900', out)
         self.assertIn('tuned 800', re.sub(r'\x1b\[[0-9;]*m', '', err))
@@ -113,8 +122,9 @@ class ReleaseAxis(unittest.TestCase):
                          pinned_env_pairs('default-swift-explicit.txt', SWIFT_DIR))
 
     def test_release_flag_line_equals_the_manual_env_line(self):
-        """What users typed yesterday (explicit -e) and what --release does today must present
-        the same docker -e environment - the compatibility bridge in one assertion."""
+        """What users typed yesterday (explicit -e) and what --release does today must give the
+        same EFFECTIVE docker environment - docker takes the last -e of a key, so compare the
+        last-wins dicts, duplicates included on the manual side."""
         rc1, old, err1 = launch('--model', 'IQ3_XXS',
                                '-e', 'STRATA_HF_REPO=ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF',
                                '-e', 'STRATA_PACK_DIR=/work/packs/swift-iq3_xxs',
@@ -124,18 +134,32 @@ class ReleaseAxis(unittest.TestCase):
                                '-e', 'STRATA_PREFILL_RING=48')
         rc2, new, err2 = launch('--release', 'swift', '--model', 'IQ3_XXS')
         self.assertEqual((rc1, rc2), (0, 0), err1 + err2)
-        manual, flag = actual_env_pairs(old), actual_env_pairs(new)
-        # the manual line repeats cache/later pins the resolver already sets for the release;
-        # docker takes the last -e, so drop the superseded duplicates before comparing
-        drop = {'STRATA_EXPERT_CACHE=800', 'STRATA_VRAM_LATER_MIB=768'}
-        self.assertEqual([p for p in manual if p not in drop], flag)
-        self.assertEqual(sorted(flag), pinned_env_pairs('default-swift-explicit.txt', SWIFT_DIR))
 
-    def test_release_qwen_line_is_the_default_line(self):
-        rc_a, a, _ = launch()
-        rc_b, b, _ = launch('--release', 'qwen', '--model', 'IQ3_S')
-        self.assertEqual((rc_a, rc_b), (0, 0))
-        self.assertEqual(actual_env_pairs(a), actual_env_pairs(b))
+        def effective(stdout):
+            line = next((l for l in stdout.splitlines() if 'docker run' in l), '')
+            toks = line.split()
+            env = {}
+            for i, t in enumerate(toks):
+                if t == '-e' and i + 1 < len(toks) and '=' in toks[i + 1]:
+                    k, _, v = toks[i + 1].partition('=')
+                    env[k] = v
+            return env
+        self.assertEqual(effective(old), effective(new))
+        self.assertEqual(sorted(f'{k}={v}' for k, v in effective(new).items()),
+                         pinned_env_pairs('default-swift-explicit.txt', SWIFT_DIR))
+
+    def test_release_qwen_line_keeps_the_qwen_pin(self):
+        rc, qwen, _ = launch('--release', 'qwen', '--model', 'IQ3_S')
+        rc2, default, _ = launch()
+        self.assertEqual((rc, rc2), (0, 0))
+        self.assertNotEqual(actual_env_pairs(qwen), actual_env_pairs(default))
+        self.assertEqual(actual_env_pairs(qwen), pinned_env_pairs('post-tune-iq3s.txt', TUNED))
+
+    def test_coder_quant_still_resolves_coder(self):
+        rc, out, err = launch('--model', 'IQ1_M')      # no release named: the quant names coder
+        self.assertEqual(rc, 0, err)
+        self.assertIn('STRATA_MODEL_NAME=qwen3.8-flash-next-coder-iq1_m', out)
+        self.assertIn('STRATA_PACK_DIR=/work/packs/coder-iq1_m', out)
 
     def test_coder_quant_under_qwen_is_refused(self):
         rc, out, err = launch('--release', 'qwen', '--model', 'IQ1_M')
