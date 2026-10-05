@@ -31,7 +31,7 @@ class MemoryPolicy:
         self.headroom = self._setting(config, "min_ram_headroom_gib", 5.5, 2, 128)
         self.overhead = self._setting(config, "overhead_ram_gib", 2, 2, 128)
         self.cooldown = self._setting(config, "cooldown_seconds", 600, 600, 86400)
-        self.pressure_duration = self._setting(config, "pressure_seconds", 60, 60, 3600)
+        self.pressure_duration = self._setting(config, "pressure_seconds", 60, 2, 3600)
         self.growth_duration = self._setting(config, "growth_seconds", 120, 120, 3600)
         self.max_age = self._setting(config, "max_sample_age_seconds", 5, 1, 60)
         if not _number(self.cap) or self.cap < 1 or not _number(vram_reserve_mib) or self.reserve_floor < 0:

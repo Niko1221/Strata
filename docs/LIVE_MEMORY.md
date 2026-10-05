@@ -41,6 +41,13 @@ admission independently enforces its configured absolute floor, so a larger nati
 growth. The resident cap remains an upper bound. These are capacity targets, not a performance guarantee
 or immediate reclamation: pressure still needs its debounce and native resizing proceeds in bounded steps.
 
+The pressure debounce defaults to 60 seconds. An explicit `pressure_seconds` from 2 seconds is accepted;
+for example, 4 seconds requires a sustained window of fresh readings before reclamation. Missing, stale
+or replayed readings reset that window. Pressure relief can bypass the growth cooldown and never grows
+the other cache; ordinary growth still uses its separate debounce and cooldown. A VRAM reserve floor of
+0 is allowed: the percentage target still retains space, and native startup/workspace guards remain.
+Live-mode startup currently admits at least 256 MiB reserve even when the configured floor is lower.
+
 The policy can observe pressure while an answer is running. Resizing runs only when native readers and GPU
 work have reached a safe boundary. A large change takes several steps and may briefly pause generation.
 Idle unload is independent: set `idle_unload_s` according to how long the model should remain loaded.

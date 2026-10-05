@@ -167,6 +167,7 @@ class PolicyTests(unittest.TestCase):
     def test_unsafe_configuration_rejected(self):
         for config in ({"ram_target_percent": 99}, {"min_ram_headroom_gib": 1},
                        {"min_ram_headroom_gib": 1.999},
+                       {"pressure_seconds": 1.999},
                        {"cooldown_seconds": 2}, {"vram_target_percent": 100}):
             with self.assertRaises(ValueError):
                 MemoryPolicy(config)
@@ -209,6 +210,43 @@ class PolicyTests(unittest.TestCase):
         self.assertIsNone(policy.observe(sample(719, gpu_used=22), True, info, 719))
         for now in range(720, 1000):
             self.assertIsNone(policy.observe(sample(now, gpu_used=21.6), True, info, now))
+
+
+class FastPressurePolicyTests(unittest.TestCase):
+    def policy(self):
+        policy = MemoryPolicy({"enabled": True, "mode": "live", "pressure_seconds": 4},
+                              vram_reserve_mib=0)
+        policy.live_actual(32 * 1024, 256, 100, "load_budget", completed=True, loaded=True)
+        return policy
+
+    def reading(self, stamp):
+        return sample(stamp, used=20, gpu_used=15.999, gpu_total=16)
+
+    def test_four_seconds_gpu_pressure_shrinks_before_growth_cooldown(self):
+        policy = self.policy()
+        info = {"arena_mib": 32 * 1024}
+        # RAM has room to grow, while an external GPU allocation exceeds 99%.
+        for now in (101, 103):
+            self.assertIsNone(policy.observe(self.reading(now), True, info, now))
+        plan = policy.observe(self.reading(105), True, info, 105)
+        self.assertEqual(plan, {"resident_budget_gib": 32, "vram_reserve_mib": 419,
+                                "reason": "sustained_pressure"})
+        self.assertEqual(policy.current, {"resident_budget_gib": 32, "vram_reserve_mib": 256})
+
+    def test_replayed_or_stale_samples_require_new_four_second_window(self):
+        for invalid_stamp in (101, 99):
+            with self.subTest(invalid_stamp=invalid_stamp):
+                policy = self.policy()
+                info = {"arena_mib": 32 * 1024}
+                for now in (101, 103):
+                    self.assertIsNone(policy.observe(self.reading(now), True, info, now))
+                self.assertIsNone(policy.observe(self.reading(invalid_stamp), True, info, 105))
+                for now in (106, 108):
+                    self.assertIsNone(policy.observe(self.reading(now), True, info, now))
+                plan = policy.observe(self.reading(110), True, info, 110)
+                self.assertEqual(plan["reason"], "sustained_pressure")
+                self.assertEqual(plan["resident_budget_gib"], 32)
+                self.assertGreater(plan["vram_reserve_mib"], 256)
 
 
 class HeadroomPolicyTests(unittest.TestCase):
