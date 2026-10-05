@@ -6,6 +6,8 @@ import sys
 import tempfile
 import unittest
 
+from _stub_runtime import stub_python
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -36,18 +38,7 @@ class RuntimeContract(unittest.TestCase):
             docker.write_text('#!/bin/sh\nexit 0\n')
             docker.chmod(0o755)
             python = root / 'python'
-            python.write_text(f"#!{sys.executable}\n" + """import os, sys
-if sys.argv[1].endswith('hipinfo.py'):
-    if '--arch' in sys.argv: print('gfx1101')
-    elif '--render-node' in sys.argv: print('/dev/dri/renderD128')
-    elif '--vram' in sys.argv: print('12272 1500 10772')
-    elif '--reserve-mib' in sys.argv: print('768')
-elif sys.argv[1].endswith('hfmodel.py'):
-    print('STRATA_CACHED=1; STRATA_ARENA_GB=43')
-else:
-    os.execv(sys.executable, [sys.executable] + sys.argv[1:])
-""")
-            python.chmod(0o755)
+            stub_python(python)
             env = {k: v for k, v in os.environ.items()
                    if not k.startswith('STRATA_') and k != 'HSA_OVERRIDE_GFX_VERSION'}
             env.update(PATH=str(root) + os.pathsep + env['PATH'], PYTHON=str(python))

@@ -31,6 +31,9 @@ cd "$ROOT"
 
 ARCH=""                                        # empty: whatever this machine actually has
 MODEL="${STRATA_MODEL:-IQ3_S}"                 # the shipped default quant
+RELEASE="${STRATA_RELEASE:-}"                  # qwen|swift|coder; empty: resolved from the quant
+                                               # or the repo (see 'the release' below)
+RELEASE_EXPLICIT=0
 IMAGE="${STRATA_IMAGE:-}"
 NAME=""
 BUDGET="${STRATA_VRAM_BUDGET_MIB:-10240}"      # this card has 12 272 MiB; the contract is 10 GiB
@@ -59,7 +62,10 @@ usage() {
   cat <<'USAGE'
 
 Options:
-  -m, --model QUANT        IQ3_XXS (default), IQ3_S, IQ2_XS, Q2_0, IQ1_M (the Coder)
+  -m, --model QUANT        IQ3_S (default), IQ3_XXS, IQ2_XS, Q2_0, IQ1_M (the Coder)
+      --release NAME       which release to serve: qwen (Qwen3.8-Flash-Next), swift (Swift 1.5,
+                           UkisAI's fine-tune), coder (expert-pruned); $STRATA_HF_REPO still wins
+                           for a release that is not in the table
       --hf-cache PATH      model cache in the Hugging Face layout (default: ~/Development/models,
                            which is on the big filesystem here; NOT ~/.cache/huggingface, whose disk
                            is too small for a quant + its pack)
@@ -95,6 +101,7 @@ USAGE
 while [ $# -gt 0 ]; do
   case "$1" in
     -m|--model)        MODEL="${2:?--model needs a value}"; shift 2 ;;
+    --release)         RELEASE="${2:?--release needs a value}"; RELEASE_EXPLICIT=1; shift 2 ;;
     --hf-cache)        HF_CACHE="${2:?}"; shift 2 ;;
     --work)            WORK="${2:?}"; shift 2 ;;
     --budget)          BUDGET="${2:?}"; shift 2 ;;
@@ -123,37 +130,13 @@ done
 [[ "$BUDGET" =~ ^[0-9]+$ ]] && [ "$BUDGET" -gt 1280 ] && [ "$BUDGET" -le 10240 ] \
   || die "budget must be 1281..10240 MiB; 10 GiB is the hard ceiling"
 [ "$MAX_CONTEXT" = 131072 ] || die "this deployment keeps exactly 131072 tokens (128K context)"
-# IQ3_S stores its experts ~17% wider than IQ3_XXS (arena 50.3 GB vs 42.9 GB), so the same VRAM
-# holds fewer of them.  For IQ3_S the tuned values are MEASURED on the gfx1101 host
-# (bench/results/2026-10-04-iq3s-tuning/): the engine's own `auto` cache sizing plus the 700 MiB
-# later-allowance floor and a 48-slot prefill ring let the prompt path keep its 2,048-token chunk
-# instead of halving to 1,024 - coding prefill 173 -> 233 tok/s, TTFT at 4K 21.1 -> 16.3 s,
-# decode and the 10 GiB contract unchanged.  The other quants keep the 0.1.39 pins.
-case "$MODEL" in
-  IQ3_XXS) EXPERT_CACHE_DEFAULT=800; LATER_DEFAULT=768; RING_DEFAULT="" ;;   # the shipped 0.1.39 pins
-  IQ3_S)   EXPERT_CACHE_DEFAULT=auto; LATER_DEFAULT=700; RING_DEFAULT=48 ;;  # measured on gfx1101
-  *)       EXPERT_CACHE_DEFAULT=680; LATER_DEFAULT=768; RING_DEFAULT="" ;;
-esac
-export STRATA_VRAM_LATER_MIB="${STRATA_VRAM_LATER_MIB:-$LATER_DEFAULT}"
-# A slot budget above the tuned value buys nothing under the same 10 GiB ceiling: the engine would
-# only cut it back to the free room.  Say so rather than let an explicit number look like more VRAM.
-wanted="${STRATA_EXPERT_CACHE:-${EXPLICIT_CACHE:-$EXPERT_CACHE_DEFAULT}}"
-if [ "$wanted" != auto ] && [[ "$wanted" =~ ^[0-9]+$ ]]; then
-  if [ "$EXPERT_CACHE_DEFAULT" = auto ]; then
-    warn "expert cache budget $wanted overrides the tuned auto sizing for $MODEL; the ceiling stays
-      at $BUDGET MiB - the engine admits only what fits under the guard and logs the number"
-  elif [ "$wanted" -gt "$EXPERT_CACHE_DEFAULT" ]; then
-    warn "expert cache budget $wanted exceeds the tuned $EXPERT_CACHE_DEFAULT for $MODEL; VRAM stays
-      capped at $BUDGET MiB, so the engine will cut it back to what fits - raise quality by no other means"
-  fi
-fi
-
 PY="${PYTHON:-python3}"
 HIPINFO="$ROOT/docker/hipinfo.py"
 case "$MODEL" in
   IQ3_XXS|IQ3_S|IQ2_XS|Q2_0|IQ1_M) ;;
-  *) [ -n "${STRATA_HF_REPO:-}" ] || die "unknown quant '$MODEL'.  Strata ships IQ3_XXS (default),
-       IQ3_S, IQ2_XS, Q2_0 and IQ1_M (the Coder); pass STRATA_HF_REPO=<org/name> for another release." ;;
+  *) { [ -n "$RELEASE" ] || [ -n "${STRATA_HF_REPO:-}" ]; } \
+     || die "unknown quant '$MODEL'.  Strata ships IQ3_XXS, IQ3_S, IQ2_XS, Q2_0 and IQ1_M (the
+       Coder); pass --release <name> or STRATA_HF_REPO=<org/name> for another release's quant." ;;
 esac
 command -v docker >/dev/null || die "docker not found.  Build first: ./build.sh"
 
@@ -179,6 +162,61 @@ if [ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ] && [ "${STRATA_ALLOW_HSA_OVERRIDE:-0}"
   die "HSA_OVERRIDE_GFX_VERSION=$HSA_OVERRIDE_GFX_VERSION is set in your environment (a login shell
        or a leftover -e). On gfx1101 it makes the code object fail to load. Unset it, or pass
        --allow-hsa-override if you really mean it."
+fi
+
+# ---------------------------------------------------------------- the release
+# A release is named (--release / $STRATA_RELEASE), implied by $STRATA_HF_REPO (its own
+# authority, known to the table or not), or implied by the quant (IQ1_M exists only for the
+# expert-pruned coder).  docker/hfmodel.py's FAMILIES is the single table; --print release just
+# asks it.  hfmodel also refuses combinations it cannot mean (a coder-only quant under
+# --release qwen) - its message is the die message, no second copy here.
+hf_release_query() {
+  "$PY" "$ROOT/docker/hfmodel.py" --model "$MODEL" \
+    ${RELEASE:+--release "$RELEASE"} ${STRATA_HF_REPO:+--repo "$STRATA_HF_REPO"} --print release
+}
+RELEASE_RESOLVED="$(hf_release_query)" || die "the release for '$MODEL' is refused or unknown (hfmodel above)"
+if [ -n "${STRATA_HF_REPO:-}" ]; then
+  RELEASE="$RELEASE_RESOLVED"          # a repo is its own authority (empty: a release off the table)
+elif [ -z "$RELEASE" ]; then
+  RELEASE="${RELEASE_RESOLVED:-qwen}"  # the quant names its release; unknown quant cannot get here
+else
+  [ -n "$RELEASE_RESOLVED" ] || die "unknown release '$RELEASE'.  Known: qwen, swift, coder
+       (STRATA_HF_REPO=<org/name> still works for a release that is not in the table)"
+fi
+
+# IQ3_S and Swift IQ3_XXS are the combinations MEASURED on this card
+# (bench/results/2026-10-04-iq3s-tuning/, README has the matrix): a 48-slot prefill ring (the
+# default 384-slot ring does not fit beside the cache, so the engine halves its prompt chunk)
+# with `auto` expert-cache sizing under the 700 MiB later-allowance floor keeps the 2,048-token
+# chunk: fresh prefill 171-173 -> 231-253 tok/s, TTFT at 4K 21.1 -> 14.8-16.3 s, decode within
+# noise, share peak 8,696-8,723 MiB under the unchanged 10 GiB contract.  IQ3_XXS on qwen keeps
+# the shipped 0.1.39 pins byte-for-byte; unmeasured combinations get those conservative pins and
+# say so.
+# (':' delimiter, not '|': case patterns treat '|' as alternation)
+case "$RELEASE:$MODEL" in
+  qwen:IQ3_XXS)             EXPERT_CACHE_DEFAULT=800; LATER_DEFAULT=768; RING_DEFAULT="" ;;
+  qwen:IQ3_S|swift:IQ3_XXS) EXPERT_CACHE_DEFAULT=auto; LATER_DEFAULT=700; RING_DEFAULT=48 ;;
+  *)                        EXPERT_CACHE_DEFAULT=680; LATER_DEFAULT=768; RING_DEFAULT="" ;;
+esac
+if [ "$RELEASE" != qwen ]; then
+  case "$RELEASE:$MODEL" in
+    swift:IQ3_XXS) : ;;
+    *) warn "release '$RELEASE' with quant $MODEL is not measured on this card; using the
+        conservative pins (expert cache 680, later allowance 768, no prefill ring)"
+  esac
+fi
+export STRATA_VRAM_LATER_MIB="${STRATA_VRAM_LATER_MIB:-$LATER_DEFAULT}"
+# A slot budget above the tuned value buys nothing under the same 10 GiB ceiling: the engine would
+# only cut it back to the free room.  Say so rather than let an explicit number look like more VRAM.
+wanted="${STRATA_EXPERT_CACHE:-${EXPLICIT_CACHE:-$EXPERT_CACHE_DEFAULT}}"
+if [ "$wanted" != auto ] && [[ "$wanted" =~ ^[0-9]+$ ]]; then
+  if [ "$EXPERT_CACHE_DEFAULT" = auto ]; then
+    warn "expert cache budget $wanted overrides the tuned auto sizing for $MODEL; the ceiling stays
+      at $BUDGET MiB - the engine admits only what fits under the guard and logs the number"
+  elif [ "$wanted" -gt "$EXPERT_CACHE_DEFAULT" ]; then
+    warn "expert cache budget $wanted exceeds the tuned $EXPERT_CACHE_DEFAULT for $MODEL; VRAM stays
+      capped at $BUDGET MiB, so the engine will cut it back to what fits - raise quality by no other means"
+  fi
 fi
 
 # ---------------------------------------------------------------- the image
@@ -214,7 +252,16 @@ log "HF cache:  $HF_CACHE  (mounted read-write: a first run may download into it
 log "work dir:  $WORK  (packs, MTP draft layer, logs)"
 
 # What is already there?  (asks the same resolver the container uses, so no drift between them)
-eval "$("$PY" "$ROOT/docker/hfmodel.py" --model "$MODEL" --cache "$HF_CACHE" --print shell --allow-missing)"
+# Ask the same resolver the container uses (no drift between them).  Direct assignment, not
+# eval "$(...)": an assignment carries the command's exit status, so a refused selection
+# (hfmodel's coder/conflict rules) dies HERE with hfmodel's own message instead of silently
+# continuing with empty keys.  --release is the named release; $STRATA_HF_REPO still wins.
+RES_KEYS="$("$PY" "$ROOT/docker/hfmodel.py" --model "$MODEL" --cache "$HF_CACHE" --print shell \
+             --allow-missing ${RELEASE:+--release "$RELEASE"} \
+             ${STRATA_HF_REPO:+--repo "$STRATA_HF_REPO"})" \
+  || die "the model resolver refused '$MODEL' (hfmodel message above)"
+eval "$RES_KEYS"
+MODEL_LOWER="$(printf '%s' "$MODEL" | tr '[:upper:]' '[:lower:]')"
 existing_ancestor() { local p="$1"; while [ ! -e "$p" ] && [ "$p" != "/" ]; do p="$(dirname "$p")"; done; printf '%s' "$p"; }
 free_gib() { df -BG --output=avail "$(existing_ancestor "$1")" 2>/dev/null | tail -1 | tr -dc '0-9' || echo 0; }
 dev_of()   { stat -c %d "$(existing_ancestor "$1")" 2>/dev/null || echo none; }
@@ -248,7 +295,7 @@ else
   note "$MODEL is cached (both shards)"
 fi
 need_pack="$(awk -v a="${STRATA_ARENA_GB:-51}" 'BEGIN{printf "%d", a + 6}')"; have_work="$(free_gib "$WORK")"
-if [ "${have_work:-0}" != 0 ] && [ "${have_work:-0}" -lt "$need_pack" ] && [ ! -f "$WORK/packs/$(printf '%s' "$MODEL" | tr '[:upper:]' '[:lower:]')/experts.bin" ]; then
+if [ "${have_work:-0}" != 0 ] && [ "${have_work:-0}" -lt "$need_pack" ] && [ ! -f "$WORK/packs/${STRATA_PACK_TAG:-}$MODEL_LOWER/experts.bin" ]; then
   warn "$WORK has ${have_work} GB free; the pack writes ~${STRATA_ARENA_GB} GB of experts.bin."
   warn "Pass --work /somewhere/bigger if the packing step fails for space."
 fi
@@ -330,6 +377,15 @@ ARGS=(docker run --rm --name "$NAME$CHECK_ONLY_SUFFIX"
       -e "HIP_VISIBLE_DEVICES=0" -e "HSA_ENABLE_SDMA=1"
       -e "STRATA_DOWNLOAD_MODEL=$([ "$OFFLINE" = 1 ] && echo 0 || echo 1)"
       -v "$HF_CACHE:/hf-cache" -v "$WORK:/work")
+# Release facts become explicit for every release but qwen, whose line stays byte-for-byte the
+# historical launch (the resolver infers qwen from the quant, and the container's pack and model-
+# name defaults already carry qwen shapes).  $STRATA_HF_REPO is forwarded too - it never was
+# before, which only worked when users passed it again via -e.
+if [ "$RELEASE" != qwen ]; then
+  ARGS+=(-e "STRATA_PACK_DIR=/work/packs/${STRATA_PACK_TAG:-}$MODEL_LOWER"
+         -e "STRATA_MODEL_NAME=${STRATA_MODEL_NAME_DEFAULT:-${STRATA_MODEL_NAME:-qwen3.8-flash-next-$MODEL_LOWER}}"
+         -e "STRATA_HF_REPO=${STRATA_HF_REPO:-$STRATA_REPO}")
+fi
 [ "$CHECK_ONLY" = 1 ] || ARGS+=(-p "$BIND:$PORT:$PORT")
 [ -n "${HF_TOKEN:-}" ]        && ARGS+=(-e "HF_TOKEN=$HF_TOKEN")
 [ -n "${HF_REVISION:-}" ]     && ARGS+=(-e "HF_REVISION=$HF_REVISION")
@@ -353,7 +409,8 @@ else
   ARGS+=(-it "$IMAGE")
 fi
 
-log "starting $MODEL on $ARCH (server on http://$BIND:$PORT, logs: $WORK/logs/)"
+[ -n "${STRATA_LICENSE:-}" ] && log "release: $RELEASE ($STRATA_LICENSE)"
+log "starting $RELEASE $MODEL on $ARCH (server on http://$BIND:$PORT, logs: $WORK/logs/)"
 [ "$DRY" = 1 ] || mkdir -p "$WORK/logs" "$WORK/packs"
 note "first start downloads/packs what is missing, then maps tens of GB: 1-3 minutes of a slow PC is normal"
 if [ "$DETACH" = 1 ]; then
