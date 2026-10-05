@@ -85,6 +85,12 @@ void kv_ring_restore(const QsaAttnPools& slots, const KvHostPools& host, int fmt
 void kv_stage_from_host(const QsaAttnPools& stage, const KvHostPools& host, int fmt, int64_t n_blocks,
                         const QsaShapes& s, void* stream);
 
+/// #579 #613 (HIP A/B, STRATA_KV_HOST_DMA=1): the reverse of kv_stage_from_host for blocks [b0, b1) - the staging
+/// pool's blocks into the host copy, by DMA, so the prompt path's append need not write host memory from a kernel.
+/// Not capturable.
+void kv_unstage_to_host(const QsaAttnPools& stage, const KvHostPools& host, int fmt, int64_t b0, int64_t b1,
+                        const QsaShapes& s, void* stream);
+
 struct KvStreamCounters {
     uint64_t misses = 0, lookups = 0, calls = 0;
     bool overflow = false;

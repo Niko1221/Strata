@@ -107,6 +107,11 @@ English/code subset from before (40,525 ids, ~110 MiB less VRAM, English answers
 almost no drafts). `--draft-vocab cyrillic` takes the English/code subset plus the whole Cyrillic script (58,963
 ids): the shipped subsets hold 142 of the vocabulary's 18,580 Cyrillic tokens, so Ukrainian or Russian answers got
 1.4 tokens a round; with it 2.1, and 83 -> 109 tokens/s (RTX 5090, the NVFP4 fork), English unchanged.
+`--draft-vocab fr` (0.1.39, #597) takes the English/code subset plus the 5,686 tokens that cover 99% of a French
+Wikipedia corpus (46,211 ids, `tools/draft_vocab.py --corpus`): 23.6% of French text's tokens were outside the
+English/code subset, 0.7% are outside this one. Drafts accepted in French answers 0.51 -> 0.60 (IQ3_XXS, RTX 5070,
+8 prompts x 2 passes; English 0.61 -> 0.63 and code 0.77 -> 0.78, no loss), and 141 -> 158 tok/s in French on an
+RTX 5090 (IQ3_S, the reporter's measurement).
 `tools/draft_vocab.py` builds and inspects subsets. When the start stops with "the draft head does not fit" (a
 12 GB card with a long context, #474), the engine says how much the head needs, how much VRAM is free and which
 smaller subset fits, and the server's start error repeats it; setup suggests `--draft-vocab en` on cards under
@@ -145,6 +150,13 @@ other ~18 GB), a 32 GB PC with a 12-16 GB GPU the Coder; IQ3_XXS on a 32 GB PC s
   with `--resident-experts` started with `--gpus` switches to `--mmap-experts` with a note, and the engine runs that
   pair as `--mmap-experts` with a warning instead of refusing it.
 
+**A mapped arena for small RAM (Linux, opt-in, 0.1.39, PR #640):** `STRATA_ARENA_MMAP=1` maps a native pack's expert
+arena read-only from the pack's `experts.bin` instead of reading it into locked RAM, for a PC whose GPUs hold most
+experts but whose RAM is small (2x 16 GB GPUs with 32 GB of RAM: ~1 GB -> 25 GB available while serving). The first
+start writes `experts.bin` (when the drive has room for it), later starts map it; the pages of the experts a GPU holds
+are handed back to the OS. Run it with `--pcie-frac 0` (the GPUs get no mapped alias). Without the variable nothing
+changes.
+
 **Low-RAM mode without `experts.bin` (engine 0.1.31):** for the native packs (IQ2_XS, IQ3_XXS, IQ3_S, the Coder, Swift,
 Q2_0 packed by `tools/iq_pack.py`; not the canonical Q2_0 pack setup makes for AVX-512 CPUs) the mapped mode no longer
 needs the pack's `experts.bin`: when the pack has none, the engine
@@ -173,6 +185,19 @@ been warmed). The server log has the same per request (`expert tiers: GPU ... hi
 blobs ... MB read`), and `GET /metrics` lists `ram_blobs`, `file_blobs` and `file_mb` for each recent request (with
 engine 0.1.31 or newer). It also lists each request's speculative drafts, `drafts_offered` and `drafts_accepted`
 (`null` when the engine did not report them), and their sums since the server started in `totals` (#457).
+Its `hit_rate` is the VRAM share of the experts looked up while answering: experts the GPU reads over PCIe
+(`--pcie-frac`) are not in it, so a higher `--pcie-frac` raises it even when decoding gets slower. `pcie_share`
+(engine 0.1.39 or newer, #588) is their share of all routed experts, and the server log and the Monitor tab show it
+beside the hit rate.
+
+**Where a decode window's time goes (profiling, #610):** start the server with `STRATA_DECODE_TIMING=1` (and
+`STRATA_VERIFY_PROFILE=1` for the GPU's side) in the environment. After each request the engine log then has one
+`strata decode timing:` line - windows, tokens per window, and per window the verify time split into the wait for the
+GPU, the CPU expert pool (plan, activation quantization, jobs) and the stage, plus commit and draft - and one
+`strata decode GPU stages (ms/window):` line with the GPU time of each stage (GDN and QSA layers, the VRAM expert
+hits, the router, the head, ...). The GPU profile times every stage with events, so it slows the decode a little:
+use it to compare, not to measure speed. This works with every pack; `--gpu-stages` (a one-token replay of
+per-layer graphs) refuses a native (IQ) pack, which has no such graphs.
 
 Time to first token is prompt length / prompt speed: with Q2_0 about 4 s at 4K, 25 s at 32K, under 2 minutes at 128K
 and 4.5 minutes at 262K (engine 0.1.13 made long prompts about twice as fast, below).
@@ -208,7 +233,9 @@ card gains depends on its PCIe link (the experts stream over it), so they are st
 More VRAM matters more than a faster GPU: every extra GB holds ~700 more experts, and every expert on the GPU is one the
 CPU does not have to compute. A 3090's 24 GB takes most of the CPU work away. (Since 0.1.14 the expert profile ranks
 all 24,576 experts; before, the cache stopped at 8,000, about 10-14 GB. `tools/make_profile.py` builds a profile from
-your own prompts: run the engine once with `--dump-routing trace.bin`, see the tool's help.)
+your own prompts: run the engine once with `--dump-routing trace.bin`, see the tool's help. The shipped profile already
+ranks every pair, so a trace only changes the order with `--reorder` (0.1.39, #587): your trace's pairs first, then the
+base's, then the rest.)
 
 ## Which model?
 
@@ -276,8 +303,8 @@ Everything else is installed for you the first time.
 | --- | --- |
 | GPU | NVIDIA **RTX 20, 30, 40 or 50 series**, **12 GB VRAM or more** (8 GB runs, slowly). Measured on an RTX 5070 and an RTX 3090; RTX 20 (Turing, since 0.1.27) was tested by a contributor on an RTX 2070. Or AMD **Radeon RX 7900 XT / XTX, RX 7800 XT / 7700 XT, RX 9060 XT, RX 9070 / 9070 XT, Radeon AI PRO R9700, RX 6800 / 6900 series**: [AMD_HIP.md](AMD_HIP.md). |
 | RAM | **64 GB** recommended (see the table above). |
-| CPU | x86-64 with AVX2 (any Intel/AMD desktop CPU from the last ~8 years). AVX-512 (Ryzen 7000/9000) is a bit faster. |
-| Disk | ~70-80 GB free for the model, ~6 GB for the MTP layer (+1 GB with images). **Q2_0 on an AVX-512 CPU** also writes a one-time ~40 GB copy of its experts for the fast CPU kernel. An NVMe SSD is strongly recommended. |
+| CPU | x86-64 with AVX2 (any Intel/AMD desktop CPU from the last ~8 years). AVX-512 (Ryzen 7000/9000) is a bit faster. Older CPUs without AVX2 are experimental and slow: [Older CPUs](INSTALL.md#older-cpus-experimental). |
+| Disk | ~70-80 GB free for the model, ~6 GB for the MTP layer (+1 GB with images). **Q2_0 on an AVX-512 CPU** also writes a one-time ~40 GB pack for the fast CPU kernel (34 GB of experts in its layout, plus the dense weights). An NVMe SSD is strongly recommended. |
 | OS | Windows 10/11, or Linux (Ubuntu 22.04/24.04 get everything installed automatically). |
 
 What the first start installs: in this folder `.venv/`, `engine/` and `third_party/`; the model files (`models/`,
@@ -414,6 +441,18 @@ the OS file cache, so loading again takes seconds while that RAM is not needed e
 16 GB with Q2_0 in the low-RAM mode: unloading takes ~0.3 s, and a request to an unloaded model answered after
 4.6 s (text) or 14.7 s (a picture, image encoder on the CPU).
 
+**Giving part of the VRAM back while it keeps serving (#533, opt-in, one NVIDIA GPU).** With `"vram_elastic": true`
+in the config (the engine flag `--vram-elastic`), the expert cache is allocated in 512 MiB segments
+(`"vram_segment_mib"`), and `POST /v1/vram` with `{"reserve_mib": 8000}` shrinks it between requests until that much
+VRAM is free for another program; `{"reserve_mib": null}` grows it back towards its full size, keeping the reserve
+the engine started with (`--vram-reserve-mib`), and `{"reserve_mib": 0}` takes all of it back. A request that is
+running finishes first. The experts of the segments given back are computed on the CPU, like any expert outside the
+cache, so answers keep coming, slower; growing back puts the same experts in the same slots. Nothing resizes on its
+own. Not with a layer split, the helper caches, `--peer-device` or the resident low-RAM mode. Measured on an RTX 5070
+12 GB with Q2_0 (4.8 GiB cache): `{"reserve_mib": 6000}` took 78 ms and freed 4.3 GiB (the cache keeps 0.5 GiB for
+the prompt path), decode 44 -> 33 tok/s; growing back took 92 ms and the answers were token for token the ones before
+the shrink. Without the flag nothing changes (the same answers as without it).
+
 **Keep what the expert cache learned across restarts (opt-in, engine 0.1.36, #477):** a start fills the GPU's expert
 cache from the shipped profile, and the adaptive tier (`--adapt-every`) then moves in the experts your requests use.
 With `"expert_profile_save": "expert-profile-learned.bin"` in `strata-<model>.json` the engine saves that as a
@@ -435,6 +474,7 @@ The server listens on `http://127.0.0.1:8080` (change with `--port` in setup, or
 | --- | --- |
 | OpenAI Chat Completions (stream and non-stream, tools) | `POST /v1/chat/completions` |
 | Anthropic Messages (stream and non-stream, tools) | `POST /v1/messages` |
+| OpenAI Responses (stream and non-stream, tools; stateless, [below](#the-responses-api-and-codex-cli)) | `POST /v1/responses` |
 | Model list / health | `GET /v1/models`, `GET /models`, `GET /health` |
 | Model properties | `GET /props` (also accepts `?model=<loaded-model-id>`) |
 | What the model is doing right now | `GET /status`, `GET /slots` (single slot, busy or idle) |
@@ -473,6 +513,18 @@ print(r.choices[0].message.content)
   part of the thinking the client sees and counts as output tokens. `"reasoning_budget_tokens": N` in
   `strata-<model>.json` sets it for every request; a request's own value wins, and `0` means no budget. Off by default;
   Anthropic's `"thinking": {"budget_tokens": N}` still only chooses the level, as above.
+- **A reply stuck on one token is ended (0.1.39, #606).** When a reply repeats the same token 256 times in a row, the
+  server ends it there with `finish_reason` `"length"` and says so in its window: a model in a loop, or a broken
+  state that answers one token forever (#606 saw 36,689 tokens of `!`). `"repeat_stop_tokens": N` in
+  `strata-<model>.json` sets the run length; `0` turns it off (for a request that really wants one token many times).
+- **Changing the effort without re-reading the prompt (opt-in, 0.1.39, #458).** The effort's instruction is the
+  first thing in the prompt, so a request that only changes the effort (an agent's "think harder" switch, `none` for
+  a quick tool step) reads the whole conversation again. `"effort_position": "end"` in `strata-<model>.json` renders
+  every request's prompt start as the default effort's and puts a `low` / `medium` effort in a short system turn
+  right before the answer (no thinking: the empty thinking block, as always); the engine (0.1.39+, which the server
+  checks) keeps its checkpoint in front of that turn, so the next request reuses the conversation whatever its
+  effort. The default (`"start"`) prompt is unchanged. The model sees a level that is not the default in another
+  place than it was trained with; how well it follows it there is not measured yet.
 - **Anthropic requests that don't ask for thinking (opt-in, 0.1.32, #278).** By default a `/v1/messages` request
   with no `"thinking"`, effort or budget thinks as the model's template does. `"anthropic_thinking": "on_request"` in
   `strata-<model>.json` renders such a request without thinking - Anthropic's own rule, and what Claude Code's short
@@ -520,6 +572,7 @@ print(r.choices[0].message.content)
 - **Claude Code** (Strata 0.1.17 or newer): set `ANTHROPIC_BASE_URL=http://127.0.0.1:8080` and
   `ANTHROPIC_MODEL` to a Claude model name it knows (it refuses names it doesn't; Strata ignores the name), plus any
   `ANTHROPIC_AUTH_TOKEN` (or your `api_key`, if you set one).
+- **Codex CLI** (0.1.39): see [the Responses API](#the-responses-api-and-codex-cli) below.
 - **Context.** Chosen in setup (8K-262K). Requests longer than that are refused, never silently cut. A request whose
   `max_tokens` would run past the context is refused too (400); agents that always ask for their full output cap
   can instead get it shortened to the room left: add `"fit_max_tokens": true` to `strata-<model>.json` (or pass
@@ -527,6 +580,14 @@ print(r.choices[0].message.content)
 - **Model aliases** (0.1.32). `"aliases": ["qwen", "local-model"]` in `strata-<model>.json` lists the model under
   those names too in `/v1/models` (each with its own `id`, and in the model's `aliases`), like llama-server's
   `--alias`; a request naming one is answered under that name. Any other name is still served, as before.
+- **Model settings in the web page (0.1.39, #564).** The About tab's Model settings card shows and changes a few of
+  the keys above in `strata-<model>.json`: the `sampling` defaults (temperature, top_p, top_k, min_p),
+  `reasoning_budget_tokens`, `fit_max_tokens`, `anthropic_thinking`, `effort_position`, `aliases`, `idle_unload_s`,
+  `lazy_load`, `engine_silence_s`, `api_monitor`, `open_browser` and `--vram-reserve-mib`. An empty field removes the
+  key (its default). Every other key of the file stays as it is, the earlier file is kept as
+  `strata-<model>.json.bak`, and the model uses the change from its next start. Only Strata's own page can save
+  (JSON, the API key when one is set, as for the Chat settings); the network, key, MCP and program keys are not
+  editable there.
 - **From other devices on your network.** The server listens on your PC only (`127.0.0.1`) unless you say otherwise:
   run setup with `START-HERE.bat --setup --host 0.0.0.0 --api-key some-long-secret` (or add `"host": "0.0.0.0"` and
   `"api_key": "..."` to `strata-<model>.json`). The server window then prints this PC's addresses
@@ -581,12 +642,19 @@ in a bounded 8 GiB host-RAM cache. This preserves controller/worker histories wh
 their requests alternate; it does not execute requests concurrently. No client session
 ID is required: only exact token/image prefixes with matching steering mode are reused.
 The default budget is 0 (disabled); `--prompt-cache 0` also disables parking.
-The initial shared-core integration supports a single session GPU: combining
-enabled parking with `--layer-split` is rejected before model loading. Ordinary
-upstream layer-split checkpoints remain available with parking disabled. FP16,
+With `--layer-split`, a parked conversation holds one image per stage (each later stage's
+session and its share of the conversation checkpoints), every image is validated before
+anything is overwritten, and each is restored on its own GPU. Verified on a 4-GPU split:
+a 9,276-token conversation restored in 51 ms, and its follow-up decodes exactly the tokens
+it decodes when the conversation never left (`tools/parking_test.py`). FP16,
 INT8, Q4_0 and identity-layout K8V4 snapshots are supported; the K8V4 draft ring
 remains INT8, as in upstream. Windows/HIP and multi-GPU runtime coverage must be
 reported separately from Linux/CUDA evidence.
+
+The web page's Monitor tab has a **Conversation cache** card (0.1.39, #596): the parked conversations against the
+slots and the RAM budget, how many were parked, restored and evicted, and the last switch (read from the engine's
+log), and for every setup how many prompt tokens the cache gave back - in the last request and since the start.
+`/metrics` has the same under `"conversation_cache"`.
 
 Snapshots contain running state, checkpoints, used K/V pages, and draft-layer K/V.
 They add host RAM, not another model or VRAM allocation. The byte budget also counts
@@ -615,8 +683,9 @@ sizes and K/V bytes reused during capture. `STRATA_SNAPSHOT_FULL_CAPTURE=1` disa
 retention for diagnostic comparisons. Snapshots are not
 persisted across restarts.
 
-**Current limits (v1):** one request at a time, and one conversation cached at a time (switching between two chats
-re-reads the other one unless the opt-in cache above is enabled); images only when set up with them (below); no video. **Temperature / top_p / top_k / min_p /
+**Current limits (v1):** one request at a time unless `"parallel": N` is set (opt-in batch slots, up to N requests
+decoded together: [BATCHING.md](BATCHING.md)), and one conversation cached at a time (switching between two chats
+re-reads the other one unless the opt-in cache above is enabled, or each conversation keeps its own batch slot); images only when set up with them (below); no video. **Temperature / top_p / top_k / min_p /
 seed** are honored per request (OpenAI and Anthropic fields); with the default adaptive expert tier a sampled result
 is not reproducible run to run - for seed-reproducible output add `--adapt-every 100000` (static residency) to the
 engine arguments. The run config's optional `sampling` block sets the defaults for requests that leave the fields out
@@ -630,6 +699,65 @@ each batch got them). That makes requests with penalties 1-11% slower than in 0.
 without penalties, so more of its guesses are now rejected. Requests without penalties are unchanged. `top_k` keeps at most 64 candidates: `0` ("off") or anything above 64 uses all 64.
 
 ---
+
+### The Responses API and Codex CLI
+
+`POST /v1/responses` (0.1.39, #451) speaks OpenAI's newer Responses API, which Codex CLI uses (it no longer
+speaks Chat Completions). It runs on the same path as `/v1/chat/completions`, so the thinking levels, the thinking
+budget, the conversation cache and the same API key, Host and Origin checks apply.
+
+It is **stateless**: nothing is stored, so the client sends the whole conversation in `input` every time (Codex does,
+with `store: false`). `previous_response_id`, `conversation`, `background` and the retrieve/delete/cancel endpoints
+are refused with an error that says so.
+
+| Request | What Strata does |
+| --- | --- |
+| `input` as a string, or as items | `message` items (`user`, `assistant`, `system`, `developer`; text and images), `reasoning`, `function_call`, `function_call_output`, `custom_tool_call(_output)` |
+| `instructions` | The system message (with leading `developer` messages; later ones become user messages, as on the chat path) |
+| `tools` | `function` tools, `namespace` tools (the model sees `namespace.name`; calls come back with `namespace` and `name`), `custom` tools (one free-form `input` string). Hosted tools (`web_search`, `file_search`, ...) are left out: the model cannot run them |
+| `tool_choice` | `"none"` hides the tools; anything else lets the model choose (it cannot be forced) |
+| `reasoning.effort` | `none`/`minimal`, `low`, `medium`, `high`/`xhigh`; without it the model's default (high) |
+| `max_output_tokens` | The output cap (thinking included). Running out ends the response `incomplete` (`max_output_tokens`) |
+| `text.format` | `json_schema` and `json_object` use the [JSON response formats](#json-response-formats) (checked, not constrained) |
+| `temperature`, `top_p`, `reasoning_budget_tokens`, ... | As on the chat path |
+
+The model's thinking comes back as a `reasoning` output item with `reasoning_text` content (streamed as
+`response.reasoning_text.delta`). This model writes no separate summaries, so `summary` is empty. With
+`"include": ["reasoning.encrypted_content"]` the item also carries `encrypted_content`: an opaque string (base64, not
+encrypted; the client already holds the text). Send the reasoning items back with the rest of the conversation, as
+Codex does: their thinking goes back into the prompt, so it matches what the model wrote and the conversation cache
+is reused.
+
+With `"stream": true` the events are the official ones, in order: `response.created`, `response.in_progress`, then
+for each output item `response.output_item.added`, its deltas (`response.reasoning_text.delta`,
+`response.output_text.delta`, `response.function_call_arguments.delta`), its `...done` events and
+`response.output_item.done`, and at the end `response.completed`, `response.incomplete` or `response.failed`.
+While a long prompt is read, a `response.in_progress` event goes out every 15 s, which Codex counts as activity.
+Errors before the answer starts have the Responses form (`{"error": {"message", "type", "param", "code"}}`); after
+it started they arrive as `response.failed`.
+
+**Codex CLI.** In `~/.codex/config.toml` (Windows: `%USERPROFILE%\.codex\config.toml`):
+
+```toml
+model = "strata"                        # any name; Strata answers with its model
+model_provider = "strata"
+model_context_window = 32768            # the context you chose in setup: Codex compacts before it gets there
+show_raw_agent_reasoning = true         # show the model's thinking (it writes no summaries)
+# model_reasoning_effort = "medium"     # none, low, medium or high; default: the model's (high)
+
+[model_providers.strata]
+name = "Strata (local)"
+base_url = "http://127.0.0.1:8080/v1"
+wire_api = "responses"
+stream_idle_timeout_ms = 600000         # a first, long prompt can take minutes to read
+# env_key = "STRATA_API_KEY"            # only if the server has an api_key: the variable holding it
+```
+
+Then run `codex` (or `codex exec "..."`) as usual. Codex warns `Model metadata for ... not found` for a local model
+name; that is expected. Measured with Codex CLI 0.160.0 and Q2_0 on an RTX 5070: its first prompt (instructions and
+tool descriptions) was 9,443 tokens, read in 10 s; in a tool loop, each later turn reused about 96% of the prompt from
+the cache and read only the new part in 1-2 s. On Windows, Codex's sandbox rejected every shell command in that test
+until it was started with `-c 'windows.sandbox="unelevated"'` (a Codex setting, not Strata's).
 
 ## Tools from MCP servers
 
@@ -747,6 +875,17 @@ helper (`strata-vision`, from llama.cpp's `mtmd` library) and adds it to your st
 
 A picture becomes up to 1,024 tokens of the context (a 640x480 photo: 300). The same picture sent again, as chat apps
 do on every turn, is encoded only once.
+
+**More image tokens (0.1.39, #625):** `--vision-tokens N` at setup (`START-HERE.bat --setup --vision cpu
+--vision-tokens 768`) sets the most tokens a picture becomes - `"max_tokens"` in the `"vision"` section of
+`strata-<model>.json`, which you can also edit by hand. More tokens keep more detail (small text, charts, screenshots)
+and take longer to encode, on the CPU most of all; a setup run again keeps the value.
+
+**A Q8_0 encoder (#625):** `"mmproj"` in the `"vision"` section can point to another mmproj file of this model, for
+example a Q8_0 one (llama.cpp's `convert_hf_to_gguf.py --mmproj --outtype q8_0` makes one): the encoder's library
+reads quantized weights, the file is half the size, and on the CPU it can encode faster than BF16. Setup downloads
+the BF16 file, and a setup run again keeps a file of your own that still exists. We have not measured its accuracy
+against BF16 yet; numbers are welcome in #625.
 
 **A spare GPU for the encoder (0.1.33, #408):** with a card the engine doesn't use, add `"cuda_device": 2` (numbered
 like `nvidia-smi`) to the `"vision"` section of `strata-<model>.json`: the encoder then runs on that card alone. Lower
@@ -872,6 +1011,7 @@ the document, +0.4% on the chat. Details: `bench/results/2026-09-27-esp/`.
 | Pictures are slow (10-30 s) | The encoder runs on the CPU: run setup again with `--vision gpu` (needs ~1.4 GB of VRAM). |
 | A request never finishes: "reading the prompt", GPU "100%" at low power | The GPU ran out of VRAM (engines before 0.1.9 could end with ~30 MiB free at large contexts). Run `START-HERE.bat` once to get engine 0.1.9 or newer; the log then says `... MiB of VRAM free with everything loaded` (a few hundred) and names the `--vram-reserve-mib` to add if it is low. |
 | Generation stops mid-answer, GPU "100%", one CPU core busy | Fixed in engine 0.1.12 (issue #29, a race in the CPU expert pool on big-VRAM cards). Since then a request that stops moving ends with an error instead of hanging (after 2 minutes; 1 minute from 0.1.13): the log says `no progress for ... s ... (issue #29)` with where it stopped, and the next request starts the engine again. If you see that line, please open an issue with it. Engine 0.1.13 adds a stall report under it (what every expert-pool thread and the GPU handshake were doing, memory and page faults) and, on Windows, a `strata-stall-<pid>.dmp` file with every thread's stack: attach both. (`STRATA_WATCHDOG_S` sets the time in seconds; 0 turns it off.) Engine 0.1.14 fixes the stall those reports found (issue #31: with the IQ packs the host could wait forever inside the NVIDIA driver while copying experts in a verify window; the experts are now copied by a GPU kernel, `--pcie-mode dma` restores the old way). |
+| `no progress for 60 s ... reading the prompt` on Linux, and the stall report says `threads waiting on the disk (state D): 16 ...` | The engine waits for the drive, not a deadlock: the n-gram table is read at random (`--ple-io direct`), which a rotational disk cannot keep up with (#605). The engine warns at start when the table is on one; `--ple-io ram` (Linux, needs RAM for the table) or the model on an SSD fixes it. Setup adds `--ple-io ram` itself on a rotational disk when the RAM holds the table (0.1.39). |
 | `the engine said nothing for ... s during the request` or `... did not finish the request after it was stopped (STOP)` | Issue #481: the engine and the server lost step (the engine waits for its next command, the server for the request's end; GPU at 0 %, nothing in the log). The server ends the engine after 300 s without a line from it during a request (while a prompt is read: each chunk may take three times the previous one's time, the first one up to its tokens at 50 tok/s more), the request ends with an error and the next request starts the engine again. `"engine_silence_s": 600` in `strata-<model>.json` sets the time (0 = wait forever, as before). If you see it, please add the end of the engine log to #481. |
 | `out of memory: cudaFuncSetAttribute` in the log (IQ3_XXS, long prompt) | Fixed in engine 0.1.15: CUDA loaded a kernel's code when it was first needed, and mid-prompt there was no VRAM left for it. Run `START-HERE.bat` (Windows) or `./setup.sh` (Linux) once to update. |
 | Anything else | The engine log is `strata-<model>.log` in this folder. |
@@ -887,12 +1027,26 @@ the document, +0.4% on the chat. Details: `bench/results/2026-09-27-esp/`.
   the conversation while you chat).
 - **RAM:** all 24,576 experts, pinned. The CPU computes the experts that are not on the GPU **in place**, at the same time
   as the GPU works on the cached ones (AVX-512 / AVX2 kernels, ggml's for the i-quants).
-- **SSD:** the 28.8 GB n-gram table, read a few rows per token through the OS cache.
+- **SSD:** the 28.8 GB n-gram table, a few rows per token, read unbuffered past the OS cache (`--ple-io direct`, the
+  default, made for SSDs; on a rotational disk `--ple-io ram` keeps the table in RAM, #605).
 - **Speculation:** the model's own MTP layer drafts up to 3 tokens; one pass over all 48 layers checks them. 2.4-3.2
   tokens per pass on average. When the reply repeats the context (code edits, quoted text), **prompt lookup** (engine
   0.1.7) drafts up to 5 tokens from the earlier copy, but only where its measured acceptance and cost say it pays:
   code edits 6-11% faster, other text unchanged. The drafts are checked like the MTP's, so the output is the same.
-- **Prompts** are processed in 2,048-token chunks with the experts streamed to the GPU over PCIe.
+- **Prompts** are processed in chunks of up to 8,192 tokens (`--prefill auto`; 32,768 opt-in) with the experts
+  streamed to the GPU over PCIe. Since engine 0.1.39b (#583) the streamed ring is sized in bytes for the pack (a
+  native pack with bigger blobs gets fewer ring slots and keeps more cache slots) and `--prefill auto` picks the
+  largest chunk that keeps that ring full. It only gives up ring slots where 0.1.39's rule held the chunk at 4,096
+  tokens or less; from 6,144 on it keeps 0.1.39's ring and only looks for a bigger chunk beside it (shrinking the
+  ring there measured slower: the Coder -12%), and a prompt that fits 0.1.39's chunk keeps 0.1.39's ring (one
+  chunk: a smaller ring only slowed it). RTX 5070, 32K prompts against `STRATA_RING_BYTES=0`, 2-3 interleaved
+  rounds: IQ3_XXS +18.5% at a 1,500-slot cache and +9% in another memory state, the Coder +3%, IQ3_S unchanged; 4K
+  prompts unchanged (-0.7% to +1.1%, bit-identical). Q2_0 (a fixed `--prefill 2048`) is not affected. It changes
+  the bits of a long prompt against 0.1.39 (the experts go through a different
+  mix of cached and streamed groups). Measured quality, teacher-forced over the next 2,001 tokens of a long document
+  against the FP16 prompt path (IQ3_XXS, `--prefill auto`): 8K prompt KL 0.042 (0.1.39: 0.054), top-1 agreement
+  93.5% (92.2%); 32K prompt KL 0.020 (0.019), top-1 95.3% (95.0%) - the same band as before. `STRATA_RING_BYTES=0`
+  restores 0.1.39's ring, loan and chunk choice.
 
 The full story, with measurements, bottlenecks and what comes next: **[docs/paper/Strata-Paper.pdf](paper/Strata-Paper.pdf)**.
 

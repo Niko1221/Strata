@@ -55,3 +55,24 @@ the critical path. The copies still execute; they are not eliminated.
   safety suite. Later combined builds did, but they do not validate this port.
 - Keep draft until pure-upstream long-context, cancellation, and image-history
   tests pass. HIP and other GPUs are unvalidated.
+
+## 0.1.39 follow-up
+
+The branch now includes official 0.1.39 (`6f32ec0`). The opt-in implementation
+still uses the existing staging pool and drains its side stream on early exits,
+relayout and destruction. No broader GPU/backend support is claimed.
+
+A combined custom 0.1.39 build passed a five-arm, 240-request HTTP suite using
+SC117 abliterated IQ3_S, 128K context and INT8 KV. Cold 110K prefill measured
+2249.2 tokens/s versus 2210.1 for the official build: roughly unchanged at this
+sample size, not evidence of a large new prefill improvement. These are
+whole-build measurements, not isolated results for this PR. Cancellation and
+image-history isolation still need independent validation on this branch.
+
+@T-Crypt has offered to review this work and include suitable parts in a combined
+streamed-KV follow-up with credit. Coordinate with that work from #711 rather
+than merging overlapping changes without review.
+
+The exact revised branch compiled and linked independently against official
+0.1.39 on the Linux host above. No model server was launched for this
+branch-specific check; this does not establish GPU runtime safety or speed.

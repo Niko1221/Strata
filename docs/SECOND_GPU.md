@@ -84,6 +84,44 @@ The existing warning about the CUDA0 expert-cache GPU hit path still applies:
 its outputs diverge from cache-off runs. Treat performance as experimental
 until the generated tokens have been validated.
 
+## Optional helper decode optimization
+
+`--remote-expert-opt` (`--serve` only) optimizes the CUDA1-3 helper caches
+above. The engine's default is off; since 0.1.39b setup adds it to a config on
+two or more GPUs (`--gpus`, or "use both" at start). It acts only when a helper
+cache is configured; a layer split runs exactly as before. To leave it out:
+setup's `--no-remote-expert-opt`, or `"remote_expert_opt": false` in the
+model's `strata-*.json` (kept when setup runs again). Measured by the PR's
+author: dual RTX 4090 +63% mixed / +132% code decode over the plain helper
+path; RTX 5090 + 4090 +28% / +63%. The primary cache avoids admitting experts already held
+by a helper, and helpers replace cold experts with frequently routed CPU
+misses using their existing same-layer slots. Each helper reduces its expert
+outputs to a weighted partial sum on its GPU before returning one vector per
+token. Tokens with no CPU expert work skip CPU activation quantization.
+
+For an existing server configuration with CUDA0 as the primary and CUDA1 as a
+helper, use these engine arguments alongside the model and profile arguments:
+
+```text
+--expert-cache auto --expert-cache-device1 auto --remote-expert-opt
+```
+
+`--expert-cache-device1`, `--expert-cache-device2` and
+`--expert-cache-device3` now also accept `auto`: fill each helper from its
+assigned ranking using actual aligned expert bytes and free VRAM, retaining
+the existing 512 MiB allowance. Explicit numeric budgets still work. This is
+startup capacity sizing, not throughput balancing; with several helpers a
+card's truncated candidate tail is not redistributed to another card.
+
+The optimization uses the existing host scheduling and pinned-host transport,
+not P2P or tensor parallelism. Each layer still waits for its participating
+helpers. It changes floating-point summation order, so enabled output is not
+claimed to be bitwise identical. Only two-card CUDA operation has been measured;
+three/four cards and HIP have not been validated. Without the switch, the
+existing decode path remains in use. This does not optimize the separate
+`--peer-device` path below or change its existing incompatibility with helper
+caches.
+
 ## Peer tier (`--peer-device`)
 
 `--peer-device N` puts a second adaptive expert cache on CUDA device N. It

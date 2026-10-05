@@ -21,12 +21,14 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate  # noqa: E402
 from serve.server import (CTX_SLACK, ByteTokenizer, EngineDied, GpuBusy, MockEngine, Service, StrataEngine,  # noqa: E402
-                          engine_args, prompt_tokens_seen, request_timings, serve, start_failure_hint)
+                          engine_args, layer_split_value, prompt_tokens_seen, request_timings, serve,
+                          start_failure_hint)
 from types import SimpleNamespace  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 CTX = 4096
-ANSWER = "x" * 2000                              # longer than the old 1024 fallback: one token per byte
+ANSWER = "xy" * 1000                             # longer than the old 1024 fallback: one token per byte (#606: not
+#                                                one token repeated, which the server ends at 256)
 
 
 class RecordingEngine(MockEngine):
@@ -239,6 +241,190 @@ class ImageMarkers(unittest.TestCase):
                     self.assertEqual(ids.count(pad), 3)          # the image's three rows, nothing else
                     self.assertIn("<|image_pad|> marks" if "docs" in text else "plain", tok.decode(ids))
             svc.embeddings.path.unlink(missing_ok=True)
+
+
+class ThinkTokenizer(ByteTokenizer):
+    """The byte tokenizer with the model's reasoning markers as specials that are matched even without parse_special,
+    as the real tokenizer does (GGUF token type 4)."""
+    SPECIALS = ByteTokenizer.SPECIALS + ["<think>", "</think>"]
+    ALWAYS = ("<think>", "</think>")
+
+
+class LiteralThinkTags(unittest.TestCase):
+    """#537: a <think> / </think> written inside a message is text, not the model's reasoning markers: a quoted
+    "</think>" no longer ends the model's reasoning before it starts.  The template's own markers stay special."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tok = ThinkTokenizer()
+        cls.svc = Service(MockEngine(cls.tok, "ok", max_context=CTX), cls.tok,
+                          ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        cls.open, cls.close = (cls.tok.encode(t)[0] for t in ("<think>", "</think>"))
+
+    def ids(self, messages, tools=None, **kw):
+        return self.svc.prepare(messages, tools, kw)[0]
+
+    def old_ids(self, messages, tools=None, **kw):
+        return self.tok.encode(self.svc.template.render(messages, tools=tools, **kw), parse_special=True)
+
+    def test_a_quoted_tag_in_a_user_message(self):
+        text = "Quote this exact literal string, then explain it: </think> and <think>"
+        ids = self.ids([{"role": "user", "content": text}])
+        self.assertEqual(ids.count(self.close), 0)
+        self.assertEqual(ids.count(self.open), 1)                         # the generation prompt's own
+        self.assertEqual(ids[-2:], [self.open, ord("\n")])
+        self.assertIn(text, self.tok.decode(ids))                         # the text is all there, as text
+        self.assertEqual(ids.count(self.close), 0)
+        # thinking off: the template's empty block stays two specials, the user's tag is text
+        ids = self.ids([{"role": "user", "content": text}], enable_thinking=False)
+        self.assertEqual((ids.count(self.open), ids.count(self.close)), (1, 1))
+
+    def test_without_a_tag_the_prompt_is_unchanged(self):
+        msgs = [{"role": "system", "content": "Be brief."}, {"role": "user", "content": "1+1?"},
+                {"role": "assistant", "content": "2", "reasoning_content": "easy"}, {"role": "user", "content": "x"}]
+        self.assertEqual(self.ids(msgs), self.old_ids(msgs))
+        self.assertEqual(self.ids(msgs, enable_thinking=False), self.old_ids(msgs, enable_thinking=False))
+
+    def test_history_tool_results_and_tools(self):
+        msgs = [{"role": "user", "content": "go"},
+                {"role": "assistant", "content": "It wrote </think> here.", "reasoning_content": "the </think> tag",
+                 "tool_calls": [{"function": {"name": "write", "arguments": {"text": "a </think> b"}}}]},
+                {"role": "tool", "content": "file has <think> in it"},
+                {"role": "user", "content": "why did you write </think>"}]
+        tools = [{"name": "write", "description": "writes text (may contain </think>)", "parameters": {}}]
+        ids = self.ids(msgs, tools)
+        # the template's markers: the history turn's <think>...</think> and the generation prompt's <think>
+        self.assertEqual((ids.count(self.open), ids.count(self.close)), (2, 1))
+        text = self.tok.decode(ids)
+        for part in ("It wrote </think> here.", "the </think> tag", "a </think> b", "file has <think> in it",
+                     "why did you write </think>", "may contain </think>"):
+            self.assertIn(part, text)
+
+    def test_a_client_that_sends_the_reasoning_inline(self):
+        # an assistant turn whose content opens with its own <think>...</think> block keeps that block's markers
+        msgs = [{"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "<think>\nplan: say </x> hello\n</think>\n\nHello, </think> is a tag."},
+                {"role": "user", "content": "again"}]
+        ids = self.ids(msgs)
+        self.assertEqual((ids.count(self.open), ids.count(self.close)), (3, 2))   # template's + the inline block's
+        self.assertIn("Hello, </think> is a tag.", self.tok.decode(ids))
+
+    def test_the_real_tokenizer_reads_the_tag_as_text(self):
+        import strata_tokenizer as ST
+        b2u = ST.bytes_to_unicode()
+        tokens = [b2u[b] for b in range(256)] + ["<think>", "</think>", "<|im_end|>"]
+        tok = ST.Tokenizer(tokens, [], [1] * 256 + [4, 4, 3])
+        text = "say </think> now<|im_end|>"
+        self.assertEqual(tok.encode(text, parse_special=True), [*b"say ", 257, *b" now", 258])
+        start = text.index("</think>")
+        plain = tok.encode(text, parse_special=True, plain=[(start, start + len("</think>"))])
+        self.assertEqual(plain, [*b"say </think> now", 258])               # the tag as text, im_end still special
+
+
+class EffortAtTheEnd(unittest.TestCase):
+    """#458 (opt-in "effort_position": "end"): a non-default effort goes in a system turn right before the answer, so
+    a request that changes only the effort keeps the cached conversation.  The engine's checkpoint rule is simulated
+    on the token ids (src/program/generate.cpp: the last <|im_start|>, and with --tail-role-token the one in front
+    of a trailing system turn); the default prompt does not change."""
+
+    TURN = 256                                       # the byte tokenizer's <|im_start|>
+    ROLE = ord("s")                                  # "system"'s first byte stands for its token
+
+    def setUp(self):
+        self.tok = ByteTokenizer()
+        self.svc = Service(MockEngine(self.tok, "ok", max_context=1 << 20), self.tok,
+                           ChatTemplate(ROOT / "serve/chat_template.jinja"))
+
+    def ids(self, messages, end, **kw):
+        self.svc.effort_end = end
+        return self.svc.encode_prompt(messages, None, kw)
+
+    def checkpoint(self, ids, tail, resume=0):
+        """Where the engine checkpoints a prompt (the tokens before it), as generate.cpp's serve loop does."""
+        turn_at = next((i for i in range(len(ids) - 1, resume, -1) if ids[i] == self.TURN), -1)
+        if turn_at > 0 and tail:
+            i = next((i for i in range(turn_at - 1, resume, -1) if ids[i] == self.TURN), None)
+            if i is not None and ids[i + 1] == self.ROLE:
+                turn_at = i
+        return ids[:turn_at]
+
+    def session(self, requests, end, tail):
+        """The reused tokens of each request after the first: the longest earlier checkpoint it starts with."""
+        checks, reused = [], []
+        for messages, kw in requests:
+            ids = self.ids(messages, end, **kw)
+            reused.append(max([len(c) for c in checks if ids[:len(c)] == c], default=0))
+            checks.append(self.checkpoint(ids, tail))
+        return reused[1:]
+
+    CHAT = [{"role": "system", "content": "You are a careful assistant. " * 40},
+            {"role": "user", "content": "Explain the conversation cache. " * 20}]
+    REPLY = {"role": "assistant", "content": "It keeps the prompt's state. " * 20, "reasoning_content": "ok"}
+    NEXT = {"role": "user", "content": "And the checkpoints?"}
+
+    def test_the_default_prompt_is_unchanged(self):
+        for kw in ({}, {"reasoning_effort": "xhigh"}):
+            self.assertEqual(self.ids(self.CHAT, True, **kw), self.ids(self.CHAT, False, **kw))
+            self.assertEqual(self.ids(self.CHAT, True, **kw),
+                             self.tok.encode(self.svc.template.render(self.CHAT, **kw), parse_special=True))
+        for kw in ({"reasoning_effort": "low"}, {"reasoning_effort": "medium"}, {"enable_thinking": False}):
+            self.assertEqual(self.ids(self.CHAT, False, **kw),        # off: every effort renders as before
+                             self.tok.encode(self.svc.template.render(self.CHAT, **kw), parse_special=True))
+
+    def test_the_trailing_turn(self):
+        text = self.tok.decode(self.ids(self.CHAT, True, reasoning_effort="low"))
+        self.assertTrue(text.endswith("<|im_end|>\n<|im_start|>system\nReasoning effort is set to low. Keep your "
+                                      "thinking brief and focused, moving directly to the conclusion without "
+                                      "unnecessary elaboration.<|im_end|>\n<|im_start|>assistant\n<think>\n"), text[-300:])
+        self.assertIn("Reasoning effort is set to xhigh", text)          # the top stays the default's
+        text = self.tok.decode(self.ids(self.CHAT, True, enable_thinking=False))
+        self.assertTrue(text.endswith("<|im_start|>assistant\n<think>\n\n</think>\n\n"))
+        self.assertNotIn("<|im_start|>system\nReasoning effort", text[-200:])
+        default = self.ids(self.CHAT, True)
+        for kw in ({"reasoning_effort": "low"}, {"reasoning_effort": "medium"}, {"enable_thinking": False}):
+            ids = self.ids(self.CHAT, True, **kw)
+            head = len(self.checkpoint(default, False))                       # all before the answer's turn
+            self.assertEqual(ids[:head], default[:head], kw)                 # the same prompt up to the answer
+
+    def test_changing_the_effort_keeps_the_conversation(self):
+        efforts = [{}, {"reasoning_effort": "low"}, {"enable_thinking": False}, {"reasoning_effort": "medium"}, {}]
+        history = len(self.checkpoint(self.ids(self.CHAT, False), False))
+        # at the top (the default): another effort differs a few tokens in, and the whole prompt is read again
+        self.assertEqual(self.session([(self.CHAT, kw) for kw in efforts], False, False)[:2], [0, 0])
+        # at the end, with the engine's rule: every request reuses the whole conversation
+        self.assertEqual(self.session([(self.CHAT, kw) for kw in efforts], True, True), [history] * 4)
+
+    def test_the_next_turn_reuses_the_checkpoint(self):
+        turn1, turn2 = self.CHAT, self.CHAT + [self.REPLY, self.NEXT]
+        low = {"reasoning_effort": "low"}
+        first = len(self.checkpoint(self.ids(turn1, True, **low), True))
+        # the engine's rule: the next turn (the same effort) reuses the first turn's whole conversation
+        self.assertEqual(self.session([(turn1, low), (turn2, low)], True, True), [first])
+        # without it the checkpoint held the effort turn and the next turn reused nothing (what #458 measured)
+        self.assertEqual(self.session([(turn1, low), (turn2, low)], True, False), [0])
+
+    def test_the_config(self):
+        from serve.server import effort_end_args
+
+        class Tok:
+            def encode(self, text, parse_special=False):
+                return [8678] if text == "system" else [1, 2]
+
+        with tempfile.TemporaryDirectory() as d:
+            new, old = Path(d) / "new.exe", Path(d) / "old.exe"
+            new.write_bytes(b"...  --tail-role-token ID --serve: ...")
+            old.write_bytes(b"... --turn-token ID ...")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertIsNone(effort_end_args({}, str(new), Tok()))
+                self.assertIsNone(effort_end_args({"effort_position": "start"}, str(new), Tok()))
+                self.assertEqual(effort_end_args({"effort_position": "end"}, str(new), Tok()),
+                                 ["--tail-role-token", "8678"])
+                self.assertIsNone(effort_end_args({"effort_position": "end"}, str(old), Tok()))
+                self.assertIsNone(effort_end_args({"effort_position": "end"}, str(new), ByteTokenizer()))
+            self.assertIn("needs engine 0.1.39 or newer", out.getvalue())
+            with self.assertRaises(ValueError):
+                effort_end_args({"effort_position": "middle"}, str(new), Tok())
 
 
 class StatusNeedsTheKey(unittest.TestCase):
@@ -498,6 +684,36 @@ class ClientShapes(unittest.TestCase):
                 status, b = self.post(path, {"model": "x", "max_tokens": 20, "messages": ["hi"]})
                 self.assertEqual(status, 400, b)
                 self.assertIn("messages must be a list of objects", b["error"]["message"])
+
+    def test_malformed_tools_are_a_400(self):
+        # #592: a "tools" value that is not a list of named tool objects is a 400 naming the field, on both APIs,
+        # not a dropped connection (an AttributeError/TypeError in the request thread)
+        msgs = [{"role": "user", "content": "hi"}]
+        bad = ("auto", ["get_weather"], [{"description": "no name"}], {"name": "x"},
+               [{"type": "function", "function": "get_weather"}], [{"type": "function", "function": {"name": ""}}])
+        for path in ("/v1/chat/completions", "/v1/messages"):
+            for tools in bad:
+                with self.subTest(path=path, tools=tools):
+                    status, b = self.post(path, {"model": "x", "max_tokens": 8, "messages": msgs, "tools": tools})
+                    self.assertEqual(status, 400, b)
+                    self.assertIn("tools", b["error"]["message"])
+        status, b = self.post("/v1/chat/completions", {"model": "x", "max_tokens": 8, "messages": msgs})
+        self.assertEqual(status, 200, b)                            # the server goes on
+
+    def test_well_formed_tools_still_work(self):
+        msgs = [{"role": "user", "content": "hi"}]
+        fn = {"name": "get_weather", "description": "the weather", "parameters": {"type": "object", "properties": {}}}
+        for path, tools in (("/v1/chat/completions", [{"type": "function", "function": fn}]),
+                            ("/v1/chat/completions", [fn]),                 # the bare shape some clients send
+                            ("/v1/chat/completions", json.dumps([{"type": "function", "function": fn}])),
+                            ("/v1/chat/completions", []), ("/v1/chat/completions", None),
+                            ("/v1/messages", [{"name": "get_weather", "input_schema": {"type": "object"}}]),
+                            ("/v1/messages", [])):
+            with self.subTest(path=path, tools=tools):
+                status, b = self.post(path, {"model": "x", "max_tokens": 8, "messages": msgs, "tools": tools})
+                self.assertEqual(status, 200, b)
+                if tools:
+                    self.assertIn("get_weather", self.prompt_text())
 
     def test_vision_temp_image_removed_when_the_pipe_fails(self):
         # #352: the temporary image goes even when the encoder's pipe raises
@@ -805,6 +1021,26 @@ class DraftCounts(unittest.TestCase):
         self.assertEqual((m["totals"]["drafts_offered"], m["totals"]["drafts_accepted"]), (17, 10))
 
 
+class PcieShare(unittest.TestCase):
+    """#588: the hit rate stays the VRAM share of the lookups; the routed experts the GPU read over PCIe (the DONE
+    line's 16th field, engine 0.1.39+) are given as their own share of all routed experts."""
+
+    def test_history(self):
+        tok = ByteTokenizer()
+        engine = DoneLineEngine(tok, "</think>\n\nok", max_context=CTX, done_lines=[
+            "DONE 4 20 40.0 30.0 stop 3 5 0 60 100 0 0 0.0 20 25",     # 25 more over PCIe: 20% of 125 routed
+            "DONE 4 20 40.0 30.0 stop 3 5 0 60 100 0 0 0.0 20 0",
+            "DONE 4 20 40.0 30.0 stop 3 5 0 60 100 0 0 0.0 20"])       # an older engine
+        svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            for _ in range(3):
+                list(svc.run(tok.encode("hi"), False, None, 10, {}, threading.Event()))
+        rows = list(svc.history)
+        self.assertEqual([r["hit_rate"] for r in rows], [0.6, 0.6, 0.6])
+        self.assertEqual([r["pcie_share"] for r in rows], [0.2, 0.0, None])
+        self.assertIn("expert cache 60.0% hit (+20.0% of the routed experts over PCIe)", out.getvalue())
+
+
 class LearnedProfile(unittest.TestCase):
     """#477: "expert_profile_save" in the config: the engine saves its learned profile there, and the next start
     begins from it when it is a profile of the same model; without the key the arguments are unchanged."""
@@ -845,6 +1081,67 @@ class LearnedProfile(unittest.TestCase):
     def test_no_profile_in_the_args(self):
         cfg = {"args": ["--native", "x"], "expert_profile_save": "learned.bin"}
         self.assertEqual(engine_args(cfg), ["--native", "x", "--expert-profile-save", "learned.bin"])
+
+
+class RepeatStop(unittest.TestCase):
+    """#606: one token repeated repeat_stop_tokens times in a row ends the reply as "length"; 0 turns it off."""
+
+    def run_reply(self, script, limit=None):
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, script, max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        if limit is not None:
+            svc.repeat_stop_tokens = limit
+        ids = tok.encode("hi")
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            done = [x for kind, x in svc.run(ids, False, None, 3000, {}, threading.Event()) if kind == "done"][0]
+        return done, out.getvalue()
+
+    def test_a_long_run_is_ended(self):
+        done, log = self.run_reply("ok " + "!" * 1000 + " never")
+        self.assertEqual(done["finish"], "length")
+        self.assertEqual(done["completion_tokens"], 3 + 256)
+        self.assertIn("repeated one token ('!') 256 times", log)
+
+    def test_short_runs_and_off(self):
+        done, _ = self.run_reply("=" * 255 + " fine")
+        self.assertEqual(done["finish"], "stop")
+        done, log = self.run_reply("!" * 1000, limit=0)
+        self.assertEqual((done["finish"], done["completion_tokens"]), ("stop", 1001))
+        self.assertNotIn("repeated one token", log)
+        done, _ = self.run_reply("ab" * 400, limit=8)       # alternating tokens are not one run
+        self.assertEqual(done["finish"], "stop")
+
+
+class LayerSplit(unittest.TestCase):
+    """#644: "layer_split" is the first layer of each later GPU; a list is accepted, counts per card are not."""
+
+    def cfg(self, split, gpus=(2, 0, 1, 3)):
+        c = {"args": ["--native", "x"], "gpu": list(gpus)}
+        if split is not ...:
+            c["layer_split"] = split
+        return c
+
+    def test_auto_and_absent(self):
+        for v in (..., None, "", "auto", "AUTO"):
+            self.assertEqual(engine_args(self.cfg(v))[-2:], ["--layer-split", "auto"])
+
+    def test_string_and_list(self):
+        self.assertEqual(engine_args(self.cfg("24,36,42"))[-2:], ["--layer-split", "24,36,42"])
+        self.assertEqual(engine_args(self.cfg(" 24, 36 ,42 "))[-2:], ["--layer-split", "24,36,42"])
+        self.assertEqual(engine_args(self.cfg([24, 36, 42]))[-2:], ["--layer-split", "24,36,42"])
+        self.assertEqual(engine_args(self.cfg(18, gpus=(0, 1)))[-2:], ["--layer-split", "18"])
+        self.assertEqual(engine_args(self.cfg([18], gpus=(0, 1)))[-2:], ["--layer-split", "18"])
+
+    def test_counts_per_card_are_refused_with_the_format(self):
+        for bad in ("24,16,12,12", [24, 16, 12, 12], "24,16,12", "24,36", "x", [24.5, 30, 40], "1,20,30", [True]):
+            with self.assertRaises(ValueError) as e:
+                layer_split_value(self.cfg(bad))
+            self.assertIn("first layer of each later GPU", str(e.exception))
+            self.assertIn('"12,24,36"', str(e.exception))   # the example for 4 GPUs
+
+    def test_one_gpu_ignores_it(self):
+        self.assertEqual(engine_args({"args": ["--native", "x"], "gpu": [0], "layer_split": "24,16"}),
+                         ["--native", "x"])
 
 
 class DraftHeadHint(unittest.TestCase):
@@ -1955,6 +2252,13 @@ for line in sys.stdin:
         break
 '''
 
+FAKE_STRATA_FAIL_ONCE = '''import pathlib, sys, time
+fail = pathlib.Path(sys.argv[sys.argv.index("--fail") + 1])
+if fail.exists():                            # this start fails before READY (as one next to a dying engine did)
+    fail.unlink()
+    sys.exit(1)
+''' + FAKE_STRATA.split("\n", 1)[1]
+
 
 class RestartWindow(unittest.TestCase):
     """#344: while the engine restarts it is not alive (a request waits for the restart instead of reading
@@ -2005,6 +2309,54 @@ class RestartWindow(unittest.TestCase):
                 finally:
                     gate.touch()
                     eng.unload()
+
+    def test_restart_retries_a_start_that_fails(self):
+        """A dead engine's VRAM is freed only when its process is gone, so a new engine started at once can exit
+        before READY; restart() tries again (3 times) instead of leaving the server with max_context 0."""
+        from unittest import mock
+        import serve.server as server
+        with tempfile.TemporaryDirectory() as d:
+            script, gate, fail = Path(d) / "fake_strata.py", Path(d) / "ready", Path(d) / "fail_once"
+            script.write_text(FAKE_STRATA_FAIL_ONCE, encoding="utf-8")
+            real = server.subprocess.Popen
+            with mock.patch.object(server.subprocess, "Popen",
+                                   lambda cmd, **kw: real([sys.executable, str(script), *cmd[1:]], **kw)), \
+                 mock.patch.object(StrataEngine, "RESTART_RETRY_S", 0.0):
+                gate.touch()
+                eng = StrataEngine("strata", ["--gate", str(gate), "--fail", str(fail)])
+                try:
+                    self.assertEqual(eng.max_context, 4096)
+                    self.assertEqual(eng.known_ctx, 4096)
+                    fail.touch()                          # the next start exits before READY, the one after works
+                    eng.proc.kill()
+                    eng.proc.wait(10)
+                    eng.restart()
+                    self.assertFalse(fail.exists(), "the failing start never ran")
+                    self.assertTrue(eng.alive())
+                    self.assertEqual(eng.max_context, 4096)
+                    self.assertFalse(eng.starting)
+                finally:
+                    gate.touch()
+                    eng.unload()
+
+    def test_failed_restart_keeps_the_known_context(self):
+        """After a restart that failed, max_context is 0 but the engine is not starting: a request is checked against
+        the last known context and reaches run() (which starts the engine again), not a 400 about context 0."""
+        tok = ByteTokenizer()
+        eng = MockEngine(tok, "</think>\n\nok", max_context=0)
+        eng.known_ctx, eng.starting = 4096, False
+        svc = Service(eng, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        try:
+            req = urllib.request.Request(base + "/v1/chat/completions",
+                                         data=json.dumps({"model": "m", "max_tokens": 16,
+                                                          "messages": [{"role": "user", "content": "hi"}]}).encode(),
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                self.assertEqual(r.status, 200)
+        finally:
+            httpd.shutdown()
 
     def test_context_zero_is_503(self):
         tok = ByteTokenizer()

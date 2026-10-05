@@ -32,4 +32,15 @@ bool gpu_shared_memory_budget(const void* luid, uint64_t& budget, uint64_t& usag
 /// The machine's physical RAM in bytes (0 when unknown).
 uint64_t total_physical_memory();
 
+/// #357/#577: whether the OS file cache could keep the `read_bytes` the expert files are read for, beside
+/// `arena_bytes` of RAM held by the engine's own copy of the experts and `margin` for everything else, with `avail`
+/// bytes of RAM available.  The file tier passes only the expert bytes it really reads from the files (the experts
+/// outside its resident RAM copy) and the RAM that copy really holds - not every shard's bytes and the requested
+/// budget, which on a 96 GB PC (#577) made the file tier read unbuffered when the cache could keep its reads.
+inline bool file_cache_keeps(uint64_t avail, uint64_t arena_bytes, uint64_t read_bytes,
+                             uint64_t margin = 4ull << 30) {
+    const uint64_t room = avail > arena_bytes + margin ? avail - arena_bytes - margin : 0;
+    return room >= read_bytes;
+}
+
 }  // namespace strata::platform

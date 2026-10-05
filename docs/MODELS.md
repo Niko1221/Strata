@@ -14,7 +14,7 @@ The installer recommends one for your PC; this page explains the choice. Back to
 | **32 GB** | **Coder** | it fits 32 GB; best at code, weaker at everything else ([why](#coder)). With a 24 GB card, Q2_0 and IQ2_XS run too ([low-RAM mode](#a-big-graphics-card-and-little-ram)) and are the better pick for general use |
 | **48 GB** | **IQ2_XS** (or Q2_0, the fastest) | the larger sizes do not fit |
 | **64 GB** | **IQ2_XS** (recommended), or IQ3_XXS / IQ3_S | every size fits (IQ3_S with little else open) |
-| **96 GB or more** | **IQ3_S**, or [Unsloth's 4-bit](#unsloth-ud-q4_k_xl-experimental) (experimental) | room for the largest sizes |
+| **96 GB or more** | **IQ3_S**, or [Unsloth's UD-IQ4_XS](#unsloth-ud-iq4_xs) (~4-bit) | room for the largest sizes |
 
 Not sure? Take **IQ2_XS**. The **Coder** is the one that fits a 32 GB PC, but it keeps only 256 of the 512 experts,
 chosen on code data, so it is weaker outside code and in languages other than English. For general use, or whenever
@@ -71,8 +71,9 @@ fetches the MTP draft layer (~6 GB, +1 GB with images).
 
 Shard 1 is the part of the model that gets loaded when it starts: its experts go into your **RAM**, the rest onto
 your graphics card (the second shard, a 29 GB lookup table, stays on the SSD). So it fits when your **RAM is at least
-shard 1 + about 10 GB** for Windows and your other programs. With 64 GB of RAM every size fits (IQ3_S with little
-else open); with 48 GB, Q2_0 and IQ2_XS. A bigger graphics card makes it faster, but it doesn't lower the RAM needed
+the experts + about 10 GB** for Windows and your other programs - the experts are most of shard 1: 34 GB for Q2_0,
+35.5 for IQ2_XS, 43 for IQ3_XXS, 50 for IQ3_S, 23 for the Coder (the dense weights in shard 1 go to the graphics
+card). With 64 GB of RAM every size fits (IQ3_S with little else open); with 48 GB, Q2_0 and IQ2_XS. A bigger graphics card makes it faster, but it doesn't lower the RAM needed
 - except in the low-RAM mode below.
 
 ### A big graphics card and little RAM
@@ -116,9 +117,22 @@ More: [details](DETAILS.md#or-swift-15-a-fine-tune-that-thinks-shorter).
 START-HERE.bat --setup --family swift --model IQ2_XS
 ```
 
+### Unsloth UD-IQ4_XS
+
+**Unsloth's UD-IQ4_XS** (~4-bit) is the fourth version in setup's menu (`--family unsloth`, its first size), a
+regular choice from 0.1.39: a 94 GB download with 59.5 GB of experts (IQ3_S and IQ4_NL), between IQ3_S and UD-Q4_K_XL
+in quality. Strata keeps your RAM minus 24 GB of the experts in RAM and reads the rest from the SSD while it answers:
+on a 64 GB PC part of them come from the SSD (slower; an NVMe SSD helps), from ~80 GB of RAM all of them stay in RAM.
+It needs 48 GB of RAM or more and engine 0.1.38 or newer; images are an option, as with the other models.
+Details: [UD-IQ4_XS](UNSLOTH_Q4.md#ud-iq4_xs-setup-from-0139-621).
+
+```
+START-HERE.bat --setup --family unsloth --model UD-IQ4_XS
+```
+
 ### Unsloth UD-Q4_K_XL (experimental)
 
-**Unsloth's 4-bit UD-Q4_K_XL** (experimental) is the fourth version in setup's menu (`--family unsloth`): the closest
+**Unsloth's 4-bit UD-Q4_K_XL** (experimental) is the second size of the same family (`--family unsloth`): the closest
 to the full model, but a 111 GB download whose 77 GB of experts do not fit in RAM. Strata keeps your RAM minus 24 GB
 of them in RAM and reads the rest from the SSD while it answers: 7-8.5 tokens/s on a 64 GB PC with a 12 GB GPU, several
 times slower than the sizes above, and long prompts are slow. It needs 48 GB of RAM or more, an NVMe SSD and one

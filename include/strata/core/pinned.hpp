@@ -117,8 +117,11 @@ LoadStats load_experts_direct(const std::string& path, uint8_t* dst, const std::
 /// STRATA_UNBUFFERED_LOAD=1 / 0 forces it. `why` says what decided.
 /// `cache_counts` false (the file tier with a RAM budget): only whether the files could be kept decides - their mapped
 /// pages land in the process's working set, so a partly cached file would still take the RAM the budget was sized for.
+/// `read_bytes` (#577): the bytes the files are read for, when that is less than the files (the file tier reads only
+/// the experts outside its RAM copy); `kAllFileBytes` = every byte of `files`.  See platform::file_cache_keeps.
+constexpr uint64_t kAllFileBytes = ~0ull;
 bool experts_unbuffered(const std::vector<std::string>& files, uint64_t arena_bytes, std::string& why,
-                        bool cache_counts = true);
+                        bool cache_counts = true, uint64_t read_bytes = kAllFileBytes);
 
 // FNV-1a 64.  Per layer, so a corrupt or short read names WHICH layer rather than just failing a whole-file
 // comparison - the same reason the Phase 1 tools report the first differing element.
