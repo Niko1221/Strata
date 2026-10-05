@@ -680,8 +680,25 @@ rather than permission to continue with partial state. Indexer spare keys and th
 moving spare row are preserved, including checkpoint rewinds.
 The engine log reports parking, restoration, bytes, evictions, individual snapshot
 sizes and K/V bytes reused during capture. `STRATA_SNAPSHOT_FULL_CAPTURE=1` disables
-retention for diagnostic comparisons. Snapshots are not
-persisted across restarts.
+retention for diagnostic comparisons. Parked snapshots are not
+persisted across restarts (the prefix snapshots below are).
+
+**Prefix snapshots on disk (opt-in).** The system-prompt checkpoint above lives in the one K/V arena, so it is gone
+once a request with another start comes in (a title request, a subagent, another client), and after every restart;
+a parked conversation that holds it is taken out whole to lend it. `--prefix-cache-dir DIR` keeps it in a file
+instead: when a request that read its system prompt has answered (after `DONE`), the state at that checkpoint - its
+running state and the K/V of every layer and of the draft layer up to it - is streamed from the session into
+`DIR`, once per distinct system prompt. A later request whose prompt starts with a saved one, and which the live
+session or a batch slot cannot serve further, restores it and reads only the rest. It is preferred over a parked
+conversation of the same length, which then stays parked. Restoring leaves the file in place.
+`--prefix-cache-disk-mib N` (default 51200) caps the directory, least recently used first;
+`--prefix-cache-ram-mib N` (default 2048, 0 = disk only) also keeps the most recently used in RAM when
+`--conversation-cache-min-free-mib` allows it - otherwise the file is streamed into the session through a 64 MB
+buffer, so a full RAM never blocks it. Each file records the engine build, the pack, `--native`, `--mtp`, `--kv` and
+`STRATA_BF16_TC`; a file that differs in any of them (a rebuilt engine included) is deleted at start-up, and every
+restore is validated like a parked snapshot before anything is written. A restore that fails before writing keeps
+what the session held; one that fails after reads the whole prompt instead. One GPU without `--batch` only. A file
+is about 118 MB plus 12.4 KB per token with K8V4 (a 30,028-token system prompt: 490 MB).
 
 **Current limits (v1):** one request at a time unless `"parallel": N` is set (opt-in batch slots, up to N requests
 decoded together: [BATCHING.md](BATCHING.md)), and one conversation cached at a time (switching between two chats

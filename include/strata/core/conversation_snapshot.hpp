@@ -4,7 +4,10 @@
 #include "strata/core/layer.hpp"
 #include "strata/core/session.hpp"
 
+#include <array>
+#include <functional>
 #include <string>
+#include <vector>
 
 namespace strata::core {
 
@@ -29,6 +32,25 @@ bool conversation_kv_restore(const ConversationKv& image, const QsaState& state,
 // fingerprints the authoritative payload only. Never changes model state.
 bool conversation_kv_verify(const ConversationKv& image, const QsaState& state, const ModelGeometry& g,
                             int64_t upto, bool include_index, uint64_t& fingerprint, std::string& error);
+
+// Streaming (prefix snapshots, docs/DETAILS.md): K/V moves between the session and a byte stream through
+// `bounce` instead of a whole RAM image.  Payloads come in the order k, v, k_scale, v_scale, pooled, each the
+// size conversation_kv_layout reports - the same bytes conversation_kv_save would hold.
+using ConversationKvSizes = std::array<size_t, 5>;
+using ConversationWrite = std::function<bool(const uint8_t*, size_t)>;
+using ConversationRead = std::function<bool(uint8_t*, size_t)>;
+bool conversation_kv_layout(ConversationKv& header, ConversationKvSizes& sizes, const QsaState& state,
+                            const ModelGeometry& g, int64_t upto, bool include_index, std::string& error);
+// conversation_kv_validate with payload sizes in place of the buffers
+bool conversation_kv_validate_sizes(const ConversationKv& header, const ConversationKvSizes& sizes,
+                                    const QsaState& state, const ModelGeometry& g, int64_t upto,
+                                    bool include_index, std::string& error);
+bool conversation_kv_save_stream(const QsaState& state, const ModelGeometry& g, int64_t upto, bool include_index,
+                                 std::vector<uint8_t>& bounce, const ConversationWrite& write, std::string& error);
+bool conversation_kv_restore_stream(const ConversationKv& header, const ConversationKvSizes& sizes,
+                                    const QsaState& state, const ModelGeometry& g, int64_t upto,
+                                    bool include_index, std::vector<uint8_t>& bounce,
+                                    const ConversationRead& read, std::string& error);
 
 struct ConversationStateSizes {
     size_t gdn = 0, ple = 0, tail = 0, dead = 0, block_pos = 0;
@@ -92,5 +114,22 @@ bool conversation_snapshot_validate(const SavedConversation& image, const Sessio
                                     const ModelGeometry& g, const QsaState* draft, std::string& error);
 ConversationRestore conversation_snapshot_restore(const SavedConversation& image, SessionState& session,
                                                    const ModelGeometry& g, const QsaState* draft, std::string& error);
+
+// Prefix snapshots (docs/DETAILS.md): the session's state at `root`, a checkpoint of the conversation it
+// holds (no pictures), with K/V up to root's length.  `meta` is that image without the K/V payloads: their
+// headers only, and `sizes` per layer (main layers, then the draft).  Single session only (no layer split).
+bool conversation_prefix_header(SavedConversation& meta, std::vector<ConversationKvSizes>& sizes,
+                                const ConversationCheckpoint& root, bool cvec, const SessionState& session,
+                                const ModelGeometry& g, const QsaState& draft, std::string& error);
+// the K/V payloads of conversation_prefix_header's image, every layer in order
+bool conversation_prefix_save_stream(const SessionState& session, const ModelGeometry& g, const QsaState& draft,
+                                     int64_t upto, std::vector<uint8_t>& bounce, const ConversationWrite& write,
+                                     std::string& error);
+// The whole image is validated (as conversation_snapshot_validate) before anything is written.
+ConversationRestore conversation_prefix_restore_stream(const SavedConversation& meta,
+                                                       const std::vector<ConversationKvSizes>& sizes,
+                                                       SessionState& session, const ModelGeometry& g,
+                                                       const QsaState& draft, std::vector<uint8_t>& bounce,
+                                                       const ConversationRead& read, std::string& error);
 
 } // namespace strata::core
