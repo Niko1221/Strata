@@ -563,6 +563,9 @@ struct Prefill::Impl {
     // C-4: the chunk's token ids on the device, for one batched embedding gather
     int32_t* tok_dev = nullptr;
     std::vector<int32_t> tok_host;
+    // APR (prism.hadamard): per layer, this device's copies of the gate/up (n_embd) and down (n_ff) sign vectors
+    // (nullptr: identity signs or not folded), resolved once in init so a prompt chunk reads a pointer
+    std::vector<const float*> had_sx, had_sh;
     std::unique_ptr<PeerPrefill> pp;         // multi-GPU: the peer GPU's expert share (set_peer)
     // layer split: the next stage's GPU as a stream-only peer (set_stage_helper); its buffers are that stage's own
     // prompt buffers, bound per prompt, and it takes the place of `pp` for a run it helps
@@ -754,6 +757,16 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
                       " x " + std::to_string(lay.fmt[l].n_ff) + ", not the artifact's 2560 x 640";
                 return false;
             }
+        // APR: the sign vectors on this device, once (hadamard_device_signs takes a mutex and, the first time per
+        // device, cudaMallocs its copy): run_impl reads m.had_sx / m.had_sh
+        m.had_sx.assign(lay.native ? lay.fmt.size() : 0, nullptr);
+        m.had_sh.assign(m.had_sx.size(), nullptr);
+        for (size_t l = 0; l < m.had_sx.size(); ++l) {
+            if (lay.fmt[l].had_gu)
+                m.had_sx[l] = strata::kernels::hadamard_device_signs(lay.fmt[l].gu_signs, (int) lay.fmt[l].n_embd);
+            if (lay.fmt[l].had_d)
+                m.had_sh[l] = strata::kernels::hadamard_device_signs(lay.fmt[l].d_signs, (int) lay.fmt[l].n_ff);
+        }
     }
     cudaGetDevice(&m.device);
     if (stage_le_ < 0) stage_le_ = g.n_layers;
@@ -936,13 +949,6 @@ bool Prefill::carve(size_t T, void* alloc) {
         if (!m.mmq_ctx) m.mmq_ctx = std::make_unique<mmq::Context>();
     }
     m.ring = ring_slots(T);
-    {   // APR: the device sign vectors now (cudaMalloc), not on first use inside a run
-        const auto& lay = strata::kernels::cpu::expert_layout();
-        for (size_t l = 0; lay.native && l < lay.fmt.size(); ++l) {
-            if (lay.fmt[l].had_gu) strata::kernels::hadamard_device_signs(lay.fmt[l].gu_signs, (int) lay.fmt[l].n_embd);
-            if (lay.fmt[l].had_d) strata::kernels::hadamard_device_signs(lay.fmt[l].d_signs, (int) lay.fmt[l].n_ff);
-        }
-    }
     for (int i = 0; i < m.ring; ++i) {
         m.stage_dev[i] = o.take<uint8_t>((size_t) MAXBLOB(), ok);
         m.stage_live[i] = false;                        // a new buffer: nothing of an earlier layout to wait for
@@ -1171,8 +1177,10 @@ double split_help_frac(int64_t T) {
 }  // namespace
 
 namespace {
-// APR: the down projections' sign vectors on the current device (the peer's or the helper's), one per layer, made at
-// setup (cudaMalloc) so a prompt chunk only looks them up.
+// APR: the down projections' sign vectors on the current device (the peer's or the helper's), one per layer,
+// resolved once at setup (hadamard_device_signs: a mutex and, the first time on that device, a cudaMalloc) into
+// P.had_sh, which a prompt chunk reads directly.  The gate/up signs are not needed there: the primary sends its
+// already rotated input (m.Xr).
 void peer_had_signs(PeerPrefill& P) {
     const auto& lay = strata::kernels::cpu::expert_layout();
     P.had_sh.assign(lay.native ? lay.fmt.size() : 0, nullptr);
@@ -2312,8 +2320,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     const bool had_d = lay.native && lay.fmt[(size_t) l].had_d;
                     const bool use_mmq = mmq_plan().any && mmq_plan().layer[(size_t) l];
                     const int had_block = lay.native ? lay.fmt[(size_t) l].had_block : 0;
-                    const float* had_sx = had_gu ? strata::kernels::hadamard_device_signs(lay.fmt[(size_t) l].gu_signs, (int) lay.fmt[(size_t) l].n_embd) : nullptr;
-                    const float* had_sh = had_d ? strata::kernels::hadamard_device_signs(lay.fmt[(size_t) l].d_signs, (int) lay.fmt[(size_t) l].n_ff) : nullptr;
+                    const float* had_sx = had_gu ? m.had_sx[(size_t) l] : nullptr;   // resolved in init
+                    const float* had_sh = had_d ? m.had_sh[(size_t) l] : nullptr;
                     const int mmq_gt = lay.native ? lay.fmt[(size_t) l].gu_type : 42;
                     const int mmq_dt = lay.native ? lay.fmt[(size_t) l].d_type : 42;
                     // --peer-device: MMQ only, whether or not the peer took the prompt path (set_peer can decline), as
