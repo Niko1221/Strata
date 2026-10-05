@@ -226,7 +226,11 @@ struct TensorInfo {
     uint64_t offset = 0;
     uint64_t elements() const {
         uint64_t n = 1;
-        for (auto d : shape) n *= d;
+        for (auto d : shape) {
+            if (d != 0 && n > (std::numeric_limits<uint64_t>::max)() / d)
+                throw std::runtime_error("GGUF: tensor shape overflows");
+            n *= d;
+        }
         return n;
     }
     const char* type_name() const { return ggml_type_name(type); }
@@ -238,7 +242,7 @@ class Cursor {
 public:
     Cursor(const uint8_t* base, size_t size) : base_(base), size_(size) {}
     void need(size_t n) const {
-        if (pos_ + n > size_) throw std::runtime_error("GGUF: unexpected end of file in header");
+        if (n > size_ || pos_ > size_ - n) throw std::runtime_error("GGUF: unexpected end of file in header");
     }
     template <class T> T read() {
         need(sizeof(T));
@@ -249,6 +253,7 @@ public:
     }
     std::string str() {
         const uint64_t n = read<uint64_t>();
+        if (n > (1u << 26)) throw std::runtime_error("GGUF: string too long");
         need((size_t)n);
         std::string s(reinterpret_cast<const char*>(base_ + pos_), (size_t)n);
         pos_ += (size_t)n;
@@ -337,6 +342,8 @@ inline MetaValue read_value(Cursor& c, MetaType t, int depth = 0) {
     return v;
 }
 
+inline uint64_t tensor_payload_bytes(const TensorInfo& t);
+
 class GgufFile {
 public:
     explicit GgufFile(const std::string& path) : path_(path) {
@@ -370,7 +377,17 @@ public:
         auto it = meta_.find(key);
         return it == meta_.end() ? nullptr : &it->second;
     }
-    const uint8_t* tensor_data(const TensorInfo& t) const { return base_ + data_start_ + t.offset; }
+    const uint8_t* tensor_data(const TensorInfo& t) const {
+        if (t.offset > size_ || data_start_ > size_ - t.offset)
+            throw std::runtime_error("GGUF: tensor offset is past EOF");
+        const uint64_t bytes = tensor_payload_bytes(t);
+        if (bytes != 0) {
+            const uint64_t start = data_start_ + t.offset;
+            if (bytes > size_ || start > size_ - bytes)
+                throw std::runtime_error("GGUF: tensor payload extends past EOF");
+        }
+        return base_ + data_start_ + t.offset;
+    }
 
 private:
     void open() {
@@ -427,6 +444,8 @@ private:
             throw std::runtime_error("GGUF v" + std::to_string(version_) + ", this reader handles v3");
         const uint64_t n_tensors = c.read<uint64_t>();
         const uint64_t n_kv = c.read<uint64_t>();
+        if (n_tensors > 10000000 || n_kv > 10000000)
+            throw std::runtime_error("GGUF: absurd tensor/metadata count");
 
         for (uint64_t i = 0; i < n_kv; ++i) {
             std::string key = c.str();
@@ -453,7 +472,11 @@ private:
         uint64_t align = 32;
         if (const MetaValue* a = get("general.alignment"))
             if (a->u) align = a->u;
+        if (align == 0 || align > (1u << 24) || (align & (align - 1)) != 0)
+            throw std::runtime_error("GGUF: bad alignment");
         alignment_ = align;
+        if (c.pos() > (std::numeric_limits<uint64_t>::max)() - (align - 1))
+            throw std::runtime_error("GGUF: data offset overflows");
         data_start_ = (c.pos() + align - 1) / align * align;
         if (data_start_ > size_) throw std::runtime_error("GGUF: data section starts past EOF");
     }

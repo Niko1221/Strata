@@ -603,8 +603,9 @@ print(r.choices[0].message.content)
   a proxy or tunnel whose address differs, add that address, e.g. `"trusted_origins": ["https://strata.example.com"]`.
   With the key set, any `Host` name reaches the server (see Host names below).
 - **From web apps in a browser (CORS).** Off by default. `"cors_origins": ["https://chat.example.com"]` lets pages of
-  those origins call `/v1/*` from the browser (Open WebUI's direct connections, browser extensions); `["*"]` lets any
-  page do it - only sensible with an API key. It never opens `/settings`, `/unload` or the MCP tools.
+  those origins call `/v1/*` from the browser (Open WebUI's direct connections); list a local dev page or an
+  extension origin (`"http://localhost:3000"`, `"chrome-extension://..."`) to let it in. `["*"]` needs an API key:
+  without one the server refuses to start. It never opens `/settings`, `/unload` or the MCP tools.
 - **Host names (DNS rebinding).** A web page of another site can point its own name at `127.0.0.1` and then reach
   this server as if it were its own, so without an API key the server answers only requests whose `Host` is a name
   it knows (with a key the check is off: such a page cannot send the key, and tunnels and proxies that pass their
@@ -618,11 +619,11 @@ print(r.choices[0].message.content)
   name and every name below it, and `["*"]` turns the check off (so does setting `api_key`). The hosts of
   `trusted_origins` count as allowed. Requests without a `Host` header (HTTP/1.0 clients) pass.
 - **Web pages without an API key.** Without `api_key`, a `POST` to `/v1/*` that carries an `Origin` header (a
-  browser page sent it) is answered only for Strata's own page, pages on `localhost` or an allowed host name (any
-  port), the origins in `trusted_origins` or `cors_origins`, and browser extensions and desktop apps
-  (`chrome-extension://`, `moz-extension://`, `app://`: no web site can send those), and only with a JSON body; any
-  other page, and `Origin: null`, gets **403**. Clients that send no `Origin` (curl, the OpenAI and Anthropic SDKs,
-  other servers) are not affected. With
+  browser page sent it) is answered only for Strata's own page (the `Origin` matching the request's own `Host`)
+  or the origins in `trusted_origins` or `cors_origins`, and only with a JSON body; any other page - another site,
+  another local app or port, a browser extension or desktop app (`chrome-extension://`, `moz-extension://`, `app://`),
+  `Origin: null` - gets **403**. List such an origin to let it in. Clients that send no `Origin` (curl, the OpenAI
+  and Anthropic SDKs, other servers) are not affected. With
   an API key, the key decides. `POST /unload` and `POST /load` take `Content-Type: application/json` from Strata's
   own page (or no `Origin`), like `/settings`.
 
@@ -795,9 +796,10 @@ with an `mcpServers` block; add it to the `serve/server.py` line of your run scr
 
 **Security.** MCP tools run on your PC with your user's rights, and **the model decides when to call them** - also
 because of what it reads (a web page or a file can contain instructions). Give a filesystem server only the folders
-it needs, prefer read-only tools, and don't add servers you don't trust. The tools can only be used from the chat
-page itself (a request with another site's Origin or without a JSON content type is refused); if Strata is reachable
-from other devices, set an API key.
+it needs, prefer read-only tools, and don't add servers you don't trust. The tools can only be used from this PC's
+own page (a request with another site's Origin or without a JSON content type is refused); a request that arrives on
+a network address (another device on your LAN) is refused too unless an API key is set or the config has
+`"mcp_allow_remote": true). If Strata is reachable from other devices, set an API key.
 
 **Context extension past 262K (rope scaling, EXPERIMENTAL, off unless you pick it).** The model was trained on
 262,144 positions (rotary base 1e7). Rope scaling rescales the rotation angles so that longer contexts stay usable,
@@ -902,7 +904,8 @@ you> /image C:\Users\me\Pictures\receipt.jpg
 you> What is the total on this receipt?
 ```
 
-**OpenAI API** (an `image_url` part: a `data:` URL, an `http(s)://` URL or a local file path):
+**OpenAI API** (an `image_url` part: a `data:` URL or an `http(s)://` URL; remote hosts that resolve to
+loopback, private or link-local addresses are refused, at most 20 MiB after decoding):
 
 ```python
 import base64

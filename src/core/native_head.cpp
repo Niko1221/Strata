@@ -188,10 +188,13 @@ bool NativeEmbed::load(const std::vector<std::string>& shards, int64_t n_embd, i
 }
 
 void NativeEmbed::gather_dev(const int32_t* tokens, int64_t n_tok, float* out, void* stream) const {
+    // Defense in depth: the caller validates, but never read OOB off a bad id.
+    if (!tokens || !out || n_tok <= 0 || n_vocab_ <= 0) return;
     strata::kernels::iq_embed_rows(type_, dev_, row_, tokens, n_tok, n_embd_, out, stream);
 }
 
 void NativeEmbed::gather_one(int64_t token, float* out, void* stream) const {
+    if (token < 0 || token >= n_vocab_ || !out) return;
     strata::kernels::iq_dequant_f32(type_, (const uint8_t*) dev_ + (size_t) token * row_, n_embd_, out, stream);
 }
 

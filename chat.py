@@ -73,7 +73,18 @@ def main() -> int:
                 print(f"(no such file: {path or '?'} - usage: /image <path to a picture>)")
                 continue
             mime = mimetypes.guess_type(path)[0] or "image/jpeg"
-            data = base64.b64encode(open(path, "rb").read()).decode()
+            try:
+                with open(path, "rb") as f:
+                    if os.fstat(f.fileno()).st_size > 20 * 1024 * 1024:
+                        print("(that picture is too large - 20 MiB max)")
+                        continue
+                    data = base64.b64encode(f.read(20 * 1024 * 1024 + 1)).decode()
+            except OSError as e:
+                print(f"(cannot read {path or '?'}: {e})")
+                continue
+            if len(data) > 28 * 1024 * 1024:
+                print("(that picture is too large - 20 MiB max)")
+                continue
             pending.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}})
             print(f"(picture attached: {os.path.basename(path)} - now type your question)")
             continue
