@@ -73,7 +73,7 @@ option(STRATA_PREFILL_MMQ "Build the optional GGML MMQ prefill path for HIP" OFF
 # CUDA: MMQ prompt kernels for Q4_K / Q5_K / Q5_1 (Unsloth's UD-Q4_K_XL experts).  Off by default: the engine loads
 # every kernel when it starts (CUDA_MODULE_LOADING=EAGER), so these took ~5 MB of VRAM - 1-3 expert slots - from every
 # model, and the UD-Q4_K_XL prompt is SSD-bound with or without them (docs/UNSLOTH_Q4.md)
-option(STRATA_MMQ_KQUANTS "Build the CUDA MMQ prompt kernels for Q4_K / Q5_K / Q5_1 experts" OFF)
+option(STRATA_MMQ_KQUANTS "Build the CUDA MMQ prompt kernels for Q4_K / Q5_K / Q5_1 / Q6_K experts" OFF)
 option(STRATA_ORCA_Q4KS_MMQ "Build the GGML Q5_0 MMQ instance for OrcaRouter Q4_K_S" OFF)
 if(STRATA_PREFILL_MMQ AND NOT STRATA_ENABLE_HIP)
   message(FATAL_ERROR "STRATA_PREFILL_MMQ requires STRATA_ENABLE_HIP=ON")
@@ -1054,11 +1054,11 @@ if(STRATA_NATIVE_EXPERTS)
     add_library(strata_mmq STATIC src/prefill/moe_mmq.cu src/prefill/moe_fused.cu src/prefill/moe_fused_iq.cu
                 src/prefill/ggml_cuda_host.cu ${_strata_mmq}/quantize.cu)
     # q8_0: the drafter's matrices (E-9); STRATA_ORCA_Q4KS_MMQ adds q5_0 (#296, in _strata_mmq_types), and
-    # STRATA_MMQ_KQUANTS q4_k q5_k q5_1, the experts of Unsloth's UD-Q4_K_XL (docs/UNSLOTH_Q4.md; the dispatch
-    # follows eddoursul/Strata 7706c1b)
+    # STRATA_MMQ_KQUANTS q4_k q5_k q5_1 (Unsloth's UD-Q4_K_XL, docs/UNSLOTH_Q4.md) plus q6_k (UD-Q6_K_XL's gate/up,
+    # docs/UNSLOTH_Q6.md); the dispatch follows eddoursul/Strata 7706c1b
     set(_strata_mmq_cuda_types ${_strata_mmq_types})
     if(STRATA_MMQ_KQUANTS)
-      list(APPEND _strata_mmq_cuda_types q4_k q5_k q5_1)
+      list(APPEND _strata_mmq_cuda_types q4_k q5_k q5_1 q6_k)
     endif()
     foreach(_t IN LISTS _strata_mmq_cuda_types)
       target_sources(strata_mmq PRIVATE ${_strata_mmq}/template-instances/mmq-instance-${_t}.cu)

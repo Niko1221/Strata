@@ -22,14 +22,16 @@ shard 3 is exactly the PLE table, nothing else.
 | `Qwen3.8-Flash-Next-UD-Q6_K_XL-00005-of-00006.gguf` | 49,419,317,344 | `9948e81ae8368144b135a7403d8c0f2cf9a6c2f9f692313865855b2832e696c9` |
 | `Qwen3.8-Flash-Next-UD-Q6_K_XL-00006-of-00006.gguf` | 14,838,313,984 | `e4ae255234f42b18012f6d6eec5bf615b57479b7e0a0233c47436a321ffeec3f` |
 
-Formats, read from the shard headers with `tools/gguf_reader.py` (shards 1, 2, 6; the same shape as UD-Q4_K_XL):
+Formats, read from the shard headers with `tools/gguf_reader.py` (all six shards verified: shard 4 = blocks 0-20,
+520 tensors, shard 5 = blocks 20-41, 530 tensors, and per layer the types above):
 
 - **Routed experts:** `ffn_gate_exps` and `ffn_up_exps` are Q6_K (seen in every layer of shard 6: blocks 41-47);
   `ffn_down_exps` is Q8_0 (per layer 891.3 MB at 640×2560×512, against Q6_K's 688.1 MB at 2560×640×512 for gate or
-  up). UD-Q4_K_XL's downs were Q5_1 with a few Q8_0; here every down seen so far is Q8_0. Q6_K experts are native:
-  the GPU multiplies them directly (`native_q6_k_mmvq_gpu`, multi-token prompt path too) and the CPU has the ggml
-  block layout (210 bytes per 256 elements); the per-role layout in `native_experts.txt` v4 handles shards whose
-  boundaries cut through a layer like UD-Q4_K_XL's layer 11 case does.
+  up). The down experts are Q6_K in 47 of 48 layers and Q8_0 in the odd one out, layer 2 (read from the headers:
+  UD-Q4_K_XL had the same kind of per-layer quirk, its Q5_K in layer 2). Either way Q6_K experts are native: the
+  engine multiplies them directly on the GPU in every path check below, and the CPU has the ggml block layout (210
+  bytes per 256 elements); the per-role layout in `native_experts.txt` v4 handles shards whose boundaries cut
+  through a layer like UD-Q4_K_XL's layer 11 case does.
 - **Everything else:** attention and shared-expert projections, SSM, hyper-connections, the PLE key/value, the token
   embedding and the output head are Q8_0, or F32/BF16 where the engine reads floats — the same pattern
   [UD-Q4_K_XL](UNSLOTH_Q4.md) handles with `tools/iq_pack.py --compat-bf16`.
@@ -56,9 +58,12 @@ Same workflow as [UD-Q4_K_XL](UNSLOTH_Q4.md#the-pack-by-hand), from the reposito
 ```
 
 **`--compat-bf16` is required** for the same reason as there (the 195 small Q8_0 projections the engine reads as
-BF16). Do not add `--experts-bin`; the experts stay in the GGUF files. Not yet run on this file end to end (the
-download was not finished when this was written); the packer's own tests cover the shard and conversion logic
-(`.venv/bin/python -m unittest discover -s tools -p test_iq_pack.py`).
+BF16). Do not add `--experts-bin`; the experts stay in the GGUF files. Built here end to end on this file
+(`packs/ud-q6_k_xl`, the packer's own tests cover the shard and conversion logic via
+`.venv/bin/python -m unittest discover -s tools -p test_iq_pack.py`): 1079 tensors indexed, 303 served natively, 460
+tensors converted (264 exact, 196 rounded, max abs error 0.0144 - the same profile as UD-Q4_K_XL's), 195
+compat-BF16 tensors (1.20 GiB), arena 1.38 GiB, and `native_experts.txt` v4 with the per-role shard column on
+layers 20 and 41.
 
 ## The server
 
@@ -90,18 +95,39 @@ it. `mtp/rt` is the base model's draft layer as always.
 On 64 GB machines treat the Q4 numbers below as the starting point: the RAM budget matters the same way, and
 everything it leaves out comes from the SSD, faster now per expert (Q6_K) and per table row (170 bytes).
 
+## What the engine did not have, and has now
+
+UD-Q4_K_XL's expert formats (gate/up Q4_K, down Q5_1) were in every path; Q6_K gate/up was not. This branch adds
+it (the PLE Q8_0 reader is the other half):
+
+- **Decode windows:** the grouped expert kernels (`native_expert_grouped`) take gate/up Q6_K — a pinned copy of
+  llama.cpp's `vec_dot_q6_K_q8_1` behind `Fmt<14>`, and the dequantizer (`dequantize_q6_K` folded onto the kernel's
+  32 threads). Per-token MMVQ (`native_mmvq`) already had Q6_K.
+- **The prompt path:** llama.cpp's MMQ prompt kernels now instantiate Q6_K (`STRATA_MMQ_KQUANTS=ON` builds
+  `template-instances/mmq-instance-q6_k.cu` alongside q4_k/q5_k/q5_1; `moe_mmq` accepts and dispatches it).
+- **The gates:** `native_expert_supported` took Q6_K/Q8_0 pairs (gate/up Q8_0 as in layer 2 was already in the
+  lists) — the engine previously refused the whole pack with "no GPU kernels for".
+
+Tests: `native_grouped_parity` loops Q6_K/Q8_0 pairs; `prefill_mmq_kquant_test` runs Q6_K gate/up products at
+1280×2560 against a double-precision reference; `native_expert_parity --synthetic q6_K/q8_0` checks GPU and CPU
+against ggml's dequantized weights. All three are built (CUDA, `86;120`) and pending a GPU slot to run on the same
+box as the first real decode.
+
 ## Status: what is verified and what is not
 
 Verified here (test clone, Linux, NVIDIA GPU, source build):
 
 - The six files' sizes and SHA-256 (HF tree API; shards 1, 2, 6 additionally against the downloaded blobs).
-- The tensor inventory of shards 1, 2 and 6, read from the headers (`tools/gguf_reader.py`).
+- The tensor inventory of shards 1, 2 and 6, read from the headers (`tools/gguf_reader.py`); shards 4 and 5's
+  tensor counts and per-layer expert types, from the pack's `conversions.json` and `native_experts.txt` v4.
 - Q8_0 PLE rows: `ple_reader_test --selftest` runs 90, 110 and 170-byte rows (all OK); `ple_q8_parity` on a
   synthetic Q8_0 table (`tools/ple_q8_fixture.py`) matches ggml's reference dequantizer bit for bit through both
-  Mmap and Direct (`max_abs 0.000e+00`).
-- Q6_K experts were already native (the CPU/GPU kernels and their parity tests predate this).
+  Mmap and Direct (`max_abs 0.000e+00`). Both still pass on this branch with the Q6_K expert work in.
+- The pack on the finished file (numbers above), and the engine binary builds (CUDA `86;120`, MMQ K-quants on).
+- Q6_K expert source support: decode-side MMVQ was already there; the grouped verify-window kernels, the MMQ
+  prompt kernels and the `native_expert_supported` gate were not, and are in this branch (section above).
 
-Not yet: a real decode run on the finished file (speed, quality against llama.cpp, the prompt path's behavior with
-this table), the pack on the complete download, whether shards 4/5 put a layer boundary inside a layer. When the
-download finishes: pack, start the server, and record the same measurements as
-[UD-Q4_K_XL's](UNSLOTH_Q4.md#quality-against-llamacpp-on-the-same-file) before un-experimental-ing this.
+Not yet: running the three Q6_K parity tests on a GPU (the box is serving production), the first real decode run
+on the finished file (speed, quality against llama.cpp, the prompt path's behavior with this table), and the
+measurements that let this page lose "experimental". When the GPU frees up: parity tests, then the server, and
+record the same measurements as [UD-Q4_K_XL's](UNSLOTH_Q4.md#quality-against-llamacpp-on-the-same-file).
