@@ -952,7 +952,40 @@ __global__ void wait_flag_ge_kernel(const volatile uint32_t* flag, uint32_t valu
     while (*flag < value) strata_spin_pause();
     __threadfence_system();
 }
+
+__global__ void handoff_publish_kernel(float* dst, const float* __restrict__ a, int64_t na, const float* __restrict__ b,
+                                       int64_t nb, const float* __restrict__ c, int64_t nc, uint32_t* counter,
+                                       uint32_t* flag) {
+    const int64_t n = na + nb + nc;
+    volatile float* const out = dst;
+    for (int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x; i < n; i += (int64_t) gridDim.x * blockDim.x)
+        out[i] = i < na ? a[i] : i < na + nb ? b[i - na] : c[i - na - nb];
+    __threadfence_system();   // this thread's stores reach host memory before the block counts itself done
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        const uint32_t prev = atomicAdd(counter, 1u);
+        if (prev == gridDim.x - 1) {   // every block's payload is out: raise the next stage's flag
+            *(volatile uint32_t*) counter = 0u;
+            __threadfence_system();
+            *(volatile uint32_t*) flag = 1u;
+            __threadfence_system();
+        }
+    }
+}
 }  // namespace
+
+void handoff_publish(float* dst, const float* a, int64_t na, const float* b, int64_t nb, const float* c, int64_t nc,
+                     uint32_t* counter, uint32_t* flag, void* stream) {
+    const int64_t n = na + nb + nc;
+    if (n <= 0 || dst == nullptr || counter == nullptr || flag == nullptr) {
+        std::fprintf(stderr, "handoff_publish: invalid arguments\n");
+        std::exit(1);
+    }
+    const int64_t nb256 = (n + 255) / 256;
+    const int blocks = (int) (nb256 < 64 ? nb256 : 64);
+    handoff_publish_kernel<<<blocks, 256, 0, (cudaStream_t) stream>>>(dst, a, na, b, nb, c, nc, counter, flag);
+    check("handoff_publish");
+}
 
 namespace {
 // one thread per window entry: up to kVerifyMaxT tokens x 10 routed experts (80), so 128 (#646 had 64: a window of

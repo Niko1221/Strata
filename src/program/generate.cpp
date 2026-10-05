@@ -6049,11 +6049,33 @@ int main(int argc, char** argv) {
                 }
                 std::memset(hh, 0, hb);
             }
+            // STRATA_SPLIT_OVERLAP=1 (opt-in; measured on 2x RX 7900 XTX only): a ready word per hand-off, raised by the
+            // writing stage's GPU, so the next stage's window is launched early and the host never syncs between
+            // stages (Verifier::set_handoff_flags).  Not for --split-device 0 (both stages on one GPU).
+            const bool overlap = !split_same && [] {
+                const char* v = std::getenv("STRATA_SPLIT_OVERLAP");
+                return v != nullptr && std::atoi(v) != 0;
+            }();
+            std::vector<uint32_t*> hflag_h((size_t) n_stages - 1, nullptr), hflag_d((size_t) n_stages - 1, nullptr);
+            if (overlap)
+                for (size_t i = 0; i < hflag_h.size(); ++i) {
+                    if (cudaHostAlloc((void**) &hflag_h[i], 64, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess ||
+                        cudaHostGetDevicePointer((void**) &hflag_d[i], hflag_h[i], 0) != cudaSuccess) {
+                        std::fprintf(stderr, "strata serve: the layer-split hand-off flag allocation failed\n");
+                        return 1;
+                    }
+                    std::memset(hflag_h[i], 0, 64);
+                }
             split_drive.base = &drive;
             split_drive.n = n_stages;
             for (int st = 0; st < n_stages; ++st) {
                 stage_ver(st).set_stage(st == 0 ? 0 : split_at[(size_t) st - 1], st + 1 < n_stages ? split_at[(size_t) st] : -1,
                                         st == 0 ? nullptr : hand[(size_t) st - 1], st + 1 < n_stages ? hand[(size_t) st] : nullptr);
+                if (overlap)
+                    stage_ver(st).set_handoff_flags(st == 0 ? nullptr : hflag_h[(size_t) st - 1],
+                                                    st == 0 ? nullptr : hflag_d[(size_t) st - 1],
+                                                    st + 1 < n_stages ? hflag_h[(size_t) st] : nullptr,
+                                                    st + 1 < n_stages ? hflag_d[(size_t) st] : nullptr);
                 split_drive.end[st] = st + 1 < n_stages ? split_at[(size_t) st] : g.n_layers;
                 split_drive.cache_base[st] = drive.d.cache_base;
                 split_drive.cache_slot_off[st] = drive.d.cache_slot_off;
@@ -6089,7 +6111,8 @@ int main(int argc, char** argv) {
             for (int st = 1; st < n_stages; ++st)
                 plan_s += ", " + std::to_string(split_at[(size_t) st - 1]) + "-" + std::to_string(split_drive.end[st] - 1) +
                           " (CUDA" + std::to_string(split_same ? 0 : stages[(size_t) st - 1]->dev) + ")";
-            std::fprintf(stderr, "strata serve: layer split: layers %s, one hand-off per window\n", plan_s.c_str());
+            std::fprintf(stderr, "strata serve: layer split: layers %s, one hand-off per window%s\n", plan_s.c_str(),
+                         overlap ? " (overlapped: STRATA_SPLIT_OVERLAP=1)" : "");
         }
         // --pipeline-windows: the odd windows' verifiers and their hand-off (initialized before `ver`, which stays the
         // watchdog's verifier), and the drafter's own row buffer, which either parity's rows are copied into

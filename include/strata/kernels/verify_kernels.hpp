@@ -41,6 +41,12 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
 /// Spin until *flag >= value (a mapped host flag).  The value is fixed at capture, so several rings can be
 /// outstanding at once (the split verify window keeps two).
 void wait_flag_ge(const uint32_t* flag, uint32_t value, void* stream);
+/// Layer split, overlapped hand-off (STRATA_SPLIT_OVERLAP): dst (mapped) = [a (na) | b (nb) | c (nc)] with volatile
+/// stores, then the LAST block to finish raises *flag = 1 (mapped) after a system fence, so the next stage's GPU can
+/// start (wait_flag_ge(flag, 1)) without the host syncing this stage first.  `counter` is one device word, 0 between
+/// calls (the last block resets it).  Volatile because on RDNA a plain store to mapped memory can sit in the L2.
+void handoff_publish(float* dst, const float* a, int64_t na, const float* b, int64_t nb, const float* c, int64_t nc,
+                     uint32_t* counter, uint32_t* flag, void* stream);
 /// the GPU's %globaltimer (ns) into buf[i] (a one-thread kernel: the verify window's stage profiler).
 void gpu_stamp(unsigned long long* buf, int i, void* stream);
 
