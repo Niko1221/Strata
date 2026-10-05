@@ -260,12 +260,33 @@ class WindowsDetection(unittest.TestCase):
         g = setup.amd_gpus_windows([], self.REGISTRY)
         self.assertEqual([x["arch"] for x in g if not x["arch"].startswith("unknown")], ["gfx1201", "gfx1101"])
 
+    def test_strix_halo(self):
+        """gfx1151 on Windows: the registry's figure is the carve-out and HIP's the carve-out plus shared RAM, both
+        cut from system RAM, so neither adds to it for the fit estimates (Ryzen AI Max+ 395, 64 GB, 16 GB carve-out)."""
+        adapters = [{"name": "AMD Radeon(TM) 8060S Graphics",
+                     "pnp": r"PCI\VEN_1002&DEV_1586&SUBSYS_8D01103C&REV_D1\4&8", "ram": 4293918720}]
+        registry = [{"DriverDesc": "AMD Radeon(TM) 8060S Graphics", "MatchingDeviceId": r"PCI\VEN_1002&DEV_1586&REV_D1",
+                     "HardwareInformation.qwMemorySize": (16 << 30).to_bytes(8, "little")}]
+        g = setup.amd_gpus_windows(adapters, registry)
+        self.assertEqual((g[0]["arch"], g[0]["vram_gb"], g[0]["shared_memory"]), ("gfx1151", 16.0, True))
+        self.assertIsNone(setup.amd_problem(g[0]))
+        self.assertEqual(setup.independent_vram_gb(g[0]), 0.0)
+        h = setup.hip_devices(text="device 0: AMD Radeon(TM) 8060S Graphics\n  arch gfx1151, 43.8 GiB, wave32\n")
+        self.assertTrue(h[0]["shared_memory"])
+        self.assertEqual(setup.independent_vram_gb(h[0]), 0.0)
+        with mock.patch.object(setup, "hip_devices", lambda probe=None, text=None: h), \
+                mock.patch.object(setup, "ok", lambda *a: None):
+            card = setup.hip_card(Path("engine"), g[0], g)
+        self.assertEqual((card["index"], card["vram_gb"], card["shared_memory"]), (0, 43.8, True))
+
     def test_arch_names(self):
         for name, arch in (("AMD Radeon RX 9070 GRE", "gfx1201"), ("AMD Radeon AI PRO R9700", "gfx1201"),
                            ("AMD Radeon RX 9060 XT", "gfx1200"), ("AMD Radeon RX 7900 GRE", "gfx1100"),
                            ("AMD Radeon PRO W7800", "gfx1100"), ("AMD Radeon RX 7700 XT", "gfx1101"),
                            ("AMD Radeon RX 7600", "gfx1102"), ("AMD Radeon RX 6950 XT", "gfx1030"),
-                           ("AMD Radeon RX 6800M", ""), ("AMD Radeon 780M Graphics", ""), ("AMD Radeon RX 7700S", "")):
+                           ("AMD Radeon RX 6800M", ""), ("AMD Radeon 780M Graphics", ""), ("AMD Radeon RX 7700S", ""),
+                           ("AMD Radeon(TM) 8060S Graphics", "gfx1151"), ("AMD Radeon 8050S Graphics", "gfx1151"),
+                           ("AMD Radeon 890M Graphics", "")):
             self.assertEqual(setup.win_amd_arch(None, name), arch, name)
         self.assertEqual(setup.win_amd_arch(0x744C, "whatever"), "gfx1100")
 

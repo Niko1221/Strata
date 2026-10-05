@@ -187,6 +187,30 @@ hipError_t mem_get_info(size_t* free_bytes, size_t* total_bytes) {
     *free_bytes = *free_bytes > withheld ? *free_bytes - withheld : 0;
     return e;
 }
+
+// An APU (Radeon 8060S, gfx1151) on Windows: the firmware carve-out ("dedicated GPU memory" in Task Manager, set in
+// the BIOS or AMD Software) is RAM that Windows does not count as system memory, so host_available_memory() never
+// sees it; the rest of hipMemGetInfo's figure is shared system RAM.  What of the carve-out is left: its size
+// (DXGI_ADAPTER_DESC1::DedicatedVideoMemory) less this process's local usage.  On a UMA adapter DXGI's local segment
+// may also count shared allocations, which only makes this figure smaller.  false when DXGI has no answer.
+bool apu_dedicated_free(size_t* bytes) {
+    if (bytes == nullptr) return false;
+    *bytes = 0;
+    int device = 0;
+    if (hipGetDevice(&device) != hipSuccess) {
+        (void) hipGetLastError();
+        return false;
+    }
+    IDXGIAdapter3* adapter = budget_adapter(device);
+    DXGI_ADAPTER_DESC1 desc{};
+    DXGI_QUERY_VIDEO_MEMORY_INFO local{};
+    if (adapter == nullptr || FAILED(adapter->GetDesc1(&desc)) ||
+        FAILED(adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &local)))
+        return false;
+    const uint64_t dedicated = (uint64_t) desc.DedicatedVideoMemory;
+    *bytes = (size_t) (dedicated > local.CurrentUsage ? dedicated - local.CurrentUsage : 0);
+    return true;
+}
 }  // namespace strata::hip_compat
 #endif
 

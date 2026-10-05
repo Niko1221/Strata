@@ -66,10 +66,11 @@ On a PC with no NVIDIA card Strata can use, the AMD card is chosen by itself; wi
   Adrenalin Edition](https://www.amd.com/en/support/download/drivers.html)). Nothing else: no ROCm or HIP SDK
   install, no compiler, no admin rights.
 - **Detection:** setup reads the display adapters Windows lists (their PCI ids; the VRAM size from the display
-  driver's registry entry). An integrated Radeon is listed as not supported.
+  driver's registry entry). An integrated Radeon is listed as not supported, except the Radeon 8060S / 8050S
+  (gfx1151, not model-tested on Windows yet: see [gfx1151](#rdna-35-gfx1151)).
 - **Engine:** the ready-made `strata-windows-x64-hip.zip` from the release (built by `tools\hip\build_windows.bat`
-  for gfx1100, gfx1101, gfx1102, gfx1200, gfx1201 and gfx1030) goes into `engine\`. It carries the ROCm libraries the
-  engine loads (`engine\rocm\bin`: the HIP runtime, hipBLAS / rocBLAS / hipBLASLt with their kernels for these cards,
+  for gfx1100, gfx1101, gfx1102, gfx1200, gfx1201 and gfx1030; gfx1151 from the next build on) goes into
+  `engine\`. It carries the ROCm libraries the engine loads (`engine\rocm\bin`: the HIP runtime, hipBLAS / rocBLAS / hipBLASLt with their kernels for these cards,
   amd_comgr and the Microsoft C++ runtime; ROCm 10.2.0a20260930 from AMD's TheRock builds, licenses in
   `engine\rocm\licenses`). The HIP runtime works through the AMD driver's own components, so the driver is the one
   thing it needs from the PC.
@@ -238,6 +239,24 @@ and two 100-token capped replies at 46.2 and 62.0 tok/s. A reasoning-enabled req
 1,921 tokens in 41 seconds (47.8 tok/s); its live average stayed around 47.6-48.9 tok/s through most of the run. Those
 measurements used plain hipBLAS, before the gfx1151 hipBLASLt 1.5.0 table below was calibrated. Windows is not
 included in this validation: the ready-made Windows HIP archive is not built with gfx1151 yet.
+
+**Windows (not model-tested yet).** `tools\hip\build_windows.bat` now builds gfx1151 by default, and setup knows the
+Radeon 8060S / 8050S by its PCI id (`0x1586`) or its name. On Windows the GPU's memory is split in two: the firmware
+carve-out (set in the BIOS or AMD Software), which Windows keeps outside system RAM, and shared system RAM. On a
+Ryzen AI Max+ 395 with 64 GB and a 16 GB carve-out, Windows reports 47.8 GB of RAM, the registry 16 GB of VRAM and
+the HIP runtime 43.8 GiB (carve-out plus shared). Setup treats both figures as shared, so neither adds to the RAM in
+its model choice. The engine sizes its automatic expert cache from host memory as on Linux, plus what is left of the
+carve-out (DXGI's dedicated video memory less this process's local usage; logged as `integrated AMD GPU: N GiB of
+its carve-out free`). Checked on that PC (Windows 11, AMD driver 32.0.22018.5, TheRock ROCm 10.2.0a20260930):
+`tools\hip\build_windows.bat tests` builds and packages the archive with gfx1151 (rocBLAS ships gfx1151's kernels
+as a folder, which the packager now copies), `strata-device --selftest` passes, and the HIP ctest passes 60 of 65:
+`hip_handoff` (Windows, above), `ple_parity`, `expert_parity` and `pool_test` (they need model fixtures) and
+`expert_cache_segmented_test` (`--vram-elastic` is CUDA-only) fail as on other cards; two are skipped.
+`hip_prefill_mmq_parity` failed there at first: its output sentinel was written by a null-stream `hipMemset`
+that landed after the MMQ kernel on the non-blocking stream. The kernels were right (the same instructions as
+gfx1100's but for `s_delay_alu` hints; 0.05-0.13% relative L2 once ordered); the test now sets the sentinel on the
+product's stream. A model run on Windows is still to come; a self-built archive is installed with
+`START-HERE.bat --backend hip --prebuilt dist\`.
 
 Do not use TheRock `7.14.0a20260612` on gfx1151. The complete Strata tree compiles with it, but both its own
 `rocminfo` and `strata-device` segfault in `rocr::AMD::GpuAgent::InitDma()` during `hsa_init`, before a kernel can

@@ -1481,8 +1481,10 @@ _WIN_AMD_DID = {0x744C: "gfx1100", 0x7448: "gfx1100", 0x745E: "gfx1100",        
                 0x7480: "gfx1102",                                                  # RX 7600 / 7600 XT
                 0x7590: "gfx1200",                                                  # RX 9060 XT
                 0x7550: "gfx1201", 0x7551: "gfx1201",                               # RX 9070 / 9070 XT, AI PRO R9700
-                0x73BF: "gfx1030", 0x73AF: "gfx1030", 0x73A5: "gfx1030"}            # RX 6800 / 6800 XT / 6900 XT / 6950 XT
+                0x73BF: "gfx1030", 0x73AF: "gfx1030", 0x73A5: "gfx1030",            # RX 6800 / 6800 XT / 6900 XT / 6950 XT
+                0x1586: "gfx1151"}                                                  # Radeon 8060S / 8050S (APU)
 _WIN_AMD_NAME = ((re.compile(r"\b9070\b|R9700", re.I), "gfx1201"),
+                 (re.compile(r"Radeon\W*(?:\(TM\))?\s*80[56]0S", re.I), "gfx1151"),
                  (re.compile(r"\b9060\b", re.I), "gfx1200"),
                  (re.compile(r"RX\s*7900|W7900|W7800", re.I), "gfx1100"),
                  (re.compile(r"RX\s*7800|RX\s*7700(?!\s*S)|W7700", re.I), "gfx1101"),
@@ -1584,6 +1586,8 @@ def amd_gpus_windows(adapters=None, registry=None) -> list[dict]:
         name = ad.get("name") or AMD_NAMES.get(arch, f"AMD Radeon (device {did:04X})")
         found.append({"index": len(found), "name": name, "vram_gb": vram, "arch": arch or f"unknown (PCI {did:04X})",
                       "driver": driver or "amd", "vendor": "amd"})
+        if arch == "gfx1151":                          # the registry's figure is the firmware carve-out: the same RAM
+            found[-1]["shared_memory"] = True
     return found
 
 
@@ -1629,6 +1633,8 @@ def hip_devices(probe: Path | None = None, text: str | None = None) -> list[dict
             g["arch"] = "unknown"
         if g["arch"] in AMD_NAMES and g["name"] in ("", "AMD Radeon Graphics"):
             g["name"] = AMD_NAMES[g["arch"]]
+        if g["arch"] == "gfx1151":                     # HIP's figure: the carve-out plus shared system RAM
+            g["shared_memory"] = True
     return found
 
 

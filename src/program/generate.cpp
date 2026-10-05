@@ -3206,19 +3206,30 @@ int main(int argc, char** argv) {
     if (o.expert_cache < 0) {
         size_t free_b = 0, total_b = 0;
         cudaMemGetInfo(&free_b, &total_b);
-#if defined(STRATA_USE_HIP) && !defined(_WIN32)
+#if defined(STRATA_USE_HIP)
         // An APU's "VRAM" is system RAM. hipMemGetInfo reports the whole GPU-addressable GTT pool and does not
         // subtract ordinary CPU allocations (including Strata's host expert arena), so sizing the cache from that
         // number alone can ask the OOM killer for nearly all RAM. Cap it at currently available host memory with
         // 4 GiB left for the OS and request-time CPU work. Discrete cards keep the normal independent-VRAM path.
+        // Windows: the same cap (there an over-sized cache pages to disk instead of meeting the OOM killer), plus
+        // what is left of the firmware carve-out, which Windows keeps outside system RAM (a Ryzen AI Max+ 395 with
+        // 64 GB and a 16 GB carve-out: HIP reports 43.8 GiB, Windows 47.8 GB of RAM).  The arch check covers a HIP
+        // runtime that does not flag the adapter as integrated.
         cudaDeviceProp apu_prop{};
         int apu_dev = 0;
-        if (cudaGetDevice(&apu_dev) == cudaSuccess &&
-            cudaGetDeviceProperties(&apu_prop, apu_dev) == cudaSuccess && apu_prop.integrated) {
+        if (cudaGetDevice(&apu_dev) == cudaSuccess && cudaGetDeviceProperties(&apu_prop, apu_dev) == cudaSuccess &&
+            (apu_prop.integrated || std::strncmp(apu_prop.gcnArchName, "gfx1151", 7) == 0)) {
             strata::core::detail::HostMemory hm{};
             if (strata::core::detail::host_available_memory(hm)) {
                 constexpr uint64_t host_headroom = 4ull << 30;
-                const uint64_t host_free = hm.available > host_headroom ? hm.available - host_headroom : 0;
+                uint64_t host_free = hm.available > host_headroom ? hm.available - host_headroom : 0;
+#if defined(_WIN32)
+                if (size_t carve = 0; strata::hip_compat::apu_dedicated_free(&carve)) {
+                    std::fprintf(stderr, "strata generate: integrated AMD GPU: %.2f GiB of its carve-out free\n",
+                                 (double) carve / 1073741824.0);
+                    host_free += carve;
+                }
+#endif
                 if (host_free < free_b) {
                     std::fprintf(stderr, "strata generate: integrated AMD GPU shares system RAM: limiting the expert "
                                          "cache's %.2f GiB device-free figure to %.2f GiB of host memory\n",

@@ -85,6 +85,8 @@
 // (src/core/device.cu; STRATA_WDDM_BUDGET=0: hipMemGetInfo as it is).
 namespace strata::hip_compat {
 hipError_t mem_get_info(size_t* free_bytes, size_t* total_bytes);
+// An APU's firmware carve-out still free for this process (Windows counts it outside system RAM; src/core/device.cu)
+bool apu_dedicated_free(size_t* bytes);
 }
 #define cudaMemGetInfo ::strata::hip_compat::mem_get_info
 #else

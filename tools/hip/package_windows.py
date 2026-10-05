@@ -117,8 +117,8 @@ def main() -> int:
     lib.mkdir(parents=True)
     for f in (rbin / "rocblas" / "library").iterdir():
         m = re.search(r"gfx[0-9a-f]+", f.name)
-        if m is None or m.group() in archs:
-            shutil.copy2(f, lib / f.name)
+        if m is None or m.group() in archs:          # gfx1151's kernels come as a folder (TheRock 10.2), not files
+            (shutil.copytree if f.is_dir() else shutil.copy2)(f, lib / f.name)
     for arch in archs:
         src = rbin / "hipblaslt" / "library" / arch
         if src.is_dir():                                  # hipBLASLt has no RDNA2 (gfx1030) kernels
