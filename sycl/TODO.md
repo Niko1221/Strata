@@ -95,12 +95,21 @@ https://github.com/maxious/Strata_SYCL, branch `b70-intel-arc-0139`: built on th
 its own experiments on top (2026-10-05): "experiments 42-46" measured on an Arc Pro B60; int8 DPAS benches (a Q6_K
 MMVQ, a fused gate+up, a prompt-width sweep); the host-flag spin priced (an exhaustion counter, a doorbell probe).
 
-- [ ] Fetch the branch and diff it against `intel-arc-0.1.39`: what each experiment changes, what it measured, and
-      on which card (the B60 is a smaller Xe2 die than the B70).
-- [ ] Re-run the int8 DPAS benches here (B70, B65): the fused gate+up and the prompt-width sweep bear directly on 4
-      (the expert groups' row counts, int8 against fp16) - and on why this port's own int8 DPAS kernel lost.
-- [ ] The spin pricing against this port's doorbell and bounded spins (decode's host handshake); take what wins, with
-      credit, through benchy v1.
+- [x] Fetched and read (2026-10-05): 210 files on top of `baa84d9`, with an experiments log
+      (`docs/sycl-experiments/`, 42-46 measured on the B60) and engine opt-ins: `STRATA_MMVQ_PREUNPACK`,
+      `STRATA_PREFILL_INT8`, `STRATA_PREFILL_MMQ`, `STRATA_GDN_PIPELINE` (default on there), `STRATA_REORDER_ESIMD`.
+- [x] **Their DPAS / pre-unpack decode matvec on this box:** `xmx_mmvq_bench` on the B65 (the B70's die) at decode
+      widths 3-8: DPAS 1.24-1.90x the shipped Q6_K kernel on the real shapes (2560->12288/10240, 6144->2560), the
+      one-time pre-unpack (their exp 27, dp4a kept) 1.11-1.76x - most of the gain; DPAS loses on 2560 x 2560. All arms
+      at the same error against fp64. **But not worth taking for decode on a 32 GB card:** their engine A/B found the
+      unpacked copies cost 2.53 GiB of VRAM, the expert cache shrinks (9,478 -> 8,152 slots there) and decode drops
+      12.4%; at matched slot counts within 1%. DPAS needs the same bytes (272 per 256 weights), so the same VRAM.
+      Worth it only where VRAM is spare (the B65 beside a layer split, a 48 GB card).
+- [ ] Their `STRATA_PREFILL_INT8` / `STRATA_PREFILL_MMQ` (int8 prompt paths) against item 4's oneDNN numbers: A/B
+      with benchy (config `"env"`) on the Coder; their note says MMQ lost on long prompts (FP16 stays default).
+- [ ] `STRATA_GDN_PIPELINE` ("cols_pipe", the value heads of a key head in one thread, same bits): their default;
+      A/B it here.
+- [ ] The spin pricing (exp 46: the handshake ~1.4% of a round, exhaustion-dominant) against this port's doorbell.
 
 ## Later
 
