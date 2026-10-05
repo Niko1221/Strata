@@ -40,6 +40,7 @@
 #include <type_traits>
 #include <string>
 #include <cmath>
+#include <unordered_map>
 
 namespace strata::kernels {
 namespace {
@@ -54,6 +55,11 @@ constexpr int VDR = 2;
 constexpr int WARPS = 4;
 constexpr int WARP = 32;
 constexpr int QUANT_THREADS = 256;
+// shared dense-K-quant pre-unpack registry (exp 28/30): packed device ptr -> pre-unpacked device ptr.
+// Registered once at weight load (single-threaded), read per decode call.  Each callsite (native_q6_k_mmvq /
+// native_q5_k_mmvq) routes to its own decode kernel when its packed pointer is found and routing is enabled.
+std::unordered_map<const void*, const void*> g_q6k_preunpack;
+int g_q6k_preunpack_enabled = 0;
 
 struct Q5KBlock {
     sycl::half2 dm;
@@ -133,13 +139,8 @@ static_assert(sizeof(IQ4NLBlock) == 18 && alignof(IQ4NLBlock) == 2 && offsetof(I
 __dpct_inline__ float warp_sum(float x) {
 #pragma unroll
     for (int offset = WARP / 2; offset > 0; offset >>= 1) {
-        /*
-        DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-        feature masked sub_group function which may not be supported by all
-        compilers or runtimes. You may need to adjust the code.
-        */
-        x += dpct::experimental::permute_sub_group_by_xor(
-            0xffffffff, sycl::ext::oneapi::this_work_item::get_sub_group(), x,
+        x += strata::sub_group_permute_xor(
+            sycl::ext::oneapi::this_work_item::get_sub_group(), x,
             offset);
     }
     return x;
@@ -167,14 +168,8 @@ inline bool mmvq_sg16(bool iq4xs, int n_out) {
 __dpct_inline__ float warp_max(float x) {
 #pragma unroll
     for (int offset = WARP / 2; offset > 0; offset >>= 1) {
-        /*
-        DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-        feature masked sub_group function which may not be supported by all
-        compilers or runtimes. You may need to adjust the code.
-        */
         x = sycl::fmax(x,
-                       dpct::experimental::permute_sub_group_by_xor(
-                           0xffffffff,
+                       strata::sub_group_permute_xor(
                            sycl::ext::oneapi::this_work_item::get_sub_group(),
                            x, offset));
     }
@@ -223,12 +218,6 @@ q5_q8_dot_impl(const int *__restrict__ vl, const int *__restrict__ vh,
     return dm5f.x() * sumf_d - dm5f.y() * sumf_m;
 }
 
-/*
-DPCT1110: The total declared local variable size in device function
-q5_q8_dot exceeds 128 bytes and may cause high register pressure. Consult with
-your hardware vendor to find the total register size available and adjust the
-code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ float q5_q8_dot(const Q5KBlock *__restrict__ bq5,
                                 const Q81Block *__restrict__ bq8, int iqs) {
     int vl[2];
@@ -305,12 +294,7 @@ __dpct_inline__ void native_q5_k_mmvq_kernel(const Q5KBlock *__restrict__ w,
             partial[item_ct1.get_local_id(1) - 1][i][item_ct1.get_local_id(2)] =
                 tmp[i];
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     if (item_ct1.get_local_id(1) > 0) return;
 #pragma unroll
     for (int i = 0; i < ROWS; ++i) {
@@ -384,12 +368,7 @@ __dpct_inline__ void native_q2_0_mmvq_kernel(const Q20Block *__restrict__ w,
             partial[item_ct1.get_local_id(1) - 1][i][item_ct1.get_local_id(2)] =
                 tmp[i];
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     if (item_ct1.get_local_id(1) > 0) return;
 #pragma unroll
     for (int i = 0; i < ROWS; ++i) {
@@ -486,12 +465,7 @@ __dpct_inline__ void native_q3_k_mmvq_kernel(const Q3KBlock *__restrict__ w,
             partial[item_ct1.get_local_id(1) - 1][i][item_ct1.get_local_id(2)] =
                 tmp[i];
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     if (item_ct1.get_local_id(1) > 0) return;
 #pragma unroll
     for (int i = 0; i < ROWS; ++i) {
@@ -587,12 +561,7 @@ native_iq4_xs_mmvq_kernel(const IQ4XSBlock *__restrict__ w,
             partial[item_ct1.get_local_id(1) - 1][i][item_ct1.get_local_id(2)] =
                 tmp[i];
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     if (item_ct1.get_local_id(1) > 0) return;
 #pragma unroll
     for (int i = 0; i < ROWS; ++i) {
@@ -698,12 +667,7 @@ __dpct_inline__ void native_q4_k_mmvq_kernel(const Q4KBlock *__restrict__ w,
             partial[item_ct1.get_local_id(1) - 1][i][item_ct1.get_local_id(2)] =
                 tmp[i];
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     if (item_ct1.get_local_id(1) > 0) return;
 #pragma unroll
     for (int i = 0; i < ROWS; ++i) {
@@ -785,12 +749,7 @@ __dpct_inline__ void native_q6_k_mmvq_kernel(const Q6KBlock *__restrict__ w,
             partial[item_ct1.get_local_id(1) - 1][i][item_ct1.get_local_id(2)] =
                 tmp[i];
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     if (item_ct1.get_local_id(1) > 0) return;
 #pragma unroll
     for (int i = 0; i < ROWS; ++i) {
@@ -918,12 +877,7 @@ __dpct_inline__ void native_small_mmvq_kernel(const Weight *__restrict__ w,
             partial[item_ct1.get_local_id(1) - 1][i][item_ct1.get_local_id(2)] =
                 tmp[i];
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     if (item_ct1.get_local_id(1) > 0) return;
 #pragma unroll
     for (int i = 0; i < ROWS; ++i) {
@@ -1196,12 +1150,6 @@ struct SmallTraits {
 bool g_multi_exact = true;   // until the upstream layout is timed on an idle GPU (plan rule: default only what is measured)
 
 template <typename F, int NCOLS, int NW, int ROWS, int SG = WARP>
-/*
-DPCT1110: The total declared local variable size in device function
-native_mmvq_multi_kernel exceeds 128 bytes and may cause high register pressure.
-Consult with your hardware vendor to find the total register size available and
-adjust the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void
 native_mmvq_multi_kernel(const typename F::Block *__restrict__ w,
                          const Q81Block *__restrict__ x, float *__restrict__ y,
@@ -1254,12 +1202,7 @@ native_mmvq_multi_kernel(const typename F::Block *__restrict__ w,
                 partial[item_ct1.get_local_id(1) - 1][j][i]
                        [item_ct1.get_local_id(2)] = tmp[j][i];
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     if (item_ct1.get_local_id(1) > 0) return;
 #pragma unroll
     for (int j = 0; j < NCOLS; ++j) {
@@ -1311,7 +1254,7 @@ void native_mmvq_rowwarp_kernel(const typename F::Block* __restrict__ w, const Q
         for (int j = 0; j < NCOLS; ++j) {
             float v = tmp[r][j];
 #pragma unroll
-            for (int o = WARP / 2; o > 0; o >>= 1) v += dpct::experimental::permute_sub_group_by_xor(0xffffffffu, sg, v, o);
+            for (int o = WARP / 2; o > 0; o >>= 1) v += strata::sub_group_permute_xor(sg, v, o);
             if (lane == 0 && row0 + r < n_out) y[std::size_t(j) * n_out + row0 + r] = v;
         }
 }
@@ -1432,6 +1375,68 @@ void native_mmvq_q6k_wide_kernel(const Q6KBlock* __restrict__ w, const Q81Block*
             if (lane == 0 && row0 + r < n_out) y[std::size_t(j) * n_out + row0 + r] = v;
         }
 }
+// SYCL port: experiment, README P0 #2 avenue 2 (exp 26) - the wide Q6_K kernel with NCOLS as a *runtime* column
+// loop instead of the full `#pragma unroll`.  The unrolled kernel keeps all NCOLS columns' activations (u0/u1/ds)
+// and accumulators live in one work-item, which blows registers at NCOLS>=5 (NCOLS=8 spills 6272 B vs 384 B at
+// NCOLS=4, exp 22).  Here the activation load and its dot are fused per-j so only one column is live at a time;
+// acc[NCOLS] stays live (each column accumulates independently).  `#pragma unroll 1` forces the loop to stay a
+// loop even though NCOLS is a compile-time template constant.
+template <int NCOLS>
+void native_mmvq_q6k_wide_loop_kernel(const Q6KBlock* __restrict__ w, const Q81Block* __restrict__ x,
+                                      float* __restrict__ y, int n_in, int n_out) {
+    auto item = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+    const int lane = int(item.get_local_id(2)), warp = int(item.get_local_id(1));
+    const int row = int(item.get_group(2)) * WARPS + warp;
+    if (row >= n_out) return;
+    const int blocks_per_row = n_in / QK, x_stride = n_in / Q8K;
+    const int g = lane & 7, sub = lane >> 3;
+    const int vh_shift = 2 * ((g & 3) >> 1);
+    const int qh4_idx = 2 * (g >> 2) + (g & 1);
+    const int scale_offset = 8 * (g >> 2) + (g & 3);
+    const int bq8_offset = 4 * (g >> 2) + ((g & 3) >> 1);
+    const int u_int4 = g & 1;
+    const Q6KBlock* wr = w + std::size_t(row) * blocks_per_row;
+    float acc[NCOLS] = {};
+    for (int kbx = sub; kbx < blocks_per_row; kbx += WARP / 8) {
+        const int kby = kbx * (QK / Q8K);
+        const Q6KBlock* b = wr + kbx;
+        const sycl::int4 ql4 = load16_a2(b->ql + 16 * g);
+        const sycl::int4 qh4 = load16_a2(b->qh + 16 * qh4_idx);
+        const float d = b->d;
+        const float dsc0 = d * (float) b->scales[scale_offset];
+        const float dsc1 = d * (float) b->scales[scale_offset + 4];
+        const int vl[4] = {ql4.x(), ql4.y(), ql4.z(), ql4.w()};
+        const int vh[4] = {qh4.x() >> vh_shift, qh4.y() >> vh_shift, qh4.z() >> vh_shift, qh4.w() >> vh_shift};
+        int vi0[4], vi1[4];
+#pragma unroll
+        for (int p = 0; p < 4; ++p) {
+            vi0[p] = dpct::vectorized_binary<sycl::char4>((vl[p] & 0x0f0f0f0f) | ((vh[p] << 4) & 0x30303030), 0x20202020, dpct::sub_sat());
+            vi1[p] = dpct::vectorized_binary<sycl::char4>(((vl[p] >> 4) & 0x0f0f0f0f) | (((vh[p] >> 4) << 4) & 0x30303030), 0x20202020, dpct::sub_sat());
+        }
+#pragma unroll 1
+        for (int j = 0; j < NCOLS; ++j) {          // one column's activation live at a time
+            const Q81Block* xb = x + std::size_t(j) * x_stride + kby + bq8_offset;
+            const int* p0 = reinterpret_cast<const int*>(xb[0].qs) + 4 * u_int4;
+            const int* p1 = reinterpret_cast<const int*>(xb[2].qs) + 4 * u_int4;
+            const sycl::int4 u0 = sycl::int4(p0[0], p0[1], p0[2], p0[3]);
+            const sycl::int4 u1 = sycl::int4(p1[0], p1[1], p1[2], p1[3]);
+            const float ds0 = xb[0].ds[0], ds1 = xb[2].ds[0];
+            int s0 = 0, s1 = 0;
+            s0 = strata::dp4a(vi0[0], u0.x(), s0); s0 = strata::dp4a(vi0[1], u0.y(), s0);
+            s0 = strata::dp4a(vi0[2], u0.z(), s0); s0 = strata::dp4a(vi0[3], u0.w(), s0);
+            s1 = strata::dp4a(vi1[0], u1.x(), s1); s1 = strata::dp4a(vi1[1], u1.y(), s1);
+            s1 = strata::dp4a(vi1[2], u1.z(), s1); s1 = strata::dp4a(vi1[3], u1.w(), s1);
+            acc[j] += (float) ds0 * dsc0 * (float) s0 + (float) ds1 * dsc1 * (float) s1;
+        }
+    }
+    auto sg = item.get_sub_group();
+    for (int j = 0; j < NCOLS; ++j) {
+        float v = acc[j];
+#pragma unroll
+        for (int o = WARP / 2; o > 0; o >>= 1) v += sycl::permute_group_by_xor(sg, v, o);
+        if (lane == 0 && row < n_out) y[std::size_t(j) * n_out + row] = v;
+    }
+}
 // SYCL port: the wide Q6_K kernel with its weight loads issued U steps ahead. The wide kernel's 2560-wide rows
 // are ~3 steps of load -> wait -> dot per sub-group, so each sub-group has one 16-byte load per lane in flight
 // at a time and the kernel is latency-bound (~146 GB/s). Here a sub-group first issues the ql/qh/scale loads
@@ -1508,6 +1513,57 @@ inline int q6k_wide_rpw() {
     static const int v = std::getenv("STRATA_MMVQ_WIDE_RPW") ? std::atoi(std::getenv("STRATA_MMVQ_WIDE_RPW")) : 1;
     return v;
 }
+// STRATA_MMVQ_CACHE_MODE (item 7, exp 39): the MMVQ cache policy, set IN THE SOURCE as a launch property
+// (sycl_ext_intel_cache_controls) so it actually reaches the compiler - exp 22's sweep was null because
+// -cl-load/store-cache-default never arrived on a SYCL/SPIR-V input.  It is a build-time mode because the property
+// list's type is part of the launch: 0 = no hints (the shipping default), 1 = stream the reads past L1, 2 = uncached
+// L1, 3 = cached at L1.
+//
+// MEASURED, and the answer is that this toolchain cannot express the property at all (exp 39): on icpx 2026.1 EVERY
+// route - read_hint on a launch property with one cache_control entry, with the spec's two-entry L1/L2+L3 form, and
+// sycl::ext::oneapi::experimental::annotated_ptr - compiles and then fails at the SPIR-V DEVICE LINK with
+// "InvalidLlvmModule: Invalid LLVM module: CacheControlLoadINTEL requires exactly 2 extra operands".  The error is per
+// kernel and independent of the spelling, so modes 1-3 are kept for a future compiler but cannot be measured here.
+// Mode 0 compiles and is the shipping path.
+#ifndef STRATA_MMVQ_CACHE_MODE
+#define STRATA_MMVQ_CACHE_MODE 0
+#endif
+constexpr int kMmvqCacheMode = STRATA_MMVQ_CACHE_MODE;
+inline auto mmvq_cache_props() {
+    namespace ce = sycl::ext::intel::experimental;
+    namespace cl = sycl::ext::oneapi::experimental;
+    namespace px = sycl::ext::oneapi::experimental;
+    // The property list is a type, so it has to be spelled out: `properties<detail::properties_type_list<...>>`.
+    if constexpr (kMmvqCacheMode == 1)
+        return px::properties<px::detail::properties_type_list<px::property_value<
+            ce::read_hint_key, ce::cache_control<ce::cache_mode::streaming, cl::cache_level::L1>>>>{};
+    else if constexpr (kMmvqCacheMode == 2)
+        return px::properties<px::detail::properties_type_list<px::property_value<
+            ce::read_hint_key, ce::cache_control<ce::cache_mode::uncached, cl::cache_level::L1>>>>{};
+    else if constexpr (kMmvqCacheMode == 3)
+        return px::properties<px::detail::properties_type_list<px::property_value<
+            ce::read_hint_key, ce::cache_control<ce::cache_mode::cached, cl::cache_level::L1>>>>{};
+    else
+        return px::properties<px::detail::properties_type_list<>>{};
+}
+inline bool q6k_loop() {   // STRATA_MMVQ_LOOP=1: exp 26 - the wide Q6_K kernel runs NCOLS>=5 as a runtime column loop (opt-in)
+    static const bool v = std::getenv("STRATA_MMVQ_LOOP") != nullptr && std::atoi(std::getenv("STRATA_MMVQ_LOOP")) != 0;
+    return v;
+}
+#ifndef STRATA_MMVQ_RESTRICT_ATTR
+#define STRATA_MMVQ_RESTRICT_ATTR 0
+#endif
+// Item 5 (exp 40): intel::kernel_args_restrict asserts that every pointer/accessor captured as a kernel argument
+// points at a DISJOINT object, which is unchecked - true for the MMVQ (w, x, y never alias) but not for a kernel that
+// accumulates in place.  The decode kernels already declare __restrict__ by hand on w and x; what is left is the
+// compiler not knowing that for the *captured* arguments, and y.  Mode 1 adds the attribute to the Q6_K wide launches.
+// It compiles and links on this toolchain, unlike the cache-control intrinsics (exp 39) - verified with a standalone
+// kernel, with and without a co-located [[sycl::reqd_sub_group_size]].
+#if STRATA_MMVQ_RESTRICT_ATTR
+#define STRATA_MMVQ_RESTRICT [[intel::kernel_args_restrict]]
+#else
+#define STRATA_MMVQ_RESTRICT
+#endif
 template <int NCOLS>
 void launch_q6k_wide(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, dpct::queue_ptr s) {
     const auto* w = static_cast<const Q6KBlock*>(weights);
@@ -1524,11 +1580,21 @@ void launch_q6k_wide(const void* weights, const void* x_q8_1, float* y, int n_in
         STRATA_Q6PF(2) STRATA_Q6PF(3) STRATA_Q6PF(4) STRATA_Q6PF(6)
 #undef STRATA_Q6PF
     }
+    if (rpw == 1 && q6k_a2() && NCOLS >= 5 && q6k_loop()) {   // exp 26: the runtime-NCOLS column loop for NCOLS>=5 (opt-in)
+        const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
+        s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_wide_loop, dpct_kernel_scalar<NCOLS>>>(
+            sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
+            [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
+                native_mmvq_q6k_wide_loop_kernel<NCOLS>(w, x, y, n_in, n_out);
+            });
+        return;
+    }
     if (rpw == 1 && q6k_a2()) {
         const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
         s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_wide_a2, dpct_kernel_scalar<NCOLS>>>(
             sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
-            [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
+            mmvq_cache_props(),
+            [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] STRATA_MMVQ_RESTRICT {
                 native_mmvq_q6k_wide_kernel<NCOLS, 1, WARP, (int) sizeof(Q6KBlock), true>(w, x, y, n_in, n_out);
             });
         return;
@@ -1552,7 +1618,8 @@ void launch_q6k_wide(const void* weights, const void* x_q8_1, float* y, int n_in
     const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
     s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_wide1, dpct_kernel_scalar<NCOLS>>>(
         sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
-        [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { native_mmvq_q6k_wide_kernel<NCOLS, 1>(w, x, y, n_in, n_out); });
+        mmvq_cache_props(),
+        [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] STRATA_MMVQ_RESTRICT { native_mmvq_q6k_wide_kernel<NCOLS, 1>(w, x, y, n_in, n_out); });
 }
 // ---------------------------------------------------------------- SYCL port: wide kernels for Q4_K, Q5_K, IQ4_XS
 //
@@ -1949,27 +2016,10 @@ void validate_stream(void* stream) {
     if (!stream) throw std::invalid_argument("native MMVQ requires an explicit non-null CUDA stream");
 }
 void launch_check() {
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const auto error = 0;
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be
-    rewritten.
-    */
     if (error != 0) {
-        /*
-        DPCT1009: SYCL reports errors using exceptions and does not use
-        error codes. Please replace the "get_error_string_dummy(...)" with a
-        real error-handling function.
-        */
-        /*
-        DPCT1001: The statement could not be removed.
-        */
         throw std::runtime_error(std::string("native MMVQ launch: ") +
-                                 dpct::get_error_string_dummy(error));
+                                 dpct::error_string(error));
     }
 }
 
@@ -2123,6 +2173,14 @@ void native_q5_k_mmvq(const void* weights, const void* x_q8_1, float* y,
     validate_pointer(x_q8_1);
     validate_pointer(y);
     validate_stream(stream);
+    // exp 30 (P0 #5): a registered pre-unpacked Q5U buffer decodes through the no-bit-unpack path.
+    if (g_q6k_preunpack_enabled && ncols >= 1 && ncols <= 8) {
+        auto it = g_q6k_preunpack.find(weights);
+        if (it != g_q6k_preunpack.end() && n_in % 32 == 0) {
+            native_mmvq_q5k_unpacked(it->second, x_q8_1, y, n_in, n_out, ncols, stream);
+            return;
+        }
+    }
     if (try_wide<WideQ5K>(weights, x_q8_1, y, n_in, n_out, ncols, stream)) { launch_check(); return; }
     if (ncols > 1) {
         launch_multi<Q5KTraits>(weights, x_q8_1, y, n_in, n_out, ncols, stream);
@@ -2500,8 +2558,187 @@ void native_q4_k_f32(const void* weights, const float* x, void* scratch_q8_1,
     native_q4_k_mmvq(weights, scratch_q8_1, y, n_in, n_out, ncols, stream);
 }
 
+// ---------------------------------------------------------------------- exp 27/28 (P0 #2 avenue 1)
+// pre-unpacked Q6_K decode: the one-time Q6K->Q6U transform removes the per-token 6-bit unpack/gather, which the
+// ISA showed is the pipe cost (dp4a is 32 of 985 instr on the same ALU int pipe as the bfn/xor/mov unpack).  The
+// unpacked Q6U blocks are decoded by the identical load+dp4a path the Q8_0 wide32 kernel uses (Wide32Q6U mirrors
+// Wide32Q8 with the two per-16 scales Q6_K keeps), so the decode land at the measured ~2x ceiling.
+void native_mmvq_set_q6k_preunpack(bool enabled) { g_q6k_preunpack_enabled = enabled ? 1 : 0; }
+void native_mmvq_register_q6k_preunpack(const void* packed, const void* unpacked) { g_q6k_preunpack[packed] = unpacked; }
+void native_mmvq_unregister_q6k_preunpack(const void* packed) { g_q6k_preunpack.erase(packed); }
+void native_mmvq_clear_q6k_preunpack() { g_q6k_preunpack.clear(); }
+
+std::size_t native_mmvq_q6k_preunpack_bytes(int n_in, int n_out) {
+    return (std::size_t) n_out * (n_in / 32) * sizeof(Q6UBlock);
+}
+
+void native_q6k_preunpack_kernel(const Q6KBlock* __restrict__ w, Q6UBlock* __restrict__ out, int n_blocks) {
+    auto item = sycl::ext::oneapi::this_work_item::get_nd_item<1>();
+    const int blk = int(item.get_global_id(0));
+    if (blk >= n_blocks) return;
+    const Q6KBlock* b = w + blk;                 // row-major (row, 256-block); 8 Q6U per 256-block
+    Q6UBlock* ob = out + (std::size_t) blk * 8;
+    const float d = (float) b->d;
+    const uint8_t* ql = b->ql; const uint8_t* qh = b->qh; const int8_t* sc = b->scales;
+#pragma unroll
+    for (int eb = 0; eb < 8; ++eb) {             // 8 x 32-element groups; per-16 scale g = 2eb, 2eb+1
+        Q6UBlock o;
+        o.d0 = d * (float) sc[2 * eb];
+        o.d1 = d * (float) sc[2 * eb + 1];
+#pragma unroll
+        for (int i = 0; i < 32; ++i) {
+            const int e = 32 * eb + i;
+            const int h = e / 128, e2 = e - 128 * h;
+            const int quad = e2 / 32, l = e2 - 32 * quad;
+            const int qloff = 64 * h + l + (quad & 1 ? 32 : 0);
+            const uint8_t qv = (quad & 2) ? (uint8_t) (ql[qloff] >> 4) : (uint8_t) (ql[qloff] & 0x0F);
+            const int q = (int) qv | (((qh[32 * h + l] >> (2 * quad)) & 3) << 4);
+            o.qs[i] = (int8_t) (q - 32);
+        }
+        ob[eb] = o;
+    }
+}
+void native_q6k_preunpack(const void* weights, void* unpacked, int n_in, int n_out, void* stream) {
+    const auto s = strata::q_of(stream);
+    const int n_blocks = n_out * (n_in / 256);
+    if (n_blocks <= 0) return;
+    const std::size_t local = 128, global = (std::size_t)((n_blocks + (int) local - 1) / (int) local) * local;  // round up so tiny tensors still launch
+    s->parallel_for<dpct_kernel_name<class native_q6k_preunpack_kernel_dpct>>(
+        sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(local)),
+        [=](sycl::nd_item<1> it) { native_q6k_preunpack_kernel((const Q6KBlock*) weights, (Q6UBlock*) unpacked, n_blocks); });
+}
+
+// decode the pre-unpacked Q6U blocks through the Q8_0 wide32 path (Wide32Q8's load+dp4a, two per-16 scales).
+struct Wide32Q6U {
+    using Block = Q6UBlock;
+    static constexpr int LPB = 2;
+    struct W { sycl::int4 q; float d; int half; };
+    static W load(const Block* b, int l) {
+        W r; r.half = l; r.q = load16_a2(b->qs + 16 * l); r.d = (l == 0) ? b->d0 : b->d1; return r;
+    }
+    static float apply(const W& r, const Q81Block* xb) {
+        return r.d * (float) xb->ds[0] * (float) dp4a4(r.q, ld_q8_16(xb, r.half), 0);
+    }
+};
+template <int NCOLS>
+void launch_q6k_unpacked(const void* w, const void* xq, float* y, int n_in, int n_out, dpct::queue_ptr s) {
+    const unsigned blocks = unsigned((std::size_t) n_out + WARPS - 1) / WARPS;
+    s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_unpacked, dpct_kernel_scalar<NCOLS>>>(
+        sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
+        [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]]
+            { native_mmvq_wide32_kernel<Wide32Q6U, NCOLS>((const Q6UBlock*) w, (const Q81Block*) xq, y, n_in, n_out); });
+}
+void native_mmvq_q6k_unpacked(const void* weights, const void* x_q8_1, float* y,
+                              int n_in, int n_out, int ncols, void* stream) {
+    if (ncols < 1 || ncols > 8 || n_in % 32 != 0) return;   // routing only dispatches valid shapes
+    const auto s = strata::q_of(stream);
+    switch (ncols) {
+        case 1: launch_q6k_unpacked<1>(weights, x_q8_1, y, n_in, n_out, s); return;
+        case 2: launch_q6k_unpacked<2>(weights, x_q8_1, y, n_in, n_out, s); return;
+        case 3: launch_q6k_unpacked<3>(weights, x_q8_1, y, n_in, n_out, s); return;
+        case 4: launch_q6k_unpacked<4>(weights, x_q8_1, y, n_in, n_out, s); return;
+        case 5: launch_q6k_unpacked<5>(weights, x_q8_1, y, n_in, n_out, s); return;
+        case 6: launch_q6k_unpacked<6>(weights, x_q8_1, y, n_in, n_out, s); return;
+        case 7: launch_q6k_unpacked<7>(weights, x_q8_1, y, n_in, n_out, s); return;
+        default: launch_q6k_unpacked<8>(weights, x_q8_1, y, n_in, n_out, s); return;
+    }
+}
+
+// ---------------------------------------------------------------------- exp 30 (P0 #5)
+// pre-unpacked Q5_K decode: Q5_K is the min-offset analog of Q6_K (value = d*sc*code5 - mn*m, per 32-group).
+// Pre-unpacking folds d*sc and mn*m into Q5UBlock{dsc,mn1,qs[32]} once, and the decode is native
+// q5_q8_dot_impl minus the per-element 5-bit gather (the vl/vh/0x10101010 build), keeping the same dp4a count.
+std::size_t native_mmvq_q5k_preunpack_bytes(int n_in, int n_out) {
+    return (std::size_t) n_out * (n_in / 32) * sizeof(Q5UBlock);
+}
+void native_q5k_preunpack_kernel(const Q5KBlock* __restrict__ w, Q5UBlock* __restrict__ out, int n_blocks) {
+    auto item = sycl::ext::oneapi::this_work_item::get_nd_item<1>();
+    const int blk = int(item.get_global_id(0));
+    if (blk >= n_blocks) return;
+    const Q5KBlock* b = w + blk;
+    Q5UBlock* ob = out + (std::size_t) blk * 8;                       // 8 x 32-groups per 256 super-block
+    const float d = (float) b->dm.x(), mn = (float) b->dm.y();
+    const uint8_t* ql = b->qs; const uint8_t* qh = b->qh;
+#pragma unroll
+    for (int g = 0; g < 8; ++g) {                                     // per 32-group
+        const int j = g;
+        uint8_t sc, m;                                                // get_scale_min_k4(g, scales, sc, m), inlined
+        if (j < 4) { sc = b->scales[j] & 63; m = b->scales[j + 4] & 63; }
+        else { sc = (uint8_t)(b->scales[j + 4] & 0x0F) | (uint8_t)((b->scales[j - 4] >> 6) << 4);
+               m  = (uint8_t)(b->scales[j + 4] >> 4) | (uint8_t)((b->scales[j]     >> 6) << 4); }
+        Q5UBlock o; o.dsc = d * (float) sc; o.mn1 = mn * (float) m;
+#pragma unroll
+        for (int i = 0; i < 32; ++i) {
+            const int e = 32 * g + i;
+            const int jj = e / 64, l = e % 32;                        // jj: 64-group, l: position in 32-run
+            const bool lo = (e % 64) < 32;
+            const int nibble = lo ? (ql[32 * jj + l] & 0x0F) : (ql[32 * jj + l] >> 4);
+            const int bit = lo ? (1 << (2 * jj)) : (2 << (2 * jj));
+            o.qs[i] = (int8_t) (nibble + ((qh[l] & bit) ? 16 : 0));
+        }
+        ob[g] = o;
+    }
+}
+void native_q5k_preunpack(const void* weights, void* unpacked, int n_in, int n_out, void* stream) {
+    const auto s = strata::q_of(stream);
+    const int n_blocks = n_out * (n_in / 256);
+    if (n_blocks <= 0) return;
+    const std::size_t local = 128, global = (std::size_t) ((n_blocks + (int) local - 1) / (int) local) * local;
+    s->parallel_for<dpct_kernel_name<class native_q5k_preunpack_kernel_dpct>>(
+        sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(local)),
+        [=](sycl::nd_item<1> it) { native_q5k_preunpack_kernel((const Q5KBlock*) weights, (Q5UBlock*) unpacked, n_blocks); });
+}
+
+// reads of the activation 16-byte half; a signed dot with qs (0..31) and a ones-dot give the d*code - m affine term.
+struct Wide32Q5U {
+    using Block = Q5UBlock;
+    static constexpr int LPB = 2;
+    struct W { sycl::int4 q; float dsc, mn1; int half; };
+    static W load(const Block* b, int l) {
+        W r; r.half = l; r.q = load16_a2(b->qs + 16 * l); r.dsc = b->dsc; r.mn1 = b->mn1; return r;
+    }
+    static float apply(const W& r, const Q81Block* xb) {
+        const sycl::int4 u = ld_q8_16(xb, r.half);
+        const sycl::int4 ones = sycl::int4(0x01010101, 0x01010101, 0x01010101, 0x01010101);
+        const int dot = dp4a4(r.q, u, 0);
+        const int sdsum = dp4a4(ones, u, 0);
+        return (float) xb->ds[0] * ((float) dot * r.dsc - (float) sdsum * r.mn1);
+    }
+};
+template <int NCOLS>
+void launch_q5k_unpacked(const void* w, const void* xq, float* y, int n_in, int n_out, dpct::queue_ptr s) {
+    const unsigned blocks = unsigned((std::size_t) n_out + WARPS - 1) / WARPS;
+    s->parallel_for<dpct_kernel_name<class native_mmvq_q5k_unpacked, dpct_kernel_scalar<NCOLS>>>(
+        sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
+        [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]]
+            { native_mmvq_wide32_kernel<Wide32Q5U, NCOLS>((const Q5UBlock*) w, (const Q81Block*) xq, y, n_in, n_out); });
+}
+void native_mmvq_q5k_unpacked(const void* weights, const void* x_q8_1, float* y,
+                              int n_in, int n_out, int ncols, void* stream) {
+    if (ncols < 1 || ncols > 8 || n_in % 32 != 0) return;
+    const auto s = strata::q_of(stream);
+    switch (ncols) {
+        case 1: launch_q5k_unpacked<1>(weights, x_q8_1, y, n_in, n_out, s); return;
+        case 2: launch_q5k_unpacked<2>(weights, x_q8_1, y, n_in, n_out, s); return;
+        case 3: launch_q5k_unpacked<3>(weights, x_q8_1, y, n_in, n_out, s); return;
+        case 4: launch_q5k_unpacked<4>(weights, x_q8_1, y, n_in, n_out, s); return;
+        case 5: launch_q5k_unpacked<5>(weights, x_q8_1, y, n_in, n_out, s); return;
+        case 6: launch_q5k_unpacked<6>(weights, x_q8_1, y, n_in, n_out, s); return;
+        case 7: launch_q5k_unpacked<7>(weights, x_q8_1, y, n_in, n_out, s); return;
+        default: launch_q5k_unpacked<8>(weights, x_q8_1, y, n_in, n_out, s); return;
+    }
+}
+
 void native_q6_k_mmvq(const void* weights, const void* x_q8_1, float* y,
                       int n_in, int n_out, int ncols, void* stream) {
+    // OPT-IN P0 #2 avenue 1 (exp 27/28): a registered pre-unpacked Q6U buffer decodes through the no-bit-unpack path.
+    if (g_q6k_preunpack_enabled && ncols >= 1 && ncols <= 8) {
+        auto it = g_q6k_preunpack.find(weights);
+        if (it != g_q6k_preunpack.end() && n_in % 32 == 0) {
+            native_mmvq_q6k_unpacked(it->second, x_q8_1, y, n_in, n_out, ncols, stream);
+            return;
+        }
+    }
     // SYCL port: 16-byte-load kernel for the decode shapes (ncols <= 4)
     // With the aligned loads (load16_a2) the wide kernel wins on every Q6_K shape and window width: 2.6-3.4x the
     // misaligned-load kernels in q6k_align_bench, decode 44.9 -> 54 tok/s on the Coder, output tokens identical.

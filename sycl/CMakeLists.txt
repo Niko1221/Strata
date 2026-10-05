@@ -268,6 +268,20 @@ if(STRATA_SYCL_PARITY)
   target_link_libraries(xmx_gemm_bench PRIVATE strata_kernels strata_prefill)   # -qmkl for the oneMKL reference
   add_executable(xmx_int8_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/xmx_int8_bench.cpp)   # int8 XMX IQ4_NL GEMM prototype
   target_link_libraries(xmx_int8_bench PRIVATE strata_kernels strata_prefill)
+  # Q6_K / Q5_K decode options from maxious/Strata_SYCL (their experiments 27/28/30/42, opt-in; see sycl/TODO.md 5):
+  # the one-time pre-unpack to signed bytes (STRATA_MMVQ_PREUNPACK=1) and the DPAS int8 matvec bench
+  add_executable(q6k_preunpack_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/q6k_preunpack_parity.cpp)
+  target_link_libraries(q6k_preunpack_parity PRIVATE strata_kernels)
+  add_test(NAME q6k_preunpack_parity COMMAND q6k_preunpack_parity)
+  add_executable(q5k_preunpack_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/q5k_preunpack_parity.cpp)
+  target_link_libraries(q5k_preunpack_parity PRIVATE strata_kernels)
+  add_test(NAME q5k_preunpack_parity COMMAND q5k_preunpack_parity)
+  add_executable(q6k_preunpack_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/q6k_preunpack_bench.cpp)
+  target_link_libraries(q6k_preunpack_bench PRIVATE strata_kernels)
+  add_executable(q5k_preunpack_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/q5k_preunpack_bench.cpp)
+  target_link_libraries(q5k_preunpack_bench PRIVATE strata_kernels)
+  add_executable(xmx_mmvq_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/xmx_mmvq_bench.cpp)
+  target_link_libraries(xmx_mmvq_bench PRIVATE strata_kernels strata_prefill)   # strata_prefill: oneMKL (the sweep)
   add_executable(sel_scores_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/sel_scores_bench.cpp)   # QSA block scores: kernel vs oneMKL GEMM
   target_link_libraries(sel_scores_bench PRIVATE strata_kernels strata_prefill)
   add_executable(attn_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/attn_bench.cpp)   # prompt QSA attention variants

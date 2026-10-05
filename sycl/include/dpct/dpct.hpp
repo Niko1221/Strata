@@ -87,6 +87,18 @@ inline const char *get_error_string_dummy(int ec) {
   return "<FIXME: Placeholder>"; // Return the error string for the error code
                                  // ec.
 }
+/// DPCT_CHECK_ERROR keeps the message of the exception a queued call raised (SYCL reports errors by exception and
+/// has no error codes), so a caller can put what went wrong into its own error text (from maxious/Strata_SYCL).
+inline std::string &last_error() {
+  static thread_local std::string message;
+  return message;
+}
+/// The message for a DPCT_CHECK_ERROR code: the exception the call raised, or the state of the code itself.
+inline const char *error_string(int ec) {
+  if (ec == success) return "no error";
+  const std::string &m = last_error();
+  return m.empty() ? "the call raised a SYCL exception (reported above)" : m.c_str();
+}
 } // namespace dpct
 
 #define DPCT_CHECK_ERROR(expr)                                                 \
@@ -96,6 +108,7 @@ inline const char *get_error_string_dummy(int ec) {
       return dpct::success;                                                    \
     } catch (std::exception const &e) {                                        \
       std::cerr << e.what() << std::endl;                                      \
+      dpct::last_error() = e.what();                                           \
       return dpct::default_error;                                              \
     }                                                                          \
   }()

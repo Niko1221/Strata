@@ -49,6 +49,16 @@ struct Pending {
     uint64_t bytes;
     DevicePtr data;
 };
+// exp 27/28 (P0 #2 avenue 1): pre-unpack each Q6_K/Q5_K tensor once so the decode skips the per-token 6-bit
+// unpack/gather.  The kernel is faster in isolation - 1.04-2.27x on the shapes this model actually decodes, at
+// ncols=1..8 (exp 36) - but the pre-unpacked copies cost 2.53 GiB of extra dense VRAM (300 -> 463 matrices on the
+// Coder IQ1_M), and on a 32 GB card the expert cache is what that VRAM buys: 9,478 -> 8,152 slots, 5.37 -> 7.90 GiB
+// RAM mirror.  End to end that is a 12.4% decode LOSS (42.2 -> 38.0 tok/s); at matched slot counts the two arms are
+// within 1% (38.4/38.4 vs 38.0).  So DEFAULT OFF, opt-in: STRATA_MMVQ_PREUNPACK=1 pre-unpacks.
+bool q6k_preunpack_enabled() {
+    static const bool v = std::getenv("STRATA_MMVQ_PREUNPACK") != nullptr && std::atol(std::getenv("STRATA_MMVQ_PREUNPACK")) != 0;
+    return v;
+}
 }
 
 bool NativeDense::served_names(const std::vector<std::string>& shards, bool include_ple_key,
@@ -191,22 +201,9 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                         dpct::get_in_order_queue()
                             .memcpy(data.get(), gguf.tensor_data(tensor), bytes)
                             .wait());
-                /*
-                DPCT1000: Error handling if-stmt was detected but could not
-                be rewritten.
-                */
                 if (status != 0) {
-                    /*
-                    DPCT1009: SYCL reports errors using exceptions and does
-                    not use error codes. Please replace the
-                    "get_error_string_dummy(...)" with a real error-handling
-                    function.
-                    */
-                    /*
-                    DPCT1001: The statement could not be removed.
-                    */
                     err = "native dense upload " + tensor.name + ": " +
-                          dpct::get_error_string_dummy(status);
+                          dpct::error_string(status);
                         return false;
                 }
                 max_in = (std::max)(max_in, (int) ref.ne0);
@@ -221,31 +218,37 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                                  strata::kernels::native_q8_1_bytes(max_in),
                                  dpct::get_in_order_queue()));
         DevicePtr scratch(allocation);
-        /*
-        DPCT1009: SYCL reports errors using exceptions and does not use
-        error codes. Please replace the "get_error_string_dummy(...)" with a
-        real error-handling function.
-        */
-        /*
-        DPCT1001: The statement could not be removed.
-        */
-        /*
-        DPCT1000: Error handling if-stmt was detected but could not be
-        rewritten.
-        */
         if (status != 0) {
             err = std::string("native dense scratch: ") +
-                  dpct::get_error_string_dummy(status);
+                  dpct::error_string(status);
             return false;
         }
         // All checks and allocations finish before publishing any reference.
-        weights_.reserve(pending.size());
+        const bool preunpack = q6k_preunpack_enabled();
+        bool preunpacked_any = false;
+        weights_.reserve(pending.size() + (preunpack ? 1 : 0));
         for (auto& item : pending) {
             item.ref->native_data = item.data.get();
             item.ref->native_type = item.type;
             item.ref->native_q8_1 = scratch.get();
             weights_.push_back(item.data.release());
+            if (preunpack && (item.type == 14 || item.type == 13)) {   // Q6_K / Q5_K: one-time pre-unpack + register
+                void* u = nullptr;
+                const int ni = (int) item.ref->ne0, no = (int) item.ref->ne1;
+                const uint64_t ubytes = item.type == 14 ? strata::kernels::native_mmvq_q6k_preunpack_bytes(ni, no)
+                                                        : strata::kernels::native_mmvq_q5k_preunpack_bytes(ni, no);
+                auto st = DPCT_CHECK_ERROR(u = (void*) sycl::malloc_device(ubytes, dpct::get_in_order_queue()));
+                if (st == 0 && u) {
+                    if (item.type == 14) strata::kernels::native_q6k_preunpack(item.ref->native_data, u, ni, no, &dpct::get_in_order_queue());
+                    else strata::kernels::native_q5k_preunpack(item.ref->native_data, u, ni, no, &dpct::get_in_order_queue());
+                    dpct::get_in_order_queue().wait();   // finished before any decode uses it
+                    strata::kernels::native_mmvq_register_q6k_preunpack(item.ref->native_data, u);   // shared dense-K-quant registry
+                    weights_.push_back(u);               // keep alive for the lifetime of this NativeDense
+                    preunpacked_any = true;
+                }
+            }
         }
+        if (preunpacked_any) strata::kernels::native_mmvq_set_q6k_preunpack(true);
         scratch_ = scratch.release();
         bytes_ = total;
         return true;
