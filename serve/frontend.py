@@ -179,7 +179,7 @@ def _has_tag(v, tags) -> bool:
     return False
 
 
-def mark_think_literals(messages: list[dict], tools: list[dict] | None, tags: dict[str, str]):
+def mark_literals(messages: list[dict], tools: list[dict] | None, tags: dict[str, str]):
     """#537: (messages, tools) with every literal of `tags` (<think> / </think>, and with literal_tags() the control
     tokens' texts) in their text swapped for its mark, and whether there was one (None: no change, the same objects
     back - a prompt without them renders as it always did).  An assistant message whose content opens with a whole
@@ -203,7 +203,7 @@ def mark_think_literals(messages: list[dict], tools: list[dict] | None, tags: di
     return out, _mark_deep(tools, tags), True
 
 
-def unmark_think_literals(prompt: str, tags: dict[str, str]) -> tuple[str, list[tuple[int, int]]]:
+def unmark_literals(prompt: str, tags: dict[str, str]) -> tuple[str, list[tuple[int, int]]]:
     """The rendered prompt with the marks turned back into their literals' text, and the (start, end) spans of those
     literals in it: the server encodes them as ordinary text (the tokenizer's `plain` spans)."""
     marks = {v: k for k, v in tags.items()}
