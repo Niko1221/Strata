@@ -42,7 +42,9 @@ the kernel's amdgpu driver (no ROCm install needed):
 - **hipBLASLt tuning table:** setup uses `tools/hip/<arch>-hipblaslt-<version>.txt` only when it matches both the
   card's architecture and the installed hipBLASLt version (read from `hipblaslt-version.h`; 1.2.0 is `100200`).
   Otherwise it says so and the prompt's dense matrix products use plain hipBLAS (slower prompts, same answers).
-  A table's solution ids are valid only for that pair, and the engine refuses any other table.
+  A table's solution ids are valid only for that pair, and the engine refuses any other table. On gfx103x (RDNA2,
+  no hipBLASLt kernels) the same role falls to a rocBLAS table, `tools/hip/<arch>-rocblas-<version>.txt`, which the
+  engine picks for its own rocBLAS build when setup points it at the directory ([RDNA2](#rdna2-gfx1030)).
 - **Several cards:** setup takes one card (the one with the most VRAM, or `--gpu N`) unless you name more:
   `./setup.sh --backend hip --gpus 1,0` splits the model's layers across them, the first one the main card (numbers
   as setup lists them; `--gpus all` = every supported card, the most VRAM first). Every chosen card must be one of the
@@ -410,6 +412,26 @@ run it; the report below is from a community machine: an RX 6900 XT 16 GB (gfx10
   matrix cores; `hip_prefill_hipblaslt_gemm`, no hipBLASLt table) and 3 that fail for reasons outside the engine
   (`ple_parity` needs a Q2_0 PLE file that is not on that machine, `expert_multi_test` refuses the CPU without AVX-512,
   `platform_memory_test` cannot `mlock` at the shell's default `ulimit -l`).
+- **rocBLAS solution table** (for the `STRATA_HIP_PROMPT_F16=1` route above; with it off, nothing runs through the
+  table): rocBLAS picks the kernel for each of those FP16 GEMMs from its own table by shape, and
+  on gfx1030 that pick is far from the best kernel the library holds for some shapes: the GDN input projection
+  (N = 10240, K = 2560) below about 1,150 tokens runs at 5 TFLOPS where the best of rocBLAS's own 237 solutions for the
+  same shape runs at 32-38 (7x; the kernel choice flips at T = 1152). `tools/hip/tune_rocblas` enumerates the library's
+  solutions per shape and token bucket, checks each against the default kernel's output and writes the winners as
+  `tools/hip/<arch>-rocblas-<version>.txt`; the engine reads the table through `STRATA_ROCBLAS_TUNING` (a file, or
+  the directory, from which it takes the file of its own rocBLAS build) and runs those solutions in place of rocBLAS's
+  choice, the default kernel for every shape without a row. Solution indices are valid for one architecture and one
+  rocBLAS build (the full version string, `5.6.0.8d1ae90e` for ROCm 10.0.0's), and the engine refuses any other
+  table. Shipped: `gfx1030-rocblas-5.6.0.8d1ae90e.txt` (ROCm 10.0.0, the `/opt/rocm` setup installs on Ubuntu); setup
+  points the engine at the directory when a table for the card's architecture exists, and the engine's log says
+  `rocBLAS tuning enabled (... rows ...)` or why not. Measured on the 2x RX 6900 XT machine above (one card, #835 +
+  this, `STRATA_PREFILL_TIMING=1`, temperature 0, the same answers with and without): a 799-token prompt's GPU time
+  3,329 -> 2,985 ms (the GDN projections 443 -> 177 ms, `hc read` 270 -> 77), 495 tokens 2,477 -> 2,139 ms (365 ->
+  146), 8,874 tokens 11,978 -> 11,459 ms (the 682-token tail chunk's projections, `hc read` 1,200 -> 898); a
+  1,108-token prompt did not change (3,391 -> 3,395 ms): its GDN time fell 598 -> 201 ms and the whole saving
+  reappeared as `wait copy`, the experts' PCIe transfer, which bounds that prompt. Per-run lines and the tuner's
+  summary: [bench/results/2026-10-05-rdna2-rocblas-table](../bench/results/2026-10-05-rdna2-rocblas-table/README.md). Decode does not use these GEMMs and is unchanged. See [Tuning
+  table](#tuning-table) for making a table for another rocBLAS build.
 - **gfx1031** (RX 6700 XT, #524): setup knows it (the `gfx103X-all` wheels, unvalidated); its reporter runs it daily
   on one card. More reports: an RX 6700 XT 12 GB run as gfx1030 on ROCm 7.2.4 (#1027: IQ2_XS, decode 30-32 tok/s, prompt about 300 tok/s, 6 of 6
   needles), and an RX 6800M 12 GB on Windows with a self-built engine (#915, #1078: Q2_0, decode 9-27 tok/s, prompt 50-114 tok/s; the
@@ -560,6 +582,33 @@ baseline while the clocks are still ramping: that T=4096 shape read 0.31-0.63 ms
 timed right after it held 0.606-0.619 ms every time, so time a heavy case first and read the later ones. And the
 first fresh prompt after the model loads is not a measurement: it gave 949 and 1,423 tok/s in the two arms of that
 A/B, while the three trials after it differed by 0.4-1.5%.
+
+### rocBLAS table (gfx103x)
+
+On RDNA2 the prompt GEMMs run through rocBLAS in FP16 (#835), and hipBLASLt has no gfx1030 kernels; the rocBLAS table
+does for rocBLAS what the one above does for hipBLASLt (the [RDNA2 section](#rdna2-gfx1030) has the measurements). A
+table is valid for one architecture and one rocBLAS build - the full version string, tweak hash included - so it is
+calibrated on the card with the rocBLAS the engine loads (`lib_dirs` in the run configuration; `/opt/rocm/lib` is
+rocBLAS 5.6.0.8d1ae90e on ROCm 10.0.0, while Ubuntu's own `librocblas5` package is a 5.1 build):
+
+```sh
+cmake --build build-hip --target tune_rocblas
+LD_LIBRARY_PATH=/opt/rocm/lib ./build-hip/tune_rocblas --tuning-out table.txt   # 14 shapes x 8 token buckets, ~5 min
+```
+
+The tool times rocBLAS's default kernel and every solution the library lists for each shape at T = 256 ... 8192 (the
+engine's dense GEMM shapes; `--case T,N,K,ldy` adds one, `--tokens` changes the buckets), checks the fastest ones
+against the default kernel's output (within FP16 rounding, no write outside the N x T result) and that they also run at
+smaller, odd token counts, and writes one row per shape and bucket: the winning solution index where it beats the
+default by `--min-gain` (1.05), `default` otherwise - a `default` row is what keeps a neighbouring bucket's solution from
+reaching token counts where rocBLAS's own choice measured best. The file's header names the architecture and version
+(`STRATA_ROCBLAS_TUNING_V1 gfx1030 5.6.0.8d1ae90e`); save it as `tools/hip/<arch>-rocblas-<version>.txt` (the version
+with trailing dots dropped) for setup, or point `STRATA_ROCBLAS_TUNING` at the file. `STRATA_ROCBLAS_VERBOSE=1` prints
+the solution picked for each shape and a `tuned_launches=... fallbacks=...` summary at exit; a solution rocBLAS refuses
+at run time (status 11 once while it sets up its workspace is normal) falls back to the default kernel for that call, and
+after three refusals for good. `hip_prefill_rocblas_gemm` (with `STRATA_ROCBLAS_TUNING` set; skips otherwise) is the
+smoke test: it refuses a table for another architecture or build and checks Gemm's FP16 route against hipBLASEx on the
+table's first two shapes.
 
 ## Original backend validation (PR #94)
 
