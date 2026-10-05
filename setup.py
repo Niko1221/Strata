@@ -3840,7 +3840,11 @@ def main() -> int:
     floor = cpu_floor(avx2)
     if floor == "unsupported" and platform.machine().lower() not in ("aarch64", "arm64"):
         fail("this CPU has neither AVX2 nor SSE4.2; Strata needs at least SSE4.2 (Intel Nehalem, 2008, or newer)")
-    if not avx2:
+    arm64 = platform.machine().lower() in ("aarch64", "arm64")
+    if arm64:
+        warn("this ARM64 CPU uses Strata's experimental portable CPU fallback; the GB10 CUDA path handles the main model work")
+        a.build = True
+    elif not avx2:
         # #394 #595 #623: the ready-made engine is AVX2; an older CPU gets one compiled here, whose CPU experts run on
         # ggml-cpu's kernels for this CPU.  Experimental: measured only on newer CPUs with the older path forced, and by
         # users on a few Xeons.  A warning, not a stop.
