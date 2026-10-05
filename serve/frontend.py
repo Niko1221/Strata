@@ -660,9 +660,16 @@ class OutputParser:
 
     def _rescue_calls(self, tail: str) -> "list[ToolCall] | None":
         """The kept tail as a list of calls, or None when the tail is not ONLY complete, well-formed calls
-        separated by whitespace.  The tail starts at a <tool_call> opener (see _track_reasoning), so anything
-        else in it - prose between or after the blocks, an unfinished block, a body that does not parse - is
-        the model narrating a call it considered, not making one, and stays what it already streamed as."""
+        separated by whitespace, each naming a tool the request declared.  The tail starts at a
+        <tool_call> opener (see _track_reasoning), so anything
+        else in it - prose between or after the blocks, an unfinished block, a body that does not parse -
+        is the model narrating a call it considered, not making one, and stays what it already streamed
+        as.  The declared-tool requirement is the rescue's own bar, stricter than the content channel
+        (which delivers any name the model writes): this path infers an act from bytes the model streamed
+        as reasoning, and an act references a declared instrument.  Three of the four live sightings in
+        #804 are `<function=tool_call>` envelopes - a `calls` list of real calls wrapped in a call to a
+        tool no request declares - and delivering one would hand the client a bogus tool, so they stay
+        reasoning (their shape is a candidate fix of its own, not a guess this one makes)."""
         calls, rest = [], tail
         while True:
             rest = rest.lstrip()
@@ -677,8 +684,11 @@ class OutputParser:
             s = body.strip()
             if not s.startswith("<function="):
                 return None
+            name = s[len("<function="):].split(">", 1)[0]
+            if name not in self.schemas:
+                return None                  # not a tool this request declared: not an act to infer
             try:
-                calls.append(parse_tool_call(s, self.schemas.get(s[len("<function="):].split(">", 1)[0])))
+                calls.append(parse_tool_call(s, self.schemas.get(name)))
             except ValueError:
                 return None                  # not a well-formed act; leave every block as reasoning
 

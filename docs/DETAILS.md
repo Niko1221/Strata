@@ -541,7 +541,11 @@ print(r.choices[0].message.content)
     `max_tokens` is never rescued (a call quoted in that reasoning was something the model considered), the
     `<tool_call>` must begin a line outside any code fence (all four live sightings, in #804, begin the call
     on its own line; an opener woven into a sentence is the model narrating), and prose between or after the
-    blocks - the shape of a disclaimed example - leaves them as reasoning.
+    blocks - the shape of a disclaimed example - leaves them as reasoning. The call must also name a tool
+    the request declared: three of the four recorded live sightings (#804, real agent traffic - 4 of ~1050
+    replies; #970's production saw it 5 of ~1270) were `<function=tool_call>` envelopes, a `calls` list
+    wrapped in a call to a tool no request declares, and delivering one would hand the client a bogus tool,
+    so they stay reasoning.
   Nothing that already streamed ever changes, and a fix that fires says so twice: in the server window and in
   the reply's `"adaptations"` (OpenAI streaming and non-streaming). With the fix off, the same detection still
   logs - a complete tool call was left in reasoning, and which fix would have delivered it - so the failure is

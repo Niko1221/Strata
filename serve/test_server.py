@@ -2897,6 +2897,74 @@ class ReasoningToolCall(unittest.TestCase):
         evs = self.run_parser(text, False, 7)
         self.assertFalse([e for e in evs if e.kind == "tool_call"])
 
+    def test_the_four_live_failures(self):
+        # The four recorded failures of #804 (#970's fixtures, real Hermes Agent traffic): a complete
+        # call inside unclosed thinking, natural stop.  One is a genuine act and is rescued; the other
+        # three are <function=tool_call> envelopes - a calls list wrapped in a call to a tool no request
+        # declares - and stay reasoning: delivering one would hand the client a bogus tool.
+        import json
+        from pathlib import Path
+        from serve.frontend import OutputParser
+        cases = json.loads((Path(__file__).resolve().parents[1] / "serve" / "fixtures" /
+                            "stranded_tool_call_failures.json").read_text(encoding="utf-8"))["failures"]
+        self.assertEqual(len(cases), 4)
+        tools = [{"name": n, "parameters": {"properties": {"code": {"type": "string"}}}}
+                 for n in ("execute_code", "read_file", "write_file", "mcp__unreal_engine__list_toolsets")]
+        rescued = 0
+        for case in cases:
+            text = case["reasoning_content"] + case["content"]
+            for step in (1, 7, 10_000):
+                with self.subTest(when=case["when"], step=step):
+                    p = OutputParser(thinking=True, tools=tools, stream_tools=False,
+                                     fixes=("stranded-call",))
+                    evs = []
+                    for i in range(0, len(text), step):
+                        evs += p.feed(text[i:i + step])
+                    evs += p.finish("stop")
+                    calls = [e.call for e in evs if e.kind == "tool_call"]
+                    if calls:                     # the one genuine act
+                        self.assertEqual([(c.name, "code" in c.arguments) for c in calls],
+                                         [("execute_code", True)])
+                        self.assertEqual(p.adaptations, ["stranded-call"])
+                        rescued += 1
+                    else:                         # the envelopes
+                        self.assertEqual(p.adaptations, [])
+                        self.assertIsNone(p.format_hint)   # not even the stranded shape: no declared act
+                        self.assertIn("<function=tool_call>",
+                                      "".join(e.text for e in evs if e.kind == "reasoning"))
+        self.assertGreater(rescued, 0)
+
+    def test_mention_only_controls(self):
+        # The ten mention shapes of #970 (controls recorded alongside the live failures): none may start
+        # a rescue, whatever the chunking - the opener is quoted, mid-sentence, indented, in a markdown
+        # quote, in a fence, or the span closes right after it.
+        from serve.frontend import OutputParser
+        CALL = "<tool_call>\n<function=execute_code>\n<parameter=code>\nx\n</parameter>\n</function>\n</tool_call>"
+        CONTROLS = {
+            "backticks mid-sentence": "I must emit `<tool_call>` then `<function=execute_code>` - the format.\n",
+            "mid-sentence, whole call": "The format is <tool_call>\n<function=execute_code>\n</function>\n</tool_call> ok.\n",
+            "backticks at line start": "Plan:\n`<tool_call>\n<function=execute_code>` comes next.\n",
+            "line start, no <function=": "Next step:\n<tool_call> is the tag the format starts with.\n",
+            "line start, other tag after": "Example:\n<tool_call>\n<parameter=code>\nx\n</parameter>\n",
+            "indented": "As a list:\n  <tool_call>\n  <function=execute_code>\n",
+            "markdown quote": "The doc says:\n> <tool_call>\n> <function=execute_code>\n",
+            "``` code block": "Format:\n```xml\n" + CALL + "\n```\nThat is how a call looks.\n",
+            "~~~ code block": "Format:\n~~~\n" + CALL + "\n~~~\nDone.\n",
+            "tag right before </think>": "So I call it:\n<tool_call>\n</think>Here is the answer.",
+        }
+        tools = [{"name": "execute_code", "parameters": {"properties": {"code": {"type": "string"}}}}]
+        for label, text in CONTROLS.items():
+            for step in (1, 7, 10_000):
+                with self.subTest(control=label, step=step):
+                    p = OutputParser(thinking=True, tools=tools, stream_tools=False,
+                                     fixes=("stranded-call",))
+                    evs = []
+                    for i in range(0, len(text), step):
+                        evs += p.feed(text[i:i + step])
+                    evs += p.finish("stop")
+                    self.assertFalse([e for e in evs if e.kind == "tool_call"], label)
+                    self.assertEqual(p.adaptations, [], label)
+
     def test_call_after_think_end_uses_the_content_channel(self):
         # The span closes FIRST (or there was none): the call that follows is ordinary content-channel
         # parsing, untouched by the fix.  (An earlier version of this test fed the call into a span it
