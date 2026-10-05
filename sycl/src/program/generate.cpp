@@ -731,7 +731,8 @@ void usage() {
                  "                       position take all of them.  The default policy fills in arrival order\n"
                  "                       from one shared counter, so 256 slots went to ~26 layers of position 0\n"
                  "                       and measured **2.97%%**.  Per-layer, the same routing gives 21.4%% at 8\n"
-                 "                       slots/layer and 70.4%% at 64.\n"
+                 "                       slots/layer and 70.4%% at 64.  On a native pack, N is still the budget of N\n"
+                 "                       largest blobs; each layer's slots are that layer's own blob.\n"
                  "  --no-host-worker     R2.2: the A/B arm.  By default the HOST THREAD joins the drain, so the\n"
                  "                       pool is six threads on six cores instead of five plus an idle core;\n"
                  "                       this flag restores the five-worker form for comparison on `pool phases`.\n"
@@ -3498,12 +3499,46 @@ int main(int argc, char **argv) try {
             o.expert_cache = (int) fit;
         }
     }
-    // plan v0.3 P6: a native pack's blobs differ per layer, so with a profile its slots are sized per pair: the
-    // same VRAM holds ~30% more IQ3_XXS experts than slots of the largest blob would
-    // #369: not with --expert-cache-per-layer - its per-layer slot ranges ignore the profile rank a sized slot was cut
-    // for, so a layer's larger blob could land in a smaller slot: that mode keeps slots of the largest blob
+    // plan v0.3 P6: a native pack's blobs differ per layer, so the same VRAM holds more experts than slots of
+    // the largest blob would. The shared cache below sizes slots in profile order.
+    // #369: that list does not match --expert-cache-per-layer. A range is layer * quota + n, so a size cut for
+    // one layer can land in another layer's slot. Every expert in a layer is one size, so the per-layer list is
+    // `quota` copies of that layer's own blob, in layer order. `--expert-cache N` stays the budget of N largest
+    // blobs, and the quota is however many copies of every layer fit in it.
     std::vector<int64_t> sized_slots;
-    if (native_pack && o.expert_cache > 0 && !profile.empty() && !o.expert_cache_per_layer) {
+    uint64_t per_layer_bytes = 0;
+    if (native_pack && o.expert_cache > 0 && o.expert_cache_per_layer) {
+        size_t free_b = 0, total_b = 0;
+        /*
+        DPCT1106: 'cudaMemGetInfo' was migrated with the Intel extensions
+        for device information which may not be supported by all compilers or
+        runtimes. You may need to adjust the code.
+        */
+        dpct::get_current_device().get_memory_info(free_b, total_b);
+        const auto& lay = strata::kernels::cpu::expert_layout();
+        const int asked = o.expert_cache;
+        const uint64_t budget = (uint64_t) asked * lay.max_blob;
+        size_t free_room = free_b > ((size_t) o.vram_reserve_mib << 20) ? free_b - ((size_t) o.vram_reserve_mib << 20) : 0;
+        const uint64_t cap = std::min<uint64_t>(budget, (uint64_t) free_room);
+        uint64_t sum = 0;
+        for (int64_t l = 0; l < g.n_layers; ++l)
+            sum += (lay.blob_bytes(l) + 255) / 256 * 256;
+        int64_t q = sum > 0 ? (int64_t) (cap / sum) : 0;
+        if (q > g.n_expert) q = g.n_expert;
+        if (q > 0) {
+            per_layer_bytes = sum;
+            sized_slots.reserve((size_t) q * (size_t) g.n_layers);
+            for (int64_t l = 0; l < g.n_layers; ++l) {
+                const int64_t b = (int64_t) lay.blob_bytes(l);
+                for (int64_t s = 0; s < q; ++s) sized_slots.push_back(b);
+            }
+            o.expert_cache = (int) sized_slots.size();
+            std::fprintf(stderr, "strata generate: per-layer slots use each layer's blob: %d uniform slots "
+                                 "(%.2f GiB) -> %d slots, %lld per layer (%.2f GiB)\n",
+                         asked, (double) budget / 1073741824.0, o.expert_cache, (long long) q,
+                         (double) ((uint64_t) q * per_layer_bytes) / 1073741824.0);
+        }
+    } else if (native_pack && o.expert_cache > 0 && !profile.empty()) {
         size_t free_b = 0, total_b = 0;
         /*
         DPCT1106: 'cudaMemGetInfo' was migrated with the Intel extensions
@@ -3546,6 +3581,20 @@ int main(int argc, char **argv) try {
         // keep the first `keep_bytes` of the cache (the profile's hottest experts first); false when nothing is left
         auto shrink_to = [&](int64_t keep_bytes) -> bool {
             if (keep_bytes <= 0) { o.expert_cache = 0; sized_slots.clear(); return false; }
+            if (per_layer_bytes > 0) {
+                // Cutting the list short would put one layer's blob in the next layer's range.
+                const auto& lay = strata::kernels::cpu::expert_layout();
+                int64_t q = keep_bytes / (int64_t) per_layer_bytes;
+                if (q > g.n_expert) q = g.n_expert;
+                sized_slots.clear();
+                if (q <= 0) { o.expert_cache = 0; return false; }
+                for (int64_t l = 0; l < g.n_layers; ++l) {
+                    const int64_t b = (int64_t) lay.blob_bytes(l);
+                    for (int64_t s = 0; s < q; ++s) sized_slots.push_back(b);
+                }
+                o.expert_cache = (int) sized_slots.size();
+                return true;
+            }
             if (!sized_slots.empty()) {
                 int64_t used = 0;
                 size_t keep = 0;
