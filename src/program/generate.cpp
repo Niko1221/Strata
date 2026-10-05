@@ -1856,6 +1856,14 @@ int main(int argc, char** argv) {
         if (hc == "last") strata::kernels::cpu::set_host_core(strata::kernels::cpu::HostCore::Last);
     }
     strata::core::set_peer_portable(o.peer_device >= 1);   // multi-GPU: the Portable flag on mapped host buffers only with a peer device (before any allocation)
+    if (o.peer_device >= 1) {   // the peer's context must exist BEFORE the arena's whole-range cudaHostRegister
+        int n = -1;             // (#253's Linux default). Registered first, the peer's first device op — a
+        if (cudaGetDeviceCount(&n) == cudaSuccess && o.peer_device < n) {  // stream, in PeerExperts::open — fails
+            cudaSetDevice(o.peer_device);   // with a misleading 'out of memory' even on an empty card (the
+            cudaFree(0);                    // registration has to map into every context). Forced here, that
+            cudaSetDevice(0);               // mapping lands on the register itself, whose sliced-pin fallback
+        }                                   // (#243 / STRATA_ARENA_PIN_GIB) can already take over.
+    }
     if (o.serve && o.conversation_cache_mib > 0 && (o.prompt_cache == 0 || o.conversation_cache_slots == 0))
         std::fprintf(stderr, "strata serve: warning: conversation caching is disabled by %s\n",
                      o.prompt_cache == 0 ? "--prompt-cache 0" : "--conversation-cache-slots 0");
