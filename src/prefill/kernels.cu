@@ -12,6 +12,10 @@
 #include <cstdio>
 #include <cstdlib>
 
+// the rocWMMA include for the GDN WY WMMA arm - at GLOBAL scope (its std:: names must not
+// resolve against the anonymous namespace below); see gdn_rec_wy_wmma_rocwmma.hpp
+#include "gdn_rec_wy_wmma_rocwmma.hpp"
+
 namespace strata::prefill {
 namespace {
 
@@ -595,6 +599,116 @@ bool gdn_keyhead_ok() {
     return known[dev] == 1;
 }
 #endif
+constexpr int WY = 64;   // the WY sub-chunk length (gdn_rec_wy_kernel)
+// The chunk-parallel (WY-form) recurrence: tokens in 64-token sub-chunks; per sub-chunk one CxC unit-lower-
+// triangular solve (the only serial part, C steps instead of C fully-serial token steps) and GEMV-shaped
+// folds.  Opt-in STRATA_GDN_WY: EXACT MODULO SUMMATION ORDER ONLY (same fp32 dtype, no tolerance - the
+// reassociation bound and the fp64-oracle check live in src/prefill/gdn_wy_check.cu; design and
+// measured verdicts in the PR description).  Writes the same pre-norm oc as the cols kernels; gdn_out_norm follows
+// unchanged.  A[t][s] = beta_t g_t (dec[t]/dec[s+1]) (k_t . k_s) with dec[t] = prod of gates before t;
+// rhs_t = beta_t (v_t - g_t dec[t] (k_t . S_in)); o_t = dec[t+1](q_t . S_in) + sum (dec[t+1]/dec[s+1])(q_t.k_s)u_s;
+// S_out = dec[w] S_in + sum (dec[w]/dec[s+1]) k_s u_s.  The two strided loops MUST stride the flat thread id
+// (rg*CB + c): under dim3(CB, RG) threadIdx.x alone covers a quarter of the range and leaves the rest of
+// kt/A uninitialized (the run-varying-NaN class gdn_wy_check's redk-vs-redq probe caught).
+__global__ void __launch_bounds__(CB * RG) gdn_rec_wy_kernel(float* __restrict__ state, const float* __restrict__ h,
+                                                             const float* __restrict__ gate,
+                                                             const float* __restrict__ beta,
+                                                             float* __restrict__ oc_out, int64_t T) {
+    __shared__ float kt[WY][S];
+    __shared__ float A[WY * WY];
+    __shared__ float dec[WY + 1];
+    __shared__ float redk[RG][CB], redq[RG][CB];
+    const int head = blockIdx.x / NCB, cb = blockIdx.x % NCB;
+    const int c = threadIdx.x, rg = threadIdx.y, col = cb * CB + c, tid = rg * CB + c;
+    const int qh = head % HK;
+    float s[RPG];
+    float* base = state + ((size_t) (rg * RPG) * HV + head) * S + col;
+    const size_t rs = (size_t) HV * S;
+#pragma unroll
+    for (int r = 0; r < RPG; ++r) s[r] = base[r * rs];
+
+    for (int64_t t0 = 0; t0 < T; t0 += WY) {
+        const int w = (int) min((int64_t) WY, T - t0);
+        if (threadIdx.x == 0) {
+            dec[0] = 1.0f;
+            for (int t = 0; t < w; ++t) dec[t + 1] = dec[t] * __expf(gate[(t0 + t) * HV + head]);
+        }
+        for (int t = 0; t < w; ++t) {
+            const float* src = h + HK * S + qh * S + (t0 + t) * C;
+            for (int i = tid; i < S; i += CB * RG) kt[t][i] = src[i];
+        }
+        __syncthreads();
+        for (int p = tid; p < WY * WY; p += CB * RG) {
+            const int t = p / WY, s2 = p % WY;
+            if (t >= w) continue;
+            if (s2 > t) { A[p] = 0.0f; continue; }
+            if (s2 == t) { A[p] = 1.0f; continue; }
+            const float b = beta[(t0 + t) * HV + head], g = __expf(gate[(t0 + t) * HV + head]);
+            float dk = 0.0f;
+#pragma unroll 4
+            for (int i = 0; i < S; ++i) dk += kt[t][i] * kt[s2][i];
+            // the decay factor as a product, not g * dec[t]/dec[s+1]: under fast decay the cumulative
+            // products underflow fp32 to 0 and the ratio becomes 0/0 = NaN (the serial path just multiplies
+            // and lands at 0).  g * (dec[t]/dec[s+1]) = prod of gates s+1..t exactly - the standalone g is
+            // consumed by the product.  Same real value, covered by the reassociation bound.
+            float dec_ratio = 1.0f;
+            for (int j = s2 + 1; j <= t; ++j) dec_ratio *= __expf(gate[(t0 + j) * HV + head]);
+            A[p] = b * dec_ratio * dk;
+        }
+        __syncthreads();
+        float uj[WY], pk[WY], pq[WY];
+        for (int t = 0; t < w; ++t) {
+            const float* qt = h + (t0 + t) * C + qh * S;
+            float kpart = 0.0f, qpart = 0.0f;
+#pragma unroll
+            for (int r = 0; r < RPG; ++r) { kpart += s[r] * kt[t][rg * RPG + r]; qpart += s[r] * qt[rg * RPG + r]; }
+            redk[rg][c] = kpart;
+            redq[rg][c] = qpart;
+            __syncthreads();
+            pk[t] = redk[0][c] + redk[1][c] + redk[2][c] + redk[3][c];
+            pq[t] = redq[0][c] + redq[1][c] + redq[2][c] + redq[3][c];
+            __syncthreads();   // every thread has read both reductions before the next token overwrites them
+        }
+        for (int t = 0; t < w; ++t) {
+            const float vj = h[2 * HK * S + head * S + (t0 + t) * C + col];
+            const float b = beta[(t0 + t) * HV + head], g = __expf(gate[(t0 + t) * HV + head]);
+            float acc = b * (vj - g * dec[t] * pk[t]);
+            for (int s2 = 0; s2 < t; ++s2) acc -= A[t * WY + s2] * uj[s2];
+            uj[t] = acc;
+        }
+        for (int t = 0; t < w; ++t) {
+            const float* qt = h + (t0 + t) * C + qh * S;
+            float o = dec[t + 1] * pq[t];
+            for (int s2 = 0; s2 <= t; ++s2) {
+                float dq = 0.0f;
+#pragma unroll 4
+                for (int i = 0; i < S; ++i) dq += qt[i] * kt[s2][i];
+                float dec_ratio = 1.0f;
+                for (int j = s2 + 1; j <= t; ++j) dec_ratio *= __expf(gate[(t0 + j) * HV + head]);
+                o += dec_ratio * dq * uj[s2];
+            }
+            if (rg == 0) oc_out[(t0 + t) * HV * S + head * S + col] = o * rsqrtf((float) S);
+        }
+        for (int r = 0; r < RPG; ++r) {
+            const int i = rg * RPG + r;
+            float v = dec[w] * s[r];
+            for (int s2 = 0; s2 < w; ++s2) {
+                float dec_ratio = 1.0f;
+                for (int j = s2 + 1; j < w; ++j) dec_ratio *= __expf(gate[(t0 + j) * HV + head]);
+                v += dec_ratio * kt[s2][i] * uj[s2];
+            }
+            s[r] = v;
+        }
+        __syncthreads();
+    }
+#pragma unroll
+    for (int r = 0; r < RPG; ++r) base[r * rs] = s[r];
+}
+// The tensor-core folds variant of the WY kernel (rocWMMA 16x16x16 fp16xfp16->f32, wave32),
+// included INSIDE the anonymous namespace so it sees S/HK/HV/C/CB/RG/RPG/NCB/WY above; the
+// the pre-derived fp16-class error bound and the parity gates predate this file (PR description) QA note: the codegen draft's `sh` alias
+// was block-scoped; hoisted to kernel scope at the LDS declarations during review.
+#include "gdn_rec_wy_wmma.cuh"
 // the output norm over a head's 128 columns, into the FP16 copy the out projection reads (the FP32 output before the
 // norm stays in its scratch buffer)
 __global__ void __launch_bounds__(S) gdn_out_norm_kernel(const float* __restrict__ z, const float* __restrict__ gamma,
@@ -912,12 +1026,24 @@ void gdn_recurrence(float* state, const float* h, const float* gate, const float
         gdn_rec_kernel<<<HV, dim3(S, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, z, gamma, eps, y, y16, T);
     } else {
         static const bool pipe = [] { const char* v = std::getenv("STRATA_GDN_PIPELINE"); return v == nullptr || std::atoi(v) != 0; }();
+        static const bool wy = [] { const char* v = std::getenv("STRATA_GDN_WY"); return v != nullptr && v[0] != '\0' && v[0] != '0'; }();
 #if !defined(__HIPCC__)
-        if (pipe && gdn_keyhead_ok())   // the value heads of a key head in one thread (same bits)
+        if (pipe && !wy && gdn_keyhead_ok())   // the value heads of a key head in one thread (same bits)
             gdn_rec_kh_kernel<<<HK * NCB, dim3(CB, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
         else
 #endif
-        if (pipe)   // the software-pipelined loads (same bits)
+        if (wy) {   // the chunk-parallel WY recurrence (opt-in; wmma folds per the revised checkpoint, fma fallback)
+            if (gdn_wy_wmma_supported()) {
+                static const bool said_wmma = [] { std::fprintf(stderr, "gdn wy arm = wmma (gfx1100, opt-in)\n"); return true; }();
+                (void) said_wmma;
+                gdn_rec_wy_wmma_kernel<<<HV * NCB, dim3(CB, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
+            } else {
+                static const bool said_fma = [] { std::fprintf(stderr, "gdn wy arm = fma (opt-in, wmma unavailable)\n"); return true; }();
+                (void) said_fma;
+                gdn_rec_wy_kernel<<<HV * NCB, dim3(CB, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
+            }
+        }
+        else if (pipe)   // the software-pipelined loads (same bits)
             gdn_rec_cols_pipe_kernel<<<HV * NCB, dim3(CB, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
         else
             gdn_rec_cols_kernel<<<HV * NCB, dim3(CB, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
