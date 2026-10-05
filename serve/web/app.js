@@ -329,7 +329,7 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   // recent requests
   const body = $("req-body");
   if (!requests.length) {
-    body.innerHTML = `<tr><td colspan="8" class="muted">No requests yet</td></tr>`;
+    body.innerHTML = `<tr><td colspan="9" class="muted">No requests yet</td></tr>`;
   } else {
     const badge = {stop: ["", "Done"], length: ["", "Max tokens"], cancel: ["st-badge--queued", "Stopped"],
                    disconnect: ["st-badge--queued", "Closed"], error: ["st-badge--error", "Error"]};
@@ -339,9 +339,11 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
       const proj = r.projection == null ? "" : ` <span class="st-badge${r.projection ? " st-badge--reading" : ""}" title="experimental speed projection ${r.projection ? "on" : "off"}">${r.projection ? "ESP" : "stock"}</span>`;
       // #588: the VRAM share; the PCIe share (--pcie-frac) beside it when there is one
       const hit = r.hit_rate == null ? "–" : `${(r.hit_rate * 100).toFixed(1)}%` +
-        (r.pcie_share ? ` <span class="muted" title="routed experts the GPU read over PCIe (--pcie-frac) or another GPU computed">+${(r.pcie_share * 100).toFixed(1)}% PCIe</span>` : "");
+        (r.pcie_share ? ` <span class="muted" title="routed experts the GPU read over PCIe (--pcie-frac) or another GPU computed">+${(r.pcie_share * 100).toFixed(1)}%</span>` : "");
+      const pp = r.prompt_ms > 0 && r.prompt_tokens > (r.reused || 0)   // net of cache: only what was actually read
+        ? fmt((r.prompt_tokens - (r.reused || 0)) / (r.prompt_ms / 1000)) : "–";
       return `<tr><td>${esc(t)}</td><td><span class="st-badge ${cls}">${esc(text)}</span>${proj}</td><td class="num">${fmt(r.prompt_tokens)}</td>
-        <td class="num">${fmt(r.reused)}</td><td class="num">${fmt(r.output_tokens)}</td><td class="num">${fmt(r.decode_tok_s, 1)}</td>
+        <td class="num">${fmt(r.reused)}</td><td class="num">${fmt(r.output_tokens)}</td><td class="num">${pp}</td><td class="num">${fmt(r.decode_tok_s, 1)}</td>
         <td class="num">${hit}</td><td class="num">${fmt(r.duration_s, 1)} s</td></tr>`;
     }).join("");
   }
@@ -620,7 +622,9 @@ function msgEl(m, i) {
     el.innerHTML = `<details class="st-collapse think" hidden><summary>${icon("thinking", "st-icon st-icon--sm")}<span class="think-title"></span>` +
       `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body thinking"></div></details>` +
       `<div class="st-bubble"></div><div class="st-msg__meta"><span class="meta-text"></span>` +
-      `<button class="st-btn st-btn--icon" data-msg-copy aria-label="Copy the answer" title="Copy">${icon("copy")}</button></div>`;
+      `<button class="st-btn st-btn--icon" data-msg-detail hidden aria-label="Request details" title="Details">${icon("chevron")}</button>` +
+      `<button class="st-btn st-btn--icon" data-msg-copy aria-label="Copy the answer" title="Copy">${icon("copy")}</button></div>` +
+      `<div class="st-msg__detail" hidden></div>`;
     updateAssistant(el, m, false);
   }
   return el;
@@ -698,6 +702,23 @@ function updateAssistant(el, m, streaming) {
     if (streaming) bubble.classList.add("cursor"); else bubble.classList.remove("cursor");
   }
   el.querySelector(".meta-text").textContent = m.meta || (streaming ? "" : m.stopped ? "Stopped" : "");
+  const dbtn = el.querySelector("[data-msg-detail]");
+  if (dbtn) {
+    dbtn.hidden = streaming || !m.timings;
+    dbtn.classList.toggle("open", !!m.detailOpen);
+    const drow = el.querySelector(".st-msg__detail");
+    if (drow && m.timings && m.detailOpen) {
+      const t = m.timings;
+      const read = t.prompt_n != null ? t.prompt_n : null;
+      const parts = [];
+      if (read != null) parts.push(`read ${fmt(read)} tokens${t.prompt_per_second ? ` @ ${fmt(t.prompt_per_second)} tok/s` : ""}`);
+      if (t.cache_n) parts.push(`${fmt(t.cache_n)} reused`);
+      if (t.prompt_ms != null) parts.push(`TTFT ${fmt(t.prompt_ms / 1000, 1)} s`);
+      if (t.draft_n != null) parts.push(`drafts ${fmt(t.draft_n_accepted)} of ${fmt(t.draft_n)} accepted`);
+      drow.textContent = parts.join(" · ");
+      drow.hidden = false;
+    } else if (drow) drow.hidden = true;
+  }
   el.querySelector("[data-msg-copy]").hidden = streaming || !m.text;
 }
 function renderChat() {
@@ -714,6 +735,14 @@ function scrollDown(force) { const s = $("chat-scroll"); if (force || nearBottom
 $("chat").addEventListener("click", (e) => {
   const cc = e.target.closest("[data-code-copy]");
   if (cc) { copyText(cc.closest(".st-code").querySelector("pre").textContent, cc); return; }
+  const md = e.target.closest("[data-msg-detail]");
+  if (md) {
+    const el = md.closest(".st-msg"), m = messages[+el.dataset.i];
+    if (!m) return;
+    m.detailOpen = !m.detailOpen;
+    updateAssistant(el, m, !!busy && busy.msg === m);
+    return;
+  }
   const mc = e.target.closest("[data-msg-copy]");
   if (mc) { const i = +mc.closest(".st-msg").dataset.i; copyText(messages[i].text, mc); return; }
   // a tool block: its open state lives in the message (the answer is rebuilt while it streams), so the click sets it
@@ -832,6 +861,7 @@ async function send() {
         try { j = JSON.parse(data); } catch (e) { continue; }
         if (j.error) throw new Error(j.error.message || "the engine reported an error");
         if (j.usage) usage = j.usage;
+        if (j.timings) m.timings = j.timings;
         if (j.strata_mcp) onTool(m, j.strata_mcp);
         const d = (j.choices && j.choices[0] && j.choices[0].delta) || {};
         const lastTool = m.tools && m.tools.length ? m.tools[m.tools.length - 1] : null;   // a new round after a tool
