@@ -1,0 +1,31 @@
+[
+  {
+    "label": "ring48-prewarm",
+    "kind": "warmup",
+    "trial": 0,
+    "wall_s": 0.6899457690306008,
+    "metrics": {
+      "prompt_tokens": 15.0,
+      "reused": 0.0,
+      "fresh": 15.0,
+      "prefill_ms": 488.0,
+      "prefill_tps": 30.8,
+      "generated": 2.0,
+      "decode_ms": 193.0,
+      "decode_tps": 10.3
+    },
+    "usage": {
+      "prompt_tokens": 15,
+      "completion_tokens": 2,
+      "total_tokens": 17,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "stop",
+    "message": {
+      "role": "assistant",
+      "content": "READY"
+    }
+  }
+]

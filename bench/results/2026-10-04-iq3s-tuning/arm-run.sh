@@ -14,7 +14,7 @@ START=$(stat -c %s "$LOG")
 
 echo "== prewarm (excluded) =="
 python3 "$ROOT/tools/hip/bench_prefill.py" --url "$URL" --model "$MODEL" --engine-log "$LOG" \
-  --output "$D/$LABEL-prewarm.json" --label "$LABEL-prewarm" --trials 2 --start-trial 90 >/dev/null || { echo prewarm failed; exit 1; }
+  --output "$D/$LABEL-prewarm.json" --label "$LABEL-prewarm" --trials 3 --start-trial 90 >/dev/null || { echo prewarm failed; exit 1; }
 
 python3 "$ROOT/docker/vram-guard.py" --budget-mib 10240 --interval 0.05 \
   --output "$D/$LABEL-vram.json" > "$D/$LABEL-vram-guard.log" 2>&1 &
@@ -47,7 +47,11 @@ echo "== coding smoke =="
 python3 "$ROOT/tools/hip/check_coding_task.py" --url "$URL" --model "$MODEL" \
   --label "$LABEL" --output "$D/$LABEL-smoke.json" 2>&1 | tail -2 || echo "SMOKE FAILED"
 
-kill -INT $GUARD $GUARD2 2>/dev/null; wait $GUARD 2>/dev/null; wait $GUARD2 2>/dev/null
+kill -INT $GUARD 2>/dev/null; wait $GUARD 2>/dev/null
+# SIGINT does not propagate through docker exec; stop the in-container guard there.
+docker exec strata-gfx1101 pkill -INT -f vram-guard.py 2>/dev/null || true
+wait $GUARD2 2>/dev/null
+for i in $(seq 1 20); do [ -f /mnt/storage/Development/strata-work/logs/ARM-vram-share.json ] && break; sleep 1; done
 cp /mnt/storage/Development/strata-work/logs/ARM-vram-share.json "$D/$LABEL-vram-share.json" 2>/dev/null && rm -f /mnt/storage/Development/strata-work/logs/ARM-vram-share.json
 echo "== raw guard: $(tail -1 "$D/$LABEL-vram-guard.log") =="
 [ -n "$GUARD2" ] && echo "== share guard: $(tail -1 "$D/$LABEL-vram-share-guard.log") =="
