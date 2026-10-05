@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Configure + build the SYCL port inside strata-sycl-dev.  sycl/build.sh [target...]
+# Configure + build the SYCL port inside strata-sycl-dev (or a toolbox with oneAPI).  sycl/build.sh [target...]
 set -uo pipefail
 source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1 || true
 repo=${REPO:-$(git rev-parse --show-toplevel)}

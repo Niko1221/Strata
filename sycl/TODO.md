@@ -6,7 +6,7 @@ output-identity comparison against the build before it.
 
 ## 1. New hardware readiness (no card time)
 
-The B70 trains at PCIe Gen3 x8 in its current slot (it can do Gen5 x16). IQ2_XS and Swift read their ~6,000
+The B70 trained at PCIe Gen3 x8 in the old host's slot (it can do Gen5 x16); the new host gives both cards Gen5 x8. IQ2_XS and Swift read their ~6,000
 mirrored experts over that link at every decode step, and each start reads 30-43 GB from the SSD. A second card
 lets a layer split hold the IQ2_XS without a host mirror.
 
@@ -15,7 +15,9 @@ lets a layer split hold the IQ2_XS without a host mirror.
       `"gpu"`/`layer_split`, the server adds `--layer-split`, `strata-sycl.sh` opens the selector to every card,
       benchy reads every card. A second card of another die needs a two-target build (`AOT=bmg-g21,bmg-g31`,
       checked to compile).
-- [ ] On the new box: benchy v1 before any code change, so the hardware's share of any speedup is known.
+- [x] On the new box (2026-10-04): benchy v1 with the same engine, B70 at Gen5 x8 on a Ryzen 9 9950X with 61 GB:
+      IQ2_XS / Swift decode +15-30% and long prompts ~25% faster (the RAM mirror over a 26.5 GB/s link, 6.1 before),
+      the Coder +15-40% prompt, +3% decode. The B65 alone: 70-77% of the B70 (INTEL_PERFORMANCE.md).
 - [ ] With the second card: a layer split of the IQ2_XS (all experts resident) through setup and benchy.
 
 ## 2. Refill lent cache slots in the background (short-prompt test)

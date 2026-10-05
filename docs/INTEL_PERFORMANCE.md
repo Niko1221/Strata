@@ -7,12 +7,15 @@ why things are the way they are; this file holds the numbers. It has three parts
 - **History:** what each change bought, with dates.
 - **Other people's cards:** results posted on the upstream PR.
 
-**Our machine.**
+**Our machine** (since 2026-10-04).
 
-- Card: Arc Pro B70 (32 GB, Xe2, 608 GB/s), in a PCIe 3.0 x8 slot. The card trains at Gen3 x8 there; it can do
-  Gen5 x16.
-- Host: Ryzen (Zen 1), Ubuntu 24.04, 23 GB of RAM given to the engine.
-- Toolchain: oneAPI DPC++ 2026.1 and an AOT build (`AOT=bmg-g31`).
+- Cards: Arc Pro B70 (32 GB, Xe2, 608 GB/s) and Arc Pro B65 (32 GB), both at PCIe Gen5 x8 (the board splits its
+  x16 between the two slots).
+- Host: Ryzen 9 9950X, 61 GB of RAM, Fedora Silverblue 44; the engine runs in a Debian 13 distrobox (INTEL.md,
+  "Without Docker").
+- Toolchain: oneAPI DPC++ 2026.1.1 and an AOT build (`AOT=bmg-g31`).
+- Until 2026-10-04: the B70 alone at PCIe Gen3 x8 on a Ryzen 7 1700X (Zen 1) with 23 GB of RAM, Ubuntu 24.04, in the
+  dev image. Its numbers are under "On the earlier host".
 
 **How the engine numbers are measured.**
 
@@ -29,9 +32,193 @@ why things are the way they are; this file holds the numbers. It has three parts
 - "Through the API" rows use the served model with its sampling defaults (temperature 0.6, top_p 0.95, top_k 20,
   repetition penalty 1.05).
 
-## Current numbers (engine 0.1.38-sycl, 2026-10-04)
+## Current numbers (engine 0.1.39-sycl, 2026-10-04)
+
+The tables of the earlier host that this host has not re-run yet are under "On the earlier host" below.
 
 ### Benchy v1 on our B70 (the served configs, 2026-10-04)
+
+`sycl/benchy.sh`, unchanged ("Submitting numbers" below), on this host: each model with the serve config it is
+actually served with, from a cold page cache. The engine ran on the B70 (`level_zero:0`, the image's selector).
+Its report, as written:
+
+
+| Model / configuration | Input tokens | PP (tok/s) | TTFT (s) | TG (tok/s) | Drafts accepted | Actual output tokens | Completed requests |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| coder-iq1_m, 256K context | 20 | 57.41 | 0.4 | 77.30 | 73% | 256 | 1/1 |
+| coder-iq1_m, 256K context | 2,185 | 874.53 | 2.6 | 74.63 | 72% | 256 | 1/1 |
+| coder-iq1_m, 256K context | 8,000 | 1,284.69 | 6.3 | 71.89 | 71% | 256 | 1/1 |
+| coder-iq1_m, 256K context | 40,000 | 1,392.04 | 28.8 | 67.64 | 68% | 256 | 1/1 |
+| coder-iq1_m, 256K context | 128,000 | 1,326.53 | 96.6 | 63.91 | 69% | 256 | 1/1 |
+| coder-iq1_m, 256K context | 256,000 | 1,271.21 | 201.5 | 55.95 | 69% | 256 | 1/1 |
+| iq2_xs, 128K context | 20 | 59.54 | 0.4 | 70.03 | 65% | 256 | 1/1 |
+| iq2_xs, 128K context | 2,185 | 744.68 | 3.0 | 77.45 | 76% | 256 | 1/1 |
+| iq2_xs, 128K context | 8,000 | 1,050.13 | 7.7 | 78.49 | 78% | 256 | 1/1 |
+| iq2_xs, 128K context | 40,000 | 1,116.83 | 35.9 | 71.79 | 71% | 256 | 1/1 |
+| iq2_xs, 128K context | 128,000 | 1,090.30 | 117.5 | 65.38 | 67% | 256 | 1/1 |
+| swift-iq2_xs, 128K context | 20 | 59.44 | 0.4 | 77.11 | 81% | 256 | 1/1 |
+| swift-iq2_xs, 128K context | 2,185 | 742.02 | 3.1 | 74.81 | 78% | 256 | 1/1 |
+| swift-iq2_xs, 128K context | 8,000 | 1,045.90 | 7.8 | 75.50 | 72% | 256 | 1/1 |
+| swift-iq2_xs, 128K context | 40,000 | 1,108.11 | 36.2 | 63.06 | 65% | 256 | 1/1 |
+| swift-iq2_xs, 128K context | 128,000 | 1,082.09 | 118.4 | 70.81 | 76% | 256 | 1/1 |
+
+| Model / configuration | Input tokens | Experts in VRAM | Offloaded to the RAM mirror | Slots lent to the prompt | Peak VRAM (GB) | RAM (GB) | SSD read at load (GB) | SSD read, request (GB) | PLE rows from SSD (MB) | Load (s) | Avg power (W) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| coder-iq1_m | 20 | 12,288 (23.4 GiB) | 0 (0.0 GiB) | 311 | 29.9 | 8.6 | 30.5 | 0.02 | 18 | 33 | 194 |
+| coder-iq1_m | 2,185 | 12,288 (23.4 GiB) | 0 (0.0 GiB) | 808 | 29.9 | 8.6 | 30.5 | 0.12 | 126 | 35 | 222 |
+| coder-iq1_m | 8,000 | 12,288 (23.4 GiB) | 0 (0.0 GiB) | 1,186 | 29.9 | 8.9 | 30.5 | 0.12 | 122 | 33 | 202 |
+| coder-iq1_m | 40,000 | 12,288 (23.4 GiB) | 0 (0.0 GiB) | 1,186 | 29.9 | 8.8 | 30.5 | 0.13 | 123 | 33 | 226 |
+| coder-iq1_m | 128,000 | 12,288 (23.4 GiB) | 0 (0.0 GiB) | 1,186 | 30.0 | 8.9 | 30.5 | 0.13 | 123 | 33 | 232 |
+| coder-iq1_m | 256,000 | 12,288 (23.4 GiB) | 0 (0.0 GiB) | 1,186 | 30.0 | 9.1 | 30.5 | 0.13 | 122 | 33 | 236 |
+| iq2_xs | 20 | 18,412 (24.7 GiB) | 6,164 (8.3 GiB) | 314 | 30.3 | 14.5 | 40.1 | 0.02 | 21 | 38 | 181 |
+| iq2_xs | 2,185 | 18,412 (24.7 GiB) | 6,164 (8.3 GiB) | 877 | 30.3 | 14.5 | 40.2 | 0.01 | 126 | 41 | 201 |
+| iq2_xs | 8,000 | 18,412 (24.7 GiB) | 6,164 (8.3 GiB) | 1,397 | 30.3 | 14.6 | 40.2 | 0.01 | 120 | 41 | 200 |
+| iq2_xs | 40,000 | 18,412 (24.7 GiB) | 6,164 (8.3 GiB) | 1,397 | 30.3 | 14.6 | 40.2 | 0.09 | 122 | 39 | 209 |
+| iq2_xs | 128,000 | 18,412 (24.7 GiB) | 6,164 (8.3 GiB) | 1,397 | 30.4 | 14.5 | 40.2 | 0.06 | 122 | 38 | 215 |
+| swift-iq2_xs | 20 | 18,412 (24.7 GiB) | 6,164 (8.3 GiB) | 314 | 30.3 | 14.6 | 40.1 | 0.02 | 17 | 37 | 201 |
+| swift-iq2_xs | 2,185 | 18,412 (24.7 GiB) | 6,164 (8.3 GiB) | 877 | 30.3 | 14.5 | 40.1 | 0.11 | 128 | 38 | 193 |
+| swift-iq2_xs | 8,000 | 18,412 (24.7 GiB) | 6,164 (8.3 GiB) | 1,397 | 30.3 | 14.7 | 40.1 | 0.11 | 122 | 38 | 196 |
+| swift-iq2_xs | 40,000 | 18,412 (24.7 GiB) | 6,164 (8.3 GiB) | 1,397 | 30.3 | 14.6 | 40.1 | 0.12 | 123 | 38 | 208 |
+| swift-iq2_xs | 128,000 | 18,412 (24.7 GiB) | 6,164 (8.3 GiB) | 1,397 | 30.4 | 14.7 | 40.1 | 0.11 | 121 | 38 | 214 |
+
+System and build:
+- Intel(R) Arc(TM) Pro B70 Graphics, 32 GB, PCIe Gen5 x8 (card max Gen5 x16); Intel(R) Arc(TM) Pro B65 Graphics, 32 GB, PCIe Gen5 x8 (card max Gen5 x16).
+- AMD Ryzen 9 9950X 16-Core Processor (32 threads), 61.4 GiB RAM; models on nvme1n1 (PCIe SSD).
+- Fedora Linux 44.20261004.0 (Silverblue), kernel 7.2.8-200.fc44.x86_64.
+- Engine 0.1.39-sycl, commit `b56c45e96812 + local changes`, image `distrobox debintel, Intel(R) oneAPI DPC++/C++ Compiler 2026.1.1 (2026.1.1.20260724)`, `build-sycl-aot/strata`. Each configuration's engine args: `config-<name>.txt`.
+
+Caveats:
+- One run per row, greedy, 256 new tokens, a fresh engine each time; the page cache dropped before every run (cold start).
+- TG includes speculative decoding (the MTP draft layer): it depends on the text, and on how often drafts are accepted.
+- RAM is the drop in the host's available memory (pinned memory included); VRAM is every client's resident VRAM from fdinfo, less what was in use before.
+- Skipped (context too small): iq2_xs 256,000 (needs --max-context 256256), swift-iq2_xs 256,000 (needs --max-context 256256).
+
+The configs (`config-*.txt`):
+
+- `coder-iq1_m`: `--pack /work/Strata-data/packs/coder-iq1_m --native /work/models/IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf --ple-gguf /work/models/IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00002-of-00002.gguf --expert-profile /work/Strata_B70/data/expert-profile-coder.bin --expert-cache auto --prefill 4096 --spec 4 --spec-min-p 0.5 --mtp /work/Strata-data/mtp/rt --max-context 262144 --kv int8 --stream-experts --vram-reserve-mib 2048 --kv-resident 32768`
+- `iq2_xs`: `--pack /work/Strata-data/packs/iq2_xs --native /work/models/IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf --ple-gguf /work/models/IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf --expert-profile /work/Strata_B70/data/expert-profile.bin --expert-cache auto --prefill 4096 --spec 4 --spec-min-p 0.5 --mtp /work/Strata-data/mtp/rt --max-context 131072 --kv int8 --stream-experts --vram-reserve-mib 2048 --kv-resident 32768`
+- `swift-iq2_xs`: `--pack /work/Strata-data/packs/swift-iq2_xs --native /work/models/SWIFT-IQ2_XS/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf --ple-gguf /work/models/SWIFT-IQ2_XS/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf --expert-profile /work/Strata_B70/data/expert-profile.bin --expert-cache auto --prefill 4096 --spec 4 --spec-min-p 0.5 --mtp /work/Strata-data/mtp/rt --max-context 131072 --kv int8 --stream-experts --vram-reserve-mib 2048 --kv-resident 32768`
+
+**Against the earlier host** (benchy v1 of the same engine, 0.1.39 with these changes' speedups, there on
+2026-10-04: Ryzen 7 1700X, 23 GB of RAM, the B70 at PCIe Gen3 x8, the dev image):
+
+| | Earlier host: TTFT / TG | This host: TTFT / TG |
+|---|---|---|
+| Coder, 20 | 0.8 s / 75.5 tok/s | 0.4 s / 77.3 tok/s |
+| Coder, 2,185 | 3.8 s / 73.0 tok/s | 2.6 s / 74.6 tok/s |
+| Coder, 8,000 | 8.3 s / 70.2 tok/s | 6.3 s / 71.9 tok/s |
+| Coder, 40,000 | 33.5 s / 65.8 tok/s | 28.8 s / 67.6 tok/s |
+| Coder, 128,000 | 111.2 s / 61.2 tok/s | 96.6 s / 63.9 tok/s |
+| Coder, 256,000 | 234.9 s / 54.1 tok/s | 201.5 s / 56.0 tok/s |
+| IQ2_XS, 20 | 0.8 s / 53.0 tok/s | 0.4 s / 70.0 tok/s |
+| IQ2_XS, 2,185 | 4.9 s / 64.2 tok/s | 3.0 s / 77.5 tok/s |
+| IQ2_XS, 8,000 | 10.9 s / 65.2 tok/s | 7.7 s / 78.5 tok/s |
+| IQ2_XS, 40,000 | 47.8 s / 60.3 tok/s | 35.9 s / 71.8 tok/s |
+| IQ2_XS, 128,000 | 155.2 s / 54.8 tok/s | 117.5 s / 65.4 tok/s |
+| Swift 1.5, 20 | 0.8 s / 51.9 tok/s | 0.4 s / 77.1 tok/s |
+| Swift 1.5, 2,185 | 4.6 s / 64.7 tok/s | 3.1 s / 74.8 tok/s |
+| Swift 1.5, 8,000 | 10.9 s / 62.9 tok/s | 7.8 s / 75.5 tok/s |
+| Swift 1.5, 40,000 | 48.3 s / 50.2 tok/s | 36.2 s / 63.1 tok/s |
+| Swift 1.5, 128,000 | 157.0 s / 59.3 tok/s | 118.4 s / 70.8 tok/s |
+
+- **The models with a RAM mirror gain most** (IQ2_XS and Swift, ~8 GB of experts in host memory, read over PCIe
+  at every decode step): decode +15-30% and long prompts ~25% faster. The engine's start-up probe measures the
+  link at 26.5 GB/s host->device on Gen5 x8, against 6.1 on Gen3 x8.
+- **The Coder** holds all its experts in VRAM; it gains only from the host: prompt reading +15-40%, decode +3%.
+- Load 40 -> 33 s (Coder), 49 -> 38 s (IQ2_XS). SSD reads during a request ~1.9 GB -> under 0.15 GB.
+- Avg power is higher (195-235 W against 120-210 W): the card waits less. It also includes the idle B65 (see the
+  report's caveats).
+
+### Benchy v1 on the B65 (2026-10-04)
+
+The same bench, build and host, on an Arc Pro B65 (32 GB, Battlemage G31 like the B70, PCIe Gen5 x8):
+`ONEAPI_DEVICE_SELECTOR=level_zero:1 sycl/benchy.sh`, the engine's VRAM on the B65 checked in fdinfo during the
+run. Its report, as written:
+
+
+| Model / configuration | Input tokens | PP (tok/s) | TTFT (s) | TG (tok/s) | Drafts accepted | Actual output tokens | Completed requests |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| coder-iq1_m, 256K context | 20 | 38.85 | 0.6 | 54.27 | 74% | 256 | 1/1 |
+| coder-iq1_m, 256K context | 2,185 | 612.85 | 3.7 | 52.42 | 74% | 256 | 1/1 |
+| coder-iq1_m, 256K context | 8,000 | 925.99 | 8.8 | 51.93 | 73% | 256 | 1/1 |
+| coder-iq1_m, 256K context | 40,000 | 1,001.05 | 40.1 | 47.35 | 68% | 256 | 1/1 |
+| coder-iq1_m, 256K context | 128,000 | 966.38 | 132.6 | 43.62 | 69% | 256 | 1/1 |
+| coder-iq1_m, 256K context | 256,000 | 919.38 | 278.6 | 40.10 | 69% | 256 | 1/1 |
+| iq2_xs, 128K context | 20 | 46.20 | 0.5 | 51.42 | 68% | 256 | 1/1 |
+| iq2_xs, 128K context | 2,185 | 561.18 | 4.0 | 53.93 | 77% | 256 | 1/1 |
+| iq2_xs, 128K context | 8,000 | 809.92 | 10.0 | 50.42 | 70% | 256 | 1/1 |
+| iq2_xs, 128K context | 40,000 | 856.92 | 46.8 | 52.93 | 77% | 256 | 1/1 |
+| iq2_xs, 128K context | 128,000 | 835.75 | 153.3 | 50.48 | 78% | 256 | 1/1 |
+| swift-iq2_xs, 128K context | 20 | 46.13 | 0.5 | 54.55 | 75% | 256 | 1/1 |
+| swift-iq2_xs, 128K context | 2,185 | 558.53 | 4.0 | 49.81 | 69% | 256 | 1/1 |
+| swift-iq2_xs, 128K context | 8,000 | 805.89 | 10.0 | 53.37 | 76% | 256 | 1/1 |
+| swift-iq2_xs, 128K context | 40,000 | 849.89 | 47.2 | 44.92 | 68% | 256 | 1/1 |
+| swift-iq2_xs, 128K context | 128,000 | 830.10 | 154.3 | 50.17 | 76% | 256 | 1/1 |
+
+| Model / configuration | Input tokens | Experts in VRAM | Offloaded to the RAM mirror | Slots lent to the prompt | Peak VRAM (GB) | RAM (GB) | SSD read at load (GB) | SSD read, request (GB) | PLE rows from SSD (MB) | Load (s) | Avg power (W) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| coder-iq1_m | 20 | 12,288 (23.4 GiB) | 0 (0.0 GiB) | 311 | 29.9 | 8.8 | 30.5 | 0.02 | 18 | 33 | 129 |
+| coder-iq1_m | 2,185 | 12,288 (23.4 GiB) | 0 (0.0 GiB) | 808 | 29.9 | 8.7 | 30.6 | 0.01 | 125 | 34 | 135 |
+| coder-iq1_m | 8,000 | 12,288 (23.4 GiB) | 0 (0.0 GiB) | 1,186 | 29.9 | 8.9 | 30.6 | 0.01 | 122 | 34 | 143 |
+| coder-iq1_m | 40,000 | 12,288 (23.4 GiB) | 0 (0.0 GiB) | 1,186 | 29.9 | 8.9 | 30.6 | 0.02 | 123 | 34 | 154 |
+| coder-iq1_m | 128,000 | 12,288 (23.4 GiB) | 0 (0.0 GiB) | 1,186 | 30.0 | 8.9 | 30.6 | 0.02 | 123 | 34 | 158 |
+| coder-iq1_m | 256,000 | 12,288 (23.4 GiB) | 0 (0.0 GiB) | 1,186 | 30.0 | 8.9 | 30.6 | 0.03 | 122 | 34 | 162 |
+| iq2_xs | 20 | 18,412 (24.7 GiB) | 6,164 (8.3 GiB) | 314 | 30.3 | 14.5 | 40.1 | 0.02 | 20 | 39 | 148 |
+| iq2_xs | 2,185 | 18,412 (24.7 GiB) | 6,164 (8.3 GiB) | 877 | 30.3 | 14.5 | 40.2 | 0.01 | 126 | 41 | 133 |
+| iq2_xs | 8,000 | 18,412 (24.7 GiB) | 6,164 (8.3 GiB) | 1,397 | 30.3 | 14.6 | 40.1 | 0.12 | 122 | 39 | 147 |
+| iq2_xs | 40,000 | 18,412 (24.7 GiB) | 6,164 (8.3 GiB) | 1,397 | 30.3 | 14.6 | 40.1 | 0.12 | 121 | 39 | 148 |
+| iq2_xs | 128,000 | 18,412 (24.7 GiB) | 6,164 (8.3 GiB) | 1,397 | 30.4 | 14.6 | 40.2 | 0.02 | 120 | 41 | 153 |
+| swift-iq2_xs | 20 | 18,412 (24.7 GiB) | 6,164 (8.3 GiB) | 314 | 30.3 | 14.5 | 40.1 | 0.02 | 18 | 38 | 139 |
+| swift-iq2_xs | 2,185 | 18,412 (24.7 GiB) | 6,164 (8.3 GiB) | 877 | 30.3 | 14.4 | 40.2 | 0.02 | 129 | 39 | 139 |
+| swift-iq2_xs | 8,000 | 18,412 (24.7 GiB) | 6,164 (8.3 GiB) | 1,397 | 30.3 | 14.4 | 40.2 | 0.01 | 121 | 39 | 139 |
+| swift-iq2_xs | 40,000 | 18,412 (24.7 GiB) | 6,164 (8.3 GiB) | 1,397 | 30.3 | 14.6 | 40.1 | 0.13 | 123 | 38 | 149 |
+| swift-iq2_xs | 128,000 | 18,412 (24.7 GiB) | 6,164 (8.3 GiB) | 1,397 | 30.4 | 14.6 | 40.2 | 0.02 | 121 | 39 | 153 |
+
+System and build:
+- Intel(R) Arc(TM) Pro B70 Graphics, 32 GB, PCIe Gen5 x8 (card max Gen5 x16); Intel(R) Arc(TM) Pro B65 Graphics, 32 GB, PCIe Gen5 x8 (card max Gen5 x16).
+- AMD Ryzen 9 9950X 16-Core Processor (32 threads), 61.4 GiB RAM; models on nvme1n1 (PCIe SSD).
+- Fedora Linux 44.20261004.0 (Silverblue), kernel 7.2.8-200.fc44.x86_64.
+- Engine 0.1.39-sycl, commit `b56c45e96812 + local changes`, image `distrobox debintel, Intel(R) oneAPI DPC++/C++ Compiler 2026.1.1 (2026.1.1.20260724)`, `build-sycl-aot/strata`. Each configuration's engine args: `config-<name>.txt`.
+
+Caveats:
+- One run per row, greedy, 256 new tokens, a fresh engine each time; the page cache dropped before every run (cold start).
+- TG includes speculative decoding (the MTP draft layer): it depends on the text, and on how often drafts are accepted.
+- RAM is the drop in the host's available memory (pinned memory included); VRAM is every client's resident VRAM from fdinfo, less what was in use before.
+- Skipped (context too small): iq2_xs 256,000 (needs --max-context 256256), swift-iq2_xs 256,000 (needs --max-context 256256).
+
+**Against the B70:**
+
+
+| | B70: PP / TTFT / TG | B65: PP / TTFT / TG | B65 / B70 (PP, TG) |
+|---|---|---|---|
+| Coder, 20 | 57 tok/s / 0.4 s / 77.3 | 39 tok/s / 0.6 s / 54.3 | 68%, 70% |
+| Coder, 2,185 | 875 tok/s / 2.6 s / 74.6 | 613 tok/s / 3.7 s / 52.4 | 70%, 70% |
+| Coder, 8,000 | 1,285 tok/s / 6.3 s / 71.9 | 926 tok/s / 8.8 s / 51.9 | 72%, 72% |
+| Coder, 40,000 | 1,392 tok/s / 28.8 s / 67.6 | 1,001 tok/s / 40.1 s / 47.4 | 72%, 70% |
+| Coder, 128,000 | 1,327 tok/s / 96.6 s / 63.9 | 966 tok/s / 132.6 s / 43.6 | 73%, 68% |
+| Coder, 256,000 | 1,271 tok/s / 201.5 s / 56.0 | 919 tok/s / 278.6 s / 40.1 | 72%, 72% |
+| IQ2_XS, 20 | 60 tok/s / 0.4 s / 70.0 | 46 tok/s / 0.5 s / 51.4 | 78%, 73% |
+| IQ2_XS, 2,185 | 745 tok/s / 3.0 s / 77.5 | 561 tok/s / 4.0 s / 53.9 | 75%, 70% |
+| IQ2_XS, 8,000 | 1,050 tok/s / 7.7 s / 78.5 | 810 tok/s / 10.0 s / 50.4 | 77%, 64% |
+| IQ2_XS, 40,000 | 1,117 tok/s / 35.9 s / 71.8 | 857 tok/s / 46.8 s / 52.9 | 77%, 74% |
+| IQ2_XS, 128,000 | 1,090 tok/s / 117.5 s / 65.4 | 836 tok/s / 153.3 s / 50.5 | 77%, 77% |
+| Swift 1.5, 20 | 59 tok/s / 0.4 s / 77.1 | 46 tok/s / 0.5 s / 54.5 | 78%, 71% |
+| Swift 1.5, 2,185 | 742 tok/s / 3.1 s / 74.8 | 559 tok/s / 4.0 s / 49.8 | 75%, 67% |
+| Swift 1.5, 8,000 | 1,046 tok/s / 7.8 s / 75.5 | 806 tok/s / 10.0 s / 53.4 | 77%, 71% |
+| Swift 1.5, 40,000 | 1,108 tok/s / 36.2 s / 63.1 | 850 tok/s / 47.2 s / 44.9 | 77%, 71% |
+| Swift 1.5, 128,000 | 1,082 tok/s / 118.4 s / 70.8 | 830 tok/s / 154.3 s / 50.2 | 77%, 71% |
+
+- The B65 reads prompts at 70-77% of the B70's rate and decodes at 70-77%, drawing ~70% of its power
+  (130-160 W against 195-235 W): about the same tokens per watt.
+- Load time, peak VRAM and draft acceptance are the same: both have 32 GB, so every model fits the same way.
+
+## On the earlier host (Ryzen 7 1700X, 23 GB of RAM, the B70 at PCIe Gen3 x8)
+
+The current numbers of that host when it was replaced (2026-10-04), engine 0.1.38-0.1.39. The tables above
+supersede them where they overlap; the rest are re-run on this host and move up.
+
+
+### Benchy v1 on the B70, engine 0.1.38 (the served configs, 2026-10-04)
 
 `sycl/benchy.sh`, unchanged ("Submitting numbers" below): each model with the serve config it is actually served
 with, from a cold page cache. Its report, as written:
