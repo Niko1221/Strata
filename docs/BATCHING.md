@@ -213,3 +213,6 @@ On top of `GEN` / `GENI`:
 
 `tools/batch_test.py` drives the engine directly: the same prompts alone, then together, compared token by token,
 and the aggregate rate.
+
+With `--vision`, each batch slot keeps its own image-position table on every GPU stage. Later image or text
+admissions cannot change an active reply's positions; slot reuse updates the table without recapturing its graphs.

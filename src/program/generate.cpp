@@ -52,6 +52,7 @@
 #include "strata/core/mtp.hpp"
 #include "strata/prefill/prefill.hpp"
 #include "strata/core/native_dense.hpp"
+#include "strata/program/vision_records.hpp"
 #include "strata/program/logits_selection.hpp"
 #include "strata/program/conv_cache.hpp"
 #include "strata/spec/draft_policy.hpp"
@@ -2926,6 +2927,9 @@ int main(int argc, char** argv) {
                      last ? " and the head" : "", (double) fb / 1073741824.0);
     }
 
+    // Separate from the foreground admission table. Slot graphs keep these addresses across reuse.
+    std::vector<std::vector<std::shared_ptr<int32_t>>> bslot_mrope;
+
     // --batch: every stage carves o.batch more sessions like its own (same layer range and context), one per
     // slot of the batch windows.  Before the expert cache is sized, so `--expert-cache auto` leaves them room.
     // Recommend, never force: a count the engine cannot run is said and adjusted (or batching left off) - the
@@ -2951,6 +2955,7 @@ int main(int argc, char** argv) {
     }
     if (o.batch > 0) {
         bslot_ss.resize(1 + stages.size());
+        bslot_mrope.resize(bslot_ss.size());
         int fit = o.batch;   // the slots every stage could carve
         uint64_t bytes0 = 0;
         for (size_t k = 0; k < bslot_ss.size(); ++k) {
@@ -2961,6 +2966,26 @@ int main(int argc, char** argv) {
             const uint64_t bytes = strata::core::session_bytes(g, o.max_context, K, lo, hi);
             if (k == 0) bytes0 = bytes;
             for (int b = 0; b < fit; ++b) {
+                std::shared_ptr<int32_t> positions_owner;
+                if (o.vision) {
+                    int32_t* positions = nullptr;
+                    if (cudaMalloc(&positions, mrope_host.size() * sizeof(int32_t)) != cudaSuccess) {
+                        std::fprintf(stderr, "strata generate: --batch: slot %d's image positions do not fit on CUDA%d\n", b, dev);
+                        cudaGetLastError();
+                        fit = b;
+                        break;
+                    }
+                    positions_owner = std::shared_ptr<int32_t>(positions, [dev](int32_t* p) {
+                        const strata::core::OnDevice on(dev);
+                        cudaFree(p);
+                    });
+                    if (cudaMemcpy(positions, mrope_host.data(), mrope_host.size() * sizeof(int32_t), cudaMemcpyHostToDevice) != cudaSuccess) {
+                        std::fprintf(stderr, "strata generate: --batch: slot %d's image position initialization failed on CUDA%d\n", b, dev);
+                        cudaGetLastError();
+                        fit = b;
+                        break;
+                    }
+                }
                 auto u = std::make_unique<strata::core::SessionState>();
                 void* buf = nullptr;
                 if (cudaMalloc(&buf, bytes) != cudaSuccess || strata::core::session_init(g, o.max_context, K, buf, *u, lo, hi) == 0) {
@@ -2974,6 +2999,10 @@ int main(int argc, char** argv) {
                     fit = b;
                     break;
                 }
+                if (positions_owner) {
+                    u->mrope = positions_owner.get();
+                    bslot_mrope[k].push_back(std::move(positions_owner));
+                }
                 strata::core::session_zero(*u, g, nullptr, nullptr);
                 bslot_ss[k].push_back(std::move(u));
             }
@@ -2983,11 +3012,13 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: --batch: %d slot sessions on CUDA%d (%.2f GiB each); %.2f GiB free\n",
                          (int) bslot_ss[k].size(), dev, (double) bytes / 1073741824.0, (double) fb / 1073741824.0);
         }
+        for (auto& v : bslot_mrope) if ((int) v.size() > fit) v.resize((size_t) fit);
         for (auto& v : bslot_ss) if ((int) v.size() > fit) v.resize((size_t) fit);   // the same count on every stage
         if (fit < 2) {
             std::fprintf(stderr, "strata generate: WARNING: --batch is off: not two slot sessions fit (a smaller "
                                  "--max-context or KV streaming, --kv-resident, makes them smaller)\n");
             bslot_ss.clear();
+            bslot_mrope.clear();
             o.batch = 0;
         } else {
             o.batch = fit;
@@ -5923,6 +5954,12 @@ int main(int argc, char** argv) {
                 strata::core::SessionState& to = *bslot_ss[k][(size_t) b];
                 const strata::core::OnDevice on_k(k == 0 ? 0 : stages[k - 1]->dev);
                 if (cudaDeviceSynchronize() != cudaSuccess) { e = "batch admission: device sync failed"; return false; }
+                if (to.mrope != nullptr && cudaMemcpy(const_cast<int32_t*>(to.mrope),
+                    k == 0 ? d_mrope : stages[k - 1]->mrope, mrope_host.size() * sizeof(int32_t),
+                    cudaMemcpyDeviceToDevice) != cudaSuccess) {
+                    e = "batch admission: image position copy failed";
+                    return false;
+                }
                 strata::core::ConversationCheckpoint ck;
                 ck.ids = ids;
                 if (!strata::core::conversation_checkpoint_save(ck, from, g, e) ||
@@ -6295,6 +6332,11 @@ int main(int argc, char** argv) {
                 continue;
             }
             const int64_t n = (int64_t) ids.size();
+            if (n < 1 || n > o.max_context - 8 || max_new > o.max_context - n - 8) {
+                std::printf("ERR prompt (%lld tokens) + max_new (%lld) exceeds the context (%lld)\n", (long long) n,
+                            (long long) max_new, (long long) o.max_context);
+                continue;
+            }
             req_imgs.clear();
             if (geni && !o.vision) { std::printf("ERR this engine was started without --vision\n"); continue; }
             if (geni || !mrope_identity) {
@@ -6310,33 +6352,14 @@ int main(int argc, char** argv) {
                 if (!geni) {
                     for (int64_t c = 0; c < cells; ++c) put(c, c, c, c);
                 } else {
-                    struct Img { int64_t n, nx, ny; size_t off; };
-                    std::vector<Img> imgs;
-                    img_rows.clear();
-                    std::FILE* f = std::fopen(emb_path.c_str(), "rb");
-                    if (!f) ve = "cannot open " + emb_path;
-                    while (f && ve.empty()) {
-                        int32_t hdr[5];
-                        const size_t got = std::fread(hdr, sizeof(int32_t), 5, f);
-                        if (got == 0) break;
-                        if (got != 5 || hdr[0] != 0x31455653 || hdr[1] < 1 || hdr[2] < 1 || hdr[3] < 1 ||
-                            (int64_t) hdr[2] * hdr[3] != hdr[1] || hdr[4] != (int32_t) g.n_embd) {
-                            ve = "bad embeddings file (expected strata-vision records of width " +
-                                 std::to_string((long long) g.n_embd) + ")";
-                            break;
-                        }
-                        const size_t off = img_rows.size(), cnt = (size_t) hdr[1] * (size_t) hdr[4];
-                        img_rows.resize(off + cnt);
-                        if (std::fread(img_rows.data() + off, sizeof(float), cnt, f) != cnt) { ve = "short embeddings file"; break; }
-                        imgs.push_back({hdr[1], hdr[2], hdr[3], off});
-                    }
-                    if (f) std::fclose(f);
+                    std::vector<strata::program::VisionRecord> imgs;
+                    strata::program::read_vision_records(emb_path, g.n_embd, n, img_rows, imgs, ve);
                     int64_t p = 0, i = 0;
                     size_t k = 0;
                     while (ve.empty() && i < n) {
                         if (ids[(size_t) i] != kImagePad) { put(i, p, p, p); ++p; ++i; continue; }
                         if (k >= imgs.size()) { ve = "the prompt has more images than the embeddings file"; break; }
-                        const Img& im = imgs[k++];
+                        const strata::program::VisionRecord& im = imgs[k++];
                         {   // what the conversation cache compares: a picture is its grid and its embeddings
                             const int64_t grid[3] = {im.n, im.nx, im.ny};
                             uint64_t h = fnv1a(grid, sizeof grid);
@@ -6387,11 +6410,6 @@ int main(int argc, char** argv) {
                 mrope_identity = !geni;
             }
             sp.embd_rows = geni ? row_ptr.data() : nullptr;
-            if (n + max_new + 8 > o.max_context) {
-                std::printf("ERR prompt (%lld tokens) + max_new (%lld) exceeds the context (%lld)\n", (long long) n,
-                            (long long) max_new, (long long) o.max_context);
-                continue;
-            }
             bool bad = false;
             for (int64_t t : ids) bad = bad || t < 0 || t >= n_vocab;
             if (bad) { std::printf("ERR a token id is outside the vocabulary\n"); continue; }
