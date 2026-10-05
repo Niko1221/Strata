@@ -134,7 +134,8 @@ Strata のインストール、起動、停止もできます。
   インストーラーのメニューにはありません。
 
 サイズ、ダウンロード、どれがどこに収まるかについて：[docs/MODELS.md](docs/MODELS.md)。あとで別のモデルを追加するには
-`SETUP.bat`（Linux：`./setup.sh --setup`）を実行します。
+`SETUP.bat`（Linux：`./setup.sh --setup`）を実行します。サイズを選んで、フラグを打つ代わりにウィンドウで
+設定を保存して使い回すには：`LAUNCHER.bat`（Linux：`./launcher.sh`、[ランチャー](docs/LAUNCHER.md)）。
 
 ## 使い方
 

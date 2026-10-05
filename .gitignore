@@ -35,11 +35,13 @@ td.log
 /run-*.bat
 /run-*.sh
 /strata-*.json
+/strata-*.json.bak
 /strata-*.log
 /build-strata.bat
 /build-strata-cuda12.bat
 /build-cuda12/
 /.strata-mcp/
+/.strata-launcher/
 
 # image encoder (setup.py --vision): build output and the generated build script
 build-vision*/

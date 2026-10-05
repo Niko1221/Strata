@@ -135,7 +135,8 @@ sizes are faster. Larger sizes are a bit smarter.
   not in the installer's menu.
 
 Sizes, downloads and what fits where: [docs/MODELS.md](docs/MODELS.md). To add another model later, run
-`SETUP.bat` (Linux: `./setup.sh --setup`).
+`SETUP.bat` (Linux: `./setup.sh --setup`). To pick a size and keep settings you can reuse in a window instead of
+typing flags: `LAUNCHER.bat` (Linux: `./launcher.sh`, [the launcher](docs/LAUNCHER.md)).
 
 ## Using it
 
