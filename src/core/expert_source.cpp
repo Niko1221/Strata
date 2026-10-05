@@ -2686,6 +2686,28 @@ LoadStats load_experts_gguf(const std::string& gguf, uint8_t* dst, const strata:
     return st;
 }
 
+#if defined(_WIN32)
+namespace {
+// STRATA_ARENA_MMAP on Windows: `bytes` of `path` as one view.  write = create the file at that size and map it
+// writable (the first start's fill); otherwise the existing file, read-only.  The view keeps the file open, so both
+// handles are closed here and UnmapViewOfFile is the whole release.  No FILE_FLAG_RANDOM_ACCESS: see FileExpertSource.
+void* map_arena_file(const std::string& path, uint64_t bytes, bool write) {
+    const int wide = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
+    std::vector<wchar_t> w((size_t) std::max(wide, 1), L'\0');
+    if (wide > 0) MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, w.data(), wide);
+    HANDLE f = CreateFileW(w.data(), write ? GENERIC_READ | GENERIC_WRITE : GENERIC_READ, write ? 0 : FILE_SHARE_READ,
+                           nullptr, write ? CREATE_ALWAYS : OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return nullptr;
+    HANDLE m = CreateFileMappingW(f, nullptr, write ? PAGE_READWRITE : PAGE_READONLY, (DWORD) (bytes >> 32),
+                                  (DWORD) (bytes & 0xffffffffu), nullptr);
+    void* v = m != nullptr ? MapViewOfFile(m, write ? FILE_MAP_WRITE : FILE_MAP_READ, 0, 0, (SIZE_T) bytes) : nullptr;
+    if (m != nullptr) CloseHandle(m);
+    CloseHandle(f);
+    return v;
+}
+}  // namespace
+#endif
+
 ArenaExpertSource::~ArenaExpertSource() { close(); }
 
 bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, int threads,
@@ -2733,9 +2755,6 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     // dropped is re-read from the file, so a result never depends on what is resident.  The GPUs then get no
     // mapped alias: run with --pcie-frac 0.  The first start writes experts.bin (arena layout, padded by one blob
     // so a whole-slot copy may start at any expert), later ones map it.
-#if defined(_WIN32)
-    static const bool arena_mmap = false;   // POSIX mmap/madvise: Linux only for now
-#else
     static const bool arena_mmap = [] { const char* v = std::getenv("STRATA_ARENA_MMAP"); return v && v[0] == '1'; }();
     if (arena_mmap) {
         const uint64_t file_bytes = want + (uint64_t) blob;
@@ -2744,11 +2763,58 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
             std::ifstream f(path, std::ios::binary | std::ios::ate);
             if (f) have = (uint64_t) f.tellg();
         }
+#if defined(_WIN32)
+        // Windows, the first start: experts.bin is filled THROUGH a writable mapping of the file, by the same loader
+        // that fills the RAM arena - so this start never holds the arena in RAM (a PC this mode is for could not),
+        // and the layout is the loader's own.  Written as .tmp and renamed, so a stopped fill leaves no experts.bin.
+        if (have != file_bytes && from_gguf) {
+            std::error_code ec;
+            const uint64_t free_disk = (uint64_t) std::filesystem::space(std::filesystem::path(path).parent_path(), ec).available;
+            if (ec || free_disk < file_bytes + (2ull << 30)) {
+                std::fprintf(stderr, "strata generate: STRATA_ARENA_MMAP: NOT writing %s - %.1f GiB free on that drive, it "
+                                     "needs %.1f GiB plus 2 GiB to spare; this start keeps the arena in RAM\n", path.c_str(),
+                             (double) free_disk / 1073741824.0, (double) file_bytes / 1073741824.0);
+            } else {
+                const std::string tmp = path + ".tmp";
+                std::fprintf(stderr, "strata generate: STRATA_ARENA_MMAP: writing %s (%.1f GiB) from the GGUF, once\n",
+                             path.c_str(), (double) file_bytes / 1073741824.0);
+                void* w = map_arena_file(tmp, file_bytes, /*write=*/true);
+                bool ok = w != nullptr;
+                if (ok) {
+                    std::vector<std::string> files;
+                    for (int64_t l = 0; l < n_layers; ++l)
+                        for (int r = 0; r < 3; ++r) {
+                            const std::string f = expert_gguf_file(gguf_, lay, l, r);
+                            if (std::find(files.begin(), files.end(), f) == files.end()) files.push_back(f);
+                        }
+                    std::string why;
+                    const bool unbuffered = experts_unbuffered(files, file_bytes, why);
+                    const LoadStats st = load_experts_gguf(gguf_, (uint8_t*) w, lay, unbuffered ? std::max(threads, 16) : threads,
+                                                           unbuffered);
+                    ok = st.ok && st.bytes == want;
+                    if (!ok) std::fprintf(stderr, "strata generate: STRATA_ARENA_MMAP: the fill failed: %s\n", st.error.c_str());
+                    ok = FlushViewOfFile(w, 0) != 0 && ok;
+                    UnmapViewOfFile(w);
+                    if (ok) std::fprintf(stderr, "strata generate: STRATA_ARENA_MMAP: filled at %.2f GiB/s (%.0f s)\n",
+                                         st.gib_per_second(), st.seconds);
+                }
+                if (ok) ok = std::rename(tmp.c_str(), path.c_str()) == 0;
+                if (!ok) std::remove(tmp.c_str());
+                std::fprintf(stderr, "strata generate: STRATA_ARENA_MMAP: %s %s\n", ok ? "wrote" : "could NOT write", path.c_str());
+                if (ok) have = file_bytes;
+            }
+        }
+#endif
         if (have == file_bytes) {
+#if defined(_WIN32)
+            void* v = map_arena_file(path, file_bytes, /*write=*/false);
+            if (v == nullptr) { err = "ArenaExpertSource: MapViewOfFile of " + path + " failed"; return false; }
+#else
             const int fd = ::open(path.c_str(), O_RDONLY);
             void* v = fd >= 0 ? mmap(nullptr, (size_t) file_bytes, PROT_READ, MAP_SHARED, fd, 0) : MAP_FAILED;
             if (fd >= 0) ::close(fd);
             if (v == MAP_FAILED) { err = "ArenaExpertSource: mmap of " + path + " failed"; return false; }
+#endif
             map_ = v;
             map_bytes_ = file_bytes;
             base_ = (const uint8_t*) v;
@@ -2764,7 +2830,6 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
             return true;
         }
     }
-#endif
 
     // #633: THE RAM BEFORE THE ALLOCATION.  On Linux the arena is an anonymous mapping that succeeds whatever the host
     // has; its pages are committed as the load writes them, so a container whose memory limit is below the arena was
@@ -2909,7 +2974,9 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
 }
 
 void ArenaExpertSource::close() {
-#if !defined(_WIN32)
+#if defined(_WIN32)
+    if (map_ != nullptr) UnmapViewOfFile(map_);
+#else
     if (map_ != nullptr) munmap(map_, (size_t) map_bytes_);
 #endif
     map_ = nullptr;
@@ -2924,13 +2991,14 @@ void ArenaExpertSource::close() {
 }
 
 void ArenaExpertSource::prefetch(int64_t layer, int64_t expert) {
-#if defined(_WIN32)
-    (void) layer; (void) expert;
-#else
     if (map_ == nullptr || layer < 0 || expert < 0 || expert >= n_expert_) return;
     const auto& lay = strata::kernels::cpu::expert_layout();
     const uint64_t off = lay.blob_offset(layer, expert) & ~(uint64_t) 4095;
     const uint64_t end = lay.blob_offset(layer, expert) + lay.blob_bytes(layer);
+#if defined(_WIN32)
+    WIN32_MEMORY_RANGE_ENTRY range{(uint8_t*) map_ + off, (SIZE_T) (end - off)};
+    (void) PrefetchVirtualMemory(GetCurrentProcess(), 1, &range, 0);
+#else
     madvise((uint8_t*) map_ + off, (size_t) (end - off), MADV_WILLNEED);
 #endif
 }
@@ -2942,18 +3010,20 @@ void ArenaExpertSource::prefetch(int64_t layer, int64_t expert) {
 // faults a second in decode, +8 ms a window.  The memory the arena used to hold was never the cache itself but
 // ROCclr's pin-in-place locks on it (see main) - locked pages are the ones the kernel cannot take back.
 uint64_t ArenaExpertSource::release(int64_t layer, int64_t expert) {
-#if defined(_WIN32)
-    (void) layer; (void) expert;
-    return 0;
-#else
     if (map_ == nullptr || layer < 0 || expert < 0 || expert >= n_expert_) return 0;
     const auto& lay = strata::kernels::cpu::expert_layout();
     const uint64_t off = (lay.blob_offset(layer, expert) + 4095) & ~(uint64_t) 4095;
     const uint64_t end = (lay.blob_offset(layer, expert) + lay.blob_bytes(layer)) & ~(uint64_t) 4095;
     if (end <= off) return 0;
+#if defined(_WIN32)
+    // Windows' MADV_DONTNEED for a mapped view: VirtualUnlock on pages that are NOT locked takes them out of the
+    // working set (it "fails" with ERROR_NOT_LOCKED, which is the documented way to say it did that).  They stay
+    // in the standby list as clean file pages - the same cheap-to-take-back, soft-fault-to-return state.
+    (void) VirtualUnlock((uint8_t*) map_ + off, (SIZE_T) (end - off));
+#else
     if (madvise((uint8_t*) map_ + off, (size_t) (end - off), MADV_DONTNEED) != 0) return 0;
-    return end - off;
 #endif
+    return end - off;
 }
 
 bool ArenaExpertSource::pinned(int64_t layer, int64_t expert) const {

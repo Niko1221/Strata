@@ -150,7 +150,7 @@ other ~18 GB), a 32 GB PC with a 12-16 GB GPU the Coder; IQ3_XXS on a 32 GB PC s
   with `--resident-experts` started with `--gpus` switches to `--mmap-experts` with a note, and the engine runs that
   pair as `--mmap-experts` with a warning instead of refusing it.
 
-**A mapped arena for small RAM (Linux, opt-in, 0.1.39, PR #640):** `STRATA_ARENA_MMAP=1` maps a native pack's expert
+**A mapped arena for small RAM (Linux and Windows, opt-in, 0.1.39, PR #640):** `STRATA_ARENA_MMAP=1` maps a native pack's expert
 arena read-only from the pack's `experts.bin` instead of reading it into locked RAM, for a PC whose GPUs hold most
 experts but whose RAM is small (2x 16 GB GPUs with 32 GB of RAM: ~1 GB -> 25 GB available while serving). The first
 start writes `experts.bin` (when the drive has room for it), later starts map it; the pages of the experts a GPU holds
