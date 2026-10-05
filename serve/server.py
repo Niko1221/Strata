@@ -3075,6 +3075,39 @@ def make_handler(svc: Service):
             else:
                 self._json(404, {"error": {"message": "not found"}})
 
+        def _read_body(self) -> bytes:
+            """The request body: by Content-Length, or de-chunked when a proxy sends Transfer-Encoding:
+            chunked with no Content-Length (e.g. a relay agent forwarding a tunneled request to this
+            server's local port) - without this, such a body reads as empty: 400 'No messages provided'."""
+            cl = self.headers.get("Content-Length")
+            if cl is not None:
+                try:
+                    n = int(cl)
+                except ValueError:
+                    return b""
+                return self.rfile.read(n) if n > 0 else b""
+            if (self.headers.get("Transfer-Encoding", "") or "").strip().lower() != "chunked":
+                return b""
+            chunks = []
+            while True:
+                line = self.rfile.readline(128)
+                if not line:
+                    break
+                size_str = line.split(b";", 1)[0].strip()
+                try:
+                    size = int(size_str, 16)
+                except ValueError:
+                    break
+                if size == 0:
+                    while True:
+                        trailer = self.rfile.readline()
+                        if trailer in (b"\r\n", b"\n", b""):
+                            break
+                    break
+                chunks.append(self.rfile.read(size))
+                self.rfile.read(2)  # the chunk's trailing CRLF
+            return b"".join(chunks)
+
         def do_POST(self):
             if not self._authorized():
                 return
@@ -3108,7 +3141,7 @@ def make_handler(svc: Service):
                     self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                 return
             try:
-                req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+                req = json.loads(self._read_body() or b"{}")
                 if not isinstance(req, dict):
                     raise ValueError("send a JSON object")
                 if path.startswith("/v1/responses/"):        # retrieve/delete/cancel/compact: nothing is stored
