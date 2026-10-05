@@ -149,6 +149,12 @@ On a 24 GB card, cache misses run on the CPU, so the CPU matters: this box had a
 The llama.cpp row is the build before the CUDA trellis fixes; those added about 3 % at 24 GB, where the CPU layers
 dominate.
 
+The Strata rows predate Strata's own CPU kernels for the trellis types (`src/kernels/cpu/tq_*.cpp`, AVX2 and
+AVX-512, picked at run time). Before them a cache miss ran ggml-cpu's `vec_dot`, one token at a time; the new kernels
+take about 45 % of its time per expert on AVX2 and decode a block once for all the tokens of a verify window
+(`build/tq_cpu_parity --bench` measures them on your CPU). `STRATA_NO_TQ_KERNELS=1` goes back to ggml-cpu;
+`STRATA_TQ_ISA=avx2` or `scalar` caps the instruction set (for comparisons).
+
 ### Smaller caches (RTX 5090, 2026-10-02, before the int8 decode kernels)
 
 | Expert cache | prose | JSON | code |
