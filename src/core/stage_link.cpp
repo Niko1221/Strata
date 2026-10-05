@@ -222,11 +222,23 @@ bool take_reply(StageLink& link, void* into, uint64_t want, std::string& err) {
 }  // namespace
 
 bool RemoteStageBridge::open(int port, int wait_s, const StageHello& mine, std::string& err) {
-    if (!link_.listen_accept(port, wait_s, err)) return false;
+    // Anything may knock on an open port (a health check of whatever used this port before): a caller that does not
+    // answer the hello as a stage is dropped and the wait goes on, until the stage itself arrives or the time is up.
     StageHello theirs{};
-    if (!link_.send_msg(StageOp::Hello, 0, 0, &mine, sizeof mine, nullptr, 0, err) ||
-        !take_reply(link_, &theirs, sizeof theirs, err))
-        return false;
+    const auto t0 = std::chrono::steady_clock::now();
+    for (int strangers = 0;; ++strangers) {
+        const int left = wait_s - (int) std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        if (left <= 0) {
+            err = "stage link: no stage connected to port " + std::to_string(port) + " within " + std::to_string(wait_s) +
+                  " s (" + std::to_string(strangers) + " other callers were turned away)";
+            return false;
+        }
+        if (!link_.listen_accept(port, left, err)) return false;
+        if (link_.send_msg(StageOp::Hello, 0, 0, &mine, sizeof mine, nullptr, 0, err) &&
+            take_reply(link_, &theirs, sizeof theirs, err))
+            break;
+        link_.close();
+    }
     auto bad = [&](const char* what, long long m, long long t) {
         err = std::string("the stage on the other PC does not match this engine: ") + what + " " + std::to_string(m) +
               " here, " + std::to_string(t) + " there";
