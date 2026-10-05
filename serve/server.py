@@ -2460,6 +2460,9 @@ class Service:
                 Path(emb).unlink(missing_ok=True)
         for ev in parser.finish():
             yield "event", ev
+        if parser.implicit_ends:
+            print(f"[strata] implicit end of thinking: {parser.implicit_ends} tool call(s) written inside the "
+                  f"thinking without </think> were read as calls (#804)", flush=True)
         yield "done", {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),
                        "timings": timings, "reasoning_tokens": thinking_n}
 

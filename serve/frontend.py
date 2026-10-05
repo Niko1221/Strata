@@ -469,6 +469,8 @@ class OutputParser:
         self.state = "reasoning" if thinking else "content"
         self.buf = ""
         self.lead = False
+        self.rseen = ""              # the reasoning span so far, to see a call that ends it (#804)
+        self.implicit_ends = 0       # #804: calls rescued from a thinking span the model never closed
         self.schemas = {t.get("name"): t for t in tools or []}
         # stream_tools: a tool call is also reported while it is being written - "tool_start" (its name and id) as
         # soon as the name is known, then "tool_args" pieces of its JSON arguments (string parameters character by
@@ -597,14 +599,73 @@ class OutputParser:
                     best = max(best, n)
         return best
 
+    def _in_fence(self, pos: int) -> bool:
+        """True when `pos` in the reasoning so far (`self.rseen`) falls inside a ```/~~~ fenced block (#804): a call
+        quoted in the reasoning (documenting the format, showing an example) is a mention, not an act."""
+        fence, start = None, 0
+        while True:
+            nl = self.rseen.find("\n", start)
+            if nl < 0 or nl >= pos:
+                break
+            line = self.rseen[start:nl].lstrip()
+            if fence is None:
+                if line.startswith("```") or line.startswith("~~~"):
+                    fence = line[:3]
+            elif line.startswith(fence):
+                fence = None
+            start = nl + 1
+        return fence is not None
+
+    def _implicit_call(self, start: int):
+        """The first `<tool_call>` in `self.rseen` (from `start`) that ends an unclosed thinking span (#804), as
+        (index in rseen, "valid" | "pending").  Strict, so quoted markup stays reasoning: it must be at the start of
+        a line (right after a newline, or the very first text of the thinking), outside a code fence, and followed -
+        after only whitespace - by the `<function=` that opens a real call body.  "pending": the follower is still
+        arriving.  None: no such call."""
+        idx = max(start, 0)
+        while True:
+            c = self.rseen.find(CALL_START, idx)
+            if c < 0:
+                return None
+            if (c == 0 or self.rseen[c - 1] == "\n") and not self._in_fence(c):
+                after = self.rseen[c + len(CALL_START):].lstrip()
+                if after.startswith("<function="):
+                    return c, "valid"
+                if "<function=".startswith(after):
+                    return c, "pending"
+            idx = c + len(CALL_START)
+
     def feed(self, delta: str) -> list[Event]:
         self.buf += delta
+        if self.state == "reasoning":
+            self.rseen += delta
         out: list[Event] = []
         while True:
             if self.state == "reasoning":
+                # The template opens <think>; only the model closes it.  When it goes straight from its reasoning
+                # to a tool call, it sometimes never emits </think>, so the call stays inside the thinking span
+                # and - without this - is channeled out as reasoning_content: the client sees no tool_calls,
+                # finish_reason "stop", and its turn ends with nothing to run (#804).  A line-start <tool_call>
+                # followed by <function=, outside a code fence, is an implicit end of thinking; the reasoning
+                # before it is kept.  A candidate whose follower has not arrived is held so streamed and whole
+                # outputs stay identical.
+                offset = len(self.rseen) - len(self.buf)      # self.buf is the tail of self.rseen
+                cand = self._implicit_call(offset)
                 i = self.buf.find(THINK_END)
+                if cand is not None and (i < 0 or cand[0] - offset < i):
+                    c, status = cand[0] - offset, cand[1]      # c in self.buf
+                    if c:
+                        out.append(Event("reasoning", self.buf[:c]))
+                    if status == "pending":
+                        self.buf = self.buf[c:]               # hold the opener and its follower
+                        return out
+                    self.implicit_ends += 1
+                    self.buf = self.buf[c + len(CALL_START):]
+                    self.rseen = ""
+                    self.state = "call"
+                    continue
                 if i < 0:
-                    keep = self._hold(self.buf, (THINK_END,))
+                    keep = self._hold(self.buf, (THINK_END, CALL_START))
                     if len(self.buf) > keep:
                         out.append(Event("reasoning", self.buf[:len(self.buf) - keep]))
                         self.buf = self.buf[len(self.buf) - keep:]
@@ -612,6 +673,7 @@ class OutputParser:
                 if i:
                     out.append(Event("reasoning", self.buf[:i]))
                 self.buf = self.buf[i + len(THINK_END):]
+                self.rseen = ""
                 self.state, self.lead = "content", True
             elif self.state == "content":
                 if self.lead:                                   # newlines right after </think> or a call
@@ -673,4 +735,5 @@ class OutputParser:
             text = self.buf if self.state != "call" else CALL_START + self.buf
             out.append(Event(kind, text))
             self.buf = ""
+        self.rseen = ""
         return out

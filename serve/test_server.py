@@ -591,6 +591,102 @@ class UnfinishedToolCall(unittest.TestCase):
         self.assertEqual((a["anthropic", True][0], json.loads(a["anthropic", True][1])), ("tool_use", whole))
 
 
+class ToolCallInsideThinking(unittest.TestCase):
+    """#804: the model sometimes goes straight from its reasoning to a tool call without ever emitting </think>.
+    The call is then an implicit end of thinking, not reasoning_content - otherwise the client sees no tool_calls,
+    finish_reason "stop", and its turn ends with nothing to execute.  Strict, so a mention of the format quoted in
+    the reasoning (indented, backticked, fenced, mid-sentence) stays reasoning."""
+    SCHEMA = [{"name": "execute", "parameters": {"properties": {"code": {"type": "string"}}}}]
+    CALL = ("Let me run it now.\n\n<tool_call>\n<function=execute>\n<parameter=code>\nprint(1)\n</parameter>\n"
+            "</function>\n</tool_call>")
+
+    def parse(self, text, stream_tools, step):
+        from serve.frontend import OutputParser
+        p = OutputParser(thinking=True, tools=self.SCHEMA, stream_tools=stream_tools)
+        evs = []
+        for i in range(0, len(text), step):
+            evs += p.feed(text[i:i + step])
+        evs += p.finish()
+        return evs
+
+    def all_ways(self, text):
+        return {(st, step): self.parse(text, st, step) for st in (False, True) for step in (1, 7, 10_000)}
+
+    @staticmethod
+    def calls(evs):
+        return [e.call for e in evs if e.kind == "tool_call"]
+
+    @staticmethod
+    def reasoning(evs):
+        return "".join(e.text for e in evs if e.kind == "reasoning")
+
+    def test_a_call_in_the_thinking_is_read_as_a_call(self):
+        for (stream_tools, step), evs in self.all_ways(self.CALL).items():
+            with self.subTest(stream_tools=stream_tools, step=step):
+                calls = self.calls(evs)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(calls[0].name, "execute")
+                self.assertEqual(calls[0].arguments, {"code": "print(1)"})
+                self.assertIn("Let me run it now.", self.reasoning(evs))
+                self.assertNotIn("<tool_call>", self.reasoning(evs))
+
+    def test_a_closed_thinking_span_is_unchanged(self):
+        text = self.CALL.replace("\n\n<tool_call>", "\n</think>\n\n<tool_call>", 1)
+        for (stream_tools, step), evs in self.all_ways(text).items():
+            with self.subTest(stream_tools=stream_tools, step=step):
+                self.assertEqual(len(self.calls(evs)), 1)
+                self.assertIn("Let me run it now.", self.reasoning(evs))
+
+    def test_mentions_in_the_thinking_stay_reasoning(self):
+        body = ("\n<tool_call>\n<function=execute>\n<parameter=code>\nx\n</parameter>\n</function>\n</tool_call>")
+        mentions = {
+            "backticked at line start": "Example:\n`<tool_call>\n<function=execute>...`",
+            "mid-sentence": "I will use the <tool_call> format now.\nand then stop.",
+            "whole call mid-sentence": "The format is <tool_call><function=execute>... </tool_call> as documented.",
+            "no function body": "Next:\n<tool_call>\nnot a call body",
+            "tag after tag": "Next:\n<tool_call>\n<tool_call>\nstill not a call body",
+            "indented": "Next:\n  " + body.lstrip("\n"),
+            "markdown quote": "Next:\n> " + body.lstrip("\n"),
+            "fenced backticks": "Example:\n```" + body + "\n```\ndone",
+            "fenced tildes": "Example:\n~~~" + body + "\n~~~\ndone",
+            "bare tag before </think>": "Next:\n<tool_call>\n(no body here)\n</think>\nDone",
+        }
+        for name, text in mentions.items():
+            evs = self.parse(text, True, 7)
+            with self.subTest(name=name):
+                self.assertEqual(self.calls(evs), [])
+
+    def test_an_unfinished_call_is_not_reported(self):
+        text = "Let me run it now.\n\n<tool_call>\n<function=execute>\n<parameter=code>\nprint("
+        for stream_tools in (False, True):
+            for step in (1, 7, 10_000):
+                with self.subTest(stream_tools=stream_tools, step=step):
+                    self.assertEqual(self.calls(self.parse(text, stream_tools, step)), [])
+
+    def test_server_reports_finish_reason_tool_calls(self):
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, self.CALL, max_context=CTX), tok,
+                      ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        try:
+            body = {"model": "x", "max_tokens": 500, "stream": False, "tools": [
+                        {"type": "function", "function": {"name": "execute", "parameters": {
+                            "type": "object", "properties": {"code": {"type": "string"}}}}}],
+                    "messages": [{"role": "user", "content": "run"}]}
+            req = urllib.request.Request(base + "/v1/chat/completions", data=json.dumps(body).encode(),
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                choice = json.loads(r.read())["choices"][0]
+            self.assertEqual(choice["finish_reason"], "tool_calls")
+            call = choice["message"]["tool_calls"][0]
+            self.assertEqual(call["function"]["name"], "execute")
+            self.assertEqual(json.loads(call["function"]["arguments"]), {"code": "print(1)"})
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+
 class ClientShapes(unittest.TestCase):
     """What real clients send: Claude Code posts /v1/messages?beta=true (issue #55) and puts hook context into the
     conversation as a mid-conversation system message (issue #56); some OpenAI clients send a late developer message."""
