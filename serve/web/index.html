@@ -53,6 +53,9 @@
           <button type="button" class="st-btn st-btn--icon" id="attach-btn" title="Attach a text file (or drop it here)" aria-label="Attach a file">
             <svg class="st-icon"><use href="web/sprite.svg#i-attach"/></svg></button>
           <input type="file" id="file" multiple hidden>
+          <button type="button" class="st-btn st-btn--icon" id="compact-btn" title="Compact older turns into a summary" aria-label="Compact older turns">
+            <svg class="st-icon"><use href="web/sprite.svg#i-layers"/></svg>
+          </button>
           <button type="button" class="st-btn st-btn--icon" id="new-btn" title="New chat" aria-label="New chat">
             <svg class="st-icon"><use href="web/sprite.svg#i-new-chat"/></svg></button>
           <button type="button" class="st-btn st-btn--icon" id="export-btn" title="Save this chat as Markdown" aria-label="Save this chat">
@@ -242,6 +245,8 @@
 </aside>
 <div class="scrim" id="scrim" hidden></div>
 <div class="st-toasts" id="toasts" aria-live="polite"></div>
+<script src="web/compact-prompt.js"></script>
+<script src="web/compaction.js"></script>
 <script src="web/app.js"></script>
 </body>
 </html>
