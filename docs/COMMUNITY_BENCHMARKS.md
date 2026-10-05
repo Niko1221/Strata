@@ -18,6 +18,10 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-03: 2x AMD Instinct MI50 16 GB (gfx906), Xeon E5-2666 v3, 32 GB RAM](../bench/results/2026-10-03-community-2x-mi50/README.md):
   the gfx906 build (#638) with #639 and #640, Coder IQ1_M, 131,072-token context, layer split across both cards;
   three runs each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.
+- [2026-10-05: 2x AMD Radeon RX 6900 XT 16 GB (gfx1030), Ryzen 5 5600X, 128 GB RAM](../bench/results/2026-10-05-community-2x-rx-6900xt/README.md):
+  Strata 0.1.39 stock and with #835, #849 and #854, original Flash-Next IQ3_S, 131,072-token context, one card, a
+  layer split and the expert-helper mode (seven configurations); three runs each at 4,096, 32,768, and 128,000 prompt
+  tokens, plus six recall checks per configuration.
 
 ## What to record
 
