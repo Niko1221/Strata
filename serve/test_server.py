@@ -19,7 +19,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from serve.frontend import ChatTemplate  # noqa: E402
+from serve.frontend import ChatTemplate, literal_tags, mark_think_literals, unmark_think_literals  # noqa: E402
 from serve.server import (CTX_SLACK, ByteTokenizer, EngineDied, GpuBusy, MockEngine, Service, StrataEngine,  # noqa: E402
                           engine_args, layer_split_value, prompt_tokens_seen, request_timings, serve,
                           start_failure_hint)
@@ -381,6 +381,18 @@ class LiteralControlTokens(unittest.TestCase):
         self.assertEqual(self.counts(ids), own)
         self.assertEqual(ids.count(self.tok.encode("</think>")[0]), 1)    # the template's empty thinking block
         self.assertIn(text, self.tok.decode(ids))
+
+    def test_a_literal_inside_a_longer_one(self):
+        import strata_tokenizer as ST
+        b2u = ST.bytes_to_unicode()
+        text = "see <x<|a|>y> and <|a|> here"
+        for order in (["<|a|>", "<x<|a|>y>"], ["<x<|a|>y>", "<|a|>"]):          # either order in the vocabulary
+            with self.subTest(order=order):
+                tok = ST.Tokenizer([b2u[b] for b in range(256)] + order, [], [1] * 256 + [3, 3])
+                tags = literal_tags(tok.control_tokens)
+                marked, _, _ = mark_think_literals([{"role": "user", "content": text}], None, tags)
+                prompt, plain = unmark_think_literals(marked[0]["content"], tags)
+                self.assertEqual(tok.encode(prompt, parse_special=True, plain=plain), [*text.encode()])
 
     def test_the_real_tokenizer_names_its_control_tokens(self):
         import strata_tokenizer as ST

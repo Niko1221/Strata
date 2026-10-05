@@ -141,14 +141,16 @@ def images_of(messages: list[dict]) -> list[str]:
 # a user quoting "</think>" used to hand the model a real end-of-reasoning token.  Before the template is rendered
 # they are swapped for these private-use characters, and the server encodes the spans they mark as ordinary text.
 THINK_TAGS = {"<think>": "\U000F0E01", "</think>": "\U000F0E02"}
-CONTROL_MARK0 = 0xF0E10
+CONTROL_MARK0 = 0xF0E10      # the control tokens' marks start here, clear of the think tags' two
 
 
-def literal_tags(controls=()) -> dict[str, str]:
+def literal_tags(controls) -> dict[str, str]:
     """THINK_TAGS plus a mark for each control token's text (`controls`: the tokenizer's CONTROL literals,
     <|im_start|>, <|im_end|>, <|endoftext|>, ...).  The rendered prompt is encoded with those literals parsed, so one
-    written inside a message - a file an agent reads, a pasted chat template - opened or ended a turn there."""
-    return {**THINK_TAGS, **{c: chr(CONTROL_MARK0 + k) for k, c in enumerate(controls)}}
+    written inside a message - a file an agent reads, a pasted chat template - opened or ended a turn there.
+    Longest first, as the tokenizer matches them: a literal inside a longer one is not marked before it."""
+    tags = {**THINK_TAGS, **{c: chr(CONTROL_MARK0 + k) for k, c in enumerate(controls)}}
+    return dict(sorted(tags.items(), key=lambda t: -len(t[0])))
 
 
 def _mark(text: str, tags: dict[str, str]) -> str:
@@ -177,7 +179,7 @@ def _has_tag(v, tags) -> bool:
     return False
 
 
-def mark_think_literals(messages: list[dict], tools: list[dict] | None, tags: dict[str, str] = THINK_TAGS):
+def mark_think_literals(messages: list[dict], tools: list[dict] | None, tags: dict[str, str]):
     """#537: (messages, tools) with every literal of `tags` (<think> / </think>, and with literal_tags() the control
     tokens' texts) in their text swapped for its mark, and whether there was one (None: no change, the same objects
     back - a prompt without them renders as it always did).  An assistant message whose content opens with a whole
@@ -201,7 +203,7 @@ def mark_think_literals(messages: list[dict], tools: list[dict] | None, tags: di
     return out, _mark_deep(tools, tags), True
 
 
-def unmark_think_literals(prompt: str, tags: dict[str, str] = THINK_TAGS) -> tuple[str, list[tuple[int, int]]]:
+def unmark_think_literals(prompt: str, tags: dict[str, str]) -> tuple[str, list[tuple[int, int]]]:
     """The rendered prompt with the marks turned back into their literals' text, and the (start, end) spans of those
     literals in it: the server encodes them as ordinary text (the tokenizer's `plain` spans)."""
     marks = {v: k for k, v in tags.items()}
