@@ -63,14 +63,19 @@ At 40K: expert GEMMs 23%, attention 19%, dequant 16%, QSA select 7%, host groupi
 
 Its measurements on the B70, which Strata's own benches never matched:
 
-- [ ] **oneDNN against oneMKL for the prompt path's GEMMs (bench first, ~30 min).** oneDNN's matmul reached ~180 T
-      multiply-adds/s in fp16 and 320-350 T in int8 (1.8-2.0x) at its linears' shapes (5376 -> 21504 and similar);
-      `xmx_gemm_bench` saw 30-60 TFLOP/s from oneMKL fp16 here, at expert shapes. Expert GEMMs are 18-23% of a
-      long prompt and the dense QSA projections 10-16% (INTEL_PERFORMANCE.md, "Where the time goes"). Bench this
-      port's real shapes (each expert's gate/up and down at 16-512 rows; the QSA, DeltaNet and hyper-connection
-      projections at the 4,096-row chunk) in oneMKL fp16/bf16, oneDNN fp16/bf16, and oneDNN int8 with activations
-      quantized per row.
-- [ ] **If oneDNN int8 wins on the dense projections:** its int8 linear as built there - a Hadamard rotation of
+- [x] **oneDNN against oneMKL for the prompt path's GEMMs: measured** (2026-10-05, `onednn_gemm_bench`, B70; the
+      other project's quoted rate was at different shapes). oneMKL fp16 is not slow where it matters most: 128-147
+      TFLOP/s on the dense projections at the 4,096-row chunk, and oneDNN fp16 matches it (1.00-1.14x). Two gaps:
+      - **expert gate/up at 256-512 rows:** oneMKL drops to 28-32 TFLOP/s, oneDNN fp16 does 54-56 (1.8-1.9x, same
+        precision); 1.0-1.3x at 64-128 rows; slower below 64 (0.6x at 16-32). A per-group switch by row count.
+      - **int8 (s8 x s8, scales per tensor / column):** 1.6-2.4x on the dense projections (6144 -> 2560: 319 against
+        132 TFLOP/s), 1.3-3.2x on expert shapes - GEMM alone; the activations' quantization and the weights' int8 form
+        come on top.
+      Prompt share at 40K: expert GEMMs 18%, QSA projections 16% (part of it GEMM), so a 2x GEMM is ~10-15% of TTFT.
+- [ ] **oneDNN fp16 for expert groups of >= 128 rows** (lowest risk: the same fp16 inputs and fp32 accumulation).
+      Needs oneDNN's headers in the dev image (`intel-oneapi-dnnl-devel`), and the rows per expert of real prompts
+      (mean 80 at 4,096 tokens x 10 of 512 experts; skewed) to know the share above 128.
+- [ ] **int8 for the dense projections (it wins on the GEMM, above):** its int8 linear as built there - a Hadamard rotation of
       activations and weights (groups of up to 256) so int8 keeps the outliers, activations quantized on the fly, the
       int8 GEMM, one rescale per row after it (fused). Strata's earlier int8 DPAS kernel lost because it rescaled
       after every 32-element block inside the GEMM; this rescales once. Error there: 0.17% (rotations in fp32).
