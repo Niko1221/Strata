@@ -984,6 +984,24 @@ void drive_pool_split(void* user, const float* x_f, const int32_t* ids, int64_t 
     drive_pool_multi(s->base, x_f, ids, n_tok, k, out, layer);
 }
 
+/// Two-PC Strata, step B1: the bridge that stays inside one process.  The hop's two hand-off buffers are host memory;
+/// run() copies the whole buffer (a window's rows, and a batch group's, wherever they sit).  commit / wait_commit
+/// have nothing to carry here - on a socket they become messages to the other PC's stages.
+struct LoopbackBridge : strata::core::StageBridge {
+    const float* src = nullptr;
+    float* dst = nullptr;
+    size_t bytes = 0;
+    int64_t windows = 0;
+    bool run(int, const int32_t*, int64_t, std::string& err) override {
+        if (src == nullptr || dst == nullptr) { err = "stage bridge: no buffers"; return false; }
+        std::memcpy(dst, src, bytes);
+        ++windows;
+        return true;
+    }
+    bool commit(int, std::string&) override { return true; }
+    bool wait_commit(std::string&) override { return true; }
+};
+
 /// Layer split across GPUs: a later stage on its own device, with its own copy of the dense weights, a session, an
 /// expert cache for its layers, a verify window and a prompt path; the last one also holds the head (the drafter
 /// lives on its device too).
@@ -6040,20 +6058,42 @@ int main(int argc, char** argv) {
             const size_t hb = (size_t) strata::kernels::kVerifyMaxT *
                               (size_t) strata::core::Verifier::handoff_floats(g) * sizeof(float);
             std::vector<float*> hand((size_t) n_stages - 1, nullptr);
-            for (float*& h : hand) {
+            // two-PC Strata, step B1: STRATA_BRIDGE_LOOPBACK=N puts a StageBridge on the hop after stage N (0 = the
+            // first).  That hop then has TWO buffers - stage N writes one, stage N+1 reads the other - and the bridge
+            // copies between them on the host, the way a socket to another PC will.  Greedy output must stay byte
+            // for byte what the plain split gives; hand_in holds the read side of each hop (== hand unless bridged).
+            std::vector<float*> hand_in = hand;
+            const int bridge_hop = [] { const char* v = std::getenv("STRATA_BRIDGE_LOOPBACK"); return v ? std::atoi(v) : -1; }();
+            static LoopbackBridge loopback;
+            for (size_t i = 0; i < hand.size(); ++i) {
                 float* hh = nullptr;
                 if (cudaHostAlloc((void**) &hh, hb, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess ||
-                    cudaHostGetDevicePointer((void**) &h, hh, 0) != cudaSuccess) {
+                    cudaHostGetDevicePointer((void**) &hand[i], hh, 0) != cudaSuccess) {
                     std::fprintf(stderr, "strata serve: the layer-split hand-off allocation failed\n");
                     return 1;
                 }
                 std::memset(hh, 0, hb);
+                hand_in[i] = hand[i];
+                if ((int) i == bridge_hop) {
+                    float* h2 = nullptr;
+                    if (cudaHostAlloc((void**) &h2, hb, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess ||
+                        cudaHostGetDevicePointer((void**) &hand_in[i], h2, 0) != cudaSuccess) {
+                        std::fprintf(stderr, "strata serve: the bridged hand-off allocation failed\n");
+                        return 1;
+                    }
+                    std::memset(h2, 0, hb);
+                    loopback.src = hh;
+                    loopback.dst = h2;
+                    loopback.bytes = hb;
+                    std::fprintf(stderr, "strata serve: STRATA_BRIDGE_LOOPBACK: the hop after stage %d goes through a host "
+                                         "copy of %zu KiB per window (two-PC check)\n", bridge_hop, hb >> 10);
+                }
             }
             split_drive.base = &drive;
             split_drive.n = n_stages;
             for (int st = 0; st < n_stages; ++st) {
                 stage_ver(st).set_stage(st == 0 ? 0 : split_at[(size_t) st - 1], st + 1 < n_stages ? split_at[(size_t) st] : -1,
-                                        st == 0 ? nullptr : hand[(size_t) st - 1], st + 1 < n_stages ? hand[(size_t) st] : nullptr);
+                                        st == 0 ? nullptr : hand_in[(size_t) st - 1], st + 1 < n_stages ? hand[(size_t) st] : nullptr);
                 split_drive.end[st] = st + 1 < n_stages ? split_at[(size_t) st] : g.n_layers;
                 split_drive.cache_base[st] = drive.d.cache_base;
                 split_drive.cache_slot_off[st] = drive.d.cache_slot_off;
@@ -6085,6 +6125,7 @@ int main(int argc, char** argv) {
                 }
             }
             for (int st = 0; st + 1 < n_stages; ++st) stage_ver(st).set_next(&stage_ver(st + 1), &split_drive);
+            if (bridge_hop >= 0 && bridge_hop + 1 < n_stages) stage_ver(bridge_hop).set_bridge(&loopback);
             std::string plan_s = "0-" + std::to_string(split_at[0] - 1) + " (CUDA0)";
             for (int st = 1; st < n_stages; ++st)
                 plan_s += ", " + std::to_string(split_at[(size_t) st - 1]) + "-" + std::to_string(split_drive.end[st] - 1) +

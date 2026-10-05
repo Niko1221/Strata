@@ -1841,6 +1841,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     // the drafts were. Exact: a rejected row's draw is discarded, and no kept decision depends on a reused draw.
     if (le_ < g.n_layers) {   // a layer split's earlier stage: the hand-off is written (synced above)
         ++windows;
+        if (bridge_ != nullptr && !bridge_->run(T, tokens, pos0, err)) return false;
         return next_ == nullptr || next_->run(T, tokens, pos0, pool, next_user_, out, err);
     }
     const bool sampled = !sampling_.greedy && sampling_.temperature > 0.0f;
@@ -2039,6 +2040,7 @@ bool Verifier::commit(int n_keep, std::string& err) {
             ss_->ple_prev[1] = last_tokens_[t];
         }
     ms_commit += ms_since(t0);
+    if (bridge_ != nullptr && !bridge_->commit(n_keep, err)) return false;
     return next_ == nullptr || next_->commit(n_keep, err);
 }
 
@@ -2049,6 +2051,7 @@ bool Verifier::wait_commit(std::string& err) {
         const cudaError_t se = cudaEventSynchronize(commit_done_);
         if (se != cudaSuccess) { err = std::string("verify: commit: ") + cudaGetErrorString(se); return false; }
     }
+    if (bridge_ != nullptr && !bridge_->wait_commit(err)) return false;
     return next_ == nullptr || next_->wait_commit(err);
 }
 

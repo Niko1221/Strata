@@ -55,6 +55,18 @@ struct VerifyHits {
     int64_t blob = 0;
 };
 
+/// A hop between two stages of a layer split that are NOT in one process (two-PC Strata): called after this stage's
+/// hand-off is written and before the next stage runs, and the same for commit / wait_commit.  The bridge owns the two
+/// HOST buffers (this stage's hand-off out, the next stage's hand-off in) and whatever carries one to the other - a
+/// memcpy (the loopback check: must be byte-identical to the plain split) or a socket to the stages on another PC.
+struct StageBridge {
+    virtual ~StageBridge() = default;
+    /// the window just run: T tokens at pos0; false with `err` ends the request (never a silent fallback)
+    virtual bool run(int T, const int32_t* tokens, int64_t pos0, std::string& err) = 0;
+    virtual bool commit(int n_keep, std::string& err) = 0;
+    virtual bool wait_commit(std::string& err) = 0;
+};
+
 class Verifier {
 public:
     Verifier() = default;
@@ -122,6 +134,9 @@ public:
     /// The next stage: `run` and `commit` continue into it (its pool calls get `next_user`); sampling settings
     /// and `final_R` are the last stage's.
     void set_next(Verifier* next, void* next_user) { next_ = next; next_user_ = next_user; }
+    /// Two-PC Strata: a hop after this stage (see StageBridge).  Null (the default) = the next stage reads this
+    /// stage's hand-off buffer directly.  Batch windows (run_slots) do not take a bridge.
+    void set_bridge(StageBridge* bridge) { bridge_ = bridge; }
     /// floats per token in a hand-off buffer
     static int64_t handoff_floats(const ModelGeometry& g) { return (int64_t) g.hc * g.n_embd + g.n_embd + g.hc; }
 
@@ -341,6 +356,7 @@ private:
     float* hand_out_ = nullptr;
     Verifier* next_ = nullptr;
     void* next_user_ = nullptr;
+    StageBridge* bridge_ = nullptr;      ///< set_bridge
     bool ple_stage() const { return lb_ <= 1 && 1 < le_; }   ///< holds layer 1, where the PLE block runs
     void stage_inputs(int T, const int32_t* tokens, int64_t pos0);
     bool staged_ = false;
