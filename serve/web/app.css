@@ -190,3 +190,11 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-ctx__fill { display: block; height: 100%; background: currentColor; opacity: .8; width: 0; }
 .st-ctx.warn { color: var(--st-warn, #c90); }
 .st-ctx.hot { color: var(--st-error, #c33); }
+
+/* the request-detail row the chat meta's chevron opens: one muted line, the same rhythm as the meta */
+.st-msg__detail { font-size: 12px; opacity: .7; padding: 0 12px 6px; }
+[data-msg-detail] .st-icon { transition: transform .15s ease; }
+[data-msg-detail].open .st-icon { transform: rotate(180deg); }
+
+/* long unbroken strings (URLs, paths, hashes) must wrap inside bubbles and detail rows */
+.st-bubble, .st-collapse__body, .st-msg__detail { overflow-wrap: anywhere; word-break: break-word; }
