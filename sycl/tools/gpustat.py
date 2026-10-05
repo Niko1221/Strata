@@ -135,7 +135,8 @@ def main():
     link = pcie_link(); link_t = time.time()
     while True:
         now = time.time(); dt = max(now - t_prev, 1e-3)
-        cl = clients()
+        # this card's clients only: with two cards every process's fdinfo lists both, and their sum read as 163% of one
+        cl = {cid: c for cid, c in clients().items() if not c.get("pdev") or c["pdev"] == PCI}
         busy = 0.0
         for cid, c in cl.items():
             p = prev.get(cid)
