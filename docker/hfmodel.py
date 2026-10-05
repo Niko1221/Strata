@@ -32,17 +32,23 @@ from pathlib import Path
 # holding per_layer_token_embd.weight (default 2); the Swift repo packs that table into file 1 and
 # puts expert continuation in file 2 (measured on Swift IQ3_XXS on this host, 2026-10-04:
 # bench/results/2026-10-04-iq3s-tuning/swift-launch.log - the engine finds the 320,001,536-row
-# table in 00001 and fatal-errors that the tensor "is not in" 00002).
+# table in 00001 and fatal-errors that the tensor "is not in" 00002).  "tag" prefixes pack
+# directories (packs/swift-iq3_xxs beside qwen's packs/iq3_xxs - one quant, two releases, one
+# pack each), "name" prefixes the advertised model id, and "license" is what the launcher logs
+# before starting a release that is not the original.  Mirrors setup.py's FAMILIES (name/tag/
+# license); a new release is incomplete without that sync.
 FAMILIES = {
     "qwen": {"repo": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
              "file": "Qwen3.8-Flash-Next-GSQ-RCO-{q}-0000{i}-of-00002.gguf", "subdir": True,
-             "title": "Qwen3.8-Flash-Next"},
+             "title": "Qwen3.8-Flash-Next", "tag": "", "name": "qwen3.8-flash-next"},
     "swift": {"repo": "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
               "file": "Swift-Qwen3.8-Flash-Next-GSQ-RCO-{q}-0000{i}-of-00002.gguf", "subdir": False,
-              "title": "Swift 1.5", "ple": 1},
+              "title": "Swift 1.5", "ple": 1, "tag": "swift-", "name": "swift-1.5",
+              "license": "Swift Open License 1.0: https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF"},
     "coder": {"repo": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF",
               "file": "Qwen3.8-Flash-Next-GSQ-RCO-{q}-0000{i}-of-00002.gguf", "subdir": True,
-              "title": "Qwen3.8-Flash-Next Coder"},
+              "title": "Qwen3.8-Flash-Next Coder", "tag": "coder-",
+              "name": "qwen3.8-flash-next-coder"},
 }
 # The sizes Strata knows: quant -> family, download GB, RAM GB, experts.bin GB (setup.py:64-79).
 # download_gb is what `hf download` writes into the cache; arena_gb is what iq_pack.py --experts-bin
@@ -95,8 +101,10 @@ def snapshot_dir(rd: Path, rev: str = "") -> Path | None:
     return dirs[-1] if dirs else None
 
 
-def family_of(model: str, repo: str) -> dict | None:
-    """The release this quant belongs to: by repo id if given, else by the quant's family."""
+def family_of(model: str, repo: str, release: str = "") -> dict | None:
+    """The release this quant belongs to: named release, else by repo id, else by the quant."""
+    if release:
+        return FAMILIES.get(release)
     if repo:
         for fam in FAMILIES.values():
             if fam["repo"] == repo:
@@ -105,6 +113,19 @@ def family_of(model: str, repo: str) -> dict | None:
         return {"repo": repo, "file": None, "subdir": True, "title": repo}
     info = MODELS.get(model)
     return FAMILIES[info["family"]] if info else None
+
+
+def release_of(model: str, repo: str = "", release: str = "") -> str:
+    """The FAMILIES key for a selection; "" when it names a repo the table does not know."""
+    if release:
+        return release if release in FAMILIES else ""
+    for key, fam in FAMILIES.items():
+        if repo:
+            if fam["repo"] == repo:
+                return key
+        elif model in MODELS and MODELS[model]["family"] == key:
+            return key
+    return ""
 
 
 def n_files(fam: dict) -> int:
@@ -144,11 +165,12 @@ def _find_in_snapshot(snap: Path, model: str, i: int, fam: dict) -> Path | None:
     return None
 
 
-def shard_path(root: Path, model: str, i: int, rev: str = "", repo: str = "") -> Path | None:
+def shard_path(root: Path, model: str, i: int, rev: str = "", repo: str = "",
+               release: str = "") -> Path | None:
     """The path of file `i` (1 = the model, 2 = Qwen3.8's PLE shard) inside the cache, or None.
 
     A one-file release returns its single GGUF for i == 1 and None for i == 2."""
-    fam = family_of(model, repo)
+    fam = family_of(model, repo, release)
     if fam is None:
         return None
     if n_files(fam) == 1 and i != 1:
@@ -159,9 +181,10 @@ def shard_path(root: Path, model: str, i: int, rev: str = "", repo: str = "") ->
     return _find_in_snapshot(snap, model, i, fam)
 
 
-def mtp_path(root: Path, model: str, rev: str = "", repo: str = "") -> Path | None:
+def mtp_path(root: Path, model: str, rev: str = "", repo: str = "",
+             release: str = "") -> Path | None:
     """The external MTP draft GGUF for a family that declares one, or None."""
-    fam = family_of(model, repo)
+    fam = family_of(model, repo, release)
     if not fam or not fam.get("mtp"):
         return None
     m = fam["mtp"]
@@ -223,9 +246,12 @@ def main() -> int:
                     "~/Development/models when it exists, else ~/.cache/huggingface/hub)")
     ap.add_argument("--model", default=os.environ.get("STRATA_MODEL", DEFAULT_MODEL))
     ap.add_argument("--repo", default="", help="override the repo id for a release not in setup.py")
+    ap.add_argument("--release", default="", choices=["", *sorted(FAMILIES)],
+                    help="named release (qwen, swift, coder); beats --repo and the quant's own family")
     ap.add_argument("--rev", default="", help="revision/commit (default: refs/main or newest snapshot)")
     ap.add_argument("--print", dest="what", default="both",
-                    choices=["shard1", "shard2", "both", "json", "shell", "available", "mtp", "ple"])
+                    choices=["shard1", "shard2", "both", "json", "shell", "available", "mtp", "ple",
+                             "release"])
     ap.add_argument("--allow-missing", action="store_true",
                     help="with shell/json: exit 0 and empty paths when the shards are not cached yet")
     ap.add_argument("--resolve", action="store_true", help="print resolved blob paths instead of snapshot paths")
@@ -235,14 +261,31 @@ def main() -> int:
     if a.what == "available":
         print(f"HF cache: {root}\n{describe_available(root)}")
         return 0
-    if a.model not in MODELS and not a.repo:
+    if a.release and release_of(a.model, a.repo, a.release) != a.release:
+        sys.exit(f"hfmodel: unknown release '{a.release}'. Known: {', '.join(sorted(FAMILIES))}")
+    # The Coder release is expert-pruned: its quantizations are a different model, and its quant
+    # names are its own (docs: half of each layer's experts removed).  The other releases share
+    # the quant vocabulary, so a shared name under another named release is allowed - with a
+    # warning, because the download numbers then come from the qwen row of MODELS.
+    if a.model in MODELS and MODELS[a.model]["family"] == "coder" \
+            and (a.release and a.release != "coder") and not a.repo:
+        sys.exit(f"hfmodel: {a.model} is only released for the expert-pruned 'coder' release, "
+                 f"not '{a.release}'; use --release coder")
+    if a.model in MODELS and a.release and MODELS[a.model]["family"] != a.release:
+        print(f"hfmodel: note: {a.model} is catalogued for '{MODELS[a.model]['family']}'; using "
+              f"'{a.release}' names and sizes as asked", file=sys.stderr)
+    if a.model not in MODELS and not a.repo and not a.release:
         sys.exit(f"hfmodel: unknown model '{a.model}'. Known: {', '.join(sorted(MODELS))}")
 
+    if a.what == "release":
+        print(release_of(a.model, a.repo, a.release))
+        return 0
+
     if a.what == "mtp":
-        p = mtp_path(root, a.model, a.rev, a.repo)
+        p = mtp_path(root, a.model, a.rev, a.repo, a.release)
         print("" if p is None else str(p.resolve() if a.resolve else p))
         if p is None and not a.allow_missing:
-            fam = family_of(a.model, a.repo) or {}
+            fam = family_of(a.model, a.repo, a.release) or {}
             m = fam.get("mtp", {})
             if m:
                 print(f"hfmodel: the MTP draft ({m['repo']} / {m['file']}) is not in {root}", file=sys.stderr)
@@ -250,14 +293,14 @@ def main() -> int:
                 return 1
         return 0
 
-    fam = family_of(a.model, a.repo) or FAMILIES["qwen"]
+    fam = family_of(a.model, a.repo, a.release) or FAMILIES["qwen"]
     if a.what == "ple":
-        p = shard_path(root, a.model, min(ple_index(fam), n_files(fam)), a.rev, a.repo)
+        p = shard_path(root, a.model, min(ple_index(fam), n_files(fam)), a.rev, a.repo, a.release)
         print("" if p is None else str(p.resolve() if a.resolve else p))
         return 0 if p is not None or a.allow_missing else 1
     want = {"shard1": [1], "shard2": [2], "both": [1, 2], "json": [1, 2], "shell": [1, 2]}[a.what]
     info = MODELS.get(a.model, {"download_gb": "?", "ram_gb": "?", "arena_gb": "?"})
-    paths = {i: shard_path(root, a.model, i, a.rev, a.repo) for i in want}
+    paths = {i: shard_path(root, a.model, i, a.rev, a.repo, a.release) for i in want}
     if n_files(fam) == 1 and fam.get("single_name") and fam.get("file"):
         include = fam["file"]
     else:
@@ -285,8 +328,13 @@ def main() -> int:
     if a.what == "shell":       # eval'able assignments for bootstrap-model.sh / the entrypoint
         import shlex
         m = fam.get("mtp", {})
-        mp = mtp_path(root, a.model, a.rev, a.repo)
+        mp = mtp_path(root, a.model, a.rev, a.repo, a.release)
+        quant_lower = a.model.lower()
         for key, value in {"MODEL": a.model, "CACHED": int(not missing), "REPO": fam["repo"],
+                           "FAMILY": release_of(a.model, a.repo, a.release),
+                           "PACK_TAG": fam.get("tag", ""),
+                           "MODEL_NAME_DEFAULT": f"{fam.get('name', fam.get('title', fam['repo']))}-{quant_lower}",
+                           "LICENSE": fam.get("license", ""),
                            "HF_CACHE": str(root), "SHARD1": shown(1), "SHARD2": shown(2),
                            "PLE_FILE": shown(min(ple_index(fam), n_files(fam))),
                            "FILES": n_files(fam),
@@ -307,8 +355,9 @@ def main() -> int:
         out.update({"model": a.model, "repo": fam["repo"], "cached": not missing, "cache": str(root),
                     "download_gb": info["download_gb"], "ram_gb": info["ram_gb"],
                     "arena_gb": info["arena_gb"], "hf_include": include, "files": n_files(fam),
-                    "mtp": "" if mtp_path(root, a.model, a.rev, a.repo) is None else
-                           str(mtp_path(root, a.model, a.rev, a.repo))})
+                    "release": release_of(a.model, a.repo, a.release),
+                    "mtp": "" if mtp_path(root, a.model, a.rev, a.repo, a.release) is None else
+                           str(mtp_path(root, a.model, a.rev, a.repo, a.release))})
         print(json.dumps(out, indent=1))
     elif a.what == "both":
         print(shown(1) + "\n" + shown(2))
