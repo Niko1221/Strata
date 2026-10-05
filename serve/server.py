@@ -497,6 +497,11 @@ class StrataEngine:
         gs = self.batch // groups if self.batch else 0
         # slots in the order that spreads requests over the pipeline's groups first: 0, gs, 2gs, .., 1, gs+1, ..
         self.slot_order = [g * gs + t for t in range(gs) for g in range(groups)]
+        # pipelined groups (the engine says how many it runs: INFO batch_groups, 0.1.39+ engines; older ones: the
+        # args).  A pipelined group's window spans its slots up to its last busy one, and the engine keeps no
+        # pipelined slot as a conversation cache - see pick_slot
+        groups_run = int(self.info.get("batch_groups") or groups)
+        self.slot_gs = gs if groups > 1 and groups_run > 1 else 0
         self.slot_q = [queue.Queue() for _ in range(self.batch)]
         self.slot_busy = [False] * self.batch
         # what each slot's sessions hold (prompt + every token a window fed), so a conversation's next turn goes to
@@ -1084,6 +1089,16 @@ class StrataEngine:
         free = [b for b in self.slot_order if not self.slot_busy[b]]
         if not free:
             return None
+        gs = getattr(self, "slot_gs", 0)
+        if gs:
+            # pipelined groups: the engine keeps no pipelined slot as a conversation cache, so nothing is worth keeping
+            # free for a next turn.  A group's window spans its slots up to its last busy one, so first fill a hole
+            # below a busy slot of the same group (it costs no extra row), then follow the spreading order
+            # (reported on #793: least-recently-used picks left leading holes, [_ B], that cost a whole row each)
+            def fills_hole(b):
+                g0 = b - b % gs
+                return any(self.slot_busy[x] for x in range(b + 1, g0 + gs))
+            return min(free, key=lambda b: (not fills_hole(b), self.slot_order.index(b)))
         def held_prefix(b):
             h = self.slot_held[b]
             return len(h) if h and len(h) < len(prompt) and prompt[:len(h)] == h else 0
