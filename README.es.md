@@ -137,7 +137,8 @@ tamaños pequeños son más rápidos. Los grandes son algo más inteligentes.
   el menú del instalador.
 
 Tamaños, descargas y qué cabe dónde: [docs/MODELS.md](docs/MODELS.md). Para añadir otro modelo más adelante, ejecuta
-`SETUP.bat` (Linux: `./setup.sh --setup`).
+`SETUP.bat` (Linux: `./setup.sh --setup`). Para elegir un tamaño y guardar ajustes reutilizables en una ventana en
+lugar de escribir opciones: `LAUNCHER.bat` (Linux: `./launcher.sh`, [el lanzador](docs/LAUNCHER.md)).
 
 ## Cómo usarlo
 

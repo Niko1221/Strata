@@ -17,7 +17,8 @@ scripts do. It is one Python file that uses only the standard library, so it wor
 
 It is not the same thing as [Tools from MCP servers](DETAILS.md#tools-from-mcp-servers). That feature
 (`serve/mcp.py`) lets the *Strata model* call tools from your MCP servers in its chat page. This page is the other
-direction: *your assistant* manages Strata.
+direction: *your assistant* manages Strata. For a person rather than an assistant, `LAUNCHER.bat`
+(Linux: `./launcher.sh`) puts the same steps in a window: [the launcher](LAUNCHER.md).
 
 ## Add it
 

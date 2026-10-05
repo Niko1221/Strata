@@ -127,7 +127,8 @@ NVIDIA 和 AMD 的步骤完全一样。安装程序会识别你的显卡，并�
 - **[OrcaRouter 的 Uncensored IQ3_XXS](docs/MODELS.md#orcarouter-uncensored-iq3_xxs)：** 需要手动设置，不在安装程序的菜单里。
 
 规格、下载以及各配置能装下什么：[docs/MODELS.md](docs/MODELS.md)。以后想再添加模型，运行
-`SETUP.bat`（Linux：`./setup.sh --setup`）。
+`SETUP.bat`（Linux：`./setup.sh --setup`）。想在窗口里挑选规格、把设置存成可复用的预设而不用记命令行参数：
+`LAUNCHER.bat`（Linux：`./launcher.sh`，[启动器](docs/LAUNCHER.md)）。
 
 ## 使用方法
 
