@@ -449,12 +449,6 @@ bool ExpertCache::ensure_blocking_staging(std::size_t bytes, std::string& err) {
 }
 #endif
 
-namespace {
-bool g_cache_vmm = false;   // set_vmm
-}  // namespace
-
-void ExpertCache::set_vmm(bool enabled) { g_cache_vmm = enabled; }
-
 bool ExpertCache::open(int64_t n_slots, int64_t n_layers, int64_t n_expert, int64_t blob_bytes,
                        std::string& err) {
     close();
@@ -493,7 +487,7 @@ bool ExpertCache::open(int64_t n_slots, int64_t n_layers, int64_t n_expert, int6
 
     if (seg_req_ > 0) {   // #533: --vram-elastic: physical segments behind one address range (zeroed below)
         if (!open_segmented(want, err)) return false;
-    } else if (g_cache_vmm && vmm_available()) {
+    } else if (vmm_on_ && vmm_available()) {
         // the elastic K/V: every chunk mapped now; the K/V may later take some of them (and give them back)
         auto r = std::make_unique<VmmRange>();
         if (!r->reserve(want) || !r->map_range(0, r->chunks(), [] { return (VmmChunk) 0; })) {
