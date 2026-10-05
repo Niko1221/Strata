@@ -17,9 +17,12 @@ do not establish general answer quality or performance on other workloads.
   saving); the engine's startup host-to-device transfer probe measured
   6.9 GB/s, from which the engine chose `--pcie-frac 0.15` (default 0.55).
   GPU clocks were not fixed for this test.
-- Intel Xeon E5-2690 v4 @ 2.60 GHz; 14 cores / 28 threads; no AVX-512 (the
-  engine reported it runs the expert kernels on AVX-2). 13 expert-pool workers.
-- 125 GB installed RAM; about 70 GB available at benchmark start. Swap: a
+- Intel Xeon E5-2690 v4 @ 2.60 GHz; 1 CPU (1 socket), 14 cores / 28 threads;
+  no AVX-512 (the engine reported it runs the expert kernels on AVX-2).
+  13 expert-pool workers. Motherboard: HUANANZHI X99-BD4.
+- 125 GB installed RAM (MemTotal; 4x 32 GB DDR4-2133 ECC, all four channels
+  populated: DIMM_A1/B1 on channel group 1, DIMM_C1/D1 on channel group 2,
+  quad-channel); about 70 GB available at benchmark start. Swap: a
   2 GB swapfile. Storage: repository and packs on a Netac NVMe SSD 1 TB;
   GGUF shards on an MSI S270 960 GB SATA SSD.
 - Linux Mint 22.3, kernel 7.0.0-31-generic, NVIDIA driver 610.57.04.

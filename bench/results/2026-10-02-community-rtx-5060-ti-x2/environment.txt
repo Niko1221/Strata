@@ -2,7 +2,7 @@
 
 OS:            Linux Mint 22.3, kernel 7.0.0-31-generic
 CPU:           Intel Xeon E5-2690 v4 @ 2.60 GHz (14 cores / 28 threads), no AVX-512 (engine uses AVX-2)
-RAM:           125 GB installed (~70 GB available at benchmark start)
+RAM:           125 GB installed (MemTotal; 4x 32 GB DDR4-2133 ECC, quad-channel: DIMM_A1/B1 group 1, DIMM_C1/D1 group 2) (~70 GB available at benchmark start)
 Swap:          /swapfile 2 GB
 Storage:       repo + packs on Netac NVMe SSD 1TB (/); GGUF shards on MSI S270 960GB SATA SSD (data disk)
 GPUs:          2x NVIDIA GeForce RTX 5060 Ti, 16311 MiB each, power limit 180 W, compute capability 12.0
