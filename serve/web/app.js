@@ -118,6 +118,7 @@ async function loadHealth() {
   try {
     health = await (await fetch("health")).json();
     renderEmptyChat();
+    updateContextPill();
     $("tab-btn-images").hidden = !health.image_generation;
     if (location.hash === "#images" && health.image_generation) showTab("images");
   } catch (e) {
@@ -794,6 +795,33 @@ function samplingUntouched(s) {
   const t = +s.temperature;
   return (t === DEFAULTS.temperature || t === OLD_DEFAULT_TEMPERATURE) && +s.top_p === DEFAULTS.top_p && +s.top_k === DEFAULTS.top_k;
 }
+
+function updateContextPill() {
+  const el = $("ctx-pill");
+  if (!el) return;
+  let ctx = null;
+  for (const m of messages) {
+    if (m.ctx != null) ctx = m.ctx;
+    if (m.compact && m.stats && m.stats.ctx != null) ctx = m.stats.ctx;   // a fresh fold is the latest reading until the next reply
+  }
+  const total = health.max_context || 0;
+  if (ctx == null || !total) {
+    el.hidden = !total;
+    el.classList.remove("warn", "hot");
+    el.querySelector(".st-ctx__fill").style.width = "0%";
+    el.querySelector(".st-ctx__text").textContent = total ? `–/${ctxfmt(total)}` : "–";
+    el.title = "Context usage is not measured yet";
+    return;
+  }
+  const pct = Math.min(100, 100 * ctx / total);
+  el.hidden = false;
+  el.classList.toggle("warn", pct >= 70 && pct < 90);
+  el.classList.toggle("hot", pct >= 90);
+  el.querySelector(".st-ctx__fill").style.width = `${pct}%`;
+  el.querySelector(".st-ctx__text").textContent = `${kfmt(ctx)}/${ctxfmt(total)}`;
+  el.title = `Context window: ${fmt(ctx)} of ${fmt(total)} tokens`;
+}
+
 let settings = {...DEFAULTS, ...store.get("sampling", {})};
 if (samplingUntouched(settings)) settings.temperature = DEFAULTS.temperature;
 let messages = store.get("chat", []).filter((m) => !m.compacting);   // a reload mid-compaction leaves no placeholder
@@ -1099,6 +1127,7 @@ function renderChat() {
   foldPoint = null;
   { const k = messages.map((m) => !!m.compact).lastIndexOf(true);
     if (k >= 0) foldPoint = Math.max(0, Math.min(messages[k].folded, k)); }   // clamped as compaction.js clamps it
+  updateContextPill();
   $("compact-btn").disabled = historyLocked() || messages.length < 2;
   messages.forEach((m, i) => chat.appendChild(msgEl(m, i)));
   renderSidebar();
@@ -1438,6 +1467,7 @@ async function generateReply() {
   if (cut) m.interrupted = true;
   if (thinkStart && m.thinkSecs == null) m.thinkSecs = (performance.now() - thinkStart) / 1000;
   const n = usage ? usage.completion_tokens : null;
+  if (usage && usage.prompt_tokens != null) m.ctx = usage.prompt_tokens + (n || 0);   // the context pill's reading
   const ended = cut ? tr("chat.interruptedLower", "interrupted") : tr("chat.stoppedLower", "stopped");
   if (n && firstAt) {
     const secs = (performance.now() - firstAt) / 1000;
@@ -1455,6 +1485,7 @@ async function generateReply() {
   paintLive();
   if (frame) cancelAnimationFrame(frame);
   updateAssistant(el, m, false);
+  updateContextPill();   // renderChat is not called here, and the fresh m.ctx is the newest measurement
   saveChat();
   scrollDown();
   settlePending(cut, !m.stopped && !m.error);
