@@ -1,0 +1,14 @@
+
+bf16 vs bf16-rerun
+text     pos   argmax  top-10   mean KL  median KL   p99 KL  ppl bf16  ppl other
+code    1084   100.0%  100.0%    0.0000    0.00000    0.000    70.158     70.158
+doc     1145   100.0%  100.0%    0.0000    0.00000    0.000  7117.566   7117.566
+prose   1098   100.0%  100.0%    0.0000    0.00000    0.000   352.088    352.088
+all 3327 positions: mean KL 0.0000, median 0.00000, p99 0.000, max 0.000
+
+bf16 vs req8
+text     pos   argmax  top-10   mean KL  median KL   p99 KL  ppl bf16  ppl other
+code    1084    93.3%   91.1%    0.0693    0.00769    1.033    70.158     52.894
+doc     1145    99.7%   92.2%    0.0063    0.00017    0.066  7117.566   7187.024
+prose   1098    97.7%   95.4%    0.0066    0.00124    0.088   352.088    354.509
+all 3327 positions: mean KL 0.0269, median 0.00108, p99 0.426, max 6.907
