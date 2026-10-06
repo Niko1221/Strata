@@ -1,0 +1,5 @@
+[strata] filling the GPU's expert cache (8300 experts, 15.80 GiB of VRAM) ...
+[strata] done: 211 tokens in 27 s (18.0 tok/s) (stop, cancel=False), expert cache 85.2% hit
+[strata] done: 256 tokens in 34 s (36.0 tok/s) (length, cancel=False), expert cache 93.7% hit
+[strata] done: 256 tokens in 10 s (41.5 tok/s) (length, cancel=False), expert cache 96.0% hit
+[strata] done: 240 tokens in 11 s (27.3 tok/s) (stop, cancel=False), expert cache 89.4% hit
