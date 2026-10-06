@@ -89,6 +89,17 @@ helped (~360 MB at 3.3K tokens). The rows it computes round like a different MMQ
 bit-identical to the default's (it is repeatable: same prompt, same output), which is why it is **opt-in**:
 `STRATA_PREFILL_HELP=1` turns it on. Native packs on the MMQ prompt path only (not with the fused prompt kernels,
 `STRATA_PF_FUSED=1`, nor with `--peer-device`). With it on, `STRATA_PREFILL_HELP_FRAC=f` fixes the share.
+`STRATA_PREFILL_HELP_FRACS=f0,f1,f2` optionally fixes a different share for each visible CUDA device. The share
+is the fraction a stage lends to its helper, not a layer count. Invalid lists fall back to the existing policy;
+a missing device entry uses `STRATA_PREFILL_HELP_FRAC` or the default. Fixed shares also apply to long prompts,
+so measure those before keeping an override.
+`STRATA_PREFILL_HELP_DEVICES=d0,d1,d2` optionally chooses a helper for each stage, in stage order. Entries are
+visible CUDA device numbers; every helper must be a different device used by the split. The default is the next
+stage, cyclically. On a `[0,1,2]` x16/x8/x16 arrangement, `2,0,0` lends the other x16 card to the first stage and
+an x16 card to the middle and last stages. `STRATA_PREFILL_HELP_LOG=1` prints each active share and helper.
+A 1,024-token request can read only 1,023 tokens on the batched path, below the default 1,024-token streaming
+floor; the helper then stays inactive. `STRATA_PREFILL_STREAM_MIN=1023` is an opt-in boundary adjustment. It
+also changes the streaming policy, so measure it with and without helpers on the model being used.
 
 The engine flags behind it: `--layer-split K1[,K2..]|auto` and `--split-device D1[,D2..]` (the later stages'
 devices; default the next visible ones). `--layer-split K --split-device 0` runs both stages on one card sharing
@@ -191,28 +202,37 @@ The Coder on an RTX 5080 + RTX 3090 (Ryzen 9 9950X3D), 32K context; details in
   3090 pair slower (68 / 90 tok/s decode): every extra card costs its own round per window.
 - More cards pay off when the model's routed experts do not fit the faster ones.
 
-## One conversation with both cards busy (`--pipeline-windows`, opt-in)
+## One conversation across two or three cards (`--pipeline-windows`, opt-in)
 
 With a split the cards take turns on a verify window: the first card runs its layers and hands off, then waits while
 the last card runs the rest, the head and the draft. `--pipeline-windows 2` lets the first card start the **next**
 window while the last card still verifies this one. The next window is a guess: that this window is accepted whole
 and that its bonus token is the one the draft layer predicts (the draft layer is run on through the drafts of the
-window in flight). When the guess holds, half of the next window is already done; when it does not, the first card
-puts its state back (a copy of its recurrent state taken while the window ran) and the next window is built from the
+window in flight). When the guess holds, the prefix of the next window is already done; when it does not, the prefix cards
+put their state back (copies of their recurrent state taken before the speculative commit) and the next window is built from the
 real tokens. A guessed window is only started when the draft layer's estimate says it is likely to be kept. Windows
 copied from earlier context (`--suffix-draft`) are guessed past as well, which is where edits that copy text gain
 most. `--pipeline-windows 1` overlaps only the short prompt reads that go through the verify windows
 (`--short-read`).
 
-Two cards, exactly two stages, `--serve`. In the config:
+Two or three cards, one stage per card, `--serve`. In the config:
 
 ```
 "args": [ ..., "--pipeline-windows", "2" ],
 "layer_split": "20"
 ```
 
+- **Three stages**: for example, `"gpu": [0, 1, 2]` and `"layer_split": "20,28"` assign a 48-layer model
+  20, 8 and 20 layers. The last card runs the head and draft. There are still at most two decode windows in
+  flight. A speculative window starts after the earlier window has finished both prefix stages; both prefix
+  stages keep their own recurrent-state snapshots and restore them when a guess fails. This avoids copying
+  into a CUDA stream whose graph is waiting for host expert work.
+  `STRATA_PIPELINE_PREFIX_EARLY=1` optionally starts the next window on stage 0 as soon as the previous window
+  has finished stage 0. Its middle-stage optimistic commit and snapshot wait until that stage is idle; the next
+  window cannot enter the middle stage before that commit. This overlaps the first and middle cards as well as
+  the prefix with the head. It still keeps at most two decode windows in flight. It applies to three stages only.
 - **Cost**: a second verify window on each card, 160 MiB more kept out of each card's expert cache, plus two copies
-  of the first card's recurrent state (about 3 MiB per GDN layer it runs) on the first card with `2`.
+  of each prefix card's recurrent state (about 3 MiB per GDN layer it runs) with `2`.
 - **Same text**: the last card only ever runs windows that are verified, and every window row computes what it
   would in any other window, so the tokens are the serial loop's. With `STRATA_IQ_MT_MIN=1 --pcie-frac 0
   --adapt-every 0` the greedy output is identical bit for bit to the serial loop's with the same expert caches. The pipeline keeps
@@ -220,7 +240,7 @@ Two cards, exactly two stages, `--serve`. In the config:
   rounds them differently, and a near-tie can flip (a serial run given the same caches through `--vram-reserve-mib`
   matches it exactly).
 - **Off, with one line in the log saying why**, with `--batch` slots, `--peer-device`, the helper caches
-  (`--expert-cache-device1..3`, `--remote-expert-opt`), a split into three or more stages or onto one GPU
+  (`--expert-cache-device1..3`, `--remote-expert-opt`), a split into four or more stages or onto one GPU
   (`--split-device 0`), or no draft layer. A request with repetition penalties (`penalty_last_n`) or coupled
   draft sampling decodes serially.
 - **Measured** (Swift 1.5 IQ3_XXS, 160K context, q4_0 KV, the stock draft layer, RTX 4060 Ti (layers 0-19) +

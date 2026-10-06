@@ -185,7 +185,7 @@ public:
     /// false with `err` when it failed.  Free when nothing is pending.
     bool wait_commit(std::string& err);
 
-    // ---- PIPELINED WINDOWS (--pipeline-windows, a layer split on two GPUs).  One conversation's windows with the
+    // ---- PIPELINED WINDOWS (--pipeline-windows, a layer split on two or three GPUs).  One conversation's windows with the
     // stages overlapped: stage 0 runs window K+1 while stage 1 still runs window K.  The same window as `run`, driven
     // without blocking the host, so one host thread keeps a window in flight on each stage (the batch pipeline's
     // pattern, batch_launch / batch_poll, for one sequence with drafts).  Two verifiers per stage (one per window

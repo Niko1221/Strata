@@ -1,0 +1,49 @@
+{
+  "source": "272f4884db83b28bbdb18c46106b4742ea853178",
+  "exe_sha256": "8f12d68a3105242e03214822d9e4aa785f1dcb2818977c7dcc50c0d1bcad81a7",
+  "requests": 30,
+  "input_tokens": 128,
+  "output_cap": 192,
+  "kv": "fp16",
+  "weights": "Q8_0",
+  "gpu_layers": [
+    20,
+    8,
+    20
+  ],
+  "token_parity": true,
+  "recurrent_parity": true,
+  "attention_parity": true,
+  "code_checks": [
+    {
+      "status": "passed",
+      "cases": 1005
+    },
+    {
+      "status": "passed",
+      "cases": 1005
+    },
+    {
+      "status": "passed",
+      "cases": 1005
+    },
+    {
+      "status": "passed",
+      "cases": 1005
+    },
+    {
+      "status": "passed",
+      "cases": 1005
+    }
+  ],
+  "forced_rollback_counts": [
+    62,
+    115,
+    96,
+    62,
+    115,
+    96
+  ],
+  "build": "Release, GCC 12, CUDA 12.0, sm_61",
+  "commit_limit_test": "passed"
+}

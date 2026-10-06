@@ -4,6 +4,7 @@
 // expert cache gives up, and neither moves: every captured graph and stored pointer stays valid.  The driver calls
 // are reached through the runtime's entry-point query, so nothing links the driver library.  Not under HIP.
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -33,7 +34,7 @@ public:
     void release();
     uint8_t* base() const { return (uint8_t*) (uintptr_t) base_; }
     int64_t chunks() const { return (int64_t) h_.size(); }
-    bool mapped(int64_t i) const { return i >= 0 && i < chunks() && h_[(size_t) i] != 0; }
+    bool mapped(int64_t i) const { return i >= 0 && i < chunks() && h_[(std::size_t) i] != 0; }
     int64_t mapped_count() const;
     /// Maps chunks [lo, hi) that are not mapped yet, each to `take()` or, when that returns 0, to a new chunk.
     /// Readable and writable when it returns; false: out of memory (what was mapped stays mapped).

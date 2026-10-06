@@ -44,6 +44,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <thread>
 #include <vector>
 
@@ -1249,7 +1250,31 @@ bool split_help_env() {
 // 1440 (1609), 6K 1811 / 1660 / 1471 (2038), 8K 1895 / 1804 / 1663 (2230) - the best share falls with T and from ~4K
 // none pays, which this rule follows (0.41 at 1.5K, 0.32 at 3K, off from ~3.3K).
 // STRATA_PREFILL_HELP_FRAC sets the share for every T.
-double split_help_frac(int64_t T) {
+double split_help_frac(int64_t T, int device) {
+    // Optional shares indexed by visible CUDA device. Unequal PCIe links can
+    // lend different fractions while preserving the existing default policy.
+    static const std::vector<double> per_device = [] {
+        std::vector<double> values;
+        const char* e = std::getenv("STRATA_PREFILL_HELP_FRACS");
+        if (e == nullptr) return values;
+        std::istringstream list(e);
+        std::string item;
+        while (std::getline(list, item, ',')) {
+            std::istringstream field(item);
+            double f = 0;
+            if (!(field >> f) || !std::isfinite(f) || f < 0 || f > 1 || !(field >> std::ws).eof()) {
+                std::fprintf(stderr, "strata prefill: invalid STRATA_PREFILL_HELP_FRACS; using the default shares\n");
+                return std::vector<double>{};
+            }
+            values.push_back(f);
+        }
+        if (values.empty() || e[std::strlen(e) - 1] == ',') {
+            std::fprintf(stderr, "strata prefill: invalid STRATA_PREFILL_HELP_FRACS; using the default shares\n");
+            return std::vector<double>{};
+        }
+        return values;
+    }();
+    if (device >= 0 && (size_t) device < per_device.size()) return per_device[(size_t) device];
     static const double fixed = [] {
         const char* e = std::getenv("STRATA_PREFILL_HELP_FRAC");
         return e ? std::clamp(std::atof(e), 0.0, 1.0) : -1.0;
@@ -1305,7 +1330,7 @@ bool Prefill::set_stage_helper(Prefill* helper, std::string& err) {
 bool Prefill::bind_stage_helper(int64_t T) {
     Impl& m = *impl_;
     if (!m.help_pp || helper_ == nullptr || m.pp) return false;
-    const double frac = split_help_frac(T);
+    const double frac = split_help_frac(T, m.device);
     if (frac <= 0.0 || T < stream_all_min() || m.src == nullptr || m.ring <= STAGE || fused_ring()) return false;
     const strata::kernels::cpu::ExpertLayout& lay = strata::kernels::cpu::expert_layout();
     for (int64_t l = stage_lb_; l < stage_le_; ++l) {
@@ -1362,6 +1387,9 @@ bool Prefill::bind_stage_helper(int64_t T) {
     }
     const core::OnDevice on(P.dev);
     mmq::iota(P.ident, T * K, P.s);           // the helper's row table: a refill may have overwritten its slots
+    if (std::getenv("STRATA_PREFILL_HELP_LOG") != nullptr)
+        std::fprintf(stderr, "strata prefill: CUDA%d lends %.3f of streamed experts to CUDA%d for %lld tokens (helper ring %d)\n",
+                     m.device, frac, P.dev, (long long) T, P.RP);
     return true;
 }
 
