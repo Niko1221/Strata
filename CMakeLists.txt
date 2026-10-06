@@ -467,6 +467,15 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_test(NAME expert_profile_save_test COMMAND expert_profile_save_test)
     set_tests_properties(expert_profile_save_test PROPERTIES TIMEOUT 60)
   endif()
+  # #796 part C: the advisory VRAM planner - pure arithmetic over injected byte costs, no GPU and no engine
+  # library needed.  Every case asserts WARNINGS, never a refusal.
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/vram_plan_test.cpp")
+    enable_testing()
+    add_executable(vram_plan_test tests/core/vram_plan_test.cpp src/prefill/vram_plan.cpp)
+    target_include_directories(vram_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    add_test(NAME vram_plan_test COMMAND vram_plan_test)
+    set_tests_properties(vram_plan_test PROPERTIES TIMEOUT 60)
+  endif()
   if(STRATA_BUILD_TESTS AND STRATA_NATIVE_EXPERTS)
     # native_experts.txt v2-v4 (the real packs' copies and the per-role shard column) and the arena filled from
     # synthetic GGUF shards at the real expert dimensions
@@ -513,7 +522,9 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # what composes them into a token.  No tokenizer - the prompt arrives as ids - because Gate C1 compares logits
   # against llama.cpp on the SAME ids and a tokenizer on one side of that comparison is a second variable.
   # plan v0.3 P5: batched prompt processing (tensor-core GEMMs through cuBLAS).
-  add_library(strata_prefill STATIC src/prefill/gemm.cu src/prefill/kernels.cu src/prefill/prefill.cpp)
+  # #796 part C: the advisory VRAM planner - pure arithmetic over injected costs, no device code in it.
+  add_library(strata_prefill STATIC src/prefill/gemm.cu src/prefill/kernels.cu src/prefill/prefill.cpp
+    src/prefill/vram_plan.cpp)
   if(STRATA_ENABLE_HIP)
     # #313: the RDNA3 WMMA GEMMs include hip_runtime.h: AMD builds only (a CUDA build never sees this file)
     target_sources(strata_prefill PRIVATE src/prefill/wmma_gemm.cu)

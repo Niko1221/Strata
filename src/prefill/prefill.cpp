@@ -163,10 +163,11 @@ inline int ring_cap() { return fused_ring() && !strata::kernels::cpu::expert_lay
 // The ring's budget in bytes: the measured slot counts above, at the blob size they were measured with.  It is
 // bytes and not slots because a slot is one whole blob and the blob is the pack's - see the note above.
 inline constexpr uint64_t Q2_0_BLOB = 1382400ull;   // the blob of the pack the ring was tuned on
-inline uint64_t ring_bytes() {
+inline uint64_t ring_bytes_at_share(double share) {
     const uint64_t slots = fused_ring() ? 1024ull : 384ull;   // #136: a fused ring holds two layers' experts
-    return (g_pinned_share >= 0.9 ? slots : slots / 4) * Q2_0_BLOB;
+    return (share >= 0.9 ? slots : slots / 4) * Q2_0_BLOB;
 }
+inline uint64_t ring_bytes() { return ring_bytes_at_share(g_pinned_share); }
 // ...and what that buys on THIS pack, never past ring_cap(): the slot count `init` lays out, and what the auto
 // chunk scan treats as a full ring.  A pack whose blobs are larger than Q2_0's gets fewer slots for the same
 // bytes, which is the point - the ring competes with the expert cache for the same VRAM.
@@ -178,13 +179,14 @@ inline bool ring_bytes_on() {
     static const bool on = [] { const char* v = std::getenv("STRATA_RING_BYTES"); return v == nullptr || v[0] != '0'; }();
     return on;
 }
-inline int ring_budget_slots() {
+inline int ring_budget_slots_for_share(double share) {
     const int64_t per = MAXBLOB();
-    const int64_t n = per > 0 ? (int64_t) (ring_bytes() / (uint64_t) per) : 0;
+    const int64_t n = per > 0 ? (int64_t) (ring_bytes_at_share(share) / (uint64_t) per) : 0;
     const int cap = ring_cap();
     return (int) (n <= 0 ? 0 : (n > cap ? cap : n));
 }
-inline int ring_slots(size_t T) {
+inline int ring_budget_slots() { return ring_budget_slots_for_share(g_pinned_share); }
+inline int ring_slots_for_share(size_t T, double share) {
     const char* v = std::getenv("STRATA_PREFILL_RING");
 #if defined(STRATA_USE_HIP)
     // S6: with the opt-in RDNA4 matrix-core attention (STRATA_HIP_WMMA=1) a 96-slot ring: measured with it, 9070 XT
@@ -200,13 +202,14 @@ inline int ring_slots(size_t T) {
     // is not what is competing for VRAM.
     // 0.1.39's ring (1024 fused / 384 pinned, 96 when a large share goes through host copies), and the #583 byte
     // budget the auto scan chose for chunks past the size 0.1.39's rule would have picked (set_ring_budget)
-    const int pinned_ring = g_pinned_share >= 0.9 ? (fused_ring() ? 1024 : 384) : 96;
+    const int pinned_ring = share >= 0.9 ? (fused_ring() ? 1024 : 384) : 96;
     const bool budget = ring_bytes_on() && g_ring_budget > 0 && (int64_t) T > g_ring_small_max;
     const int r = v ? std::atoi(v) : g_ring_override > 0 ? g_ring_override : budget ? g_ring_budget : pinned_ring;
     if (v && r == STAGE) return STAGE; // Explicit opt-in to routed-only staging, including large chunks.
     const int big = r < 16 ? 16 : r > ring_cap() ? ring_cap() : r;
     return (int64_t) T >= stream_all_min() ? big : STAGE;
 }
+inline int ring_slots(size_t T) { return ring_slots_for_share(T, g_pinned_share); }
 constexpr int DQ = 2;              // dequantized-expert ring (FP16 gate/up + down)
 // The BF16-weight projections (hyper-connection, SSM alpha/beta, indexer, router, shared gate, PLE key/value) take
 // BF16 activations here and FP32 ones in decode. STRATA_PREFILL_BF16X2=1 adds each activation's BF16 remainder as a
@@ -1474,18 +1477,20 @@ double Prefill::pinned_share() { return g_pinned_share; }
 int64_t Prefill::stream_all_min_tokens() { return stream_all_min(); }
 
 uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk) {
-    return bytes_needed_impl(g, ss, chunk, false);
+    return bytes_needed_at_share(g, ss, chunk, g_pinned_share, false);
 }
 
 // What `init` really allocates when the prompt path owns its buffers (no loan): every cudaMalloc rounds up to a 2 MiB
 // page, and the ring is one allocation (carve).  `bytes_needed` stays the borrowed region's sum.
 uint64_t Prefill::bytes_needed_owned(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk) {
-    return bytes_needed_impl(g, ss, chunk, true);
+    return bytes_needed_at_share(g, ss, chunk, g_pinned_share, true);
 }
 
-uint64_t Prefill::bytes_needed_impl(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk,
-                                    bool owned_pages) {
-    // the same allocation sequence as `init`, counted
+uint64_t Prefill::bytes_needed_at_share(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk,
+                                        double share, bool owned_pages) {
+    // the same allocation sequence as `init`, counted - at `share`, the pinned share the pricing assumes (the
+    // runtime prices at the measured global; the advisory planner passes its own measured figure and touches
+    // nothing)
     const size_t T = (size_t) chunk;
     bool ok = true;
     Alloc o;
@@ -1527,10 +1532,11 @@ uint64_t Prefill::bytes_needed_impl(const core::ModelGeometry& g, const core::Se
         o.take<uint8_t>(MMQ_GROUP * mp.gu_max + MMQ_TAIL, ok);
         o.take<uint8_t>(MMQ_GROUP * mp.d_max + MMQ_TAIL, ok);
     }
+    const int ring = ring_slots_for_share(T, share);
     if (owned_pages) {
-        if (ring_slots(T) > 0) o.take<uint8_t>((size_t) ring_slots(T) * (size_t) MAXBLOB(), ok);   // one allocation
+        if (ring > 0) o.take<uint8_t>((size_t) ring * (size_t) MAXBLOB(), ok);   // one allocation
     } else {
-        for (int i = 0; i < ring_slots(T); ++i) o.take<uint8_t>((size_t) MAXBLOB(), ok);
+        for (int i = 0; i < ring; ++i) o.take<uint8_t>((size_t) MAXBLOB(), ok);
     }
     f(T * N);
     f((size_t) strata::kernels::NG_HC_DIM);
@@ -1543,26 +1549,38 @@ uint64_t Prefill::bytes_needed_no_ring(const core::ModelGeometry& g, const core:
     return bytes_needed(g, ss, chunk) - (uint64_t) ring_slots((size_t) chunk) * (uint64_t) MAXBLOB();
 }
 
-int64_t Prefill::ring_default_slots() {
-    const int r = g_pinned_share >= 0.9 ? (fused_ring() ? 1024 : 384) : 96;
+int64_t Prefill::ring_default_slots_at(double share) {
+    const int r = share >= 0.9 ? (fused_ring() ? 1024 : 384) : 96;
     return (int64_t) std::min(r, ring_cap());
 }
 
-int64_t Prefill::ring_cap_for(int64_t old_chunk) {
+int64_t Prefill::ring_default_slots() { return ring_default_slots_at(g_pinned_share); }
+
+int64_t Prefill::ring_cap_for_at(int64_t old_chunk, double share) {
     // 0.1.39b (#583, measured on the RTX 5070): giving up ring slots for a bigger chunk paid where 0.1.39's ring held
     // the chunk at 4096 or less (IQ3_XXS 32K prompts +14% to +26%: 4096/384 -> 6656/56) and lost where 0.1.39 already
     // read 6144-token chunks (the Coder: 6144/384 -> 7936/199, 32K -12%).  From kKeepRingChunk on the ring keeps its
     // 0.1.39 size and the scan only looks for a bigger chunk next to it (IQ3_XXS unpinned 6144/96 -> 6912/96: +9%).
     constexpr int64_t kKeepRingChunk = 6144;
-    return old_chunk >= kKeepRingChunk ? ring_default_slots() : ring_max_slots();
+    return old_chunk >= kKeepRingChunk ? ring_default_slots_at(share) : ring_max_slots_at(share);
 }
+
+int64_t Prefill::ring_cap_for(int64_t old_chunk) { return ring_cap_for_at(old_chunk, g_pinned_share); }
 
 // the unpinned arm keeps its measured 96 (the PR's rule; the byte budget would have been ~49 slots on IQ3_S)
-int64_t Prefill::ring_max_slots() {
-    return g_pinned_share >= 0.9 ? (int64_t) ring_budget_slots() : (int64_t) std::min(96, ring_cap());
+int64_t Prefill::ring_max_slots_at(double share) {
+    return share >= 0.9 ? (int64_t) ring_budget_slots_for_share(share) : (int64_t) std::min(96, ring_cap());
 }
 
+int64_t Prefill::ring_max_slots() { return ring_max_slots_at(g_pinned_share); }
+
 int64_t Prefill::ring_slots_for(int64_t chunk) { return ring_slots((size_t) chunk); }
+
+int64_t Prefill::ring_slots_at_share(int64_t chunk, double share) {
+    return ring_slots_for_share((size_t) chunk, share);
+}
+
+int64_t Prefill::ring_stage_slots() { return STAGE; }
 
 bool Prefill::ring_bytes_enabled() { return ring_bytes_on(); }
 
