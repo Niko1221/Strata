@@ -1,4 +1,5 @@
 #include "strata/core/remote_experts.hpp"
+#include "strata/core/device.hpp"   // primary_device() (STRATA_PRIMARY_DEVICE)
 #include "strata/core/remote_expert_opt.hpp"
 
 #include "strata/kernels/cpu/expert_layout.hpp"
@@ -67,8 +68,13 @@ RemoteExperts::~RemoteExperts() { close(); }
 bool RemoteExperts::preflight(int device, double& free_gib, std::string& err) {
     int count = 0;
     if (!check(cudaGetDeviceCount(&count), "cudaGetDeviceCount", err, device)) return false;
-    if (device < 1 || device >= count) {
+    if (device < 0 || device >= count) {
         err = "CUDA" + std::to_string(device) + " experts: CUDA device is not visible";
+        return false;
+    }
+    if (device == primary_device()) {   // the primary may be any visible ordinal; the helper cannot be it
+        err = "CUDA" + std::to_string(device) + " experts: the helper cannot be the primary device "
+                                                 "(STRATA_PRIMARY_DEVICE)";
         return false;
     }
     // The layer waits for this GPU on the CPU pool's critical path: spin instead of sleeping, whose wake-up
@@ -125,8 +131,9 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
     close();
     int count = 0;
     if (!check(cudaGetDeviceCount(&count), "cudaGetDeviceCount", err, device)) return false;
-    if (device < 1 || device >= count || slots <= 0 || ranked.empty() ||
-        layers <= 0 || experts <= 0 || claimed.size() != (size_t) layers * (size_t) experts) {
+    if (device < 0 || device >= count || slots <= 0 || ranked.empty() ||
+        layers <= 0 || experts <= 0 || claimed.size() != (size_t) layers * (size_t) experts ||
+        device == primary_device()) {   // the helper cannot be the primary device (any visible ordinal)
         err = "CUDA" + std::to_string(device) + " experts: need the device, ranked experts and positive slot count";
         return false;
     }
@@ -330,7 +337,23 @@ bool RemoteExperts::finish(float* out, std::string& err) {
     DeviceScope scope(device_);
     if (!scope.ok) { err = scope.error(device_); return false; }
     const auto w0 = std::chrono::steady_clock::now();
-    if (!check(cudaStreamSynchronize(stream_), "finish", err, device_)) return false;
+    // Spin on the stream like PeerExperts::finish instead of the blocking sync: the layer waits for this helper
+    // on the CPU pool's critical path, and a blocking sync's wake-up costs more than the helper's small batch
+    // takes - on HIP especially, where the CUDA branch's cudaInitDevice(ScheduleSpin) does not exist and the
+    // device keeps its default policy.  STRATA_REMOTE_SPIN=0 keeps the blocking sync (the same switch the CUDA
+    // branch reads).
+    static const bool spin = [] {
+        const char* v = std::getenv("STRATA_REMOTE_SPIN");
+        return !(v != nullptr && v[0] == '0');
+    }();
+    if (spin) {
+        cudaError_t e;
+        while ((e = cudaStreamQuery(stream_)) == cudaErrorNotReady) {
+        }
+        if (!check(e, "finish", err, device_)) return false;
+    } else if (!check(cudaStreamSynchronize(stream_), "finish", err, device_)) {
+        return false;
+    }
     ms_wait_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - w0).count();
     if (remote_opt_ && remote_opt_->active()) { remote_opt_->accumulate(*this); return true; }
     for (size_t i = 0; i < original_row_.size(); ++i)

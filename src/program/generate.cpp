@@ -1859,6 +1859,16 @@ int main(int argc, char** argv) {
     if (o.serve && o.conversation_cache_mib > 0 && (o.prompt_cache == 0 || o.conversation_cache_slots == 0))
         std::fprintf(stderr, "strata serve: warning: conversation caching is disabled by %s\n",
                      o.prompt_cache == 0 ? "--prompt-cache 0" : "--conversation-cache-slots 0");
+    // STRATA_PRIMARY_DEVICE: which VISIBLE device the engine's own session runs on.  The Windows HIP runtime
+    // enumerates the cards in a fixed order no HIP_VISIBLE_DEVICES list can change (it only filters), so with a
+    // slower card first a run could only put the model on it (RX 6600 before RX 6800).  0 (unset) is upstream's
+    // behavior; the helper caches and the peer tier follow it, a layer split still assumes device 0 (see below).
+    const int primary_device = [] {
+        const char* v = std::getenv("STRATA_PRIMARY_DEVICE");
+        const int n = v != nullptr ? std::atoi(v) : 0;
+        return n > 0 ? n : 0;
+    }();
+    strata::core::set_primary_device(primary_device);
     // parking with --layer-split saves every stage (SavedConversation::stage_images)
     // Layer split (multi-GPU): the later stages run layers [K_i, K_i+1) on their own GPUs (--split-device, default
     // the next visible ones); "auto" places the K from each GPU's free VRAM once the weights are in (below).  KV
@@ -1921,6 +1931,14 @@ int main(int argc, char** argv) {
         }
     }
     bool multi_gpu = !split_devs.empty() && !split_same;   // cleared by --split-skip-if-fits before any stage loads
+    // STRATA_PRIMARY_DEVICE: a later stage's list (`--split-device` values must be > 0) still assumes the
+    // primary is device 0 - refuse the combination rather than mis-place a stage.  The peer tier takes the
+    // primary into account (peer_experts.cpp).
+    if (primary_device != 0 && !o.layer_split.empty()) {
+        std::fprintf(stderr, "strata generate: STRATA_PRIMARY_DEVICE %d is not supported with a layer split yet\n",
+                     primary_device);
+        return 2;
+    }
     bool split_own_auto = false;   // #340: the split keeps own prompt buffers by its rule (not --no-prefill-borrow)
     if (o.mmap_experts && !o.shared_expert_arena.empty()) {
         std::fprintf(stderr, "strata generate: --shared-expert-arena backs the resident arena and cannot be used with --mmap-experts\n");
@@ -1930,17 +1948,25 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: --resident-cpu-experts requires --mmap-experts and a static --expert-profile\n");
         return 2;
     }
-    const bool remote_caches = o.expert_cache_remote[0] > 0 || o.expert_cache_remote[1] > 0 ||
-                               o.expert_cache_remote[2] > 0;
     // A layer split keeps the resident RAM mode: every stage's GPU cache is left out of the RAM copy, and an adaptive
     // swap copies an evicted expert back from the card that owns its layer (resident_stage_swaps).
-    if (o.resident_cpu_experts && remote_caches) {
-        std::fprintf(stderr, "strata generate: --resident-cpu-experts does not support remote expert caches\n");
-        return 2;
-    }
+    // The helper-GPU caches are allowed beside the resident RAM mode too: their experts are left out of the RAM copy
+    // like a stage's (below), the helpers' refills read through the source (the RAM copy when it holds the bytes),
+    // and the two adaptive tiers already keep each other's experts out (helper_holds in the primary's candidates,
+    // RemoteExpertOpt::adapt's resident table).  Measured on RX 6800 + RX 6600, Windows (docs/SECOND_GPU.md).
     // the helper-GPU expert caches (--expert-cache-remote, docs/SECOND_GPU.md): CUDA1..3 on one GPU; with a layer
     // split, the visible GPUs no stage runs on, in order
     int remote_dev[3] = {1, 2, 3};
+    if (primary_device != 0) {
+        // STRATA_PRIMARY_DEVICE: the helpers are the visible devices except the primary, in order
+        int n_vis = 1;
+        if (cudaGetDeviceCount(&n_vis) != cudaSuccess || n_vis < 1) n_vis = 1;
+        cudaGetLastError();
+        int k = 0;
+        for (int d = 0; d < n_vis && k < 3; ++d)
+            if (d != primary_device) remote_dev[k++] = d;
+        for (; k < 3; ++k) remote_dev[k] = -1;
+    }
     if (multi_gpu) {
         if (o.expert_profile.empty()) {
             std::fprintf(stderr, "strata generate: a layer split across GPUs needs --expert-profile\n");
@@ -2024,7 +2050,7 @@ int main(int argc, char** argv) {
     {
         // every GPU this run uses must be an architecture the binary has code for (a gfx1100 build on a gfx1201
         // card would otherwise fail later with "invalid device function")
-        std::vector<int> used{0};
+        std::vector<int> used{primary_device};   // STRATA_PRIMARY_DEVICE: the primary is not always 0
         if (multi_gpu) used.insert(used.end(), split_devs.begin(), split_devs.end());
         for (int r = 0; r < 3; ++r)
             if (o.expert_cache_remote[(size_t) r] > 0) used.push_back(remote_dev[r]);
@@ -2331,6 +2357,25 @@ int main(int argc, char** argv) {
         }
     }
     const bool native_pack = strata::kernels::cpu::expert_layout().native;
+    // STRATA_PRIMARY_DEVICE: switch the engine's own thread to the chosen card BEFORE any GPU
+    // context or allocation exists below (the helper preflights, the PCIe probe, the weights and the
+    // arena all follow it).  Every other device switch in the engine saves and restores the current
+    // device, so this single call is where the primary is picked.
+    if (primary_device != 0) {
+        int n_vis = 0;
+        if (cudaGetDeviceCount(&n_vis) != cudaSuccess || primary_device >= n_vis) {
+            cudaGetLastError();
+            std::fprintf(stderr, "strata generate: STRATA_PRIMARY_DEVICE=%d: no such visible device (%d visible)\n",
+                         primary_device, n_vis);
+            return 2;
+        }
+        if (cudaSetDevice(primary_device) != cudaSuccess) {
+            std::fprintf(stderr, "strata generate: STRATA_PRIMARY_DEVICE=%d: cudaSetDevice failed: %s\n",
+                         primary_device, cudaGetErrorString(cudaGetLastError()));
+            return 1;
+        }
+        std::fprintf(stderr, "strata generate: primary device from STRATA_PRIMARY_DEVICE: CUDA%d\n", primary_device);
+    }
     // STRATA_EARLY_REMOTE_CONTEXTS=1: create EVERY secondary context here, like CUDA1's.  Under WSL2 the driver's
     // pinned/mapped host budget (dxg gpadl, ~1 GiB) is spent by CUDA0's weights and MTP before the later loop runs,
     // and a new context then fails with cudaErrorMemoryAllocation (CUDA2: "cudaSetDevice(2) failed: out of memory").
@@ -3390,7 +3435,7 @@ int main(int argc, char** argv) {
     // held all 48 layers' state whatever layers it ran, which is the same disease the chunked-QSA-prefill PR
     // fixed in llama.cpp: allocation sized by the whole model instead of the device's own work.
     {
-        const strata::core::OnDevice on0(0);
+        const strata::core::OnDevice on0(primary_device);   // STRATA_PRIMARY_DEVICE (upstream: a literal 0)
         const int64_t hi0 = multi_gpu ? split_at[0] : -1;
         // the elastic K/V (--kv-grow, see kvg_ensure): one GPU, the whole K/V in VRAM (no streaming), a profiled cache
         // that can give slots up, and every expert in RAM for the CPU to compute the ones it gives up
@@ -5464,6 +5509,14 @@ int main(int argc, char** argv) {
             for (int64_t l = st->lb; l < st->le; ++l)
                 for (int64_t e = 0; e < g.n_expert; ++e)
                     if (st->cache.slot_of(l, e) >= 0) stage_pairs.emplace_back((int32_t) l, (int32_t) e);
+        // A helper GPU's experts are left out of the RAM copy as a stage's are - the RAM
+        // that duplication would take goes to colder experts instead.
+        for (int r = 0; r < 3; ++r) {
+            if (o.expert_cache_remote[(size_t) r] <= 0) continue;
+            for (int64_t l = 0; l < g.n_layers; ++l)
+                for (int64_t e = 0; e < g.n_expert; ++e)
+                    if (remote_experts[(size_t) r].holds(l, (int32_t) e)) stage_pairs.emplace_back((int32_t) l, (int32_t) e);
+        }
         const std::vector<std::pair<int32_t, int32_t>>& rank_all = profile_all.empty() ? profile : profile_all;
         bool resident_ok = src.pin_cache_complement(xcache, err, o.resident_pin, stage_pairs, lend_from,
                                                     o.resident_headroom, o.resident_budget, &rank_all);

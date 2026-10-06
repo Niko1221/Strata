@@ -82,6 +82,13 @@ int device_count() {
     return count < 0 ? 0 : count;
 }
 
+// STRATA_PRIMARY_DEVICE: see the declaration in device.hpp.  0 = upstream's behavior (the runtime's first
+// visible device).  Set once, before any context exists, by generate.cpp's STRATA_PRIMARY_DEVICE handling.
+static int g_primary_device = 0;
+
+void set_primary_device(int ordinal) { g_primary_device = ordinal; }
+int primary_device() { return g_primary_device; }
+
 bool device_summary(int ordinal, std::string& name, std::string& detail) {
     cudaDeviceProp p{};
     if (ordinal < 0 || ordinal >= device_count() || cudaGetDeviceProperties(&p, ordinal) != cudaSuccess) {

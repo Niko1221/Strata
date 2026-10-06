@@ -166,3 +166,50 @@ not yet combined with the peer's rows. Mapped host buffers gain
 context write them. The tier size is manual for now (`--peer-reserve-mib`,
 `--peer-slots`); automatic sizing on small cards wants the buffer lending of
 #216 and is a follow-up.
+
+## The resident RAM mode with the helper caches
+
+`--resident-experts` (the low-RAM mode) works with the helper caches: the
+experts a helper holds are left out of the RAM copy as a split stage's are, and
+the helpers' refills read through the source - the RAM copy when it holds the
+bytes, the files otherwise. Measured here on an RX 6800 (gfx1030, 16 GB) + RX
+6600 (gfx1032, 8 GB), Windows 11, an i5-11400F and 32 GB of RAM (the 6800 alone:
+~37.5 decode tok/s, the same worker configuration): the 6600's 3.4-3.8k-expert
+cache lifted decode to ~40.6 / 44.2 tok/s on 8K-token requests at 3800 slots,
+with the CPU pool's share of the experts down from ~2.9 to ~0.4 entries per
+layer-window. The helper's rows cost about 0.3-0.6 ms per layer on the pool's
+critical path - usually less than the CPU rows and page faults they replace,
+which is why the 6600 (about 2-3x the 6800's cost per row) still pays off as a
+cache tier.
+
+**Size a helper against the card's *real* free VRAM.** `--expert-cache-device1
+auto` reads `cudaMemGetInfo`, which on Windows reports the *process's* WDDM
+budget: it cannot see the desktop, the vision encoder (a separate process), a
+streaming host or other apps on that card.  A helper auto-sized on a card that
+also drives the display or the encoder over-commits, WDDM backs the excess with
+system RAM ("shared GPU memory"), and that memory leaves the machine's RAM - on
+a 32 GB PC it pushed the resident complement into the pagefile and made the
+helper read its own cache over PCIe.  An explicit count
+(`--expert-cache-device1 3800` here, of ~4100 that fit an empty card) kept the
+cache in real VRAM; freeing another app's sticky allocation on the same card
+was worth about the same again.  Prefer explicit counts on a card that shares
+its VRAM with anything else.
+
+## Choosing the primary device on Windows (`STRATA_PRIMARY_DEVICE`)
+
+The engine runs the model on the device the runtime numbers 0.  Windows' HIP
+runtime enumerates the cards in a fixed order that `HIP_VISIBLE_DEVICES` only
+filters - it cannot reorder - so on a PC whose faster card comes second (an RX
+6800 after an RX 6600, say) a run with both visible could only put the model on
+the slow one.  `STRATA_PRIMARY_DEVICE=N` picks another visible ordinal as the
+primary; unset or 0 is upstream's behavior.
+
+- the helper caches (`--expert-cache-device1..3`) take the visible devices
+  other than the primary, in order;
+- the peer tier's cross-device checks use the same ordinal;
+- a layer split is refused with this set (its later stages must be > 0, and
+  stage 0 is the primary);
+- NVIDIA cards do not need it: `CUDA_VISIBLE_DEVICES` with
+  `CUDA_DEVICE_ORDER=PCI_BUS_ID` already reorders.
+
+Measured on RX 6800 + RX 6600, Windows 11; the report accompanies this change.
