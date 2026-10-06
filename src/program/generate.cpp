@@ -6700,7 +6700,7 @@ int main(int argc, char** argv) {
                     sl.ids.clear();
                     sl.checks.clear();
                     kv_pool.release(*bslot_ss[0][(size_t) slot_source]);
-                    if (!pool_reserve(ss, n + 8, -1)) {   // the main session holds the conversation: it waits there
+                    if (!pool_reserve(ss, n + 8, -1)) {   // refused; the main session keeps the conversation for a retry
                         pool_report();
                         pool_full();
                         continue;
