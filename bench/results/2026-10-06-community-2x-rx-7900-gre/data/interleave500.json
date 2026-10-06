@@ -1,0 +1,602 @@
+[
+  {
+    "pair": 1,
+    "arm": "A",
+    "prompt_id": 0,
+    "config": "<strata checkout>/strata-coder-iq1_m.json",
+    "wall_s": 8.065,
+    "ttft_s": 1.935,
+    "metrics": {
+      "prompt_tokens": 1757.0,
+      "reused": 0.0,
+      "fresh": 1757.0,
+      "prefill_ms": 1898.0,
+      "prefill_tps": 925.5,
+      "generated": 409.0,
+      "decode_ms": 6160.0,
+      "decode_tps": 66.4
+    },
+    "engine_line": "strata serve: prompt 1757 tokens = 0 reused + 1757 read in 1898 ms (925.5 tok/s), 409 generated in 6160 ms (66.4 tok/s), drafts accepted 235 of 385, 1 checkpoints",
+    "finish_reason": "stop",
+    "usage": {
+      "prompt_tokens": 1757,
+      "completion_tokens": 409,
+      "total_tokens": 2166,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "chars": 1751,
+    "text_head": "The source code defines a series of exported functions, `rule0` through `rule59`, each implementing a specific condition"
+  },
+  {
+    "pair": 1,
+    "arm": "B",
+    "prompt_id": 0,
+    "config": "<strata checkout>/bench/results/2026-10-06-community-2x-rx-7900-gre/data/cfg-interleave-B.json",
+    "wall_s": 8.759,
+    "ttft_s": 1.944,
+    "metrics": {
+      "prompt_tokens": 1757.0,
+      "reused": 0.0,
+      "fresh": 1757.0,
+      "prefill_ms": 1904.0,
+      "prefill_tps": 922.7,
+      "generated": 414.0,
+      "decode_ms": 6846.0,
+      "decode_tps": 60.5
+    },
+    "engine_line": "strata serve: prompt 1757 tokens = 0 reused + 1757 read in 1904 ms (922.7 tok/s), 414 generated in 6846 ms (60.5 tok/s), drafts accepted 240 of 374, 1 checkpoints",
+    "finish_reason": "stop",
+    "usage": {
+      "prompt_tokens": 1757,
+      "completion_tokens": 414,
+      "total_tokens": 2171,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "chars": 2002,
+    "text_head": "The source code defines a series of exported functions (`rule0` through `rule59`) that implement a specific mathematical"
+  },
+  {
+    "pair": 2,
+    "arm": "A",
+    "prompt_id": 1,
+    "config": "<strata checkout>/strata-coder-iq1_m.json",
+    "wall_s": 9.673,
+    "ttft_s": 2.812,
+    "metrics": {
+      "prompt_tokens": 2334.0,
+      "reused": 0.0,
+      "fresh": 2334.0,
+      "prefill_ms": 2773.0,
+      "prefill_tps": 841.5,
+      "generated": 500.0,
+      "decode_ms": 6891.0,
+      "decode_tps": 72.6
+    },
+    "engine_line": "strata serve: prompt 2334 tokens = 0 reused + 2334 read in 2773 ms (841.5 tok/s), 500 generated in 6891 ms (72.6 tok/s), drafts accepted 308 of 436, 1 checkpoints",
+    "finish_reason": "length",
+    "usage": {
+      "prompt_tokens": 2334,
+      "completion_tokens": 500,
+      "total_tokens": 2834,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "chars": 1780,
+    "text_head": "### Summary of Module Functionality\n\nThis module defines a collection of 80 exported functions (`rule0` through `rule79`"
+  },
+  {
+    "pair": 2,
+    "arm": "B",
+    "prompt_id": 1,
+    "config": "<strata checkout>/bench/results/2026-10-06-community-2x-rx-7900-gre/data/cfg-interleave-B.json",
+    "wall_s": 11.114,
+    "ttft_s": 2.775,
+    "metrics": {
+      "prompt_tokens": 2334.0,
+      "reused": 0.0,
+      "fresh": 2334.0,
+      "prefill_ms": 2734.0,
+      "prefill_tps": 853.8,
+      "generated": 500.0,
+      "decode_ms": 8371.0,
+      "decode_tps": 59.7
+    },
+    "engine_line": "strata serve: prompt 2334 tokens = 0 reused + 2334 read in 2734 ms (853.8 tok/s), 500 generated in 8371 ms (59.7 tok/s), drafts accepted 290 of 465, 1 checkpoints",
+    "finish_reason": "length",
+    "usage": {
+      "prompt_tokens": 2334,
+      "completion_tokens": 500,
+      "total_tokens": 2834,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "chars": 2003,
+    "text_head": "### Summary of Module Functionality\n\nThis module defines a collection of 80 exported functions (`rule0` through `rule79`"
+  },
+  {
+    "pair": 3,
+    "arm": "A",
+    "prompt_id": 2,
+    "config": "<strata checkout>/strata-coder-iq1_m.json",
+    "wall_s": 10.378,
+    "ttft_s": 3.037,
+    "metrics": {
+      "prompt_tokens": 2913.0,
+      "reused": 0.0,
+      "fresh": 2913.0,
+      "prefill_ms": 2998.0,
+      "prefill_tps": 971.8,
+      "generated": 500.0,
+      "decode_ms": 7370.0,
+      "decode_tps": 67.8
+    },
+    "engine_line": "strata serve: prompt 2913 tokens = 0 reused + 2913 read in 2998 ms (971.8 tok/s), 500 generated in 7370 ms (67.8 tok/s), drafts accepted 298 of 480, 1 checkpoints",
+    "finish_reason": "length",
+    "usage": {
+      "prompt_tokens": 2913,
+      "completion_tokens": 500,
+      "total_tokens": 3413,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "chars": 1874,
+    "text_head": "### Code Review\n\n#### 1. Naming\n**Severity: High**\nThe naming convention `rule0` through `rule99` is non-descriptive and"
+  },
+  {
+    "pair": 3,
+    "arm": "B",
+    "prompt_id": 2,
+    "config": "<strata checkout>/bench/results/2026-10-06-community-2x-rx-7900-gre/data/cfg-interleave-B.json",
+    "wall_s": 10.323,
+    "ttft_s": 3.037,
+    "metrics": {
+      "prompt_tokens": 2913.0,
+      "reused": 0.0,
+      "fresh": 2913.0,
+      "prefill_ms": 2997.0,
+      "prefill_tps": 972.1,
+      "generated": 500.0,
+      "decode_ms": 7316.0,
+      "decode_tps": 68.3
+    },
+    "engine_line": "strata serve: prompt 2913 tokens = 0 reused + 2913 read in 2997 ms (972.1 tok/s), 500 generated in 7316 ms (68.3 tok/s), drafts accepted 326 of 453, 1 checkpoints",
+    "finish_reason": "length",
+    "usage": {
+      "prompt_tokens": 2913,
+      "completion_tokens": 500,
+      "total_tokens": 3413,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "chars": 1627,
+    "text_head": "Here is the code review for the provided file.\n\n### Code Review: `rules.ts` (or similar)\n\n#### 1. Naming & Structure\n*  "
+  },
+  {
+    "pair": 4,
+    "arm": "A",
+    "prompt_id": 3,
+    "config": "<strata checkout>/strata-coder-iq1_m.json",
+    "wall_s": 10.103,
+    "ttft_s": 2.863,
+    "metrics": {
+      "prompt_tokens": 3584.0,
+      "reused": 0.0,
+      "fresh": 3584.0,
+      "prefill_ms": 2822.0,
+      "prefill_tps": 1270.1,
+      "generated": 500.0,
+      "decode_ms": 7269.0,
+      "decode_tps": 68.8
+    },
+    "engine_line": "strata serve: prompt 3584 tokens = 0 reused + 3584 read in 2822 ms (1270.1 tok/s), 500 generated in 7269 ms (68.8 tok/s), drafts accepted 288 of 411, 1 checkpoints",
+    "finish_reason": "length",
+    "usage": {
+      "prompt_tokens": 3584,
+      "completion_tokens": 500,
+      "total_tokens": 4084,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "chars": 1838,
+    "text_head": "Here is the breakdown of the code for a new maintainer.\n\n### 1. Data Flow\nThe code defines a sequence of 120 exported fu"
+  },
+  {
+    "pair": 4,
+    "arm": "B",
+    "prompt_id": 3,
+    "config": "<strata checkout>/bench/results/2026-10-06-community-2x-rx-7900-gre/data/cfg-interleave-B.json",
+    "wall_s": 10.185,
+    "ttft_s": 2.871,
+    "metrics": {
+      "prompt_tokens": 3584.0,
+      "reused": 0.0,
+      "fresh": 3584.0,
+      "prefill_ms": 2829.0,
+      "prefill_tps": 1266.8,
+      "generated": 500.0,
+      "decode_ms": 7344.0,
+      "decode_tps": 68.1
+    },
+    "engine_line": "strata serve: prompt 3584 tokens = 0 reused + 3584 read in 2829 ms (1266.8 tok/s), 500 generated in 7344 ms (68.1 tok/s), drafts accepted 335 of 493, 1 checkpoints",
+    "finish_reason": "length",
+    "usage": {
+      "prompt_tokens": 3584,
+      "completion_tokens": 500,
+      "total_tokens": 4084,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "chars": 1650,
+    "text_head": "Here is the breakdown for the new maintainer.\n\n### 1. The Data Flow\nThe code consists of 120 exported functions (`rule0`"
+  },
+  {
+    "pair": 5,
+    "arm": "A",
+    "prompt_id": 4,
+    "config": "<strata checkout>/strata-coder-iq1_m.json",
+    "wall_s": 10.282,
+    "ttft_s": 3.484,
+    "metrics": {
+      "prompt_tokens": 4238.0,
+      "reused": 0.0,
+      "fresh": 4238.0,
+      "prefill_ms": 3442.0,
+      "prefill_tps": 1231.3,
+      "generated": 500.0,
+      "decode_ms": 6827.0,
+      "decode_tps": 73.2
+    },
+    "engine_line": "strata serve: prompt 4238 tokens = 0 reused + 4238 read in 3442 ms (1231.3 tok/s), 500 generated in 6827 ms (73.2 tok/s), drafts accepted 307 of 454, 1 checkpoints",
+    "finish_reason": "length",
+    "usage": {
+      "prompt_tokens": 4238,
+      "completion_tokens": 500,
+      "total_tokens": 4738,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "chars": 1572,
+    "text_head": "**Design Note: The \"Rule-N\" Family**\n\n**1. Problem Solved**\nThis code implements a **conditional identity transformation"
+  },
+  {
+    "pair": 5,
+    "arm": "B",
+    "prompt_id": 4,
+    "config": "<strata checkout>/bench/results/2026-10-06-community-2x-rx-7900-gre/data/cfg-interleave-B.json",
+    "wall_s": 7.448,
+    "ttft_s": 3.432,
+    "metrics": {
+      "prompt_tokens": 4238.0,
+      "reused": 0.0,
+      "fresh": 4238.0,
+      "prefill_ms": 3388.0,
+      "prefill_tps": 1250.8,
+      "generated": 256.0,
+      "decode_ms": 4046.0,
+      "decode_tps": 63.3
+    },
+    "engine_line": "strata serve: prompt 4238 tokens = 0 reused + 4238 read in 3388 ms (1250.8 tok/s), 256 generated in 4046 ms (63.3 tok/s), drafts accepted 126 of 126, 1 checkpoints",
+    "finish_reason": "length",
+    "usage": {
+      "prompt_tokens": 4238,
+      "completion_tokens": 256,
+      "total_tokens": 4494,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "chars": 255,
+    "text_head": "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+  },
+  {
+    "pair": 6,
+    "arm": "A",
+    "prompt_id": 0,
+    "config": "<strata checkout>/strata-coder-iq1_m.json",
+    "wall_s": 6.904,
+    "ttft_s": 1.948,
+    "metrics": {
+      "prompt_tokens": 1757.0,
+      "reused": 0.0,
+      "fresh": 1757.0,
+      "prefill_ms": 1912.0,
+      "prefill_tps": 918.9,
+      "generated": 336.0,
+      "decode_ms": 4985.0,
+      "decode_tps": 67.4
+    },
+    "engine_line": "strata serve: prompt 1757 tokens = 0 reused + 1757 read in 1912 ms (918.9 tok/s), 336 generated in 4985 ms (67.4 tok/s), drafts accepted 195 of 308, 1 checkpoints",
+    "finish_reason": "stop",
+    "usage": {
+      "prompt_tokens": 1757,
+      "completion_tokens": 336,
+      "total_tokens": 2093,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "chars": 1531,
+    "text_head": "The source code defines a series of exported functions, `rule0` through `rule59`, each following a consistent pattern wh"
+  },
+  {
+    "pair": 6,
+    "arm": "B",
+    "prompt_id": 0,
+    "config": "<strata checkout>/bench/results/2026-10-06-community-2x-rx-7900-gre/data/cfg-interleave-B.json",
+    "wall_s": 5.998,
+    "ttft_s": 1.963,
+    "metrics": {
+      "prompt_tokens": 1757.0,
+      "reused": 0.0,
+      "fresh": 1757.0,
+      "prefill_ms": 1925.0,
+      "prefill_tps": 912.8,
+      "generated": 258.0,
+      "decode_ms": 4064.0,
+      "decode_tps": 63.5
+    },
+    "engine_line": "strata serve: prompt 1757 tokens = 0 reused + 1757 read in 1925 ms (912.8 tok/s), 258 generated in 4064 ms (63.5 tok/s), drafts accepted 159 of 232, 1 checkpoints",
+    "finish_reason": "stop",
+    "usage": {
+      "prompt_tokens": 1757,
+      "completion_tokens": 258,
+      "total_tokens": 2015,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "chars": 1075,
+    "text_head": "The source code defines a series of exported functions, `rule0` through `rule59`, each implementing a specific condition"
+  },
+  {
+    "pair": 7,
+    "arm": "A",
+    "prompt_id": 1,
+    "config": "<strata checkout>/strata-coder-iq1_m.json",
+    "wall_s": 10.219,
+    "ttft_s": 2.777,
+    "metrics": {
+      "prompt_tokens": 2334.0,
+      "reused": 0.0,
+      "fresh": 2334.0,
+      "prefill_ms": 2739.0,
+      "prefill_tps": 852.2,
+      "generated": 500.0,
+      "decode_ms": 7471.0,
+      "decode_tps": 66.9
+    },
+    "engine_line": "strata serve: prompt 2334 tokens = 0 reused + 2334 read in 2739 ms (852.2 tok/s), 500 generated in 7471 ms (66.9 tok/s), drafts accepted 289 of 479, 1 checkpoints",
+    "finish_reason": "length",
+    "usage": {
+      "prompt_tokens": 2334,
+      "completion_tokens": 500,
+      "total_tokens": 2834,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "chars": 1977,
+    "text_head": "### Summary of Module Functionality\n\nThis module defines a collection of 80 exported functions, named `rule0` through `r"
+  },
+  {
+    "pair": 7,
+    "arm": "B",
+    "prompt_id": 1,
+    "config": "<strata checkout>/bench/results/2026-10-06-community-2x-rx-7900-gre/data/cfg-interleave-B.json",
+    "wall_s": 10.625,
+    "ttft_s": 2.819,
+    "metrics": {
+      "prompt_tokens": 2334.0,
+      "reused": 0.0,
+      "fresh": 2334.0,
+      "prefill_ms": 2780.0,
+      "prefill_tps": 839.6,
+      "generated": 500.0,
+      "decode_ms": 7836.0,
+      "decode_tps": 63.8
+    },
+    "engine_line": "strata serve: prompt 2334 tokens = 0 reused + 2334 read in 2780 ms (839.6 tok/s), 500 generated in 7836 ms (63.8 tok/s), drafts accepted 309 of 464, 1 checkpoints",
+    "finish_reason": "length",
+    "usage": {
+      "prompt_tokens": 2334,
+      "completion_tokens": 500,
+      "total_tokens": 2834,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "chars": 1980,
+    "text_head": "### Summary of Module Functionality\n\nThis module defines a family of 80 distinct functions (`rule0` through `rule79`). E"
+  },
+  {
+    "pair": 8,
+    "arm": "A",
+    "prompt_id": 2,
+    "config": "<strata checkout>/strata-coder-iq1_m.json",
+    "wall_s": 10.122,
+    "ttft_s": 3.105,
+    "metrics": {
+      "prompt_tokens": 2913.0,
+      "reused": 0.0,
+      "fresh": 2913.0,
+      "prefill_ms": 3066.0,
+      "prefill_tps": 950.2,
+      "generated": 500.0,
+      "decode_ms": 7046.0,
+      "decode_tps": 71.0
+    },
+    "engine_line": "strata serve: prompt 2913 tokens = 0 reused + 2913 read in 3066 ms (950.2 tok/s), 500 generated in 7046 ms (71.0 tok/s), drafts accepted 295 of 429, 1 checkpoints",
+    "finish_reason": "length",
+    "usage": {
+      "prompt_tokens": 2913,
+      "completion_tokens": 500,
+      "total_tokens": 3413,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "chars": 1792,
+    "text_head": "Here is the code review for the provided file.\n\n### Code Review Summary\n\n**Severity: Critical**\n\nThe current implementat"
+  },
+  {
+    "pair": 8,
+    "arm": "B",
+    "prompt_id": 2,
+    "config": "<strata checkout>/bench/results/2026-10-06-community-2x-rx-7900-gre/data/cfg-interleave-B.json",
+    "wall_s": 10.262,
+    "ttft_s": 3.114,
+    "metrics": {
+      "prompt_tokens": 2913.0,
+      "reused": 0.0,
+      "fresh": 2913.0,
+      "prefill_ms": 3074.0,
+      "prefill_tps": 947.7,
+      "generated": 500.0,
+      "decode_ms": 7177.0,
+      "decode_tps": 69.7
+    },
+    "engine_line": "strata serve: prompt 2913 tokens = 0 reused + 2913 read in 3074 ms (947.7 tok/s), 500 generated in 7177 ms (69.7 tok/s), drafts accepted 326 of 433, 1 checkpoints",
+    "finish_reason": "length",
+    "usage": {
+      "prompt_tokens": 2913,
+      "completion_tokens": 500,
+      "total_tokens": 3413,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "chars": 1782,
+    "text_head": "Here is the code review for the provided file.\n\n### Code Review Summary\n\n**Severity: Critical**\n\nThe file contains 100 e"
+  },
+  {
+    "pair": 9,
+    "arm": "A",
+    "prompt_id": 3,
+    "config": "<strata checkout>/strata-coder-iq1_m.json",
+    "wall_s": 9.563,
+    "ttft_s": 2.863,
+    "metrics": {
+      "prompt_tokens": 3584.0,
+      "reused": 0.0,
+      "fresh": 3584.0,
+      "prefill_ms": 2822.0,
+      "prefill_tps": 1270.1,
+      "generated": 500.0,
+      "decode_ms": 6729.0,
+      "decode_tps": 74.3
+    },
+    "engine_line": "strata serve: prompt 3584 tokens = 0 reused + 3584 read in 2822 ms (1270.1 tok/s), 500 generated in 6729 ms (74.3 tok/s), drafts accepted 316 of 475, 1 checkpoints",
+    "finish_reason": "length",
+    "usage": {
+      "prompt_tokens": 3584,
+      "completion_tokens": 500,
+      "total_tokens": 4084,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "chars": 1523,
+    "text_head": "Here is the breakdown for the new maintainer.\n\n### 1. The Data Flow\nThe code consists of 120 independent, stateless func"
+  },
+  {
+    "pair": 9,
+    "arm": "B",
+    "prompt_id": 3,
+    "config": "<strata checkout>/bench/results/2026-10-06-community-2x-rx-7900-gre/data/cfg-interleave-B.json",
+    "wall_s": 10.57,
+    "ttft_s": 2.861,
+    "metrics": {
+      "prompt_tokens": 3584.0,
+      "reused": 0.0,
+      "fresh": 3584.0,
+      "prefill_ms": 2818.0,
+      "prefill_tps": 1271.9,
+      "generated": 500.0,
+      "decode_ms": 7740.0,
+      "decode_tps": 64.6
+    },
+    "engine_line": "strata serve: prompt 3584 tokens = 0 reused + 3584 read in 2818 ms (1271.9 tok/s), 500 generated in 7740 ms (64.6 tok/s), drafts accepted 322 of 501, 1 checkpoints",
+    "finish_reason": "length",
+    "usage": {
+      "prompt_tokens": 3584,
+      "completion_tokens": 500,
+      "total_tokens": 4084,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "chars": 1735,
+    "text_head": "Here is the explanation for the new maintainer, structured as requested.\n\n### 1. The Data Flow\nThe code consists of 120 "
+  },
+  {
+    "pair": 10,
+    "arm": "A",
+    "prompt_id": 4,
+    "config": "<strata checkout>/strata-coder-iq1_m.json",
+    "wall_s": 10.686,
+    "ttft_s": 3.558,
+    "metrics": {
+      "prompt_tokens": 4238.0,
+      "reused": 0.0,
+      "fresh": 4238.0,
+      "prefill_ms": 3516.0,
+      "prefill_tps": 1205.2,
+      "generated": 500.0,
+      "decode_ms": 7157.0,
+      "decode_tps": 69.9
+    },
+    "engine_line": "strata serve: prompt 4238 tokens = 0 reused + 4238 read in 3516 ms (1205.2 tok/s), 500 generated in 7157 ms (69.9 tok/s), drafts accepted 295 of 444, 1 checkpoints",
+    "finish_reason": "length",
+    "usage": {
+      "prompt_tokens": 4238,
+      "completion_tokens": 500,
+      "total_tokens": 4738,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "chars": 1628,
+    "text_head": "**Design Note: The \"Rule-N\" Identity/Shift Pattern**\n\n**1. Problem Solved**\nThis code implements a **conditional identit"
+  },
+  {
+    "pair": 10,
+    "arm": "B",
+    "prompt_id": 4,
+    "config": "<strata checkout>/bench/results/2026-10-06-community-2x-rx-7900-gre/data/cfg-interleave-B.json",
+    "wall_s": 11.51,
+    "ttft_s": 3.717,
+    "metrics": {
+      "prompt_tokens": 4238.0,
+      "reused": 0.0,
+      "fresh": 4238.0,
+      "prefill_ms": 3674.0,
+      "prefill_tps": 1153.5,
+      "generated": 500.0,
+      "decode_ms": 7823.0,
+      "decode_tps": 63.9
+    },
+    "engine_line": "strata serve: prompt 4238 tokens = 0 reused + 4238 read in 3674 ms (1153.5 tok/s), 500 generated in 7823 ms (63.9 tok/s), drafts accepted 310 of 457, 1 checkpoints",
+    "finish_reason": "length",
+    "usage": {
+      "prompt_tokens": 4238,
+      "completion_tokens": 500,
+      "total_tokens": 4738,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "chars": 1795,
+    "text_head": "### Design Note: The \"Identity-Shift\" Rule Family\n\n**Problem Solved:**\nThis code implements a family of 140 functions (`"
+  }
+]

@@ -1,0 +1,3354 @@
+{
+  "started": 1791285704.0868523,
+  "minutes": 30.0,
+  "interval_s": 60.0,
+  "config": "<strata checkout>/bench/results/2026-10-06-community-2x-rx-7900-gre/data/cfg-soak.json",
+  "requests": [
+    {
+      "n": 1,
+      "wall_s": 3.23,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 75,
+        "completion_tokens": 128,
+        "total_tokens": 203,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of the differences between lists an"
+    },
+    {
+      "n": 2,
+      "wall_s": 2.44,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 3: How a Hash Map Handles Collisions\n\n## 1. The Core Problem: What Is"
+    },
+    {
+      "n": 3,
+      "wall_s": 2.61,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "### 1. The Core Concept: From Linear Search to Binary Search\n\nTo understand how "
+    },
+    {
+      "n": 4,
+      "wall_s": 2.37,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 75,
+        "completion_tokens": 128,
+        "total_tokens": 203,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "### 1. Conceptual Overview of Context Managers\n\nA context manager in Python is a"
+    },
+    {
+      "n": 5,
+      "wall_s": 2.68,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 73,
+        "completion_tokens": 128,
+        "total_tokens": 201,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Backpressure in Streaming Pipelines\n\nBackpressure is a flow-control mechanism "
+    },
+    {
+      "n": 6,
+      "wall_s": 2.17,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 74,
+        "completion_tokens": 128,
+        "total_tokens": 202,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of the Big-O complexity for Binary "
+    },
+    {
+      "n": 7,
+      "wall_s": 2.61,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Making a Function Idempotent\n\n## Step 1: Understand What Idempotency Means\n\nA "
+    },
+    {
+      "n": 8,
+      "wall_s": 2.66,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 72,
+        "completion_tokens": 128,
+        "total_tokens": 200,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 9: Concurrency vs. Parallelism\n\n## 1. Core Definitions\n\n**Concurrency"
+    },
+    {
+      "n": 9,
+      "wall_s": 2.39,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 75,
+        "completion_tokens": 128,
+        "total_tokens": 203,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to merge two sorted lists in"
+    },
+    {
+      "n": 10,
+      "wall_s": 2.68,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 74,
+        "completion_tokens": 128,
+        "total_tokens": 202,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Floating point addition is not associative because the IEEE 754 standard (and mo"
+    },
+    {
+      "n": 11,
+      "wall_s": 2.71,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 75,
+        "completion_tokens": 128,
+        "total_tokens": 203,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "DNS resolution is the process by which a computer translates a human-readable do"
+    },
+    {
+      "n": 12,
+      "wall_s": 2.63,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 74,
+        "completion_tokens": 128,
+        "total_tokens": 202,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Versioning a database schema safely is a critical aspect of software engineering"
+    },
+    {
+      "n": 13,
+      "wall_s": 2.63,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "### 1. Introduction to Decorators and Retry Logic\n\nIn Python, a **decorator** is"
+    },
+    {
+      "n": 14,
+      "wall_s": 2.65,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 80,
+        "completion_tokens": 128,
+        "total_tokens": 208,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Monotonic Clocks vs. Wall Clocks: A Deep Dive\n\n## 1. The Core Problem: Time is"
+    },
+    {
+      "n": 15,
+      "wall_s": 2.02,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to implement a Python functi"
+    },
+    {
+      "n": 16,
+      "wall_s": 2.5,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "In Python, lists and tuples are both sequence types, but they serve fundamentall"
+    },
+    {
+      "n": 17,
+      "wall_s": 2.31,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 78,
+        "completion_tokens": 128,
+        "total_tokens": 206,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 18: How a Hash Map Handles Collisions\n\n## 1. The Core Problem: What I"
+    },
+    {
+      "n": 18,
+      "wall_s": 2.41,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 78,
+        "completion_tokens": 128,
+        "total_tokens": 206,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "SQL indexes speed up queries by providing a secondary, optimized data structure "
+    },
+    {
+      "n": 19,
+      "wall_s": 2.27,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "### 1. Introduction to Context Managers in Python\n\nA context manager in Python i"
+    },
+    {
+      "n": 20,
+      "wall_s": 2.8,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 75,
+        "completion_tokens": 128,
+        "total_tokens": 203,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Backpressure in Streaming Pipelines\n\n## 1. Definition and Core Concept\n\n**Back"
+    },
+    {
+      "n": 21,
+      "wall_s": 2.18,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is the compact, step-by-step explanation of Big-O notation for Binary Searc"
+    },
+    {
+      "n": 22,
+      "wall_s": 2.76,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Making a Function Idempotent\n\n## Step 1: Understand What Idempotency Means\n\nA "
+    },
+    {
+      "n": 23,
+      "wall_s": 2.58,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 74,
+        "completion_tokens": 128,
+        "total_tokens": 202,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Concurrency vs. Parallelism: A Deep Dive\n\n## 1. Core Definitions\n\n**Concurrenc"
+    },
+    {
+      "n": 24,
+      "wall_s": 2.48,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 75,
+        "completion_tokens": 128,
+        "total_tokens": 203,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to merge two sorted lists in"
+    },
+    {
+      "n": 25,
+      "wall_s": 2.84,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 74,
+        "completion_tokens": 128,
+        "total_tokens": 202,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Floating point addition is not associative because the IEEE 754 standard (and mo"
+    },
+    {
+      "n": 26,
+      "wall_s": 2.7,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 75,
+        "completion_tokens": 128,
+        "total_tokens": 203,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "DNS resolution is the process by which a computer translates a human-readable do"
+    },
+    {
+      "n": 27,
+      "wall_s": 2.58,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 74,
+        "completion_tokens": 128,
+        "total_tokens": 202,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Versioning a database schema safely is a critical aspect of software engineering"
+    },
+    {
+      "n": 28,
+      "wall_s": 2.52,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 29: Python Decorator for Retrying Flaky Calls\n\n## Step-by-Step Reason"
+    },
+    {
+      "n": 29,
+      "wall_s": 2.64,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 80,
+        "completion_tokens": 128,
+        "total_tokens": 208,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Monotonic Clocks vs. Wall Clocks: A Deep Dive\n\n## 1. The Core Problem: Time is"
+    },
+    {
+      "n": 30,
+      "wall_s": 2.04,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to implement a Python functi"
+    },
+    {
+      "n": 31,
+      "wall_s": 2.45,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "In Python, lists and tuples are both sequence types, but they serve fundamentall"
+    },
+    {
+      "n": 32,
+      "wall_s": 2.36,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 78,
+        "completion_tokens": 128,
+        "total_tokens": 206,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 33: How a Hash Map Handles Collisions\n\n## 1. The Core Problem: What I"
+    },
+    {
+      "n": 33,
+      "wall_s": 2.81,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 78,
+        "completion_tokens": 128,
+        "total_tokens": 206,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "### Step-by-Step Explanation of How SQL Indexes Speed Up Queries\n\nSQL indexes fu"
+    },
+    {
+      "n": 34,
+      "wall_s": 2.51,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "### 1. Introduction to Context Managers in Python\n\nA context manager in Python i"
+    },
+    {
+      "n": 35,
+      "wall_s": 2.83,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 75,
+        "completion_tokens": 128,
+        "total_tokens": 203,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Backpressure in Streaming Pipelines\n\n## 1. Definition and Core Concept\n\n**Back"
+    },
+    {
+      "n": 36,
+      "wall_s": 2.19,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is the compact, step-by-step explanation of Big-O notation for Binary Searc"
+    },
+    {
+      "n": 37,
+      "wall_s": 2.79,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Making a Function Idempotent\n\n## Step 1: Understand What Idempotency Means\n\nA "
+    },
+    {
+      "n": 38,
+      "wall_s": 2.68,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 74,
+        "completion_tokens": 128,
+        "total_tokens": 202,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Concurrency vs. Parallelism: A Deep Dive\n\n## 1. Core Definitions\n\n**Concurrenc"
+    },
+    {
+      "n": 39,
+      "wall_s": 2.29,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 75,
+        "completion_tokens": 128,
+        "total_tokens": 203,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to merge two sorted lists in"
+    },
+    {
+      "n": 40,
+      "wall_s": 2.62,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 74,
+        "completion_tokens": 128,
+        "total_tokens": 202,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 41: Why Floating Point Addition Is Not Associative\n\n## 1. The Core Ma"
+    },
+    {
+      "n": 41,
+      "wall_s": 2.77,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 75,
+        "completion_tokens": 128,
+        "total_tokens": 203,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "DNS resolution is the process by which a computer translates a human-readable do"
+    },
+    {
+      "n": 42,
+      "wall_s": 2.55,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 74,
+        "completion_tokens": 128,
+        "total_tokens": 202,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Versioning a database schema safely is a critical aspect of software engineering"
+    },
+    {
+      "n": 43,
+      "wall_s": 2.46,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "### 1. Introduction to Decorators and Retry Logic\n\nIn Python, a **decorator** is"
+    },
+    {
+      "n": 44,
+      "wall_s": 2.39,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 80,
+        "completion_tokens": 128,
+        "total_tokens": 208,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 45: Monotonic Clocks vs. Wall Clocks\n\n## 1. The Core Problem: Time is"
+    },
+    {
+      "n": 45,
+      "wall_s": 2.02,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to implement a Python functi"
+    },
+    {
+      "n": 46,
+      "wall_s": 2.26,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 47: Difference Between a List and a Tuple in Python\n\n## Step-by-Step "
+    },
+    {
+      "n": 47,
+      "wall_s": 2.42,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 78,
+        "completion_tokens": 128,
+        "total_tokens": 206,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 48: How a Hash Map Handles Collisions\n\n## 1. The Core Problem: What I"
+    },
+    {
+      "n": 48,
+      "wall_s": 2.79,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 78,
+        "completion_tokens": 128,
+        "total_tokens": 206,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "### Step-by-Step Explanation of How SQL Indexes Speed Up Queries\n\nSQL indexes fu"
+    },
+    {
+      "n": 49,
+      "wall_s": 2.51,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "### 1. Introduction to Context Managers in Python\n\nA context manager in Python i"
+    },
+    {
+      "n": 50,
+      "wall_s": 2.77,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 75,
+        "completion_tokens": 128,
+        "total_tokens": 203,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Backpressure in Streaming Pipelines\n\n## 1. Definition and Core Concept\n\n**Back"
+    },
+    {
+      "n": 51,
+      "wall_s": 2.18,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is the compact, step-by-step explanation of Big-O notation for Binary Searc"
+    },
+    {
+      "n": 52,
+      "wall_s": 2.66,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Making a Function Idempotent\n\n## Step 1: Understand What Idempotency Means\n\nA "
+    },
+    {
+      "n": 53,
+      "wall_s": 2.53,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 74,
+        "completion_tokens": 128,
+        "total_tokens": 202,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Concurrency vs. Parallelism: A Deep Dive\n\n## 1. Core Definitions\n\n**Concurrenc"
+    },
+    {
+      "n": 54,
+      "wall_s": 2.32,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 75,
+        "completion_tokens": 128,
+        "total_tokens": 203,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to merge two sorted lists in"
+    },
+    {
+      "n": 55,
+      "wall_s": 2.68,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 74,
+        "completion_tokens": 128,
+        "total_tokens": 202,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 56: Why Floating Point Addition Is Not Associative\n\n## 1. The Core Ma"
+    },
+    {
+      "n": 56,
+      "wall_s": 2.68,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 75,
+        "completion_tokens": 128,
+        "total_tokens": 203,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "DNS resolution is the process by which a computer translates a human-readable do"
+    },
+    {
+      "n": 57,
+      "wall_s": 2.52,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 74,
+        "completion_tokens": 128,
+        "total_tokens": 202,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 58: How to Version a Database Schema Safely\n\nVersioning a database sc"
+    },
+    {
+      "n": 58,
+      "wall_s": 2.48,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "A Python decorator that retries a flaky call is a powerful pattern for handling "
+    },
+    {
+      "n": 59,
+      "wall_s": 2.63,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 80,
+        "completion_tokens": 128,
+        "total_tokens": 208,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 60: Monotonic Clocks vs. Wall Clocks\n\n## 1. The Core Problem: Time is"
+    },
+    {
+      "n": 60,
+      "wall_s": 2.15,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to implement a Python functi"
+    },
+    {
+      "n": 61,
+      "wall_s": 2.53,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 62: Difference Between a List and a Tuple in Python\n\n## Step-by-Step "
+    },
+    {
+      "n": 62,
+      "wall_s": 2.36,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 78,
+        "completion_tokens": 128,
+        "total_tokens": 206,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "A hash map (also known as a hash table or dictionary) is a data structure that p"
+    },
+    {
+      "n": 63,
+      "wall_s": 2.67,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 78,
+        "completion_tokens": 128,
+        "total_tokens": 206,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "### Step-by-Step Explanation of How SQL Indexes Speed Up Queries\n\nSQL indexes fu"
+    },
+    {
+      "n": 64,
+      "wall_s": 2.28,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "### 1. Introduction to Context Managers in Python\n\nA context manager in Python i"
+    },
+    {
+      "n": 65,
+      "wall_s": 2.55,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 75,
+        "completion_tokens": 128,
+        "total_tokens": 203,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 66: Backpressure in Streaming Pipelines\n\n## 1. Definition and Core Co"
+    },
+    {
+      "n": 66,
+      "wall_s": 2.21,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is the compact, step-by-step explanation of Big-O notation for Binary Searc"
+    },
+    {
+      "n": 67,
+      "wall_s": 2.69,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Making a Function Idempotent\n\n## Step 1: Understand What Idempotency Means\n\nA "
+    },
+    {
+      "n": 68,
+      "wall_s": 2.75,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 74,
+        "completion_tokens": 128,
+        "total_tokens": 202,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Concurrency vs. Parallelism: A Deep Dive\n\n## 1. Core Definitions\n\n**Concurrenc"
+    },
+    {
+      "n": 69,
+      "wall_s": 2.36,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 75,
+        "completion_tokens": 128,
+        "total_tokens": 203,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to merge two sorted lists in"
+    },
+    {
+      "n": 70,
+      "wall_s": 2.59,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 74,
+        "completion_tokens": 128,
+        "total_tokens": 202,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 71: Why Floating Point Addition Is Not Associative\n\n## 1. The Core Ma"
+    },
+    {
+      "n": 71,
+      "wall_s": 2.73,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 75,
+        "completion_tokens": 128,
+        "total_tokens": 203,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "DNS resolution is the process by which a computer translates a human-readable do"
+    },
+    {
+      "n": 72,
+      "wall_s": 2.66,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 74,
+        "completion_tokens": 128,
+        "total_tokens": 202,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Versioning a database schema safely is a critical aspect of software engineering"
+    },
+    {
+      "n": 73,
+      "wall_s": 2.62,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "A Python decorator that retries a flaky call is a powerful pattern for handling "
+    },
+    {
+      "n": 74,
+      "wall_s": 2.53,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 80,
+        "completion_tokens": 128,
+        "total_tokens": 208,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 75: Monotonic Clocks vs. Wall Clocks\n\n## 1. The Core Problem: Time is"
+    },
+    {
+      "n": 75,
+      "wall_s": 2.11,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to implement a Python functi"
+    },
+    {
+      "n": 76,
+      "wall_s": 2.47,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "In Python, lists and tuples are both sequence types, but they serve fundamentall"
+    },
+    {
+      "n": 77,
+      "wall_s": 2.25,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 78,
+        "completion_tokens": 128,
+        "total_tokens": 206,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 78: How a Hash Map Handles Collisions\n\n## 1. The Core Problem: What I"
+    },
+    {
+      "n": 78,
+      "wall_s": 2.48,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 78,
+        "completion_tokens": 128,
+        "total_tokens": 206,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# How SQL Indexes Speed Up Queries\n\n## Step-by-Step Reasoning\n\n### 1. The Proble"
+    },
+    {
+      "n": 79,
+      "wall_s": 2.34,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "### 1. Introduction to Context Managers in Python\n\nA context manager in Python i"
+    },
+    {
+      "n": 80,
+      "wall_s": 2.87,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 75,
+        "completion_tokens": 128,
+        "total_tokens": 203,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Backpressure in Streaming Pipelines\n\nBackpressure is a fundamental concept in "
+    },
+    {
+      "n": 81,
+      "wall_s": 2.58,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "### 1. The Core Concept: Halving the Search Space\n\nBinary search operates on a s"
+    },
+    {
+      "n": 82,
+      "wall_s": 2.78,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Making a Function Idempotent\n\n## Step 1: Understand What Idempotency Means\n\nA "
+    },
+    {
+      "n": 83,
+      "wall_s": 2.46,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 74,
+        "completion_tokens": 128,
+        "total_tokens": 202,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Concurrency vs. Parallelism: A Deep Dive\n\nConcurrency and parallelism are ofte"
+    },
+    {
+      "n": 84,
+      "wall_s": 2.26,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 75,
+        "completion_tokens": 128,
+        "total_tokens": 203,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to merge two sorted lists in"
+    },
+    {
+      "n": 85,
+      "wall_s": 2.68,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 74,
+        "completion_tokens": 128,
+        "total_tokens": 202,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 86: Why Floating Point Addition Is Not Associative\n\n## 1. The Core Ma"
+    },
+    {
+      "n": 86,
+      "wall_s": 2.79,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 75,
+        "completion_tokens": 128,
+        "total_tokens": 203,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "DNS resolution is the process by which a human-readable domain name (e.g., `exam"
+    },
+    {
+      "n": 87,
+      "wall_s": 2.56,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 74,
+        "completion_tokens": 128,
+        "total_tokens": 202,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Versioning a database schema safely is a critical aspect of software engineering"
+    },
+    {
+      "n": 88,
+      "wall_s": 2.44,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "A Python decorator that retries a flaky call is a powerful pattern for handling "
+    },
+    {
+      "n": 89,
+      "wall_s": 2.55,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 80,
+        "completion_tokens": 128,
+        "total_tokens": 208,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 90: Monotonic Clocks vs. Wall Clocks\n\n## 1. The Core Problem: Time is"
+    },
+    {
+      "n": 90,
+      "wall_s": 2.32,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to implement a Python functi"
+    },
+    {
+      "n": 91,
+      "wall_s": 2.4,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 92: Difference Between a List and a Tuple in Python\n\n## Step-by-Step "
+    },
+    {
+      "n": 92,
+      "wall_s": 2.31,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 78,
+        "completion_tokens": 128,
+        "total_tokens": 206,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 93: How a Hash Map Handles Collisions\n\n## 1. The Core Problem: What I"
+    },
+    {
+      "n": 93,
+      "wall_s": 2.26,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 78,
+        "completion_tokens": 128,
+        "total_tokens": 206,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "### Step-by-Step Explanation of How SQL Indexes Speed Up Queries\n\n1.  **The Prob"
+    },
+    {
+      "n": 94,
+      "wall_s": 2.36,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "### 1. Introduction to Context Managers in Python\n\nA context manager in Python i"
+    },
+    {
+      "n": 95,
+      "wall_s": 2.84,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 75,
+        "completion_tokens": 128,
+        "total_tokens": 203,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Backpressure in Streaming Pipelines\n\nBackpressure is a flow-control mechanism "
+    },
+    {
+      "n": 96,
+      "wall_s": 2.62,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "### 1. The Core Concept: Halving the Search Space\n\nBinary search operates on a s"
+    },
+    {
+      "n": 97,
+      "wall_s": 2.6,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Making a Function Idempotent\n\n## Step 1: Understand What Idempotency Means\n\nA "
+    },
+    {
+      "n": 98,
+      "wall_s": 2.64,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 74,
+        "completion_tokens": 128,
+        "total_tokens": 202,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Concurrency vs. Parallelism: A Deep Dive\n\nConcurrency and parallelism are ofte"
+    },
+    {
+      "n": 99,
+      "wall_s": 2.38,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to merge two sorted lists in"
+    },
+    {
+      "n": 100,
+      "wall_s": 2.57,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Floating point addition is not associative because the IEEE 754 standard (and mo"
+    },
+    {
+      "n": 101,
+      "wall_s": 2.67,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "DNS resolution is the process by which a computer translates a human-readable do"
+    },
+    {
+      "n": 102,
+      "wall_s": 2.56,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Versioning a database schema safely is a critical aspect of software engineering"
+    },
+    {
+      "n": 103,
+      "wall_s": 2.62,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 78,
+        "completion_tokens": 128,
+        "total_tokens": 206,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "### 1. Introduction to Decorators and Retry Logic\n\nIn Python, a **decorator** is"
+    },
+    {
+      "n": 104,
+      "wall_s": 2.43,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 82,
+        "completion_tokens": 128,
+        "total_tokens": 210,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 105: Monotonic Clocks vs. Wall Clocks\n\n## 1. The Core Problem: Time i"
+    },
+    {
+      "n": 105,
+      "wall_s": 2.17,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to implement a Python functi"
+    },
+    {
+      "n": 106,
+      "wall_s": 2.31,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 107: Difference Between a List and a Tuple in Python\n\n## Step-by-Step"
+    },
+    {
+      "n": 107,
+      "wall_s": 2.55,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 80,
+        "completion_tokens": 128,
+        "total_tokens": 208,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 108: Hash Map Collision Handling\n\n## Step-by-Step Reasoning\n\n### 1. T"
+    },
+    {
+      "n": 108,
+      "wall_s": 2.46,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 80,
+        "completion_tokens": 128,
+        "total_tokens": 208,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# How SQL Indexes Speed Up Queries\n\n## Step-by-Step Reasoning\n\n### 1. The Proble"
+    },
+    {
+      "n": 109,
+      "wall_s": 2.43,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "### 1. Introduction to Context Managers in Python\n\nA context manager in Python i"
+    },
+    {
+      "n": 110,
+      "wall_s": 2.87,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Backpressure in Streaming Pipelines\n\n## 1. Definition and Core Concept\n\n**Back"
+    },
+    {
+      "n": 111,
+      "wall_s": 2.23,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 78,
+        "completion_tokens": 128,
+        "total_tokens": 206,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is the compact, step-by-step explanation of the Big-O complexity for Binary"
+    },
+    {
+      "n": 112,
+      "wall_s": 2.75,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 81,
+        "completion_tokens": 128,
+        "total_tokens": 209,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Making a Function Idempotent\n\n## Step 1: Understand What Idempotency Means\n\nA "
+    },
+    {
+      "n": 113,
+      "wall_s": 2.75,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Concurrency vs. Parallelism: A Deep Dive\n\n## 1. Core Definitions\n\n**Concurrenc"
+    },
+    {
+      "n": 114,
+      "wall_s": 2.27,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to merge two sorted lists in"
+    },
+    {
+      "n": 115,
+      "wall_s": 2.61,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 116: Why Floating Point Addition Is Not Associative\n\n## 1. The Core M"
+    },
+    {
+      "n": 116,
+      "wall_s": 2.73,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "DNS resolution is the process by which a computer translates a human-readable do"
+    },
+    {
+      "n": 117,
+      "wall_s": 2.51,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Versioning a database schema safely is a critical aspect of software engineering"
+    },
+    {
+      "n": 118,
+      "wall_s": 2.67,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 78,
+        "completion_tokens": 128,
+        "total_tokens": 206,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "A Python decorator that retries a flaky call is a powerful pattern for handling "
+    },
+    {
+      "n": 119,
+      "wall_s": 2.62,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 82,
+        "completion_tokens": 128,
+        "total_tokens": 210,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 120: Monotonic Clocks vs. Wall Clocks\n\n## 1. The Core Problem: Time i"
+    },
+    {
+      "n": 120,
+      "wall_s": 2.21,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to implement a Python functi"
+    },
+    {
+      "n": 121,
+      "wall_s": 2.25,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 122: Difference Between a List and a Tuple in Python\n\n## Step-by-Step"
+    },
+    {
+      "n": 122,
+      "wall_s": 2.6,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 80,
+        "completion_tokens": 128,
+        "total_tokens": 208,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 123: Hash Map Collision Handling\n\n## Step-by-Step Reasoning\n\n### 1. T"
+    },
+    {
+      "n": 123,
+      "wall_s": 2.5,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 80,
+        "completion_tokens": 128,
+        "total_tokens": 208,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# How SQL Indexes Speed Up Queries\n\n## Step-by-Step Reasoning\n\n### 1. The Proble"
+    },
+    {
+      "n": 124,
+      "wall_s": 2.66,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "### 1. Introduction to Context Managers in Python\n\nA context manager in Python i"
+    },
+    {
+      "n": 125,
+      "wall_s": 2.9,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Backpressure in Streaming Pipelines\n\n## 1. Definition and Core Concept\n\n**Back"
+    },
+    {
+      "n": 126,
+      "wall_s": 2.24,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 78,
+        "completion_tokens": 128,
+        "total_tokens": 206,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is the compact, step-by-step explanation of Big-O notation for Binary Searc"
+    },
+    {
+      "n": 127,
+      "wall_s": 2.77,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 81,
+        "completion_tokens": 128,
+        "total_tokens": 209,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Making a Function Idempotent\n\n## Step 1: Understand What Idempotency Means\n\nA "
+    },
+    {
+      "n": 128,
+      "wall_s": 2.73,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Concurrency vs. Parallelism: A Deep Dive\n\n## 1. Core Definitions\n\n**Concurrenc"
+    },
+    {
+      "n": 129,
+      "wall_s": 2.38,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to merge two sorted lists in"
+    },
+    {
+      "n": 130,
+      "wall_s": 2.52,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 131: Why Floating Point Addition Is Not Associative\n\n## Introduction\n"
+    },
+    {
+      "n": 131,
+      "wall_s": 2.82,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "DNS resolution is the process by which a computer translates a human-readable do"
+    },
+    {
+      "n": 132,
+      "wall_s": 2.57,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Versioning a database schema safely is a critical aspect of software engineering"
+    },
+    {
+      "n": 133,
+      "wall_s": 2.75,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 78,
+        "completion_tokens": 128,
+        "total_tokens": 206,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "A Python decorator that retries a flaky call is a powerful tool for handling tra"
+    },
+    {
+      "n": 134,
+      "wall_s": 2.51,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 82,
+        "completion_tokens": 128,
+        "total_tokens": 210,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 135: Monotonic Clocks vs. Wall Clocks\n\n## 1. The Core Problem: Time i"
+    },
+    {
+      "n": 135,
+      "wall_s": 2.39,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to implement a Python functi"
+    },
+    {
+      "n": 136,
+      "wall_s": 2.18,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 137: Difference Between a List and a Tuple in Python\n\n## Step-by-Step"
+    },
+    {
+      "n": 137,
+      "wall_s": 2.41,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 80,
+        "completion_tokens": 128,
+        "total_tokens": 208,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 138: How a Hash Map Handles Collisions\n\n## Step-by-Step Reasoning\n\n##"
+    },
+    {
+      "n": 138,
+      "wall_s": 2.6,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 80,
+        "completion_tokens": 128,
+        "total_tokens": 208,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# How SQL Indexes Speed Up Queries\n\n## Step-by-Step Reasoning\n\n### 1. The Proble"
+    },
+    {
+      "n": 139,
+      "wall_s": 2.46,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is the step-by-step reasoning and implementation for a Python context manag"
+    },
+    {
+      "n": 140,
+      "wall_s": 3.07,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Backpressure in Streaming Pipelines\n\n## 1. Definition and Core Concept\n\n**Back"
+    },
+    {
+      "n": 141,
+      "wall_s": 2.56,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 78,
+        "completion_tokens": 128,
+        "total_tokens": 206,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "### 1. The Core Concept: Halving the Search Space\n\nBinary search operates on a s"
+    },
+    {
+      "n": 142,
+      "wall_s": 2.71,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 81,
+        "completion_tokens": 128,
+        "total_tokens": 209,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Making a Function Idempotent\n\n## Step 1: Understand What Idempotency Means\n\nA "
+    },
+    {
+      "n": 143,
+      "wall_s": 2.71,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Concurrency vs. Parallelism: A Deep Dive\n\n## 1. Core Definitions\n\n**Concurrenc"
+    },
+    {
+      "n": 144,
+      "wall_s": 2.43,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to merge two sorted lists in"
+    },
+    {
+      "n": 145,
+      "wall_s": 2.57,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 146: Why Floating Point Addition Is Not Associative\n\n## Introduction\n"
+    },
+    {
+      "n": 146,
+      "wall_s": 2.81,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "DNS resolution is the process by which a computer translates a human-readable do"
+    },
+    {
+      "n": 147,
+      "wall_s": 2.54,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Versioning a database schema safely is a critical aspect of software engineering"
+    },
+    {
+      "n": 148,
+      "wall_s": 2.58,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 78,
+        "completion_tokens": 128,
+        "total_tokens": 206,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "A Python decorator that retries a flaky call is a powerful pattern for handling "
+    },
+    {
+      "n": 149,
+      "wall_s": 2.78,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 82,
+        "completion_tokens": 128,
+        "total_tokens": 210,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Monotonic Clocks vs. Wall Clocks: A Deep Dive\n\n## 1. The Core Problem: Time is"
+    },
+    {
+      "n": 150,
+      "wall_s": 2.36,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to implement a Python functi"
+    },
+    {
+      "n": 151,
+      "wall_s": 2.48,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "In Python, lists and tuples are both sequence types, but they serve fundamentall"
+    },
+    {
+      "n": 152,
+      "wall_s": 2.43,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 80,
+        "completion_tokens": 128,
+        "total_tokens": 208,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 153: How a Hash Map Handles Collisions\n\n## Step-by-Step Reasoning\n\n##"
+    },
+    {
+      "n": 153,
+      "wall_s": 2.66,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 80,
+        "completion_tokens": 128,
+        "total_tokens": 208,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "### Step-by-Step Explanation of How SQL Indexes Speed Up Queries\n\nSQL indexes fu"
+    },
+    {
+      "n": 154,
+      "wall_s": 2.55,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "### 1. Introduction to Context Managers in Python\n\nA context manager in Python i"
+    },
+    {
+      "n": 155,
+      "wall_s": 2.76,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Backpressure in Streaming Pipelines\n\n## 1. Definition and Core Concept\n\n**Back"
+    },
+    {
+      "n": 156,
+      "wall_s": 2.44,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 78,
+        "completion_tokens": 128,
+        "total_tokens": 206,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Big-O Complexity of Binary Search: A Compact but Thorough Explanation\n\nBinary "
+    },
+    {
+      "n": 157,
+      "wall_s": 2.76,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 81,
+        "completion_tokens": 128,
+        "total_tokens": 209,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Making a Function Idempotent\n\n## Step 1: Understand What Idempotency Means\n\nAn"
+    },
+    {
+      "n": 158,
+      "wall_s": 2.37,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Concurrency vs. Parallelism: A Deep Dive\n\nConcurrency and parallelism are ofte"
+    },
+    {
+      "n": 159,
+      "wall_s": 2.32,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to merge two sorted lists in"
+    },
+    {
+      "n": 160,
+      "wall_s": 2.58,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 161: Why Floating Point Addition Is Not Associative\n\n## Introduction\n"
+    },
+    {
+      "n": 161,
+      "wall_s": 2.89,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "DNS resolution is the process by which a computer translates a human-readable do"
+    },
+    {
+      "n": 162,
+      "wall_s": 2.59,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Versioning a database schema safely is a critical aspect of software engineering"
+    },
+    {
+      "n": 163,
+      "wall_s": 2.65,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 78,
+        "completion_tokens": 128,
+        "total_tokens": 206,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to implement and use a Pytho"
+    },
+    {
+      "n": 164,
+      "wall_s": 2.6,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 82,
+        "completion_tokens": 128,
+        "total_tokens": 210,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 165: Monotonic Clocks vs. Wall Clocks\n\n## 1. The Core Problem: Time i"
+    },
+    {
+      "n": 165,
+      "wall_s": 2.35,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to implement a Python functi"
+    },
+    {
+      "n": 166,
+      "wall_s": 2.51,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 167: Difference Between a List and a Tuple in Python\n\n## Step-by-Step"
+    },
+    {
+      "n": 167,
+      "wall_s": 2.53,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 80,
+        "completion_tokens": 128,
+        "total_tokens": 208,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 168: How a Hash Map Handles Collisions\n\n## Step-by-Step Reasoning\n\n##"
+    },
+    {
+      "n": 168,
+      "wall_s": 2.48,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 80,
+        "completion_tokens": 128,
+        "total_tokens": 208,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# How SQL Indexes Speed Up Queries\n\n## Step-by-Step Reasoning\n\n### 1. The Proble"
+    },
+    {
+      "n": 169,
+      "wall_s": 2.26,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to implement a Python contex"
+    },
+    {
+      "n": 170,
+      "wall_s": 3.03,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Backpressure in Streaming Pipelines\n\n## 1. Definition and Core Concept\n\n**Back"
+    },
+    {
+      "n": 171,
+      "wall_s": 2.36,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 78,
+        "completion_tokens": 128,
+        "total_tokens": 206,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is the compact, step-by-step explanation of Big-O notation for Binary Searc"
+    },
+    {
+      "n": 172,
+      "wall_s": 2.76,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 81,
+        "completion_tokens": 128,
+        "total_tokens": 209,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Making a Function Idempotent\n\n## Step 1: Understand What Idempotency Means\n\nAn"
+    },
+    {
+      "n": 173,
+      "wall_s": 2.38,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Concurrency vs. Parallelism: A Deep Dive\n\nConcurrency and parallelism are ofte"
+    },
+    {
+      "n": 174,
+      "wall_s": 2.16,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to merge two sorted lists in"
+    },
+    {
+      "n": 175,
+      "wall_s": 2.54,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 176: Why Floating Point Addition Is Not Associative\n\n## Introduction\n"
+    },
+    {
+      "n": 176,
+      "wall_s": 2.75,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "DNS resolution is the process by which a computer translates a human-readable do"
+    },
+    {
+      "n": 177,
+      "wall_s": 2.6,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Versioning a database schema safely is a critical aspect of software engineering"
+    },
+    {
+      "n": 178,
+      "wall_s": 2.7,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 78,
+        "completion_tokens": 128,
+        "total_tokens": 206,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "A Python decorator that retries a flaky call is a powerful pattern for handling "
+    },
+    {
+      "n": 179,
+      "wall_s": 2.68,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 82,
+        "completion_tokens": 128,
+        "total_tokens": 210,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 180: Monotonic Clocks vs. Wall Clocks\n\n## 1. The Core Problem: Time i"
+    },
+    {
+      "n": 180,
+      "wall_s": 2.13,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to implement a Python functi"
+    },
+    {
+      "n": 181,
+      "wall_s": 2.32,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 182: Difference Between a List and a Tuple in Python\n\n## Step-by-Step"
+    },
+    {
+      "n": 182,
+      "wall_s": 2.46,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 80,
+        "completion_tokens": 128,
+        "total_tokens": 208,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 183: How a Hash Map Handles Collisions\n\n## 1. The Core Problem: What "
+    },
+    {
+      "n": 183,
+      "wall_s": 2.85,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 80,
+        "completion_tokens": 128,
+        "total_tokens": 208,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "### Step-by-Step Explanation of How SQL Indexes Speed Up Queries\n\nSQL indexes fu"
+    },
+    {
+      "n": 184,
+      "wall_s": 2.41,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "### 1. Introduction to Context Managers in Python\n\nA context manager in Python i"
+    },
+    {
+      "n": 185,
+      "wall_s": 2.9,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Backpressure in Streaming Pipelines\n\n## 1. Definition and Core Concept\n\n**Back"
+    },
+    {
+      "n": 186,
+      "wall_s": 2.62,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 78,
+        "completion_tokens": 128,
+        "total_tokens": 206,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "### 1. The Core Concept: Halving the Search Space\n\nBinary search operates on a s"
+    },
+    {
+      "n": 187,
+      "wall_s": 2.71,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 81,
+        "completion_tokens": 128,
+        "total_tokens": 209,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Making a Function Idempotent\n\n## Step 1: Understand What Idempotency Means\n\nAn"
+    },
+    {
+      "n": 188,
+      "wall_s": 2.55,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Concurrency vs. Parallelism: A Deep Dive\n\nConcurrency and parallelism are ofte"
+    },
+    {
+      "n": 189,
+      "wall_s": 2.33,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to merge two sorted lists in"
+    },
+    {
+      "n": 190,
+      "wall_s": 2.48,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Floating point addition is not associative because the set of floating point num"
+    },
+    {
+      "n": 191,
+      "wall_s": 2.72,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "DNS resolution is the process by which a computer translates a human-readable do"
+    },
+    {
+      "n": 192,
+      "wall_s": 2.58,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Versioning a database schema safely is a critical aspect of software engineering"
+    },
+    {
+      "n": 193,
+      "wall_s": 2.69,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 78,
+        "completion_tokens": 128,
+        "total_tokens": 206,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "A Python decorator that retries a flaky call is a powerful pattern for handling "
+    },
+    {
+      "n": 194,
+      "wall_s": 2.67,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 82,
+        "completion_tokens": 128,
+        "total_tokens": 210,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 195: Monotonic Clocks vs. Wall Clocks\n\n## 1. The Core Problem: Time i"
+    },
+    {
+      "n": 195,
+      "wall_s": 2.42,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to implement a Python functi"
+    },
+    {
+      "n": 196,
+      "wall_s": 2.43,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Difference Between a List and a Tuple in Python\n\n## 1. Definition and Core Pur"
+    },
+    {
+      "n": 197,
+      "wall_s": 2.54,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 80,
+        "completion_tokens": 128,
+        "total_tokens": 208,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# How a Hash Map Handles Collisions\n\n## Step-by-Step Reasoning\n\n### 1. The Core "
+    },
+    {
+      "n": 198,
+      "wall_s": 2.7,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 80,
+        "completion_tokens": 128,
+        "total_tokens": 208,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "### Step-by-Step Explanation of How SQL Indexes Speed Up Queries\n\nSQL indexes fu"
+    },
+    {
+      "n": 199,
+      "wall_s": 2.25,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to implement a Python contex"
+    },
+    {
+      "n": 200,
+      "wall_s": 3.02,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Backpressure in Streaming Pipelines\n\n## 1. Definition and Core Concept\n\n**Back"
+    },
+    {
+      "n": 201,
+      "wall_s": 2.31,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 78,
+        "completion_tokens": 128,
+        "total_tokens": 206,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is the compact, step-by-step explanation of Big-O notation for Binary Searc"
+    },
+    {
+      "n": 202,
+      "wall_s": 2.77,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 81,
+        "completion_tokens": 128,
+        "total_tokens": 209,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Making a Function Idempotent\n\n## Step 1: Understand What Idempotency Means\n\nA "
+    },
+    {
+      "n": 203,
+      "wall_s": 2.8,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Concurrency vs. Parallelism: A Deep Dive\n\n## 1. Core Definitions\n\n**Concurrenc"
+    },
+    {
+      "n": 204,
+      "wall_s": 2.51,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to merge two sorted lists in"
+    },
+    {
+      "n": 205,
+      "wall_s": 2.59,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 206: Why Floating Point Addition Is Not Associative\n\n## Introduction\n"
+    },
+    {
+      "n": 206,
+      "wall_s": 2.79,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "DNS resolution is the process by which a human-readable domain name (e.g., `exam"
+    },
+    {
+      "n": 207,
+      "wall_s": 2.53,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Versioning a database schema safely is a critical aspect of software engineering"
+    },
+    {
+      "n": 208,
+      "wall_s": 2.62,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 78,
+        "completion_tokens": 128,
+        "total_tokens": 206,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to implement and use a Pytho"
+    },
+    {
+      "n": 209,
+      "wall_s": 2.66,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 82,
+        "completion_tokens": 128,
+        "total_tokens": 210,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 210: Monotonic Clocks vs. Wall Clocks\n\n## 1. The Core Problem: Time i"
+    },
+    {
+      "n": 210,
+      "wall_s": 2.37,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to implement a Python functi"
+    },
+    {
+      "n": 211,
+      "wall_s": 2.52,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "In Python, lists and tuples are both sequence types, but they serve fundamentall"
+    },
+    {
+      "n": 212,
+      "wall_s": 2.4,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 80,
+        "completion_tokens": 128,
+        "total_tokens": 208,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 213: How a Hash Map Handles Collisions\n\n## Step-by-Step Reasoning\n\n##"
+    },
+    {
+      "n": 213,
+      "wall_s": 2.54,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 80,
+        "completion_tokens": 128,
+        "total_tokens": 208,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# How SQL Indexes Speed Up Queries\n\n## Step-by-Step Reasoning\n\n### 1. The Proble"
+    },
+    {
+      "n": 214,
+      "wall_s": 2.5,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to implement a Python contex"
+    },
+    {
+      "n": 215,
+      "wall_s": 2.84,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Backpressure in Streaming Pipelines\n\n## 1. Definition and Core Concept\n\n**Back"
+    },
+    {
+      "n": 216,
+      "wall_s": 2.46,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 78,
+        "completion_tokens": 128,
+        "total_tokens": 206,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Big-O Complexity of Binary Search: A Compact but Thorough Explanation\n\nBinary "
+    },
+    {
+      "n": 217,
+      "wall_s": 2.7,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 81,
+        "completion_tokens": 128,
+        "total_tokens": 209,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Making a Function Idempotent\n\n## Step 1: Understand What Idempotency Means\n\nA "
+    },
+    {
+      "n": 218,
+      "wall_s": 2.71,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Concurrency vs. Parallelism: A Deep Dive\n\n## 1. Core Definitions\n\n**Concurrenc"
+    },
+    {
+      "n": 219,
+      "wall_s": 2.24,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to merge two sorted lists in"
+    },
+    {
+      "n": 220,
+      "wall_s": 2.69,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Floating point addition is not associative because floating point numbers are a "
+    },
+    {
+      "n": 221,
+      "wall_s": 2.82,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "DNS resolution is the process by which a computer translates a human-readable do"
+    },
+    {
+      "n": 222,
+      "wall_s": 2.57,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Versioning a database schema safely is a critical aspect of software engineering"
+    },
+    {
+      "n": 223,
+      "wall_s": 2.37,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 78,
+        "completion_tokens": 128,
+        "total_tokens": 206,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to implement and use a Pytho"
+    },
+    {
+      "n": 224,
+      "wall_s": 2.59,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 82,
+        "completion_tokens": 128,
+        "total_tokens": 210,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 225: Monotonic Clocks vs. Wall Clocks\n\n## 1. The Core Problem: Time i"
+    },
+    {
+      "n": 225,
+      "wall_s": 2.34,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to implement a Python functi"
+    },
+    {
+      "n": 226,
+      "wall_s": 2.33,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 227: Difference Between a List and a Tuple in Python\n\n## Step-by-Step"
+    },
+    {
+      "n": 227,
+      "wall_s": 2.57,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 80,
+        "completion_tokens": 128,
+        "total_tokens": 208,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Handling Collisions in Hash Maps\n\n## Step-by-Step Reasoning\n\n### 1. The Core P"
+    },
+    {
+      "n": 228,
+      "wall_s": 2.62,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 80,
+        "completion_tokens": 128,
+        "total_tokens": 208,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# How SQL Indexes Speed Up Queries\n\n## Step-by-Step Reasoning\n\n### 1. The Proble"
+    },
+    {
+      "n": 229,
+      "wall_s": 2.35,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 79,
+        "completion_tokens": 128,
+        "total_tokens": 207,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to implement a Python contex"
+    },
+    {
+      "n": 230,
+      "wall_s": 2.9,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Backpressure in Streaming Pipelines\n\n## 1. Definition and Core Concept\n\n**Back"
+    },
+    {
+      "n": 231,
+      "wall_s": 2.18,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 78,
+        "completion_tokens": 128,
+        "total_tokens": 206,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is the compact, step-by-step explanation of Big-O notation for Binary Searc"
+    },
+    {
+      "n": 232,
+      "wall_s": 2.42,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 81,
+        "completion_tokens": 128,
+        "total_tokens": 209,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Making a Function Idempotent\n\n## Step 1: Define Idempotency\n\nA function is **i"
+    },
+    {
+      "n": 233,
+      "wall_s": 2.37,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Concurrency vs. Parallelism: A Deep Dive\n\nConcurrency and parallelism are ofte"
+    },
+    {
+      "n": 234,
+      "wall_s": 2.29,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Here is a thorough, step-by-step explanation of how to merge two sorted lists in"
+    },
+    {
+      "n": 235,
+      "wall_s": 2.52,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 236: Why Floating Point Addition Is Not Associative\n\n## 1. The Core M"
+    },
+    {
+      "n": 236,
+      "wall_s": 2.78,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 77,
+        "completion_tokens": 128,
+        "total_tokens": 205,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "DNS resolution is the process by which a computer translates a human-readable do"
+    },
+    {
+      "n": 237,
+      "wall_s": 2.56,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 76,
+        "completion_tokens": 128,
+        "total_tokens": 204,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "Versioning a database schema safely is a critical aspect of software engineering"
+    },
+    {
+      "n": 238,
+      "wall_s": 2.57,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 78,
+        "completion_tokens": 128,
+        "total_tokens": 206,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "A Python decorator that retries a flaky call is a powerful pattern for handling "
+    },
+    {
+      "n": 239,
+      "wall_s": 2.53,
+      "finish": "length",
+      "usage": {
+        "prompt_tokens": 82,
+        "completion_tokens": 128,
+        "total_tokens": 210,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "head": "# Question 240: Monotonic Clocks vs. Wall Clocks\n\n## 1. The Core Problem: Time i"
+    }
+  ]
+}

@@ -1,0 +1,334 @@
+
+[2026-10-06T21:46:39+11:00] === interleave500: 10 pairs, A = pipeline 2, B = pipeline 1 ===
+
+<strata checkout>/bench/results/2026-10-06-community-2x-rx-7900-gre/data/cfg-interleave-B.json: +args ['--arg', '--pipeline-windows', '1']
+[21:46:39] pair 1/10 arm A: starting the server
+[21:47:11] pair 1 arm A: decode 66.4 tok/s, prompt 925.5 tok/s, ttft 1.935 s
+[21:47:17] pair 1/10 arm B: starting the server
+[21:47:50] pair 1 arm B: decode 60.5 tok/s, prompt 922.7 tok/s, ttft 1.944 s
+[21:47:56] pair 2/10 arm A: starting the server
+[21:48:30] pair 2 arm A: decode 72.6 tok/s, prompt 841.5 tok/s, ttft 2.812 s
+[21:48:36] pair 2/10 arm B: starting the server
+[21:49:11] pair 2 arm B: decode 59.7 tok/s, prompt 853.8 tok/s, ttft 2.775 s
+[21:49:17] pair 3/10 arm A: starting the server
+[21:49:51] pair 3 arm A: decode 67.8 tok/s, prompt 971.8 tok/s, ttft 3.037 s
+[21:49:57] pair 3/10 arm B: starting the server
+[21:50:32] pair 3 arm B: decode 68.3 tok/s, prompt 972.1 tok/s, ttft 3.037 s
+[21:50:38] pair 4/10 arm A: starting the server
+[21:51:12] pair 4 arm A: decode 68.8 tok/s, prompt 1270.1 tok/s, ttft 2.863 s
+[21:51:18] pair 4/10 arm B: starting the server
+[21:51:52] pair 4 arm B: decode 68.1 tok/s, prompt 1266.8 tok/s, ttft 2.871 s
+[21:51:58] pair 5/10 arm A: starting the server
+[21:52:32] pair 5 arm A: decode 73.2 tok/s, prompt 1231.3 tok/s, ttft 3.484 s
+[21:52:38] pair 5/10 arm B: starting the server
+[21:53:10] pair 5 arm B: decode 63.3 tok/s, prompt 1250.8 tok/s, ttft 3.432 s
+[21:53:16] pair 6/10 arm A: starting the server
+[21:53:47] pair 6 arm A: decode 67.4 tok/s, prompt 918.9 tok/s, ttft 1.948 s
+[21:53:53] pair 6/10 arm B: starting the server
+[21:54:23] pair 6 arm B: decode 63.5 tok/s, prompt 912.8 tok/s, ttft 1.963 s
+[21:54:29] pair 7/10 arm A: starting the server
+[21:55:03] pair 7 arm A: decode 66.9 tok/s, prompt 852.2 tok/s, ttft 2.777 s
+[21:55:09] pair 7/10 arm B: starting the server
+[21:55:44] pair 7 arm B: decode 63.8 tok/s, prompt 839.6 tok/s, ttft 2.819 s
+[21:55:50] pair 8/10 arm A: starting the server
+[21:56:24] pair 8 arm A: decode 71.0 tok/s, prompt 950.2 tok/s, ttft 3.105 s
+[21:56:30] pair 8/10 arm B: starting the server
+[21:57:04] pair 8 arm B: decode 69.7 tok/s, prompt 947.7 tok/s, ttft 3.114 s
+[21:57:10] pair 9/10 arm A: starting the server
+[21:57:44] pair 9 arm A: decode 74.3 tok/s, prompt 1270.1 tok/s, ttft 2.863 s
+[21:57:50] pair 9/10 arm B: starting the server
+[21:58:24] pair 9 arm B: decode 64.6 tok/s, prompt 1271.9 tok/s, ttft 2.861 s
+[21:58:30] pair 10/10 arm A: starting the server
+[21:59:05] pair 10 arm A: decode 69.9 tok/s, prompt 1205.2 tok/s, ttft 3.558 s
+[21:59:11] pair 10/10 arm B: starting the server
+[21:59:47] pair 10 arm B: decode 63.9 tok/s, prompt 1153.5 tok/s, ttft 3.717 s
+[21:59:53] done: 20 requests -> <strata checkout>/bench/results/2026-10-06-community-2x-rx-7900-gre/data/interleave500.json
+
+[2026-10-06T21:59:53+11:00] === arm pipeline-off ===
+
+[run-arm pipeline-off] engine log offset 1113194, 2026-10-06T21:59:53+11:00
+[run-arm pipeline-off] run.sh exit 0, 2026-10-06T22:07:07+11:00
+
+[2026-10-06T22:07:07+11:00] === arm stage-trim-off (the base config already has STRATA_STAGE_TRIM=1) ===
+
+[run-arm stage-trim-off] engine log offset 1137471, 2026-10-06T22:07:07+11:00
+[run-arm stage-trim-off] run.sh exit 0, 2026-10-06T22:14:28+11:00
+
+[2026-10-06T22:14:28+11:00] === arm resident ===
+
+[run-arm resident] engine log offset 1167496, 2026-10-06T22:14:28+11:00
+[run-arm resident] run.sh exit 0, 2026-10-06T22:21:38+11:00
+
+[2026-10-06T22:21:38+11:00] === soak: 30 minutes, --resident-budget-gib 30, samples every 60 s ===
+
+<strata checkout>/bench/results/2026-10-06-community-2x-rx-7900-gre/data/cfg-soak.json: +args ['--arg', '--resident-budget-gib', '30']
+[22:22:06] server ready; starting the sampler and the prompt loop
+[22:22:09] prompt 1: 3.23 s, length
+[22:22:16] prompt 2: 2.44 s, length
+[22:22:24] prompt 3: 2.61 s, length
+[22:22:31] prompt 4: 2.37 s, length
+[22:22:39] prompt 5: 2.68 s, length
+[22:22:46] prompt 6: 2.17 s, length
+[22:22:54] prompt 7: 2.61 s, length
+[22:23:01] prompt 8: 2.66 s, length
+[22:23:09] prompt 9: 2.39 s, length
+[22:23:16] prompt 10: 2.68 s, length
+[22:23:24] prompt 11: 2.71 s, length
+[22:23:32] prompt 12: 2.63 s, length
+[22:23:39] prompt 13: 2.63 s, length
+[22:23:47] prompt 14: 2.65 s, length
+[22:23:54] prompt 15: 2.02 s, length
+[22:24:02] prompt 16: 2.5 s, length
+[22:24:09] prompt 17: 2.31 s, length
+[22:24:16] prompt 18: 2.41 s, length
+[22:24:24] prompt 19: 2.27 s, length
+[22:24:31] prompt 20: 2.8 s, length
+[22:24:39] prompt 21: 2.18 s, length
+[22:24:46] prompt 22: 2.76 s, length
+[22:24:54] prompt 23: 2.58 s, length
+[22:25:01] prompt 24: 2.48 s, length
+[22:25:09] prompt 25: 2.84 s, length
+[22:25:17] prompt 26: 2.7 s, length
+[22:25:25] prompt 27: 2.58 s, length
+[22:25:32] prompt 28: 2.52 s, length
+[22:25:40] prompt 29: 2.64 s, length
+[22:25:47] prompt 30: 2.04 s, length
+[22:25:54] prompt 31: 2.45 s, length
+[22:26:02] prompt 32: 2.36 s, length
+[22:26:09] prompt 33: 2.81 s, length
+[22:26:17] prompt 34: 2.51 s, length
+[22:26:25] prompt 35: 2.83 s, length
+[22:26:32] prompt 36: 2.19 s, length
+[22:26:40] prompt 37: 2.79 s, length
+[22:26:47] prompt 38: 2.68 s, length
+[22:26:55] prompt 39: 2.29 s, length
+[22:27:02] prompt 40: 2.62 s, length
+[22:27:10] prompt 41: 2.77 s, length
+[22:27:18] prompt 42: 2.55 s, length
+[22:27:25] prompt 43: 2.46 s, length
+[22:27:32] prompt 44: 2.39 s, length
+[22:27:39] prompt 45: 2.02 s, length
+[22:27:47] prompt 46: 2.26 s, length
+[22:27:54] prompt 47: 2.42 s, length
+[22:28:02] prompt 48: 2.79 s, length
+[22:28:09] prompt 49: 2.51 s, length
+[22:28:17] prompt 50: 2.77 s, length
+[22:28:24] prompt 51: 2.18 s, length
+[22:28:32] prompt 52: 2.66 s, length
+[22:28:40] prompt 53: 2.53 s, length
+[22:28:47] prompt 54: 2.32 s, length
+[22:28:55] prompt 55: 2.68 s, length
+[22:29:02] prompt 56: 2.68 s, length
+[22:29:10] prompt 57: 2.52 s, length
+[22:29:17] prompt 58: 2.48 s, length
+[22:29:25] prompt 59: 2.63 s, length
+[22:29:32] prompt 60: 2.15 s, length
+[22:29:40] prompt 61: 2.53 s, length
+[22:29:47] prompt 62: 2.36 s, length
+[22:29:55] prompt 63: 2.67 s, length
+[22:30:02] prompt 64: 2.28 s, length
+[22:30:09] prompt 65: 2.55 s, length
+[22:30:17] prompt 66: 2.21 s, length
+[22:30:24] prompt 67: 2.69 s, length
+[22:30:32] prompt 68: 2.75 s, length
+[22:30:39] prompt 69: 2.36 s, length
+[22:30:47] prompt 70: 2.59 s, length
+[22:30:55] prompt 71: 2.73 s, length
+[22:31:02] prompt 72: 2.66 s, length
+[22:31:10] prompt 73: 2.62 s, length
+[22:31:18] prompt 74: 2.53 s, length
+[22:31:25] prompt 75: 2.11 s, length
+[22:31:32] prompt 76: 2.47 s, length
+[22:31:39] prompt 77: 2.25 s, length
+[22:31:47] prompt 78: 2.48 s, length
+[22:31:54] prompt 79: 2.34 s, length
+[22:32:02] prompt 80: 2.87 s, length
+[22:32:10] prompt 81: 2.58 s, length
+[22:32:17] prompt 82: 2.78 s, length
+[22:32:25] prompt 83: 2.46 s, length
+[22:32:32] prompt 84: 2.26 s, length
+[22:32:40] prompt 85: 2.68 s, length
+[22:32:48] prompt 86: 2.79 s, length
+[22:32:55] prompt 87: 2.56 s, length
+[22:33:03] prompt 88: 2.44 s, length
+[22:33:10] prompt 89: 2.55 s, length
+[22:33:18] prompt 90: 2.32 s, length
+[22:33:25] prompt 91: 2.4 s, length
+[22:33:32] prompt 92: 2.31 s, length
+[22:33:39] prompt 93: 2.26 s, length
+[22:33:47] prompt 94: 2.36 s, length
+[22:33:55] prompt 95: 2.84 s, length
+[22:34:02] prompt 96: 2.62 s, length
+[22:34:10] prompt 97: 2.6 s, length
+[22:34:18] prompt 98: 2.64 s, length
+[22:34:25] prompt 99: 2.38 s, length
+[22:34:32] prompt 100: 2.57 s, length
+[22:34:40] prompt 101: 2.67 s, length
+[22:34:48] prompt 102: 2.56 s, length
+[22:34:55] prompt 103: 2.62 s, length
+[22:35:03] prompt 104: 2.43 s, length
+[22:35:10] prompt 105: 2.17 s, length
+[22:35:17] prompt 106: 2.31 s, length
+[22:35:25] prompt 107: 2.55 s, length
+[22:35:32] prompt 108: 2.46 s, length
+[22:35:40] prompt 109: 2.43 s, length
+[22:35:48] prompt 110: 2.87 s, length
+[22:35:55] prompt 111: 2.23 s, length
+[22:36:03] prompt 112: 2.75 s, length
+[22:36:10] prompt 113: 2.75 s, length
+[22:36:18] prompt 114: 2.27 s, length
+[22:36:25] prompt 115: 2.61 s, length
+[22:36:33] prompt 116: 2.73 s, length
+[22:36:40] prompt 117: 2.51 s, length
+[22:36:48] prompt 118: 2.67 s, length
+[22:36:56] prompt 119: 2.62 s, length
+[22:37:03] prompt 120: 2.21 s, length
+[22:37:10] prompt 121: 2.25 s, length
+[22:37:18] prompt 122: 2.6 s, length
+[22:37:25] prompt 123: 2.5 s, length
+[22:37:33] prompt 124: 2.66 s, length
+[22:37:41] prompt 125: 2.9 s, length
+[22:37:48] prompt 126: 2.24 s, length
+[22:37:56] prompt 127: 2.77 s, length
+[22:38:04] prompt 128: 2.73 s, length
+[22:38:11] prompt 129: 2.38 s, length
+[22:38:18] prompt 130: 2.52 s, length
+[22:38:26] prompt 131: 2.82 s, length
+[22:38:34] prompt 132: 2.57 s, length
+[22:38:42] prompt 133: 2.75 s, length
+[22:38:49] prompt 134: 2.51 s, length
+[22:38:57] prompt 135: 2.39 s, length
+[22:39:04] prompt 136: 2.18 s, length
+[22:39:11] prompt 137: 2.41 s, length
+[22:39:19] prompt 138: 2.6 s, length
+[22:39:26] prompt 139: 2.46 s, length
+[22:39:34] prompt 140: 3.07 s, length
+[22:39:42] prompt 141: 2.56 s, length
+[22:39:50] prompt 142: 2.71 s, length
+[22:39:57] prompt 143: 2.71 s, length
+[22:40:05] prompt 144: 2.43 s, length
+[22:40:12] prompt 145: 2.57 s, length
+[22:40:20] prompt 146: 2.81 s, length
+[22:40:28] prompt 147: 2.54 s, length
+[22:40:35] prompt 148: 2.58 s, length
+[22:40:43] prompt 149: 2.78 s, length
+[22:40:50] prompt 150: 2.36 s, length
+[22:40:58] prompt 151: 2.48 s, length
+[22:41:05] prompt 152: 2.43 s, length
+[22:41:13] prompt 153: 2.66 s, length
+[22:41:20] prompt 154: 2.55 s, length
+[22:41:28] prompt 155: 2.76 s, length
+[22:41:36] prompt 156: 2.44 s, length
+[22:41:43] prompt 157: 2.76 s, length
+[22:41:51] prompt 158: 2.37 s, length
+[22:41:58] prompt 159: 2.32 s, length
+[22:42:06] prompt 160: 2.58 s, length
+[22:42:14] prompt 161: 2.89 s, length
+[22:42:21] prompt 162: 2.59 s, length
+[22:42:29] prompt 163: 2.65 s, length
+[22:42:36] prompt 164: 2.6 s, length
+[22:42:44] prompt 165: 2.35 s, length
+[22:42:51] prompt 166: 2.51 s, length
+[22:42:59] prompt 167: 2.53 s, length
+[22:43:06] prompt 168: 2.48 s, length
+[22:43:14] prompt 169: 2.26 s, length
+[22:43:22] prompt 170: 3.03 s, length
+[22:43:29] prompt 171: 2.36 s, length
+[22:43:37] prompt 172: 2.76 s, length
+[22:43:44] prompt 173: 2.38 s, length
+[22:43:51] prompt 174: 2.16 s, length
+[22:43:59] prompt 175: 2.54 s, length
+[22:44:07] prompt 176: 2.75 s, length
+[22:44:14] prompt 177: 2.6 s, length
+[22:44:22] prompt 178: 2.7 s, length
+[22:44:29] prompt 179: 2.68 s, length
+[22:44:37] prompt 180: 2.13 s, length
+[22:44:44] prompt 181: 2.32 s, length
+[22:44:51] prompt 182: 2.46 s, length
+[22:44:59] prompt 183: 2.85 s, length
+[22:45:07] prompt 184: 2.41 s, length
+[22:45:15] prompt 185: 2.9 s, length
+[22:45:22] prompt 186: 2.62 s, length
+[22:45:30] prompt 187: 2.71 s, length
+[22:45:37] prompt 188: 2.55 s, length
+[22:45:45] prompt 189: 2.33 s, length
+[22:45:52] prompt 190: 2.48 s, length
+[22:46:00] prompt 191: 2.72 s, length
+[22:46:08] prompt 192: 2.58 s, length
+[22:46:15] prompt 193: 2.69 s, length
+[22:46:23] prompt 194: 2.67 s, length
+[22:46:30] prompt 195: 2.42 s, length
+[22:46:38] prompt 196: 2.43 s, length
+[22:46:45] prompt 197: 2.54 s, length
+[22:46:53] prompt 198: 2.7 s, length
+[22:47:00] prompt 199: 2.25 s, length
+[22:47:08] prompt 200: 3.02 s, length
+[22:47:16] prompt 201: 2.31 s, length
+[22:47:23] prompt 202: 2.77 s, length
+[22:47:31] prompt 203: 2.8 s, length
+[22:47:39] prompt 204: 2.51 s, length
+[22:47:46] prompt 205: 2.59 s, length
+[22:47:54] prompt 206: 2.79 s, length
+[22:48:02] prompt 207: 2.53 s, length
+[22:48:09] prompt 208: 2.62 s, length
+[22:48:17] prompt 209: 2.66 s, length
+[22:48:24] prompt 210: 2.37 s, length
+[22:48:32] prompt 211: 2.52 s, length
+[22:48:39] prompt 212: 2.4 s, length
+[22:48:47] prompt 213: 2.54 s, length
+[22:48:54] prompt 214: 2.5 s, length
+[22:49:02] prompt 215: 2.84 s, length
+[22:49:10] prompt 216: 2.46 s, length
+[22:49:17] prompt 217: 2.7 s, length
+[22:49:25] prompt 218: 2.71 s, length
+[22:49:32] prompt 219: 2.24 s, length
+[22:49:40] prompt 220: 2.69 s, length
+[22:49:48] prompt 221: 2.82 s, length
+[22:49:55] prompt 222: 2.57 s, length
+[22:50:03] prompt 223: 2.37 s, length
+[22:50:10] prompt 224: 2.59 s, length
+[22:50:18] prompt 225: 2.34 s, length
+[22:50:25] prompt 226: 2.33 s, length
+[22:50:32] prompt 227: 2.57 s, length
+[22:50:40] prompt 228: 2.62 s, length
+[22:50:47] prompt 229: 2.35 s, length
+[22:50:55] prompt 230: 2.9 s, length
+[22:51:03] prompt 231: 2.18 s, length
+[22:51:10] prompt 232: 2.42 s, length
+[22:51:17] prompt 233: 2.37 s, length
+[22:51:25] prompt 234: 2.29 s, length
+[22:51:32] prompt 235: 2.52 s, length
+[22:51:40] prompt 236: 2.78 s, length
+[22:51:47] prompt 237: 2.56 s, length
+[22:51:55] prompt 238: 2.57 s, length
+[22:52:03] prompt 239: 2.53 s, length
+[22:52:08] 239 prompts sent; stopping the sampler and the server
+Traceback (most recent call last):
+  File "<strata checkout>/bench/results/2026-10-06-community-2x-rx-7900-gre/scripts/soak.py", line 220, in <module>
+    main()
+    ~~~~^^
+  File "<strata checkout>/bench/results/2026-10-06-community-2x-rx-7900-gre/scripts/soak.py", line 157, in main
+    sampler.wait(timeout=30)
+    ~~~~~~~~~~~~^^^^^^^^^^^^
+  File "<home>/.nix-profile/lib/python3.15/subprocess.py", line 1439, in wait
+    return self._wait(timeout=timeout)
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "<home>/.nix-profile/lib/python3.15/subprocess.py", line 2283, in _wait
+    if self._wait_pidfd(timeout) or self._wait_kqueue(timeout):
+       ~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "<home>/.nix-profile/lib/python3.15/subprocess.py", line 2233, in _wait_pidfd
+    raise TimeoutExpired(self.args, timeout)
+subprocess.TimeoutExpired: Command '['<strata checkout>/.venv/bin/python', '<strata checkout>/bench/results/2026-10-06-community-2x-rx-7900-gre/scripts/sample_mem.py', '--out', '<strata checkout>/bench/results/2026-10-06-community-2x-rx-7900-gre/data/soak-mem.csv', '--seconds', '1920.0', '--interval', '60.0', '--engine-rss', '--stop-file', '<strata checkout>/bench/results/2026-10-06-community-2x-rx-7900-gre/data/soak-sampler.stop']' timed out after 30 seconds
+
+[2026-10-06T22:52:38+11:00] === arm batch2 ===
+
+[run-arm batch2] engine log offset 1370247, 2026-10-06T22:52:38+11:00
+[run-arm batch2] run.sh exit 0, 2026-10-06T22:55:21+11:00
+
+[2026-10-06T22:55:21+11:00] === arm batch4 ===
+
+[run-arm batch4] engine log offset 1393315, 2026-10-06T22:55:21+11:00
+[run-arm batch4] run.sh exit 0, 2026-10-06T22:58:20+11:00
+
+[2026-10-06T22:58:20+11:00] === ALL DONE ===
+

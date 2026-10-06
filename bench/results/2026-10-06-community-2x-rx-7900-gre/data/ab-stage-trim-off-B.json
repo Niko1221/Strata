@@ -1,0 +1,263 @@
+[
+  {
+    "label": "B",
+    "kind": "warmup",
+    "trial": 0,
+    "wall_s": 0.5318419550003455,
+    "metrics": {
+      "prompt_tokens": 15.0,
+      "reused": 0.0,
+      "fresh": 15.0,
+      "prefill_ms": 414.0,
+      "prefill_tps": 36.2,
+      "generated": 2.0,
+      "decode_ms": 101.0,
+      "decode_tps": 19.8
+    },
+    "usage": {
+      "prompt_tokens": 15,
+      "completion_tokens": 2,
+      "total_tokens": 17,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "stop",
+    "message": {
+      "role": "assistant",
+      "content": "READY"
+    }
+  },
+  {
+    "label": "B",
+    "kind": "fresh",
+    "trial": 1,
+    "wall_s": 6.999074878000101,
+    "metrics": {
+      "prompt_tokens": 4210.0,
+      "reused": 0.0,
+      "fresh": 4210.0,
+      "prefill_ms": 4767.0,
+      "prefill_tps": 883.2,
+      "generated": 128.0,
+      "decode_ms": 2218.0,
+      "decode_tps": 57.7
+    },
+    "usage": {
+      "prompt_tokens": 4210,
+      "completion_tokens": 128,
+      "total_tokens": 4338,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The source code defines a series of exported functions named `rule0` through `rule139`, each accepting a single numeric argument `x` and implementing a uniform conditional logic pattern where the function checks if the input `x` is strictly equal to the integer value embedded in its name (denoted as `n`). If this equality condition is met, the function returns the result of adding `n + 1` to `x`; otherwise, it returns the result of subtracting `n` from `x`. This behavior effectively creates a set of specialized transformations where the \"identity\" case (input matching the rule index) results"
+    }
+  },
+  {
+    "label": "B",
+    "kind": "followup",
+    "trial": 1,
+    "wall_s": 2.55021169200063,
+    "metrics": {
+      "prompt_tokens": 4451.0,
+      "reused": 4337.0,
+      "fresh": 114.0,
+      "prefill_ms": 862.0,
+      "prefill_tps": 132.3,
+      "generated": 128.0,
+      "decode_ms": 1669.0,
+      "decode_tps": 76.7
+    },
+    "usage": {
+      "prompt_tokens": 4451,
+      "completion_tokens": 128,
+      "total_tokens": 4579,
+      "prompt_tokens_details": {
+        "cached_tokens": 4337
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The most relevant boundary case is **integer equality at the rule index** (e.g., `rule0(0)` or `rule139(139)`), because this is the only input that triggers the \"add\" branch (`x + n + 1`) instead of the \"subtract\" branch (`x - n`). For example, `rule0(0)` returns `1` (since `0 === 0` is true, so `0 + 1`), while `rule0(1)` returns `1` (since `1 === 0` is false, so `1 - "
+    }
+  },
+  {
+    "label": "B",
+    "kind": "fresh",
+    "trial": 2,
+    "wall_s": 9.183138945999417,
+    "metrics": {
+      "prompt_tokens": 8830.0,
+      "reused": 0.0,
+      "fresh": 8830.0,
+      "prefill_ms": 7303.0,
+      "prefill_tps": 1209.0,
+      "generated": 128.0,
+      "decode_ms": 1852.0,
+      "decode_tps": 69.1
+    },
+    "usage": {
+      "prompt_tokens": 8830,
+      "completion_tokens": 128,
+      "total_tokens": 8958,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The source code defines a comprehensive collection of 280 exported functions, named sequentially from `rule0` to `rule279`, each designed to perform a specific conditional arithmetic operation on a single numeric input `x`. Every function follows an identical logical structure: it checks if the input `x` is strictly equal to the integer value embedded in its function name (e.g., `rule42` checks if `x === 42`); if this condition is true, the function returns the input incremented by one more than that index (e.g., `x + 43` for `rule42`"
+    }
+  },
+  {
+    "label": "B",
+    "kind": "followup",
+    "trial": 2,
+    "wall_s": 2.6380094669993923,
+    "metrics": {
+      "prompt_tokens": 9071.0,
+      "reused": 8957.0,
+      "fresh": 114.0,
+      "prefill_ms": 813.0,
+      "prefill_tps": 140.3,
+      "generated": 128.0,
+      "decode_ms": 1800.0,
+      "decode_tps": 71.1
+    },
+    "usage": {
+      "prompt_tokens": 9071,
+      "completion_tokens": 128,
+      "total_tokens": 9199,
+      "prompt_tokens_details": {
+        "cached_tokens": 8957
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The most relevant boundary case is **integer equality at the specific index**, particularly when `x` equals the function's index (e.g., `rule0(0)` or `rule279(279)`). This triggers the \"true\" branch of the ternary operator, returning `x + (index + 1)`, which is the only case where the function does not return `x - index`. For example, `rule0(0)` returns `1` (since `0 + 1`), whereas `rule0(1)` returns `1` (since `1 - 0`). This"
+    }
+  },
+  {
+    "label": "B",
+    "kind": "fresh",
+    "trial": 3,
+    "wall_s": 6.169057189999876,
+    "metrics": {
+      "prompt_tokens": 4210.0,
+      "reused": 0.0,
+      "fresh": 4210.0,
+      "prefill_ms": 4219.0,
+      "prefill_tps": 997.8,
+      "generated": 128.0,
+      "decode_ms": 1935.0,
+      "decode_tps": 66.1
+    },
+    "usage": {
+      "prompt_tokens": 4210,
+      "completion_tokens": 128,
+      "total_tokens": 4338,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "This source code defines a collection of 140 exported functions, named `rule0` through `rule139`, each of which implements a specific conditional arithmetic transformation on a single numeric input `x`. The behavior of each function is uniform in structure but varies in its specific constants: for any given function `ruleN`, if the input `x` is exactly equal to the integer `N`, the function returns `x + (N + 1)`; otherwise, it returns `x - N`. Consequently, these functions act as specialized identity-like modifiers that increment the input by a unique offset when a specific threshold is met"
+    }
+  },
+  {
+    "label": "B",
+    "kind": "followup",
+    "trial": 3,
+    "wall_s": 2.9914946999997483,
+    "metrics": {
+      "prompt_tokens": 4451.0,
+      "reused": 4203.0,
+      "fresh": 248.0,
+      "prefill_ms": 1006.0,
+      "prefill_tps": 246.4,
+      "generated": 128.0,
+      "decode_ms": 1967.0,
+      "decode_tps": 65.1
+    },
+    "usage": {
+      "prompt_tokens": 4451,
+      "completion_tokens": 128,
+      "total_tokens": 4579,
+      "prompt_tokens_details": {
+        "cached_tokens": 4203
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The most relevant boundary case is the **exact integer equality check** (`x === N`), which acts as the primary switch between two distinct arithmetic behaviors: an \"increment\" path (`x + N + 1`) and a \"decrement\" path (`x - N`). This strict equality means that even a tiny deviation in the input (e.g., `N + 0.0001` or `N - 1`) triggers the completely different `else` branch, making the function highly sensitive to precision and type coercion.\n\nThe **smallest useful regression test** targets the function `rule0` with the"
+    }
+  },
+  {
+    "label": "B",
+    "kind": "fresh",
+    "trial": 4,
+    "wall_s": 8.958409051000672,
+    "metrics": {
+      "prompt_tokens": 8830.0,
+      "reused": 0.0,
+      "fresh": 8830.0,
+      "prefill_ms": 7276.0,
+      "prefill_tps": 1213.6,
+      "generated": 128.0,
+      "decode_ms": 1659.0,
+      "decode_tps": 77.1
+    },
+    "usage": {
+      "prompt_tokens": 8830,
+      "completion_tokens": 128,
+      "total_tokens": 8958,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The source code defines a series of exported functions named `rule0` through `rule279`, each accepting a single numeric argument `x` and returning a number based on a specific conditional logic pattern. For any given function `ruleN`, the behavior is determined by checking if the input `x` is strictly equal to the integer `N` embedded in the function's name; if this condition is true, the function returns `x + (N + 1)`, effectively incrementing the input by one more than its index value, whereas if the condition is false, the function returns `x - N`, subtracting the"
+    }
+  },
+  {
+    "label": "B",
+    "kind": "followup",
+    "trial": 4,
+    "wall_s": 2.814758525000798,
+    "metrics": {
+      "prompt_tokens": 9071.0,
+      "reused": 8823.0,
+      "fresh": 248.0,
+      "prefill_ms": 975.0,
+      "prefill_tps": 254.3,
+      "generated": 128.0,
+      "decode_ms": 1811.0,
+      "decode_tps": 70.7
+    },
+    "usage": {
+      "prompt_tokens": 9071,
+      "completion_tokens": 128,
+      "total_tokens": 9199,
+      "prompt_tokens_details": {
+        "cached_tokens": 8823
+      }
+    },
+    "finish_reason": "length",
+    "message": {
+      "role": "assistant",
+      "content": "The most relevant boundary case is the **identity check failure for non-integer or non-matching inputs**, specifically when `x` is a floating-point number, a string, or a negative integer that does not match the rule's index. For example, calling `rule0(-1)` returns `-1 - 0 = -1`, while `rule0(0.5)` returns `0.5 - 0 = 0.5`. The smallest useful regression test is `rule0(0) === 1`, which verifies the core logic: when the input exactly matches the rule's index (0), the function must"
+    }
+  }
+]
