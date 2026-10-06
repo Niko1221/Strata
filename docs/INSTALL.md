@@ -209,7 +209,10 @@ With `--yes` setup takes the recommended answer to every question.
 Every PC is different: `START-HERE.bat --calibrate` (Linux: `./setup.sh --calibrate`) measures a few engine settings
 on yours and keeps the fastest (about 5-10 minutes; on an RTX 5070 with a Ryzen 5 7600 it made the Coder 7% faster).
 It keeps a setting only when it is more than 3% faster, and the result is remembered per PC and model, so updates
-keep it. NVIDIA cards for now. [What it measures](DETAILS.md#double-click-start-herebat).
+keep it. Measuring the CPU worker count needs a fresh engine, so the model is loaded more than once: the PC is
+busy, and can stop responding for a minute or two, once per restart. When it finishes it **starts the model**,
+so the server is already running when it returns - do not start it a second time.
+NVIDIA cards for now. [What it measures](DETAILS.md#double-click-start-herebat).
 
 ## Options without questions
 
