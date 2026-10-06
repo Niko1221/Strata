@@ -1066,8 +1066,9 @@ conversation of the same length, which then stays parked. Restoring leaves the f
 `--prefix-cache-disk-mib N` (default 51200) caps the directory, least recently used first;
 `--prefix-cache-ram-mib N` (default 2048, 0 = disk only) also keeps the most recently used in RAM when
 `--conversation-cache-min-free-mib` allows it - otherwise the file is streamed into the session through a 64 MB
-buffer, so a full RAM never blocks it. Each file records the engine build, the pack, `--native`, `--mtp`, `--kv` and
-`STRATA_BF16_TC`; a file that differs in any of them (a rebuilt engine included) is deleted at start-up, and every
+buffer, so a full RAM never blocks it. Each file records the engine build, the pack, `--native`, `--mtp`, `--kv`,
+`STRATA_BF16_TC` and the settings a session file is bound to (the rope scaling, `STRATA_KV_ROT`, the control vector,
+the arithmetic switches); a file that differs in any of them (a rebuilt engine included) is deleted at start-up, and every
 restore is validated like a parked snapshot before anything is written. A restore that fails before writing keeps
 what the session held; one that fails after reads the whole prompt instead. One GPU without `--batch` only. A file
 is about 118 MB plus 12.4 KB per token with K8V4 (a 30,028-token system prompt: 490 MB).

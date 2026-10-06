@@ -6811,6 +6811,42 @@ int main(int argc, char** argv) {
         // that change what the saved bytes mean - the rope (K is cached post-RoPE), the loaded control vector, the
         // K/V format and the arithmetic switches.  Sampling, seeds, draft tuning and the expert tier are not in it.
         std::optional<uint64_t> model_fp, config_fp;
+        // the config half, also in the prefix snapshots' identity (their K/V too is post-RoPE)
+        auto config_fingerprint = [&]() -> uint64_t {
+            if (!config_fp) {
+                strata::core::SessionConfig c;
+                c.engine_version = STRATA_VERSION;
+#if defined(STRATA_USE_HIP)
+                c.backend = "hip";
+#else
+                c.backend = "cuda";
+#endif
+                c.kv = o.kv;
+                c.max_context = o.max_context;
+                c.kv_resident = o.kv_resident;
+                c.mtp_window = o.mtp.empty() ? -1 : o.mtp_window;
+                const char* rot = std::getenv("STRATA_KV_ROT");
+                c.kv_rot = rot != nullptr && rot[0] == '1';
+                c.rope = {(int64_t) rope_cfg.type, rope_cfg.freq_base, rope_cfg.factor, rope_cfg.freq_scale(),
+                          rope_cfg.orig_ctx, rope_cfg.ext_factor, rope_cfg.attn_factor, rope_cfg.beta_fast,
+                          rope_cfg.beta_slow};
+                c.cvec = cvec_digest;
+                c.switches = {
+                    {"no_ple", o.no_ple}, {"native_bf16", o.native_bf16}, {"native_bf16_extra", o.native_bf16_extra},
+                    {"native_ple_key", o.native_ple_key}, {"native_moe_combine", o.native_moe_combine},
+                    {"native_gdn", o.native_gdn}, {"native_flash_attn_short", o.native_flash_attn_short},
+                    {"native_qsa_indexer", o.native_qsa_indexer}, {"native_qsa", o.native_qsa},
+                    {"native_rope", o.native_rope}, {"native_ple_postops", o.native_ple_postops},
+                    {"native_router", o.native_router}, {"cpu_oracle_q8_0", o.cpu_oracle_q8_0},
+                    {"gr_fp32_activations", o.gr_fp32_activations}, {"gr_native_mmvf", o.gr_native_mmvf},
+                    {"native_preset", !o.native_preset.empty()}, {"shared_late", o.shared_late},
+                    {"keep_canonical", o.keep_canonical}, {"no_fused_gr", o.no_fused_gr},
+                    {"no_fast_attn", o.no_fast_attn}, {"no_fused_gdn", o.no_fused_gdn},
+                    {"no_fast_select", o.no_fast_select}, {"vision", o.vision}};
+                config_fp = strata::core::session_config_fingerprint(c);
+            }
+            return *config_fp;
+        };
         auto session_identity = [&](strata::core::SessionFileIdentity& id, std::string& e,
                                     const std::function<void()>& next_file) -> bool {
             if (!model_fp) {
@@ -6844,40 +6880,8 @@ int main(int argc, char** argv) {
                     return false;
                 model_fp = fp;
             }
-            if (!config_fp) {
-                strata::core::SessionConfig c;
-                c.engine_version = STRATA_VERSION;
-#if defined(STRATA_USE_HIP)
-                c.backend = "hip";
-#else
-                c.backend = "cuda";
-#endif
-                c.kv = o.kv;
-                c.max_context = o.max_context;
-                c.kv_resident = o.kv_resident;
-                c.mtp_window = o.mtp.empty() ? -1 : o.mtp_window;
-                const char* rot = std::getenv("STRATA_KV_ROT");
-                c.kv_rot = rot != nullptr && rot[0] == '1';
-                c.rope = {(int64_t) rope_cfg.type, rope_cfg.freq_base, rope_cfg.factor, rope_cfg.freq_scale(),
-                          rope_cfg.orig_ctx, rope_cfg.ext_factor, rope_cfg.attn_factor, rope_cfg.beta_fast,
-                          rope_cfg.beta_slow};
-                c.cvec = cvec_digest;
-                c.switches = {
-                    {"no_ple", o.no_ple}, {"native_bf16", o.native_bf16}, {"native_bf16_extra", o.native_bf16_extra},
-                    {"native_ple_key", o.native_ple_key}, {"native_moe_combine", o.native_moe_combine},
-                    {"native_gdn", o.native_gdn}, {"native_flash_attn_short", o.native_flash_attn_short},
-                    {"native_qsa_indexer", o.native_qsa_indexer}, {"native_qsa", o.native_qsa},
-                    {"native_rope", o.native_rope}, {"native_ple_postops", o.native_ple_postops},
-                    {"native_router", o.native_router}, {"cpu_oracle_q8_0", o.cpu_oracle_q8_0},
-                    {"gr_fp32_activations", o.gr_fp32_activations}, {"gr_native_mmvf", o.gr_native_mmvf},
-                    {"native_preset", !o.native_preset.empty()}, {"shared_late", o.shared_late},
-                    {"keep_canonical", o.keep_canonical}, {"no_fused_gr", o.no_fused_gr},
-                    {"no_fast_attn", o.no_fast_attn}, {"no_fused_gdn", o.no_fused_gdn},
-                    {"no_fast_select", o.no_fast_select}, {"vision", o.vision}};
-                config_fp = strata::core::session_config_fingerprint(c);
-            }
             id.model = *model_fp;
-            id.config = *config_fp;
+            id.config = config_fingerprint();
             return true;
         };
         // docs/DETAILS.md: one GPU without --batch; a build or model change makes the files unusable
@@ -6887,7 +6891,8 @@ int main(int argc, char** argv) {
             po.dir = o.prefix_cache_dir;
             po.identity = std::string(STRATA_VERSION " " __DATE__ " " __TIME__) + "|" + o.pack + "|" +
                           o.native_preset + "|" + o.mtp + "|" + o.kv + "|" +
-                          (std::getenv("STRATA_BF16_TC") ? std::getenv("STRATA_BF16_TC") : "");
+                          (std::getenv("STRATA_BF16_TC") ? std::getenv("STRATA_BF16_TC") : "") + "|" +
+                          std::to_string(config_fingerprint());
             po.ram_budget = (size_t) o.prefix_cache_ram_mib << 20;
             po.disk_budget = (size_t) o.prefix_cache_disk_mib << 20;
             po.min_free = (size_t) o.conversation_cache_min_free_mib << 20;
