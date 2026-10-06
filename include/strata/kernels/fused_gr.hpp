@@ -36,6 +36,15 @@ struct FusedGrArgs {
     float* rs = nullptr;               ///< workspace, hc floats
     float* inject_out = nullptr;       ///< hc floats (when w_inject)
     float* mixed = nullptr;            ///< n_embd
+    /// S23 experiment (STRATA_HC_Q8=1): the GGUF's Q8_0 projections (null: the BF16 ones above); fused_gr_read_multi
+    /// only
+    const uint8_t* q8_down = nullptr;  ///< Q8_0 [hc_lr][hc*n_embd]
+    const uint8_t* q8_up = nullptr;    ///< Q8_0 [hc*n_embd][hc_lr]
+    const uint8_t* q8_inject = nullptr;///< Q8_0 [hc][hc*n_embd]
+    /// S26 STRATA_QFUSE=1 (fused_gr_read_multi, the default and Q8_0 reads): also write `mixed`'s q8_1 image here (the
+    /// bytes native_quantize_q8_1 would write); q8_cnt = n_embd / 32 zeroed counters owned by the caller (token 0's)
+    uint8_t* q8_mixed = nullptr;
+    unsigned* q8_cnt = nullptr;
 };
 
 bool fused_gr_supported(int64_t n_embd, int64_t hc, int64_t hc_lr);
@@ -46,7 +55,8 @@ void fused_gr_read(const FusedGrArgs& a, void* stream);
 /// weight pointers and eps must be the same for every t); `xn_scratch` is n_tok * hc * n_embd floats.  Every
 /// token's outputs are bitwise `fused_gr_read(a[t])`.
 constexpr int kFusedGrMaxT = 8;
-void fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, void* stream,
+/// Returns true when it also wrote the q8_1 images (every token's q8_mixed set and this read supports it).
+bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, void* stream,
                          unsigned long long* stamp_buf = nullptr, int stamp_i0 = 0);
 
 /// The bench only: the AMD latency-hidden kernels on (1) or off (0); -1 = STRATA_GR_FAST.

@@ -53,6 +53,10 @@ for rel in all_sources():
     edit(rel, sub(r"__nanosleep\(\d+\);", "/* spin (no __nanosleep on SYCL) */;"))
     # 7. `__fadd_rn(a, b ? c : d)` lost its parentheses.
     edit(rel, sub(r"= (\w+) \+ (\w+) \? (\w+\[\w+\]) : 0\.0f;", r"= \1 + (\2 ? \3 : 0.0f);"))
+    # 8. cudaStreamQuery(s): dpct writes `DPCT_CHECK_ERROR(s->ext_oneapi_empty())`, which is 0 whenever the call does not
+    #    throw, so the ring waits' `q != 1` guard (1 = still running) was always true and any wait over 2 ms "never rang".
+    edit(rel, sub(r"(const dpct::err0 q =)\s*DPCT_CHECK_ERROR\(\(+(\w+)\)*->ext_oneapi_empty\(\)\)+;",
+                  r"\1 \2->ext_oneapi_empty() ? 0 : 1;"))
 
 # 2b. every `(dpct::queue_ptr) stream` cast goes through strata::q_of(), which maps CUDA's null stream to the
 #     default in-order queue instead of dereferencing a null sycl::queue* (include/strata/sycl_queue.hpp).

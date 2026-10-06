@@ -235,6 +235,9 @@ void ram_blocks(bool pin, bool mixed = false) {
     const auto* first = source.blob(0, 1);
     require(first && first[0] == 2 && source.resident_bytes() == block && !source.has_resident(0, 0),
             "RAM stores requested experts and skips authoritative GPU residents");
+    require(source.resident_blob(0, 1) == first && source.resident_blob(0, 0) == nullptr &&
+            source.resident_blob(-1, 1) == nullptr && source.resident_blob(2, 0) == nullptr,
+            "the public resident accessor uses live block ownership and rejects absent or invalid experts");
     require(source.resize_live_resident(block * 2, block, 0, res, rank, done, err) && done,
             "second independent RAM block: " + err);
     require(source.blob(0, 1) == first && source.blob(1, 0)[0] == 5, "growth preserves old pointers and bytes");

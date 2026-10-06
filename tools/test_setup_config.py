@@ -114,6 +114,39 @@ class CarryOver(unittest.TestCase):
             self.assertEqual(json.loads(p.read_text(encoding="utf-8")), {"exe": "e", "args": []})
             self.assertEqual((Path(d) / "strata-x.json.bak").read_text(encoding="utf-8"), "{cut off")
 
+    def test_display_tip_and_typed_ahead_flush(self):
+        # #779: the tip only when nvidia-smi says the card drives a display; #841: typed-ahead keys are dropped on a tty
+        with unittest.mock.patch.object(setup, "out", lambda cmd: "Enabled\n"):
+            self.assertTrue(setup.gpu_drives_display({"index": 0}))
+        with unittest.mock.patch.object(setup, "out", lambda cmd: "Disabled\n"), unittest.mock.patch.object(setup, "out") as o:
+            o.return_value = "Disabled\n"
+            self.assertFalse(setup.gpu_drives_display({"index": 1}))
+            self.assertIn("1", o.call_args[0][0])
+        with unittest.mock.patch.object(setup, "out", lambda cmd: ""):
+            self.assertFalse(setup.gpu_drives_display({"index": 0}))
+        with unittest.mock.patch.object(setup.sys, "stdin") as stdin:
+            stdin.isatty.return_value = False
+            setup.flush_typed_ahead()                      # a pipe: nothing touched
+            stdin.fileno.assert_not_called()
+
+    def test_a_learned_expert_profile_is_carried(self):
+        # #775: --expert-profile / --expert-profile-save added by hand survive a setup run
+        with tempfile.TemporaryDirectory() as d:
+            mine = Path(d) / "learned.bin"
+            mine.write_bytes(b"x")
+            old = {"args": ["--kv", "int8", "--expert-profile", str(mine), "--expert-profile-save", str(mine)]}
+            new = {"args": ["--kv", "int8", "--expert-profile", "/data/expert-profile.bin", "--expert-cache", "auto"]}
+            self.assertEqual(setup.carry_over(old, new), ["args --expert-profile", "args --expert-profile-save"])
+            self.assertEqual(setup.flag_value(new["args"], "--expert-profile"), str(mine))
+            self.assertEqual(setup.flag_value(new["args"], "--expert-profile-save"), str(mine))
+            # the shipped profile named again, or a file that is gone: setup's own stays
+            gone = {"args": ["--expert-profile", str(Path(d) / "gone.bin")]}
+            new = {"args": ["--expert-profile", "/data/expert-profile.bin"]}
+            self.assertEqual(setup.carry_over(gone, new), [])
+            self.assertEqual(new["args"], ["--expert-profile", "/data/expert-profile.bin"])
+            same = {"args": ["--expert-profile", "/old/expert-profile.bin"]}
+            self.assertEqual(setup.carry_over(same, new), [])
+
     def test_a_missing_mmproj_is_not_carried(self):
         old = {"vision": {"mmproj": "/nowhere/mmproj-Q8_0.gguf", "gpu": True}}
         new = {"vision": {"mmproj": "/data/mmproj-BF16.gguf", "gpu": True}}

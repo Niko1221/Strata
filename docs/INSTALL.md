@@ -69,8 +69,8 @@ On Linux setup uses a system ROCm 7 when there is one, or installs ROCm into `.v
 sudo), and compiles the engine on your PC for the card (10-20 minutes, once; it needs a C++ compiler and git:
 `sudo apt install build-essential git`). Several AMD cards share the model with `--gpus`, as on NVIDIA.
 
-What differs from NVIDIA for now: pictures are read by the image encoder on the CPU (`--vision cpu`, 10-30 s per
-picture), `--calibrate` is NVIDIA-only, and Unsloth's 4-bit model needs an NVIDIA card. Measurements per card, the
+What differs from NVIDIA for now: pictures are read by the image encoder on the CPU (`--vision cpu`, about 3 s per
+picture at the default 300 image tokens on 8 cores), `--calibrate` is NVIDIA-only, and Unsloth's 4-bit model needs an NVIDIA card. Measurements per card, the
 build by hand and the tuning tables: [AMD_HIP.md](AMD_HIP.md).
 
 ## Two or three cards
@@ -197,7 +197,7 @@ says so and starts the engine you had.
   covering factor; `--rope-scaling`/`--rope-scale` override) ([details](DETAILS.md): "Context extension past
   262K").
 - **Images?** Whether it should also read pictures. The image encoder (0.9 GB) runs on the GPU (0.1-0.5 s per
-  picture, ~1.4 GB of VRAM kept free for it) or on the CPU (10-30 s per picture, nothing on the GPU); with AMD cards
+  picture, ~1.4 GB of VRAM kept free for it) or on the CPU (about 3-13 s per picture, nothing on the GPU); with AMD cards
   on the CPU for now. [Details](DETAILS.md#images-vision).
 - **Experimental speed projection?** Off unless you say yes - [read what it does](DETAILS.md#experimental-speed-projection-experimental-off-by-default)
   first. It changes how the model answers, and only the original model offers it.

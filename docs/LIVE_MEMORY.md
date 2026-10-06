@@ -21,6 +21,10 @@ other layouts, including remote expert optimization, are excluded. Live mode ser
 the server refuses `--batch`, `--slots` and `--batch-groups`, including flags added by the parallel setting.
 The upstream parallel paths remain available when live mode is disabled.
 
+Live mode also rejects `--adapt-async 1`: its block-based resident cache cannot use the asynchronous
+exchange path that assumes a fixed resident arena. The upstream asynchronous path remains available
+with live mode disabled.
+
 An enabled memory policy and `--vram-elastic` cannot both own cache capacity. Choose one owner; this applies
 to both live and request-boundary reload policy. The upstream elastic VRAM control remains available when
 the memory policy is disabled.

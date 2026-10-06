@@ -63,6 +63,10 @@
 #define cudaDeviceScheduleBlockingSync hipDeviceScheduleBlockingSync
 #define cudaDeviceMapHost hipDeviceMapHost
 #define cudaFuncAttributeMaxDynamicSharedMemorySize hipFuncAttributeMaxDynamicSharedMemorySize
+#define cudaFuncAttributePreferredSharedMemoryCarveout hipFuncAttributePreferredSharedMemoryCarveout
+// CUDA's cudaSharedmemCarveoutMaxShared is a percentage (100 = give the block all of the carveout); HIP has no
+// counterpart constant, so spell it out (the carveout attribute takes an int percentage).
+#define cudaSharedmemCarveoutMaxShared 100
 #define cudaDevAttrMultiProcessorCount hipDeviceAttributeMultiprocessorCount
 #define cudaDevAttrClockRate hipDeviceAttributeClockRate
 #define cudaDevAttrComputeCapabilityMajor hipDeviceAttributeComputeCapabilityMajor
@@ -151,7 +155,13 @@ template <typename T> inline hipError_t strata_host_alloc(T** p, size_t bytes, u
 #define cudaKernelNodeParams hipKernelNodeParams
 #define cudaGraphKernelNodeGetParams hipGraphKernelNodeGetParams
 inline hipError_t cudaFuncGetName(const char** name, const void*) { *name = nullptr; return hipErrorNotSupported; }
-#define cudaFuncSetAttribute(fn, attr, val) hipFuncSetAttribute(reinterpret_cast<const void*>(fn), attr, val)
+// A function, not a macro: the call sites pass kernels as cudaFuncSetAttribute(kernel<A, B, C>, ...) and a
+// function-like macro would split its arguments on the commas inside the template argument list (0.1.38's
+// hip_compat/cuda_runtime.h had this as a template function too; the macro broke fused_gr.cu on ROCm 7.2.1).
+template <typename Kernel>
+inline hipError_t cudaFuncSetAttribute(Kernel kernel, hipFuncAttribute attribute, int value) {
+    return hipFuncSetAttribute(reinterpret_cast<const void*>(kernel), attribute, value);
+}
 #define cudaMemcpyToSymbol(sym, src, ...) hipMemcpyToSymbol(HIP_SYMBOL(sym), src, __VA_ARGS__)
 
 // CUDA 12 has a 3-argument cudaGraphInstantiate(exec, graph, flags) and the older 5-argument one; HIP spells

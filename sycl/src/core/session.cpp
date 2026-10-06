@@ -784,7 +784,7 @@ bool SessionLoopScratch::init(size_t parts_bytes_in, std::string &err) try {
     const std::vector<int> cores = strata::kernels::cpu::physical_cores(false);
     if (!cores.empty()) {
         pinned_core = strata::kernels::cpu::pin_current_thread(cores[0]);
-        pinned = true;
+        pinned = pinned_core.valid;
     }
     return true;
 }
@@ -800,7 +800,7 @@ void SessionLoopScratch::free() {
     if (pinned) {
         strata::kernels::cpu::restore_thread_affinity(pinned_core);
         pinned = false;
-        pinned_core = -1;
+        pinned_core = {};
     }
     if (probe != nullptr) { dpct::destroy_event(probe); probe = nullptr; }
     if (y_miss != nullptr) {
@@ -1367,7 +1367,10 @@ bool session_run_token(const ModelGeometry &g, int64_t pos, int32_t pos_base,
                 // A slow ring: flush the submission queue once more, and notice a fault or a finished graph.
                 last_flush = now;
                 ++tg.flushes;
-                const dpct::err0 q = DPCT_CHECK_ERROR((cs->ext_oneapi_empty()));
+                // SYCL port fix: cudaStreamQuery's answer (0 finished, 1 still running) was lost in the migration
+                // (DPCT_CHECK_ERROR of ext_oneapi_empty() is always 0), so ANY wait over 2 ms was reported as
+                // "graph finished". Layers whose GPU time exceeds 2 ms (host-mirrored experts read over PCIe) failed that way.
+                const dpct::err0 q = cs->ext_oneapi_empty() ? 0 : 1;
                 if (q != 1 && *seq < want) {
                     err = "session_run_token: layer " + std::to_string(l) +
                           " never rang (" +

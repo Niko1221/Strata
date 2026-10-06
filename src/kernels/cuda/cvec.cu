@@ -151,6 +151,14 @@ void cvec_set_enabled(bool on) {
 
 bool cvec_enabled() { return g_cvec.loaded() && g_on_host; }
 
+bool cvec_tables(const float** dir, const float** s, const int** on) {
+    if (!g_cvec.loaded()) return false;
+    const DevTables& t = g_dev[cur_device()];
+    if (t.dir == nullptr) return false;
+    *dir = t.dir; *s = t.s; *on = t.on;
+    return true;
+}
+
 void cvec_apply(float* R, int64_t layer, int64_t T, int64_t r_ld, const float* bo, int64_t bo_ld, const float* inj,
                 int64_t inj_ld, bool write, void* stream) {
     if (!g_cvec.loaded() || T < 1) return;

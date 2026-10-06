@@ -21,6 +21,7 @@
 //      Asserted as a property, not as a value, because that is what the source comment claims.
 #include "strata/kernels/gr.hpp"
 #include "strata/kernels/fused_gr.hpp"
+#include "strata/kernels/native_mmvq.hpp"
 
 #include <cuda_runtime.h>
 
@@ -405,6 +406,54 @@ int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const ui
         ++bad;
     }
 
+
+    // S26 STRATA_QFUSE: the read's own q8_1 image of `mixed` must be the bytes native_quantize_q8_1 writes from it -
+    // for every T (1..8), directly and through a captured graph replayed twice (the group counters must reset)
+    {
+        uint8_t *d_q = nullptr, *d_ref = nullptr;
+        unsigned* d_cnt = nullptr;
+        const size_t qbytes = (size_t) T * (N / 32) * 36;
+        check(cudaMalloc(&d_q, qbytes), "qfuse q8");
+        check(cudaMalloc(&d_ref, qbytes), "qfuse ref");
+        check(cudaMalloc(&d_cnt, (N / 32) * sizeof(unsigned)), "qfuse counters");
+        check(cudaMemset(d_cnt, 0, (N / 32) * sizeof(unsigned)), "qfuse counters zero");
+        int qbad = 0;
+        std::vector<uint8_t> hq(qbytes), hr(qbytes);
+        for (int tt = 1; tt <= T && !qbad; ++tt) {
+            std::vector<FusedGrArgs> qa(args.begin(), args.begin() + tt);
+            for (int t = 0; t < tt; ++t) { qa[t].q8_mixed = d_q + (size_t) t * (N / 32) * 36; qa[t].q8_cnt = d_cnt; }
+            for (int rep = 0; rep < 3 && !qbad; ++rep) {
+                check(cudaMemsetAsync(d_q, 0x5a, qbytes, stream), "qfuse poison");
+                bool wrote = false;
+                cudaGraph_t qg = nullptr;
+                cudaGraphExec_t qx = nullptr;
+                if (rep == 0) {
+                    wrote = fused_gr_read_multi(qa.data(), tt, d_xn, stream);
+                } else {   // a captured read, replayed (twice: rep 1 and 2 use fresh captures, each replayed twice)
+                    check(cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal), "qfuse begin");
+                    wrote = fused_gr_read_multi(qa.data(), tt, d_xn, stream);
+                    check(cudaStreamEndCapture(stream, &qg), "qfuse end");
+                    check(cudaGraphInstantiate(&qx, qg, nullptr, nullptr, 0), "qfuse instantiate");
+                    check(cudaGraphLaunch(qx, stream), "qfuse replay 1");
+                    check(cudaMemsetAsync(d_q, 0x5a, qbytes, stream), "qfuse poison 2");
+                    check(cudaGraphLaunch(qx, stream), "qfuse replay 2");
+                }
+                strata::kernels::native_quantize_q8_1(d_mixed, d_ref, N, tt, stream);
+                check(cudaStreamSynchronize(stream), "qfuse sync");
+                if (qx) { cudaGraphExecDestroy(qx); cudaGraphDestroy(qg); }
+                if (v3) { std::printf("  QFUSE: the v3 read writes no q8_1 (%s)\n", wrote ? "WRONG: it says it did" : "ok"); qbad += wrote; break; }
+                check(cudaMemcpy(hq.data(), d_q, (size_t) tt * (N / 32) * 36, cudaMemcpyDeviceToHost), "qfuse read");
+                check(cudaMemcpy(hr.data(), d_ref, (size_t) tt * (N / 32) * 36, cudaMemcpyDeviceToHost), "qfuse ref read");
+                if (!wrote || std::memcmp(hq.data(), hr.data(), (size_t) tt * (N / 32) * 36) != 0) {
+                    std::printf("  QFUSE: T=%d rep %d: %s\n", tt, rep, wrote ? "q8_1 bytes differ" : "not written");
+                    ++qbad;
+                }
+            }
+        }
+        std::printf("  fused GR read + q8_1 (STRATA_QFUSE), T 1..8, direct and graph replays: %s\n", qbad ? "FAIL" : "pass");
+        bad += qbad;
+        cudaFree(d_q); cudaFree(d_ref); cudaFree(d_cnt);
+    }
     std::printf("  fused GR multi max-T=8 LDS launch and changing graph replay %s\n",
                 bad == 0 ? "pass" : "FAIL");
     check(cudaGraphExecDestroy(graph_exec), "multi graph exec destroy");

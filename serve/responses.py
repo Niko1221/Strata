@@ -257,6 +257,10 @@ def request_tools(req: dict):
                       "required": ["input"]}
         tools.append({"name": flat, "description": description, "parameters": params})
         names[flat] = (namespace, name, kind)
+        if namespace:
+            # Qwen writes Codex's MCP tools as `mcp__server__tool` (the flat name it
+            # learned), not `mcp__server.tool`: map that spelling back as well.
+            names.setdefault(f"{namespace}__{name}", (namespace, name, kind))
 
     for i, tool in enumerate(given):
         param = f"tools[{i}]"

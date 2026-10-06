@@ -6,6 +6,7 @@ half of the E-cores) and writes nothing new anywhere else; a calibration's measu
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -15,6 +16,57 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 import setup  # noqa: E402
 from test_setup_golden import PROFILES, install  # noqa: E402
+
+
+def fake_sys(root: Path, caps: list, pmu=None, smt=False) -> None:
+    """A /sys tree: cpu N's capacity (and, with smt, a sibling CPU per core), and the hybrid PMU lists when given."""
+    cpu_dir = root / "devices" / "system" / "cpu"
+    n = 0
+    for core, cap in enumerate(caps):
+        for _ in range(2 if smt and cap >= 1000 else 1):
+            d = cpu_dir / f"cpu{n}"
+            (d / "topology").mkdir(parents=True)
+            (d / "topology" / "physical_package_id").write_text("0")
+            (d / "topology" / "core_id").write_text(str(core))
+            (d / "cpu_capacity").write_text(str(cap))
+            n += 1
+    if pmu:
+        for name, lst in zip(("cpu_core", "cpu_atom"), pmu):
+            (root / "devices" / name).mkdir(parents=True)
+            (root / "devices" / name / "cpus").write_text(lst + "\n")
+
+
+class LinuxCores(unittest.TestCase):
+    """#798: Turbo Boost Max 3.0's "favored" P-cores have a slightly higher cpu_capacity."""
+
+    def classes(self, caps, **kw):
+        with tempfile.TemporaryDirectory() as d:
+            fake_sys(Path(d), caps, **kw)
+            cl = setup.linux_core_classes(d)
+        if not cl or max(cl) == min(cl):
+            return None
+        p = sum(1 for c in cl if c == max(cl))
+        return p, len(cl) - p
+
+    def test_favored_cores_do_not_hide_the_p_cores(self):
+        caps = [1024, 1012, 1024, 1012, 1012, 1012, 1012, 1012] + [768] * 16        # Core Ultra 7 270K Plus
+        self.assertEqual(self.classes(caps), (8, 16))                               # by capacity: >= 90% of the largest
+        self.assertEqual(self.classes(caps, pmu=("0-7", "8-23")), (8, 16))          # by the PMU lists
+        self.assertEqual(setup.hybrid_pool_workers((8, 16)), 15)
+
+    def test_plain_capacities_and_plain_cpus(self):
+        self.assertEqual(self.classes([1024] * 8 + [512] * 8), (8, 8))
+        self.assertIsNone(self.classes([1024] * 8))                                 # no E-cores
+        self.assertIsNone(self.classes([1024, 1012, 1012, 1012]))                   # favored cores only: not hybrid
+
+    def test_smt_siblings_count_once(self):
+        self.assertEqual(self.classes([1024, 1012] * 4 + [768] * 8, smt=True, pmu=("0-15", "16-23")), (8, 8))
+
+    def test_no_capacity_files_and_no_pmu_says_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            fake_sys(Path(d), [1024, 768])
+            (Path(d) / "devices/system/cpu/cpu1/cpu_capacity").unlink()
+            self.assertIsNone(setup.linux_core_classes(d))
 
 
 class HybridWorkers(unittest.TestCase):

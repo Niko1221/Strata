@@ -1376,8 +1376,10 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
             const auto now = Clock::now();
             if (now - last_flush > std::chrono::microseconds(2000)) {
                 last_flush = now;
-                const dpct::err0 q =
-                    DPCT_CHECK_ERROR(((cs_)->ext_oneapi_empty()));
+                // SYCL port fix: cudaStreamQuery's answer (0 finished, 1 still running) was lost in the migration
+                // (DPCT_CHECK_ERROR of ext_oneapi_empty() is always 0), so ANY wait over 2 ms was reported as
+                // "graph finished". Layers whose GPU time exceeds 2 ms (host-mirrored experts read over PCIe) failed that way.
+                const dpct::err0 q = cs_->ext_oneapi_empty() ? 0 : 1;
                 if (q != 1 && *seq < want) {
                     trace_ev("NEVER-RANG", k, l, (int64_t) q);
                     trace_dump(stderr);

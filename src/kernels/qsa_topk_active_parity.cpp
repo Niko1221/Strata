@@ -88,8 +88,10 @@ int main() {
         {131075, 255, 0}, {135164, 256, 0}, {135168, 256, 0}, {250022, 256, 0},
         {262144, 256, 0}, {131072, 1, 0}, {131072, 8, 0}, {131072, 257, 0},
         {131072, 256, 1}, {131072, 256, 2}, {131072, 256, 3}, {131072, 256, 4},
+        // either side of the Turing wide-kernel bound (22,528 blocks), and ties above the register limit
+        {90108, 256, 0}, {90112, 256, 0}, {200000, 256, 2}, {262144, 256, 1},
     };
     for (const auto c : cases) if (!check(c)) return 1;
-    std::puts("PASS: 16 top-k active-bound cases, selected IDs bitwise identical");
+    std::puts("PASS: 20 top-k active-bound cases, selected IDs bitwise identical");
     return 0;
 }

@@ -60,13 +60,30 @@ def with_arg(args: list[str], flag: str, value: str | None) -> list[str]:
     return out
 
 
-def worker_candidates(default: int) -> list[int]:
-    """The engine's own count, and fewer: two thirds and a half (at least 2), without repeats."""
+def worker_candidates(default: int, extra=()) -> list[int]:
+    """The engine's own count, and fewer: two thirds, a half and a quarter (at least 2), plus `extra` (the P-cores
+    minus one on a hybrid CPU, one socket's cores minus one on a 2-socket PC), without repeats.  Bench #780 #815
+    #707 #674: 4 beat 15 by 28.7% on 8P + 16E; 17-18 beat 35 by ~20% on 2-socket Xeons."""
     c = [default]
-    for w in (round(default * 2 / 3), round(default / 2)):
-        if w >= 2 and w not in c:
+    for w in (round(default * 2 / 3), round(default / 2), round(default / 4), *extra):
+        if 2 <= w < default and w not in c:
             c.append(w)
     return c
+
+
+def host_worker_extras() -> list[int]:
+    """P-cores - 1 (hybrid CPU) and one socket's cores - 1 (several sockets) of this PC: more counts to try."""
+    try:
+        import setup
+        out = []
+        cores, sockets = setup.cpu_cores(), setup.cpu_sockets()
+        if cores:
+            out.append(cores[0] - 1)
+        if sockets and sockets[0] >= 2:
+            out.append(sockets[1] - 1)
+        return out
+    except Exception:
+        return []
 
 
 def pick(measured: dict, default_key, min_gain: float = MIN_GAIN):
@@ -119,7 +136,7 @@ def run(cfg: dict, say=print, start_engine=None) -> dict:
     tok = ST.Tokenizer(toks, (tpath / "merges.txt").read_text(encoding="utf-8").split("\n"),
                        json.loads((tpath / "token_type.json").read_text()))
     ids_list = [chat_ids(tok, p) for p in PROMPTS]
-    return measure(engine_args(cfg), ids_list, start_engine, say)
+    return measure(engine_args(cfg), ids_list, start_engine, say, host_worker_extras())
 
 
 def engine_args(cfg: dict) -> list[str]:
@@ -145,7 +162,7 @@ def engine_error(log: str | None, since: int = 0) -> str | None:
     return next((x for x in reversed(lines) if x.startswith(("strata", "ERR"))), lines[-1] if lines else None)
 
 
-def measure(base_args: list[str], ids_list, start_engine, say=print) -> dict:
+def measure(base_args: list[str], ids_list, start_engine, say=print, extra_workers=()) -> dict:
     t0 = time.time()
     report: dict = {}
     say("  Loading the model for the measurements ...")
@@ -190,10 +207,10 @@ def measure(base_args: list[str], ids_list, start_engine, say=print) -> dict:
         settings["--spec-min-p"] = f"{chosen[1]:.2f}"
     base_rate = statistics.median(confirm[chosen]) if confirm.get(chosen) else None
     # 4. fewer CPU workers (a restart each), with the chosen settings
-    if d_workers and len(worker_candidates(d_workers)) > 1:
+    if d_workers and len(worker_candidates(d_workers, extra_workers)) > 1:
         tuned = with_arg(with_arg(base_args, "--pcie-frac", f"{chosen[0]:.2f}"), "--spec-min-p", f"{chosen[1]:.2f}")
         by_workers = {}
-        for w in worker_candidates(d_workers):
+        for w in worker_candidates(d_workers, extra_workers):
             say(f"  Measuring with {w} CPU workers (restarts the engine) ...")
             e = start_engine(with_arg(tuned, "--pool-workers", None if w == d_workers else str(w)))
             try:

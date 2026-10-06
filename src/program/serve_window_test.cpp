@@ -101,6 +101,24 @@ int main() {
                                                   eos_row < remaining && eos_row < proposed;
                         require(p.eos == expected_eos, "EOS in a rejected or unverified tail cannot stop the request");
                     }
+        // Lookup-chain proposals extend the MTP window. Both parts must fit the output budget:
+        // limiting only MTP would reintroduce hidden committed inputs in the final window.
+        for (int mtp = 1; mtp <= 8; ++mtp)
+            for (int chain = 0; chain <= 8; ++chain)
+                for (int remaining = 1; remaining <= 12; ++remaining) {
+                    const int mtp_t = strata::program::serve_window_size(mtp, remaining);
+                    const int chain_t = std::min(chain,
+                        strata::program::serve_window_size(mtp_t + chain, remaining) - mtp_t);
+                    require(mtp_t >= 1 && chain_t >= 0 && mtp_t + chain_t <= remaining &&
+                            mtp_t + chain_t == std::min(mtp + chain, remaining),
+                            "chained window retains the complete admitted prefix within the output cap");
+                    for (int eos_row : {-1, 0, mtp_t - 1, mtp_t + chain_t - 1}) {
+                        Prefix chained(19);
+                        chained.window(mtp_t + chain_t, mtp_t + chain_t - 1, remaining, eos_row);
+                        require(chained.exact() && chained.reusable() && chained.last_keep == chained.last_emitted,
+                                "fully accepted chained drafts retain the emitted continuation prefix through EOS");
+                    }
+                }
         // Multiple windows preserve the fed-back head, including a partial match before the last cap.
         Prefix p(19);
         for (int step = 0; p.produced < 23; ++step) {

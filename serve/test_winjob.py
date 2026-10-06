@@ -65,3 +65,18 @@ class TestWinJob(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(os.name == "nt", "power throttling is a Windows setting")
+class TestNoThrottle(unittest.TestCase):
+    def test_a_contained_child_is_opted_out_of_power_throttling(self):
+        # #691: contain() also sets ProcessPowerThrottling (EcoQoS off), so a minimized server window does not move the
+        # engine to the E-cores
+        from serve import winjob
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            self.assertTrue(winjob.no_throttle(int(child._handle)))
+            self.assertTrue(winjob.contain(child))
+        finally:
+            child.kill()
+            child.wait(10)

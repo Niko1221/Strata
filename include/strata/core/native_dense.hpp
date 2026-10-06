@@ -35,10 +35,11 @@ public:
     /// of `skip` and `load` does not upload the GGUF key over it.  A quantized row leaves `skip` unchanged.
     static bool keep_unquantized_ple_key(const std::string& pack_dir, std::set<std::string>& skip, std::string& err);
     uint64_t weight_bytes() const { return bytes_; }
-    size_t tensor_count() const { return weights_.size(); }
+    size_t tensor_count() const { return weights_.size() - packed_keys_.size(); }
 
 private:
     std::vector<void*> weights_;
+    std::vector<const void*> packed_keys_;   // GGUF-layout pointers registered with STRATA_Q8_PACKED=1
     void* scratch_ = nullptr;
     uint64_t bytes_ = 0;
 };

@@ -113,7 +113,7 @@ class Calibrate(unittest.TestCase):
             (tok / "token_type.json").write_text(json.dumps([1, 1]))
             seen = []
             saved = CAL.measure
-            CAL.measure = lambda args, ids_list, start_engine, say=print: seen.append(args) or {}
+            CAL.measure = lambda args, ids_list, start_engine, say=print, extra=(): seen.append(args) or {}
             fake = type("ST", (), {"Tokenizer": lambda *a: type("T", (), {"encode": lambda s, t, **k: [0]})()})
             try:
                 with mock.patch.dict(sys.modules, {"strata_tokenizer": fake}):
@@ -140,8 +140,11 @@ class Calibrate(unittest.TestCase):
             self.assertIsNone(CAL.engine_error(str(Path(d) / "missing.log")))
 
     def test_worker_candidates(self):
-        self.assertEqual(CAL.worker_candidates(6), [6, 4, 3])
-        self.assertEqual(CAL.worker_candidates(23), [23, 15, 12])
+        self.assertEqual(CAL.worker_candidates(6), [6, 4, 3, 2])
+        self.assertEqual(CAL.worker_candidates(23), [23, 15, 12, 6])        # a quarter: 4 beat 15 on 8P + 16E
+        self.assertEqual(CAL.worker_candidates(23, (7,)), [23, 15, 12, 6, 7])   # P-cores - 1
+        self.assertEqual(CAL.worker_candidates(35, (17,)), [35, 23, 18, 9, 17])  # 2 sockets: one socket's cores - 1
+        self.assertEqual(CAL.worker_candidates(6, (6, 1, 9)), [6, 4, 3, 2])      # none above the default, none below 2
         self.assertEqual(CAL.worker_candidates(3), [3, 2])
         self.assertEqual(CAL.worker_candidates(1), [1])
 

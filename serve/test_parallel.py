@@ -149,6 +149,30 @@ class ParallelArgs(unittest.TestCase):
         self.assertEqual(parallel_args({"parallel": "4"}, []), [])                   # said and ignored
         self.assertEqual(parallel_args({"parallel": True}, []), [])
         self.assertEqual(parallel_args({"parallel": 12}, []), ["--batch", "12"])     # the engine warns and caps
+    def test_parallel_above_the_window_says_so_unless_batch_mtp(self):
+        import contextlib, io, os
+        def said(args, env):
+            buf = io.StringIO()
+            old = os.environ.get("STRATA_BATCH_MTP")
+            if env is None:
+                os.environ.pop("STRATA_BATCH_MTP", None)
+            else:
+                os.environ["STRATA_BATCH_MTP"] = env
+            try:
+                with contextlib.redirect_stdout(buf):
+                    r = parallel_args({"parallel": 12}, args)
+            finally:
+                if old is None:
+                    os.environ.pop("STRATA_BATCH_MTP", None)
+                else:
+                    os.environ["STRATA_BATCH_MTP"] = old
+            self.assertEqual(r, ["--batch", "12"])
+            return "at most" in buf.getvalue()
+        self.assertTrue(said([], None))                  # 0.1.39: the window holds 8 rows
+        self.assertTrue(said([], "0"))
+        self.assertFalse(said(["--batch-mtp"], None))    # --batch-mtp waves more through the window
+        self.assertFalse(said([], "1"))
+
         args = engine_args({"args": ["--pack", "p"], "parallel": 2})
         self.assertEqual(args[-2:], ["--batch", "2"])
 
@@ -233,6 +257,18 @@ class ParallelService(unittest.TestCase):
         self.start(4, fit=2)
         self.assertEqual(self.engine.batch, 2)
         self.assertEqual(self.get("/v1/status")["concurrency"]["serving"], 2)
+
+    def test_stop_strings_in_a_batch_slot(self):
+        """#454: a stop string cuts the answer in --batch mode too, and the slot is freed for the next request."""
+        self.start(2)
+        body = {"messages": [{"role": "user", "content": "hi LONGREPLY"}], "max_tokens": 64, "reasoning_effort": "none",
+                "stop": ["la la"]}
+        req = urllib.request.Request(self.base + "/v1/chat/completions", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            c = json.loads(r.read().decode())["choices"][0]
+        self.assertEqual((c["message"]["content"], c["finish_reason"]), ("ok, ", "stop"))
+        self.assertEqual(self.chat("again")["choices"][0]["message"]["content"], "ok, done.")
 
     def test_engine_turns_batching_off(self):
         self.start(4, fit=0)

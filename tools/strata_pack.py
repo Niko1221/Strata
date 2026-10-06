@@ -203,7 +203,28 @@ def sha256(path: pathlib.Path, chunk: int = 1 << 24) -> str:
     return h.hexdigest()
 
 
-def build(gguf: pathlib.Path, out_dir: pathlib.Path, n_layers: int | None, skip_hash: bool) -> int:
+# The files the engine reads a pack's identity from (src/core/expert_source.cpp, the fingerprint): one of them in
+# --out means the directory already holds a pack, this tool's or iq_pack.py's.  experts.bin on its own does not:
+# build writes manifest.json last, so experts.bin without it is a build that did not finish, and is rebuilt.
+PACK_MARKERS = ("manifest.json", "index.txt", "native_experts.txt")
+
+
+def occupied(out_dir: pathlib.Path) -> pathlib.Path | None:
+    """The pack marker already in `out_dir`, or None when the directory is empty, absent or holds no pack."""
+    for name in PACK_MARKERS:
+        if (out_dir / name).exists():
+            return out_dir / name
+    return None
+
+
+def build(gguf: pathlib.Path, out_dir: pathlib.Path, n_layers: int | None, skip_hash: bool, force: bool = False) -> int:
+    # refused before anything is opened or written: build used to mkdir(exist_ok=True) and overwrite experts.bin,
+    # dense.bin, embd.bin and manifest.json of whatever pack was there, with nothing said
+    marker = None if force else occupied(out_dir)   # --force: setup rebuilding a pack that lost index.txt or experts.bin
+    if marker is not None:
+        print("%s already holds a pack (%s is there) - refusing to build; delete the directory, pass another "
+              "--out, or --force to rebuild it" % (out_dir, marker.name))
+        return 1
     out_dir.mkdir(parents=True, exist_ok=True)
     g = G.GGUFFile(gguf)
     head, flen = open_shard(gguf)
@@ -402,6 +423,7 @@ def main() -> int:
     b.add_argument("--out", required=True)
     b.add_argument("--layers", type=int, default=None, help="expert layers to emit (default 48)")
     b.add_argument("--skip-hash", action="store_true")
+    b.add_argument("--force", action="store_true", help="build into a directory that already holds a pack (#634)")
     v = sub.add_parser("verify")
     v.add_argument("--gguf", required=True)
     v.add_argument("--out", required=True)
@@ -413,7 +435,7 @@ def main() -> int:
     n.add_argument("--out", required=True)
     args = ap.parse_args()
     if args.cmd == "build":
-        return build(pathlib.Path(args.gguf), pathlib.Path(args.out), args.layers, args.skip_hash)
+        return build(pathlib.Path(args.gguf), pathlib.Path(args.out), args.layers, args.skip_hash, args.force)
     if args.cmd == "verify":
         return verify(pathlib.Path(args.gguf), pathlib.Path(args.out), args.limit, args.expert_every)
     return info(pathlib.Path(args.out))

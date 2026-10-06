@@ -66,6 +66,31 @@ __global__ void norm(const float* input, const float* __restrict__ gamma, float*
     for (std::size_t col = tid; col < std::size_t(n_cols); col += BlockSize)
         output[col] = scale * input[col] * gamma[col];
 }
+// As norm, with gamma[groups * n_cols]: row r is group r % groups and reads its own slice of gamma.
+template<int BlockSize>
+__global__ void norm_grouped(const float* input, const float* __restrict__ gamma, float* output,
+                             int n_cols, int groups, float epsilon) {
+    const int tid = threadIdx.x;
+    const std::size_t row_offset = std::size_t(blockIdx.x) * n_cols;
+    input += row_offset; output += row_offset;
+    gamma += std::size_t(blockIdx.x % unsigned(groups)) * n_cols;
+    float partial = 0.0f;
+    for (std::size_t col = tid; col < std::size_t(n_cols); col += BlockSize) {
+        const float x = input[col];
+        partial += x * x;
+    }
+    __shared__ float sums[32];
+    partial = warp_sum(partial);
+    const int lane = tid % 32;
+    if (lane == 0) sums[tid / 32] = partial;
+    __syncthreads();
+    partial = lane < BlockSize / 32 ? sums[lane] : 0.0f;
+    partial = warp_sum(partial);
+    const float mean = partial / n_cols;
+    const float scale = rsqrtf(mean + epsilon);
+    for (std::size_t col = tid; col < std::size_t(n_cols); col += BlockSize)
+        output[col] = scale * input[col] * gamma[col];
+}
 __global__ void gate(const float* attn, const float* __restrict__ q_full, float* output,
                      int n_head, int head_dim) {
     const std::size_t i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -115,6 +140,21 @@ void native_qsa_rms_norm_weighted(const float* input, const float* gamma, float*
         norm<256><<<unsigned(n_rows), 256, 0, static_cast<cudaStream_t>(stream)>>>(input, gamma, output, n_cols, epsilon);
     else
         norm<1024><<<unsigned(n_rows), 1024, 0, static_cast<cudaStream_t>(stream)>>>(input, gamma, output, n_cols, epsilon);
+    check_launch();
+}
+void native_qsa_rms_norm_grouped(const float* input, const float* gamma, float* output,
+                                 int n_cols, int groups, int n_rows, float epsilon, void* stream) {
+    if (groups < 1) throw std::invalid_argument("native QSA requires positive bounded dimensions");
+    const auto count = elements(n_cols, n_rows);
+    if (!std::isfinite(epsilon) || epsilon < 0.0f)
+        throw std::invalid_argument("native QSA requires finite nonnegative epsilon");
+    buffers(input, count * 4, gamma, std::size_t(n_cols) * groups * 4, output, stream);
+    if (n_cols < 1024)
+        norm_grouped<256><<<unsigned(n_rows), 256, 0, static_cast<cudaStream_t>(stream)>>>(input, gamma, output, n_cols,
+                                                                                         groups, epsilon);
+    else
+        norm_grouped<1024><<<unsigned(n_rows), 1024, 0, static_cast<cudaStream_t>(stream)>>>(input, gamma, output, n_cols,
+                                                                                           groups, epsilon);
     check_launch();
 }
 void native_qsa_gate_apply(const float* attn, const float* q_full, float* output,

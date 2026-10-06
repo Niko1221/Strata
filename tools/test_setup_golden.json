@@ -233,12 +233,17 @@
     "131072",
     "--kv",
     "int8",
-    "--mmap-experts"
+    "--resident-experts",
+    "--remote-expert-opt"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
-   "gpu": 0,
+   "gpu": [
+    0,
+    1
+   ],
    "gpus_asked": true,
+   "layer_split": "auto",
    "lib_dirs": [
     "<cuda>"
    ],
@@ -274,12 +279,17 @@
     "131072",
     "--kv",
     "int8",
-    "--mmap-experts"
+    "--resident-experts",
+    "--remote-expert-opt"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
-   "gpu": 0,
+   "gpu": [
+    0,
+    1
+   ],
    "gpus_asked": true,
+   "layer_split": "auto",
    "lib_dirs": [
     "<cuda>"
    ],
@@ -315,12 +325,17 @@
     "131072",
     "--kv",
     "int8",
-    "--resident-experts"
+    "--resident-experts",
+    "--remote-expert-opt"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
-   "gpu": 0,
+   "gpu": [
+    0,
+    1
+   ],
    "gpus_asked": true,
+   "layer_split": "auto",
    "lib_dirs": [
     "<cuda>"
    ],
@@ -356,12 +371,17 @@
     "131072",
     "--kv",
     "int8",
-    "--resident-experts"
+    "--resident-experts",
+    "--remote-expert-opt"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
-   "gpu": 0,
+   "gpu": [
+    0,
+    1
+   ],
    "gpus_asked": true,
+   "layer_split": "auto",
    "lib_dirs": [
     "<cuda>"
    ],
@@ -372,8 +392,44 @@
   }
  },
  "32GB-2x24GB unsloth UD-Q4_K_XL": {
-  "code": 1,
-  "config": null
+  "code": 0,
+  "config": {
+   "args": [
+    "--pack",
+    "<T>/data/packs/unsloth-ud-q4_k_xl",
+    "--native",
+    "<T>/models/unsloth-UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf",
+    "--expert-profile",
+    "<T>/data/expert-profile.bin",
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "auto",
+    "--spec",
+    "4",
+    "--spec-min-p",
+    "0.5",
+    "--mtp",
+    "<T>/data/mtp/rt",
+    "--max-context",
+    "32768",
+    "--kv",
+    "int8",
+    "--resident-budget-gib",
+    "8"
+   ],
+   "cwd": "<T>",
+   "exe": "<T>/engine/<EXE>",
+   "gpu": 0,
+   "gpus_asked": true,
+   "lib_dirs": [
+    "<cuda>"
+   ],
+   "log": "<T>/strata-unsloth-ud-q4_k_xl.log",
+   "model_name": "qwen3.8-flash-next-unsloth-ud-q4_k_xl",
+   "port": 8080,
+   "tokenizer": "<T>/data/packs/unsloth-ud-q4_k_xl/tokenizer"
+  }
  },
  "47GB-2x16GB qwen IQ3_S": {
   "code": 0,
@@ -401,12 +457,17 @@
     "65536",
     "--kv",
     "int8",
-    "--mmap-experts"
+    "--resident-experts",
+    "--remote-expert-opt"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
-   "gpu": 0,
+   "gpu": [
+    0,
+    1
+   ],
    "gpus_asked": true,
+   "layer_split": "auto",
    "lib_dirs": [
     "<cuda>"
    ],
@@ -442,12 +503,17 @@
     "65536",
     "--kv",
     "int8",
-    "--resident-experts"
+    "--resident-experts",
+    "--remote-expert-opt"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
-   "gpu": 0,
+   "gpu": [
+    0,
+    1
+   ],
    "gpus_asked": true,
+   "layer_split": "auto",
    "lib_dirs": [
     "<cuda>"
    ],
@@ -548,8 +614,44 @@
   }
  },
  "47GB-2x16GB unsloth UD-Q4_K_XL": {
-  "code": 1,
-  "config": null
+  "code": 0,
+  "config": {
+   "args": [
+    "--pack",
+    "<T>/data/packs/unsloth-ud-q4_k_xl",
+    "--native",
+    "<T>/models/unsloth-UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf",
+    "--expert-profile",
+    "<T>/data/expert-profile.bin",
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "auto",
+    "--spec",
+    "4",
+    "--spec-min-p",
+    "0.5",
+    "--mtp",
+    "<T>/data/mtp/rt",
+    "--max-context",
+    "32768",
+    "--kv",
+    "int8",
+    "--resident-budget-gib",
+    "23"
+   ],
+   "cwd": "<T>",
+   "exe": "<T>/engine/<EXE>",
+   "gpu": 0,
+   "gpus_asked": true,
+   "lib_dirs": [
+    "<cuda>"
+   ],
+   "log": "<T>/strata-unsloth-ud-q4_k_xl.log",
+   "model_name": "qwen3.8-flash-next-unsloth-ud-q4_k_xl",
+   "port": 8080,
+   "tokenizer": "<T>/data/packs/unsloth-ud-q4_k_xl/tokenizer"
+  }
  },
  "64GB-1x32GB qwen IQ3_S": {
   "code": 0,

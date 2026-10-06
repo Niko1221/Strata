@@ -62,6 +62,41 @@ class SyclBackend(unittest.TestCase):
         for name in re.findall(r'"(\w+)"', names):
             self.assertTrue(callable(getattr(setup, name, None)), name)
 
+    def test_setup_intel_replacements_take_every_argument_of_the_function_they_replace(self):
+        """#870: setup.py grew write_run_script's fourth argument and the port's replacement still took three, so
+        setup died with a TypeError after the download.  Every `S.<name> = <replacement>` in setup_intel.py must accept
+        all the parameters of setup.<name> (or take *args / **kwargs)."""
+        import ast
+        import inspect
+        tree = ast.parse((ROOT / "sycl" / "setup_intel.py").read_text(encoding="utf-8"))
+        defs = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+        checked = 0
+        for n in ast.walk(tree):
+            if not (isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Attribute)
+                    and isinstance(n.targets[0].value, ast.Name) and n.targets[0].value.id == "S"):
+                continue
+            name = n.targets[0].attr
+            fn = n.value if isinstance(n.value, ast.Lambda) else defs.get(getattr(n.value, "id", ""))
+            orig = getattr(setup, name, None)
+            if fn is None or not callable(orig):
+                continue
+            a = fn.args
+            if a.vararg is not None and a.kwarg is not None:
+                checked += 1
+                continue
+            have = {x.arg for x in a.posonlyargs + a.args + a.kwonlyargs}
+            for param in inspect.signature(orig).parameters.values():
+                if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
+                    continue
+                self.assertIn(param.name, have, f"setup_intel's {name} lacks setup.{name}'s `{param.name}`")
+            checked += 1
+        self.assertGreaterEqual(checked, 8)
+
+    def test_arc_pro_b60_is_known_under_both_pci_ids(self):
+        src = (ROOT / "sycl" / "setup_intel.py").read_text(encoding="utf-8")
+        self.assertIn('"e211": ("Arc Pro B60", 24.0)', src)
+        self.assertIn('"e221": ("Arc Pro B60", 24.0)', src)
+
 
 class CMakeOption(unittest.TestCase):
     def test_sycl_is_off_by_default_and_exclusive(self):
@@ -69,6 +104,27 @@ class CMakeOption(unittest.TestCase):
         self.assertIn('option(STRATA_ENABLE_SYCL "EXPERIMENTAL', src)
         self.assertRegex(src, r'option\(STRATA_ENABLE_SYCL "[^"]*" OFF\)')
         self.assertIn("add_subdirectory(sycl)", src)
+
+
+class IntelIds(unittest.TestCase):
+    """sycl/setup_intel.py names a card by its PCI device id. The Arc Pro B60s measured on 2x B60 (`lspci -nn` 8086:e211,
+    bmg-g21) must not fall through to "Intel GPU e211 (xe)" with a guessed VRAM size."""
+
+    @staticmethod
+    def table():
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("setup_intel", ROOT / "sycl" / "setup_intel.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.INTEL_ARC
+
+    def test_b60_e211_is_named_with_its_vram(self):
+        self.assertEqual(self.table()["e211"], ("Arc Pro B60", 24.0))
+
+    def test_the_ids_that_were_listed_before_are_kept(self):
+        t = self.table()
+        self.assertEqual(t["e223"][0], "Arc Pro B70")
+        self.assertEqual(t["e221"][0], "Arc Pro B60")
 
 
 if __name__ == "__main__":

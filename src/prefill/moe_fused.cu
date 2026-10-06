@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <mutex>
 
 namespace strata::prefill::fused {
@@ -55,6 +56,15 @@ constexpr size_t smem_bytes(bool gu) {
 
 // the stored position of value k of a 32-value half-block (see "The K order")
 __host__ __device__ __forceinline__ int perm32(int k) { return 8 * (k & 3) + 4 * (k >> 4) + ((k & 15) >> 2); }
+// where value k of a 32-value half-block is stored: perm32 for the CUDA kernel; on HIP the gfx11 WMMA kernel's order
+// (value 4b + t of a 16-value word at 4t + b: see expert_w11_kernel)
+__host__ __device__ __forceinline__ int act_pos(int k) {
+#if defined(__HIPCC__)
+    return (k & 16) | ((k & 3) << 2) | ((k >> 2) & 3);
+#else
+    return perm32(k);
+#endif
+}
 
 struct Tables {
     int32_t *cnt, *off, *fill, *ts;      // per expert: rows, first row (E + 1), placement cursor, first tile (E + 1)
@@ -88,8 +98,8 @@ __global__ void quant_act_kernel(const float* __restrict__ x, int64_t nblk, uint
         s1 += __shfl_xor_sync(0xffffffffu, s1, o);
     }
     uint8_t* out = xa + w * AB;
-    out[perm32(lane)] = (uint8_t) (int8_t) q0;
-    out[32 + perm32(lane)] = (uint8_t) (int8_t) q1;
+    out[act_pos(lane)] = (uint8_t) (int8_t) q0;
+    out[32 + act_pos(lane)] = (uint8_t) (int8_t) q1;
     if (lane == 0)
         *(float4*) (out + 64) = make_float4(a0 / 127.0f, -(MAGICF + (float) s0), a1 / 127.0f, -(MAGICF + (float) s1));
 }
@@ -348,6 +358,216 @@ expert_kernel(const Batch b, const Tables tb, const uint8_t* __restrict__ act, c
 #endif
 }
 
+#if defined(__HIPCC__)
+// ---- Aurora (S23): the same products on gfx11 (RDNA3 / RDNA3.5) matrix cores, v_wmma_i32_16x16x16_iu8 (wave32).
+// Fragments (gfx11): A lane l holds the 16 k of row l % 16 (lanes 16..31 repeat lanes 0..15), B lane l the 16 k of
+// column l % 16, C/D lane l holds D[2i + l / 16][l % 16], i = 0..7.  A = 16 weight rows, B = 16 tile rows (tokens):
+// a lane's eight results are eight weight rows of ONE tile row, whose activation scales it already holds.
+// The K order of a 16-weight word (one k-step): A register t = (word >> 2t) & 0x03030303 holds weights t, t+4, t+8,
+// t+12, so k index p = 4t + b stands for weight 4b + t; the activations are stored in that order (act_pos).  The
+// integer dot of each 32-value half (two k-steps) is exact and the epilogue is the CUDA kernel's, so the numbers are
+// those of expert_kernel (another K order inside exact integer sums).
+// No LDS staging: a wave reads its weight rows (16 B per row and 64-weight block) and its tile rows' activation
+// blocks (80 B) straight from global memory (L2: an expert's rows are read by every tile, a token's by every weight
+// block), one block ahead in registers; the work item's weight scales go to LDS once.
+#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1150__) || defined(__gfx1151__)
+#define STRATA_FUSED_W11 1
+#else
+#define STRATA_FUSED_W11 0
+#endif
+typedef int w11_i4 __attribute__((ext_vector_type(4)));
+typedef int w11_i8 __attribute__((ext_vector_type(8)));
+constexpr int W_ROWS = 128;                       // weight rows per work item (GU: 64 features = one H block)
+constexpr int W_THREADS = 256;                    // 8 waves: 4 along the weight rows (32 each) x 2 along the tile (32)
+
+__device__ __forceinline__ w11_i8 wmma_iu8(w11_i4 a, w11_i4 b, w11_i8 c) {
+#if STRATA_FUSED_W11
+    return __builtin_amdgcn_wmma_i32_16x16x16_iu8_w32(false, a, true, b, c, false);
+#else
+    __builtin_trap();
+    return c;
+#endif
+}
+
+template <bool GU>
+__global__ void __launch_bounds__(W_THREADS)
+expert_w11_kernel(const Batch b, const Tables tb, const uint8_t* __restrict__ act, const int32_t* __restrict__ src,
+                  uint8_t* __restrict__ out, float* __restrict__ dm) {
+#if STRATA_FUSED_W11
+    constexpr int NKB = GU ? 40 : 10;                 // 64-weight blocks along K
+    constexpr int NFB = (GU ? 1280 : 2560) / W_ROWS;  // work items per tile
+    constexpr int CODE_LD = GU ? 640 : 160;           // code bytes per weight row
+    constexpr size_t O_CODES = GU ? O_GU_CODES : O_D_CODES, O_SC = GU ? O_GU_SC : O_D_SC;
+    constexpr int ACT_LD = NKB * AB;                  // bytes per activation row
+    constexpr unsigned M2 = 0x03030303u;
+    __shared__ __align__(16) uint16_t wsc[W_ROWS * NKB];        // the item's weight scales (fp16), [row][kb]
+    __shared__ int srow[kTileRows];
+    __shared__ float hs[GU ? kTileRows : 1][GU ? 65 : 1];      // GU: H of the item's 64 features, [tile row][feature]
+    const int tid = threadIdx.x, lane = tid & 31, wave = tid >> 5;
+    const int wm = wave & 3, wn = wave >> 2, l16 = lane & 15, hi = lane >> 4;
+    const int t0 = tb.ts[b.e0], nwork = (tb.ts[b.e1] - t0) * NFB;
+    for (int w = blockIdx.x; w < nwork; w += gridDim.x) {
+        const int2 tl = tb.tiles[t0 + w / NFB];
+        const int fb = w % NFB, e = tl.x, row0 = tl.y, nrows = min(kTileRows, tb.off[e + 1] - row0);
+        const uint8_t* blob = b.blob[e - b.e0];
+        const int rbase = fb * W_ROWS;
+        __syncthreads();                                          // the previous item is done with srow / wsc / hs
+        if (tid < kTileRows) {
+            const int r = row0 + min(tid, nrows - 1);             // rows past the tile's end repeat its last one
+            srow[tid] = GU ? src[r] : r;
+        }
+        {
+            const uint4* s4 = reinterpret_cast<const uint4*>(blob + O_SC + (size_t) rbase * NKB * 2);
+            for (int i = tid; i < W_ROWS * NKB / 8; i += W_THREADS) reinterpret_cast<uint4*>(wsc)[i] = s4[i];
+        }
+        __syncthreads();
+        const bool on = 32 * wn < nrows;                          // a wave past the tile's rows only stages
+        float acc[2][2][8];
+#pragma unroll
+        for (int mt = 0; mt < 2; ++mt)
+#pragma unroll
+            for (int nt = 0; nt < 2; ++nt)
+#pragma unroll
+                for (int i = 0; i < 8; ++i) acc[mt][nt][i] = 0.0f;
+        if (on) {
+            const uint8_t* arow[2];
+            const uint8_t* brow[2];
+#pragma unroll
+            for (int mt = 0; mt < 2; ++mt) arow[mt] = blob + O_CODES + (size_t) (rbase + 32 * wm + 16 * mt + l16) * CODE_LD;
+#pragma unroll
+            for (int nt = 0; nt < 2; ++nt) brow[nt] = act + (size_t) srow[32 * wn + 16 * nt + l16] * ACT_LD;
+            uint4 ac[2], bq[2][4];
+            float4 bs[2];
+            auto fetch = [&](int kb, uint4 (&a)[2], uint4 (&q)[2][4], float4 (&s)[2]) {
+#pragma unroll
+                for (int mt = 0; mt < 2; ++mt) a[mt] = *reinterpret_cast<const uint4*>(arow[mt] + kb * 16);
+#pragma unroll
+                for (int nt = 0; nt < 2; ++nt) {
+                    const uint4* p = reinterpret_cast<const uint4*>(brow[nt] + kb * AB);
+                    q[nt][0] = p[0]; q[nt][1] = p[1]; q[nt][2] = p[2]; q[nt][3] = p[3];
+                    s[nt] = *reinterpret_cast<const float4*>(brow[nt] + kb * AB + 64);
+                }
+            };
+            fetch(0, ac, bq, bs);
+            for (int kb = 0; kb < NKB; ++kb) {
+                uint4 nac[2], nbq[2][4];
+                float4 nbs[2];
+                if (kb + 1 < NKB) fetch(kb + 1, nac, nbq, nbs);
+                w11_i8 c[2][2][2];                                // [half][mt][nt]
+#pragma unroll
+                for (int h = 0; h < 2; ++h)
+#pragma unroll
+                    for (int mt = 0; mt < 2; ++mt)
+#pragma unroll
+                        for (int nt = 0; nt < 2; ++nt) c[h][mt][nt] = w11_i8{0, 0, 0, 0, 0, 0, 0, 0};
+#pragma unroll
+                for (int ks = 0; ks < 4; ++ks) {                  // k-step = 16-weight word ks of the block
+                    w11_i4 A[2];
+#pragma unroll
+                    for (int mt = 0; mt < 2; ++mt) {
+                        const unsigned wd = ks == 0 ? ac[mt].x : ks == 1 ? ac[mt].y : ks == 2 ? ac[mt].z : ac[mt].w;
+                        A[mt] = w11_i4{(int) (wd & M2), (int) ((wd >> 2) & M2), (int) ((wd >> 4) & M2),
+                                       (int) ((wd >> 6) & M2)};
+                    }
+#pragma unroll
+                    for (int nt = 0; nt < 2; ++nt) {
+                        const uint4 q = bq[nt][ks];
+                        const w11_i4 B = w11_i4{(int) q.x, (int) q.y, (int) q.z, (int) q.w};
+#pragma unroll
+                        for (int mt = 0; mt < 2; ++mt) c[ks >> 1][mt][nt] = wmma_iu8(A[mt], B, c[ks >> 1][mt][nt]);
+                    }
+                }
+                // the epilogue: per 64-weight block acc += d_w * (d_x0 * (dot0 - sum0) + d_x1 * (dot1 - sum1))
+#pragma unroll
+                for (int mt = 0; mt < 2; ++mt) {
+                    float dw[8];
+#pragma unroll
+                    for (int i = 0; i < 8; ++i) {
+                        const int m = 32 * wm + 16 * mt + 2 * i + hi;
+                        dw[i] = __half2float(__ushort_as_half(wsc[m * NKB + kb]));
+                    }
+#pragma unroll
+                    for (int nt = 0; nt < 2; ++nt) {
+                        const float4 z = bs[nt];
+#pragma unroll
+                        for (int i = 0; i < 8; ++i) {
+                            const float u0 = __int_as_float(MAGIC + c[0][mt][nt][i]) + z.y;
+                            const float u1 = __int_as_float(MAGIC + c[1][mt][nt][i]) + z.w;
+                            acc[mt][nt][i] = fmaf(dw[i], fmaf(z.z, u1, z.x * u0), acc[mt][nt][i]);
+                        }
+                    }
+                }
+                if (kb + 1 < NKB) {
+#pragma unroll
+                    for (int mt = 0; mt < 2; ++mt) ac[mt] = nac[mt];
+#pragma unroll
+                    for (int nt = 0; nt < 2; ++nt) {
+                        bs[nt] = nbs[nt];
+#pragma unroll
+                        for (int j = 0; j < 4; ++j) bq[nt][j] = nbq[nt][j];
+                    }
+                }
+            }
+        }
+        if constexpr (GU) {
+            // SwiGLU: row 2f is feature f's gate (lanes 0..15), 2f + 1 its up (lanes 16..31) - the same (mt, i)
+            if (on) {
+#pragma unroll
+                for (int mt = 0; mt < 2; ++mt)
+#pragma unroll
+                    for (int nt = 0; nt < 2; ++nt)
+#pragma unroll
+                        for (int i = 0; i < 8; ++i) {
+                            const float up = __shfl_xor_sync(0xffffffffu, acc[mt][nt][i], 16);
+                            const float gt = acc[mt][nt][i];
+                            if (hi == 0) hs[32 * wn + 16 * nt + l16][16 * wm + 8 * mt + i] = gt / (1.0f + __expf(-gt)) * up;
+                        }
+            }
+            __syncthreads();
+            // H block fb (features 64 fb .. 64 fb + 63) to int8: a thread per (tile row, half)
+            if (tid < 2 * kTileRows) {
+                const int r = tid >> 1, hh = tid & 1;
+                if (r < nrows) {
+                    float am = 0.0f;
+#pragma unroll 8
+                    for (int j = 0; j < 32; ++j) am = fmaxf(am, fabsf(hs[r][32 * hh + j]));
+                    const float inv = am > 0.0f ? 127.0f / am : 0.0f;
+                    uint8_t* o = out + (size_t) (row0 + r) * (10 * AB) + (size_t) fb * AB;
+                    int sum = 0;
+                    uint32_t wd[8] = {};
+#pragma unroll
+                    for (int j = 0; j < 32; ++j) {
+                        const int qv = __float2int_rn(hs[r][32 * hh + j] * inv);
+                        sum += qv;
+                        const int p = act_pos(j);
+                        wd[p >> 2] |= (uint32_t) (uint8_t) (int8_t) qv << (8 * (p & 3));
+                    }
+                    uint4* o4 = reinterpret_cast<uint4*>(o + 32 * hh);
+                    o4[0] = make_uint4(wd[0], wd[1], wd[2], wd[3]);
+                    o4[1] = make_uint4(wd[4], wd[5], wd[6], wd[7]);
+                    *reinterpret_cast<float2*>(o + 64 + 8 * hh) = make_float2(am / 127.0f, -(MAGICF + (float) sum));
+                }
+            }
+        } else if (on) {
+#pragma unroll
+            for (int mt = 0; mt < 2; ++mt)
+#pragma unroll
+                for (int nt = 0; nt < 2; ++nt) {
+                    const int r = 32 * wn + 16 * nt + l16;
+                    if (r < nrows) {
+                        float* d = dm + (size_t) (row0 + r) * 2560 + rbase + 32 * wm + 16 * mt + hi;
+#pragma unroll
+                        for (int i = 0; i < 8; ++i) d[2 * i] = acc[mt][nt][i];
+                    }
+                }
+        }
+    }
+#else
+    __builtin_trap();
+#endif
+}
+#endif  // __HIPCC__
+
 unsigned blocks(int64_t n, int per) { return (unsigned) ((n + per - 1) / per); }
 
 struct DevInfo {
@@ -357,6 +577,20 @@ struct DevInfo {
 std::mutex g_mu;
 DevInfo g_dev[32];
 
+#if defined(__HIPCC__)
+// Resident blocks per multiprocessor for the gfx11 WMMA prompt-expert kernels' persistent grids.  HIP counts a gfx11
+// WGP (two CUs, which these kernels use as one in the default WGP mode) as one multiprocessor, and the occupancy query
+// answers 1 block for these kernels where 2 run side by side - so the grid was half the GPU's room.  gfx1151 (20
+// WGPs), 8192 tokens x top 10, IQ3_S / IQ4_NL, one layer: 1 block per WGP 60.7 ms, 2 44.7, 3 49.9, 4 45.2 (the same
+// work items and arithmetic: the results do not change).  STRATA_PF_OCC=N sets the blocks per WGP (an experiment knob).
+static int wgp_blocks(int occ) {
+    static const int env = [] {
+        const char* v = std::getenv("STRATA_PF_OCC");
+        return v != nullptr ? std::atoi(v) : 0;
+    }();
+    return env > 0 ? env : 2 * std::max(occ, 1);
+}
+#endif
 const DevInfo& dev_info() {
     int dev = 0;
     cudaGetDevice(&dev);
@@ -368,6 +602,23 @@ const DevInfo& dev_info() {
     // gfx906 reports compute capability 9.0 through HIP, but the mma.sync bodies above are CUDA sm_80+ only and
     // empty in a hipcc build: never available here (the prompt path keeps its own expert GEMMs)
     return d;
+#elif defined(__HIPCC__)
+    {   // gfx11 (RDNA3 / RDNA3.5) with this build's code for it: the WMMA kernels
+        cudaDeviceProp prop;
+        cudaDeviceGetAttribute(&d.sms, cudaDevAttrMultiProcessorCount, dev);
+        hipFuncAttributes fa{};
+        if (cudaGetDeviceProperties(&prop, dev) != cudaSuccess || std::strncmp(prop.gcnArchName, "gfx11", 5) != 0 ||
+            hipFuncGetAttributes(&fa, reinterpret_cast<const void*>(expert_w11_kernel<true>)) != hipSuccess) {
+            cudaGetLastError();
+            return d;
+        }
+        if (hipOccupancyMaxActiveBlocksPerMultiprocessor(&d.occ_gu, expert_w11_kernel<true>, W_THREADS, 0) != hipSuccess ||
+            hipOccupancyMaxActiveBlocksPerMultiprocessor(&d.occ_d, expert_w11_kernel<false>, W_THREADS, 0) != hipSuccess)
+            d.occ_gu = d.occ_d = 0;
+        d.cc = d.occ_gu >= 1 && d.occ_d >= 1 ? 80 : 0;
+        cudaGetLastError();
+        return d;
+    }
 #else
     int major = 0, minor = 0;
     cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
@@ -404,7 +655,11 @@ bool available() { return dev_info().cc >= 80; }
 bool enabled() {
     static const bool env = [] {
         const char* v = std::getenv("STRATA_PF_FUSED");
+#if defined(__HIPCC__)
+        return v != nullptr && v[0] == '1';   // Aurora: the gfx11 WMMA kernels are opt-in (STRATA_PF_FUSED=1)
+#else
         return v == nullptr || v[0] != '0';
+#endif
     }();
     return env && available();
 }
@@ -454,11 +709,18 @@ void experts(const Batch& b, int n_expert, int64_t n, const void* scratch, const
     const Tables tb = tables(const_cast<void*>(scratch), n_expert);
     // the most tiles the batch can have: every row in it, plus a partial tile per expert
     const int64_t tiles = (n + kTileRows - 1) / kTileRows + (b.e1 - b.e0);
+#if defined(__HIPCC__)
+    const unsigned g_gu = (unsigned) std::min<int64_t>(tiles * (1280 / W_ROWS), (int64_t) d.sms * wgp_blocks(d.occ_gu));
+    const unsigned g_d = (unsigned) std::min<int64_t>(tiles * (2560 / W_ROWS), (int64_t) d.sms * wgp_blocks(d.occ_d));
+    expert_w11_kernel<true><<<g_gu, W_THREADS, 0, s>>>(b, tb, (const uint8_t*) xa, src, (uint8_t*) ha, nullptr);
+    expert_w11_kernel<false><<<g_d, W_THREADS, 0, s>>>(b, tb, (const uint8_t*) ha, src, nullptr, dm);
+#else
     const unsigned g_gu = (unsigned) std::min<int64_t>(tiles * 5, (int64_t) d.sms * d.occ_gu);
     const unsigned g_d = (unsigned) std::min<int64_t>(tiles * 10, (int64_t) d.sms * d.occ_d);
     expert_kernel<true><<<g_gu, THREADS, smem_bytes(true), s>>>(b, tb, (const uint8_t*) xa, src, (uint8_t*) ha,
                                                                 nullptr);
     expert_kernel<false><<<g_d, THREADS, smem_bytes(false), s>>>(b, tb, (const uint8_t*) ha, src, nullptr, dm);
+#endif
     ck(cudaGetLastError(), "experts");
 }
 

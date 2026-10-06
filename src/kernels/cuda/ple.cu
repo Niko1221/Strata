@@ -304,7 +304,9 @@ void ple_block(const float* emb, const float* hidden, const float* hist_rows, co
 
     // ---- key = grouped_norm(ple_key @ emb). The optional native projection
     // follows pinned CUDA Q8_1 MMVQ; the default retains its canonical Q8_0 path.
-    if (w.key_bf16 != nullptr) {
+    if (w.pre_key != nullptr) {
+        cudaMemcpyAsync(d_key, w.pre_key, (size_t) hc_dim * sizeof(float), cudaMemcpyDeviceToDevice, st);
+    } else if (w.key_bf16 != nullptr) {
         bf16_gemv_fp32_mmvf(emb, w.key_bf16, d_key, n_embd, hc_dim, stream);
     } else if (native_key) {
         native_quantize_q8_1(emb, w.key_native_q8_1, n_embd, 1, stream);
@@ -320,7 +322,9 @@ void ple_block(const float* emb, const float* hidden, const float* hist_rows, co
     }
 
     // The value projection's independent option leaves the nonlinear PLE operations unchanged.
-    if (native_bf16) {
+    if (w.pre_value != nullptr) {
+        cudaMemcpyAsync(d_value, w.pre_value, (size_t) n_embd * sizeof(float), cudaMemcpyDeviceToDevice, st);
+    } else if (native_bf16) {
         bf16_gemv_fp32_mmvf(emb, w.value_bf16, d_value, n_embd, n_embd, stream);
     } else {
         to_bf16_kernel<<<(n_embd + THREADS - 1) / THREADS, THREADS, 0, st>>>(emb, d_emb16, n_embd);
