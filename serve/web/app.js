@@ -367,9 +367,13 @@ function projectionText(c) {
          "describes the vector as a refusal-direction projection; measure the speed yourself";
 }
 function renderAbout(eng, hw, st) {
-  // The update card needs the installed version and /metrics already knows it. Without this the
-  // card would say "not checked yet" while the card above it already shows the version.
-  if (eng.version) updateUI.installed = updateUI.bare(eng.version);
+  // A starting guess for the update card, before the poll has said which release this is, so it does not
+  // say "not checked yet" while the card above it already shows a version. ONLY as a guess: eng.version is
+  // BUILD.json's version, which is not always the release tag - v0.1.40.1 ships the v0.1.40 engine - so
+  // writing it over a tag the server has already reported puts the card back to the older number and
+  // brings the Install button back for an update that just finished. Measured after a real update: the
+  // card read "v0.1.37 / Latest release v0.1.40.1" with Install offered again.
+  if (eng.version && !updateUI.installed) updateUI.installed = updateUI.bare(eng.version);
   const kv = {int8: "8-bit", q4_0: "4-bit (Hadamard-rotated)", fp16: "16-bit"}[eng.kv] || eng.kv;
   facts($("facts-engine"), [
     ["Model", eng.model],
@@ -1086,9 +1090,26 @@ const UPDATE_POLL_MS = 700;
 
 const updateUI = {
   timer: null,
-  latest: null,          // the tag the server last saw, so a check can be offered again
-  installed: null,
   newer: false,          // the server's own answer to "is a newer release out?"
+
+  // The two versions are stored WITHOUT the leading v and every display adds it back, and that is
+  // enforced here rather than at each reader. Eight places print `v${...}`, so a writer that forgot to
+  // strip showed "vv0.1.40.1" - which happened, three times, on the About card after an update. The
+  // setters make that impossible: a tag, a BUILD.json version and a bare string all end up the same.
+  _latest: null,         // the release the server last saw, so a check can be offered again
+  _installed: null,
+  get latest() {
+    return this._latest;
+  },
+  set latest(v) {
+    this._latest = updateUI.bare(v);
+  },
+  get installed() {
+    return this._installed;
+  },
+  set installed(v) {
+    this._installed = updateUI.bare(v);
+  },
 
   // "v0.1.38" and "0.1.38" name the same release. The tag from GitHub carries the v, the version in
   // BUILD.json does not, so one place strips it and every display adds it back exactly once.
@@ -1172,7 +1193,10 @@ async function checkForUpdates(btn) {
 
 function renderUpdateState(s) {
   const d = s.detail || {};
-  updateUI.installed = d.installed || updateUI.installed;
+  // No bare() here: the setter strips it. This runs on every page load and overwrites whatever the
+  // About card set from /metrics, so it is the writer that matters.
+  updateUI.installed = updateUI.bare(d.installed) || updateUI.installed;
+  updateUI.latest = updateUI.bare(d.latest) || updateUI.latest;
   facts($("facts-update"), updateRows());
 
   const box = $("update-progress");
@@ -1216,6 +1240,12 @@ function renderUpdateState(s) {
     note.textContent = `The engine is now v${updateUI.bare(d.verified_version) || updateUI.bare(d.installed) || "?"}. ` +
       "The engine it replaced is kept in engine/.previous - setup.py --rollback-engine puts it back.";
     note.removeAttribute("data-tone");
+    // `newer` is the server's answer to the check that ran BEFORE this update, so it is out of date now.
+    // The state returns to idle after a run, and renderUpdateIdle recomputes the Install button from
+    // `newer`, so without this the button comes back offering the update that just finished. Measured:
+    // after a successful update to v0.1.40.1 the card still offered "Install v0.1.40.1".
+    updateUI.newer = false;
+    updateUI.latest = updateUI.bare(d.installed) || updateUI.latest;
   } else if (downloading && d.total_mb != null) {
     note.textContent = `${d.downloaded_mb} of ${d.total_mb} MB`;
     note.removeAttribute("data-tone");
