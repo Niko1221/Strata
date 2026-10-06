@@ -12,20 +12,20 @@ The original scalar C++ expression is defined only when every intermediate addit
 
 The first live comparison used Strata v0.1.39, commit 6f32ec0, and an independent native-only VMAD candidate 2d17ce0. This PR targets newer main, whose pristine DP4A header is unchanged; the quoted engine performance is from the pinned v0.1.39 experiment, not a benchmark of current main.
 
-Two Tesla P100 PCIe 16 GB cards, Gen3 x8/x8, Ryzen 9 7900X, 64 GB RAM, Ubuntu 24.04.5, driver 580.178.04, and CUDA 12.9.86 ran three ABBA blocks, six trials per arm. Context was 131072, INT8 KV with 32768 positions resident, split 25/23, spec 4 with MTP, zero prompt-cache reuse, actual 19790 input tokens, and 256 greedy output tokens.
+Two Tesla P100 PCIe 16 GB cards, Gen3 x8/x8, Ryzen 9 7900X, 64 GB RAM, Ubuntu 24.04.5, driver 580.178.04, and CUDA 12.9.86 ran three ABBA blocks per corpus, six trials per arm. Context was 131072, INT8 KV with 32768 positions resident, split 25/23, spec 4 with MTP, zero prompt-cache reuse, and 256 greedy output tokens. Each trial restarted the engine and performed a disjoint 32-token warmup. The corpora contained 19790 and 119628 actual input tokens; the extended corpus matches the pristine baseline's 3100-row request.
 
-| Metric | Control median | VMAD median |
-| --- | ---: | ---: |
-| Prompt tokens/s |428.20|428.25|
-| Decode tokens/s |37.85|41.70|
+| Actual input tokens | Control prompt tokens/s | VMAD prompt tokens/s | Control decode tokens/s | VMAD decode tokens/s | Decode change |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 19790 | 428.20 | 428.25 | 37.85 | 41.70 | +10.17% |
+| 119628 | 544.35 | 544.50 | 36.55 | 40.00 | +9.44% |
 
-Decode throughput increased 10.17% for this corpus/configuration. All twelve text and reasoning outputs matched; end-to-end logits were not measured. Raw trial timings are in [the machine-readable result](../bench/results/p100-vmad-2026-10-06.json). This does not establish near-full 128K performance or general model-quality parity.
+Prompt throughput was effectively unchanged in both corpora. All twelve text and reasoning outputs matched within each corpus; end-to-end logits were not measured by these performance suites. Raw timings and provenance are in the [19790-token result](../bench/results/p100-vmad-2026-10-06.json) and [119628-token result](../bench/results/p100-vmad-extended128k-2026-10-06.json). The extended result supports this near-full-context synthetic request and runtime configuration. Broader model-quality and first-token logit verification remain separate pending gates. The first logit diagnostic attempt did not emit the required dump, so first-token logit parity is not yet measured. Neither result is a benchmark of current main.
 
-Both P100s passed 1,813,290 exact arithmetic variants. Compute Sanitizer reported zero errors. IQ/MMVQ fixtures passed on both cards and both binaries. All 48 real expert layers passed the existing GPU/CPU-float tolerance tests on GPU0. sm_60 probes showed four VMAD.S8.S8 instructions, 12 registers versus 13 for scalar, and no spills. Separately compiled sm_61 and sm_75 probes matched control SASS exactly; no modern GPU device tests were run. Synthetic arithmetic timing favored VMAD by about 1.87x and 2.09x for one/four chains, independently of model throughput.
+Both P100s passed 1,813,290 exact arithmetic variants. Compute Sanitizer reported zero errors. IQ/MMVQ fixtures passed on both cards and both binaries. All 48 real expert layers passed the existing GPU/CPU-float tolerance tests on GPU0. sm_60 probes showed four VMAD.S8.S8 instructions, 12 registers versus 13 for scalar, and no spills. Separately compiled sm_61 and sm_75 probes matched control SASS exactly; no modern GPU device tests were run. The clean current-main PR header also passed CUDA 12.9 compile-only probes on sm_60, sm_61 and sm_75: four VMAD operations, 12 registers and no stack/local storage on sm_60, and byte-identical control/candidate probe SASS on sm_61/sm_75. The full current-main engine was not built or benchmarked. Synthetic arithmetic timing favored VMAD by about 1.87x and 2.09x for one/four chains, independently of model throughput.
 
 The IQ2_XS-labelled file's expert gate/up tensors are IQ2_S in 34 layers, IQ2_XXS in 11 and IQ1_M in 3; all 48 down tensors are Q2_0. Native expert checks use the existing 3% GPU/reference tolerance, not full-model bitwise comparisons.
 
-Requested and enforced limits remained 200 W. Instantaneous board-power samples peaked above 200 W, so neither a strict instantaneous ceiling nor an energy-efficiency gain is claimed. The clean engine/configuration was restored after testing.
+Sampled configured limits stayed at 200 W, and final requested/enforced limits read back 200 W on both cards. Instantaneous board-power samples peaked at 226.24/225.79 W in the first corpus and 242.30/236.01 W in the extended corpus, so neither a strict instantaneous ceiling nor an energy-efficiency gain is claimed. The clean engine/configuration was restored after each suite. The extended suite's per-trial cleanup confirms no live experimental session members and a free port 8081 before reuse.
 
 ## Repeat the focused tests
 
