@@ -595,6 +595,14 @@ class OutputParser:
         self.buf = ""
         self.lead = False
         self.schemas = {t.get("name"): t for t in tools or []}
+        # #1058: a call inside the reasoning is held until the turn ends - pieces ("call", call, raw) and
+        # ("ws", text, None) - and becomes a call only if nothing but whitespace and such calls follow it and the turn
+        # ends by itself (finish(natural=True)); `rline`: the call being read began a line; `rprev`: the last
+        # character of the reasoning so far
+        self.rheld: list = []
+        self.rline = False
+        self.rcalls = [0, 0]   # complete calls with a declared name in the reasoning: delivered, kept as text
+        self.rprev = "\n"
         # stream_tools: a tool call is also reported while it is being written - "tool_start" (its name and id) as
         # soon as the name is known, then "tool_args" pieces of its JSON arguments (string parameters character by
         # character; other types whole, once complete) - before the final "tool_call".  Without it, a client sees
@@ -722,10 +730,37 @@ class OutputParser:
                     best = max(best, n)
         return best
 
+    def _reasoning(self, out: list, text: str):
+        if text:
+            out.append(Event("reasoning", text))
+            self.rprev = text[-1]
+
+    def _release(self, out: list):
+        """#1058: the held calls were quoted in the thinking, not made: their text goes back to the reasoning."""
+        if self.rheld:
+            self.rcalls[1] += sum(kind == "call" for kind, val, raw in self.rheld)
+            text = "".join(raw if kind == "call" else val for kind, val, raw in self.rheld)
+            self.rheld = []
+            self._reasoning(out, text)
+
     def feed(self, delta: str) -> list[Event]:
         self.buf += delta
         out: list[Event] = []
         while True:
+            if self.state == "reasoning" and self.rheld:
+                # #1058: after a held call only whitespace and further calls may come before the turn ends
+                rest = self.buf.lstrip()
+                ws = self.buf[:len(self.buf) - len(rest)]
+                if not rest:                        # whitespace stays in the buffer until what follows it is known
+                    return out
+                if rest.startswith(CALL_START):
+                    if ws:
+                        self.rheld.append(("ws", ws, None))
+                    self.buf, self.state, self.rline = rest, "rcall", ws.endswith("\n")
+                    continue
+                if CALL_START.startswith(rest):     # a partial opener: wait for the rest
+                    return out
+                self._release(out)                  # more thinking (or </think>) after it: it was only quoted
             if self.state == "rcall":
                 # #804: a `<tool_call>` inside the reasoning, with tools declared.  It is held whole (never streamed
                 # as a call) until it ends: a declared name is then a tool call, anything else stays reasoning text.
@@ -733,24 +768,29 @@ class OutputParser:
                 end, think = call_end(body), body.find(THINK_END)
                 if end >= 0 and (think < 0 or think >= end):
                     call = None
+                    raw = self.buf[:len(CALL_START) + end + len(CALL_END)]
                     try:
                         name = body[:end].strip()[len("<function="):].split(">", 1)[0]
-                        if name in self.schemas:
+                        if name in self.schemas and self.rline:   # #1058: a call begins a line
                             call = parse_tool_call(body[:end], self.schemas.get(name))
                     except ValueError:
                         pass
                     if call is not None:
-                        out.append(Event("tool_call", call=call))
+                        self.rheld.append(("call", call, raw))   # #1058: a call only if the turn ends after it
                     else:
-                        out.append(Event("reasoning", self.buf[:len(CALL_START) + end + len(CALL_END)]))
+                        self.rcalls[1] += name in self.schemas
+                        self._release(out)
+                        self._reasoning(out, raw)
                     self.buf = body[end + len(CALL_END):]
                     self.state = "reasoning"
                 elif think >= 0:                     # the thinking ended inside it: it never was a call
-                    out.append(Event("reasoning", self.buf[:len(CALL_START) + think]))
+                    self._release(out)
+                    self._reasoning(out, self.buf[:len(CALL_START) + think])
                     self.buf = body[think:]
                     self.state = "reasoning"
                 elif len(body) > RCALL_MAX:          # a tag in the prose that never closes: stop holding the thinking back
-                    out.append(Event("reasoning", self.buf))
+                    self._release(out)
+                    self._reasoning(out, self.buf)
                     self.buf = ""
                     self.state = "reasoning"
                 else:
@@ -759,19 +799,19 @@ class OutputParser:
                 i = self.buf.find(THINK_END)
                 tool = self.buf.find(CALL_START) if self.schemas else -1
                 if tool >= 0 and (i < 0 or tool < i):
-                    if tool:
-                        out.append(Event("reasoning", self.buf[:tool]))
+                    self.rline = (self.buf[tool - 1] if tool else self.rprev) == "\n"
+                    self._reasoning(out, self.buf[:tool])
                     self.buf = self.buf[tool:]
                     self.state = "rcall"
                     continue
                 if i < 0:
                     keep = self._hold(self.buf, (THINK_END, CALL_START) if self.schemas else (THINK_END,))
                     if len(self.buf) > keep:
-                        out.append(Event("reasoning", self.buf[:len(self.buf) - keep]))
+                        self._reasoning(out, self.buf[:len(self.buf) - keep])
                         self.buf = self.buf[len(self.buf) - keep:]
                     return out
                 if i:
-                    out.append(Event("reasoning", self.buf[:i]))
+                    self._reasoning(out, self.buf[:i])
                 self.buf = self.buf[i + len(THINK_END):]
                 self.state, self.lead = "content", True
             elif self.state == "content":
@@ -834,10 +874,19 @@ class OutputParser:
                 self._reset_scan()
                 self.state, self.lead = "content", True
 
-    def finish(self) -> list[Event]:
+    def finish(self, natural: bool = True) -> list[Event]:
         """End of generation: flush whatever is held (an unterminated tool call is returned as content; one that was
-        already announced stays unfinished: its JSON is not closed and no "tool_call" follows it, #211)."""
+        already announced stays unfinished: its JSON is not closed and no "tool_call" follows it, #211).  `natural`: the
+        turn ended by itself (a stop token or string), not by max tokens or a cancel: only then do calls held at the end
+        of the thinking become calls (#1058)."""
         out = []
+        if self.rheld:
+            if natural and self.state == "reasoning" and not self.buf.strip():
+                out += [Event("tool_call", call=val) for kind, val, raw in self.rheld if kind == "call"]
+                self.rcalls[0] += len(out)
+                self.rheld, self.buf = [], ""
+            else:
+                self._release(out)
         if self.state == "call" and self.stream_tools and self.scall is not None:
             out += self._scan()                 # the output ended inside a call that was already announced
             if self.ss == "done":               # only its </tool_call> is missing: the call itself is whole

@@ -2147,7 +2147,10 @@ class Service:
         # since the server started (the Monitor's totals, issue #35)
         self.totals = {"since": time.time(), "requests": 0, "prompt_tokens": 0, "reused": 0, "output_tokens": 0,
                        "prompt_ms": 0.0, "decode_ms": 0.0,
-                       "drafts_offered": 0, "drafts_accepted": 0}   # #457: the MTP drafts, summed where reported
+                       "drafts_offered": 0, "drafts_accepted": 0,   # #457: the MTP drafts, summed where reported
+                       # #1058: complete calls to a declared tool written inside the reasoning - delivered (they
+                       # ended the turn) and kept as reasoning text (quoted: more thinking, prose or a cut followed)
+                       "reasoning_calls_delivered": 0, "reasoning_calls_kept_as_text": 0}
         self.last_timings = None                         # the last finished request's, llama.cpp's names (/v1/status)
         self.last_request_at = None                      # when a request last started or finished
         self.started_at = time.time()
@@ -3126,8 +3129,12 @@ class Service:
         finally:
             if emb:
                 Path(emb).unlink(missing_ok=True)
-        for ev in cut(parser.finish()):
+        for ev in cut(parser.finish(natural=finish == "stop")):   # #1058: a held call only on a natural end
             yield "event", ev
+        if any(parser.rcalls):
+            with self.status_lock:
+                self.totals["reasoning_calls_delivered"] += parser.rcalls[0]
+                self.totals["reasoning_calls_kept_as_text"] += parser.rcalls[1]
         if stops is not None and stops.hit is None and stops.held:
             yield "event", Event("content", stops.flush())     # the held tail was not a stop string after all
         done = {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),
