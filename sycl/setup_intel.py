@@ -157,7 +157,7 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict) -> dict:
     else:
         out.update({"backend": "sycl", "exe": str(SYCL_WRAPPER), "args": args, "sycl_root": str(MOUNT)})
     env = {}
-    aot = ROOT / ("build-sycl-aot" / "strata.exe" if S.WIN else "build-sycl-aot" / "strata")
+    aot = ROOT / "build-sycl-aot" / ("strata.exe" if S.WIN else "strata")
     if exe != aot:
         try:
             env["STRATA_SYCL_BIN"] = str(exe.relative_to(ROOT))

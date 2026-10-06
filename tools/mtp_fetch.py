@@ -107,7 +107,7 @@ SHA256 = {
 }
 
 
-def get(url, start=None, end=None, retries=4):
+def get(url, start=None, end=None, retries=10):
     for attempt in range(retries):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "strata-mtp-fetch"})
@@ -123,7 +123,10 @@ def get(url, start=None, end=None, retries=4):
         except Exception as e:  # network errors are retried, then surfaced
             if attempt == retries - 1:
                 raise
-            time.sleep(2 ** attempt)
+            # setup.py's own downloads retry 30 times at 10 s; the MTP fetch makes thousands of
+            # small requests, so one reset per connection (a flaky middlebox) used to fail the whole
+            # fetch after 4 tries. Back off the same way instead.
+            time.sleep(min(10, 2 ** attempt))
             print("retry %s: %s" % (url, e), file=sys.stderr)
 
 
