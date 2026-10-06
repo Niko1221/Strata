@@ -23,6 +23,7 @@
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
 
+#include <cstddef>
 #include <cstdint>
 
 namespace strata::kernels {
@@ -68,14 +69,14 @@ struct KvHostPools {
     /// ends: f(offset in the array, bytes already given, piece length) for each piece, in order; false as soon as f
     /// says false. Without a chunk table the bytes are one piece at `at`.
     template <class F>
-    bool for_each_piece(size_t block_bytes, size_t at, size_t n, F&& f) const {
-        if (chunk_host == nullptr || block_bytes == 0) return n == 0 || f(at, size_t(0), n);
-        for (size_t done = 0; done < n;) {
-            const size_t pos = at + done, in = pos % block_bytes;
+    bool for_each_piece(std::size_t block_bytes, std::size_t at, std::size_t n, F&& f) const {
+        if (chunk_host == nullptr || block_bytes == 0) return n == 0 || f(at, std::size_t(0), n);
+        for (std::size_t done = 0; done < n;) {
+            const std::size_t pos = at + done, in = pos % block_bytes;
             const long long b = (long long) (pos / block_bytes);
-            const size_t room = (size_t) contiguous(b, (long long) 1 << 40) * block_bytes - in;
-            const size_t len = room < n - done ? room : n - done;
-            if (!f((size_t) block_host(b) * block_bytes + in, done, len)) return false;
+            const std::size_t room = (std::size_t) contiguous(b, (long long) 1 << 40) * block_bytes - in;
+            const std::size_t len = room < n - done ? room : n - done;
+            if (!f((std::size_t) block_host(b) * block_bytes + in, done, len)) return false;
             done += len;
         }
         return true;
