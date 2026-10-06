@@ -1821,7 +1821,7 @@ class StrataEngine:
                     if slot is None:
                         finish = (self.last or {}).get("finish") if isinstance(self.last, dict) else None
                         left = int(max_new) - len(out)
-                        if cancel.is_set() or left <= 0 or finish in ("stop", "length") or (out and out[-1] in EOS_IDS):
+                        if cancel.is_set() or left <= 0 or finish in ("stop", "length", "pool") or (out and out[-1] in EOS_IDS):
                             return
                         if reused0 is None:
                             reused0 = (self.last or {}).get("reused")
@@ -6671,6 +6671,8 @@ def make_handler(svc: Service):
                 self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\ndata: [DONE]\n\n")
             except ValueError as e:                          # the engine's ERR after the stream started: the
                 err = {"error": {"type": "server_error", "message": str(e)}}   # headers are sent, so no 400 now
+                if isinstance(e, PoolFull):                  # nor a 503: the code and the wait go in the event
+                    err["error"].update(code="kv_pool_full", retry_after=POOL_RETRY_S)
                 self._note(error=err["error"])
                 self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\ndata: [DONE]\n\n")
 
@@ -6741,6 +6743,9 @@ def make_handler(svc: Service):
                                                                 code="server_error"))
                 except EngineNonFinite as e:                 # #879, twice: not the request's fault
                     return self._json(503, responses_error_body(str(e), "server_error", code="server_error"))
+                except PoolFull as e:
+                    return self._json(503, responses_error_body(str(e), "server_error", code="kv_pool_full"),
+                                      {"Retry-After": str(POOL_RETRY_S)})
                 except ValueError as e:                      # the engine's ERR line
                     return self._json(500, responses_error_body(str(e), "server_error", code="server_error"))
                 return self._json(200, result)
@@ -6776,7 +6781,7 @@ def make_handler(svc: Service):
             except StructuredOutputError as e:
                 self._responses_failed(asm, str(e), "structured_output_failed", send)
             except ValueError as e:                          # the engine's ERR after the stream started
-                self._responses_failed(asm, str(e), "server_error", send)
+                self._responses_failed(asm, str(e), "kv_pool_full" if isinstance(e, PoolFull) else "server_error", send)
 
         def _responses_failed(self, asm, message, code, send):
             e = asm.failed(message, code)
@@ -6900,7 +6905,9 @@ def make_handler(svc: Service):
                 self._note(error=err["error"])
                 self.wfile.write(b"event: error\ndata: " + json.dumps(err).encode() + b"\n\n")
             except ValueError as e:                          # the engine's ERR after the stream started
-                err = {"type": "error", "error": {"type": "api_error", "message": str(e)}}
+                # the KV pool's refusal is Anthropic's overloaded_error: its clients retry that one
+                kind = "overloaded_error" if isinstance(e, PoolFull) else "api_error"
+                err = {"type": "error", "error": {"type": kind, "message": str(e)}}
                 self._note(error=err["error"])
                 self.wfile.write(b"event: error\ndata: " + json.dumps(err).encode() + b"\n\n")
 
