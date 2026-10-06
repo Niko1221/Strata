@@ -8,8 +8,8 @@ request. This is a native greedy speed/recovery report, not broad answer-quality
 qualification or a comparison against another card/runtime.
 
 The range of the three independently warmed five-task decode medians is
-40.85–41.07 tok/s at 512 inputs and
-40.45–40.68 tok/s at 7000 inputs.
+40.53–41.46 tok/s at 512 inputs and
+39.96–41.04 tok/s at 7000 inputs.
 Task-level results vary materially; the table below preserves those differences.
 
 ## Hardware and software
@@ -54,6 +54,11 @@ and `STRATA_VERIFY_DEVICE_PLAN=1` / `STRATA_VERIFY_NO_HOST=1`. Missing experts
 execute on the GPU through direct pinned-host reads; no CPU expert computation.
 All missing experts must be mirrored or startup is refused.
 
+`STRATA_DBG_NAN` is explicitly unset. The expensive qualification-only
+intermediate-tensor downloads and CPU scans are disabled; the qualified model,
+binary and other launch settings are retained. All three repetitions of each
+task/length reproduce the same output-ID hash.
+
 Native verify/commit graphs enabled; eager off. `--spec 4 --mtp-max-t 4
 --spec-min-p 0.5` permits up to three drafts per verification window, shortened
 by confidence. `STRATA_WARM_GRAPHS=0` does not disable these serve graphs.
@@ -65,9 +70,9 @@ Startup geometry and lifecycle, per process:
 
 |Run|Resident expert slots|Expert cache MiB|Startup free VRAM MiB|Startup→READY s|QUIT→exit s|Native exit|
 |---|---:|---:|---:|---:|---:|---:|
-|1|17885|24594|3207|5.131|0.114|0|
-|2|17885|24594|3211|5.067|0.114|0|
-|3|17885|24594|3207|5.093|0.114|0|
+|1|17885|24594|3211|5.138|0.114|0|
+|2|17885|24594|3197|5.058|0.114|0|
+|3|17885|24594|3211|5.094|0.114|0|
 
 See [runs.json](runs.json) for native INFO and startup mirror/transfer lines.
 Auto residency is sized once at startup and remains fixed within each process;
@@ -121,37 +126,37 @@ are native-client monotonic measurements. Rates tok/s; times seconds.
 
 |Input tokens|Task|Runs|Generated|Reused|Prompt tok/s|Decode tok/s|TTFT s|Total s|Draft acceptance|
 |---:|---|---:|---:|---:|---|---|---|---|---:|
-|512|LRU cache code|3|640|0|101.87 [101.35–102.46]|47.80 [47.76–48.54]|5.06 [5.03–5.09]|18.43 [18.18–18.44]|81.9%|
-|512|CSV import code|3|640|0|101.57 [101.12–101.58]|46.40 [46.37–47.03]|5.07 [5.07–5.10]|18.83 [18.67–18.84]|75.0%|
-|512|Lighthouse story|3|640|0|101.16 [100.84–101.66]|36.64 [36.63–37.33]|5.10 [5.07–5.11]|22.53 [22.18–22.55]|66.9%|
-|512|Inventory explanation|3|640|0|102.30 [102.04–102.49]|40.75 [40.74–41.02]|5.04 [5.03–5.05]|20.71 [20.61–20.72]|64.4%|
-|512|Incident plan|3|640|0|101.10 [100.43–101.56]|40.87 [40.85–41.07]|5.10 [5.07–5.13]|20.71 [20.68–20.72]|66.7%|
-|7000|LRU cache code|3|640|0|95.92 [95.20–96.08]|46.39 [46.36–47.00]|73.01 [72.89–73.56]|86.77 [86.47–87.33]|76.7%|
-|7000|CSV import code|3|640|0|95.86 [95.35–96.40]|46.84 [46.82–47.46]|73.06 [72.65–73.45]|86.51 [86.28–87.08]|79.9%|
-|7000|Lighthouse story|3|640|0|95.85 [95.44–96.00]|34.91 [34.89–35.69]|73.06 [72.95–73.38]|91.36 [90.85–91.69]|65.0%|
-|7000|Inventory explanation|3|640|0|95.80 [95.65–95.93]|40.50 [40.45–40.68]|73.11 [73.01–73.22]|88.80 [88.78–89.01]|66.7%|
-|7000|Incident plan|3|640|0|95.87 [95.64–96.00]|39.85 [39.83–39.99]|73.05 [72.95–73.22]|89.02 [88.97–89.26]|66.0%|
+|512|LRU cache code|3|640|0|352.81 [343.46–352.93]|48.98 [45.86–48.98]|1.48 [1.48–1.52]|14.52 [14.52–15.45]|81.9%|
+|512|CSV import code|3|640|0|353.57 [343.85–353.64]|47.47 [44.85–47.48]|1.48 [1.48–1.52]|14.93 [14.93–15.76]|75.0%|
+|512|Lighthouse story|3|640|0|349.73 [339.86–349.75]|37.60 [33.89–37.63]|1.50 [1.50–1.54]|18.48 [18.47–20.39]|66.9%|
+|512|Inventory explanation|3|640|0|358.62 [348.70–358.84]|41.38 [39.93–41.39]|1.46 [1.46–1.50]|16.90 [16.89–17.50]|64.4%|
+|512|Incident plan|3|640|0|350.90 [340.36–351.02]|41.45 [40.53–41.46]|1.49 [1.49–1.54]|16.90 [16.90–17.29]|66.7%|
+|7000|LRU cache code|3|640|0|307.54 [297.06–307.89]|47.42 [44.71–47.44]|22.80 [22.77–23.60]|36.25 [36.23–37.88]|76.7%|
+|7000|CSV import code|3|640|0|307.65 [297.04–308.05]|47.90 [45.32–47.90]|22.79 [22.76–23.60]|36.11 [36.08–37.69]|79.9%|
+|7000|Lighthouse story|3|640|0|307.27 [296.46–307.64]|35.95 [31.84–35.97]|22.82 [22.79–23.65]|40.58 [40.55–43.72]|65.0%|
+|7000|Inventory explanation|3|640|0|307.23 [296.81–307.69]|41.04 [39.96–41.04]|22.82 [22.78–23.62]|38.38 [38.34–39.60]|66.7%|
+|7000|Incident plan|3|640|0|307.38 [297.08–307.85]|40.33 [39.64–40.36]|22.81 [22.77–23.60]|38.63 [38.61–39.71]|66.0%|
 
 Five-task medians within each fresh process, kept separate from the per-task
 repeat ranges above:
 
 |Run|Input tokens|Prompt tok/s|Decode tok/s|TTFT s|Total s|
 |---:|---:|---:|---:|---:|---:|
-|1|512|101.58|40.87|5.07|20.72|
-|1|7000|95.44|40.45|73.38|89.01|
-|2|512|101.66|41.07|5.07|20.61|
-|2|7000|95.87|40.68|73.05|88.80|
-|3|512|101.56|40.85|5.07|20.71|
-|3|7000|95.93|40.50|73.01|88.78|
+|1|512|352.81|41.45|1.48|16.90|
+|1|7000|307.85|41.04|22.77|38.34|
+|2|512|343.46|40.53|1.52|17.29|
+|2|7000|297.04|39.96|23.60|39.60|
+|3|512|352.93|41.46|1.48|16.89|
+|3|7000|307.38|41.04|22.81|38.38|
 
 ## Memory, hardware health and recovery
 
 Independent approximately 2-second monitoring covered startup, requests and
-shutdown: 999 samples over 2016.6 s.
-Observed maximum across GPU/VRAM sensors 70 °C;
-peak DRM-resident VRAM 28.936 GiB;
-minimum whole-host available memory 109.454 GiB;
-peak cgroup memory 1.235 GiB. Pinned USM is not fully
+shutdown: 520 samples over 1049.1 s.
+Observed maximum across GPU/VRAM sensors 72 °C;
+peak DRM-resident VRAM 28.945 GiB;
+minimum whole-host available memory 109.598 GiB;
+peak cgroup memory 1.156 GiB. Pinned USM is not fully
 charged to the cgroup, so that figure is not total process/host RAM use. Host
 available memory includes other services and is an estimate; sampled peaks
 can miss brief transients. [telemetry.csv](telemetry.csv) and
@@ -181,3 +186,12 @@ a causal B65/B70 comparison. Earlier qualification has separate broader
 operational evidence; neither missing full PLE test fixtures nor old S2 parity
 failures are claimed resolved by this speed report. No GPU profiler or special
 decode/PLE timing flags were active during these measured runs.
+
+## Additional public prompt fixtures
+
+[Public benchy-v1 fixtures](benchy-v1/README.md) provide three fresh-process
+repetitions at20/2185 input tokens and256 outputs using the same qualified
+configuration. Their prompt content and output lengths differ from the five-task
+640-output suite, so their results are kept separate. The native serving protocol
+uses those public fixtures; the unmodified community benchy.sh harness was not
+used. See the linked method, raw records and per-shape median/ranges.

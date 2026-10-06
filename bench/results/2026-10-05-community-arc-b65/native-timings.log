@@ -1,144 +1,144 @@
 # run=1 label=isolation-a measured=False
-DONE 8 23 1016.8 208.3 stop 6 6 0 0 0 0 0 0.0 23 0
-strata serve: prompt 23 tokens = 0 reused + 23 read in 1017 ms (22.6 tok/s), 8 generated in 208 ms (38.4 tok/s), drafts accepted 6 of 6, 0 checkpoints
+DONE 8 23 410.6 203.8 stop 6 6 0 0 0 0 0 0.0 23 0
+strata serve: prompt 23 tokens = 0 reused + 23 read in 411 ms (56.0 tok/s), 8 generated in 204 ms (39.3 tok/s), drafts accepted 6 of 6, 0 checkpoints
 # run=1 label=isolation-b measured=False
-DONE 8 23 981.1 170.2 stop 6 6 0 0 0 0 0 0.0 23 0
-strata serve: prompt 23 tokens = 0 reused + 23 read in 981 ms (23.4 tok/s), 8 generated in 170 ms (47.0 tok/s), drafts accepted 6 of 6, 0 checkpoints
+DONE 8 23 383.6 166.8 stop 6 6 0 0 0 0 0 0.0 23 0
+strata serve: prompt 23 tokens = 0 reused + 23 read in 384 ms (60.0 tok/s), 8 generated in 167 ms (48.0 tok/s), drafts accepted 6 of 6, 0 checkpoints
 # run=1 label=json-quality measured=False
-DONE 13 44 1281.2 261.0 stop 9 9 0 0 0 0 0 0.0 44 0
-strata serve: prompt 44 tokens = 0 reused + 44 read in 1281 ms (34.3 tok/s), 13 generated in 261 ms (49.8 tok/s), drafts accepted 9 of 9, 0 checkpoints
+DONE 13 44 577.8 249.9 stop 9 9 0 0 0 0 0 0.0 44 0
+strata serve: prompt 44 tokens = 0 reused + 44 read in 578 ms (76.2 tok/s), 13 generated in 250 ms (52.0 tok/s), drafts accepted 9 of 9, 0 checkpoints
 # run=1 label=warm-shape-512 measured=False
-DONE 640 512 5086.2 17321.8 length 356 544 0 0 0 0 0 0.0 512 0
-strata serve: prompt 512 tokens = 0 reused + 512 read in 5086 ms (100.7 tok/s), 640 generated in 17322 ms (36.9 tok/s), drafts accepted 356 of 544, 0 checkpoints
+DONE 640 512 1477.6 16622.5 length 356 544 0 0 0 0 0 0.0 512 0
+strata serve: prompt 512 tokens = 0 reused + 512 read in 1478 ms (346.5 tok/s), 640 generated in 16623 ms (38.5 tok/s), drafts accepted 356 of 544, 0 checkpoints
 # run=1 label=bench-512-0 measured=True
-DONE 640 512 5025.9 13401.6 length 416 508 0 0 0 0 0 0.0 512 0
-strata serve: prompt 512 tokens = 0 reused + 512 read in 5026 ms (101.9 tok/s), 640 generated in 13402 ms (47.8 tok/s), drafts accepted 416 of 508, 0 checkpoints
+DONE 640 512 1451.2 13065.9 length 416 508 0 0 0 0 0 0.0 512 0
+strata serve: prompt 512 tokens = 0 reused + 512 read in 1451 ms (352.8 tok/s), 640 generated in 13066 ms (49.0 tok/s), drafts accepted 416 of 508, 0 checkpoints
 # run=1 label=bench-512-1 measured=True
-DONE 640 512 5040.6 13793.7 length 413 551 0 0 0 0 0 0.0 512 0
-strata serve: prompt 512 tokens = 0 reused + 512 read in 5041 ms (101.6 tok/s), 640 generated in 13794 ms (46.4 tok/s), drafts accepted 413 of 551, 0 checkpoints
+DONE 640 512 1447.8 13479.7 length 413 551 0 0 0 0 0 0.0 512 0
+strata serve: prompt 512 tokens = 0 reused + 512 read in 1448 ms (353.6 tok/s), 640 generated in 13480 ms (47.5 tok/s), drafts accepted 413 of 551, 0 checkpoints
 # run=1 label=bench-512-2 measured=True
-DONE 640 512 5077.5 17473.3 length 328 490 0 0 0 0 0 0.0 512 0
-strata serve: prompt 512 tokens = 0 reused + 512 read in 5077 ms (100.8 tok/s), 640 generated in 17473 ms (36.6 tok/s), drafts accepted 328 of 490, 0 checkpoints
+DONE 640 512 1464.0 17009.7 length 328 490 0 0 0 0 0 0.0 512 0
+strata serve: prompt 512 tokens = 0 reused + 512 read in 1464 ms (349.7 tok/s), 640 generated in 17010 ms (37.6 tok/s), drafts accepted 328 of 490, 0 checkpoints
 # run=1 label=bench-512-3 measured=True
-DONE 640 512 5017.4 15704.0 length 358 556 0 0 0 0 0 0.0 512 0
-strata serve: prompt 512 tokens = 0 reused + 512 read in 5017 ms (102.0 tok/s), 640 generated in 15704 ms (40.8 tok/s), drafts accepted 358 of 556, 0 checkpoints
+DONE 640 512 1426.8 15468.2 length 358 556 0 0 0 0 0 0.0 512 0
+strata serve: prompt 512 tokens = 0 reused + 512 read in 1427 ms (358.8 tok/s), 640 generated in 15468 ms (41.4 tok/s), drafts accepted 358 of 556, 0 checkpoints
 # run=1 label=bench-512-4 measured=True
-DONE 640 512 5064.2 15659.7 length 342 513 0 0 0 0 0 0.0 512 0
-strata serve: prompt 512 tokens = 0 reused + 512 read in 5064 ms (101.1 tok/s), 640 generated in 15660 ms (40.9 tok/s), drafts accepted 342 of 513, 0 checkpoints
+DONE 640 512 1458.6 15440.2 length 342 513 0 0 0 0 0 0.0 512 0
+strata serve: prompt 512 tokens = 0 reused + 512 read in 1459 ms (351.0 tok/s), 640 generated in 15440 ms (41.5 tok/s), drafts accepted 342 of 513, 0 checkpoints
 # run=1 label=warm-shape-7000 measured=False
-DONE 640 7000 72682.9 17375.6 length 344 523 0 0 0 0 0 0.0 7000 0
-strata serve: prompt 7000 tokens = 0 reused + 7000 read in 72683 ms (96.3 tok/s), 640 generated in 17376 ms (36.8 tok/s), drafts accepted 344 of 523, 0 checkpoints
+DONE 640 7000 22793.8 16853.7 length 344 523 0 0 0 0 0 0.0 7000 0
+strata serve: prompt 7000 tokens = 0 reused + 7000 read in 22794 ms (307.1 tok/s), 640 generated in 16854 ms (38.0 tok/s), drafts accepted 344 of 523, 0 checkpoints
 # run=1 label=bench-7000-0 measured=True
-DONE 640 7000 73527.4 13803.6 length 419 546 0 0 0 0 0 0.0 7000 0
-strata serve: prompt 7000 tokens = 0 reused + 7000 read in 73527 ms (95.2 tok/s), 640 generated in 13804 ms (46.4 tok/s), drafts accepted 419 of 546, 0 checkpoints
+DONE 640 7000 22735.3 13495.0 length 419 546 0 0 0 0 0 0.0 7000 0
+strata serve: prompt 7000 tokens = 0 reused + 7000 read in 22735 ms (307.9 tok/s), 640 generated in 13495 ms (47.4 tok/s), drafts accepted 419 of 546, 0 checkpoints
 # run=1 label=bench-7000-1 measured=True
-DONE 640 7000 73411.7 13668.2 length 418 523 0 0 0 0 0 0.0 7000 0
-strata serve: prompt 7000 tokens = 0 reused + 7000 read in 73412 ms (95.4 tok/s), 640 generated in 13668 ms (46.8 tok/s), drafts accepted 418 of 523, 0 checkpoints
+DONE 640 7000 22723.3 13359.9 length 418 523 0 0 0 0 0 0.0 7000 0
+strata serve: prompt 7000 tokens = 0 reused + 7000 read in 22723 ms (308.1 tok/s), 640 generated in 13360 ms (47.9 tok/s), drafts accepted 418 of 523, 0 checkpoints
 # run=1 label=bench-7000-2 measured=True
-DONE 640 7000 73344.3 18344.0 length 325 500 0 0 0 0 0 0.0 7000 0
-strata serve: prompt 7000 tokens = 0 reused + 7000 read in 73344 ms (95.4 tok/s), 640 generated in 18344 ms (34.9 tok/s), drafts accepted 325 of 500, 0 checkpoints
+DONE 640 7000 22753.8 17792.7 length 325 500 0 0 0 0 0 0.0 7000 0
+strata serve: prompt 7000 tokens = 0 reused + 7000 read in 22754 ms (307.6 tok/s), 640 generated in 17793 ms (36.0 tok/s), drafts accepted 325 of 500, 0 checkpoints
 # run=1 label=bench-7000-3 measured=True
-DONE 640 7000 73185.4 15821.7 length 355 532 0 0 0 0 0 0.0 7000 0
-strata serve: prompt 7000 tokens = 0 reused + 7000 read in 73185 ms (95.6 tok/s), 640 generated in 15822 ms (40.5 tok/s), drafts accepted 355 of 532, 0 checkpoints
+DONE 640 7000 22749.9 15593.7 length 355 532 0 0 0 0 0 0.0 7000 0
+strata serve: prompt 7000 tokens = 0 reused + 7000 read in 22750 ms (307.7 tok/s), 640 generated in 15594 ms (41.0 tok/s), drafts accepted 355 of 532, 0 checkpoints
 # run=1 label=bench-7000-4 measured=True
-DONE 640 7000 73190.0 16067.9 length 339 514 0 0 0 0 0 0.0 7000 0
-strata serve: prompt 7000 tokens = 0 reused + 7000 read in 73190 ms (95.6 tok/s), 640 generated in 16068 ms (39.8 tok/s), drafts accepted 339 of 514, 0 checkpoints
+DONE 640 7000 22738.1 15869.0 length 339 514 0 0 0 0 0 0.0 7000 0
+strata serve: prompt 7000 tokens = 0 reused + 7000 read in 22738 ms (307.9 tok/s), 640 generated in 15869 ms (40.3 tok/s), drafts accepted 339 of 514, 0 checkpoints
 # run=1 label=post-long-isolation measured=False
-DONE 8 23 964.0 167.0 stop 6 6 0 0 0 0 0 0.0 23 0
-strata serve: prompt 23 tokens = 0 reused + 23 read in 964 ms (23.9 tok/s), 8 generated in 167 ms (47.9 tok/s), drafts accepted 6 of 6, 0 checkpoints
+DONE 8 23 382.2 162.8 stop 6 6 0 0 0 0 0 0.0 23 0
+strata serve: prompt 23 tokens = 0 reused + 23 read in 382 ms (60.2 tok/s), 8 generated in 163 ms (49.1 tok/s), drafts accepted 6 of 6, 0 checkpoints
 # run=2 label=isolation-a measured=False
-DONE 8 23 1018.1 204.3 stop 6 6 0 0 0 0 0 0.0 23 0
-strata serve: prompt 23 tokens = 0 reused + 23 read in 1018 ms (22.6 tok/s), 8 generated in 204 ms (39.2 tok/s), drafts accepted 6 of 6, 0 checkpoints
+DONE 8 23 414.1 217.7 stop 6 6 0 0 0 0 0 0.0 23 0
+strata serve: prompt 23 tokens = 0 reused + 23 read in 414 ms (55.5 tok/s), 8 generated in 218 ms (36.7 tok/s), drafts accepted 6 of 6, 0 checkpoints
 # run=2 label=isolation-b measured=False
-DONE 8 23 985.1 168.3 stop 6 6 0 0 0 0 0 0.0 23 0
-strata serve: prompt 23 tokens = 0 reused + 23 read in 985 ms (23.3 tok/s), 8 generated in 168 ms (47.5 tok/s), drafts accepted 6 of 6, 0 checkpoints
+DONE 8 23 387.8 182.5 stop 6 6 0 0 0 0 0 0.0 23 0
+strata serve: prompt 23 tokens = 0 reused + 23 read in 388 ms (59.3 tok/s), 8 generated in 182 ms (43.8 tok/s), drafts accepted 6 of 6, 0 checkpoints
 # run=2 label=json-quality measured=False
-DONE 13 44 1274.8 252.4 stop 9 9 0 0 0 0 0 0.0 44 0
-strata serve: prompt 44 tokens = 0 reused + 44 read in 1275 ms (34.5 tok/s), 13 generated in 252 ms (51.5 tok/s), drafts accepted 9 of 9, 0 checkpoints
+DONE 13 44 586.4 290.7 stop 9 9 0 0 0 0 0 0.0 44 0
+strata serve: prompt 44 tokens = 0 reused + 44 read in 586 ms (75.0 tok/s), 13 generated in 291 ms (44.7 tok/s), drafts accepted 9 of 9, 0 checkpoints
 # run=2 label=warm-shape-512 measured=False
-DONE 640 512 5034.2 16754.5 length 356 544 0 0 0 0 0 0.0 512 0
-strata serve: prompt 512 tokens = 0 reused + 512 read in 5034 ms (101.7 tok/s), 640 generated in 16754 ms (38.2 tok/s), drafts accepted 356 of 544, 0 checkpoints
+DONE 640 512 1521.0 18811.5 length 356 544 0 0 0 0 0 0.0 512 0
+strata serve: prompt 512 tokens = 0 reused + 512 read in 1521 ms (336.6 tok/s), 640 generated in 18811 ms (34.0 tok/s), drafts accepted 356 of 544, 0 checkpoints
 # run=2 label=bench-512-0 measured=True
-DONE 640 512 4997.3 13186.1 length 416 508 0 0 0 0 0 0.0 512 0
-strata serve: prompt 512 tokens = 0 reused + 512 read in 4997 ms (102.5 tok/s), 640 generated in 13186 ms (48.5 tok/s), drafts accepted 416 of 508, 0 checkpoints
+DONE 640 512 1490.7 13956.0 length 416 508 0 0 0 0 0 0.0 512 0
+strata serve: prompt 512 tokens = 0 reused + 512 read in 1491 ms (343.5 tok/s), 640 generated in 13956 ms (45.9 tok/s), drafts accepted 416 of 508, 0 checkpoints
 # run=2 label=bench-512-1 measured=True
-DONE 640 512 5063.4 13606.9 length 413 551 0 0 0 0 0 0.0 512 0
-strata serve: prompt 512 tokens = 0 reused + 512 read in 5063 ms (101.1 tok/s), 640 generated in 13607 ms (47.0 tok/s), drafts accepted 413 of 551, 0 checkpoints
+DONE 640 512 1489.0 14270.4 length 413 551 0 0 0 0 0 0.0 512 0
+strata serve: prompt 512 tokens = 0 reused + 512 read in 1489 ms (343.8 tok/s), 640 generated in 14270 ms (44.8 tok/s), drafts accepted 413 of 551, 0 checkpoints
 # run=2 label=bench-512-2 measured=True
-DONE 640 512 5036.5 17143.6 length 328 490 0 0 0 0 0 0.0 512 0
-strata serve: prompt 512 tokens = 0 reused + 512 read in 5037 ms (101.7 tok/s), 640 generated in 17144 ms (37.3 tok/s), drafts accepted 328 of 490, 0 checkpoints
+DONE 640 512 1506.5 18885.4 length 328 490 0 0 0 0 0 0.0 512 0
+strata serve: prompt 512 tokens = 0 reused + 512 read in 1506 ms (339.9 tok/s), 640 generated in 18885 ms (33.9 tok/s), drafts accepted 328 of 490, 0 checkpoints
 # run=2 label=bench-512-3 measured=True
-DONE 640 512 5005.1 15603.2 length 358 556 0 0 0 0 0 0.0 512 0
-strata serve: prompt 512 tokens = 0 reused + 512 read in 5005 ms (102.3 tok/s), 640 generated in 15603 ms (41.0 tok/s), drafts accepted 358 of 556, 0 checkpoints
+DONE 640 512 1468.3 16029.2 length 358 556 0 0 0 0 0 0.0 512 0
+strata serve: prompt 512 tokens = 0 reused + 512 read in 1468 ms (348.7 tok/s), 640 generated in 16029 ms (39.9 tok/s), drafts accepted 358 of 556, 0 checkpoints
 # run=2 label=bench-512-4 measured=True
-DONE 640 512 5098.2 15582.0 length 342 513 0 0 0 0 0 0.0 512 0
-strata serve: prompt 512 tokens = 0 reused + 512 read in 5098 ms (100.4 tok/s), 640 generated in 15582 ms (41.1 tok/s), drafts accepted 342 of 513, 0 checkpoints
+DONE 640 512 1504.3 15790.4 length 342 513 0 0 0 0 0 0.0 512 0
+strata serve: prompt 512 tokens = 0 reused + 512 read in 1504 ms (340.4 tok/s), 640 generated in 15790 ms (40.5 tok/s), drafts accepted 342 of 513, 0 checkpoints
 # run=2 label=warm-shape-7000 measured=False
-DONE 640 7000 72284.5 16991.9 length 344 523 0 0 0 0 0 0.0 7000 0
-strata serve: prompt 7000 tokens = 0 reused + 7000 read in 72285 ms (96.8 tok/s), 640 generated in 16992 ms (37.7 tok/s), drafts accepted 344 of 523, 0 checkpoints
+DONE 640 7000 23643.9 18494.9 length 344 523 0 0 0 0 0 0.0 7000 0
+strata serve: prompt 7000 tokens = 0 reused + 7000 read in 23644 ms (296.1 tok/s), 640 generated in 18495 ms (34.6 tok/s), drafts accepted 344 of 523, 0 checkpoints
 # run=2 label=bench-7000-0 measured=True
-DONE 640 7000 72853.9 13616.9 length 419 546 0 0 0 0 0 0.0 7000 0
-strata serve: prompt 7000 tokens = 0 reused + 7000 read in 72854 ms (96.1 tok/s), 640 generated in 13617 ms (47.0 tok/s), drafts accepted 419 of 546, 0 checkpoints
+DONE 640 7000 23564.6 14316.0 length 419 546 0 0 0 0 0 0.0 7000 0
+strata serve: prompt 7000 tokens = 0 reused + 7000 read in 23565 ms (297.1 tok/s), 640 generated in 14316 ms (44.7 tok/s), drafts accepted 419 of 546, 0 checkpoints
 # run=2 label=bench-7000-1 measured=True
-DONE 640 7000 73025.6 13484.9 length 418 523 0 0 0 0 0 0.0 7000 0
-strata serve: prompt 7000 tokens = 0 reused + 7000 read in 73026 ms (95.9 tok/s), 640 generated in 13485 ms (47.5 tok/s), drafts accepted 418 of 523, 0 checkpoints
+DONE 640 7000 23566.2 14123.2 length 418 523 0 0 0 0 0 0.0 7000 0
+strata serve: prompt 7000 tokens = 0 reused + 7000 read in 23566 ms (297.0 tok/s), 640 generated in 14123 ms (45.3 tok/s), drafts accepted 418 of 523, 0 checkpoints
 # run=2 label=bench-7000-2 measured=True
-DONE 640 7000 72914.0 17934.3 length 325 500 0 0 0 0 0 0.0 7000 0
-strata serve: prompt 7000 tokens = 0 reused + 7000 read in 72914 ms (96.0 tok/s), 640 generated in 17934 ms (35.7 tok/s), drafts accepted 325 of 500, 0 checkpoints
+DONE 640 7000 23611.8 20103.5 length 325 500 0 0 0 0 0 0.0 7000 0
+strata serve: prompt 7000 tokens = 0 reused + 7000 read in 23612 ms (296.5 tok/s), 640 generated in 20103 ms (31.8 tok/s), drafts accepted 325 of 500, 0 checkpoints
 # run=2 label=bench-7000-3 measured=True
-DONE 640 7000 73070.5 15731.0 length 355 532 0 0 0 0 0 0.0 7000 0
-strata serve: prompt 7000 tokens = 0 reused + 7000 read in 73070 ms (95.8 tok/s), 640 generated in 15731 ms (40.7 tok/s), drafts accepted 355 of 532, 0 checkpoints
+DONE 640 7000 23584.5 16015.3 length 355 532 0 0 0 0 0 0.0 7000 0
+strata serve: prompt 7000 tokens = 0 reused + 7000 read in 23585 ms (296.8 tok/s), 640 generated in 16015 ms (40.0 tok/s), drafts accepted 355 of 532, 0 checkpoints
 # run=2 label=bench-7000-4 measured=True
-DONE 640 7000 73013.7 16005.9 length 339 514 0 0 0 0 0 0.0 7000 0
-strata serve: prompt 7000 tokens = 0 reused + 7000 read in 73014 ms (95.9 tok/s), 640 generated in 16006 ms (40.0 tok/s), drafts accepted 339 of 514, 0 checkpoints
+DONE 640 7000 23562.9 16145.0 length 339 514 0 0 0 0 0 0.0 7000 0
+strata serve: prompt 7000 tokens = 0 reused + 7000 read in 23563 ms (297.1 tok/s), 640 generated in 16145 ms (39.6 tok/s), drafts accepted 339 of 514, 0 checkpoints
 # run=2 label=post-long-isolation measured=False
-DONE 8 23 980.6 164.4 stop 6 6 0 0 0 0 0 0.0 23 0
-strata serve: prompt 23 tokens = 0 reused + 23 read in 981 ms (23.5 tok/s), 8 generated in 164 ms (48.7 tok/s), drafts accepted 6 of 6, 0 checkpoints
+DONE 8 23 386.1 175.5 stop 6 6 0 0 0 0 0 0.0 23 0
+strata serve: prompt 23 tokens = 0 reused + 23 read in 386 ms (59.6 tok/s), 8 generated in 176 ms (45.6 tok/s), drafts accepted 6 of 6, 0 checkpoints
 # run=3 label=isolation-a measured=False
-DONE 8 23 1014.7 205.2 stop 6 6 0 0 0 0 0 0.0 23 0
-strata serve: prompt 23 tokens = 0 reused + 23 read in 1015 ms (22.7 tok/s), 8 generated in 205 ms (39.0 tok/s), drafts accepted 6 of 6, 0 checkpoints
+DONE 8 23 411.1 202.2 stop 6 6 0 0 0 0 0 0.0 23 0
+strata serve: prompt 23 tokens = 0 reused + 23 read in 411 ms (55.9 tok/s), 8 generated in 202 ms (39.6 tok/s), drafts accepted 6 of 6, 0 checkpoints
 # run=3 label=isolation-b measured=False
-DONE 8 23 986.6 169.9 stop 6 6 0 0 0 0 0 0.0 23 0
-strata serve: prompt 23 tokens = 0 reused + 23 read in 987 ms (23.3 tok/s), 8 generated in 170 ms (47.1 tok/s), drafts accepted 6 of 6, 0 checkpoints
+DONE 8 23 383.4 166.9 stop 6 6 0 0 0 0 0 0.0 23 0
+strata serve: prompt 23 tokens = 0 reused + 23 read in 383 ms (60.0 tok/s), 8 generated in 167 ms (47.9 tok/s), drafts accepted 6 of 6, 0 checkpoints
 # run=3 label=json-quality measured=False
-DONE 13 44 1278.3 258.9 stop 9 9 0 0 0 0 0 0.0 44 0
-strata serve: prompt 44 tokens = 0 reused + 44 read in 1278 ms (34.4 tok/s), 13 generated in 259 ms (50.2 tok/s), drafts accepted 9 of 9, 0 checkpoints
+DONE 13 44 578.2 249.6 stop 9 9 0 0 0 0 0 0.0 44 0
+strata serve: prompt 44 tokens = 0 reused + 44 read in 578 ms (76.1 tok/s), 13 generated in 250 ms (52.1 tok/s), drafts accepted 9 of 9, 0 checkpoints
 # run=3 label=warm-shape-512 measured=False
-DONE 640 512 5081.9 17274.9 length 356 544 0 0 0 0 0 0.0 512 0
-strata serve: prompt 512 tokens = 0 reused + 512 read in 5082 ms (100.7 tok/s), 640 generated in 17275 ms (37.0 tok/s), drafts accepted 356 of 544, 0 checkpoints
+DONE 640 512 1476.6 16614.9 length 356 544 0 0 0 0 0 0.0 512 0
+strata serve: prompt 512 tokens = 0 reused + 512 read in 1477 ms (346.7 tok/s), 640 generated in 16615 ms (38.5 tok/s), drafts accepted 356 of 544, 0 checkpoints
 # run=3 label=bench-512-0 measured=True
-DONE 640 512 5051.9 13388.5 length 416 508 0 0 0 0 0 0.0 512 0
-strata serve: prompt 512 tokens = 0 reused + 512 read in 5052 ms (101.3 tok/s), 640 generated in 13389 ms (47.8 tok/s), drafts accepted 416 of 508, 0 checkpoints
+DONE 640 512 1450.7 13067.8 length 416 508 0 0 0 0 0 0.0 512 0
+strata serve: prompt 512 tokens = 0 reused + 512 read in 1451 ms (352.9 tok/s), 640 generated in 13068 ms (49.0 tok/s), drafts accepted 416 of 508, 0 checkpoints
 # run=3 label=bench-512-1 measured=True
-DONE 640 512 5040.8 13802.2 length 413 551 0 0 0 0 0 0.0 512 0
-strata serve: prompt 512 tokens = 0 reused + 512 read in 5041 ms (101.6 tok/s), 640 generated in 13802 ms (46.4 tok/s), drafts accepted 413 of 551, 0 checkpoints
+DONE 640 512 1448.1 13482.4 length 413 551 0 0 0 0 0 0.0 512 0
+strata serve: prompt 512 tokens = 0 reused + 512 read in 1448 ms (353.6 tok/s), 640 generated in 13482 ms (47.5 tok/s), drafts accepted 413 of 551, 0 checkpoints
 # run=3 label=bench-512-2 measured=True
-DONE 640 512 5061.1 17465.5 length 328 490 0 0 0 0 0 0.0 512 0
-strata serve: prompt 512 tokens = 0 reused + 512 read in 5061 ms (101.2 tok/s), 640 generated in 17465 ms (36.6 tok/s), drafts accepted 328 of 490, 0 checkpoints
+DONE 640 512 1463.9 17019.4 length 328 490 0 0 0 0 0 0.0 512 0
+strata serve: prompt 512 tokens = 0 reused + 512 read in 1464 ms (349.7 tok/s), 640 generated in 17019 ms (37.6 tok/s), drafts accepted 328 of 490, 0 checkpoints
 # run=3 label=bench-512-3 measured=True
-DONE 640 512 4995.5 15709.9 length 358 556 0 0 0 0 0 0.0 512 0
-strata serve: prompt 512 tokens = 0 reused + 512 read in 4996 ms (102.5 tok/s), 640 generated in 15710 ms (40.7 tok/s), drafts accepted 358 of 556, 0 checkpoints
+DONE 640 512 1427.7 15463.9 length 358 556 0 0 0 0 0 0.0 512 0
+strata serve: prompt 512 tokens = 0 reused + 512 read in 1428 ms (358.6 tok/s), 640 generated in 15464 ms (41.4 tok/s), drafts accepted 358 of 556, 0 checkpoints
 # run=3 label=bench-512-4 measured=True
-DONE 640 512 5041.4 15666.8 length 342 513 0 0 0 0 0 0.0 512 0
-strata serve: prompt 512 tokens = 0 reused + 512 read in 5041 ms (101.6 tok/s), 640 generated in 15667 ms (40.9 tok/s), drafts accepted 342 of 513, 0 checkpoints
+DONE 640 512 1459.1 15435.8 length 342 513 0 0 0 0 0 0.0 512 0
+strata serve: prompt 512 tokens = 0 reused + 512 read in 1459 ms (350.9 tok/s), 640 generated in 15436 ms (41.5 tok/s), drafts accepted 342 of 513, 0 checkpoints
 # run=3 label=warm-shape-7000 measured=False
-DONE 640 7000 72556.1 17364.5 length 344 523 0 0 0 0 0 0.0 7000 0
-strata serve: prompt 7000 tokens = 0 reused + 7000 read in 72556 ms (96.5 tok/s), 640 generated in 17364 ms (36.9 tok/s), drafts accepted 344 of 523, 0 checkpoints
+DONE 640 7000 22810.1 16848.3 length 344 523 0 0 0 0 0 0.0 7000 0
+strata serve: prompt 7000 tokens = 0 reused + 7000 read in 22810 ms (306.9 tok/s), 640 generated in 16848 ms (38.0 tok/s), drafts accepted 344 of 523, 0 checkpoints
 # run=3 label=bench-7000-0 measured=True
-DONE 640 7000 72974.5 13795.8 length 419 546 0 0 0 0 0 0.0 7000 0
-strata serve: prompt 7000 tokens = 0 reused + 7000 read in 72974 ms (95.9 tok/s), 640 generated in 13796 ms (46.4 tok/s), drafts accepted 419 of 546, 0 checkpoints
+DONE 640 7000 22761.3 13491.2 length 419 546 0 0 0 0 0 0.0 7000 0
+strata serve: prompt 7000 tokens = 0 reused + 7000 read in 22761 ms (307.5 tok/s), 640 generated in 13491 ms (47.4 tok/s), drafts accepted 419 of 546, 0 checkpoints
 # run=3 label=bench-7000-1 measured=True
-DONE 640 7000 72614.0 13663.8 length 418 523 0 0 0 0 0 0.0 7000 0
-strata serve: prompt 7000 tokens = 0 reused + 7000 read in 72614 ms (96.4 tok/s), 640 generated in 13664 ms (46.8 tok/s), drafts accepted 418 of 523, 0 checkpoints
+DONE 640 7000 22753.0 13360.8 length 418 523 0 0 0 0 0 0.0 7000 0
+strata serve: prompt 7000 tokens = 0 reused + 7000 read in 22753 ms (307.7 tok/s), 640 generated in 13361 ms (47.9 tok/s), drafts accepted 418 of 523, 0 checkpoints
 # run=3 label=bench-7000-2 measured=True
-DONE 640 7000 73028.7 18333.6 length 325 500 0 0 0 0 0 0.0 7000 0
-strata serve: prompt 7000 tokens = 0 reused + 7000 read in 73029 ms (95.9 tok/s), 640 generated in 18334 ms (34.9 tok/s), drafts accepted 325 of 500, 0 checkpoints
+DONE 640 7000 22780.9 17800.6 length 325 500 0 0 0 0 0 0.0 7000 0
+strata serve: prompt 7000 tokens = 0 reused + 7000 read in 22781 ms (307.3 tok/s), 640 generated in 17801 ms (36.0 tok/s), drafts accepted 325 of 500, 0 checkpoints
 # run=3 label=bench-7000-3 measured=True
-DONE 640 7000 72972.0 15803.5 length 355 532 0 0 0 0 0 0.0 7000 0
-strata serve: prompt 7000 tokens = 0 reused + 7000 read in 72972 ms (95.9 tok/s), 640 generated in 15804 ms (40.5 tok/s), drafts accepted 355 of 532, 0 checkpoints
+DONE 640 7000 22784.0 15593.1 length 355 532 0 0 0 0 0 0.0 7000 0
+strata serve: prompt 7000 tokens = 0 reused + 7000 read in 22784 ms (307.2 tok/s), 640 generated in 15593 ms (41.0 tok/s), drafts accepted 355 of 532, 0 checkpoints
 # run=3 label=bench-7000-4 measured=True
-DONE 640 7000 72913.9 16059.7 length 339 514 0 0 0 0 0 0.0 7000 0
-strata serve: prompt 7000 tokens = 0 reused + 7000 read in 72914 ms (96.0 tok/s), 640 generated in 16060 ms (39.9 tok/s), drafts accepted 339 of 514, 0 checkpoints
+DONE 640 7000 22773.3 15858.7 length 339 514 0 0 0 0 0 0.0 7000 0
+strata serve: prompt 7000 tokens = 0 reused + 7000 read in 22773 ms (307.4 tok/s), 640 generated in 15859 ms (40.4 tok/s), drafts accepted 339 of 514, 0 checkpoints
 # run=3 label=post-long-isolation measured=False
-DONE 8 23 982.1 166.8 stop 6 6 0 0 0 0 0 0.0 23 0
-strata serve: prompt 23 tokens = 0 reused + 23 read in 982 ms (23.4 tok/s), 8 generated in 167 ms (48.0 tok/s), drafts accepted 6 of 6, 0 checkpoints
+DONE 8 23 383.1 162.8 stop 6 6 0 0 0 0 0 0.0 23 0
+strata serve: prompt 23 tokens = 0 reused + 23 read in 383 ms (60.0 tok/s), 8 generated in 163 ms (49.1 tok/s), drafts accepted 6 of 6, 0 checkpoints

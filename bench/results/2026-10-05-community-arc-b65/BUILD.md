@@ -1,4 +1,7 @@
-# Measured source build and reproduction
+# Source build and reproduction
+
+The qualified configuration explicitly unsets STRATA_DBG_NAN to avoid expensive
+qualification-only CPU tensor scans.
 
 The measurements use Strata 0.1.39-sycl at
 `6f32ec070f23ced9f50e704d854d775da52591ab`, ggml/llama.cpp
@@ -82,7 +85,8 @@ machine policies or stop other services for you.
 export ONEAPI_DEVICE_SELECTOR=level_zero:0 SYCL_CACHE_PERSISTENT=0
 export SYCL_PROGRAM_COMPILE_OPTIONS=-cl-fp32-correctly-rounded-divide-sqrt
 export STRATA_MIRROR_MIB=16384 STRATA_VERIFY_DEVICE_PLAN=1 STRATA_VERIFY_NO_HOST=1
-export STRATA_WARM_GRAPHS=0 STRATA_DBG_NAN=1
+export STRATA_WARM_GRAPHS=0
+unset STRATA_DBG_NAN
 export STRATA_STAGER_THREADS=4 OMP_NUM_THREADS=4 MKL_NUM_THREADS=4
 unset STRATA_VERIFY_EAGER STRATA_DECODE_TIMING STRATA_PLE_TRACE
 sudo install -d -m700 -o "$(id -un)" /run/strata-community

@@ -1,0 +1,12 @@
+{
+  "samples": 44,
+  "max_sensor_C": 63.0,
+  "peak_resident_VRAM_GiB": 28.90790557861328,
+  "all_AER_zero": true,
+  "native_exits": [
+    0,
+    0,
+    0
+  ],
+  "private_API_and_retained_recovery_passed": true
+}

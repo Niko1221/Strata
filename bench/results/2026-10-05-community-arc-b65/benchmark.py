@@ -2,7 +2,7 @@
 """Three fresh native runs; only numeric timing and hash receipts persist.
 
 Use under an independent GPU/resource guard, with the model router isolated.
-Run: python benchmark.py --source SOURCE --profile profile.json --out OUTPUT
+Run: python campaign.py --source SOURCE --profile profile.json --out OUTPUT
 RAM logs must live on tmpfs. No generated content is written by this script.
 """
 import argparse
@@ -52,6 +52,8 @@ def main():
             self.done_line = line
             return super()._parse_done(line)
 
+    assert 'STRATA_DBG_NAN' not in os.environ, 'qualification diagnostic must be absent'
+    refs=json.loads((Path(__file__).parent/'reference-output-hashes.json').read_text())
     profile = json.loads(args.profile.read_text())
     native_args = [os.path.expandvars(x) for x in profile['args']]
     binary = os.path.expandvars(profile['exe'])
@@ -141,6 +143,10 @@ def main():
         if label == 'json-quality':
             row['math_answer_correct'] = json.loads(text).get('answer') == 50 if valid else False
             row['math_answer_is_runtime_gate'] = False
+        if measured:
+            ref=refs[label]
+            row['matches_reference_output_ids']=all(row[k]==ref[k] for k in ref)
+            assert row['matches_reference_output_ids'], 'reference output stream changed: '+label
         rows.append(row)
         save()
         print(json.dumps({'run': len(runs), 'label': label, 'measured': measured,
@@ -197,6 +203,8 @@ def main():
     finally:
         if engine is not None:
             proc = engine.proc
+            if proc is not None and proc.poll() is None:
+                proc.stdin.write('QUIT\n');proc.stdin.flush();proc.wait(timeout=75)
             engine.close()
             runs[-1]['native_exit'] = None if proc is None else proc.returncode
         save()
