@@ -455,6 +455,37 @@ bool file_tier_unbuffered(const std::vector<std::string>& paths, uint64_t arena_
 
 }  // namespace
 
+namespace {
+
+/// STRATA_TIER_TRACE=<file>: one line per expert blob served outside the GPU caches - "<ms> <kind> <layer> <expert>
+/// <bytes>", kind R (decode, RAM copy), F (decode, files), Q (prompt path, RAM copy), P (prompt path, files) - for
+/// studying which experts the RAM tier should hold.  Unset: nothing is written.
+class TierTrace {
+public:
+    static TierTrace& get() { static TierTrace t; return t; }
+    bool on() const { return f_ != nullptr; }
+    void put(char kind, int64_t layer, int64_t expert, uint64_t bytes) {
+        if (f_ == nullptr) return;
+        const long long ms = (long long) std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t0_).count();
+        std::lock_guard<std::mutex> lk(mu_);
+        std::fprintf(f_, "%lld %c %lld %lld %llu\n", ms, kind, (long long) layer, (long long) expert,
+                     (unsigned long long) bytes);
+        if (++n_ % 4096 == 0) std::fflush(f_);
+    }
+private:
+    TierTrace() {
+        const char* p = std::getenv("STRATA_TIER_TRACE");
+        if (p != nullptr && *p != 0) f_ = std::fopen(p, "w");
+    }
+    std::FILE* f_ = nullptr;
+    std::mutex mu_;
+    uint64_t n_ = 0;
+    std::chrono::steady_clock::time_point t0_ = std::chrono::steady_clock::now();
+};
+
+}  // namespace
+
 // ================================ THE FILE-BACKED SOURCE ================================
 
 FileExpertSource::~FileExpertSource() { close(); }
@@ -2020,6 +2051,7 @@ bool FileExpertSource::copy_blob(int64_t layer, int64_t expert, uint8_t* dst) {
         if (held == nullptr && !override_.empty()) held = override_[index];
         if (held != nullptr) {
             std::memcpy(dst, held, (size_t) bytes);
+            TierTrace::get().put('Q', layer, expert, bytes);
             return true;
         }
     }
@@ -2029,6 +2061,7 @@ bool FileExpertSource::copy_blob(int64_t layer, int64_t expert, uint8_t* dst) {
     }
     const auto t0 = std::chrono::steady_clock::now();
     if (!copy_from_files(layer, expert, dst)) return false;
+    TierTrace::get().put('P', layer, expert, bytes);
     file_us_.fetch_add((uint64_t) std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count(),
                        std::memory_order_relaxed);
     file_read_bytes_.fetch_add(bytes, std::memory_order_relaxed);
@@ -2061,6 +2094,7 @@ bool FileExpertSource::copy_blobs(const int32_t* layers, const int32_t* experts,
         bytes += layer_blob_bytes_[(size_t) l];
     }
     if (fills.empty()) return true;
+    for (const Fill& f : fills) TierTrace::get().put('P', f.layer, f.e, layer_blob_bytes_[(size_t) f.layer]);
     const auto t0 = std::chrono::steady_clock::now();
     if (!read_direct(fills.data(), fills.size()))
         for (const Fill& f : fills)   // a failed batch: each blob on its own (copy_from_files falls back to the mapping)
@@ -2891,6 +2925,8 @@ const uint8_t* FileExpertSource::blob(int64_t layer, int64_t expert) {
         }
         if (complement_ready_ && result != nullptr) file_reads_.fetch_add(1, std::memory_order_relaxed);
     }
+    if (result != nullptr && TierTrace::get().on())
+        TierTrace::get().put(from_files ? 'F' : 'R', layer, expert, layer_blob_bytes_[(size_t) layer]);
     if (result != nullptr) ++reads_;
     return result;
 }
