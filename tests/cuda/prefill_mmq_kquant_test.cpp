@@ -12,16 +12,19 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <numeric>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
 namespace mmq = strata::prefill::mmq;
+bool stress_default_stream = false;
 
 void ck(cudaError_t e, const char* what) {
     if (e != cudaSuccess) throw std::runtime_error(std::string(what) + ": " + cudaGetErrorString(e));
@@ -89,12 +92,20 @@ void product(mmq::Context& ctx, cudaStream_t s, const char* name, ggml_type t, i
     }
     Dev dx(x.size() * 4), dsrc((size_t) rows * 4), ddst((size_t) rows * 4), db(bounds.size() * 4), dw(w.size()),
         dxq(mmq::q8_bytes(rows, cols)), dy((size_t) rows * (size_t) out_rows * 4);
-    ck(cudaMemcpy(dx.p, x.data(), x.size() * 4, cudaMemcpyHostToDevice), "x");
-    ck(cudaMemcpy(dsrc.p, src.data(), src.size() * 4, cudaMemcpyHostToDevice), "src");
-    ck(cudaMemcpy(ddst.p, dst.data(), dst.size() * 4, cudaMemcpyHostToDevice), "dst");
-    ck(cudaMemcpy(db.p, bounds.data(), bounds.size() * 4, cudaMemcpyHostToDevice), "bounds");
-    ck(cudaMemcpy(dw.p, w.data(), w.size(), cudaMemcpyHostToDevice), "w");
-    ck(cudaMemset(dy.p, 0xff, (size_t) rows * (size_t) out_rows * 4), "sentinel");
+    // s is non-blocking: default-stream copies/memsets do not order its kernels.
+    // Keep setup, the NaN sentinel, compute and readback on this same stream.
+    ck(cudaMemcpyAsync(dx.p, x.data(), x.size() * 4, cudaMemcpyHostToDevice, s), "x");
+    ck(cudaMemcpyAsync(dsrc.p, src.data(), src.size() * 4, cudaMemcpyHostToDevice, s), "src");
+    ck(cudaMemcpyAsync(ddst.p, dst.data(), dst.size() * 4, cudaMemcpyHostToDevice, s), "dst");
+    ck(cudaMemcpyAsync(db.p, bounds.data(), bounds.size() * 4, cudaMemcpyHostToDevice, s), "bounds");
+    ck(cudaMemcpyAsync(dw.p, w.data(), w.size(), cudaMemcpyHostToDevice, s), "w");
+    // Regression mode: make unrelated legacy-stream work overlap this product.
+    // A sentinel queued there instead of on s can overwrite the computed result.
+    if (stress_default_stream)
+        ck(cudaLaunchHostFunc(nullptr, [](void*) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }, nullptr), "delay default stream");
+    ck(cudaMemsetAsync(dy.p, 0xff, (size_t) rows * (size_t) out_rows * 4, s), "sentinel");
     mmq::quantize((const float*) dx.p, (const int32_t*) dsrc.p, dxq.p, (int) t, cols, cols, rows, s);
     mmq::Product p;
     p.w = dw.p; p.type = (int) t; p.w_rows = out_rows; p.w_cols = cols; p.expert_bytes = eb; p.n = n;
@@ -102,9 +113,9 @@ void product(mmq::Context& ctx, cudaStream_t s, const char* name, ggml_type t, i
     p.max_rows = *std::max_element(counts.begin(), counts.end()); p.dst = (float*) dy.p; p.ld_dst = out_rows;
     ctx.run(p, s);
     ck(cudaGetLastError(), "launch");
-    ck(cudaStreamSynchronize(s), "sync");
     std::vector<float> got((size_t) rows * (size_t) out_rows);
-    ck(cudaMemcpy(got.data(), dy.p, got.size() * 4, cudaMemcpyDeviceToHost), "y");
+    ck(cudaMemcpyAsync(got.data(), dy.p, got.size() * 4, cudaMemcpyDeviceToHost, s), "y");
+    ck(cudaStreamSynchronize(s), "sync");
 
     const auto* tr = ggml_get_type_traits(t);
     std::vector<float> ref(got.size(), 0.0f), wd((size_t) out_rows * (size_t) cols);
@@ -140,14 +151,17 @@ void product(mmq::Context& ctx, cudaStream_t s, const char* name, ggml_type t, i
 }
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
     try {
+        if (argc == 2 && std::string(argv[1]) == "--stress-default-stream") stress_default_stream = true;
+        else if (argc != 1) throw std::runtime_error("usage: test [--stress-default-stream]");
         if (!mmq::built()) { std::printf("no MMQ in this build\n"); return 1; }
         cudaStream_t s = nullptr;
         ck(cudaStreamCreateWithFlags(&s, cudaStreamNonBlocking), "stream");
         {
             mmq::Context ctx;
-            const std::vector<std::vector<int>> batches{{1, 3, 3}, {4, 1, 2}, {2, 3}, {17}};
+            const std::vector<std::vector<int>> batches{
+                {1, 3, 3}, {4, 1, 2}, {2, 3}, {17}, {0, 1, 0, 3, 0}, {1, 7, 8, 9}, {1, 127, 1}};
             int trial = 0;
             for (const auto& counts : batches) {
                 const std::string tag = "-" + std::to_string(trial);
