@@ -23,8 +23,31 @@ bool conversation_kv_capture_bytes(const ConversationKv& image, const QsaState& 
 // No CUDA calls or destination writes. Used for whole-session prevalidation.
 bool conversation_kv_validate(const ConversationKv& image, const QsaState& state, const ModelGeometry& g,
                               int64_t upto, bool include_index, std::string& error);
+// The streaming form: the image holds headers only (its K/V buffers are empty; the bytes are still on disk), so the
+// geometry, the extent and the target pools are checked, not buffer sizes.
+bool conversation_kv_validate_meta(const ConversationKv& image, const QsaState& state, const ModelGeometry& g,
+                                   int64_t upto, bool include_index, std::string& error);
 bool conversation_kv_restore(const ConversationKv& image, const QsaState& state, const ModelGeometry& g,
                              int64_t upto, bool include_index, std::string& error);
+// One K/V layer of a streaming restore (conversation_file.hpp): conversation_kv_targets binds every layer's
+// authoritative pool after validating its header; `apply` copies one block into it (cudaMemcpyDefault, so a device
+// pool and a device-mapped host pool both work), in offset order; `finish` refills what the layer's K/V mode keeps
+// in VRAM (the streaming window, or the resident ring) - without it attention reads stale slots while the pool
+// bytes are right.  The image and the session must outlive the targets.
+struct ConversationKvTarget {
+    const QsaState* state = nullptr;
+    const ModelGeometry* geometry = nullptr;
+    int64_t upto = 0;
+    bool index = false;
+    std::array<uint8_t*, 5> pool{};
+    std::array<uint64_t, 5> sizes{};
+    bool apply(size_t part, uint64_t offset, const void* data, size_t n, std::string& error) const;
+    bool finish(std::string& error) const;
+};
+bool conversation_kv_targets(const SavedConversation& image, const SessionState& session, const ModelGeometry& g,
+                             const QsaState* draft, std::vector<ConversationKvTarget>& targets, std::string& error);
+bool conversation_kv_targets(const SavedConversation& image, const SessionState& session, const ModelGeometry& g,
+                             const QsaState& draft, std::vector<ConversationKvTarget>& targets, std::string& error);
 // conversation_kv_save(from) + conversation_kv_restore(to) without a host image, for two states of the same layout.
 // The copies are complete on return; the residency refresh is queued on the legacy stream like the restore's.
 // `queued`: the copies are only queued on the private copy stream, the refresh is ordered after them on the device,
@@ -151,6 +174,11 @@ enum class ConversationRestore { restored, invalid, transfer_failed };
 ConversationRestore conversation_snapshot_restore(const SavedConversation& image, SessionState& session,
                                                    const ModelGeometry& g, const QsaState& draft,
                                                    std::string& error);
+// The streaming form of the same checks: the image's K/V is a set of headers (conversation_file.hpp), so every
+// layer is checked by conversation_kv_validate_meta.  As strict otherwise: geometry, layer range, the live state and
+// every checkpoint are validated without any CUDA call or device write.
+bool conversation_snapshot_validate_meta(const SavedConversation& image, const SessionState& session,
+                                         const ModelGeometry& g, const QsaState& draft, std::string& error);
 // The K/V of the image's first `upto` tokens (main layers and the draft layer), not its running state: the caller
 // mounts a checkpoint taken at `upto`.  For a checkpoint of a parked conversation that a new conversation starts
 // with, while the parked one stays where it is (ConversationCache::borrows).  Same failure contract as above.
@@ -178,6 +206,8 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
                                 std::vector<ConversationCheckpoint>* moved = nullptr);
 bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& session,
                                     const ModelGeometry& g, const QsaState* draft, std::string& error);
+bool conversation_snapshot_validate_meta(const SavedConversation& image, const SessionState& session,
+                                         const ModelGeometry& g, const QsaState* draft, std::string& error);
 ConversationRestore conversation_snapshot_restore(const SavedConversation& image, SessionState& session,
                                                    const ModelGeometry& g, const QsaState* draft, std::string& error);
 ConversationRestore conversation_snapshot_restore_prefix(const SavedConversation& image, int64_t upto,
