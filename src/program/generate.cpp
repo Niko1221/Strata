@@ -3962,8 +3962,8 @@ int main(int argc, char** argv) {
             const strata::core::OnDevice on_k(dev);
             // the slots borrow the RoPE table of the session already on this device (the same context length)
             const strata::core::SessionState& host_ss = k == 0 ? ss : stages[k - 1]->ss;
-            const strata::core::QsaState* rope = g.n_qsa_layers() > 0 ? &host_ss.qsa_states[host_ss.qsa_primary()]
-                                                                       : nullptr;
+            const strata::core::QsaState* rope =
+                g.n_qsa_layers() > 0 && host_ss.qsa_alloc > 0 ? &host_ss.qsa_states[host_ss.qsa_primary()] : nullptr;
             const uint64_t bytes = strata::core::session_bytes(g, o.max_context, K, lo, hi, rope != nullptr);
             if (k == 0) bytes0 = bytes;
             for (int b = 0; b < fit; ++b) {
@@ -10215,9 +10215,13 @@ int main(int argc, char** argv) {
             // (with STRATA_IQ_MT_MIN=1 bit for bit; sampled requests with the same Philox draw per position).
             bool pl_ran = false;
             const bool pl_want = pipe && pl_pw >= 2 && pl_snap2[0] != nullptr;
+            // --kv-pool-tokens: the pipelined loop launches windows ahead of each other and does not reserve per window
+            // as the serial loop does, so it backs the whole context first (it runs without --batch: no slot to give way)
             const char* pl_serial = !pl_want ? nullptr
                                   : hist_n > 0 ? "repetition penalties (penalty_last_n)"
-                                  : mtp.coupled() ? "coupled draft sampling" : nullptr;
+                                  : mtp.coupled() ? "coupled draft sampling"
+                                  : kv_pool.active() && !pool_reserve(ss, o.max_context, -1)
+                                      ? "a KV pool (--kv-pool-tokens) that cannot back the whole context" : nullptr;
             if (pl_serial != nullptr) {   // said once per reason
                 static std::set<std::string> said;
                 if (said.insert(pl_serial).second)
