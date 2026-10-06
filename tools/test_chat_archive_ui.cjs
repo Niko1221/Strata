@@ -1,0 +1,190 @@
+"use strict";
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const vm = require("node:vm");
+const Context = require("../serve/web/chat-context.js");
+const source = fs.readFileSync(require.resolve("../serve/web/app.js"), "utf8");
+function section(start, end) {
+  const a=source.indexOf(start), b=source.indexOf(end,a);
+  assert.ok(a>=0 && b>a, `Missing source section ${start}`);
+  return source.slice(a,b);
+}
+function chat(id="first") {return {id,title:"New chat",activeBranchId:"main",branches:[{id:"main",messages:[],context:null,draft:{}}]};}
+function harness() {
+  const elements={}, notices=[], readers=[], stored=new Map();
+  const element=()=>({value:"",style:{},dataset:{},disabled:false,innerHTML:"", children:[],
+    appendChild(x){this.children.push(x);}, append(){}, setAttribute(){},
+    setCustomValidity(text){this.validity=text;},reportValidity(){},select(){},showModal(){this.open=true;},close(){this.open=false;}});
+  class Reader {constructor(){readers.push(this);} readAsDataURL(){} readAsText(){} complete(result){this.result=result;this.onload();}}
+  const ctx=vm.createContext({Promise,JSON,Date,FileReader:Reader,StrataChatContext:Context,
+    crypto:{randomUUID:()=>"synthetic-new"},$:id=>elements[id] ||= element(),
+    localStorage:{setItem:(key,value)=>stored.set(key,value)},store:{get:(key,fallback)=>stored.has("strata."+key)?JSON.parse(stored.get("strata."+key)):fallback,set:(key,value)=>stored.set("strata."+key,JSON.stringify(value))},
+    document:{createElement:element},icon:()=>"", toast:(...args)=>notices.push(args),
+    autosize(){},renderChat(){},renderHistory(){},renderAttachments(){},compactStatus(){},setBusy(){},
+    headers:()=>({}),fetch(){throw Error("Unexpected network request");},
+    contextRequest(){throw Error("Unexpected model request");}});
+  vm.runInContext(`let messages=[], chatContext=null, attachments=[], currentChat=null, library=null;
+    let chatEpoch=0, fallbackStorageWarned=false, fallbackTextSaved=false, requestedLegacyId=null, chatList=[], busy=null, historyBusy=false, legacyRouteResolved=true;
+    let health={images:true,model:'synthetic'}, settings={thinking:'none',max:'32',mcp:false},mcpInfo={tools:0},autoCompact=true;`,ctx);
+  vm.runInContext(section("function browserTextSnapshot(","const restoredBrowserChat")+section("function currentBranch()","function renderHistory()")+
+    section("function useChat(chat)","async function initializeHistory()")+
+    section("async function historyAction(action)",'$("chat-select").onchange')+
+    section('$("rename-btn").onclick',"async function importChats(")+
+    section('$("new-btn").onclick','$("export-btn").onclick')+
+    section("const TEXT_EXT","// a file's text in the message")+
+    section("async function prepareChatContext(","// An answer that used MCP tools")+
+    section('$("restore-btn").onclick','$("input").addEventListener("keydown"'),ctx);
+  return {ctx,elements,notices,readers,stored,run:code=>vm.runInContext(code,ctx)};
+}
+async function flush(){for(let i=0;i<12;i++)await Promise.resolve();}
+
+test("optional archive preserves browser chat persistence and New chat/Undo", async()=>{
+  const h=harness();h.run("messages=[{role:'user',text:'keep original'}]");
+  assert.equal(await h.run("saveChat()"),true);
+  assert.equal(JSON.parse(h.stored.get("strata.chat"))[0].text,"keep original");
+  await h.elements["new-btn"].onclick();
+  assert.equal(h.run("messages.length"),0);
+  assert.equal(JSON.parse(h.stored.get("strata.chat")).length,0);
+  h.notices.at(-1)[4].run();
+  assert.equal(h.run("messages[0].text"),"keep original");
+});
+
+test("fallback quota failure prevents compaction, retains stored source and full current chat",async()=>{
+  const h=harness();h.run("messages=Array.from({length:8},(_,i)=>({role:i%2?'assistant':'user',text:'original '+i}))");
+  await h.run("saveChat()");const before=h.stored.get("strata.chat-archive");
+  h.ctx.localStorage.setItem=()=>{throw Error("QuotaExceededError");};
+  let summaries=0;
+  h.ctx.wireMessage=m=>[{role:m.role,content:m.text}];
+  h.ctx.contextRequest=async(path)=>{
+    if(path.includes("completions")){summaries++;throw Error("Summary must not run");}
+    return {input_tokens:950,max_context:1000,effective_max_tokens:32,context_slack:8};
+  };
+  await assert.rejects(h.run("prepareChatContext(null,true)"),/compaction was not started/);
+  assert.equal(summaries,0);assert.equal(h.run("messages.length"),8);assert.equal(h.run("chatContext"),null);
+  assert.equal(h.stored.get("strata.chat-archive"),before);
+  assert.match(h.notices[0][1],/page only/);
+  h.run('$("input").value="unsent"; attachments=[{kind:"image",name:"keep.png",url:"data:image/png;base64,AA"}]');
+  await h.elements["new-btn"].onclick();
+  assert.equal(h.run("messages.length"),8);assert.equal(h.run("attachments.length"),1);assert.equal(h.elements.input.value,"unsent");
+});
+
+test("late save cannot replace a newly selected chat and draft copy is detached",async()=>{
+  const h=harness();h.ctx.first=chat();h.run("useChat(first)");
+  let finish,snapshot;h.ctx.adapter={save:copy=>{snapshot=copy;return new Promise(resolve=>{finish=()=>resolve(copy);});}};
+  h.run('library=adapter;attachments=[{kind:"image",name:"old.png",url:"data:image/png;base64,AA"}]');
+  const saving=h.run("saveChat()");h.run('attachments[0].name="changed.png"');
+  assert.equal(snapshot.branches[0].draft.attachments[0].name,"old.png");
+  h.ctx.next=chat("second");h.run("useChat(next)");finish();await saving;
+  assert.equal(h.run("currentChat.id"),"second");assert.equal(h.run("attachments.length"),0);
+});
+
+test("old image and text read callbacks cannot enter another branch draft",()=>{
+  for(const type of ["image/png","text/plain"]){
+    const h=harness();h.ctx.files=[{name:type==='image/png'?"old.png":"old.txt",type,size:20}];
+    h.run("addFiles(files)");h.ctx.next=chat("second");h.run("useChat(next)");
+    h.readers[0].complete(type==='image/png'?"data:image/png;base64,AA":"old text");
+    assert.equal(h.run("attachments.length"),0);
+  }
+});
+
+test("rename retains branches/source and manually selected New chat title",async()=>{
+  const h=harness();const record=chat();record.source={raw:"original graph"};record.branches.push({id:"other",messages:[{role:"user",text:"inactive"}]});
+  h.ctx.record=record;h.run("useChat(record)");
+  const writes=[];h.ctx.adapter={save:async copy=>{writes.push(JSON.parse(JSON.stringify(copy)));return copy;}};
+  h.run("library=adapter");h.ctx.refreshHistory=async()=>{};
+  h.elements["rename-title"].value=" New chat ";h.elements["rename-form"].onsubmit({preventDefault(){}});await flush();
+  assert.equal(h.run("currentChat.titleManuallySet"),true);assert.equal(writes.at(-1).branches[1].messages[0].text,"inactive");
+  assert.equal(writes.at(-1).source.raw,"original graph");
+  h.run("delete currentChat.source;messages=[{role:'user',text:'must not rename automatically'}]");await h.run("saveChat()");
+  assert.equal(writes.at(-1).title,"New chat");
+});
+
+test("rename conflict and failed restore retain title and original compacted state",async()=>{
+  const h=harness();h.ctx.record=chat();h.run("useChat(record);chatContext={summary:'retained',through:0}");
+  h.ctx.adapter={save:async()=>{throw Error("newer archive retained");}};h.run("library=adapter");
+  h.elements["rename-title"].value="Different title";h.elements["rename-form"].onsubmit({preventDefault(){}});await flush();
+  assert.equal(h.run("currentChat.title"),"New chat");
+  await h.elements["restore-btn"].onclick();assert.equal(h.run("chatContext.summary"),"retained");
+});
+
+test("history rendering creates images only for local data, retaining remote URLs as inert labels",()=>{
+  const h=harness(), created=[];
+  h.ctx.document.createElement=tag=>{const element={tag,dataset:{},children:[],appendChild(child){this.children.push(child);},append(){}};created.push(element);return element;};
+  h.ctx.timeStr=()=>"synthetic time";
+  h.run(section("function safeImage(url)","function compactStatus(")+section("function msgEl(m, i)","// One MCP tool call"));
+  h.ctx.message={role:"user",text:"saved",time:1,images:[{name:"remote.png",url:"https://example.invalid/private.png"},
+    {name:"local.png",url:"data:image/png;base64,AA"}]};
+  h.run("msgEl(message,0)");
+  assert.deepEqual(created.filter(el=>el.tag==="img").map(el=>el.src),["data:image/png;base64,AA"]);
+  assert.equal(h.ctx.message.images[0].url,"https://example.invalid/private.png");
+});
+
+test("oversized full snapshots still save newer text; reload and New chat/Undo preserve latest messages",async()=>{
+  const h=harness();h.run("messages=[{role:'user',text:'initial'}]");await h.run("saveChat()");
+  const oldFull=h.stored.get("strata.chat-archive");
+  h.ctx.localStorage.setItem=(key,value)=>{if(key==="strata.chat-archive"&&value.length>1000)throw Error("QuotaExceededError");h.stored.set(key,value);};
+  h.ctx.large="data:image/png;base64,"+"A".repeat(4096);
+  h.run("messages.push({role:'user',text:'image question',images:[{name:'large.png',url:large}]},{role:'user',text:'later one'},{role:'assistant',text:'later two'})");
+  assert.equal(await h.run("saveChat()"),false);
+  assert.equal(h.stored.get("strata.chat-archive"),oldFull);
+  assert.equal(JSON.parse(h.stored.get("strata.chat")).at(-1).text,"later two");
+  assert.match(h.notices[0][1],/Text saved/);
+  assert.match(h.notices[0][2],/Attachment contents may be missing/);
+  const reloaded=h.run("restoreBrowserChat()");
+  assert.equal(reloaded.messages.length,4);assert.equal(reloaded.messages[2].text,"later one");
+  assert.equal(reloaded.messages[1].images[0].name,"large.png");assert.equal(reloaded.messages[1].images[0].url,undefined);
+  assert.equal(reloaded.context,null);
+  await h.elements["new-btn"].onclick();assert.equal(h.run("messages.length"),0);
+  h.notices.at(-1)[4].run();await flush();
+  assert.equal(h.run("messages[1].images[0].url"),h.ctx.large);
+  assert.equal(h.run("restoreBrowserChat().messages.at(-1).text"),"later two");
+});
+
+test("independent full save stays reloadable when the stripped text key cannot be written",async()=>{
+  const h=harness();h.run("messages=[{role:'user',text:'old'}]");await h.run("saveChat()");
+  const oldText=h.stored.get("strata.chat");
+  h.ctx.localStorage.setItem=(key,value)=>{if(key==="strata.chat")throw Error("text key unavailable");h.stored.set(key,value);};
+  h.run("messages.push({role:'assistant',text:'new full copy'})");
+  assert.equal(await h.run("saveChat()"),true);assert.equal(h.stored.get("strata.chat"),oldText);
+  assert.equal(h.run("restoreBrowserChat().messages.at(-1).text"),"new full copy");
+});
+
+test("browser-only startup clears old legacy route gate, while configured archive keeps unresolved link gated",async()=>{
+  for(const configured of [false,true]){
+    const h=harness();h.run("requestedLegacyId='old';legacyRouteResolved=false;historyBusy=true");
+    h.ctx.StrataChatLibrary=configured?{open:async()=>({seedLegacy:async()=>{}})}:require("../serve/web/chat-library.js");
+    if(configured){
+      h.ctx.fixture=chat("available");h.run("async function refreshHistory(){chatList=[fixture];return {sessions:chatList,activeId:'available'};}");
+    } else h.ctx.fetch=async()=>({status:503,ok:false,json:async()=>({error:{message:"configure chat_archive_path to enable durable chat history"}})});
+    h.run(section("async function initializeHistory()","async function historyAction(")+section("function setBusy(on)","async function send()"));
+    await h.run("initializeHistory()");
+    assert.equal(h.run("legacyRouteResolved"),!configured);
+    assert.equal(h.elements.input.disabled,configured);assert.equal(h.elements["send-btn"].disabled,configured);
+    if(!configured){
+      h.run("messages=[{role:'user',text:'still usable'}];legacyRouteResolved=false");
+      await h.elements["new-btn"].onclick();
+      assert.equal(h.run("legacyRouteResolved"),true);assert.equal(h.elements.input.disabled,false);assert.equal(h.elements["send-btn"].disabled,false);
+    }
+  }
+});
+
+test("migrated name-only media remains visible and continuation omits unknown image bytes",()=>{
+  const h=harness(),created=[];
+  h.ctx.document.createElement=tag=>{const element={tag,dataset:{},children:[],labels:[],appendChild(child){this.children.push(child);},append(...items){this.labels.push(...items);}};created.push(element);return element;};
+  h.ctx.timeStr=()=>"synthetic time";
+  h.run(section("function safeImage(url)","function compactStatus(")+section("function msgEl(m, i)","// One MCP tool call")+
+    section("function fileBlock(f)","function renderAttachments(")+section("function wireMessage(m)","function apiMessages()"));
+  for(const normalized of [false,true]){
+    h.ctx.message={role:"user",text:"Continue this conversation",time:1,
+      images:[normalized?{name:"screen.png",url:"",legacyContentUnavailable:true}:{name:"screen.png"}],
+      files:[normalized?{name:"notes.txt",text:"",legacyContentUnavailable:true}:{name:"notes.txt"}]};
+    const wire=h.run("wireMessage(message)");
+    assert.equal(wire.length,1);assert.equal(typeof wire[0].content,"string");assert.match(wire[0].content,/Continue this conversation/);
+    if(normalized)assert.match(wire[0].content,/notes.txt.*\n\[Content unavailable/);
+    h.run("msgEl(message,0)");
+  }
+  assert.equal(created.filter(el=>el.tag==="img").length,0);
+  assert.ok(created.some(el=>el.labels.includes("screen.png (content unavailable)")));
+  assert.ok(created.some(el=>el.labels.includes("notes.txt (content unavailable)")));
+});

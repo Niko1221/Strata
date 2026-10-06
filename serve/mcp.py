@@ -500,6 +500,20 @@ class McpHub:
         self.threads: list[threading.Thread] = []
         self._routes: dict[str, tuple[McpServer, str]] = {}
 
+    def register_builtin(self, provider) -> str:
+        """Attach an in-process provider without replacing a configured server."""
+        if any(server is provider for server in self.servers.values()):
+            raise ValueError("provider is already registered")
+        base = _clean(provider.name)[:48]
+        occupied = {_clean(server.name) for server in self.servers.values()}
+        name, suffix = base, 2
+        while name in occupied or name in self.servers:
+            name, suffix = f"{base}_{suffix}", suffix + 1
+        provider.name = name
+        self.servers[name] = provider
+        self._routes = {}
+        return name
+
     def start(self, wait: bool = False):
         """Start every server on its own thread (npx may download a package first: that must not delay the chat)."""
         self.threads = [threading.Thread(target=s.start, daemon=True, name=f"mcp-{s.name}")
