@@ -34,7 +34,8 @@ malicious engine, the digest matches it.  A hash PINNED IN THE REPO - which is w
 for the Unsloth shards, and what a reviewer asked for - is stronger, because a compromised release cannot
 change it; it costs a reviewed commit per release.  What this buys is everything the digest is good for:
 a corrupted transfer, a substituted or mirrored download, a TLS-terminating proxy, a hostile network.
-``get_prebuilt()`` has no check at all today, so this is strictly more than the install path does.
+``get_prebuilt()`` checks the same way on the install path (#1218); before that it checked nothing at all,
+so a release asset there was installed on its length alone.
 
 WHAT IT DOES NOT DO.  It does not touch the Python checkout, the pinned packages, the model, or the
 packs.  Those are a ``git pull`` and a ``pip install -r``; rewriting the code this server is running

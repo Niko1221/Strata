@@ -533,8 +533,8 @@ engine is older than its own tag names.
 
 What the hash does *not* do: it proves the bytes are the ones GitHub published for that asset. It does not
 make a malicious release safe — a hash pinned in the repo, as `setup.py` does for the Unsloth shards, is
-stronger, and costs a reviewed commit per release. `get_prebuilt()` has no check at all today, so this is
-strictly more than the install path does.
+stronger, and costs a reviewed commit per release. The install path's `get_prebuilt()` checks the same way
+(#1218); before that it checked nothing at all, so a release asset was installed on its length alone.
 
 Measured here on a GTX 1070 (compute capability 6.1, `STRATA_EXPERIMENTAL_SM60` CUDA 12.9 build) against the real
 v0.1.40.1 release: the CUDA 12 asset (190,241,259 bytes) was chosen because the installed engine's `BUILD.json`
