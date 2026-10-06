@@ -249,6 +249,10 @@ class EngineDied(RuntimeError):
     """The engine process ended in the middle of a request (issue #27: on Linux, the out-of-memory killer)."""
 
 
+class EngineRequestError(ValueError):
+    """The engine ended this command with ERR instead of DONE / BADM; there is nothing left to drain."""
+
+
 class EngineStarting(RuntimeError):
     """The engine is (re)starting and has not said READY yet (#344): no context size to plan a request with - a 503,
     not a 400 about the prompt."""
@@ -947,7 +951,7 @@ class StrataEngine:
                 if len(f) >= 3 and f[1].lstrip("-").isdigit() and f[2].isdigit():
                     self._yielded = (int(f[1]), int(f[2]))
             elif line.startswith("ERR"):
-                raise ValueError(line[4:].strip())
+                raise EngineRequestError(line[4:].strip())
             if line.startswith("DONE") and self._ctl_mode == "solo":
                 self._ctl_result = ("done", None)
                 return
@@ -1258,6 +1262,11 @@ class StrataEngine:
                             btrace("back to the solo path")
                             break
                         return
+        except EngineRequestError:
+            # #1059: a native ERR has ended this command.  Waiting for its nonexistent DONE / BADM held the
+            # control lock for 300 s.  Other ValueErrors (malformed protocol lines) still need the cleanup below.
+            phase = "none"
+            raise
         finally:
             # a consumer that left early (or an error): keep the engine and this server in step
             btrace("finally phase", phase, "slot", slot, "holding", holding)
