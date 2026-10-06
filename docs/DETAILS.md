@@ -974,11 +974,9 @@ them. Only the prompt: for the output parser and in the response the request's t
 one entry, replaced by each such prompt; a compaction of another conversation, a request without that metadata (Codex
 before 0.140) or a restart renders the request as sent, as before. A thread-title turn (`thread_source` `thread_title`,
 a different session Codex sends next to the user turn, with `tools: []`) is not stored as that conversation's last
-prompt. Measured with Codex CLI 0.160.0, the server's own tokenizer and an engine that only counts the prompt start it
-shares with the previous prompt: a compaction after an 85,000-token conversation reused 84,895 of its 84,997 tokens and
-read 102; without this it reused 41 of 80,683 and read the rest again (about 6 minutes at the ~209 tokens/s an RTX 2080
-Ti reads a long prompt with IQ3_XXS). On that card an earlier build that rendered the same prompt read a 225,970-token
-compaction as 225,806 reused + 164 read in 5.6 s.
+prompt. Measured on an RTX 2080 Ti with Qwen3.8-Flash-Next-IQ3_XXS and Codex-shaped requests: a compaction after a
+12,880-token conversation reused 12,875 of 12,976 tokens and completed in 3 s; without this it reused 0 of 10,789
+tokens and read the prompt again from the start in 48 s.
 
 ## Tools from MCP servers
 
