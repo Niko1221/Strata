@@ -179,6 +179,11 @@ void dot_rows(const uint8_t* w, size_t row_bytes, int n, const void* const* act,
 template <int TY> STRATA_ROWS_FN
 void gu_rows_nt(int nt, const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act,
                 float* const* ff, int r0, int r1) {
+    if (nt > 8) {
+        for (int first = 0; first < nt; first += 8)
+            gu_rows_nt<TY>(std::min(8, nt - first), blob, gu_row, up_off, n, act + first, ff + first, r0, r1);
+        return;
+    }
     switch (nt) {
         case 1: gu_rows<TY, 1>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
         case 2: gu_rows<TY, 2>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
