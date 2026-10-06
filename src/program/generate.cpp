@@ -9046,6 +9046,8 @@ int main(int argc, char** argv) {
             }
             std::vector<int64_t> force_rows(16, 0);   // windows by rows
             int64_t force_windows = 0, force_acc = 0, force_off = 0, force_over = 0;
+            // the last forced window's rows: the target's own picks and the forced ids that replaced them
+            std::vector<int32_t> force_orig(64, -1), force_val(64, -1);
             static std::FILE* force_trace = [] {
                 const char* v = std::getenv("STRATA_FORCE_TRACE");
                 return v != nullptr && v[0] != 0 ? std::fopen(v, "a") : nullptr;
@@ -9055,13 +9057,18 @@ int main(int argc, char** argv) {
             auto force_rows_out = [&](int32_t* out, int T, int64_t at) {
                 if (forced == nullptr) return;
                 for (int i = 0; i < T; ++i) {
+                    force_orig[(size_t) i] = force_val[(size_t) i] = -1;
                     const int64_t k = at + i;
                     if (k >= (int64_t) forced->size()) break;
-                    if (out[i] != (*forced)[(size_t) k]) ++force_over;
+                    force_orig[(size_t) i] = out[i];
+                    force_val[(size_t) i] = (*forced)[(size_t) k];
                     out[i] = (*forced)[(size_t) k];
                 }
             };
             auto force_note = [&](int64_t pos, int T, int acc, const int32_t* rows) {
+                if (forced != nullptr)   // a verified row (on the forced path) where the target picked another id
+                    for (int i = 0; i <= acc && i < T; ++i)
+                        if (force_val[(size_t) i] >= 0 && force_orig[(size_t) i] != force_val[(size_t) i]) ++force_over;
                 force_rows[(size_t) std::min<int>(T, 15)] += 1;
                 ++force_windows;
                 force_acc += acc;
@@ -9872,7 +9879,7 @@ int main(int argc, char** argv) {
                         h += hb;
                     }
                 std::fprintf(stderr, "strata work: request %lld%s, %lld windows, rows/window%s, accepted %lld of %lld drafts, "
-                                     "%lld tokens; target picks replaced %lld\n", (long long) force_k,
+                                     "%lld tokens; target picks replaced on verified rows %lld\n", (long long) force_k,
                              forced != nullptr ? " (forced)" : "", (long long) force_windows, h.c_str(),
                              (long long) force_acc, (long long) force_off, (long long) produced_n, (long long) force_over);
                 if (force_trace != nullptr) std::fflush(force_trace);
