@@ -1,0 +1,505 @@
+{
+  "schema": 1,
+  "suite": "vmad-correctness-v1",
+  "completed_utc": "2026-10-06T23:19:10Z",
+  "scope": "Pinned v0.1.39 diagnostic twins; first verifier window row zero only, not every generated position. No current-main engine correctness or performance claim.",
+  "model": "Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS",
+  "runtime": {
+    "context": 131072,
+    "kv": "int8",
+    "spec": 4,
+    "layer_split": "25/23",
+    "prompt_cache": 0,
+    "fresh_process_per_case_arm": true,
+    "warmup": false,
+    "max_tokens": 128,
+    "greedy": {
+      "temperature": 0,
+      "seed": 12345
+    },
+    "gpu_resident_context": 32768
+  },
+  "original_performance": {
+    "source_commits": {
+      "control": "6f32ec070f23ced9f50e704d854d775da52591ab",
+      "candidate": "2d17ce0baa8fa3ace94fe78359f5b80d5630457c"
+    },
+    "engine_sha256": {
+      "candidate": "4b84e10d9499caad0e317c1d4ec93f7dddb123a92121de46f94ad02102344a21",
+      "control": "d6f9535ce0e111605f85f39df132835d3b03fdd177b517f8694725c7a5dcb31e"
+    },
+    "unchanged_by_diagnostic_build": true
+  },
+  "diagnostic_twins": {
+    "source_commits": {
+      "control": "4e8cbb282a07862e313083a107229bc3765893e3",
+      "candidate": "86a8f5e1a1f34d5f2193c3be6bc2c0395b175e89"
+    },
+    "observed_engine_sha256": {
+      "control": "d134284dc79369f1ac6c2dcbb60dcbdf4082af795391bb437450331f85b6643a",
+      "candidate": "f6ea9ac78dc68f64d53072a056da279eb042d5042426feceba3f3143205c66fb"
+    },
+    "common_patch_path": "src/program/generate.cpp",
+    "common_patch_sha256": "6a84ade5b3b250e925a5e4d4a64051ef9cfbabd800667db47b35551a22c5223f",
+    "generate_cpp_sha256": "6e3efb9ad24237d1caad2b621f0034dfd30b8cfd5b9a4e8fabbce85412fb4fcd",
+    "compiled_source_difference": [
+      "include/strata/kernels/dp4a.hpp"
+    ],
+    "build": "Recompiled generate.cpp and relinked each original arm library set; original flags, libraries and performance binaries retained and hash-checked."
+  },
+  "pins": {
+    "correctness_corpus_sha256": "37b12311912a3a2da3f26c4272d857076d2cfe6d3137b0a33dde4eb09fa398f3",
+    "target_gguf_hashes": {
+      "IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf": "92cee27ae5bbadcd732416a0f7a7f0acc092399dbbe8f5a5efa707c2ec0a49d7",
+      "IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"
+    },
+    "upstream_lock_sha256": "38f977179c2ee5f252070efb5e8fded933a7921872ff44a491d5a165bfe14824",
+    "mtp_manifest_sha256": "1ad281ed87ad9cd42f9c048e9c49172165ea714a600d15f1d80cd0a02db12328"
+  },
+  "summary": {
+    "case_pairs": 8,
+    "arm_requests": 16,
+    "text_reasoning_usage_finish_equal_pairs": 8,
+    "first_position_logits": {
+      "scope": "first verifier window, row zero only; raw float32, complete target vocabulary",
+      "bitwise_equal_pairs": 8,
+      "vocabulary_entries_per_arm_case": 248320,
+      "max_abs_difference": 0.0
+    },
+    "teacher_forced_prompt_logprobs": {
+      "scope": "eligible teacher-forced prompt windows only; not generated positions",
+      "measured_pairs": 7,
+      "rows_per_arm": 223,
+      "token_ids_and_serialized_scores_equal": true,
+      "max_abs_score_delta": 0.0,
+      "score_precision": {
+        "primary_fields": 9,
+        "topk_scores": 6
+      },
+      "unmeasured_cases": {
+        "retrieval_long": "no eligible teacher-forced prompt windows"
+      }
+    },
+    "quality_fixtures": {
+      "passes_per_arm": {
+        "control": 8,
+        "candidate": 8
+      },
+      "scope": "Eight declared output smoke fixtures, evaluated separately from parity; not a general or unquantized model-quality evaluation."
+    }
+  },
+  "cases": [
+    {
+      "id": "math_product",
+      "actual_usage_per_arm": {
+        "prompt_tokens": 28,
+        "completion_tokens": 4,
+        "total_tokens": 32
+      },
+      "text_reasoning_usage_finish_equal": true,
+      "content": "437",
+      "first_position_logits": {
+        "bitwise_equal": true,
+        "vocab_size": 248320,
+        "max_abs_difference": 0.0,
+        "pass": true
+      },
+      "teacher_forced_prompt_logprobs": {
+        "measured": true,
+        "pass": true,
+        "control_rows": 27,
+        "candidate_rows": 27,
+        "max_abs_score_delta": 0.0,
+        "tolerance": 2e-06,
+        "score_precision": "primary score fields serialize to nine decimals; top-k scores to six"
+      },
+      "quality_fixtures": {
+        "control": {
+          "pass": true,
+          "kind": "exact_trimmed"
+        },
+        "candidate": {
+          "pass": true,
+          "kind": "exact_trimmed"
+        }
+      },
+      "observed_arms": {
+        "control": {
+          "engine_sha256": "d134284dc79369f1ac6c2dcbb60dcbdf4082af795391bb437450331f85b6643a",
+          "first_logits_sha256": "b38c5508df3fb3140ef2e3556fc77f05e4af056f7528affe1c73bb20a14086b2",
+          "first_logits_values": 248320,
+          "teacher_forced_prompt_rows": 27
+        },
+        "candidate": {
+          "engine_sha256": "f6ea9ac78dc68f64d53072a056da279eb042d5042426feceba3f3143205c66fb",
+          "first_logits_sha256": "b38c5508df3fb3140ef2e3556fc77f05e4af056f7528affe1c73bb20a14086b2",
+          "first_logits_values": 248320,
+          "teacher_forced_prompt_rows": 27
+        }
+      }
+    },
+    {
+      "id": "math_sum",
+      "actual_usage_per_arm": {
+        "prompt_tokens": 36,
+        "completion_tokens": 5,
+        "total_tokens": 41
+      },
+      "text_reasoning_usage_finish_equal": true,
+      "content": "5050",
+      "first_position_logits": {
+        "bitwise_equal": true,
+        "vocab_size": 248320,
+        "max_abs_difference": 0.0,
+        "pass": true
+      },
+      "teacher_forced_prompt_logprobs": {
+        "measured": true,
+        "pass": true,
+        "control_rows": 35,
+        "candidate_rows": 35,
+        "max_abs_score_delta": 0.0,
+        "tolerance": 2e-06,
+        "score_precision": "primary score fields serialize to nine decimals; top-k scores to six"
+      },
+      "quality_fixtures": {
+        "control": {
+          "pass": true,
+          "kind": "exact_trimmed"
+        },
+        "candidate": {
+          "pass": true,
+          "kind": "exact_trimmed"
+        }
+      },
+      "observed_arms": {
+        "control": {
+          "engine_sha256": "d134284dc79369f1ac6c2dcbb60dcbdf4082af795391bb437450331f85b6643a",
+          "first_logits_sha256": "1e8d157927e00b207d5eaf87d5554dd02d6f5f1e5513e26c8b89763c8ba75688",
+          "first_logits_values": 248320,
+          "teacher_forced_prompt_rows": 35
+        },
+        "candidate": {
+          "engine_sha256": "f6ea9ac78dc68f64d53072a056da279eb042d5042426feceba3f3143205c66fb",
+          "first_logits_sha256": "1e8d157927e00b207d5eaf87d5554dd02d6f5f1e5513e26c8b89763c8ba75688",
+          "first_logits_values": 248320,
+          "teacher_forced_prompt_rows": 35
+        }
+      }
+    },
+    {
+      "id": "code_python",
+      "actual_usage_per_arm": {
+        "prompt_tokens": 37,
+        "completion_tokens": 21,
+        "total_tokens": 58
+      },
+      "text_reasoning_usage_finish_equal": true,
+      "content": "```python\ndef is_even(n):\n    return n % 2 == 0\n```",
+      "first_position_logits": {
+        "bitwise_equal": true,
+        "vocab_size": 248320,
+        "max_abs_difference": 0.0,
+        "pass": true
+      },
+      "teacher_forced_prompt_logprobs": {
+        "measured": true,
+        "pass": true,
+        "control_rows": 36,
+        "candidate_rows": 36,
+        "max_abs_score_delta": 0.0,
+        "tolerance": 2e-06,
+        "score_precision": "primary score fields serialize to nine decimals; top-k scores to six"
+      },
+      "quality_fixtures": {
+        "control": {
+          "pass": true,
+          "kind": "contains_all"
+        },
+        "candidate": {
+          "pass": true,
+          "kind": "contains_all"
+        }
+      },
+      "observed_arms": {
+        "control": {
+          "engine_sha256": "d134284dc79369f1ac6c2dcbb60dcbdf4082af795391bb437450331f85b6643a",
+          "first_logits_sha256": "3a97eb3d85b6a7170a6926c7b7c52b8640c79f78cb5e7e146841bae77e65a1d9",
+          "first_logits_values": 248320,
+          "teacher_forced_prompt_rows": 36
+        },
+        "candidate": {
+          "engine_sha256": "f6ea9ac78dc68f64d53072a056da279eb042d5042426feceba3f3143205c66fb",
+          "first_logits_sha256": "3a97eb3d85b6a7170a6926c7b7c52b8640c79f78cb5e7e146841bae77e65a1d9",
+          "first_logits_values": 248320,
+          "teacher_forced_prompt_rows": 36
+        }
+      }
+    },
+    {
+      "id": "structured_json",
+      "actual_usage_per_arm": {
+        "prompt_tokens": 37,
+        "completion_tokens": 18,
+        "total_tokens": 55
+      },
+      "text_reasoning_usage_finish_equal": true,
+      "content": "{\"city\": \"Paris\", \"count\": 3, \"ready\": true}",
+      "first_position_logits": {
+        "bitwise_equal": true,
+        "vocab_size": 248320,
+        "max_abs_difference": 0.0,
+        "pass": true
+      },
+      "teacher_forced_prompt_logprobs": {
+        "measured": true,
+        "pass": true,
+        "control_rows": 36,
+        "candidate_rows": 36,
+        "max_abs_score_delta": 0.0,
+        "tolerance": 2e-06,
+        "score_precision": "primary score fields serialize to nine decimals; top-k scores to six"
+      },
+      "quality_fixtures": {
+        "control": {
+          "pass": true,
+          "kind": "json_fields"
+        },
+        "candidate": {
+          "pass": true,
+          "kind": "json_fields"
+        }
+      },
+      "observed_arms": {
+        "control": {
+          "engine_sha256": "d134284dc79369f1ac6c2dcbb60dcbdf4082af795391bb437450331f85b6643a",
+          "first_logits_sha256": "be13f22debe0000bfc2d8c07ee604fd6e95e8c746ab8377fa1b848562bd01251",
+          "first_logits_values": 248320,
+          "teacher_forced_prompt_rows": 36
+        },
+        "candidate": {
+          "engine_sha256": "f6ea9ac78dc68f64d53072a056da279eb042d5042426feceba3f3143205c66fb",
+          "first_logits_sha256": "be13f22debe0000bfc2d8c07ee604fd6e95e8c746ab8377fa1b848562bd01251",
+          "first_logits_values": 248320,
+          "teacher_forced_prompt_rows": 36
+        }
+      }
+    },
+    {
+      "id": "multilingual_spanish",
+      "actual_usage_per_arm": {
+        "prompt_tokens": 30,
+        "completion_tokens": 9,
+        "total_tokens": 39
+      },
+      "text_reasoning_usage_finish_equal": true,
+      "content": "Buenos días, estoy listo.",
+      "first_position_logits": {
+        "bitwise_equal": true,
+        "vocab_size": 248320,
+        "max_abs_difference": 0.0,
+        "pass": true
+      },
+      "teacher_forced_prompt_logprobs": {
+        "measured": true,
+        "pass": true,
+        "control_rows": 29,
+        "candidate_rows": 29,
+        "max_abs_score_delta": 0.0,
+        "tolerance": 2e-06,
+        "score_precision": "primary score fields serialize to nine decimals; top-k scores to six"
+      },
+      "quality_fixtures": {
+        "control": {
+          "pass": true,
+          "kind": "contains"
+        },
+        "candidate": {
+          "pass": true,
+          "kind": "contains"
+        }
+      },
+      "observed_arms": {
+        "control": {
+          "engine_sha256": "d134284dc79369f1ac6c2dcbb60dcbdf4082af795391bb437450331f85b6643a",
+          "first_logits_sha256": "67629a04728ee12e07db7c5a8bde3000bc634b1fcc915afeed1da6b75627f7ca",
+          "first_logits_values": 248320,
+          "teacher_forced_prompt_rows": 29
+        },
+        "candidate": {
+          "engine_sha256": "f6ea9ac78dc68f64d53072a056da279eb042d5042426feceba3f3143205c66fb",
+          "first_logits_sha256": "67629a04728ee12e07db7c5a8bde3000bc634b1fcc915afeed1da6b75627f7ca",
+          "first_logits_values": 248320,
+          "teacher_forced_prompt_rows": 29
+        }
+      }
+    },
+    {
+      "id": "multilingual_japanese",
+      "actual_usage_per_arm": {
+        "prompt_tokens": 28,
+        "completion_tokens": 3,
+        "total_tokens": 31
+      },
+      "text_reasoning_usage_finish_equal": true,
+      "content": "Thank you",
+      "first_position_logits": {
+        "bitwise_equal": true,
+        "vocab_size": 248320,
+        "max_abs_difference": 0.0,
+        "pass": true
+      },
+      "teacher_forced_prompt_logprobs": {
+        "measured": true,
+        "pass": true,
+        "control_rows": 27,
+        "candidate_rows": 27,
+        "max_abs_score_delta": 0.0,
+        "tolerance": 2e-06,
+        "score_precision": "primary score fields serialize to nine decimals; top-k scores to six"
+      },
+      "quality_fixtures": {
+        "control": {
+          "pass": true,
+          "kind": "contains"
+        },
+        "candidate": {
+          "pass": true,
+          "kind": "contains"
+        }
+      },
+      "observed_arms": {
+        "control": {
+          "engine_sha256": "d134284dc79369f1ac6c2dcbb60dcbdf4082af795391bb437450331f85b6643a",
+          "first_logits_sha256": "338296b8748acd9ef3e22184b9f6a39a08078d580350f4c583cfcf1fdbeccdae",
+          "first_logits_values": 248320,
+          "teacher_forced_prompt_rows": 27
+        },
+        "candidate": {
+          "engine_sha256": "f6ea9ac78dc68f64d53072a056da279eb042d5042426feceba3f3143205c66fb",
+          "first_logits_sha256": "338296b8748acd9ef3e22184b9f6a39a08078d580350f4c583cfcf1fdbeccdae",
+          "first_logits_values": 248320,
+          "teacher_forced_prompt_rows": 27
+        }
+      }
+    },
+    {
+      "id": "retrieval_long",
+      "actual_usage_per_arm": {
+        "prompt_tokens": 4214,
+        "completion_tokens": 13,
+        "total_tokens": 4227
+      },
+      "text_reasoning_usage_finish_equal": true,
+      "content": "K7M4-Q2VX-91PA",
+      "first_position_logits": {
+        "bitwise_equal": true,
+        "vocab_size": 248320,
+        "max_abs_difference": 0.0,
+        "pass": true
+      },
+      "teacher_forced_prompt_logprobs": {
+        "measured": false,
+        "reason": "no eligible teacher-forced prompt windows"
+      },
+      "quality_fixtures": {
+        "control": {
+          "pass": true,
+          "kind": "exact_trimmed"
+        },
+        "candidate": {
+          "pass": true,
+          "kind": "exact_trimmed"
+        }
+      },
+      "observed_arms": {
+        "control": {
+          "engine_sha256": "d134284dc79369f1ac6c2dcbb60dcbdf4082af795391bb437450331f85b6643a",
+          "first_logits_sha256": "d4b4da3097527c120af105d82942bc0fe90f3bd6ea2c2cddc3b3fa3fc38a7481",
+          "first_logits_values": 248320,
+          "teacher_forced_prompt_rows": 0
+        },
+        "candidate": {
+          "engine_sha256": "f6ea9ac78dc68f64d53072a056da279eb042d5042426feceba3f3143205c66fb",
+          "first_logits_sha256": "d4b4da3097527c120af105d82942bc0fe90f3bd6ea2c2cddc3b3fa3fc38a7481",
+          "first_logits_values": 248320,
+          "teacher_forced_prompt_rows": 0
+        }
+      }
+    },
+    {
+      "id": "structured_ordering",
+      "actual_usage_per_arm": {
+        "prompt_tokens": 34,
+        "completion_tokens": 9,
+        "total_tokens": 43
+      },
+      "text_reasoning_usage_finish_equal": true,
+      "content": "apple, birch, cedar, date",
+      "first_position_logits": {
+        "bitwise_equal": true,
+        "vocab_size": 248320,
+        "max_abs_difference": 0.0,
+        "pass": true
+      },
+      "teacher_forced_prompt_logprobs": {
+        "measured": true,
+        "pass": true,
+        "control_rows": 33,
+        "candidate_rows": 33,
+        "max_abs_score_delta": 0.0,
+        "tolerance": 2e-06,
+        "score_precision": "primary score fields serialize to nine decimals; top-k scores to six"
+      },
+      "quality_fixtures": {
+        "control": {
+          "pass": true,
+          "kind": "contains"
+        },
+        "candidate": {
+          "pass": true,
+          "kind": "contains"
+        }
+      },
+      "observed_arms": {
+        "control": {
+          "engine_sha256": "d134284dc79369f1ac6c2dcbb60dcbdf4082af795391bb437450331f85b6643a",
+          "first_logits_sha256": "77ac449b95d786a1c8c12505d5c5e342d52519c9301d76e25e3c85677071aee0",
+          "first_logits_values": 248320,
+          "teacher_forced_prompt_rows": 33
+        },
+        "candidate": {
+          "engine_sha256": "f6ea9ac78dc68f64d53072a056da279eb042d5042426feceba3f3143205c66fb",
+          "first_logits_sha256": "77ac449b95d786a1c8c12505d5c5e342d52519c9301d76e25e3c85677071aee0",
+          "first_logits_values": 248320,
+          "teacher_forced_prompt_rows": 33
+        }
+      }
+    }
+  ],
+  "archives": {
+    "raw_results": {
+      "filename": "vmad-correctness-twins-20261006.tar.gz",
+      "sha256": "b37f3b85ad79bbaa781c404e6f0e578340fb8248cec74a5e8b81f4389bfe8eb1",
+      "result_path": "p100-experiments/vmad-native/engine-ab/correctness/20261006T231008Z"
+    },
+    "diagnostic_source_build_provenance": {
+      "filename": "vmad-diagnostic-twins-20261006.tar.gz",
+      "sha256": "768b8f4b29dd7aed1d473938a61f2cdfeea1487778020f589facde0f481f456c"
+    }
+  },
+  "collection_harness_commit": "585340b",
+  "completion_restore": {
+    "collector_exit_code": 0,
+    "restore_exit_code": 0,
+    "loaded_context": 131072,
+    "baseline_engine_sha256": "c3271293adc280a847013aa7c87eeb8a8996c6b95258a78f11a049f7c6215f5c",
+    "requested_enforced_power_w_per_gpu": 200,
+    "experimental_port_free": true,
+    "scope": "Recorded at suite completion, before later engine selection."
+  },
+  "rejected_attempt": {
+    "reason": "Original binaries did not emit the required first-logits dump; rejected without a parity result. Identical opt-in serve-path instrumentation was then applied to both arms.",
+    "archive_sha256": "6220e5338f6e161eecfab9f527e607ffdfadf09231e884b58c3c9700e099ef13"
+  }
+}
