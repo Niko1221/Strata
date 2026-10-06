@@ -262,6 +262,7 @@ class Updater:
     staging: Path | None = None           # set by _do_stage, cleared when the run ends
     backup: Path | None = None            # set by _do_backup; what a rollback restores from
     _changed: bool = False                         # has anything on disk been replaced yet?
+    _placed: list = field(default_factory=list)   # files this run has put in place, for the restore
 
     def __post_init__(self):
         self.engine_exe = Path(self.engine_exe)
@@ -468,6 +469,7 @@ class Updater:
         self.state = "running"
 
         self.staging = self.backup = None
+        self._placed.clear()
         try:
             for key, label in STEPS:
                 self._step(key, label, "active")
@@ -514,19 +516,37 @@ class Updater:
         return self.state_dict()
 
     def _clean_workspace(self):
-        """Remove the staging tree, the downloaded archive and any partial download.
+        """Remove the staging tree, the assembled `new-` tree, the downloaded archive and any partial
+        download.
 
         Never touches a backup-<...> directory - that is the only way back, on success and on failure
-        alike.  The archive is 124 MB and the staging tree another 221 MB, and a machine where setup.py
-        has also run accumulates them; a release URL is stable for its tag, so re-running downloads it
-        again and keeping it only grows the engine directory's parent.
+        alike.  The archive is ~130-190 MB and each of the two trees about as much again, and a machine
+        where setup.py has also run accumulates them; a release URL is stable for its tag, so re-running
+        downloads it again and keeping it only grows the engine directory's parent.
+
+        The staging tree can be locked at this point, and that is not hypothetical: step 6 EXECUTES
+        strata.exe out of it, and on Windows the child process can still hold the file a moment after it
+        exits.  Measured - a live update left its whole 190 MB staging tree behind, because rmtree failed
+        on the still-open binary and `ignore_errors=True` swallowed it, so every update would leak it.
+        So: retry for a short while, and if something still will not go, say so in the state instead of
+        quietly leaving it.
         """
-        for path in list(self.root.glob("stage-*")) + list(self.root.glob("*.zip")) + \
-                list(self.root.glob("*.part")):
-            if path.is_dir():
-                shutil.rmtree(path, ignore_errors=True)
-            else:
-                path.unlink(missing_ok=True)
+        left = []
+        for path in list(self.root.glob("stage-*")) + list(self.root.glob("new-*")) + \
+                list(self.root.glob("*.zip")) + list(self.root.glob("*.part")):
+            for attempt in range(6):
+                if not path.exists():
+                    break
+                if path.is_dir():
+                    shutil.rmtree(path, ignore_errors=True)
+                else:
+                    path.unlink(missing_ok=True)
+                if path.exists() and attempt < 5:
+                    time.sleep(0.4 * (attempt + 1))     # the child is usually closing by now
+            if path.exists():
+                left.append(path.name)
+        if left:
+            self._put(left_behind=left)
 
     # ---- the individual checks ---------------------------------------------------------------------
 
@@ -607,8 +627,7 @@ class Updater:
         return self.backup.name
 
     def _do_apply(self) -> str:
-        self._apply(self.staging)
-        self._changed = True
+        self._apply(self.staging)      # _changed and _placed are armed inside it, before the swap
         return "replaced"
 
     def _do_verify(self) -> str:
@@ -757,22 +776,49 @@ class Updater:
         return dest
 
     def _apply(self, staging: Path):
-        """Copy the staged files over the installed ones.
+        """Install the new engine: all or nothing.
 
-        Kept deliberately simple - copy, do not move - so the backup remains the only thing that can
-        undo this, and so a crash halfway leaves files that are either old or new rather than absent.
+        Two things this has to get right, and the first version got neither:
+
+        1. **Nothing installed is touched until every new file is ready.** The staged files are copied
+           into a `new-...` directory beside the engine first, so a failure while assembling them -
+           a full disk, a locked file - costs nothing.
+        2. **A failure part way through the swap restores everything.** Each file lands atomically, via
+           a `.new` temporary and `os.replace`, so no file is ever half-written; and the restore is armed
+           BEFORE the first destructive step rather than after the last one. Arming it after - which is
+           what this did - means a failure on the third of nine files leaves a directory holding a mixture
+           of two engines and no attempt to put it right, which is the one outcome an update must never
+           produce. setup.py's own replace does the same thing (it keeps `engine/.previous` and moves
+           files back on OSError); the difference here is that the backup is made first, so the restore
+           does not depend on the swap having been tidy.
 
         The executable bit is carried across explicitly: zipfile does not preserve it on Linux, and an
         engine that loses it will not start after the update, which would look like a bad release.
         """
-        for src in staging.rglob("*"):
+        incoming = Path(tempfile.mkdtemp(prefix="new-", dir=str(self.root)))
+        files: list[Path] = []
+        for src in sorted(staging.rglob("*")):
             if not src.is_file():
                 continue
-            dst = self.engine_dir / src.relative_to(staging)
+            dst = incoming / src.relative_to(staging)
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst)
-            if os.name != "nt" and src.suffix != ".json" and not src.suffix:
-                dst.chmod(src.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            files.append(dst)
+        if not files:
+            raise UpdateError("the archive held no files to install; nothing was changed")
+
+        # Armed here, on purpose: from this line on the install can be half-written, so a failure must
+        # restore it. Anything earlier fails with the install untouched and needs no restore.
+        self._changed = True
+        for src in files:
+            dst = self.engine_dir / src.relative_to(incoming)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            tmp = dst.with_name(dst.name + ".new")
+            shutil.copy2(src, tmp)
+            if os.name != "nt" and not dst.suffix:
+                tmp.chmod(src.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            os.replace(tmp, dst)      # atomic: dst is the old file or the new one, never a mixture
+            self._placed.append(dst)
 
     def _verify(self, tag: str):
         """The installed BUILD.json is the engine's own report of what it is; check it, and that the
@@ -792,10 +838,20 @@ class Updater:
         self._put(verified_version=got)
 
     def rollback(self, backup: Path | None) -> Path:
+        """Put the installed files back from `backup`, leaving the install whole.
+
+        The backup holds every file that was in the engine directory, so restoring all of them undoes a
+        swap that stopped half way - not just the files that had been reached. Any `.new` temporary left
+        by an interrupted swap is removed, so the directory does not keep a stray partial file next to the
+        engine.
+        """
         if not backup or not backup.exists():
             raise UpdateError("no backup to restore from")
         for src in backup.iterdir():
             if src.name == "_version.txt" or not src.is_file():
                 continue
             shutil.copy2(src, self.engine_dir / src.name)
+        for leftover in self.engine_dir.glob("*.new"):
+            leftover.unlink(missing_ok=True)
+        self._placed.clear()
         return backup

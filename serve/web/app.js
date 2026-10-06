@@ -1172,7 +1172,9 @@ async function checkForUpdates(btn) {
 
 function renderUpdateState(s) {
   const d = s.detail || {};
-  updateUI.installed = d.installed || updateUI.installed;
+  // bare(), like every other read: the server sends the release tag ("v0.1.40.1") while /metrics sends a
+  // bare version, and without this the row reads "vv0.1.40.1"
+  updateUI.installed = updateUI.bare(d.installed) || updateUI.installed;
   facts($("facts-update"), updateRows());
 
   const box = $("update-progress");
@@ -1222,6 +1224,14 @@ function renderUpdateState(s) {
   } else if (s.active) {
     note.textContent = `${s.active}…`;
     note.removeAttribute("data-tone");
+  }
+  // Something that would not delete is worth saying: on Windows the staged engine can still be held
+  // open by the probe, and a silent failure here would grow the engine's parent by the size of the
+  // archive on every update.
+  if ((d.left_behind || []).length) {
+    note.textContent += ` (${d.left_behind.join(", ")} could not be deleted - usually the engine still ` +
+      `being closed; it goes on the next update)`;
+    note.setAttribute("data-tone", "warn");
   }
   return s.state;
 }

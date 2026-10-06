@@ -415,7 +415,7 @@ def t_workspace_is_cleaned():
         check(state["state"] == "done", "the update succeeded", str(state.get("detail", {}).get("error", ""))[:40])
         left = sorted(p.name for p in up.root.glob("*"))
         check(all(n.startswith("backup-") for n in left),
-              "only the backup is left (no 124 MB zip, no staging tree)", str(left))
+              "only the backup is left (no zip, no staging tree, no assembled new- tree)", str(left))
         check(up.backup_dir and up.backup_dir.exists(), "the backup is kept for a by-hand restore")
 
         # a failed run must clean up too, and must not take the backups with it
@@ -664,6 +664,79 @@ def t_hotfix_release_tag():
               state["detail"].get("error", "")[:44])
 
 
+def t_swap_is_all_or_nothing():
+    print("\na failure part way through the swap restores every installed file")
+    # The reviewer's second requirement, and the first version did not meet it: files were copied over
+    # one at a time and the restore was armed only AFTER the last copy, so a failure on the third of
+    # nine left the engine directory holding a mixture of two engines and attempted nothing.
+    with tempfile.TemporaryDirectory() as d:
+        eng = install_fake(Path(d) / "engine", "0.1.31")
+        (eng / "strata-vision.exe").write_bytes(b"the OLD vision engine")
+        (eng / "keepme.dat").write_bytes(b"a file the new archive does not carry")
+        before = {p.name: p.read_bytes() for p in sorted(eng.iterdir())}
+
+        net = Fake("0.1.38")
+        up = U.Updater(engine_exe=eng / "strata.exe")
+        up.fetch, up.head = net.fetch, net.head
+        up.check()
+
+        # Make the swap fail on its SECOND os.replace. os.replace is used only by the swap, so this is
+        # precise: the backup and the download are already done and unaffected.
+        real_replace = os.replace
+        calls = {"n": 0}
+
+        def flaky(src, dst):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise OSError("simulated failure while installing the second file")
+            return real_replace(src, dst)
+
+        # patch the module, not an instance attribute: update.py calls os.replace as a module global
+        import serve.update as module
+        real_module_replace = module.os.replace
+        module.os.replace = flaky
+        try:
+            state = up.run()
+        finally:
+            module.os.replace = real_module_replace
+
+        check(state["state"] == "failed", "the run reports failure", state["state"])
+        failed = [s for s in state["steps"] if s["status"] == "failed"]
+        check(failed and failed[0]["key"] == "apply", "at the apply step", failed[0]["key"] if failed else "none")
+        check(state["detail"].get("rolled_back") is True, "and reports that it restored the backup")
+        check("Restored" in state["detail"].get("error", ""), "the message says so",
+              state["detail"].get("error", "")[:46])
+
+        after = {p.name: p.read_bytes() for p in sorted(eng.iterdir())}
+        check(after == before, "every installed file is byte-for-byte what it was",
+              str([k for k in set(before) ^ set(after)])[:48])
+        check(U.installed_version(eng) == "0.1.31", "BUILD.json reports the old version again")
+        check(not list(eng.glob("*.new")), "and no half-written temporary is left behind",
+              str([p.name for p in eng.glob("*.new")]))
+        check((eng / "keepme.dat").exists(), "a file the new archive does not carry is still there")
+
+    print("\n  ... and a file the archive does NOT carry is not deleted by a successful swap")
+    with tempfile.TemporaryDirectory() as d:
+        eng = install_fake(Path(d) / "engine", "0.1.31")
+        (eng / "keepme.dat").write_bytes(b"not in the archive")
+        net = Fake("0.1.38")
+        up, state, _ = run_update(eng, net)
+        check(state["state"] == "done", "the update succeeds", str(state["detail"].get("error", ""))[:40])
+        check((eng / "keepme.dat").exists(), "and the extra file is left alone, as setup.py does")
+        check(U.installed_version(eng) == "0.1.38", "the new engine is in place")
+
+    print("\n  ... and an archive with no files at all is refused before anything is touched")
+    with tempfile.TemporaryDirectory() as d:
+        eng = install_fake(Path(d) / "engine", "0.1.31")
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("BUILD.json", json.dumps({"version": "0.1.38"}))
+        net = Fake("0.1.38", zip_bytes=buf.getvalue())
+        up, state, _ = run_update(eng, net)
+        check(state["state"] == "failed", "an archive with only BUILD.json is refused", state["state"])
+        check(U.installed_version(eng) == "0.1.31", "and the installed engine is untouched")
+
+
 def t_sha256_verified_before_anything_is_applied():
     print("\nthe download's SHA-256 is checked against GitHub's, and a wrong one stops the run")
     # The reason this exists: without it the only check was the byte count, which a substituted file of
@@ -740,12 +813,48 @@ def t_sha256_verified_before_anything_is_applied():
               failed[0]["key"] if failed else "none")
 
 
+def t_cleanup_survives_a_locked_staging_tree():
+    print("\ncleanup removes the staging tree even while the probe's binary still holds it")
+    # Not hypothetical on Windows: step 6 runs strata.exe OUT of the staging tree, and the child can
+    # still hold the file a moment after it exits. The first version used rmtree(ignore_errors=True),
+    # which swallowed the failure - measured, a live 190 MB update left its whole staging tree behind,
+    # so every update would have leaked it.
+    with tempfile.TemporaryDirectory() as d:
+        eng = install_fake(Path(d) / "engine", "0.1.31")
+        net = Fake("0.1.38")
+        up, state, _ = run_update(eng, net)
+        check(state["state"] == "done", "the update succeeds", str(state["detail"].get("error", ""))[:40])
+        left = sorted(p.name for p in up.root.glob("*"))
+        check(all(n.startswith("backup-") for n in left),
+              "only the backup is left immediately after the run", str(left))
+
+    print("\n  ... a tree that cannot be removed is reported, not silently left")
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d) / ".strata-update"
+        root.mkdir()
+        stuck = root / "stage-stuck"
+        stuck.mkdir()
+        (stuck / "held.bin").write_bytes(b"x")
+        up = U.Updater(engine_exe=Path(d) / "engine" / "strata.exe")
+        up.root = root
+        handle = open(stuck / "held.bin", "r+b")       # a lock nothing will release
+        try:
+            up._clean_workspace()
+            check(up.detail.get("left_behind") == ["stage-stuck"],
+                  "the leftover is named in the state", str(up.detail.get("left_behind")))
+        finally:
+            handle.close()
+        # once the lock is gone the next call clears it
+        up._clean_workspace()
+        check(not stuck.exists(), "and the next call removes it")
+
+
 def main() -> int:
     for fn in (t_version_and_assets, t_installed_version, t_zip_safety, t_happy_path,
                t_no_update_needed, t_downgrade_refused, t_version_mismatch_refused,
                t_staged_engine_must_run, t_probe_explains_a_missing_runtime,
-               t_gpu_arch_refused_before_download, t_hotfix_release_tag, t_sha256_verified_before_anything_is_applied,
-               t_workspace_is_cleaned, t_truncated_download_refused, t_rollback_after_apply,
+               t_gpu_arch_refused_before_download, t_hotfix_release_tag, t_swap_is_all_or_nothing, t_sha256_verified_before_anything_is_applied,
+               t_workspace_is_cleaned, t_cleanup_survives_a_locked_staging_tree, t_truncated_download_refused, t_rollback_after_apply,
                t_backup_retention, t_missing_asset_refused):
         fn()
     print(f"\n{U.__name__}: {len(FAILS)} failures out of {CHECKS[0]} checks")
