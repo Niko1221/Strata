@@ -298,11 +298,21 @@ class Requirements(unittest.TestCase):
     def test_an_install_from_before_the_pins_is_left_alone(self):
         lines = setup.requirement_lines()
         legacy = sorted(setup.PY_PACKAGES) + ["nvidia-cublas==13.0.2.14"]
-        deps = {"markupsafe", "certifi", "charset-normalizer", "idna", "urllib3", "colorama"}
+        deps = {setup.req_name(pin) for pin in lines} - set(setup.PY_PACKAGES)
         self.assertEqual(self.pip(legacy, lines, installed=deps)[0], [])
         missing = [p for p in legacy if p != "psutil"]                         # an older list without psutil
         ran, _ = self.pip(missing, lines, installed=deps)
         self.assertEqual(ran, ["psutil==7.2.2"])
+
+    def test_legacy_install_adds_missing_document_parsers_without_replacing_runtime(self):
+        lines = setup.requirement_lines()
+        legacy = sorted(setup.PY_PACKAGES) + ["nvidia-cublas==13.0.2.14"]
+        parsers = {"pypdf", "pypdfium2", "python-docx", "openpyxl", "defusedxml",
+                   "lxml", "typing-extensions", "et-xmlfile"}
+        installed = {setup.req_name(pin) for pin in lines} - set(setup.PY_PACKAGES) - parsers
+        ran, stamp = self.pip(legacy, lines, installed=installed)
+        self.assertEqual(ran, [pin for pin in lines if setup.req_name(pin) in parsers])
+        self.assertEqual(self.pip(stamp, lines, installed=installed)[0], [])
 
     def test_a_changed_pin_is_installed(self):
         lines = setup.requirement_lines()

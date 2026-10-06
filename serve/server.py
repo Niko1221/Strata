@@ -60,6 +60,7 @@ from serve.frontend import (ChatTemplate, Event, OutputParser, anthropic_to_mess
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve import runconfig  # noqa: E402
 from serve.winjob import contain  # noqa: E402
+from serve.file_extract import ExtractionError, MAX_BODY as MAX_FILE_BODY, extract as extract_file  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
@@ -3830,7 +3831,7 @@ def make_handler(svc: Service):
             elif path in ("/health", "/api/health"):
                 self._json(200, {"status": "ok", "max_context": svc.engine.max_context, "model": svc.model,
                                  "images": svc.vision is not None, "api_key": bool(svc.api_key),
-                                 "loaded": svc.loaded(), "service": "strata"})
+                                 "loaded": svc.loaded(), "service": "strata", "file_extraction": True})
             elif path == "/status":
                 if not self._authorized():                  # #212: it shows the end of the last answer
                     return
@@ -3880,6 +3881,37 @@ def make_handler(svc: Service):
                 return
             path = self.path.split("?")[0].rstrip("/")   # issue #55: Claude Code posts /v1/messages?beta=true
             if path.startswith("/v1/") and self._foreign_page():
+                return
+            if path == "/v1/files/extract":
+                # Admission and declared-size checks happen before reading any uploaded bytes.
+                if not self._own_page("files can be extracted"):
+                    return
+                if self.headers.get("Sec-Fetch-Site") == "cross-site":
+                    self._json(403, {"error": {"message": "files can be extracted only from Strata's own page"}})
+                    return
+                try:
+                    lengths = self.headers.get_all("Content-Length", [])
+                    if len(lengths) != 1 or not lengths[0].isascii() or not lengths[0].isdigit() or \
+                            self.headers.get("Transfer-Encoding"):
+                        raise ExtractionError(400, "send one valid Content-Length without Transfer-Encoding")
+                    if len(lengths[0]) > 8:
+                        raise ExtractionError(413, "file extraction request exceeds the 28 MiB limit")
+                    length = int(lengths[0])
+                    if length > MAX_FILE_BODY:
+                        raise ExtractionError(413, "file extraction request exceeds the 28 MiB limit")
+                    self.connection.settimeout(30)
+                    body = self.rfile.read(length)
+                    if len(body) != length:
+                        raise ExtractionError(400, "incomplete file extraction request")
+                    try:
+                        request = json.loads(body)
+                    except (ValueError, UnicodeError):
+                        raise ExtractionError(400, "send a valid JSON object") from None
+                    self._json(200, extract_file(request))
+                except ExtractionError as error:
+                    self._json(error.status, {"error": {"type": "file_extraction_error", "message": str(error)}})
+                except (TimeoutError, ConnectionError):
+                    self._json(400, {"error": {"type": "file_extraction_error", "message": "incomplete file upload"}})
                 return
             if path == "/settings":
                 self._settings()

@@ -100,8 +100,8 @@ let health = {model: "strata", images: false, max_context: 0};
 async function loadHealth() {
   try {
     health = await (await fetch("health")).json();
-    $("attach-btn").title = health.images ? "Attach a text file or a picture (or drop it here)"
-                                          : "Attach a text file (or drop it here)";
+    $("attach-btn").title = health.images ? "Attach PDF, Word, Excel, text or pictures" : "Attach PDF, Word, Excel or text";
+    $("screenshot-hint").textContent = health.images ? "PDF, Word, Excel, code and images. Paste a screenshot with Ctrl+V, or drop files here." : "PDF, Word, Excel and code. Drop files here.";
     $("chat-empty-sub").textContent = `${health.model} runs on this PC. Nothing leaves it.`;
   } catch (e) {
     setTimeout(loadHealth, 2000);
@@ -557,7 +557,22 @@ function markdown(text) {
 const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true};
 let settings = {...DEFAULTS, ...store.get("sampling", {})};
 let messages = store.get("chat", []);
-let attachments = [];                 // {name, url}
+const draft = store.get("draft", {}) || {};
+let attachments = Array.isArray(draft.attachments) ? draft.attachments : [];
+let attachmentEpoch = 0, pendingAttachmentReads = 0;
+const attachmentExtractions = new Set();
+let documentExtractionQueue = Promise.resolve();
+let draftSaveWarned = false;
+function saveDraft() {
+  try {
+    localStorage.setItem("strata.draft", JSON.stringify({text: $("input").value, attachments}));
+    draftSaveWarned = false;
+  } catch (_) {
+    if (!draftSaveWarned) toast("warn", "Draft is kept in this page only", "Browser storage is full or unavailable. Your current attachments are still here, but reloading may restore an older draft.", 7000);
+    draftSaveWarned = true;
+  }
+}
+function safeImage(url) { return typeof url === "string" && (/^data:image\//i.test(url) || url.startsWith("blob:")); }
 let busy = null;                      // {controller, msg}
 
 function saveChat() {
@@ -752,20 +767,26 @@ function assistantMessages(m) {
   return out;
 }
 
+function updateSend() {
+  $("send-btn").disabled = !!(busy || pendingAttachmentReads);
+  $("attachment-status").hidden = !pendingAttachmentReads;
+  $("attachment-status").textContent = pendingAttachmentReads ? `Reading ${pendingAttachmentReads} file${pendingAttachmentReads === 1 ? "" : "s"}…` : "";
+}
 function setBusy(on) {
   $("stop-btn").hidden = !on;
-  $("send-btn").disabled = on;
+  $("send-btn").disabled = !!(on || pendingAttachmentReads);
   $("composer-hint").textContent = on ? "" : "Shift+Enter: new line";
 }
 
 async function send() {
   const text = $("input").value.trim();
-  if ((!text && !attachments.length) || busy) return;
+  if ((!text && !attachments.length) || busy || pendingAttachmentReads) return;
   messages.push({role: "user", text, images: attachments.filter((a) => a.kind !== "file"),
                  files: attachments.filter((a) => a.kind === "file"), time: Date.now()});
   attachments = [];
-  renderAttachments();
+  resetAttachmentReads();
   $("input").value = "";
+  renderAttachments();
   autosize();
   const m = {role: "assistant", text: "", reasoning: "", time: Date.now()};
   messages.push(m);
@@ -864,12 +885,17 @@ $("input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
 });
 function autosize() { const t = $("input"); t.style.height = "auto"; t.style.height = `${Math.min(t.scrollHeight, innerHeight * 0.4)}px`; }
-$("input").addEventListener("input", autosize);
+$("input").addEventListener("input", () => { autosize(); saveDraft(); });
 
 $("new-btn").onclick = () => {
   if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
-  if (!messages.length) return;
+  if (!messages.length && !attachments.length && !pendingAttachmentReads && !$("input").value) return;
   const backup = messages;
+  resetAttachmentReads();
+  attachments = [];
+  $("input").value = "";
+  autosize();
+  renderAttachments();
   messages = [];
   saveChat();
   renderChat();
@@ -892,30 +918,100 @@ $("export-btn").onclick = () => {
 // pictures and text files: the attach button, dropping them on the chat, or pasting a picture (issue #30)
 const TEXT_EXT = /\.(txt|md|markdown|rst|tex|py|pyi|ipynb|js|mjs|cjs|ts|tsx|jsx|vue|svelte|json|jsonl|csv|tsv|log|ya?ml|toml|ini|cfg|conf|env|xml|html?|css|scss|less|c|cc|cpp|cxx|h|hh|hpp|cu|cuh|rs|go|java|kt|kts|swift|rb|php|pl|lua|r|jl|scala|sql|sh|bash|zsh|fish|ps1|psm1|bat|cmd|diff|patch|gradle|cmake|mk|dockerfile|gitignore|proto|graphql)$/i;
 const MAX_TEXT_FILE = 512 * 1024;
+const DOCUMENT_EXT = /\.(pdf|docx|xlsx)$/i;
 function isTextFile(f) {
   return f.type.startsWith("text/") || /json|xml|javascript|yaml|toml|x-sh|x-python/.test(f.type) ||
          TEXT_EXT.test(f.name) || /(^|[\\/])(makefile|dockerfile|readme|license)$/i.test(f.name);
+}
+function resetAttachmentReads() {
+  attachmentEpoch++;
+  for (const controller of attachmentExtractions) controller.abort();
+  attachmentExtractions.clear();
+  documentExtractionQueue = Promise.resolve();
+  pendingAttachmentReads = 0;
+  updateSend();
+}
+function clipboardImages(data) {
+  const files = Array.from(data?.files || []).filter(f => f.type.startsWith("image/"));
+  if (files.length) return files;
+  return Array.from(data?.items || []).filter(item => item.kind === "file" && item.type.startsWith("image/"))
+    .map(item => item.getAsFile()).filter(f => f && f.type.startsWith("image/"));
+}
+function readAttachment(f, kind) {
+  const epoch = attachmentEpoch, r = new FileReader();
+  let finished = false;
+  pendingAttachmentReads++; updateSend();
+  const finish = () => {
+    if (finished) return false;
+    finished = true;
+    if (epoch !== attachmentEpoch) return false;
+    pendingAttachmentReads--; updateSend(); return true;
+  };
+  r.onload = async () => {
+    if (kind === "document") {
+      const extract = async () => {
+        if (epoch !== attachmentEpoch) return;
+        const controller = new AbortController(); attachmentExtractions.add(controller);
+        try {
+          const data = String(r.result).split(",", 2)[1];
+          if (!data) throw new Error("The document could not be read. Choose it again.");
+          const response = await fetch("v1/files/extract", {method: "POST", headers: headers(true),
+            signal: controller.signal, body: JSON.stringify({name: f.name, data})});
+          const extracted = await response.json();
+          if (!response.ok || extracted.error) throw new Error(extracted.error?.message || extracted.error || `HTTP ${response.status}`);
+          if (typeof extracted.text !== "string" || (extracted.images && !Array.isArray(extracted.images))) throw new Error("The document service returned an invalid result.");
+          if (epoch !== attachmentEpoch) return;
+          const warnings = (Array.isArray(extracted.warnings) ? extracted.warnings : []).map(String);
+          if (extracted.truncated) warnings.push("Some document content was omitted during extraction. See the extraction notes for details.");
+          const images = extracted.images || [];
+          if (images.length && !health.images) warnings.push("Scanned pages were not attached: this model has pictures disabled. Enable a vision model to read them.");
+          if (health.images) for (const image of images) {
+            if (typeof image.url !== "string" || !image.url.startsWith("data:image/png;base64,")) throw new Error("The document service returned an invalid page image.");
+          }
+          if (extracted.text) attachments.push({kind: "file", name: f.name, text: extracted.text,
+            details: `${extracted.format || "Document"} · ${extracted.text.length} characters${warnings.length ? " · " + warnings.join(" ") : ""}`});
+          if (health.images) attachments.push(...images.map(image => ({kind: "image", name: image.name || f.name, url: image.url})));
+          if (warnings.length) toast("warn", "Document extraction notes", warnings.join(" ").slice(0, 600), 7000);
+          if (!extracted.text && !images.length) toast("warn", "No readable content", `${f.name}: no text or scanned pages could be extracted.`);
+          renderAttachments();
+        } catch (error) {
+          if (epoch === attachmentEpoch) toast("error", "Document could not be extracted", String(error.message).slice(0, 400), 7000);
+        } finally { attachmentExtractions.delete(controller); finish(); }
+      };
+      documentExtractionQueue = documentExtractionQueue.then(extract, extract);
+      return documentExtractionQueue;
+    }
+    if (!finish()) return;
+    if (kind === "image") attachments.push({kind, name: f.name || "pasted image", url: r.result});
+    else {
+      const text = String(r.result);
+      if (text.includes("\u0000")) { toast("warn", "Not a text file", `${f.name} looks like a binary file.`); return; }
+      attachments.push({kind, name: f.name, text});
+    }
+    renderAttachments();
+  };
+  const failed = () => {
+    if (finish()) toast("error", "File could not be read", `${f.name || "Pasted image"}: choose or paste it again.`);
+  };
+  r.onerror = failed; r.onabort = failed;
+  try { if (kind === "image" || kind === "document") r.readAsDataURL(f); else r.readAsText(f); }
+  catch (_) { failed(); }
 }
 function addFiles(files) {
   for (const f of files) {
     if (f.type.startsWith("image/")) {
       if (!health.images) { toast("warn", "Pictures are off", "This model was set up for text only."); continue; }
       if (f.size > 20e6) { toast("warn", "Picture too large", `${f.name} is over 20 MB.`); continue; }
-      const r = new FileReader();
-      r.onload = () => { attachments.push({kind: "image", name: f.name || "pasted image", url: r.result}); renderAttachments(); };
-      r.readAsDataURL(f);
+      readAttachment(f, "image");
       continue;
     }
-    if (!isTextFile(f)) { toast("warn", "Not a text file", `${f.name}: attach text files (code, notes, logs, data)${health.images ? " or pictures" : ""}.`); continue; }
+    if (DOCUMENT_EXT.test(f.name)) {
+      if (f.size > 20 * 1024 * 1024) { toast("warn", "Document too large", `${f.name} is over 20 MB.`); continue; }
+      readAttachment(f, "document"); continue;
+    }
+    if (!isTextFile(f)) { toast("warn", "Unsupported file", `${f.name}: attach PDF, DOCX, XLSX, text files (code, notes, logs, data)${health.images ? " or pictures" : ""}.`); continue; }
     if (f.size > MAX_TEXT_FILE) { toast("warn", "File too large", `${f.name} is over 512 KB.`); continue; }
-    const r = new FileReader();
-    r.onload = () => {
-      const text = String(r.result);
-      if (text.includes("\u0000")) { toast("warn", "Not a text file", `${f.name} looks like a binary file.`); return; }
-      attachments.push({kind: "file", name: f.name, text});
-      renderAttachments();
-    };
-    r.readAsText(f);
+    readAttachment(f, "file");
   }
 }
 // a file's text in the message, fenced with more backticks than it contains itself
@@ -928,22 +1024,31 @@ function userText(m) {
   const files = (m.files || []).filter((f) => f.text != null);
   return [m.text, ...files.map(fileBlock)].filter((s) => s).join("\n\n");
 }
-function renderAttachments() {
+function renderAttachments(persist = true) {
   const box = $("attachments");
   box.hidden = !attachments.length;
   box.innerHTML = "";
   attachments.forEach((a, i) => {
     const c = document.createElement("span");
     c.className = "chip";
-    c.innerHTML = icon(a.kind === "file" ? "attach" : "image", "st-icon st-icon--sm");
-    c.append(a.name);
+    if (a.details) c.title = a.details;
+    if (a.kind !== "file" && safeImage(a.url)) {
+      const preview = document.createElement("img");
+      c.className += " chip--image";
+      preview.className = "chip__preview"; preview.src = a.url; preview.alt = `Preview: ${a.name}`;
+      c.appendChild(preview);
+    } else c.innerHTML = icon(a.kind === "file" ? "attach" : "image", "st-icon st-icon--sm");
+    const name = document.createElement("span"); name.className = "chip__name"; name.textContent = a.name;
+    c.appendChild(name);
     const x = document.createElement("button");
-    x.type = "button"; x.className = "st-btn st-btn--icon"; x.setAttribute("aria-label", "Remove");
+    x.type = "button"; x.className = "st-btn st-btn--icon"; x.setAttribute("aria-label", `Remove ${a.name}`);
     x.innerHTML = icon("trash");
     x.onclick = () => { attachments.splice(i, 1); renderAttachments(); };
     c.appendChild(x);
     box.appendChild(c);
   });
+  updateSend();
+  if (persist) saveDraft();
 }
 $("attach-btn").onclick = () => $("file").click();
 // drop files on the chat or the message box
@@ -966,7 +1071,7 @@ for (const id of ["chat", "composer"]) {
 $("file").onchange = () => { addFiles($("file").files); $("file").value = ""; };
 $("input").addEventListener("paste", (e) => {
   if (!health.images) return;
-  const files = [...(e.clipboardData || {}).files || []].filter((f) => f.type.startsWith("image/"));
+  const files = clipboardImages(e.clipboardData);
   if (files.length) { e.preventDefault(); addFiles(files); }
 });
 
@@ -1064,6 +1169,9 @@ $("scrim").onclick = () => openDrawer(false);
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("drawer").dataset.open === "true") openDrawer(false); });
 
 // ------------------------------------------------------------------ start
+$("input").value = typeof draft.text === "string" ? draft.text : "";
+autosize();
+renderAttachments(false);
 setBusy(false);
 renderChat();
 const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)

@@ -1106,6 +1106,26 @@ like `nvidia-smi`) to the `"vision"` section of `strata-<model>.json`: the encod
 `--vram-reserve-mib` in `"args"` to 700 as well, so the engine's cards keep that VRAM for the expert cache. The
 encoder's card needs code in the ready-made encoder (RTX 20/30/40/50).
 
+### Chat attachments
+
+The web chat accepts PDF, DOCX, XLSX, text and source-code files. Use the attachment button or drop files on the
+chat. With images on, paste a screenshot with Ctrl+V or drop a picture; its thumbnail appears before you send it.
+Send waits until file reads and document extraction finish. New chat cancels pending extraction and discards late
+results. Pictures, including scanned PDF pages, use the API's native `image_url` parts.
+
+Document extraction runs locally without saving original uploads to disk. A document can be at most 20 MiB;
+extracted text is limited to 512 KiB. Each worker has a 30-second timeout and a 768 MiB memory limit, with at most
+two workers at once. Documents in one composer batch are extracted one at a time. Text/code attachments read by the
+browser are limited to 512 KiB. Extraction notes report omitted content and format limits.
+
+PDF pages without extractable text fall back to images: up to eight PNG pages, at most 1600 pixels on the longer
+side and 8 MiB of encoded images in total. Reading those pages requires images to be enabled; text-only models get
+a warning. DOCX includes body paragraphs and tables, excluding embedded images. XLSX reads stored cached values;
+formulas are not executed.
+
+Completed unsent attachments and draft text stay in this browser when storage is available. If storage is full or
+unavailable, a warning explains that the current draft remains in the page only and reloading may restore an older
+draft. Current attachments remain available to send.
 ### Sending a picture
 
 **Terminal chat:** type `/image <path to a picture>`, press Enter, then type your question.
