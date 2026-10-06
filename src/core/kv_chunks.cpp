@@ -39,7 +39,7 @@ bool KvChunkMap::shrink(Lane lane, int64_t keep) {
     LaneData& l = *lanes_[(size_t) lane];
     keep = std::max<int64_t>(keep, 0);
     if (l.held <= keep) return false;
-    for (int64_t c = l.held - 1; c >= keep; --c) {   // the highest first: the lowest ends up on top of the stack
+    for (int64_t c = l.held - 1; c >= keep; --c) {   // the tail's own order reversed: its first chunk is handed out first
         free_.push_back(l.table[(size_t) c]);
         l.table[(size_t) c] = trash();
     }

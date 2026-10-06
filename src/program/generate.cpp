@@ -34,6 +34,7 @@
 #include "strata/core/layout.hpp"
 #include "strata/core/session.hpp"
 #include "strata/core/kv_pool.hpp"
+#include "strata/core/kv_pool_policy.hpp"
 #include "strata/core/weights.hpp"
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/cpu/pool.hpp"
@@ -8346,26 +8347,20 @@ int main(int argc, char** argv) {
         // (the slot this request reads from). False, with nothing given back, when all of them would not cover it.
         auto pool_reserve = [&](const strata::core::SessionState& s, int64_t cells, int keep) -> bool {
             if (!kv_pool.active() || kv_pool.reserve(s, cells)) return true;
-            auto can_give = [&](int b) {
-                return !bs[(size_t) b].active && b != keep && &s != bslot_ss[0][(size_t) b].get() &&
-                       kv_pool.reserved_cells(*bslot_ss[0][(size_t) b]) > 0;
-            };
             const int64_t chunk = kv_pool.chunk_cells();
-            const int64_t want = (std::min(cells, s.max_cells) + chunk - 1) / chunk * chunk;
-            int64_t could = kv_pool.free_cells() + kv_pool.reserved_cells(s);
-            for (int b = 0; b < (int) bs.size(); ++b)
-                if (can_give(b)) could += kv_pool.reserved_cells(*bslot_ss[0][(size_t) b]);
-            if (could < want) return false;
-            auto rank = [&](const BSlot& sl) { return sl.partial ? 2 : sl.cached ? 1 : 0; };
-            while (!kv_pool.reserve(s, cells)) {
-                int victim = -1;
-                for (int b = 0; b < (int) bs.size(); ++b) {
-                    if (!can_give(b)) continue;
-                    const BSlot& sl = bs[(size_t) b];
-                    const BSlot& v = bs[(size_t) std::max(victim, 0)];
-                    if (victim < 0 || rank(sl) < rank(v) || (rank(sl) == rank(v) && sl.used < v.used)) victim = b;
-                }
-                if (victim < 0) return false;
+            std::vector<strata::core::KvPoolLane> lanes(bs.size());
+            for (size_t b = 0; b < bs.size(); ++b) {
+                const BSlot& sl = bs[b];
+                const int64_t held = kv_pool.reserved_cells(*bslot_ss[0][b]);
+                lanes[b] = {!sl.active && (int) b != keep && &s != bslot_ss[0][b].get() && held > 0,
+                            sl.partial ? 2 : sl.cached ? 1 : 0, sl.used, held};
+            }
+            std::vector<int> victims;
+            if (!strata::core::kv_pool_eviction_plan(kv_pool.free_cells(), kv_pool.reserved_cells(s),
+                                                     (std::min(cells, s.max_cells) + chunk - 1) / chunk * chunk, lanes,
+                                                     victims))
+                return false;
+            for (const int victim : victims) {
                 BSlot& v = bs[(size_t) victim];
                 if (v.cached)
                     std::fprintf(stderr, "strata batch: KV pool full: slot %d gives back %s (%lld tokens)\n", victim,
@@ -8377,7 +8372,7 @@ int main(int argc, char** argv) {
                 v.checks.clear();
                 kv_pool.release(*bslot_ss[0][(size_t) victim]);
             }
-            return true;
+            return kv_pool.reserve(s, cells);
         };
         // --kv-pool-tokens: `POOL <cells> <free> <main> <slot 0>,<slot 1>,...` (cells held) whenever it changed - the
         // server keeps the last one for /metrics

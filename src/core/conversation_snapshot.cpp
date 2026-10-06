@@ -5,7 +5,6 @@
 
 #include <algorithm>
 #include <array>
-#include <climits>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -128,15 +127,7 @@ template <class F>
 bool each_piece(int kv_mode, const strata::kernels::KvHostPools& host, size_t i, size_t total, int64_t cells,
                 int64_t page_size, size_t at, size_t n, F&& f) {
     if (i >= 4 || kv_mode == 0 || host.chunk_host == nullptr || cells <= 0) return f(at, size_t(0), n);
-    const size_t block = total / size_t(cells / page_size);
-    for (size_t done = 0; done < n;) {
-        const size_t pos = at + done, in = pos % block;
-        const long long b = (long long) (pos / block);
-        const size_t len = std::min((size_t) host.contiguous(b, LLONG_MAX) * block - in, n - done);
-        if (!f((size_t) host.block_host(b) * block + in, done, len)) return false;
-        done += len;
-    }
-    return true;
+    return host.for_each_piece(total / size_t(cells / page_size), at, n, f);
 }
 } // namespace
 

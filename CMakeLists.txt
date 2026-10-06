@@ -458,6 +458,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_test(NAME exchange_storage_test COMMAND exchange_storage_test)
     set_tests_properties(exchange_storage_test PROPERTIES TIMEOUT 60)
   endif()
+  # the shared KV pool's logic (--kv-pool-tokens): chunk tables, the piece walk, who gives way - no GPU, no CUDA
+  if(STRATA_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/kv_chunks_test.cpp")
+    add_executable(kv_chunks_test tests/core/kv_chunks_test.cpp src/core/kv_chunks.cpp)
+    target_include_directories(kv_chunks_test PRIVATE include)
+    add_test(NAME kv_chunks_test COMMAND kv_chunks_test)
+    set_tests_properties(kv_chunks_test PROPERTIES TIMEOUT 60)
+  endif()
 
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/file_expert_source_test.cpp")
     enable_testing()
