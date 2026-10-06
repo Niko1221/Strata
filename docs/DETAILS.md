@@ -369,6 +369,9 @@ install; `START-HERE.bat --calibrate` (Linux: `./setup.sh --calibrate`) does it 
 speed with each setting and keeps one only when it is more than 3% faster. The result is remembered per PC and model
 (in the settings file next to the data folder's record), so updates keep it.
 
+Measuring the worker count needs a fresh engine, so the model is loaded more than once: the PC is busy, and can
+stop responding for a minute or two, once per restart. It then starts the model, like a plain `START-HERE.bat`.
+
 ### Running it at startup (Task Scheduler)
 
 To have the model up at logon, people start the serve from **Task Scheduler** (or a service). Beware: Windows
