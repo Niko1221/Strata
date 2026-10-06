@@ -904,15 +904,21 @@ class StrataEngine:
         for each `T`; returns ("done", None) at DONE, or ("badm", continues) at BADM (after DONE).  `stop_when()`
         true sends STOP once (the request is then read to its DONE)."""
         stopped = False
+        beat = time.monotonic()
         while True:
             try:
-                line = self.lines.get(timeout=10.0)
+                # A client can leave before the first PP/token.  Poll its Event as often as _take_control does;
+                # the ten-second HTTP heartbeat is independent of how promptly STOP reaches the engine.
+                line = self.lines.get(timeout=0.5)
             except queue.Empty:
                 if cancel.is_set() and not stopped:
                     self._send("STOP")
                     stopped = True
-                yield None
+                if time.monotonic() - beat >= 10.0:
+                    beat = time.monotonic()
+                    yield None
                 continue
+            beat = time.monotonic()
             if line is None:
                 raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
             if not line.startswith(("PP ", "INFO")):
@@ -1345,6 +1351,7 @@ class StrataEngine:
         silence = float(self.silence_s or 0)
         allow = silence + min(len(ids), PP_CHUNK_MAX) / PP_FLOOR_TOK_S if silence > 0 else 0.0
         heard, read_to = time.monotonic(), 0
+        beat = heard
         try:
             while True:
                 wait = 10.0
@@ -1355,17 +1362,21 @@ class StrataEngine:
                         raise self._silent(f"the engine said nothing for {time.monotonic() - heard:.0f} s during "
                                            "the request")
                 try:
-                    line = self.lines.get(timeout=wait)
+                    line = self.lines.get(timeout=min(wait, 0.5))
                 except queue.Empty:
                     if cancel.is_set():
                         return
-                    if wait >= 10.0:
-                        yield None                        # the 10 s heartbeat (the deadline's short waits are not)
+                    if allow > 0 and time.monotonic() - heard >= allow:
+                        continue                          # enforce the expired deadline before another heartbeat
+                    if time.monotonic() - beat >= 10.0:
+                        beat = time.monotonic()
+                        yield None                        # polling cancellation does not add HTTP heartbeats
                     continue
                 if line is None:
                     done = True
                     raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
                 heard = time.monotonic()                  # any line is output: T, PP, RESUME, INFO ...
+                beat = heard
                 if line.startswith("T "):
                     allow = silence
                     if cancel.is_set():
