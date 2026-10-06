@@ -650,6 +650,7 @@ class StrataEngine:
         gs = self.batch // groups if self.batch else 0
         # slots in the order that spreads requests over the pipeline's groups first: 0, gs, 2gs, .., 1, gs+1, ..
         self.slot_order = [g * gs + t for t in range(gs) for g in range(groups)]
+        self.slot_group = [b // gs if gs else 0 for b in range(self.batch)]   # each slot's pipeline group
         self.slot_q = [queue.Queue() for _ in range(self.batch)]
         self.slot_busy = [False] * self.batch
         # what each slot's sessions hold (prompt + every token a window fed), so a conversation's next turn goes to
@@ -1291,6 +1292,8 @@ class StrataEngine:
                         self.slot_busy[slot] = False
                         self.slot_cv.notify_all()
 
+    SLOT_PREFIX_MIN = 512   # a held prefix shorter than this is not worth unbalancing the pipeline's groups
+
     def pick_slot(self, prompt: list[int]) -> int | None:
         """A free slot for `prompt` (the caller holds slot_cv): the one whose held tokens are the longest start of the
         prompt (the engine then reads only the rest), else an empty one, else the one used longest ago - so the
@@ -1302,9 +1305,16 @@ class StrataEngine:
             h = self.slot_held[b]
             return len(h) if h and len(h) < len(prompt) and prompt[:len(h)] == h else 0
         best = max(free, key=held_prefix)
-        if held_prefix(best) > 0:
+        if held_prefix(best) >= self.SLOT_PREFIX_MIN:
             return best
-        return min(free, key=lambda b: (bool(self.slot_held[b]), self.slot_used[b]))
+        # with --batch-groups: the group with the fewest busy slots first, so the requests spread over the
+        # pipeline's stages (two requests in one group leave the other stage idle); then empty, then least recent
+        busy_in = {}
+        for b in range(self.batch):
+            if self.slot_busy[b]:
+                busy_in[self.slot_group[b]] = busy_in.get(self.slot_group[b], 0) + 1
+        return min(free, key=lambda b: (busy_in.get(self.slot_group[b], 0), bool(self.slot_held[b]),
+                                        self.slot_used[b]))
 
     def slots_view(self) -> list[dict]:
         """/metrics: each batch slot - idle (with the tokens it holds for a next turn), reading or decoding."""
