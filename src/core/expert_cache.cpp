@@ -19,6 +19,9 @@
 #include <cstdlib>
 #include <utility>
 #include <cstring>
+#include <cstdlib>
+#include <limits>
+#include <new>
 
 namespace strata::core {
 
@@ -365,6 +368,7 @@ void ExpertCache::release_segmented() {
 }
 
 int64_t ExpertCache::mapped_bytes() const {
+    if (live()) return (int64_t) committed_bytes();
     if (segs_.empty()) return base_ != nullptr ? full_bytes() : 0;
     int64_t b = 0;
     for (int64_t i = 0; i < mapped_segs_; ++i) b += seg_size_[(size_t) i];
@@ -591,6 +595,127 @@ bool ExpertCache::open_sized(const std::vector<int64_t>& slot_bytes, int64_t n_l
     return true;
 }
 
+int64_t ExpertCache::slots_for_bytes(uint64_t budget) const {
+    if (off_.empty()) return blob_ > 0 ? std::min<int64_t>(capacity(), (int64_t) (budget / blob_)) : 0;
+    return (int64_t) (std::upper_bound(off_.begin(), off_.end(), budget) - off_.begin()) - 1;
+}
+
+bool ExpertCache::open_live(const std::vector<int64_t>& sizes, int64_t active, int64_t nl, int64_t ne,
+                            std::string& err) {
+#if defined(STRATA_EC_NO_VMM)
+    (void) sizes; (void) active; (void) nl; (void) ne;
+    err = "live memory requires CUDA VMM";
+    return false;
+#else
+    close();
+    if (sizes.empty() || active < 1 || active > (int64_t) sizes.size() || nl < 1 || ne < 1) {
+        err = "live cache: invalid geometry"; return false;
+    }
+    int supported = 0;
+    if (cudaGetDevice(&live_device_) != cudaSuccess || cuInit(0) != CUDA_SUCCESS ||
+        cuDeviceGetAttribute(&supported, CU_DEVICE_ATTRIBUTE_VIRTUAL_MEMORY_MANAGEMENT_SUPPORTED,
+                             live_device_) != CUDA_SUCCESS || !supported) {
+        err = "live cache: CUDA VMM is unavailable"; return false;
+    }
+    CUmemAllocationProp prop{};
+    prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+    prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+    prop.location.id = live_device_;
+    size_t granularity = 0;
+    if (cuMemGetAllocationGranularity(&granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM) != CUDA_SUCCESS ||
+        granularity == 0) { err = "live cache: cannot query allocation granularity"; return false; }
+    live_block_ = ((32ull << 20) + granularity - 1) / granularity * granularity;
+    off_.assign(sizes.size() + 1, 0);
+    for (size_t i = 0; i < sizes.size(); ++i) {
+        if (sizes[i] <= 0 || (uint64_t) sizes[i] > (uint64_t) INT64_MAX - off_[i] - 255) {
+            err = "live cache: invalid slot size"; close(); return false;
+        }
+        off_[i + 1] = off_[i] + ((uint64_t) sizes[i] + 255) / 256 * 256;
+        blob_ = std::max(blob_, sizes[i]);
+    }
+    const uint64_t reserved = (off_.back() + live_block_ - 1) / live_block_ * live_block_;
+    CUdeviceptr address = 0;
+    if (cuMemAddressReserve(&address, (size_t) reserved, 0, 0, 0) != CUDA_SUCCESS) {
+        err = "live cache: virtual address reservation failed"; close(); return false;
+    }
+    base_ = reinterpret_cast<uint8_t*>(address);
+    live_reserved_ = reserved;
+    slots_ = (int64_t) sizes.size();
+    n_layers_ = nl; n_expert_ = ne;
+    residency_.assign((size_t) (nl * ne), kNotResident);
+    layer_next_.assign((size_t) nl, 0);
+    if (!resize_live(active, err)) { close(); return false; }
+    return true;
+#endif
+}
+
+bool ExpertCache::resize_live(int64_t active, std::string& err) try {
+#if defined(STRATA_EC_NO_VMM)
+    (void) active;
+    err = "live memory requires CUDA VMM"; return false;
+#else
+    if (!live() || active < 0 || active > capacity()) { err = "live cache: invalid active capacity"; return false; }
+    const size_t wanted = (size_t) ((off_[(size_t) active] + live_block_ - 1) / live_block_);
+    const size_t old = live_handles_.size();
+    CUmemAllocationProp prop{};
+    prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+    prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+    prop.location.id = live_device_;
+    CUmemAccessDesc access{};
+    access.location = prop.location;
+    access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+    auto address = [&](size_t i) { return (CUdeviceptr) base_ + i * live_block_; };
+    // Keep handles until every unmap has succeeded, so a driver refusal can restore the old layout.
+    if (wanted < old) {
+        size_t i = old;
+        for (; i > wanted; --i) {
+            if (cuMemUnmap(address(i - 1), (size_t) live_block_) == CUDA_SUCCESS) continue;
+            for (size_t j = i; j < old; ++j) {
+                if (cuMemMap(address(j), (size_t) live_block_, 0, live_handles_[j], 0) != CUDA_SUCCESS ||
+                    cuMemSetAccess(address(j), (size_t) live_block_, &access, 1) != CUDA_SUCCESS)
+                    std::abort(); // a broken driver mapping must never resume generation
+            }
+            err = "live cache: unmap failed; old mapping restored"; return false;
+        }
+        for (size_t j = wanted; j < old; ++j) (void) cuMemRelease(live_handles_[j]);
+        live_handles_.resize(wanted);
+    } else {
+        live_handles_.reserve(wanted);
+        for (size_t i = old; i < wanted; ++i) {
+            CUmemGenericAllocationHandle handle = 0;
+            bool mapped = false;
+            // Same fault-injection convention as STRATA_TEST_CACHE_FAIL; tests exercise rollback after one map.
+            const char* fail = std::getenv("STRATA_TEST_LIVE_MAP_FAIL_AFTER");
+            const bool inject = fail && (int64_t) (i - old) >= std::strtoll(fail, nullptr, 10);
+            if (!inject && cuMemCreate(&handle, (size_t) live_block_, &prop, 0) == CUDA_SUCCESS) {
+                mapped = cuMemMap(address(i), (size_t) live_block_, 0, handle, 0) == CUDA_SUCCESS;
+                if (mapped && cuMemSetAccess(address(i), (size_t) live_block_, &access, 1) == CUDA_SUCCESS &&
+                    cudaMemset((void*) address(i), 0, (size_t) live_block_) == cudaSuccess &&
+                    cudaDeviceSynchronize() == cudaSuccess) {
+                    live_handles_.push_back(handle); continue;
+                }
+            }
+            if (mapped) (void) cuMemUnmap(address(i), (size_t) live_block_);
+            if (handle) (void) cuMemRelease(handle);
+            for (size_t j = old; j < live_handles_.size(); ++j) {
+                (void) cuMemUnmap(address(j), (size_t) live_block_);
+                (void) cuMemRelease(live_handles_[j]);
+            }
+            live_handles_.resize(old);
+            (void) cudaGetLastError();
+            err = "live cache: growth allocation failed; old mapping preserved"; return false;
+        }
+    }
+    live_slots_ = active;
+    next_free_ = std::min(next_free_, live_slots_);
+    return true;
+#endif
+} catch (const std::bad_alloc&) {
+    // The handle vector is reserved before acquiring any new physical allocation.
+    err = "live cache: host bookkeeping allocation failed";
+    return false;
+}
+
 void ExpertCache::close() {
 #if defined(STRATA_USE_HIP)
     if (blocking_staging_) (void) cudaFreeHost(blocking_staging_);
@@ -598,6 +723,19 @@ void ExpertCache::close() {
     blocking_staging_bytes_ = 0;
 #endif
     off_.clear();
+    if (live_reserved_ != 0) {
+#if !defined(STRATA_EC_NO_VMM)
+        cudaDeviceSynchronize();
+        for (size_t i = 0; i < live_handles_.size(); ++i) {
+            (void) cuMemUnmap((CUdeviceptr) base_ + i * live_block_, (size_t) live_block_);
+            (void) cuMemRelease(live_handles_[i]);
+        }
+        (void) cuMemAddressFree((CUdeviceptr) base_, (size_t) live_reserved_);
+#endif
+        base_ = nullptr;
+    }
+    live_handles_.clear();
+    live_reserved_ = live_block_ = 0;
     if (!segs_.empty()) {
         release_segmented();
     } else if (vmm_) {
@@ -650,19 +788,19 @@ int32_t ExpertCache::admit(int64_t layer, int64_t expert) {
         ++admitted_;
         return residency_[at];
     }
-    if (next_free_ >= slots_) return kNotResident;   // full: no eviction, deliberately - see the header
+    if (next_free_ >= (live() ? live_slots_ : slots_)) return kNotResident;   // full: no eviction
     residency_[at] = (int32_t) next_free_;
     return (int32_t) next_free_++;
 }
 
 uint8_t* ExpertCache::device_slot(int32_t slot) {
-    if (slot < 0 || slot >= slots_) return nullptr;
+    if (slot < 0 || slot >= (live() ? live_slots_ : slots_)) return nullptr;
     if (!off_.empty()) return base_ + off_[(size_t) slot];
     return base_ + (size_t) slot * (size_t) blob_;
 }
 
 const uint8_t* ExpertCache::device_slot(int32_t slot) const {
-    if (slot < 0 || slot >= slots_) return nullptr;
+    if (slot < 0 || slot >= (live() ? live_slots_ : slots_)) return nullptr;
     if (!off_.empty()) return base_ + off_[(size_t) slot];
     return base_ + (size_t) slot * (size_t) blob_;
 }

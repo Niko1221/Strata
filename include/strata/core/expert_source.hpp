@@ -221,6 +221,8 @@ public:
     /// A deeper one predicts layer + j from layer's input, which is less exact the further it looks.
     void set_depth(int d) { depth_ = d < 1 ? 1 : d > 4 ? 4 : d; }
     int depth() const { return depth_; }
+    /// Called between windows before changing host residency or releasing RAM blocks.
+    void drain();
     int64_t predicted() const { return predicted_.load(std::memory_order_relaxed); }
     int64_t skipped() const { return skipped_.load(std::memory_order_relaxed); }
     double busy_ms() const { return (double) busy_us_.load(std::memory_order_relaxed) / 1000.0; }
@@ -498,6 +500,13 @@ public:
         const std::vector<std::pair<int32_t, int32_t>>& additional_gpu_pairs = {}, int64_t lend_from_slot = -1,
         uint64_t headroom_bytes = 8ull << 30, uint64_t budget_bytes = 0,
         const std::vector<std::pair<int32_t, int32_t>>* rank = nullptr);
+    /// Opt-in independently owned RAM blocks. Readers and staged exchanges must be drained by the caller.
+    bool enable_live_resident(bool pin, std::string& err, uint64_t pin_budget = UINT64_MAX);
+    /// include_gpu keeps profile-ranked duplicates inside target for prompt loans and later GPU eviction.
+    bool resize_live_resident(uint64_t target, uint64_t step_bytes, uint64_t headroom,
+                              const std::vector<int32_t>& host_res,
+                              const std::vector<std::pair<int32_t, int32_t>>& rank,
+                              bool& done, std::string& err, bool include_gpu = false);
     void close();
 
     bool mapped() const { return base_ != nullptr; }
@@ -732,6 +741,13 @@ private:
     const uint8_t* complement_device_ = nullptr;
     uint64_t complement_bytes_ = 0;
     std::vector<uint64_t> complement_offsets_;
+    struct LiveBlock { uint8_t* host; uint8_t* device; uint64_t bytes; bool pinned; };
+    struct LiveBlob { uint8_t* host = nullptr; uint8_t* device = nullptr; size_t block = 0; };
+    bool live_resident_ = false, live_pin_ = true;
+    bool live_pin_refused_ = false;
+    uint64_t live_pin_cap_ = 0;
+    std::vector<LiveBlock> live_blocks_;
+    std::vector<LiveBlob> live_blobs_;
     detail::ExchangeStorage exchange_storage_; // authoritative when active; original arenas still own memory
     bool complement_pinned_ = false;
     bool complement_partial_ = false;         ///< CS-T: only the first complement_pin_limit_ bytes are registered

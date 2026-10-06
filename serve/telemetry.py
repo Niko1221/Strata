@@ -264,13 +264,16 @@ class _CpuRamFallback:
 
 # ------------------------------------------------------------------------------------------------ the sampler
 class Telemetry:
-    def __init__(self, extra=None, gpu_index=0, gpu_indices=None, amd=False):
+    def __init__(self, extra=None, gpu_index=0, gpu_indices=None, amd=False, workload_sampler=None):
         """`extra()` -> dict of more series to record each second (the server's tok/s).  `gpu_index`: the card the
         engine runs on, numbered as nvidia-smi and NVML number them (by PCI bus); `gpu_indices`: all of them when
         the model is split across several (issue #112) - the gpu_* readings are then their total (memory, power,
         PCIe traffic), mean (load) or hottest (temperature), and "gpus" has each card's own.  `amd`: the AMD backend's
         cards, numbered as HIP numbers them, read from sysfs (#301)."""
         self.extra = extra
+        # Opt-in private aggregate; runs on this same 1s thread before extra().
+        # Accept an object with sample(now), or a callable binding server/native exclusions.
+        self.workload_sampler = workload_sampler
         self.lock = threading.Lock()
         self.now: dict = {}
         self.hist = collections.defaultdict(lambda: collections.deque(maxlen=HISTORY))
@@ -313,8 +316,47 @@ class Telemetry:
         dt = t - prev[0]
         return (c.read_bytes - prev[1]) / dt / 2**20, (c.write_bytes - prev[2]) / dt / 2**20
 
+    def capacity(self):
+        """Fresh physical RAM/VRAM only; no deltas, history, cached snapshot, or extra callback.
+
+        A multi-card total is available only when every configured reader returns that field:
+        a partial sum would understate capacity usage during model-load admission.
+        """
+        s = {"ram_used": None, "ram_total": None, "gpu_mem_used": None, "gpu_mem_total": None}
+        try:
+            if self.ps:
+                vm = self.ps.virtual_memory()
+                s["ram_used"], s["ram_total"] = vm.total - vm.available, vm.total
+            else:
+                s["ram_used"], s["ram_total"] = self.fallback.ram()
+        except Exception:  # noqa: BLE001 - a failed sensor must not stop admission sampling
+            try:
+                s["ram_used"], s["ram_total"] = self.fallback.ram()
+            except Exception:  # noqa: BLE001
+                pass
+        reads = []
+        for index, reader in self.gpus:
+            reading = {}
+            try:
+                if reader.ok():
+                    value = reader.read()
+                    if isinstance(value, dict):
+                        reading = value
+            except Exception:  # noqa: BLE001
+                pass
+            reads.append({"index": index, "mem_used": reading.get("mem_used"),
+                          "mem_total": reading.get("mem_total")})
+        if len(reads) > 1:
+            s["gpus"] = reads
+        for field in ("mem_used", "mem_total"):
+            values = [reading[field] for reading in reads]
+            if values and all(value is not None for value in values):
+                s["gpu_" + field] = sum(values)
+        s["sampled_at"] = time.time()
+        return s
+
     def sample(self):
-        s = {}
+        s = {"sampled_at": time.time()}        # capacity policy rejects old or unavailable hardware readings
         if self.gpu.ok():
             reads = [(i, g.read()) for i, g in self.gpus]
             g = dict(reads[0][1])
@@ -343,6 +385,14 @@ class Telemetry:
             s["cpu"] = self.fallback.cpu()
             s["ram_used"], s["ram_total"] = self.fallback.ram()
         s["disk_read_mb"], s["disk_write_mb"] = self._disk()
+        sampler = getattr(self, "workload_sampler", None)
+        if sampler is not None:
+            try:
+                sample = sampler.sample if hasattr(sampler, "sample") else sampler
+                s["workload"] = sample(s["sampled_at"])
+            except Exception:  # noqa: BLE001 - no failed workload sensor can stop telemetry
+                s["workload"] = {"complete": False, "codex_present": False,
+                                 "cpu_percent": None, "rss_bytes": None}
         if self.extra:
             try:
                 s.update(self.extra())

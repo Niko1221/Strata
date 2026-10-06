@@ -121,6 +121,9 @@ public:
     /// Positions [pos0, pos0 + n) holding `tokens`; `ss.ple_prev` must be the two tokens before pos0 (oldest
     /// first, -1 for none) and is advanced to the last two of these.
     bool run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err);
+    /// Between completed chunks (or idle), finish host expert reads before changing live cache ownership.
+    /// The caller must also synchronize GPU readers; this does not reset prompt or session state.
+    void drain_expert_reads();
 
     const PrefillStats& stats() const { return stats_; }
 
