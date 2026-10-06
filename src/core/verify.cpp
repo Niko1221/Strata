@@ -2353,7 +2353,7 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
     // ("verify batch: layer K never rang (graph finished)" - K is that stage's first layer), and with it the graph
     // sits on the PLE wait until the 20 s timeout.  As run() does: raise the PLE flag the graph's first wait reads,
     // let the graph run to the end, and skip the host's per-layer service (there is nothing to serve).
-    if (all_resident_) {
+    if (ar_on()) {
         if (ss_->ple.ready() && ple_stage()) {
             std::atomic_thread_fence(std::memory_order_seq_cst);
             _mm_sfence();
@@ -2523,12 +2523,12 @@ int Verifier::batch_poll(PoolMultiFn pool, void* user, std::string& err) {
     // #646: an all-resident stage's graph raises no host doorbells (see run_slot_rows): nothing to serve per layer,
     // so the poll is just "has the graph finished" - except the PLE flag, which the graph's first wait reads and
     // only the host can raise (the same raise run_slot_rows makes).
-    if (all_resident_ && ss_->ple.ready() && ple_stage()) {
+    if (ar_on() && ss_->ple.ready() && ple_stage()) {
         std::atomic_thread_fence(std::memory_order_seq_cst);
         _mm_sfence();
         *h_flag_ = 1;
     }
-    while (!all_resident_ && b_k_ < b_steps_) {
+    while (!ar_on() && b_k_ < b_steps_) {
         const uint32_t want = (uint32_t) (b_k_ + 1);
         if (*seq < want) {
             const auto now = Clock::now();
