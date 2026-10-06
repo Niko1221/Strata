@@ -1302,6 +1302,16 @@ if(STRATA_NATIVE_EXPERTS)
     add_test(NAME hip_prefill_fused_iq COMMAND hip_prefill_fused_iq)
     set_tests_properties(hip_prefill_fused_iq PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
     list(APPEND _strata_hip_tests hip_prefill_fused_iq)
+    if(STRATA_MMQ_KQUANTS)
+      # the UD-Q4_K_XL / UD-Q6_K_XL expert formats through the HIP MMQ build against ggml's dequantized weights
+      # (tests/cuda's test, synthetic, a few seconds)
+      add_executable(hip_prefill_mmq_kquant tests/cuda/prefill_mmq_kquant_test.cpp)
+      target_include_directories(hip_prefill_mmq_kquant PRIVATE "${_strata_gg}/include")
+      target_link_libraries(hip_prefill_mmq_kquant PRIVATE strata_mmq ggml-base strata_hip_runtime)
+      add_test(NAME hip_prefill_mmq_kquant COMMAND hip_prefill_mmq_kquant)
+      set_tests_properties(hip_prefill_mmq_kquant PROPERTIES TIMEOUT 120)
+      list(APPEND _strata_hip_tests hip_prefill_mmq_kquant)
+    endif()
 
     # Numerical diagnostic: synthetic layouts by default, optional first-expert IQ3_XXS/IQ4_NL check with a pack.
     add_executable(hip_prefill_mmq_parity tests/hip/prefill_mmq_parity.cpp)

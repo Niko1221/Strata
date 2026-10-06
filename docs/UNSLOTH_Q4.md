@@ -24,10 +24,11 @@ What setup does differently for this model:
 
 - It needs 48 GB of RAM or more (with less it asks, default no; `--model UD-Q4_K_XL --yes` installs it anyway) and
   engine 0.1.32 or newer (checked before anything is downloaded), and an NVIDIA
-  GPU: it has not been run on AMD cards (its prompt kernels for the Q4_K / Q5_K experts are NVIDIA-only), so with
-  `--backend hip` setup says so and asks before the download (#429; `--model UD-Q4_K_XL --yes` tries it). One GPU
-  by default: the RAM budget below has no layer split (the engine refuses `--resident-budget-gib` with one). No
-  images (the vision encoder is not wired to this file yet) and no experimental speed projection (not tested with it).
+  GPU: setup has not been run with it on AMD cards, so with `--backend hip` setup says so and asks before the download
+  (#429; `--model UD-Q4_K_XL --yes` tries it). Set up by hand, it runs on an R9700 ([below](#on-an-amd-card-r9700-set-up-by-hand)).
+  One GPU by default: the RAM budget below has no layer split (the engine refuses `--resident-budget-gib` with one).
+  Setup offers no images for it (they work when added by hand, [below](#on-an-amd-card-r9700-set-up-by-hand)) and no
+  experimental speed projection (not tested with it).
 - Several GPUs (#498): when the RAM holds the GGUF files and 24 GB more (~135 GB of RAM) and two or more cards can
   share it, setup asks (one GPU stays the default; `--gpus 0,1` takes the split). The split runs **without** the RAM budget: all 77 GB of experts are loaded into RAM from the GGUFs at
   start, the files pass through the OS file cache while they load, and the config gets `"gpu": [0, 1]` and
@@ -180,6 +181,32 @@ also fails, the warning preserves both the GPU allocation or mapping error and t
 - Where the time goes (`--stats` on the command line): at 40 GiB about 550-750 ms of each verify round (3.5 tokens) is
   reading experts from the SSD, ~75 ms the CPU's expert kernels, ~13 ms the GPU.
 
+## On an AMD card (R9700, set up by hand)
+
+Measured on a Radeon AI PRO R9700 (32 GB, gfx1201), i7-12700KF (no AVX-512: the CPU's expert kernels run on AVX-2),
+96 GB DDR4-3200, Ubuntu 26.04, setup's ROCm 7.10 wheels, engine 0.1.40 built with `-DSTRATA_MMQ_KQUANTS=ON` (the HIP
+build has the Q4_K / Q5_K / Q5_1 MMQ kernels since 43881f1; CTest `hip_prefill_mmq_kquant` checks them on the card).
+The pack and server config are the ones above, with `"exe"` set to `build-hip/strata`, `--resident-budget-gib 64`,
+`--max-context 262144 --kv int8 --kv-resident 32768` and the MTP draft layer. All experts are resident: 8,176 in the
+GPU cache and 47.87 GiB page-locked in RAM, no file reads.
+
+| What | Measured |
+| --- | --- |
+| Prompts, 19K-63K tokens (6, no shared prefix) | 800-941 tokens/s |
+| One answer of 1,000 tokens (sampled, temperature 1.0) | 32.1 and 36.6 tok/s (2 runs) |
+| Two answers at once (`"parallel": 2`, 1,000 tokens each) | 22.1-22.5 tok/s together, ~11 each (3 runs) |
+| An image (CPU encoder, `"max_tokens": 1024`), then a second question on it | 24.7 s, then 8.4 s (encoded once) |
+
+- No stalls in 12 long prompts from a cold start: the 6 above, and 6 pairs of a 13K-57K prompt with a short request
+  3 s after it on 2 slots. Engine 0.1.39 on the same PC hit the 60 s no-progress watchdog (#29) in about half of such
+  prompts while reading them ("reading the prompt (batched): layer 0-7"), with one slot or two, and with
+  `STRATA_PREFILL_MMQ=0`; `STRATA_RESIDENT_PIN=0` (RAM not mapped for the GPU) avoided it.
+- Images: the `"vision"` section and `--vision` as for the other models, with this file's first shard as `"model"`
+  and ISTA-DASLab's `mmproj-Qwen3.8-Flash-Next-BF16.gguf`, the encoder on the CPU (`"gpu": false`). With 1,024 image
+  tokens the model read a 2560x1440 screenshot's small text correctly (a GPU name, a speed, a VRAM figure); with 300
+  (the CPU default) it described the layout but misread those numbers (engine 0.1.39).
+- Not yet on AMD: the comparison against llama.cpp below.
+
 ## Quality: against llama.cpp on the same file
 
 Strata and llama.cpp (the pinned commit `3cf0325`, a CPU build reading the GGUF memory-mapped) were given the same
@@ -292,7 +319,8 @@ whose header shows the same formats.
 - Tests: the packer's synthetic 4-shard and conversion tests (`.venv/bin/python -m unittest discover -s tools -p
   test_iq_pack.py`); CTests `gguf_split_test`, `expert_layout_test`, `native_expert_parity_*` (the three real expert
   format pairs against ggml-cpu, the Q5_1 min term, Q8_0 rows, Q4_0/Q4_0 and Q4_0/Q4_1), `prefill_mmq_kquant_test` (with `-DSTRATA_MMQ_KQUANTS=ON`: the
-  prompt path's MMQ products for Q4_K / Q5_K / Q5_1 / Q8_0 against ggml's dequantized weights); the in-place mode against `experts.bin` on the Coder
+  prompt path's MMQ products for Q4_K / Q5_K / Q5_1 / Q8_0 against ggml's dequantized weights; `hip_prefill_mmq_kquant`
+  on a HIP build); the in-place mode against `experts.bin` on the Coder
   (identical tokens and logits).
 - Real runs: greedy answers to a coding prompt (correct) at every budget and setting above, identical across them;
   the same tokens as llama.cpp at 97.5-99% of the positions of short greedy answers and 90-91% after a 16K prompt,
