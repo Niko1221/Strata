@@ -2158,6 +2158,39 @@ class WebApp(unittest.TestCase):
                 self.assertEqual(code, 200)
                 self.assertIn(want, ctype)
 
+    def test_the_whole_app_can_move_to_another_path(self):
+        # the run config's "dashboard" (or --dashboard): the page, its files and the API all come under that path.
+        # It moves as one because the page asks for everything by relative URL (#82) - which is also why the page
+        # is only reached with the trailing slash: without it a browser would resolve those against / again.
+        self.svc.dashboard = "/ui"
+        try:
+            code, ctype, body = self.get("/ui/")
+            self.assertEqual(code, 200)
+            self.assertIn("text/html", ctype)
+            self.assertIn(b"\"web/app.js\"", body)
+            self.assertEqual(self.get("/ui")[0], 200)             # /ui is moved to /ui/, then served
+            for path in ("/ui/web/app.js", "/ui/web/app.css", "/ui/web/tokens.css", "/ui/web/sprite.svg",
+                         "/ui/health", "/ui/metrics", "/ui/status", "/ui/v1/models"):
+                with self.subTest(path=path):
+                    self.assertEqual(self.get(path)[0], 200)
+            for path in ("/", "/web/app.js", "/web/tokens.css"):    # the page's own things moved with it
+                with self.subTest(path=path):
+                    self.assertEqual(self.get(path)[0], 404)
+            # the API does not move: /v1 and the rest answer where they always have, and the page's own calls
+            # (relative, #82) arrive under /ui and work there too
+            for path in ("/health", "/v1/models", "/metrics", "/ui/health", "/ui/v1/models"):
+                with self.subTest(path=path):
+                    self.assertEqual(self.get(path)[0], 200)
+            data = json.dumps({"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                               "max_tokens": 5}).encode()
+            for path in ("/v1/chat/completions", "/ui/v1/chat/completions"):
+                req = urllib.request.Request(self.base + path, data=data,
+                                            headers={"Content-Type": "application/json"})
+                with self.subTest(path=path):
+                    self.assertEqual(urllib.request.urlopen(req, timeout=10).getcode(), 200)
+        finally:
+            self.svc.dashboard = ""
+
     def test_only_the_app_files_are_served(self):
         for path in ("/web/..%2Fserver.py", "/web/index.html", "/web/test.py", "/fonts/..%2F..%2Fsetup.py",
                      "/fonts/missing.woff2", "/fonts/x.ttf"):
@@ -2262,7 +2295,7 @@ class WebApp(unittest.TestCase):
         try:
             self.assertEqual(self.get("/metrics")[0], 401)
             self.assertEqual(self.get("/metrics", {"Authorization": "Bearer secret"})[0], 200)
-            self.assertEqual(self.get("/")[0], 200)                  # the page itself asks for the key
+            self.assertEqual(self.get("/")[0], 200)                   # the page itself asks for the key
         finally:
             self.svc.api_key = ""
 

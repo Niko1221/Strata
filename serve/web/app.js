@@ -1066,7 +1066,7 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("drawe
 // ------------------------------------------------------------------ start
 setBusy(false);
 renderChat();
-const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)
+const startQuestion = new URLSearchParams(location.search).get("q");   // ?q=... starts a chat (a shortcut)
 if (startQuestion) history.replaceState(null, "", location.pathname + location.hash);
 loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
 showTab(location.hash.slice(1) || "chat");

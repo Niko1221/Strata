@@ -99,7 +99,7 @@ Il vous pose quelques questions :
 
 Appuyez sur Entrée à chaque fois pour garder la réponse recommandée. Ensuite il télécharge le modèle (environ 70 Go)
 et le démarre. Si le téléchargement s'arrête, relancez-le : il reprend là où il s'était arrêté. Votre navigateur
-ouvre l'application Strata à l'adresse `http://127.0.0.1:8080`.
+ouvre l'application Strata à l'adresse `http://127.0.0.1:8080/`.
 
 > **Pendant le démarrage du modèle, votre PC peut ralentir ou ne plus répondre pendant 1-3 minutes** (plus longtemps la première fois).
 > Strata charge 35-55 Go dans votre RAM et en réserve une partie pour la carte graphique. C'est normal. Attendez, et
@@ -144,7 +144,7 @@ tard, lancez `SETUP.bat` (Linux : `./setup.sh --setup`).
 <p align="center"><img src="docs/media/runpagoda.png" width="900" alt="L'onglet Monitor de l'application Strata à côté d'un agent de code"><br>
 <sub>Le <b>Monitor</b> de l'application Strata (à gauche) pendant qu'un agent de code écrit le jardin de pagode de la vidéo (à droite)</sub></p>
 
-- **Dans le navigateur :** ouvrez `http://127.0.0.1:8080`. Vous y trouvez **Chat**, un **Monitor** en direct du
+- **Dans le navigateur :** ouvrez `http://127.0.0.1:8080/`. Vous y trouvez **Chat**, un **Monitor** en direct du
   modèle et de votre GPU/CPU/RAM, et **About** avec les réglages et les adresses.
 - **Vos applications et agents de code :** ajoutez un fournisseur « OpenAI-compatible » avec l'URL de base
   **`http://127.0.0.1:8080/v1`**. N'importe quelle clé API et n'importe quel nom de modèle fonctionnent.

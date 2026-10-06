@@ -35,7 +35,7 @@ the engine for your GPU (asks first; 20-40 minutes once). More: [details](DETAIL
 3. Answer a few questions - or just press Enter each time for the recommended choice ([the questions](#setups-questions)).
 
 Then it downloads everything (the model is ~70 GB, so the first time takes a while - you can stop and it picks up
-where it left off) and **starts the model**. Your browser opens the Strata app at `http://127.0.0.1:8080`.
+where it left off) and **starts the model**. Your browser opens the Strata app at `http://127.0.0.1:8080/`.
 
 > **While the model starts, your PC can be slow or stop responding for 1-3 minutes** (longest the first time): Strata
 > loads 35-55 GB into your RAM and locks part of it for the graphics card. That's normal - wait, and don't close the
@@ -53,7 +53,7 @@ start is 24x slower: [Running it at startup](DETAILS.md#running-it-at-startup-ta
 ```
 
 The same questions, the same automatic install (it uses `sudo apt` for Python and, only if it has to compile, for
-the build tools), and the same start: `http://127.0.0.1:8080`. Later runs of `./setup.sh` (or `./run-<model>.sh`)
+the build tools), and the same start: `http://127.0.0.1:8080/`. Later runs of `./setup.sh` (or `./run-<model>.sh`)
 start the model directly; `./setup.sh --setup` installs another model or changes the settings. Other distributions,
 WSL and compiling: [details](DETAILS.md#linux).
 

@@ -186,7 +186,7 @@ class Monitor(unittest.TestCase):
     def test_page_and_relative_assets_are_served(self):
         code, html = self.request("/api-monitor")
         self.assertEqual(code, 200)
-        self.assertIn('src="/web/monitor.js"', html)
+        self.assertIn('src="web/monitor.js"', html)   # relative, so the page works under "dashboard" too
         code, script = self.request("/web/monitor.js")
         self.assertEqual(code, 200)
         self.assertIn("textContent", script)

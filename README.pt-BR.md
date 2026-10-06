@@ -99,7 +99,7 @@ Ele faz algumas perguntas:
 
 Aperte Enter em cada uma para usar a resposta recomendada. Depois ele baixa o modelo (cerca de 70 GB) e o inicia.
 Se o download parar, rode de novo: ele continua de onde parou. Seu navegador abre o app do Strata em
-`http://127.0.0.1:8080`.
+`http://127.0.0.1:8080/`.
 
 > **Enquanto o modelo inicia, seu PC pode ficar lento ou parar de responder por 1-3 minutos** (mais na primeira vez).
 > O Strata carrega 35-55 GB na sua RAM e reserva parte dela para a placa de vídeo. Isso é normal. Espere e não
@@ -144,7 +144,7 @@ Tamanhos, downloads e o que cabe onde: [docs/MODELS.md](docs/MODELS.md). Para ad
 <p align="center"><img src="docs/media/runpagoda.png" width="900" alt="A aba Monitor do app Strata ao lado de um agente de programação"><br>
 <sub>O <b>Monitor</b> do app Strata (à esquerda) enquanto um agente de programação escreve o jardim com pagode do vídeo (à direita)</sub></p>
 
-- **No navegador:** abra `http://127.0.0.1:8080`. Lá tem o **Chat**, um **Monitor** ao vivo do modelo e da sua
+- **No navegador:** abra `http://127.0.0.1:8080/`. Lá tem o **Chat**, um **Monitor** ao vivo do modelo e da sua
   GPU/CPU/RAM, e o **About** com as configurações e os endereços.
 - **Seus apps e agentes de programação:** adicione um provedor "OpenAI-compatible" com a URL base
   **`http://127.0.0.1:8080/v1`**. Qualquer chave de API e qualquer nome de modelo funcionam.

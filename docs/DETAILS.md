@@ -387,7 +387,7 @@ Windows, `build-essential` + CUDA on Ubuntu) and compiles the engine for your GP
 4. **Images?** yes / no (see [Images](#images-vision)).
 
 Then it downloads and prepares everything (the model is 66-76 GB, so the first start takes a while; an interrupted
-download continues where it stopped) and **starts the model**: your browser opens `http://127.0.0.1:8080`, the Strata
+download continues where it stopped) and **starts the model**: your browser opens `http://127.0.0.1:8080/`, the Strata
 app. It has three tabs:
 - **Chat:** streaming answers, the model's thinking (folded away once it answers), code with a copy button, pictures when
   images are on, and sampling and thinking-level settings. Chats stay in your browser.
@@ -537,6 +537,18 @@ The server listens on `http://127.0.0.1:8080` (change with `--port` in setup, or
 | Save / restore the conversation to a file (session files, below) | `POST /slots/0?action=save\|restore` |
 | Everything the Monitor tab shows (engine, live state, last requests, hardware) | `GET /metrics` |
 | The MCP servers, their state and tools ([below](#tools-from-mcp-servers)) | `GET /mcp` |
+| The web app's page: Chat, Monitor, About ([above](#using-it)) | `GET /` - and `/?q=<your question>` opens a chat already asking |
+| The API monitor's own page ([below](#api-request-monitor)) | `GET /api-monitor` |
+
+`"dashboard": "/ui"` in the run config (or `serve/server.py --dashboard /ui`) serves the web page at `/ui/` instead
+of `/`, along with the styles, script, icon file and font the page loads for itself (`/ui/web/*`, `/ui/fonts/*`).
+`/` then answers 404, so your own page or a reverse proxy can hold the root. **The API is not in scope**:
+`/v1/chat/completions`, `/v1/messages`, `/health`, `/metrics` and the rest answer where they always have, so no
+client of Strata's API changes anything - and neither does the page, which asks for its files and for the API by
+relative URL ([#82](https://github.com/Niko1221/Strata/issues/82)) and reaches both under either spelling. Ask for
+`/ui` without the trailing slash and it redirects to `/ui/`, because a browser would otherwise resolve those relative
+URLs against `/`. A path that is not one of the server's own (not `/web`, `/v1`, `/health`, ...) is refused before
+the model loads.
 
 `/models` and `/v1/models` list only the loaded model, with its context limit and input modalities. `/props` exposes the original chat template, context limit, configured generation defaults (shared settings take precedence), model path and engine version when available. Context means the full engine context, not the resident KV window. `n_predict: -1` means no fixed output cap. Unconfigured sampling fields are omitted. `autoload` has no effect; an unknown `model` returns 404. These metadata endpoints and `/slots` require the API key when one is configured. They do not load, unload or restart models.
 

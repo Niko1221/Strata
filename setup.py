@@ -5,7 +5,7 @@
 
 The first time it asks four questions - which model (the original Qwen3.8-Flash-Next or the Swift 1.5 fine-tune),
 which size, how much context, and whether the model should also read images - then installs everything and starts the model on http://127.0.0.1:8080 (OpenAI- and Anthropic-compatible
-API; a small page there shows that it runs). Every later start skips straight to running the model: nothing that
+API; its chat page is at http://127.0.0.1:8080/). Every later start skips straight to running the model: nothing that
 is already downloaded, installed or prepared is done again.
 
 What the first run does (each step is skipped when it is already done):
