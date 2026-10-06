@@ -511,6 +511,8 @@ struct PeerPrefill {
     // T x N) instead of its rows (rows_peer x N, up to K times more over the primary's link); the primary's combine
     // adds it to its own experts' rows (eddoursul/Strata's second-GPU prompt path, f8de703).
     bool sums = false;
+    cudaStream_t x_stream = nullptr;      // primary: the host route's copies beside its compute stream
+    cudaEvent_t ev_x = nullptr;
     bool f16 = false;                     // the sums mode's transfers in FP16 (STRATA_PF_PEER_F16=0: FP32)
     // the sums in one launch per group (STRATA_PF_PEER_GATHER=0: per expert): per group [tokens | starts | rows] at
     // adds_at[g], built on the host from the rows' pairs, uploaded once per layer
@@ -547,6 +549,8 @@ struct PeerPrefill {
         if (s) cudaStreamDestroy(s);
         cudaSetDevice(prev);
         if (ev_in) cudaEventDestroy(ev_in);
+        if (x_stream) { cudaStreamSynchronize(x_stream); cudaStreamDestroy(x_stream); }
+        if (ev_x) cudaEventDestroy(ev_x);
         if (host_x) cudaFreeHost(host_x);
         if (host_rows) cudaFreeHost(host_rows);
         if (host_src) cudaFreeHost(host_src);
@@ -1405,6 +1409,15 @@ bool Prefill::set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& e
     const int64_t R = pp->cap_rows;
     const MmqPlan& mp = mmq_plan();
     if (cudaEventCreateWithFlags(&pp->ev_in, cudaEventDisableTiming) != cudaSuccess) { err = "prefill peer: event"; return false; }
+    if (!pp->p2p) {   // the host route's copies on a stream of their own (STRATA_PF_PEER_XSTREAM=0: the compute stream)
+        const char* xv = std::getenv("STRATA_PF_PEER_XSTREAM");
+        if ((xv == nullptr || std::atoi(xv) != 0) &&
+            (cudaStreamCreateWithFlags(&pp->x_stream, cudaStreamNonBlocking) != cudaSuccess ||
+             cudaEventCreateWithFlags(&pp->ev_x, cudaEventDisableTiming) != cudaSuccess)) {
+            err = "prefill peer: copy stream";
+            return false;
+        }
+    }
     int prev = 0;
     cudaGetDevice(&prev);
     pp->dev = peer->device();
@@ -2780,14 +2793,22 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         peer_now = use_mmq && !order_peer.empty();
                         if (peer_now) {
                             PeerPrefill& P = *m.pp;
-                            if (!P.p2p && P.f16) cudaMemcpyAsync(P.host_x16, m.mixed_h, (size_t) T * N * 2, cudaMemcpyDeviceToHost, m.cs);
-                            else if (!P.p2p) cudaMemcpyAsync(P.host_x, m.mixed, (size_t) T * N * 4, cudaMemcpyDeviceToHost, m.cs);
+                            // the host route's copies beside the compute stream: the primary's own experts start at once
+                            // (mixed_h and w are rewritten only after this layer's combine, which waits for the peer)
+                            cudaStream_t xs = m.cs;
+                            if (P.x_stream != nullptr) {
+                                cudaEventRecord(P.ev_x, m.cs);
+                                cudaStreamWaitEvent(P.x_stream, P.ev_x, 0);
+                                xs = P.x_stream;
+                            }
+                            if (!P.p2p && P.f16) cudaMemcpyAsync(P.host_x16, m.mixed_h, (size_t) T * N * 2, cudaMemcpyDeviceToHost, xs);
+                            else if (!P.p2p) cudaMemcpyAsync(P.host_x, m.mixed, (size_t) T * N * 4, cudaMemcpyDeviceToHost, xs);
                             if (P.sums) {   // the routing weights, and each peer row's routed pair (t * K + k)
-                                cudaMemcpyAsync(P.host_w, m.w, (size_t) T * K * 4, cudaMemcpyDeviceToHost, m.cs);
+                                cudaMemcpyAsync(P.host_w, m.w, (size_t) T * K * 4, cudaMemcpyDeviceToHost, xs);
                                 for (int64_t i = 0; i < T * K; ++i)
                                     if (const int32_t r = slot_h[(size_t) i]; r >= rows_local) P.host_pair[r - rows_local] = (int32_t) i;
                             }
-                            cudaEventRecord(P.ev_in, m.cs);
+                            cudaEventRecord(P.ev_in, xs);
                             int prevd = 0;
                             cudaGetDevice(&prevd);
                             cudaSetDevice(P.dev);
