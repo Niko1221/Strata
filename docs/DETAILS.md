@@ -484,18 +484,37 @@ server, three server options (all off by default; also as keys in `strata-<model
 
 | Option | Config key | What it does |
 | --- | --- | --- |
-| `--idle-unload 600` | `"idle_unload_s": 600` | unload the model after 600 s without requests; the next request loads it again |
+| `--idle-unload 600` | `"idle_unload_s": 600` | unload the model after 600 s without requests; the next request loads it again (the Monitor tab sets it too) |
 | `--min-free-vram-mib 11000` | `"min_free_vram_mib": 11000` | load an unloaded model only when that much VRAM is free (it waits up to 15 s for memory being given back), else answer **503** "the GPU is in use by another program" instead of starting into what a game left (with several GPUs it checks the first one) |
 | `--before-load "cmd"` | `"before_load": "cmd"` or `["cmd", "arg"]` | a command run before the model is loaded again, e.g. one that unloads another server's model |
 
-`POST /unload` unloads it now (`409` while a request is running) and `POST /load` loads it ahead of a request (both
-with `Content-Type: application/json`, e.g. `curl -X POST -H "Content-Type: application/json" localhost:8080/unload`);
-`/health` says `"loaded"`, `/v1/models` lists it as `unloaded` (like llama.cpp's router), `/props` sets
+`POST /unload` unloads it now and `POST /load` loads it ahead of a request (both with `Content-Type:
+application/json`, e.g. `curl -X POST -H "Content-Type: application/json" localhost:8080/unload`). Both answer
+**409** `"busy"` while a request is running or waiting: the model controls must not move the engine out from under an
+active client, and a client that has to retry anyway is better served by a refusal than by a reload it did not ask
+for. `/health` says `"loaded"`, `/v1/models` lists it as `unloaded` (like llama.cpp's router), `/props` sets
 `is_sleeping` and the Monitor shows the state. Unloading ends the engine process - and the image encoder, when images
-are on; it is started again first, as at a start - so their VRAM and RAM go straight back. The model files stay in
+are on; it is started again first, as at a start - so their VRAM and RAM go straight back. The engine's *live*
+figures go with it: an unload clears `expert_slots`, `expert_cache_mib`, `arena_mib`, `vram_free_mib` and the rest of
+its per-run INFO from `/metrics`, so the Monitor's **Experts in VRAM** row reports what the card is really doing
+(`model unloaded · 36 MiB in use`, read from the driver) instead of the last session's numbers. The facts that
+describe how the engine *would* run - context, KV type, speculation - stay, so About still describes the model while
+nothing is loaded. The model files stay in
 the OS file cache, so loading again takes seconds while that RAM is not needed elsewhere. Measured on an RTX 5060 Ti
 16 GB with Q2_0 in the low-RAM mode: unloading takes ~0.3 s, and a request to an unloaded model answered after
 4.6 s (text) or 14.7 s (a picture, image encoder on the CPU).
+
+The Monitor tab's Model state card has one **split button** for these two calls: the main segment is **Load** when
+the model is unloaded and **Unload** when it is loaded (it reads **Loading…** / **Unloading…** while it works, and
+is enabled only when nothing runs, as the server refuses a load/unload in the middle of a request); the caret
+segment opens a dropdown that sets `idle_unload_s` on a slider (never to 2 hours) and applies it
+right away - the idle loop reads the value on every turn, so a change from the page needs no restart - and shows the
+active timer as a tag on the caret. The slider covers the minutes in whole steps, but not on a straight line: they are
+a piecewise curve over the track, so the steps are fine near `never` (a minute apart up to 20), twice as coarse to
+45, and coarser again above (about 3 minutes apart at 2 hours). A straight 0-120 minute scale would put `never` one
+pixel from `1 min` and give the common 5-20 minute range a sixth of the track. The labels sit under the thumb
+centres, and `idle_unload_s` is capped at 7200 s on the server as well as on the page. Measured on a 7900 XTX 24 GB with IQ2_XS: `POST /unload` took ~1 s and
+`rocm-smi`'s used VRAM went from 23.7 GiB to 45 MiB, so the card is free for other programs.
 
 **Giving part of the VRAM back while it keeps serving (#533, opt-in, one NVIDIA GPU).** With `"vram_elastic": true`
 in the config (the engine flag `--vram-elastic`), the expert cache is allocated in 512 MiB segments
@@ -570,10 +589,15 @@ print(r.choices[0].message.content)
   part of the thinking the client sees and counts as output tokens. `"reasoning_budget_tokens": N` in
   `strata-<model>.json` sets it for every request; a request's own value wins, and `0` means no budget. Off by default;
   Anthropic's `"thinking": {"budget_tokens": N}` still only chooses the level, as above.
-- **A reply stuck on one token is ended (0.1.39, #606).** When a reply repeats the same token 256 times in a row, the
-  server ends it there with `finish_reason` `"length"` and says so in its window: a model in a loop, or a broken
-  state that answers one token forever (#606 saw 36,689 tokens of `!`). `"repeat_stop_tokens": N` in
-  `strata-<model>.json` sets the run length; `0` turns it off (for a request that really wants one token many times).
+- **A reply stuck on one token is ended, and the engine is replaced (0.1.39, #606).** When a reply repeats the same
+  token 256 times in a row, the server ends it there and says so in its window: a model in a loop, or a broken state
+  that answers one token forever (#606 saw 36,689 tokens of `!`). Such a state is sticky - the next prompt gets the
+  same answer - so the engine is **restarted** (a fresh process, empty caches) and the request ends in an **error**
+  ("the engine's reply repeated one token '!' 256 times in a row and holds no answer - retry this request"), never in
+  the empty message that reads as `"length"` with no text and that an agent client cannot act on. Every agent client
+  retries, so its retry meets a clean engine; with parallel requests (`--batch`) the engine is left alone (restarting
+  it would end the others) and only the error is sent. `"repeat_stop_tokens": N` in `strata-<model>.json` sets the run
+  length; `0` turns the whole thing off (for a request that really wants one token many times).
 - **Repeated reasoning (opt-in, #728).** The single-token guard above does not see a model that repeats whole
   passages. `"reasoning_loop_recovery"` in `strata-<model>.json` is `false` (the default), `"stop"` or `"recover"`
   (`true` means `"recover"`). Every 512 output tokens, at a complete character and parser boundary, the reasoning is
@@ -665,7 +689,8 @@ print(r.choices[0].message.content)
   `reasoning_budget_tokens`, `fit_max_tokens`, `anthropic_thinking`, `effort_position`, `aliases`, `idle_unload_s`,
   `lazy_load`, `engine_silence_s`, `api_monitor`, `open_browser` and `--vram-reserve-mib`. An empty field removes the
   key (its default). Every other key of the file stays as it is, the earlier file is kept as
-  `strata-<model>.json.bak`, and the model uses the change from its next start. Only Strata's own page can save
+  `strata-<model>.json.bak`, and the model uses the change from its next start - `idle_unload_s` excepted, which
+  the running server applies right away. Only Strata's own page can save
   (JSON, the API key when one is set, as for the Chat settings); the network, key, MCP and program keys are not
   editable there.
 - **From other devices on your network.** The server listens on your PC only (`127.0.0.1`) unless you say otherwise:

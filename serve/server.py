@@ -248,6 +248,8 @@ class MockEngine:
 class EngineDied(RuntimeError):
     """The engine process ended in the middle of a request (issue #27: on Linux, the out-of-memory killer)."""
 
+    hint = "; the next request restarts it"        # what a client is told after the error (DegenerateReply: none)
+
 
 class EngineStarting(RuntimeError):
     """The engine is (re)starting and has not said READY yet (#344): no context size to plan a request with - a 503,
@@ -279,6 +281,11 @@ class SessionRefused(ValueError):
     @property
     def status(self) -> int:
         return self.STATUS[self.kind]
+class DegenerateReply(EngineDied):
+    """#606: the engine answered with one token repeated over and over - not an answer, and it answers the next request
+    the same way.  Service.run restarts the engine (nothing it sent can be taken back) and raises this, so a client
+    that retries - every agent client does - meets a clean engine instead of an empty message it cannot use."""
+    hint = ""
 
 
 class EngineStuck(RuntimeError):
@@ -543,6 +550,14 @@ class StrataEngine:
     last_err = None                      # #997: an ERR that was its last stdout line (death_note says it)
     batch = 0                            # --batch: the engine's batch slots (0: one request at a time)
 
+    # The INFO keys that only mean something while the engine is running (generate.cpp prints them at READY, and
+    # again for every VRAM command). An unload ends the process, which frees its arena and expert cache for real, so
+    # leaving them in `info` made /metrics - and the Monitor's "Experts in VRAM" - claim gigabytes of VRAM were
+    # still held, long after the driver had given them back. Everything else in INFO describes how the engine would
+    # run (context, kv, speculation) and stays, so About still describes the model while nothing is loaded.
+    LIVE_INFO = ("expert_slots", "expert_cache_mib", "expert_slots_primary", "expert_cache_primary_mib",
+                 "vram_free_mib", "arena_mib", "pool_workers", "vram")
+
     # `last`: the figures of the engine's last DONE line.  With batch slots several requests run at once, each on its
     # own thread, so each one reads its own request's figures (Service.run records them); one at a time, the one dict.
     @property
@@ -750,6 +765,8 @@ class StrataEngine:
         """Release GPU/RAM between requests, retaining the spawn config for automatic reloading."""
         self.close()
         self.unloaded = True
+        for k in self.LIVE_INFO:         # the process is gone, so these are history, not state (see LIVE_INFO)
+            self.info.pop(k, None)
 
     RESTART_RETRY_S = 15.0   # between the tries of restart(): a dying engine's VRAM may take a while to come back
 
@@ -2196,6 +2213,7 @@ class Service:
         # only start it again when this much VRAM is free, and run this command first (e.g. to unload another
         # server's model); the next request after an unload starts the engine again
         self.idle_unload_s = 0
+        self.idle_thread = None                          # the idle-unload loop, started once (set_idle_unload)
         self.min_free_vram_mib = 0
         self.before_load = None
         self.vram_reserve = None                         # #533: the last POST /v1/vram reserve (None: the start's)
@@ -2410,12 +2428,24 @@ class Service:
         print(f"[strata] {e}. {note} The next request starts the engine again."
               f"{' Its log: ' + log if log else ''}", flush=True)
 
-    def load(self):
-        """POST /load and every generation request: start the engine now if it is unloaded (raises GpuBusy)."""
+    def load(self, refuse_busy: bool = False) -> str:
+        """POST /load and every generation request: start the engine now if it is unloaded (raises GpuBusy).
+        "loaded", or with refuse_busy "busy": an explicit load from the page is refused while a request runs or waits
+        - the way /unload and /v1/load already do - instead of queueing behind it."""
         # a request is on its way: the idle thread must not unload between this and the request's own start
         self.last_request_at = time.time()
+        # refuse_busy comes before the "already loaded" answer below: with the engine up and generating, that
+        # answer would be true and the page's Load would look like it did something while a request ran.
+        if refuse_busy:
+            if not self.fifo.acquire(blocking=False):
+                return "busy"
+            with self.status_lock:
+                busy = bool(self.status.get("busy") or self.status.get("queued"))
+            self.fifo.release()
+            if busy:
+                return "busy"
         if self.loaded() and not self._vision_down():
-            return
+            return "loaded"
         trace = getattr(self.request_trace, "record", None)
         waiting = time.perf_counter()
         with self.fifo:
@@ -2431,6 +2461,7 @@ class Service:
                     with self.status_lock:
                         trace["load_s"] += round(time.perf_counter() - loading, 3)
                         trace["state"] = "queued"
+        return "loaded"
 
     def unload(self, idle_for: float | None = None) -> str:
         """Stop the engine between requests: "unloaded", "not loaded", "busy" (a request is running or waiting, or
@@ -2456,19 +2487,30 @@ class Service:
         finally:
             self.fifo.release()
 
+    def set_idle_unload(self, seconds) -> float:
+        """#564: idle_unload_s from the page's Settings, applied right away: the loop below reads the value on every
+        turn, so a change needs no restart (the run config keeps it for the next start as well).  0 = never."""
+        self.idle_unload_s = float(seconds)
+        if self.idle_unload_s:
+            self.start_idle_unload()
+        return self.idle_unload_s
+
     def start_idle_unload(self):
-        if not self.idle_unload_s or not hasattr(self.engine, "unload"):
+        if not self.idle_unload_s or not hasattr(self.engine, "unload") or self.idle_thread is not None:
             return
         print(f"[strata] the model unloads after {self.idle_unload_s} s without requests", flush=True)
 
         def loop():
             while True:
                 time.sleep(max(1.0, min(30.0, self.idle_unload_s / 4)))
+                if not self.idle_unload_s:            # switched off from the page while the loop runs
+                    continue
                 try:
                     self.unload(idle_for=self.idle_unload_s)
                 except EngineStuck as e:                # tried again at the next turn; the thread keeps running
                     print(f"[strata] idle unload: {e}", flush=True)
-        threading.Thread(target=loop, daemon=True).start()
+        self.idle_thread = threading.Thread(target=loop, daemon=True)
+        self.idle_thread.start()
 
     def set_shared(self, defaults) -> dict:
         """The Chat settings every client gets for what it leaves out; {} / None = clients use their own again."""
@@ -2609,7 +2651,8 @@ class Service:
                 "tok_s": round(self._tok_s(), 1) if state == "generating" else None,
                 "tok_s_mean": round(self._tok_s_mean(), 1) if state == "generating" else None,
                 "prefill_tok_s_mean": getattr(self.engine, "prefill_tok_s_mean", None) if s.get("busy") else None,
-                "tok_s_window_s": RATE_WINDOW_S if state == "generating" else None}
+                "tok_s_window_s": RATE_WINDOW_S if state == "generating" else None,
+                "idle_unload_s": self.idle_unload_s}
         if state == "reading" and progress:
             live["prompt_read"], live["prompt_total"] = progress
         par = int(getattr(self.engine, "batch", 0) or 0)
@@ -3081,8 +3124,7 @@ class Service:
                     elif repeated:
                         print(f"[strata] the reply repeated one token ({self.tok.decode([run_tok])!r}) "
                               f"{run_len} times in a row: ended as \"length\" (repeat_stop_tokens in "
-                              "strata-<model>.json; 0 turns this off). If a new request with a short prompt does the "
-                              "same, restart the server and report it (#606)", flush=True)
+                              "strata-<model>.json; 0 turns this off)", flush=True)
                 except GeneratorExit:                   # the client disconnected mid-stream
                     finish = "disconnect"
                     raise
@@ -3146,7 +3188,9 @@ class Service:
                                 hit_msg += f" (+{pcie_share*100:.1f}% of the routed experts over PCIe)"
                             print(f"[strata] done: {n} tokens in {el:.0f} s ({rate:.1f} tok/s) "
                                   f"({finish}, cancel={cancel.is_set()}){hit_msg}", flush=True)
-                            if finish == "length" and parser.state in ("reasoning", "rcall"):   # #530
+                            # #530: no answer because the thinking filled the budget (a degenerate reply is
+                            # #606's business, and a thinking budget would not help there)
+                            if finish == "length" and parser.state in ("reasoning", "rcall") and not repeated:
                                 print("[strata] the reply reached max tokens while still thinking, so it has no "
                                       "answer: a thinking budget (reasoning_budget_tokens, in the request or in "
                                       "strata-<model>.json for every request) leaves room to answer", flush=True)
@@ -3163,6 +3207,24 @@ class Service:
                                 self.status.update(busy=False)
                                 self.status.pop("tail", None)
                                 self.status.pop("tool", None)
+                # #606: a degenerate reply is not an answer, and it sticks - the engine answered one token over and
+                # over, and it answers the next request the same way.  What it sent cannot be taken back, but the
+                # engine can be replaced while this request still holds the fifo, so a client that retries (every
+                # agent client does) meets a clean one, and the empty message that reads as "length, no output" -
+                # which no agent can act on - becomes an error it can.
+                if repeated:
+                    if par or not hasattr(self.engine, "restart"):
+                        print("[strata] the engine is left as it is (other requests are running in parallel, or it "
+                              "cannot be restarted): a retry of this request may end the same way", flush=True)
+                    else:
+                        try:
+                            self.engine.restart()             # best effort: whatever it raises, the client still
+                            print("[strata] the engine is running again, so a retry of this request starts clean",
+                                  flush=True)                # gets the error that says what happened
+                        except (RuntimeError, ValueError, OSError) as e:     # EngineStuck, EngineDied, a failed start
+                            print(f"[strata] the engine could not be restarted: {e}", flush=True)
+                    raise DegenerateReply(f"the engine's reply repeated one token {self.tok.decode([run_tok])!r} "
+                                          f"{run_len} times in a row and holds no answer - retry this request")
         finally:
             if emb:
                 Path(emb).unlink(missing_ok=True)
@@ -3905,8 +3967,8 @@ def make_handler(svc: Service):
                 return
             if path == "/load":                              # load now, e.g. ahead of a request
                 try:
-                    svc.load()
-                    self._json(200, {"status": "loaded"})
+                    r = svc.load(refuse_busy=True)
+                    self._json(409 if r == "busy" else 200, {"status": r})
                 except GpuBusy as e:
                     self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                 return
@@ -3988,7 +4050,7 @@ def make_handler(svc: Service):
             except (GpuBusy, EngineStarting) as e:
                 self._json(503, {"error": {"type": "server_error", "message": str(e)}})
             except EngineDied as e:                          # before the answer started (not streamed)
-                self._json(503, {"error": {"type": "server_error", "message": f"{e}; the next request restarts it"}})
+                self._json(503, {"error": {"type": "server_error", "message": f"{e}{e.hint}"}})
             except EngineStuck as e:                         # an unload or restart that could not end the engine
                 self._json(503, {"error": {"type": "server_error", "message": str(e)}})
 
@@ -4101,8 +4163,12 @@ def make_handler(svc: Service):
                 self._json(500, {"error": {"type": "server_error", "message": f"the run config cannot be written: {e}"}})
                 return
             if changed:
+                if "idle_unload_s" in changed:
+                    svc.set_idle_unload(new.get("idle_unload_s") or 0)     # the idle loop reads it: no restart
+                applies = ("idle_unload_s applies right away" if "idle_unload_s" in changed
+                           else "used from the next start")
                 print(f"[strata] the Settings view changed {', '.join(changed)} in {Path(svc.config_path).name} "
-                      f"(the earlier file: {bak.name}); used from the next start", flush=True)
+                      f"(the earlier file: {bak.name}); {applies}", flush=True)
             self._json(200, {**runconfig.view(new, svc.config_path), "changed": changed})
         def _foreign_origin(self) -> bool:
             """A web page of another origin sent this.  The Origin must be this server's own address (host and port),
@@ -4224,7 +4290,10 @@ def make_handler(svc: Service):
                 chunks = structured_chunks(chunks, validator)
             chunks = self._capture(chunks, "openai")
             if not req.get("stream"):
-                return self._json(200, openai_collect(chunks))
+                try:
+                    return self._json(200, openai_collect(chunks))
+                except EngineDied as e:                      # #606: nothing sent yet, so the status can say why
+                    return self._json(503, {"error": {"type": "server_error", "message": f"{e}{e.hint}"}})
             self._sse()
             try:
                 for c in chunks:
@@ -4239,7 +4308,7 @@ def make_handler(svc: Service):
                 cancel.set()                                 # client went away: stop the engine
                 chunks.close()
             except EngineDied as e:                          # mid-stream: say so, then end the stream properly
-                err = {"error": {"type": "server_error", "message": f"{e}; the next request restarts it"}}
+                err = {"error": {"type": "server_error", "message": f"{e}{e.hint}"}}
                 self._note(error=err["error"])
                 self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\ndata: [DONE]\n\n")
             except StructuredOutputError as e:
@@ -4288,8 +4357,7 @@ def make_handler(svc: Service):
                     return self._json(502, responses_error_body(str(e), "server_error",
                                                                 code="structured_output_failed"))
                 except EngineDied as e:
-                    return self._json(503, responses_error_body(f"{e}; the next request restarts it", "server_error",
-                                                                code="server_error"))
+                    return self._json(503, responses_error_body(f"{e}{e.hint}", "server_error", code="server_error"))
                 except ValueError as e:                      # the engine's ERR line
                     return self._json(500, responses_error_body(str(e), "server_error", code="server_error"))
                 return self._json(200, result)
@@ -4319,7 +4387,7 @@ def make_handler(svc: Service):
                 cancel.set()                                 # client went away: stop the engine
                 items.close()
             except EngineDied as e:                          # mid-stream: response.failed, then the stream ends
-                self._responses_failed(asm, f"{e}; the next request restarts it", "server_error", send)
+                self._responses_failed(asm, f"{e}{e.hint}", "server_error", send)
             except StructuredOutputError as e:
                 self._responses_failed(asm, str(e), "structured_output_failed", send)
             except ValueError as e:                          # the engine's ERR after the stream started
@@ -4406,7 +4474,11 @@ def make_handler(svc: Service):
             events = anthropic_events(svc, req, ids, thinking, tools, max_new, cancel, force=force)
             events = self._capture(events, "anthropic")
             if not req.get("stream"):
-                return self._json(200, anthropic_collect(events))
+                try:
+                    return self._json(200, anthropic_collect(events))
+                except EngineDied as e:                      # #606: nothing sent yet, so the status can say why
+                    return self._json(503, {"type": "error", "error": {"type": "api_error",
+                                                                        "message": f"{e}{e.hint}"}})
             self._sse()
             try:
                 for item in events:
@@ -4422,7 +4494,7 @@ def make_handler(svc: Service):
                 cancel.set()
                 events.close()
             except EngineDied as e:                          # mid-stream: Anthropic's error event
-                err = {"type": "error", "error": {"type": "api_error", "message": f"{e}; the next request restarts it"}}
+                err = {"type": "error", "error": {"type": "api_error", "message": f"{e}{e.hint}"}}
                 self._note(error=err["error"])
                 self.wfile.write(b"event: error\ndata: " + json.dumps(err).encode() + b"\n\n")
             except ValueError as e:                          # the engine's ERR after the stream started
