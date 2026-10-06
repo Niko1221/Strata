@@ -15,6 +15,18 @@
 
 namespace strata::core {
 namespace {
+// `load` makes one cudaMalloc per projection matrix, and the driver backs each call with 2 MiB granules
+// (measured on the RTX 5060: 300 buffers of 6.73 MiB asked 2019 MiB and cost 2400).  So a stage's real
+// footprint is the granule-rounded sum, not the payload sum.  This rule - a granule for every matrix of a
+// MiB or more, the payload for the rest - prices the iq3_s pack's 300 matrices at 2255 MiB where they
+// really take 2238 (+0.8%).  It over-prices, which is the safe side: the card is left slightly less room
+// than it has rather than slightly more.  Pricing *every* matrix at a granule is far worse (2378 MiB),
+// because the driver packs the sub-MiB matrices into the slack of the rounded ones.
+constexpr uint64_t kAllocGranule = 2ull << 20;
+constexpr uint64_t kSmallAlloc = 1ull << 20;
+uint64_t alloc_bytes(uint64_t bytes) {
+    return bytes < kSmallAlloc ? bytes : (bytes + kAllocGranule - 1) / kAllocGranule * kAllocGranule;
+}
 int g_layer_lb = -1, g_layer_le = -1;   // set_layer_range; -1: every layer
 bool in_range(const std::string& name) {
     if (g_layer_lb < 0 || name.rfind("blk.", 0) != 0) return true;
@@ -62,6 +74,52 @@ bool NativeDense::served_names(const std::vector<std::string>& shards, bool incl
 }
 
 void NativeDense::set_layer_range(int lb, int le) { g_layer_lb = lb; g_layer_le = le; }
+// The byte walk `load` does, without the allocations.  The filters are `load`'s, in `load`'s order, and the two
+// have to stay in step: bytes this prices and `load` does not upload waste cache, bytes `load` uploads and this
+// does not price are bytes the split search cannot see.  Two deliberate differences, both because `load` has
+// already run for CUDA0 by the time the search calls this: a tensor whose canonical ref already carries a native
+// override is expected here, and a repeated name is skipped rather than refused.
+bool NativeDense::weight_bytes_for(const std::vector<std::string>& shards, WeightTable& table, bool include_ple_key,
+                                   int64_t lb, int64_t le, uint64_t& out, std::string& err) {
+    out = 0;
+    auto outside = [&](const std::string& name) {   // the same rule as `in_range` with (-1,-1) released: [lb, le)
+        if (name.rfind("blk.", 0) != 0) return false;
+        const long l = std::strtol(name.c_str() + 4, nullptr, 10);
+        return l < lb || l >= le;
+    };
+    try {
+        std::set<std::string> seen;
+        uint64_t total = 0;
+        for (const auto& path : shards) {
+            strata::GgufFile gguf(path);
+            for (const auto& tensor : gguf.tensors()) {
+                if (!eligible(tensor, include_ple_key)) continue;
+                if (outside(tensor.name) && tensor.name.find("ple") == std::string::npos) continue;
+                if (!seen.insert(tensor.name).second) continue;
+                auto found = table.table_.find(tensor.name);
+                if (found == table.table_.end()) {
+                    err = "native dense: tensor absent from canonical table: " + tensor.name;
+                    return false;
+                }
+                const auto& ref = found->second;
+                if (!strata::kernels::native_mmvq_supported(tensor.type)) continue;
+                if (tensor.name == "blk.1.ple_key.weight" && !ref.quantized()) continue;
+                if (!ref.quantized() || tensor.shape.size() != 2 ||
+                    ref.ne0 <= 0 || ref.ne0 > INT_MAX || ref.ne1 <= 0 || ref.ne1 > INT_MAX ||
+                    tensor.shape[0] != (uint64_t) ref.ne0 || tensor.shape[1] != (uint64_t) ref.ne1) {
+                    err = "native dense: incompatible matrix " + tensor.name;
+                    return false;
+                }
+                total += alloc_bytes(strata::kernels::native_mmvq_weight_bytes(tensor.type, (int) ref.ne0, (int) ref.ne1));
+            }
+        }
+        out = total;
+        return true;
+    } catch (const std::exception& error) {
+        err = std::string("native dense: ") + error.what();
+        return false;
+    }
+}
 bool NativeDense::keep_unquantized_ple_key(const std::string& pack_dir, std::set<std::string>& skip,
                                            std::string& err) {
     const std::string key = "blk.1.ple_key.weight";
@@ -90,7 +148,7 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
         std::vector<Pending> pending;
         std::set<std::string> seen;
         int max_in = 0;
-        uint64_t total = 0;
+        uint64_t total = 0, allocated = 0;
         uint64_t split_count = 0, split_tensors = 0;
         std::set<uint64_t> split_numbers;
         bool have_architecture = false;
@@ -183,6 +241,7 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                 }
                 max_in = (std::max)(max_in, (int) ref.ne0);
                 total += bytes;
+                allocated += alloc_bytes(bytes);
                 pending.push_back(Pending{&ref, (int) tensor.type, bytes, std::move(data)});
             }
         }
@@ -201,6 +260,7 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
         }
         scratch_ = scratch.release();
         bytes_ = total;
+        allocated_ = allocated;
         return true;
     } catch (const std::exception& error) {
         err = std::string("native dense: ") + error.what();

@@ -2705,24 +2705,54 @@ int main(int argc, char** argv) {
     // smaller, which measured cost no decode (K=28 on 9070 XT + R9700: 58.4 tok/s own vs 58.5 borrowing), while a
     // search with the reserve moved the boundary to K=32 and decode to 54.8. STRATA_SPLIT_OWN_PLACE=reserve: the
     // search sees the reserve.
-    // ---- WHAT EACH CARD WILL HOLD WHEN THE SEARCH PRICES IT.  A later stage's weights load after this search
-    // (that is what lets `auto` trim them), so its arena is not in `cudaMemGetInfo` yet: size it here from the
-    // pack index.  `pool_bytes` reads the index and returns - it allocates nothing.  CUDA0's arena IS up
-    // already, so its entry is 0, and the number the search sees for every card is the one it has always seen:
-    // the placement it picks does not move.  Deliberate - this buys cache, not a different split.
-    std::vector<uint64_t> stage_pool(stages.size() + 1, pool_bytes);
-    stage_pool[0] = 0;
-    if (stage_trim) {
-        for (size_t i = 0; i < stages.size(); ++i) {
-            const int64_t lb = split_at[i], le = i + 1 < split_at.size() ? split_at[i + 1] : g.n_layers;
+    // ---- WHAT A STAGE HOLDS ONCE ITS WEIGHTS LOAD, PRICED FOR A LAYER RANGE.  A later stage's weights load
+    // after this search (that is what lets `auto` trim them), so they are not in `cudaMemGetInfo` yet and have to
+    // be priced from the pack instead: `WeightTable::pool_bytes` reads index.txt, `NativeDense::weight_bytes_for`
+    // reads the GGUF headers, and neither allocates.
+    // BOTH HAVE TO BE PRICED.  `NativeDense::load` runs one cudaMalloc per projection matrix, and the search
+    // cannot see those - so a search that prices only the canonical arena thinks a card is emptier than it will
+    // be.  That is a small error in GiB and a large one in proportion on a small card: measured by
+    // @paulhothersall on a P40 (24 GB) + RTX 3070 (8 GB) rig, the planner was told the 3070 had 4.26 GiB free
+    // where v0.1.39 measured 2.34, and under `auto` it chose K=2 instead of K=16 - 46 layers on the 8 GB card,
+    // the P40 left on two, -11% prefill at 32K (and -49% with the trim on).  The 1.92 GiB it could not see is
+    // exactly this allocation.
+    // The carve depends on the layer range - which is what the search is choosing - so it is priced per
+    // candidate in `predict`, beside `session_bytes`, and memoised by range.  CUDA0 is not priced at all: its
+    // arena and its own native dense are allocated before this search, so they are already missing from `cap[0]`.
+    bool carve_ok = true;
+    std::map<std::pair<int64_t, int64_t>, uint64_t> carve_memo;
+    auto carve_bytes = [&](int64_t lb, int64_t le) -> uint64_t {
+        const std::pair<int64_t, int64_t> key(lb, le);
+        if (const auto it = carve_memo.find(key); it != carve_memo.end()) return it->second;
+        uint64_t total = 0;
+        if (trim_asked) {
             std::set<std::string> sk = skip_base;
             add_foreign(lb, le, sk, false);
-            if (!strata::core::WeightTable::pool_bytes(o.pack, stage_pool[i + 1], err, &sk)) {
-                std::fprintf(stderr, "strata generate: %s\n", err.c_str());
-                return 1;
+            if (!strata::core::WeightTable::pool_bytes(o.pack, total, err, sk.empty() ? nullptr : &sk)) {
+                carve_ok = false;
+                return 0;
             }
+        } else {
+            total = pool_bytes;   // not trimming: this stage keeps the whole pool whatever range it runs
         }
-    }
+        if (!o.native_dense_gguf.empty()) {
+            uint64_t dense = 0;
+            if (trim_asked) {
+                if (!strata::core::NativeDense::weight_bytes_for(o.native_dense_gguf, wt, o.native_ple_key, lb, le,
+                                                                 dense, err)) {
+                    carve_ok = false;
+                    return 0;
+                }
+            } else {
+                // loaded in full above; `set_layer_range` was never called.  `allocated_bytes`, not
+                // `weight_bytes`: what a stage of the SAME shape will really take, granules included.
+                dense = native_dense.allocated_bytes();
+            }
+            total += dense;
+        }
+        carve_memo.emplace(key, total);
+        return total;
+    };
     static const bool place_with_reserve = [] {
         const char* v = std::getenv("STRATA_SPLIT_OWN_PLACE");
         return v != nullptr && std::string(v) == "reserve";
@@ -2745,8 +2775,7 @@ int main(int argc, char** argv) {
         std::vector<double> layer_ms((size_t) ns);
         for (int i = 0; i < ns; ++i) {
             const int dev = i == 0 ? 0 : stages[(size_t) i - 1]->dev;
-            cap[(size_t) i] = std::max<int64_t>(stage_room(i == 0 ? -1 : dev, i > 0, i + 1 == ns, true) -
-                                                    (int64_t) stage_pool[(size_t) i], 0);
+            cap[(size_t) i] = stage_room(i == 0 ? -1 : dev, i > 0, i + 1 == ns, true);
             int sms = 0, khz = 0;
             cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev);
             if (cudaDeviceGetAttribute(&khz, cudaDevAttrClockRate, dev) != cudaSuccess || khz <= 0) khz = 1800000;
@@ -2754,7 +2783,7 @@ int main(int argc, char** argv) {
             const double speed = std::max(1.0, (double) sms * (double) khz / 1e6);   // SMs x GHz
             layer_ms[(size_t) i] = 0.33 * (84.0 * 2.617) / speed;
             std::fprintf(stderr, "strata generate: layer split auto: CUDA%d %d SMs at %.2f GHz -> %.2f ms per layer, "
-                                 "%.2f GiB free for its weights, session and experts\n", dev, sms, khz / 1e6,
+                                 "%.2f GiB free before its weights, session and experts\n", dev, sms, khz / 1e6,
                          layer_ms[(size_t) i], (double) cap[(size_t) i] / 1073741824.0);
         }
         const double miss_ms = std::getenv("STRATA_SPLIT_MISS_MS") ? std::atof(std::getenv("STRATA_SPLIT_MISS_MS")) : 190.0;
@@ -2769,11 +2798,15 @@ int main(int argc, char** argv) {
             // THE CARVE, PRICED: a placement gives stage i the layers [lb, le), and that range's session is a
             // real cost on its device - subtracted here so the search knows what it leaves for experts.  This
             // is why the sessions are allocated after the search: `session_bytes` is pure arithmetic.
+            // The range's WEIGHTS are subtracted here too, for the same reason and from the same candidate: a
+            // later stage's arena and native projections are not allocated yet.  CUDA0's are (it is priced at
+            // zero), which is what makes its `cap` the post-weights number v0.1.39 always printed.
             std::vector<int64_t> capr((size_t) ns);
             for (int i = 0; i < ns; ++i) {
                 const int64_t lb = i == 0 ? 0 : at[(size_t) i - 1];
                 const int64_t le = i + 1 < ns ? at[(size_t) i] : g.n_layers;
-                capr[(size_t) i] = cap[(size_t) i] - (int64_t) strata::core::session_bytes(g, o.max_context, K, lb, le);
+                capr[(size_t) i] = cap[(size_t) i] - (int64_t) strata::core::session_bytes(g, o.max_context, K, lb, le) -
+                                   (i == 0 ? 0 : (int64_t) carve_bytes(lb, le));
             }
             std::fill(used.begin(), used.end(), 0);
             held_mass = 0;
@@ -2830,6 +2863,10 @@ int main(int argc, char** argv) {
                              "hold %lld of %zu profiled pairs (~%.1f%% of the routed mass)\n", ks.c_str(), best_ms,
                      (long long) best_held, profile.size(), 100.0 * best_mass);
     }
+    if (!carve_ok) {   // `carve_bytes` reports through `err`; it is called from the search, which cannot return
+        std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+        return 1;
+    }
     for (size_t i = 0; i < split_at.size(); ++i)
         if (split_at[i] >= g.n_layers) {
             std::fprintf(stderr, "strata generate: --layer-split: layer %lld is past the last (%lld)\n",
@@ -2860,8 +2897,8 @@ int main(int argc, char** argv) {
     // chosen anything - so a rig that left `--layer-split auto` (the default) kept a full copy of the model on
     // every card: on the 4-way IQ3_S rig CUDA1 3650 expert slots, CUDA2 1241, CUDA3 533, and the prompt chunk
     // capped at 768 tokens.  Carved: 4608 / 2485 / 1772 and a 6144-token chunk.  The search above priced these
-    // arenas from the pack index (`stage_pool`), so the placement it chose is the placement it has always
-    // chosen; what changed is only where the freed VRAM goes.
+    // arenas - and the native projections that load beside them - from the pack itself, so what changed here is
+    // only where the freed VRAM goes.
     for (size_t i = 0; i < stages.size(); ++i) {
         GpuStage& st = *stages[i];
         const strata::core::OnDevice on(st.dev);
@@ -2878,6 +2915,8 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: layer split: CUDA%d loads the dense weights of layers %lld-%lld only\n",
                          st.dev, (long long) lb, (long long) le - 1);
         }
+        size_t took_before = 0, took_total = 0;   // what this stage's load really costs, for the check below
+        cudaMemGetInfo(&took_before, &took_total);
         void* arena_s = nullptr;
         if (cudaMalloc(&arena_s, pool_s) != cudaSuccess ||
             !st.wt.load(o.pack, arena_s, pool_s, err, skip_s.empty() ? nullptr : &skip_s)) {
@@ -2895,6 +2934,24 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: layer split, CUDA%d native dense projections: %s\n", st.dev,
                          err.c_str());
             return 1;
+        }
+        // WHAT THE SEARCH WAS TOLD THIS STAGE WOULD HOLD, AGAINST WHAT IT JUST TOOK.  The two are the same
+        // arithmetic by construction (`pool_bytes` on the same skip set; `weight_bytes_for` walks the walk
+        // `load` walked), so a mismatch means the pricing has drifted from the loading - which is the bug this
+        // whole block exists to fix, and would otherwise show up only as a wrong split on someone else's rig.
+        {
+            size_t took_after = 0, took_total_after = 0;
+            cudaMemGetInfo(&took_after, &took_total_after);
+            const uint64_t took = (uint64_t) (took_before - took_after);   // arena + projections, measured
+            const uint64_t priced = carve_bytes(st.lb, st.le);
+            // UNDER-pricing is the bug this block exists to fix - the search hands a card layers it cannot
+            // hold, which is how 42 of 48 layers landed on an 8 GB card.  A little OVER-pricing is by
+            // design: the projections are priced a granule at a time (see `alloc_bytes`), which runs ~0.8%
+            // high.  Past that, the pricing has drifted from the loading and someone should hear about it.
+            if (priced < took || priced - took > took / 20)
+                std::fprintf(stderr, "strata generate: layer split, CUDA%d: WARNING the split search priced this "
+                                     "stage's weights at %llu MiB, it took %llu MiB\n", st.dev,
+                             (unsigned long long) (priced >> 20), (unsigned long long) (took >> 20));
         }
         size_t fb = 0, tb = 0;
         cudaMemGetInfo(&fb, &tb);

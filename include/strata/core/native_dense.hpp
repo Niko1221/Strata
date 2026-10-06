@@ -27,6 +27,16 @@ public:
     /// supported type, 2-D), read from the GGUF headers only - so the canonical arena can skip them.
     static bool served_names(const std::vector<std::string>& shards, bool include_ple_key,
                              std::set<std::string>& out, std::string& err);
+    /// Layer split: the device bytes `load` would allocate for the matrices inside [lb, le) - the same walk, the
+    /// same filters, the same PLE exception and the same per-matrix granule rounding as `load`, but reading the
+    /// GGUF headers and the canonical table only, so it allocates nothing and needs no device.  A later stage's
+    /// projections are not in `cudaMemGetInfo` when the split search prices that stage, and the search has to see
+    /// them: `load` runs one cudaMalloc per matrix, so a search that prices only the canonical arena thinks a
+    /// small card is emptier than it will be - measured on a P40 (24 GB) + RTX 3070 (8 GB) rig, it chose K=2
+    /// instead of K=16.  `table` must be the canonical table `load` attaches to, and must already hold every
+    /// tensor the shards carry (`load` looks each one up).
+    static bool weight_bytes_for(const std::vector<std::string>& shards, WeightTable& table, bool include_ple_key,
+                                 int64_t lb, int64_t le, uint64_t& out, std::string& err);
     /// Layer split: load only blocks [lb, le) (every other `blk.N.` projection belongs to another GPU's stage; the
     /// PLE tensors are loaded everywhere).  Process-wide, read by the next `load`; (-1, -1) = all layers.
     static void set_layer_range(int lb, int le);
@@ -34,12 +44,19 @@ public:
     /// the native kernel also reads, e.g. OrcaRouter's IQ3_XXS) serves the PLE from that row, so it is taken out
     /// of `skip` and `load` does not upload the GGUF key over it.  A quantized row leaves `skip` unchanged.
     static bool keep_unquantized_ple_key(const std::string& pack_dir, std::set<std::string>& skip, std::string& err);
+    /// The payload of the matrices `load` uploaded - what the weights themselves weigh.
     uint64_t weight_bytes() const { return bytes_; }
+    /// What the device lost to `load`: the same matrices, but each one rounded up to the granule
+    /// `cudaMalloc` backs it with, because `load` makes one call per matrix.  This is the number the layer
+    /// split has to price; `weight_bytes()` is ~11% smaller on the iq3_s pack and pricing that is what put
+    /// 42 of 48 layers on an 8 GB card.
+    uint64_t allocated_bytes() const { return allocated_; }
     size_t tensor_count() const { return weights_.size(); }
 
 private:
     std::vector<void*> weights_;
     void* scratch_ = nullptr;
     uint64_t bytes_ = 0;
+    uint64_t allocated_ = 0;
 };
 } // namespace strata::core
