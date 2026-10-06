@@ -864,6 +864,8 @@ bool Prefill::carve(size_t T, void* alloc) {
     s.idx_dim = g.idx_key_dim;
     m.cap = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s);
     m.max_blocks = ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;
+    if (!std::getenv("STRATA_SELECT_OLD"))   // the selection scorer's one-time measurement (HIP SGEMM scorer), if any
+        strata::kernels::qsa_block_scores_tc_prepare(m.sel_batch, m.max_blocks, s, m.cs);
     {
         // one region for the attention half's and the MoE half's scratch (see gdn_set_bytes)
         const bool fz = fused_layout(T, m.src != nullptr);

@@ -35,6 +35,11 @@ void qsa_block_scores(const float* pooled, const float* dead, const float* q_idx
 bool qsa_block_scores_tc(const float* pooled, const float* dead, const float* q_idx, const int32_t* steps, int64_t nq,
                          int64_t max_blocks, const QsaShapes& s, float* scores, void* stream, int64_t active_blocks);
 
+/// What qsa_block_scores_tc would measure at its first call for batches of `nq` queries over up to `max_blocks` blocks,
+/// done now (engine start) so no prompt pays it: on HIP with the rocBLAS SGEMM scorer on (STRATA_SELECT_SGEMM=1) the
+/// solution of every reach bucket, about 0.5 s per card; a no-op everywhere else.
+void qsa_block_scores_tc_prepare(int64_t nq, int64_t max_blocks, const QsaShapes& s, void* stream);
+
 /// ids [nq, cap] (cells, ascending); `cap` >= the largest selection width.
 void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64_t max_blocks, int64_t cap,
                     const QsaShapes& s, int32_t* ids, void* stream,

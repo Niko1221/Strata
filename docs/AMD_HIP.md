@@ -352,12 +352,12 @@ run it; the report below is from a community machine: an RX 6900 XT 16 GB (gfx10
   every (query, KV block) pair - the one prompt term that grows with the context - and without matrix cores it runs
   the warp kernel: 27 ms per 8K-token chunk at the start of a prompt, 760 ms per chunk at a 128K context on an RX
   6900 XT. With the switch the scores are rocBLAS SGEMMs (the GEMM the sm_80 scorer runs, in FP32: FP32-level,
-  not bitwise the warp kernel) with the solution index measured on the card at the first call (rocBLAS's own
-  choice for this skinny shape runs at 1.4 TFLOPS there, its best listed solution at 19; the measurement costs
-  about 0.5 s per card, once per engine start, inside the first prompt). `qsa_select_bench` at a 128K context:
+  not bitwise the warp kernel) with the solution index measured on the card at engine start (rocBLAS's own
+  choice for this skinny shape runs at 1.4 TFLOPS there, its best listed solution at 19; the measurement adds
+  about 0.5 s per card to the load). `qsa_select_bench` at a 128K context:
   scores 2.75 -> 0.811 ms ms per 256 queries, the FP64 gate passed, selections identical 256/256; on the 2x RX 6900 XT
-  split a 128K-token prompt reads 810 -> 833 tok/s (+2.8%), a 50K one is unchanged within the measurement, below 16K there is
-  nothing to gain. `STRATA_SELECT_SGEMM_TUNE=0` keeps rocBLAS's kernel choice, `STRATA_SELECT_SGEMM_VERBOSE=1`
+  split a 128K-token prompt reads 810 -> 833 tok/s (+2.8%), a 50K one 756 -> 763, below 16K there is nothing to
+  gain. `STRATA_SELECT_SGEMM_TUNE=0` keeps rocBLAS's kernel choice, `STRATA_SELECT_SGEMM_VERBOSE=1`
   prints the measurements. Decode is unchanged.
 - **gfx1031** (RX 6700 XT, #524): setup knows it (the `gfx103X-all` wheels, unvalidated); its reporter runs it daily
   on one card.

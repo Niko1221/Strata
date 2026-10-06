@@ -1128,23 +1128,27 @@ static int32_t sel_sgemm_solution(SelSgemm& st, int bucket, const float* pooled,
 }
 }  // namespace
 
-static bool qsa_block_scores_sgemm(const float* pooled, const float* dead, const float* q_idx, const int32_t* steps,
-                                   int64_t nq, int64_t max_blocks, int64_t reach, float* scores, void* stream) {
+namespace {
+bool sel_sgemm_on() {
     static const bool on = [] {
         const char* v = std::getenv("STRATA_SELECT_SGEMM");
         return v != nullptr && v[0] != '\0' && v[0] != '0';
     }();
-    if (!on || reach <= 0 || reach > INT32_MAX || nq > INT32_MAX) return false;
-    int dev = 0;
-    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return false; }
-    SelSgemm& st = sel_sgemm(dev);
+    return on;
+}
+
+// the handle, the scratch for nq x max_blocks and the solution of every reach bucket up to max_blocks, measured once
+// per card and batch size (a later, larger batch measures again); `pooled` and `q_idx` are the GEMM operands the
+// measurement runs on (their values do not matter).  false: the warp kernel scores.
+bool sel_sgemm_ready(SelSgemm& st, const float* pooled, const float* q_idx, int64_t nq, int64_t max_blocks,
+                     cudaStream_t stream) {
     if (st.failed) return false;
     if (!st.handle && rocblas_create_handle(&st.handle) != rocblas_status_success) {
         std::fprintf(stderr, "qsa select: rocBLAS handle creation failed; the warp kernel scores\n");
         st.failed = true;
         return false;
     }
-    const size_t need = (size_t) nq * (size_t) (max_blocks > reach ? max_blocks : reach);   // room for the pre-measurement too
+    const size_t need = (size_t) nq * (size_t) max_blocks;
     if (st.tmp_elems < need) {
         if (st.tmp) cudaFree(st.tmp);
         st.tmp = nullptr; st.tmp_elems = 0;
@@ -1158,21 +1162,29 @@ static bool qsa_block_scores_sgemm(const float* pooled, const float* dead, const
         st.tmp_elems = need;
     }
     rocblas_set_stream(st.handle, (hipStream_t) stream);
+    if (st.pre_nq < nq) {   // every reach bucket at once: no prompt pays a measurement inside its own chunk
+        st.pre_nq = (int) nq;
+        int cap_bucket = 0;
+        while ((1LL << cap_bucket) < max_blocks && cap_bucket < 31) ++cap_bucket;
+        for (int b = 7; b <= cap_bucket; ++b) {
+            const int r = (int) std::min<int64_t>(1LL << b, max_blocks);
+            (void) sel_sgemm_solution(st, b, pooled, q_idx, r, (int) nq, stream);
+        }
+    }
+    return true;
+}
+}  // namespace
+
+static bool qsa_block_scores_sgemm(const float* pooled, const float* dead, const float* q_idx, const int32_t* steps,
+                                   int64_t nq, int64_t max_blocks, int64_t reach, float* scores, void* stream) {
+    if (!sel_sgemm_on() || reach <= 0 || reach > INT32_MAX || nq > INT32_MAX || max_blocks < reach) return false;
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return false; }
+    SelSgemm& st = sel_sgemm(dev);
+    if (!sel_sgemm_ready(st, pooled, q_idx, nq, max_blocks, (cudaStream_t) stream)) return false;
     const float one = 1.0f, zero = 0.0f;
     int bucket = 0;
     while ((1LL << bucket) < reach && bucket < 31) ++bucket;
-    {   // the first call (and a later one with a larger batch) measures every reach bucket up to the capacity at once,
-        // once per engine start and card, so no later prompt pays the measurement inside its own chunk
-        if (st.pre_nq < nq) {
-            st.pre_nq = (int) nq;
-            int cap_bucket = 0;
-            while ((1LL << cap_bucket) < max_blocks && cap_bucket < 31) ++cap_bucket;
-            for (int b = 7; b <= cap_bucket; ++b) {
-                const int r = (int) std::min<int64_t>(1LL << b, max_blocks);
-                (void) sel_sgemm_solution(st, b, pooled, q_idx, r, (int) nq, (cudaStream_t) stream);
-            }
-        }
-    }
     const int32_t sol = sel_sgemm_solution(st, bucket, pooled, q_idx, (int) reach, (int) nq, (cudaStream_t) stream);
     for (int h = 0; h < IDX_HEADS; ++h) {
         // column-major: A = pooled seen as [128 x reach] (lda 128), transposed; B = q_idx's head h seen as
@@ -1205,6 +1217,33 @@ static bool qsa_block_scores_sgemm(const float* pooled, const float* dead, const
     return true;
 }
 #endif
+
+void qsa_block_scores_tc_prepare(int64_t nq, int64_t max_blocks, const QsaShapes& s, void* stream) {
+#if defined(__HIPCC__) && defined(STRATA_ROCBLAS_AVAILABLE)
+    // the SGEMM scorer's measurement, at engine start instead of inside the first prompt (about 0.5 s per card on an
+    // RX 6900 XT at a 128K capacity); the operands are zero-filled buffers of the right shape (SGEMM timing does not
+    // depend on the values)
+    if (!sel_sgemm_on() || nq <= 0 || nq > INT32_MAX || max_blocks <= 0 || max_blocks > INT32_MAX) return;
+    if (s.idx_dim != IDX_DIM || s.idx_n_head != IDX_HEADS || s.idx_block != R) return;
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return; }
+    SelSgemm& st = sel_sgemm(dev);
+    if (st.failed || st.pre_nq >= nq) return;
+    float* pooled = nullptr; float* q_idx = nullptr;
+    const size_t pooled_bytes = (size_t) max_blocks * IDX_DIM * sizeof(float);
+    const size_t q_bytes = (size_t) nq * IDX_HEADS * IDX_DIM * sizeof(float);
+    if (cudaMalloc(&pooled, pooled_bytes) != cudaSuccess) { cudaGetLastError(); return; }
+    if (cudaMalloc(&q_idx, q_bytes) != cudaSuccess) { cudaGetLastError(); cudaFree(pooled); return; }
+    cudaMemsetAsync(pooled, 0, pooled_bytes, (cudaStream_t) stream);
+    cudaMemsetAsync(q_idx, 0, q_bytes, (cudaStream_t) stream);
+    (void) sel_sgemm_ready(st, pooled, q_idx, nq, max_blocks, (cudaStream_t) stream);
+    cudaStreamSynchronize((cudaStream_t) stream);
+    cudaFree(pooled); cudaFree(q_idx);
+    cudaGetLastError();
+#else
+    (void) nq; (void) max_blocks; (void) s; (void) stream;
+#endif
+}
 
 bool qsa_block_scores_tc(const float* pooled, const float* dead, const float* q_idx, const int32_t* steps, int64_t nq,
                          int64_t max_blocks, const QsaShapes& s, float* scores, void* stream, int64_t active_blocks) {
