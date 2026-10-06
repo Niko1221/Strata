@@ -42,6 +42,11 @@ void gr_write_cvec_norm_rs(float* R, const float* bo, const float* inj, int64_t 
 void gr_silu(const float* lo, uint16_t* lo16, int64_t T, void* stream, uint16_t* lo16_lo = nullptr);
 /// The BF16-weight GEMMs' activation image (gr_* kernels, to_bf16) in FP16 instead of BF16, on the current device.
 void set_act_f16(bool on);
+/// STRATA_F16_RANGE: count what the activation images convert to FP16 on this device (hf_sat): the largest |value| and
+/// how many were beyond 65504 or NaN.  f16_range_read returns them (and resets when asked); false if the device
+/// refused the copy.
+void set_f16_range(bool on);
+bool f16_range_read(float& max_abs, unsigned long long& over, bool reset);
 /// mixed[t, d] = mean_c xn[t, c, d] * sigmoid(gated[t, c, d]); FP32, BF16 and FP16 (either image may be null).
 void gr_mix(const float* xn, const float* gated, float* mixed, uint16_t* mixed16, int64_t T, void* stream,
             uint16_t* mixed_h = nullptr, uint16_t* mixed16_lo = nullptr);
