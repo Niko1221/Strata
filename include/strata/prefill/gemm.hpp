@@ -68,7 +68,11 @@ private:
     bool external_ = false;
     void* hipblaslt_state_ = nullptr;
     bool f16_io_ = false;
-    // below sm_80: FP16 (Pascal: fp32) copies of a BF16 product's weight and activation slice (Gemm::bf16)
+    // RDNA2 (gfx103x, HIP): the product as an SGEMM on FP32 copies (tc_w_, tc_x_); false: the native call runs (gemm.cu)
+    bool rdna2_sgemm(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
+                     float beta, bool bf16);
+    // below sm_80: FP16 (Pascal: fp32) copies of a BF16 product's weight and activation slice (Gemm::bf16);
+    // RDNA2: FP32 copies of the weight and an activation slice (Gemm::rdna2_sgemm)
     uint16_t* tc_w_ = nullptr;
     int64_t tc_w_elems_ = 0;
     uint16_t* tc_x_ = nullptr;

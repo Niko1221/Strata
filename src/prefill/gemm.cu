@@ -568,6 +568,92 @@ bool Gemm::bf16_hcd_exact(const uint16_t* X, int64_t ldx, const uint16_t* W, flo
 #endif
 }
 
+#if defined(__HIPCC__)
+// ---- RDNA2 (gfx103x): the prompt path's GEMMs as FP32 SGEMMs ------------------------------------------------------
+// The GEMMs here take 16-bit inputs (FP16 or BF16) and write FP32 (rocBLAS's "HS" / "BS" types).  The rocBLAS the engine
+// ships has tuned gfx1030 kernels for FP16 -> FP16 ("HH"), int8 and FP32 -> FP32 ("SS") only: every 16-bit-input,
+// FP32-output GEMM runs a "fallback" kernel at ~5 TFLOPS.  Measured on an RX 6800 (ROCm 10.2.0a20260930) with the
+// engine's exact calls (opA = T, opB = N, fp32 compute): at the Coder's prompt shapes the FP16 GEMMs of one fresh
+// 12K-token prompt take 14.1 s, the same GEMMs as SGEMM on widened copies 4.7 s including the widening (e.g.
+// N 10240 x T 8192 x K 2560: 86.7 -> 27.7 ms); the BF16 hyper-connection GEMMs 10.9 -> 7.5 ms (N 320, K 10240).
+// Widening FP16 / BF16 to FP32 is exact and SGEMM accumulates in FP32 like the native call, so the products are the
+// same up to summation order.  The weight is widened once per call, the activations in slices of up to 128 MiB of
+// FP32 (an 8,192-token chunk at K = 2560 is one slice).  Small N (< 64: routers, gates) keeps the native call:
+// there the widening costs more than the GEMM gains.  If the FP32 buffers cannot be allocated, the native call runs.
+//   Default: on for gfx103x, off for every other AMD architecture.  STRATA_RDNA2_SGEMM=0 / =1 turns it off / on for
+//   any AMD card (the A/B arms).
+namespace {
+__global__ void rdna2_bf16_to_f32_kernel(const uint16_t* __restrict__ in, float* __restrict__ out, int64_t n) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = __uint_as_float((uint32_t) in[i] << 16);
+}
+__global__ void rdna2_f16_to_f32_kernel(const __half* __restrict__ in, float* __restrict__ out, int64_t n) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = __half2float(in[i]);
+}
+void rdna2_widen(const uint16_t* in, float* out, int64_t n, bool bf16, cudaStream_t st) {
+    if (n <= 0) return;
+    const unsigned blocks = (unsigned) ((n + 255) / 256);
+    if (bf16) rdna2_bf16_to_f32_kernel<<<blocks, 256, 0, st>>>(in, out, n);
+    else rdna2_f16_to_f32_kernel<<<blocks, 256, 0, st>>>(reinterpret_cast<const __half*>(in), out, n);
+}
+// whether this GEMM runs as an SGEMM (see above)
+bool rdna2_sgemm_on(int64_t N) {
+    static const int forced = [] {
+        const char* v = std::getenv("STRATA_RDNA2_SGEMM");
+        return v != nullptr && v[0] != '\0' ? std::atoi(v) : -1;
+    }();
+    if (forced == 0 || N < 64) return false;
+    if (forced > 0) return true;
+    static std::atomic<int> arch[64] = {};   // per device: 0 not known, 1 gfx103x, 2 another architecture
+    int dev = 0;
+    if (hipGetDevice(&dev) != hipSuccess || dev < 0 || dev >= 64) { (void) hipGetLastError(); return false; }
+    int v = arch[dev].load(std::memory_order_relaxed);
+    if (v == 0) {
+        hipDeviceProp_t prop{};
+        if (hipGetDeviceProperties(&prop, dev) != hipSuccess) { (void) hipGetLastError(); return false; }
+        v = std::strncmp(prop.gcnArchName, "gfx103", 6) == 0 ? 1 : 2;
+        arch[dev].store(v, std::memory_order_relaxed);
+    }
+    return v == 1;
+}
+// `have`, `want`: FP32 elements (the buffers are the instance's 2-byte tc_ buffers, sized in 2-byte elements)
+bool rdna2_grow(uint16_t*& p, int64_t& have_u16, int64_t want_f32) {
+    const int64_t want = 2 * want_f32;
+    if (have_u16 >= want) return true;
+    if (p) cudaFree(p);
+    p = nullptr;
+    have_u16 = 0;
+    if (cudaMalloc((void**) &p, (size_t) want * 2) != cudaSuccess) { (void) cudaGetLastError(); p = nullptr; return false; }
+    have_u16 = want;
+    return true;
+}
+constexpr int64_t kRdna2SliceF32 = 32ll << 20;   // 128 MiB of FP32 activations per slice
+}  // namespace
+
+// Y^T[N, T] (+)= W[N, K] . X^T[K, T] as SGEMMs on FP32 copies; false: not this card / shape, or no buffers (the caller
+// runs its native GEMM, nothing was written)
+bool Gemm::rdna2_sgemm(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
+                       float beta, bool bf16) {
+    if (K <= 0 || !rdna2_sgemm_on(N)) return false;
+    const int64_t rows = std::max<int64_t>(1, std::min<int64_t>(T, kRdna2SliceF32 / K));
+    if (!rdna2_grow(tc_w_, tc_w_elems_, N * K) || !rdna2_grow(tc_x_, tc_x_elems_, rows * K)) return false;
+    float* const wf = reinterpret_cast<float*>(tc_w_);
+    float* const xf = reinterpret_cast<float*>(tc_x_);
+    const float alpha = 1.0f;
+    rdna2_widen(W, wf, N * K, bf16, (cudaStream_t) stream_);
+    for (int64_t t0 = 0; t0 < T; t0 += rows) {
+        const int64_t n = std::min<int64_t>(rows, T - t0);
+        rdna2_widen(X + t0 * K, xf, n * K, bf16, (cudaStream_t) stream_);
+        // every slice is a disjoint block of Y, so each gets the caller's beta
+        ck(hipblasSgemm((hipblasHandle_t) handle_, HIPBLAS_OP_T, HIPBLAS_OP_N, (int) N, (int) n, (int) K, &alpha, wf,
+                        (int) K, xf, (int) K, &beta, Y + t0 * ldy, (int) ldy),
+           "hipblasSgemm (RDNA2)");
+    }
+    return true;
+}
+#endif
+
 void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
                 float beta, int64_t ldx) {
     if (T <= 0 || N <= 0) return;
@@ -604,6 +690,9 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
         STRATA_ABSORB_HIPBLAS_STICKY("hipBLASLt bf16");
         return;
     }
+#endif
+#if defined(__HIPCC__)
+    if (rdna2_sgemm(X, W, Y, T, N, K, ldy, beta, true)) return;
 #endif
 #if !defined(__HIPCC__)
     if (const int path = K > 0 ? bf16_path() : 0; path == 1 && N > 1 && beta == 0.0f) {
@@ -673,6 +762,9 @@ void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_
         STRATA_ABSORB_HIPBLAS_STICKY("hipBLASLt f16");
         return;
     }
+#endif
+#if defined(__HIPCC__)
+    if (rdna2_sgemm(X, W, Y, T, N, K, ldy, beta, false)) return;
 #endif
     ck(cublasGemmEx((cublasHandle_t) handle_, CUBLAS_OP_T, CUBLAS_OP_N, (int) N, (int) T, (int) K, &alpha, W,
                     CUDA_R_16F, (int) K, X, CUDA_R_16F, (int) K, &beta, Y, CUDA_R_32F, (int) ldy,
