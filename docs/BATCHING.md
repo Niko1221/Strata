@@ -48,7 +48,8 @@ the count the engine reports (`INFO batch_slots=N`), and `GET /v1/status` says i
 
 Every slot's session takes VRAM that the expert cache would otherwise hold: 0.56 GiB at a 32K context with 8-bit
 KV, more with a longer context unless the KV cache streams (`--kv-resident`: then only the attention's 32K window
-stays in VRAM, and each slot's whole KV cache takes pinned RAM - 1.6 GB at 128K). On a card whose experts mostly run
+stays in VRAM, and each slot's whole KV cache takes pinned RAM - 1.6 GB at 128K - unless `--kv-pool-tokens` makes the
+sessions share one pool, below). On a card whose experts mostly run
 on the CPU, a batch also reads about as many distinct experts as the requests one by one (different conversations
 route to different experts), so the gain is in **latency** (nobody waits for a whole answer), and a request alone
 runs slower (the smaller expert cache): 11-24 % on a 12 GB card, see the measurements below.
@@ -59,6 +60,41 @@ slots, and the slots may take at most a fifth of it, up to 4 slots. With Q2_0 at
 card, 4 from 32 GB or on a split such as 2 x 16 GB; IQ3_S needs 32 GB or a split. Everywhere else (any 12 or 16 GB
 card alone) it stays at one at a time and setup says: "parallel N reduces waiting for several users but costs
 about 10-25% speed per request on this card". `--parallel N` is honoured as asked either way.
+
+### One pinned KV pool for the lanes (`--kv-pool-tokens`)
+
+With KV streaming (`--kv-resident`) the whole KV cache of every session lives in pinned RAM, so the main session and
+each slot pin the **full** `--max-context` even when their conversations are short: at 262,144 cells and 8-bit KV that is
+about 3.1 GiB each, 15.5 GiB for four slots and the main session. `--kv-pool-tokens N` pins N cells per QSA layer
+**once** (about 12.7 KB a cell with `--kv int8`: 524,288 cells are 6.2 GiB), and a session holds only the 4,096-cell
+chunks its conversation has reached.
+
+```
+"args": [ ..., "--batch", "4", "--max-context", "262144", "--kv", "int8", "--kv-resident", "32768",
+           "--kv-pool-tokens", "524288" ]
+```
+
+- N must hold one whole context (`--max-context`) and needs `--kv-resident` with a context longer than the resident
+  cells; the engine refuses it otherwise at start. It works on one GPU and across the cards of a layer split: each
+  card pins its own QSA layers' share of the pool, and a conversation's chunks are the same on every card.
+- A conversation moves between the main session and a slot (a request admitted into a slot, a slot handing its
+  conversation back to the solo path) by **exchanging chunks**, not copying them: 52-79 ms for 140-151K tokens
+  against ~1.0-1.1 s copied (PR #1011, single RTX 4090); the pool never holds a conversation twice. A prompt read that
+  gives way to a short request (`BYIELD`) still copies.
+- **When the pool is full**, in this order: an idle slot's cached conversation gives its K/V back (a slot holding
+  nothing worth keeping first, then the one used longest ago, a prompt read that gave way last - and nobody at all when
+  every idle slot together would not cover what is needed); then a **new request is refused** (`ERR KV pool full`:
+  the server answers **503 with `Retry-After: 10`**, `error.code: "kv_pool_full"`; in a stream the error event carries
+  that code, and on `/v1/messages` it is an `overloaded_error`, which Anthropic's clients retry); and a **decoding lane
+  that cannot grow ends** with `finish_reason: "length"` and `"truncated": true` (llama.cpp's field).
+- `GET /metrics` shows the pool as `live.kv_pool`: `cells` in all, `free`, `main` (cells the main session holds) and
+  `slots` (one count per slot), updated whenever a chunk moves. A request refused for a full pool is not in a slot:
+  it did not start.
+- The slot sessions borrow the main session's RoPE table (64 MiB each at 262K) with or without the pool.
+- Without `--kv-pool-tokens` nothing changes: each session pins its own copy, as before.
+- The conversation cache (`--conversation-cache-mib`, parked conversations in ordinary RAM) and the session files
+  (`SAVE`/`RESTORE`, single-session only) read and write the K/V through the same chunk tables; a restore reserves its
+  chunks first and is refused (retryable) when the lanes hold the pool.
 
 ## How the server uses the slots
 

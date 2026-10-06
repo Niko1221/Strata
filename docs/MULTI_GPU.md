@@ -143,7 +143,8 @@ strata serve: layer split: layers 0-18 (CUDA0), 19-47 (CUDA1), one hand-off per 
 ## What each card holds
 
 - **every card**: a copy of the dense weights (~3.4 GB for the Coder), its own session state (the KV cache of the full
-  context), its verify window and its prompt-path buffers, and an expert cache for its layers filled from the profile;
+  context; with `--kv-resident --kv-pool-tokens N` only the attended window in VRAM, and the K/V of its QSA layers in
+  one pinned pool shared by the main session and the `--batch` slots, see docs/BATCHING.md), its verify window and its prompt-path buffers, and an expert cache for its layers filled from the profile;
 - **the last card**: also the output head and the draft layer (~0.8 GB);
 - **host RAM**: the expert arena once, shared by all cards (the CPU pool computes whatever no card holds).
 
@@ -157,7 +158,8 @@ into the card that owns the layer.
   - images (`--vision`): each card keeps its own image-position table;
   - control vectors and the experimental speed projection: each card holds the vector's tables, switched on and
     off per request on all of them;
-  - KV streaming (`--kv-resident`): each card streams the KV of its own session;
+  - KV streaming (`--kv-resident`): each card streams the KV of its own session; `--kv-pool-tokens N` shares one
+    pinned K/V pool between the sessions of all cards (one chunk table per conversation, a copy on each card);
   - mid-prompt checkpoints (`--prompt-cache-every`): each card saves its part of a checkpoint when it has read that
     chunk;
   - the older helper-GPU caches (`--expert-cache-remote`, docs/SECOND_GPU.md): they take the visible GPUs no stage
