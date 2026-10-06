@@ -419,8 +419,11 @@ With more than one model installed, it asks which one to start. `run-<model>.bat
   So setup reads the asset's size and SHA-256 from the releases API - a different origin from the download -
   and hashes the file it just downloaded. It does this *before* the archive is opened, so a file that does
   not match never reaches the engine directory. A file that does not match is deleted, so the next run
-  downloads the published one again, and the verified hash is kept in the download's finish mark, so the
-  ~190 MB is hashed once and not again on the next run.
+  downloads the published one again. There is deliberately no "already checked" mark: `verify_sha256()`
+  keeps one for the Unsloth shards because it hashes 111 GB there, where the ~5 minutes are worth skipping.
+  The engine archive is 190 MB, which hashes in 0.79 s at 242 MB/s on this machine, against 3.0 s to
+  download the same file - so a mark would save 0.8 s and cost a class of hole, since anything that changed
+  the file after it was checked would then be taken on trust, at any length.
   
   Measured on v0.1.40's `strata-windows-x64.zip`: the API reported 131,707,082 bytes and
   `cd264b2125fdb85e84a8264da2ab2343463e6c7f9a12f317d4ce7192cd2c6b33`; the download hashed to the same, and a
@@ -451,13 +454,17 @@ With more than one model installed, it asks which one to start. `run-<model>.bat
   published hash matches it. Only a hash pinned in the source closes that, at the cost of a commit per
   release.
   
-  A hash from the API is also only as available as the API. If GitHub will not answer - no internet, or the
-  anonymous rate limit, 60 requests an hour counted per internet address, which a shared or office
-  connection can run out of - there is nothing to check against. The same is true when `--prebuilt` points at
-  a local folder or a plain mirror, which is not a release URL and has no published hash at all; setup says
-  which of the two it is rather than claiming to have checked something. `STRATA_ALLOW_UNVERIFIED_ENGINE=1`
-  is the explicit, recorded way to accept an engine that cannot be checked, and setup says so in its output
-  when it installs one that way.
+  A hash from the API is also only as available as the API, and only where there is a published release to
+  ask about. Three cases, and setup says which one it is rather than claiming to have checked something:
+  - **no answer from GitHub** - no internet, or the anonymous rate limit (60 requests an hour counted per
+    internet address, which a shared or office connection can run out of). An engine *update* keeps the
+    engine already installed and starts it; a first install stops, because there is nothing to fall back to.
+  - **a local folder** (`--prebuilt D:\mirror`) - the user's own file on their own disk, the same trust
+    decision as `--gguf-dir`, and no API could say anything about it whatever. Setup warns, naming the
+    folder and the archive, and installs it.
+  - **a remote mirror** naming no release (`--prebuilt https://mirror/engine/`) - there is a network in the
+    middle *and* nothing published to check against, so this one refuses unless
+    `STRATA_ALLOW_UNVERIFIED_ENGINE=1`. Setup says so in its output when it installs one that way.
 
 **Tuning for your PC (`--calibrate`, engine 0.1.19).** Three engine settings depend on the PC more than on the model:
 - the share of the experts missing from VRAM that are copied to the GPU instead of computed by the CPU

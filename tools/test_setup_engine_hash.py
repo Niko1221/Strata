@@ -49,24 +49,37 @@ def sha_of(b: bytes) -> str:
 
 
 class WhereTheHashComesFrom(unittest.TestCase):
-    """`github_release_of`: which release a download URL names, and whether it names one at all."""
+    """`release_of` and `is_local`: which base names a published release, and which is the user's own disk."""
 
     def test_a_tag_url_names_its_tag(self):
-        self.assertEqual(setup.github_release_of(TAG_BASE), ("Niko1221/Strata", "0.1.40"))
+        self.assertEqual(setup.release_of(TAG_BASE),
+                         ("https://api.github.com/repos/Niko1221/Strata/releases", "0.1.40"))
 
     def test_the_latest_url_names_no_tag(self):
-        self.assertEqual(setup.github_release_of(LATEST_BASE), ("Niko1221/Strata", None))
+        self.assertEqual(setup.release_of(LATEST_BASE),
+                         ("https://api.github.com/repos/Niko1221/Strata/releases", None))
 
     def test_a_fork_names_the_fork_not_this_repository(self):
         # The repository used to be hardcoded, so a fork's own tag was looked up under Niko1221/Strata,
         # where it does not exist - every fork install would be refused.
-        self.assertEqual(setup.github_release_of(FORK_BASE), ("someone/Strata", "1.0"))
+        self.assertEqual(setup.release_of(FORK_BASE),
+                         ("https://api.github.com/repos/someone/Strata/releases", "1.0"))
 
     def test_something_that_is_not_a_github_release_url_names_nothing(self):
         # This is the case that mattered: a local folder or a plain mirror used to match no tag, fall
         # through to releases/latest, and be checked against a release the user did not ask for.
         for base in (LOCAL_BASE, "https://mirror.invalid/dl/", "/mnt/mirror", "\\\\share\\engine"):
-            self.assertIsNone(setup.github_release_of(base), base)
+            self.assertIsNone(setup.release_of(base), base)
+
+    def test_a_local_folder_is_local_and_a_remote_mirror_is_not(self):
+        # The distinction the policy turns on: nothing is between a local file and setup; a remote mirror
+        # has a network in the middle and still no release to check against.
+        for base in (LOCAL_BASE, r"C:\\mirror", "/mnt/mirror", "file:///srv/engine",
+                     r"\\\\share\\engine"):
+            self.assertTrue(setup.is_local(base), base)
+        for base in (setup.PREBUILT_URL, TAG_BASE, FORK_BASE, "https://mirror.invalid/dl/",
+                     "http://example.invalid/engine/"):
+            self.assertFalse(setup.is_local(base), base)
 
     def test_a_local_folder_asks_the_api_nothing_at_all(self):
         # Air-gapped and shared-IP installs must not depend on GitHub answering.
@@ -220,18 +233,31 @@ class ArchiveVerification(unittest.TestCase):
         self.assertIn("did not give a SHA-256", str(caught.exception))
         self.assertTrue(self.z.exists(), "the file is left alone; only the install is refused")
 
-    def test_a_local_folder_says_why_rather_than_asking_github(self):
-        # The message has to name the actual problem, or a user with a mirror is told to retry against
-        # GitHub, which cannot help them.
+    def test_a_local_folder_warns_and_proceeds(self):
+        # `--prebuilt D:\mirror` used to be refused unless the override was set, which was a regression on
+        # a supported workflow: it is the user's own file on their own disk, the same trust decision as
+        # --gguf-dir, and no API could say anything about it. It now warns by name and goes ahead.
+        said = io.StringIO()
+        with self.digest(None), mock.patch.object(setup, "warn", said.write):
+            setup.verify_engine_archive(self.z, ASSET, LOCAL_BASE)     # must not raise
+        out = said.getvalue()
+        self.assertIn(LOCAL_BASE, out)
+        self.assertIn("cannot be checked", out)
+
+    def test_a_remote_mirror_still_needs_the_override(self):
+        # There IS a network in the middle of a mirror, and still no release to check it against.
         with self.digest(None):
             with self.assertRaises(setup.UnverifiedEngine) as caught:
-                setup.verify_engine_archive(self.z, ASSET, LOCAL_BASE)
-        self.assertIn("not a GitHub release URL", str(caught.exception))
+                setup.verify_engine_archive(self.z, ASSET, "https://mirror.invalid/dl/")
+        msg = str(caught.exception)
+        self.assertIn("not a GitHub release URL", msg)
+        # and it says why a local folder would have been different, which is the distinction
+        self.assertIn("is not a folder on this PC either", msg)
 
-    def test_a_truncated_archive_does_not_trust_the_finish_mark(self):
-        # A partial copy, or a disk that filled up, leaves a file that was verified and then shortened -
-        # still carrying its .done mark. The size is checked before the mark here, which costs one stat()
-        # and closes that; verify_sha256() trusts the mark first, which is the gap.
+    def test_a_truncated_archive_is_refused(self):
+        # There is no finish mark any more, so nothing can vouch for a file that changed after it was
+        # checked. Measured cost of that decision: 190 MB hashes in 0.79 s at 242 MB/s on this machine,
+        # against 3.0 s to download the same file, so re-checking is not worth saving.
         with self.digest((len(self.data), sha_of(self.data))):
             setup.verify_engine_archive(self.z, ASSET, TAG_BASE)
             with open(self.z, "r+b") as f:
@@ -240,22 +266,17 @@ class ArchiveVerification(unittest.TestCase):
                 setup.verify_engine_archive(self.z, ASSET, TAG_BASE)
         self.assertIn("not the published", str(caught.exception))
 
-    def test_the_verified_hash_is_kept_in_the_download_mark(self):
-        # So the ~190 MB is not hashed again on the next run, the same idiom as verify_sha256 uses for
-        # the Unsloth shards - a re-run must skip straight past it.
-        sha = sha_of(self.data)
-        with self.digest((len(self.data), sha)):
+    def test_a_same_length_change_after_verification_is_refused(self):
+        # The hole the mark left: same length, so the size check passes, and the mark would have vouched
+        # for it. With no mark, the hash is recomputed and it is caught.
+        with self.digest((len(self.data), sha_of(self.data))):
             setup.verify_engine_archive(self.z, ASSET, TAG_BASE)
-            real = hashlib.sha256
-            calls = []
-
-            def spy(data=b""):
-                calls.append(len(data))
-                return real(data)
-
-            with mock.patch.object(hashlib, "sha256", spy):
+            with open(self.z, "r+b") as f:
+                f.seek(0)
+                f.write(b"X")
+            with self.assertRaises(setup.UnverifiedEngine) as caught:
                 setup.verify_engine_archive(self.z, ASSET, TAG_BASE)
-        self.assertEqual(calls, [], "the second call hashed nothing")
+        self.assertIn("wrong SHA-256", str(caught.exception))
 
     def test_the_api_is_asked_once_not_twice(self):
         # It is a rate-limited API and an install is not the place to spend two calls on one lookup.
@@ -349,9 +370,17 @@ class Wiring(unittest.TestCase):
 
     def test_the_digest_is_read_from_the_api_not_the_download_host(self):
         src = (ROOT / "setup.py").read_text(encoding="utf-8")
-        body = src[src.index("def engine_digest("):]
+        # release_of() builds the API URL, from the OWNER/REPO in the download URL - so a mirror of this
+        # repository is checked against this repository's published hash, not against whatever the mirror
+        # happens to be serving.
+        body = src[src.index("def release_of("):]
         body = body[:body.index("\ndef ")]
         self.assertIn("api.github.com/repos/", body)
+        self.assertIn("m.group(1)", body, "the repository comes out of the URL, not a constant")
+        # and engine_digest asks release_of rather than the download URL
+        body = src[src.index("def engine_digest("):]
+        body = body[:body.index("\ndef ")]
+        self.assertIn("release_of(base)", body)
 
 
 class contextlib_redirect:

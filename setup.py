@@ -2257,13 +2257,13 @@ class UnverifiedEngine(Exception):
     """
 
 
-def github_release_of(base: str) -> tuple[str, str | None] | None:
-    """(owner/repo, tag) for a GitHub release URL, or None when the URL is not one.
+def release_of(base: str) -> tuple[str, str | None] | None:
+    """("github", tag) for a GitHub release URL, or None when the URL is not one.
 
     `base` is one of the bases from `prebuilt_bases`: a `releases/download/v0.1.40/` URL (which names its
-    tag), the `releases/latest/download/` URL, or something else entirely - a local folder, a plain
-    mirror.  That last case matters: it has no published digest, so treating it as "latest" would check
-    the file against a release the user did not ask for, over the network, which is wrong twice over.
+    tag), the `releases/latest/download/` URL, or something else entirely - a local folder, a plain mirror.
+    That last case matters: it has no published digest, so treating it as "latest" would check the file
+    against a release the user did not ask for, over the network, which is wrong twice over.
 
     The repository comes out of the URL when it names one, so a fork's own releases are checked against
     the fork rather than against Niko1221/Strata (which never has the fork's tags, so the check would
@@ -2273,7 +2273,21 @@ def github_release_of(base: str) -> tuple[str, str | None] | None:
                   base)
     if not m:
         return None
-    return f"{m.group(1)}/{m.group(2)}", m.group(3)
+    return f"https://api.github.com/repos/{m.group(1)}/{m.group(2)}/releases", m.group(3)
+
+
+def is_local(base: str) -> bool:
+    """True for a path on this machine - `C:\mirror`, `/mnt/mirror`, `\\share\engine`, `file://...`.
+
+    A local folder is the user's own file on their own disk, the same trust decision as `--gguf-dir`, and
+    there is no published digest for it to be checked against.  It is treated differently from a remote
+    mirror on purpose: nothing is between the file and setup, whereas a remote mirror has a network in the
+    middle and still no release to check it against.
+    """
+    b = base.strip()
+    if b.lower().startswith("file://"):
+        return True
+    return not re.match(r"^[a-z][a-z0-9+.\-]*://", b, re.I)
 
 
 def engine_digest(asset: str, base: str) -> tuple[int, str] | None:
@@ -2287,19 +2301,18 @@ def engine_digest(asset: str, base: str) -> tuple[int, str] | None:
     (measured on v0.1.34 through v0.1.40.1).  None means no answer - no network, a rate limit, or a
     release that does not publish one - and the caller refuses rather than treating it as a pass.
     """
-    where = github_release_of(base)
-    if where is None:                       # a local folder or a plain mirror: nothing published to check against
+    where = release_of(base)
+    if where is None:                  # a local folder or a plain mirror: nothing published to check against
         return None
-    repo, tag = where
-    url = (f"https://api.github.com/repos/{repo}/releases/tags/v{tag}" if tag
-           else f"https://api.github.com/repos/{repo}/releases/latest")
+    releases, tag = where
+    url = f"{releases}/tags/v{tag}" if tag else f"{releases}/latest"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "strata-setup",
                                                    "Accept": "application/vnd.github+json"})
         with urllib.request.urlopen(req, timeout=60) as r:
             rel = json.loads(r.read().decode("utf-8"))
     except Exception:
-        return None                          # offline, rate-limited, or the release is not there
+        return None                     # offline, rate-limited, or the release is not there
     for a in rel.get("assets") or []:
         if a.get("name") == asset and a.get("digest") and str(a.get("digest")).startswith("sha256:"):
             return int(a.get("size") or 0), str(a["digest"]).split(":", 1)[1]
@@ -2315,12 +2328,23 @@ def drop_download(z: Path) -> None:
 def verify_engine_archive(z: Path, asset: str, base: str) -> None:
     """The downloaded engine archive against the published size and SHA-256, before it is unpacked.
 
-    Without this, a ready-made engine is installed on nothing but its byte count matching the server's
-    Content-Length - and a substituted file of the same length passes that.  It runs before the archive is
-    opened, so a wrong engine never reaches `_unpack`, let alone the engine directory.
+    Without this, a ready-made engine is installed on nothing more than the byte count matching the
+    server's Content-Length - and a substituted file of the same length passes that.  It runs before the
+    archive is opened, so a wrong engine never reaches `_unpack`, let alone the engine directory.
 
     Raises UnverifiedEngine on a refusal; the caller decides whether that stops setup (a first install,
     with nothing to fall back to) or keeps the engine that is already there (an update).
+
+    Where the hash comes from, and where it cannot:
+
+    - a GitHub release URL: the tag is read out of the URL, so the exact release the bytes claim to come
+      from is the one checked rather than "latest" (setup tries the checkout's own release first, #214),
+      and the repository comes out of the URL too, so a fork's releases are checked against the fork;
+    - a local folder (`--prebuilt D:\mirror`): nothing published to check against.  This warns and goes
+      ahead - it is the user's own file, the same trust decision as `--gguf-dir`, and there is nothing an
+      API could say about it;
+    - any other remote mirror: nothing published to check against either, but a network is in the middle,
+      so it refuses unless `STRATA_ALLOW_UNVERIFIED_ENGINE=1`.
 
     What a digest from the API does NOT cover, stated plainly: it proves the bytes are the ones GitHub
     published for that asset, so it catches a corrupted transfer, a mirror or proxy that substituted the
@@ -2329,35 +2353,32 @@ def verify_engine_archive(z: Path, asset: str, base: str) -> None:
     that, at the cost of a commit per release; a dict of tag -> sha next to `engine_digest` is where one
     would go.
 
-    The verified hash is kept in the download's finish mark, so the ~190 MB is hashed once and not again
-    on the next run - the same idiom, and the same mark, as `verify_sha256` for the Unsloth shards.  The
-    size and the hashing below are spelled out rather than delegated to `verify_sha256`, because that ends
-    in `fail()` and this must be able to refuse without stopping setup.
+    The size and the hashing below are spelled out rather than delegated to `verify_sha256`, for two
+    reasons, both measured here.  That function ends in `fail()`, and a refusal has to be an Exception so
+    the update paths can fall back.  And it keeps a `.done` mark so 111 GB of Unsloth shards is hashed
+    once; the engine archive is 190 MB, which hashes in 0.79 s at 242 MB/s on this machine, against 3.0 s
+    to download the same file.  A mark that saves 0.8 s is not worth a class of hole - anything that
+    changes the file after it was verified, at any length - so there is no mark here.
     """
     want = engine_digest(asset, base)          # one API call: this is a rate-limited API
     if not want:
+        if is_local(base):
+            warn(f"{base} is a folder on this PC, not a published release, so {asset} cannot be checked "
+                 f"against a SHA-256. Installing it as it is.")
+            return
         if os.environ.get("STRATA_ALLOW_UNVERIFIED_ENGINE"):
             warn(f"no published SHA-256 for {asset}; installing it UNVERIFIED "
                  f"(STRATA_ALLOW_UNVERIFIED_ENGINE)")
             return
-        if github_release_of(base) is None:
+        if release_of(base) is None:
             raise UnverifiedEngine(f"{base} is not a GitHub release URL, so there is no published "
-                                   f"SHA-256 for {asset}")
+                                   f"SHA-256 for {asset}, and it is not a folder on this PC either")
         raise UnverifiedEngine(f"GitHub's API did not give a SHA-256 for {asset}")
     size, sha = want
     have = z.stat().st_size if z.exists() else -1
-    # The size is checked BEFORE the finish mark is trusted, which is the other way round from
-    # verify_sha256() for the shards. A stat() costs nothing next to hashing 190 MB, and it closes the
-    # gap the mark leaves: a file that was verified and has since been truncated - a partial copy, a full
-    # disk - still carries its mark, and trusting that would install an engine that is not the one that was
-    # checked. Same-length tampering with a stale mark is still trusted, as it is for the shards; that is
-    # the trade for hashing once, and it needs write access to this directory to exploit.
     if have != size:
         drop_download(z)
         raise UnverifiedEngine(f"{z.name} is {have:,} bytes, not the published {size:,}")
-    m = z.with_name(z.name + ".done")
-    if m.exists() and f"sha256 {sha}" in m.read_text(encoding="utf-8", errors="replace"):
-        return                                     # verified on an earlier run; do not hash 190 MB again
     h = hashlib.sha256()
     with open(z, "rb") as f:
         while True:
@@ -2369,7 +2390,6 @@ def verify_engine_archive(z: Path, asset: str, base: str) -> None:
         got = h.hexdigest()
         drop_download(z)
         raise UnverifiedEngine(f"{z.name} has the wrong SHA-256 ({got}, expected {sha})")
-    mark(z, f"sha256 {sha}")
 
 
 def engine_refused(asset: str, e: Exception, updating: bool) -> None:

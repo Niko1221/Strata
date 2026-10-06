@@ -41,9 +41,14 @@ An update keeps the engine it replaced in `engine\.previous` (one generation, ab
     requests an hour, counted per internet address, so a shared or office connection can run out), or no
     internet. The downloaded file is deleted so the next run fetches the published one; run setup again in a
     few minutes.
-  - `is not a GitHub release URL` - you pointed setup at a local folder or a plain mirror with `--prebuilt`,
-    and there is no published hash for that. Setup will not claim to have checked it. If you trust that
-    source, set `STRATA_ALLOW_UNVERIFIED_ENGINE=1` and setup says so in its output when it installs it.
+  - `is not a GitHub release URL ... and it is not a folder on this PC either` - you pointed setup at a
+    remote mirror with `--prebuilt`, and there is no published hash for a mirror to be checked against, so
+    setup refuses rather than claim otherwise. Set `STRATA_ALLOW_UNVERIFIED_ENGINE=1` to install it anyway;
+    setup says so in its output when it does.
+
+  A **local folder** is not this error. `--prebuilt D:\mirror` is your own file on your own disk, there is
+  no published hash for it, and setup installs it after saying so once - the same trust decision as
+  `--gguf-dir`.
   - `has the wrong SHA-256` / `is N bytes, not the published M` - the file does not match the release. That
     is either a corrupted download or something substituted; the file is deleted either way.
 

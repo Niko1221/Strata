@@ -262,24 +262,13 @@ class Engine(unittest.TestCase):
         so every later run failed on it, even after the right one was published."""
         with tempfile.TemporaryDirectory() as folder:  # a --prebuilt folder, through the real download()
             asset = Path(folder) / setup.PREBUILT_ASSET
-
-            # The archive is now hashed before it is opened, so the test has to say what the hash of
-            # whatever is in the folder is, to get as far as the unpacking it is about. A --prebuilt URL
-            # points somewhere that is not this repository, so no GitHub digest covers it either.
-            def digest(name, base):
-                p = Path(folder, name)
-                data = p.read_bytes() if p.exists() else b""
-                return len(data), hashlib.sha256(data).hexdigest()
-
             asset.write_bytes(b"<html>not a zip</html>")
             with self.assertRaises(zipfile.BadZipFile):
-                with mock.patch.object(setup, "engine_digest", digest):
-                    quiet(setup.get_prebuilt, folder, {"arch": 89}, "gpu")
+                quiet(setup.get_prebuilt, folder, {"arch": 89}, "gpu")
             with zipfile.ZipFile(asset, "w") as z:
                 z.writestr("BUILD.json", json.dumps({"version": ".".join(map(str, setup.MIN_ENGINE)), "archs": [89]}))
                 z.writestr(setup.EXE, b"engine")
-            with mock.patch.object(setup, "engine_digest", digest):
-                eng, _ = quiet(setup.get_prebuilt, folder, {"arch": 89}, "gpu")
+            eng, _ = quiet(setup.get_prebuilt, folder, {"arch": 89}, "gpu")
         self.assertEqual(eng, self.root / "engine")
         self.assertEqual((self.root / "engine" / setup.EXE).read_bytes(), b"engine")
 
