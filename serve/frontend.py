@@ -269,7 +269,9 @@ def _tool_list(value, wrapper: str | None) -> list[dict]:
     {"type": "function", "function": {"name": ...}} (`wrapper` "function"; a bare {"name": ...} is still taken), or
     in the Anthropic shape {"name": ...} (`wrapper` None).  A value that is not (a string such as "auto", a list of
     names, an object without a name) is a ValueError - a 400 naming the field - where it used to take the request
-    thread down with no reply at all.  No value (or an empty one) is no tools, as always."""
+    thread down with no reply at all.  No value (or an empty one) is no tools, as always.  A tool's schema -
+    "parameters" in the OpenAI shape, "input_schema" in the Anthropic one - is an object when it is there, for the
+    same reason: a string or a list passed and raised later instead, on the model's first call of that tool."""
     if not value:
         return []
     shape = ('{"type": "function", "function": {"name": ..., "parameters": {...}}}' if wrapper else
@@ -278,10 +280,17 @@ def _tool_list(value, wrapper: str | None) -> list[dict]:
         tools = _object_list(value, "tools")
     except ValueError:
         raise ValueError(f"tools must be a list of tool objects, each {shape}") from None
+    key = "parameters" if wrapper else "input_schema"
     for i, t in enumerate(tools):
         fn = t.get(wrapper, t) if wrapper and t.get("type") == wrapper else t
         if not isinstance(fn, dict) or not isinstance(fn.get("name"), str) or not fn["name"]:
             raise ValueError(f"tools[{i}] has no name: each tool must be {shape}")
+        schema = fn.get(key)
+        if schema is not None and not isinstance(schema, dict):
+            # it reached parse_tool_call and the stream parser as the tool's schema, whose .get("properties") raised
+            # AttributeError in the request thread - after the 200 and whatever the model had said before the call
+            raise ValueError(f'tools[{i}] ({fn["name"]}): "{key}" must be an object (the JSON schema of its '
+                             f"parameters), not {type(schema).__name__}")
     return tools
 
 
