@@ -289,7 +289,8 @@ class _AmdWindows:
     The old ADL Overdrive calls answer not-supported on current drivers (verified on Adrenalin 32.0.21045) and
     the raw ADLX entry points are not a stable ctypes client, so the wheel is the supported reader; without it
     the card reports nothing, exactly as before this backend.  `index` numbers the cards by PCI bus, ascending
-    - the order HIP numbers them on Windows - matching the engine's GPU numbering."""
+    - the order HIP numbers them on Windows - matching the engine's GPU numbering; the ADLX GPU is matched to
+    that walk by name, so a card the walk cannot name reports nothing rather than another card's numbers."""
 
     def __init__(self, index=0):
         self._gpu = None
@@ -307,8 +308,6 @@ class _AmdWindows:
                 if name.casefold() == want:
                     pick = (name, gpu)
                     break
-        if pick is None and 0 <= index < len(gpus):
-            pick = gpus[index]                       # best effort: ADLX's own order
         if pick is not None:
             self._name, self._gpu = pick
             self._performance = state["performance"]
