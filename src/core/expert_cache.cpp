@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <cstdlib>
+#include <limits>
 #include <utility>
 #include <cstring>
 
@@ -580,6 +581,174 @@ bool ExpertCache::open_sized(const std::vector<int64_t>& slot_bytes, int64_t n_l
     return true;
 }
 
+#if !defined(STRATA_EC_NO_VMM)   // --elastic arena: CUDA VMM, linked against the driver library
+namespace {
+bool drv_ok(CUresult r, const char* what, std::string& err) {
+    if (r == CUDA_SUCCESS) return true;
+    const char* s = nullptr;
+    cuGetErrorString(r, &s);
+    err = std::string("ExpertCache (elastic): ") + what + ": " + (s ? s : "unknown driver error");
+    return false;
+}
+CUmemAllocationProp chunk_prop(int device) {
+    CUmemAllocationProp p = {};
+    p.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+    p.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+    p.location.id = device;
+    return p;
+}
+}  // namespace
+
+bool ExpertCache::map_to(uint64_t end, std::string& err) {
+    const CUmemAllocationProp prop = chunk_prop(device_);
+    CUmemAccessDesc acc = {};
+    acc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+    acc.location.id = device_;
+    acc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+    while (mapped_ < end) {
+        if (mapped_ + chunk_ > va_bytes_) { err = "ExpertCache (elastic): the reserved address range is full"; return false; }
+        CUmemGenericAllocationHandle h = 0;
+        if (!drv_ok(cuMemCreate(&h, chunk_, &prop, 0), "cuMemCreate", err)) return false;
+        const CUdeviceptr at = (CUdeviceptr) va_ + mapped_;
+        if (!drv_ok(cuMemMap(at, chunk_, 0, h, 0), "cuMemMap", err)) { cuMemRelease(h); return false; }
+        if (!drv_ok(cuMemSetAccess(at, chunk_, &acc, 1), "cuMemSetAccess", err)) {
+            cuMemUnmap(at, chunk_);
+            cuMemRelease(h);
+            return false;
+        }
+        handles_.push_back((unsigned long long) h);
+        mapped_ += chunk_;
+    }
+    return true;
+}
+
+void ExpertCache::unmap_above(uint64_t keep) {
+    const uint64_t keep_chunks = chunk_ ? (keep + chunk_ - 1) / chunk_ : 0;
+    while ((uint64_t) handles_.size() > keep_chunks) {
+        const uint64_t at = (uint64_t) (handles_.size() - 1) * chunk_;
+        cuMemUnmap((CUdeviceptr) va_ + at, chunk_);
+        cuMemRelease((CUmemGenericAllocationHandle) handles_.back());
+        handles_.pop_back();
+        mapped_ -= chunk_;
+    }
+}
+
+bool ExpertCache::open_sized_elastic(const std::vector<int64_t>& slot_bytes, int64_t n_layers, int64_t n_expert,
+                                     uint64_t va_bytes, uint64_t chunk_bytes, std::string& err) {
+    close();
+    if (slot_bytes.empty() || n_layers <= 0 || n_expert <= 0 ||
+        n_layers > std::numeric_limits<int64_t>::max() / n_expert ||
+        (uint64_t) slot_bytes.size() > (uint64_t) (n_layers * n_expert)) {
+        err = "ExpertCache (elastic): invalid slot count or geometry"; return false;
+    }
+    for (const int64_t b : slot_bytes)
+        if (b <= 0) { err = "ExpertCache (elastic): slot sizes must be positive"; return false; }
+    // the runtime has made the device's primary context current; the driver API works in the same one
+    if (cudaFree(nullptr) != cudaSuccess) { err = "ExpertCache (elastic): no CUDA context"; return false; }
+    int dev = 0;
+    cudaGetDevice(&dev);
+    CUdevice cudev = 0;
+    if (!drv_ok(cuDeviceGet(&cudev, dev), "cuDeviceGet", err)) return false;
+    int vmm = 0;
+    cuDeviceGetAttribute(&vmm, CU_DEVICE_ATTRIBUTE_VIRTUAL_MEMORY_MANAGEMENT_SUPPORTED, cudev);
+    if (!vmm) { err = "ExpertCache (elastic): the driver has no virtual memory management on this card"; return false; }
+    const CUmemAllocationProp prop = chunk_prop(dev);
+    size_t gran = 0;
+    if (!drv_ok(cuMemGetAllocationGranularity(&gran, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM), "granularity", err))
+        return false;
+    if (gran == 0) gran = 2u << 20;
+    chunk_ = (std::max<uint64_t>(chunk_bytes, gran) + gran - 1) / gran * gran;
+    va_bytes_ = (va_bytes + chunk_ - 1) / chunk_ * chunk_;
+    std::vector<uint64_t> off(slot_bytes.size() + 1, 0);
+    int64_t mx = 0;
+    for (size_t i = 0; i < slot_bytes.size(); ++i) {
+        const uint64_t aligned = ((uint64_t) slot_bytes[i] + 255) / 256 * 256;
+        if (aligned > va_bytes_ - off[i]) { err = "ExpertCache (elastic): the first slots exceed the reserved range"; return false; }
+        off[i + 1] = off[i] + aligned;
+        mx = std::max(mx, slot_bytes[i]);
+    }
+    if (off.back() > va_bytes_) { err = "ExpertCache (elastic): the first slots exceed the reserved range"; return false; }
+    CUdeviceptr va = 0;
+    if (!drv_ok(cuMemAddressReserve(&va, va_bytes_, 0, 0, 0), "cuMemAddressReserve", err)) return false;
+    va_ = (unsigned long long) va;
+    device_ = dev;
+    elastic_vmm_ = true;
+    mapped_ = 0;
+    handles_.clear();
+    if (!map_to(off.back(), err)) { close(); return false; }
+    base_ = (uint8_t*) (uintptr_t) va_;
+    if (cudaMemset(base_, 0, (size_t) off.back()) != cudaSuccess) {
+        err = "ExpertCache (elastic): cudaMemset of the first slots failed";
+        close();
+        return false;
+    }
+    residency_.assign((size_t) (n_layers * n_expert), kNotResident);
+    slots_ = (int64_t) slot_bytes.size();
+    live_slots_ = slots_;
+    n_layers_ = n_layers;
+    n_expert_ = n_expert;
+    blob_ = mx;
+    next_free_ = 0;
+    fills_ = 0;
+    admitted_ = 0;
+    // room for every (layer, expert): `slot_offsets()` is handed to the pool once and must never reallocate
+    off_.clear();
+    off_.reserve((size_t) (n_layers * n_expert) + 1);
+    off_.insert(off_.end(), off.begin(), off.end());
+    layer_next_.assign((size_t) n_layers, 0);
+    return true;
+}
+
+#else
+bool ExpertCache::map_to(uint64_t, std::string& err) { err = "elastic cache requires CUDA VMM"; return false; }
+void ExpertCache::unmap_above(uint64_t) {}
+bool ExpertCache::open_sized_elastic(const std::vector<int64_t>&, int64_t, int64_t, uint64_t, uint64_t, std::string& err) {
+    close(); err = "elastic cache requires CUDA VMM; using fixed cache"; return false;
+}
+#endif
+
+bool ExpertCache::elastic_grow(const std::vector<int64_t>& slot_bytes, std::string& err) {
+    if (!elastic_vmm_) { err = "ExpertCache: grow needs the elastic arena"; return false; }
+    if (slot_bytes.empty()) return true;
+    if ((uint64_t) slot_bytes.size() > (uint64_t) (n_layers_ * n_expert_ - slots_)) {
+        err = "ExpertCache (elastic): more slots than (layer, expert) pairs";
+        return false;
+    }
+    const uint64_t old_end = off_.back();
+    uint64_t end = old_end;
+    std::vector<uint64_t> add;
+    add.reserve(slot_bytes.size());
+    for (const int64_t b : slot_bytes) {
+        if (b <= 0) { err = "ExpertCache (elastic): slot sizes must be positive"; return false; }
+        const uint64_t aligned = ((uint64_t) b + 255) / 256 * 256;
+        if (aligned > va_bytes_ - end) { err = "ExpertCache (elastic): the reserved address range is full"; return false; }
+        end += aligned;
+        add.push_back(end);
+    }
+    if (!map_to(end, err)) { unmap_above(old_end); return false; }
+    if (cudaMemset(base_ + old_end, 0, (size_t) (end - old_end)) != cudaSuccess) {
+        err = "ExpertCache (elastic): cudaMemset of the new slots failed";
+        unmap_above(old_end);
+        return false;
+    }
+    off_.insert(off_.end(), add.begin(), add.end());
+    for (const int64_t b : slot_bytes) blob_ = std::max(blob_, b);
+    slots_ += (int64_t) slot_bytes.size();
+    live_slots_ = slots_;
+    return true;
+}
+
+bool ExpertCache::elastic_shrink(int64_t n_slots, std::string& err) {
+    if (!elastic_vmm_) { err = "ExpertCache: shrink needs the elastic arena"; return false; }
+    if (n_slots < 0 || n_slots > slots_) { err = "ExpertCache (elastic): shrink outside 0..slots"; return false; }
+    if (n_slots == slots_) return true;
+    off_.resize((size_t) n_slots + 1);
+    slots_ = n_slots;
+    live_slots_ = slots_;
+    unmap_above(off_.back());
+    return true;
+}
+
 void ExpertCache::close() {
 #if defined(STRATA_USE_HIP)
     if (blocking_staging_) (void) cudaFreeHost(blocking_staging_);
@@ -587,9 +756,20 @@ void ExpertCache::close() {
     blocking_staging_bytes_ = 0;
 #endif
     off_.clear();
-    if (!segs_.empty()) {
+    if (elastic_vmm_) {   // the --elastic arena (open_sized_elastic)
+        unmap_above(0);
+#if !defined(STRATA_EC_NO_VMM)
+        if (va_ != 0) cuMemAddressFree((CUdeviceptr) va_, va_bytes_);
+#endif
+        va_ = 0;
+        va_bytes_ = 0;
+        chunk_ = 0;
+        mapped_ = 0;
+        elastic_vmm_ = false;
+        base_ = nullptr;   // never cudaMalloc'd
+    } else if (!segs_.empty()) {
         release_segmented();
-    } else if (vmm_) {
+    } else if (vmm_) {   // the elastic K/V's VmmRange (set_vmm)
         vmm_.reset();   // unmaps and frees every chunk it still holds
         base_ = nullptr;
     } else if (base_ != nullptr) {

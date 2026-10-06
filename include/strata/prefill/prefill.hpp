@@ -63,9 +63,12 @@ public:
     /// `host_res`: the static residency table (n_layers x n_expert, slot or -1) or null; `cache` its slots.
     /// `borrow`/`borrow_bytes`: device memory to carve every buffer from (the top slots of the expert cache,
     /// lent for the prompt and refilled after it); null = allocate normally.
+    /// `chunk_max` (--elastic): the largest chunk a later `relayout` may ask for - the host buffers are
+    /// sized for it, the device buffers for `chunk`; 0 = `chunk` (a cache that cannot grow never lends a bigger one).
     bool init(const core::WeightTable& wt, const core::ModelGeometry& g, core::SessionState& ss,
               core::ExpertSource* src, const core::ExpertCache* cache, const int32_t* host_res, int64_t chunk,
-              void* stream, std::string& err, void* borrow = nullptr, uint64_t borrow_bytes = 0);
+              void* stream, std::string& err, void* borrow = nullptr, uint64_t borrow_bytes = 0,
+              int64_t chunk_max = 0);
 
     /// With borrowed buffers: lay them out again for chunks of `chunk` tokens (at most `init`'s) in `borrow` - a
     /// request lends only the slots its prompt needs.  The stream must be idle (between prompts).
