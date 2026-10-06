@@ -3411,11 +3411,12 @@ int main(int argc, char** argv) {
             const bool on = asked && !multi_gpu && o.kv_resident <= 0 &&
                             !o.expert_profile.empty() && !o.resident_cpu_experts && o.expert_cache != 0 && !remote &&
                             strata::core::vmm_available() &&
-                            // the batch slots carve their own K/V and --vram-elastic's cache is not one VMM range
-                            o.batch == 0 && !o.vram_elastic && o.peer_device < 0;
+                            // the batch slots carve their own K/V and --vram-elastic's cache is not one VMM range;
+                            // a peer tier is fine - its cache never enables VMM (only the K/V's own cache does)
+                            o.batch == 0 && !o.vram_elastic;
             if (asked && !on)
                 std::fprintf(stderr, "strata generate: --kv-grow is off (one GPU, a profile, the whole K/V in VRAM, "
-                                     "every expert in RAM, no --batch, --vram-elastic or --peer-device)\n");
+                                     "every expert in RAM, no --batch or --vram-elastic)\n");
             const char* iv = std::getenv("STRATA_KV_GROW_INIT");
             strata::core::qsa_set_kv_elastic(on, iv != nullptr && std::atoll(iv) > 0 ? std::atoll(iv) : 16384);
             cache_vmm = on;   // the primary cache only (xcache, below): the peer tier's stays one cudaMalloc
