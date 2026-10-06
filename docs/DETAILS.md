@@ -220,6 +220,15 @@ request: [SOURCE_INSTALL.md](SOURCE_INSTALL.md#build-from-git-on-linux-to-try-a-
 `STRATA_KV_HOST_REGISTER=1` forces the KV host copy to be pinned with `cudaHostRegister` (the order WSL2 uses
 automatically); `0` forces `cudaHostAlloc` first.
 
+**One KV pool for all the sessions (`--kv-pool-tokens N`, with `--kv-resident`; ported from PR #1011 by xdbxdbx):**
+KV streaming pins the whole context's K/V per session, so `--batch` slots plus the main session pin (slots + 1) x the
+context (15.5 GiB for four slots at 262,144 cells, 8-bit KV). With the pool, N cells per QSA layer are pinned once
+(524,288 cells: 6.2 GiB) and a session holds only the 4,096-cell chunks its conversation has reached; a conversation
+moves between the main session and a slot by swapping chunks, and when the pool is full an idle slot's cached
+conversation gives way, then a new request is refused (HTTP 503, `Retry-After`, `kv_pool_full`) or a decoding lane ends
+`length` with `"truncated": true`. It works across a layer split. Details and the behaviour when it is full:
+docs/BATCHING.md.
+
 ### Low-RAM modes (chosen by setup)
 
 Normally all of a model's experts are copied into RAM (23-50 GB, pinned) and the GPU holds a copy of the most-used ones.
