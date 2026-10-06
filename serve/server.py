@@ -3852,7 +3852,7 @@ def make_handler(svc: Service):
                              "meta": {"n_ctx": svc.engine.max_context},
                              "architecture": {"input_modalities": ["text", "image"] if svc.vision is not None else ["text"],
                                               "output_modalities": ["text"]}}
-                    if not loaded and (svc.idle_unload_s or getattr(svc.engine, "unloaded", False)):
+                    if not loaded and isinstance(svc.engine, StrataEngine):
                         model["status"] = {"value": "unloaded"}   # like llama-server's router: listed, loads on use
                         loaded = True
                     if svc.aliases:                       # #297: the aliases, and each one listed under its own id
