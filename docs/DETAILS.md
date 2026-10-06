@@ -509,6 +509,34 @@ own. Not with a layer split, the helper caches, `--peer-device` or the resident 
 the prompt path), decode 44 -> 33 tok/s; growing back took 92 ms and the answers were token for token the ones before
 the shrink. Without the flag nothing changes (the same answers as without it).
 
+**Updating the engine from the web app.** The About tab's **Update the engine** card compares the installed
+`BUILD.json` with the project's latest release and installs the new engine: `POST /api/update/check`, then
+`POST /api/update/apply` (answer `202`, or `409` while a request is running or queued), then
+`GET /api/update/state` for the nine steps with their own status and note. Both POST routes take
+`Content-Type: application/json` from Strata's own page, exactly like `/settings` and `/unload`; the state
+route only reads, so it carries no guard.
+
+The order of the steps is the safety property. Nothing on disk changes until the download's **SHA-256** has
+been checked against the hash GitHub publishes for the release asset (`digest` in the releases API - the bytes
+come from the release download, the hash from `api.github.com`, so a substituted file does not come with a
+matching hash; a mismatch is deleted, and a release with no hash is refused rather than installed unchecked).
+After it: every member's CRC and path, the engine version inside, that this GPU is one the release has code for,
+and the **staged** engine run with `--help` before the installed one is touched. Only then is the installed
+engine copied to `engine/.previous`, replaced, and the new `BUILD.json` read back; any failure from that point
+restores the backup. A downgrade is refused, as is a release with no build for this platform or backend, or one
+whose engine is older than its own tag names.
+
+Measured here on a GTX 1070 (compute capability 6.1, `STRATA_EXPERIMENTAL_SM60` CUDA 12.9 build) against the real
+v0.1.40.1 release: the CUDA 12 asset (190,241,259 bytes) was chosen because the installed engine's `BUILD.json`
+says `"cuda": "12.6"`, its SHA-256 verified against the API's `5ffaf2ba…`, the staged engine ran, and the
+install finished with engine v0.1.40 in place - in 18 s end to end. The archive was not replaced before: an
+earlier version compared the engine version to the release tag exactly and refused, because a hotfix release
+such as `v0.1.40.1` ships the `v0.1.40` engine.
+
+It updates the engine only. The Python checkout, the pinned packages and the model files are **not** touched -
+that is `git pull` and `pip install`, and rewriting the code this server is running from is a different thing
+from replacing a binary next to it.
+
 **Keep what the expert cache learned across restarts (opt-in, engine 0.1.36, #477):** a start fills the GPU's expert
 cache from the shipped profile, and the adaptive tier (`--adapt-every`) then moves in the experts your requests use.
 With `"expert_profile_save": "expert-profile-learned.bin"` in `strata-<model>.json` the engine saves that as a

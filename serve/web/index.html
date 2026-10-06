@@ -163,6 +163,25 @@
         <dl class="facts" id="facts-api"></dl>
       </div>
       <div class="st-card">
+        <span class="card-title">Update the engine</span>
+        <p class="muted small">The engine is a ready-made build that setup.py downloads, and
+          <code>UPDATE.bat</code> refreshes it. This does the same thing from this page, with each step
+          shown. Nothing on this PC changes until the download's SHA-256, the archive and the new engine
+          have all been checked, and the installed engine is kept until the new one has started and
+          reported its version. It updates the engine only - use <code>UPDATE.bat</code> for the code and
+          the Python packages.</p>
+        <dl class="facts" id="facts-update"></dl>
+        <div class="update-actions">
+          <button type="button" class="st-btn" id="update-check">Check for updates</button>
+          <button type="button" class="st-btn" id="update-apply" hidden>Install the update</button>
+        </div>
+        <div class="update-progress" id="update-progress" hidden>
+          <div class="st-progress" id="update-bar"><div class="st-progress__bar" id="update-bar-fill"></div></div>
+          <ol class="update-steps" id="update-steps"></ol>
+          <p class="muted small" id="update-note"></p>
+        </div>
+      </div>
+      <div class="st-card">
         <span class="card-title">Settings</span>
         <div class="st-field">
           <label class="st-label" for="api-key">API key <output>only if the server was started with one</output></label>

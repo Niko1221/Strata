@@ -367,6 +367,9 @@ function projectionText(c) {
          "describes the vector as a refusal-direction projection; measure the speed yourself";
 }
 function renderAbout(eng, hw, st) {
+  // The update card needs the installed version and /metrics already knows it. Without this the
+  // card would say "not checked yet" while the card above it already shows the version.
+  if (eng.version) updateUI.installed = updateUI.bare(eng.version);
   const kv = {int8: "8-bit", q4_0: "4-bit (Hadamard-rotated)", fp16: "16-bit"}[eng.kv] || eng.kv;
   facts($("facts-engine"), [
     ["Model", eng.model],
@@ -1063,11 +1066,249 @@ $("drawer-close").onclick = () => openDrawer(false);
 $("scrim").onclick = () => openDrawer(false);
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("drawer").dataset.open === "true") openDrawer(false); });
 
+// ---- updating the engine (About card) -------------------------------------------------------------
+// The engine is a ready-made build from the project's releases and the project ships one most days, so
+// updating meant fetching a 124 MB zip and replacing files by hand. The server does that part
+// cautiously (serve/update.py); this is only the panel that shows it happening.
+//
+// The one thing worth saying about the shape of this code: an update stops the model and replaces its
+// files, so "Working..." is not an acceptable UI. Every step is listed with its own state, the failure
+// note says whether the previous engine was restored, and the progress is POLLED rather than streamed
+// because the server has no event stream for this and polling matches how the rest of the panel works.
+//
+// requests:  POST /api/update/check   -> whether a newer release exists (changes nothing)
+//            POST /api/update/apply   -> starts it, returns 202; the server refuses while busy
+//            GET  /api/update/state   -> polled while it runs
+// Every POST is guarded server-side by the same _own_page check as /settings and /unload, so this
+// cannot be triggered by a form post from another site.
+
+const UPDATE_POLL_MS = 700;
+
+const updateUI = {
+  timer: null,
+  latest: null,          // the tag the server last saw, so a check can be offered again
+  installed: null,
+  newer: false,          // the server's own answer to "is a newer release out?"
+
+  // "v0.1.38" and "0.1.38" name the same release. The tag from GitHub carries the v, the version in
+  // BUILD.json does not, so one place strips it and every display adds it back exactly once.
+  bare(v) {
+    return v ? String(v).replace(/^v/i, "") : null;
+  },
+
+  // step -> the one character shown at the left. Text, not colour, carries the state: colour alone
+  // fails for anyone who cannot distinguish them, and this is the panel where being wrong matters.
+  mark(s) {
+    return {done: "✓", active: "▸", failed: "✕", skipped: "–", pending: "·"}[s] || "·";
+  },
+};
+
+function updateRows() {
+  return [
+    ["Installed", updateUI.installed ? `v${updateUI.installed}` : "unknown"],
+    ["Latest release", updateUI.latest ? `v${updateUI.latest}` : "not checked yet"],
+  ];
+}
+
+function renderUpdateIdle() {
+  facts($("facts-update"), updateRows());
+  $("update-progress").hidden = true;
+  const apply = $("update-apply");
+  // Offer the button on the server's own answer, not on a version comparison here. The server already
+  // decided `newer` from parsed numbers, which handles 0.1.9 < 0.1.38 correctly; comparing the two
+  // strings in the browser does not, and it cannot compare at all when the installed version is unknown
+  // (an engine built from source has no BUILD.json) - which would hide the button exactly when a user
+  // who needs it most cannot see it.
+  apply.hidden = !(updateUI.newer || (updateUI.latest && updateUI.latest !== updateUI.installed));
+  apply.textContent = updateUI.latest ? `Install v${updateUI.latest}` : "Install the update";
+  $("update-check").disabled = false;
+  $("update-check").textContent = updateUI.latest ? "Check again" : "Check for updates";
+}
+
+async function checkForUpdates(btn) {
+  const note = $("update-note");
+  btn.disabled = true;
+  btn.textContent = "Checking…";
+  note.textContent = "Asking GitHub for the latest release.";
+  note.removeAttribute("data-tone");
+  $("update-progress").hidden = true;
+  try {
+    const r = await fetch("api/update/check", {method: "POST", headers: headers(true), body: "{}"});
+    const body = await r.json();
+    if (!r.ok) {
+      note.textContent = (body.error && body.error.message) || "could not check";
+      note.setAttribute("data-tone", "error");
+      return;
+    }
+    const d = body.detail || {};
+    // The server sends the tag as published ("v0.1.38") and BUILD.json's version bare ("0.1.38").
+    // Both are stored WITHOUT the v here, because every row and button adds it for display - comparing
+    // "v0.1.38" against "0.1.38" says they differ, and printing `v${latest}` says "vv0.1.38".
+    updateUI.latest = updateUI.bare(d.latest);
+    updateUI.installed = updateUI.bare(d.installed) || updateUI.installed;
+    updateUI.newer = !!d.newer;                    // the server's answer, from parsed version numbers
+    renderUpdateIdle();
+    if (d.newer) {
+      note.textContent = `v${updateUI.latest} is available (${d.asset_mb} MB). It will stop the model while it runs.`;
+      note.removeAttribute("data-tone");
+    } else if (updateUI.latest) {
+      note.textContent = updateUI.installed
+        ? `Already on v${updateUI.latest}.`
+        : `The latest release is v${updateUI.latest}. This engine reports no version (no BUILD.json beside it), ` +
+          "so it cannot tell whether that is newer.";
+      note.removeAttribute("data-tone");
+    } else {
+      note.textContent = "That release publishes no build for this card and platform.";
+      note.setAttribute("data-tone", "warn");
+    }
+  } catch (e) {
+    note.textContent = "could not reach the server";
+    note.setAttribute("data-tone", "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Check for updates";
+  }
+}
+
+function renderUpdateState(s) {
+  const d = s.detail || {};
+  updateUI.installed = d.installed || updateUI.installed;
+  facts($("facts-update"), updateRows());
+
+  const box = $("update-progress");
+  box.hidden = !s.steps.length;
+  $("update-check").disabled = s.state === "running";
+  $("update-apply").hidden = true;          // one update at a time; the card shows what is happening
+
+  const bar = $("update-bar");
+  const fill = $("update-bar-fill");
+  // percent is null outside a run (the check phase has one finished step, which would read 100% and
+  // then snap back to 0%). While the download runs the server reports its own byte percent instead.
+  // match on the step KEY, not the label: a label is English copy that can be reworded, and this panel
+  // must keep working when it is
+  const downloading = s.active_key === "download";
+  const pct = downloading && d.percent != null ? d.percent : (s.percent == null ? 0 : s.percent);
+  fill.style.width = `${pct}%`;
+  bar.setAttribute("data-tone", s.state === "failed" ? "danger" : (s.state === "done" ? "" : "info"));
+
+  const list = $("update-steps");
+  list.innerHTML = (s.steps || []).map((st) => {
+    const secs = st.seconds != null ? `${st.seconds.toFixed(1)}s` : "";
+    // The note goes on its own row under the label, not in a third column. A failure's note is a full
+    // sentence or three ("this engine needs a CUDA library this PC does not have..."); in a 1fr column
+    // that squeezed the label to one word per line and made the whole list unreadable.
+    return `<li data-state="${esc(st.status)}"><span class="mark">${esc(updateUI.mark(st.status))}</span>` +
+           `<span class="label">${esc(st.label)}</span>` +
+           `<span class="time">${esc(secs)}</span>` +
+           (st.note ? `<span class="note">${esc(st.note)}</span>` : "") + `</li>`;
+  }).join("");
+
+  const note = $("update-note");
+  if (s.state === "failed") {
+    // The failing step already shows the full message; this line is what was DONE about it, which is the
+    // part a reader needs first and the only part that says whether their engine still works.
+    note.textContent = d.action || d.error || "the update failed";
+    note.setAttribute("data-tone", "error");
+  } else if (s.state === "done") {
+    // verified_version is what the installed BUILD.json says; installed is the release TAG, and the two are
+    // not always the same - a hotfix release such as v0.1.40.1 ships the v0.1.40 engine. Reporting the tag
+    // here claimed v0.1.40.1 on a machine that had 0.1.40 installed.
+    note.textContent = `The engine is now v${updateUI.bare(d.verified_version) || updateUI.bare(d.installed) || "?"}. ` +
+      `The previous one is kept in ${s.backup || "the backup folder"}.`;
+    note.removeAttribute("data-tone");
+  } else if (downloading && d.total_mb != null) {
+    note.textContent = `${d.downloaded_mb} of ${d.total_mb} MB`;
+    note.removeAttribute("data-tone");
+  } else if (s.active) {
+    note.textContent = `${s.active}…`;
+    note.removeAttribute("data-tone");
+  }
+  return s.state;
+}
+
+async function pollUpdate() {
+  try {
+    const r = await fetch("api/update/state", {headers: headers()});
+    const s = await r.json();
+    const state = renderUpdateState(s);
+    if (state === "running" || state === "checking") {
+      updateUI.timer = setTimeout(pollUpdate, UPDATE_POLL_MS);
+    } else {
+      updateUI.timer = null;
+      if (state === "done") {
+        // The engine was replaced and reloaded underneath us; re-read /health so the About card's
+        // own numbers match what is now running.
+        loadHealth().catch(() => {});
+      }
+      $("update-check").disabled = false;
+    }
+  } catch (e) {
+    updateUI.timer = null;
+  }
+}
+
+async function applyUpdate(btn) {
+  const note = $("update-note");
+  btn.disabled = true;
+  note.textContent = "Asking the server to stop the model and start the update…";
+  note.removeAttribute("data-tone");
+  try {
+    const r = await fetch("api/update/apply", {method: "POST", headers: headers(true), body: "{}"});
+    const body = await r.json();
+    if (!r.ok && r.status !== 202) {
+      note.textContent = (body.error && body.error.message) || "the update would not start";
+      note.setAttribute("data-tone", "error");
+      btn.disabled = false;
+      return;
+    }
+    renderUpdateState(body);
+    if (!updateUI.timer) updateUI.timer = setTimeout(pollUpdate, UPDATE_POLL_MS);
+  } catch (e) {
+    note.textContent = "could not reach the server";
+    note.setAttribute("data-tone", "error");
+    btn.disabled = false;
+  }
+}
+
+function wireUpdate() {
+  const check = $("update-check");
+  const apply = $("update-apply");
+  if (!check || !apply) return;
+  check.addEventListener("click", () => checkForUpdates(check));
+  apply.addEventListener("click", () => {
+    if (!confirm("This stops the model and replaces the engine files.\n\n" +
+                 "The new engine is checked before the installed one is touched, and the installed " +
+                 "engine is kept until the new one starts. Continue?")) return;
+    applyUpdate(apply);
+  });
+  // An update left running by a previous visit to this page is picked up again on load, so the card
+  // shows the outcome rather than silently resetting to "check for updates".
+  fetch("api/update/state", {headers: headers()})
+    .then((r) => r.json())
+    .then((s) => {
+      updateUI.latest = updateUI.bare(s.detail && s.detail.latest);
+      // `|| updateUI.installed`, never `|| null`: before the first check /api/update/state carries no
+      // detail, and writing null there would overwrite the version renderAbout already took from
+      // /metrics - so a freshly loaded page showed "Installed: unknown" next to "Engine v0.1.31".
+      updateUI.installed = updateUI.bare(s.detail && s.detail.installed) || updateUI.installed;
+      if (s.state === "running" || s.state === "checking") {
+        renderUpdateState(s);
+        updateUI.timer = setTimeout(pollUpdate, UPDATE_POLL_MS);
+      } else if (s.state === "done" || s.state === "failed") {
+        renderUpdateState(s);
+      } else {
+        renderUpdateIdle();
+      }
+    })
+    .catch(() => renderUpdateIdle());
+}
+
 // ------------------------------------------------------------------ start
 setBusy(false);
 renderChat();
 const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)
 if (startQuestion) history.replaceState(null, "", location.pathname + location.hash);
 loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
+wireUpdate();
 showTab(location.hash.slice(1) || "chat");
 poll();
