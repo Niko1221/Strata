@@ -88,19 +88,34 @@ class WindowsDetection(unittest.TestCase):
         self.assertIn("Intel(R) Arc(TM) Pro B70 Graphics", out.getvalue())
         self.assertIn("docs/INTEL_ARC.md", out.getvalue())
 
-    def test_sycl_windows_message_names_the_card(self):
+    def test_sycl_windows_hands_over_to_setup_intel(self):
+        import contextlib
+        out = io.StringIO()
         with mock.patch.object(setup, "WIN", True), \
-                mock.patch.object(setup, "intel_gpus_windows",
-                                  lambda *a, **k: [{"index": 0, "name": "Intel(R) Arc(TM) Pro B70 Graphics",
-                                                   "vram_gb": 31.8, "arch": "xe", "driver": "intel",
-                                                   "vendor": "intel", "pci_id": 0xE223}]):
-            out = io.StringIO()
-            with contextlib.redirect_stdout(out):
-                with self.assertRaises(SystemExit):
-                    setup.sycl_setup(["--backend", "sycl"])
+                mock.patch.object(setup.subprocess, "call", return_value=0) as call, \
+                contextlib.redirect_stdout(out):
+            rc = setup.sycl_setup(["--backend", "sycl"])
+        self.assertEqual(rc, 0)
         self.assertIn("EXPERIMENTAL", out.getvalue())
-        self.assertIn("Intel(R) Arc(TM) Pro B70 Graphics", out.getvalue())
-        self.assertIn("docs/INTEL_ARC.md", out.getvalue())
+        cmd = call.call_args[0][0]
+        self.assertTrue(cmd[1].endswith(str(Path("sycl") / "setup_intel.py")))
+        self.assertEqual(cmd[2:], [])
+
+    def test_sycl_engine_windows_finds_the_exe_without_docker(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "build-sycl-aot").mkdir()
+            (root / "build-sycl-aot" / "strata.exe").write_text("x")
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("setup_intel_win", ROOT / "sycl" / "setup_intel.py")
+            mod = importlib.util.module_from_spec(spec)
+            with mock.patch.object(setup, "WIN", True):
+                spec.loader.exec_module(mod)
+                with mock.patch.object(mod, "ROOT", root), mock.patch.object(mod.S, "WIN", True):
+                    exe, why = mod.sycl_engine()
+                    self.assertIsNotNone(exe)
+                    self.assertIsNone(why)
 
 
 if __name__ == "__main__":

@@ -48,8 +48,14 @@ list(APPEND _sycl_flags -fsycl-default-sub-group-size=32)
 # split the first launch in the prompt path (the embedding gather) paid 245 ms for the image it shared (2026-09-30).
 list(APPEND _sycl_link -fsycl-device-code-split=per_kernel)
 list(APPEND _sycl_flags -fsycl-device-code-split=per_kernel)
-add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:${_sycl_flags}>" -fp-model=precise -Wno-unused-parameter
-                    -Wno-unused-variable -Wno-deprecated-declarations)
+# Windows (ICX + Ninja): the IntelLLVM driver accepts the same -fsycl / -fp-model / -qmkl / -m flags as on Linux.
+# MSVC cl does not, so the warning flags are gated there. docs/INTEL_ARC.md Windows path uses ICX, not cl.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+  add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:${_sycl_flags}>" /fp:precise /W3)
+else()
+  add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:${_sycl_flags}>" -fp-model=precise -Wno-unused-parameter
+                      -Wno-unused-variable -Wno-deprecated-declarations)
+endif()
 add_link_options(${_sycl_link})
 
 # --- source resolution: the migrated copy when there is one, the original otherwise -------------------------------
@@ -78,7 +84,11 @@ add_library(strata_includes INTERFACE)
 target_include_directories(strata_includes INTERFACE
   ${CMAKE_CURRENT_SOURCE_DIR}/include      # migrated headers + dpct/ helpers, first
   ${STRATA_ROOT}/include)
-target_compile_options(strata_includes INTERFACE -Wall -Wextra)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+  target_compile_options(strata_includes INTERFACE /W3)
+else()
+  target_compile_options(strata_includes INTERFACE -Wall -Wextra)
+endif()
 
 # --- CPU-side pieces, identical to the top-level build ------------------------------------------------------------
 strata_resolve(_spec src/spec/suffix_drafter.cpp src/spec/controller.cpp src/spec/draft_policy.cpp)
@@ -166,8 +176,14 @@ target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_ker
 strata_resolve(_prefill src/prefill/gemm.cu src/prefill/kernels.cu src/prefill/prefill.cpp)
 add_library(strata_prefill STATIC ${_prefill}
             ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill/moe_fused_stub.cpp)   # upstream's fused int8 kernels: not built here
-target_compile_options(strata_prefill PUBLIC -qmkl=sequential)
-target_link_options(strata_prefill PUBLIC -qmkl=sequential)
+# IntelLLVM (icx/icpx) accepts -qmkl on both Linux and Windows; MSVC cl needs /Qmkl.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+  target_compile_options(strata_prefill PUBLIC /Qmkl:sequential)
+  target_link_options(strata_prefill PUBLIC /Qmkl:sequential)
+else()
+  target_compile_options(strata_prefill PUBLIC -qmkl=sequential)
+  target_link_options(strata_prefill PUBLIC -qmkl=sequential)
+endif()
 target_link_libraries(strata_prefill PUBLIC strata_engine)
 
 strata_resolve(_main src/program/generate.cpp)

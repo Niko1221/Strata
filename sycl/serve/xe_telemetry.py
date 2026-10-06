@@ -34,11 +34,29 @@ class _XeGpu:
         self._e = None                          # (t, card energy uJ) for power without the sampler
 
     def ok(self):
-        return self.dev is not None and sys.platform.startswith("linux")
+        if sys.platform.startswith("linux"):
+            return self.dev is not None
+        # Windows: sysfs has no card; the name/VRAM come from setup's display-adapter
+        # detection (setup.intel_gpus_windows). Util/temp/power are not read yet.
+        try:
+            from pathlib import Path as _P
+            import sys as _s
+            _s.path.insert(0, str(_P(__file__).resolve().parents[2]))
+            import setup as _S
+            intel = _S.intel_gpus_windows() if _S.WIN else []
+            self._win = [g for g in intel if _S.intel_problem(g) is None]
+            return bool(self._win)
+        except (OSError, ValueError, ImportError):
+            return False
 
     def name(self):
         st = self._stat()
-        return (st or {}).get("name") or "Intel Arc GPU"
+        if (st or {}).get("name"):
+            return st["name"]
+        try:
+            return (self.__dict__.get("_win") or [{}])[0].get("name") or "Intel Arc GPU"
+        except (AttributeError, IndexError):
+            return "Intel Arc GPU"
 
     def _stat(self):
         try:
@@ -100,4 +118,12 @@ class _XeGpu:
                 out["power_limit"] = int(cap) / 1e6 if cap and cap.isdigit() and int(cap) > 0 else None
         out["pcie_gen"], out["pcie_gen_max"], out["pcie_width"] = self._link()
         out["pcie_rx_mb"] = out["pcie_tx_mb"] = None    # xe exposes no PCIe traffic counters
+        if not sys.platform.startswith("linux"):
+            # Windows: report the card's VRAM size so the Monitor tab sizes correctly.
+            try:
+                win = (self.__dict__.get("_win") or [{}])[0]
+                if out.get("mem_total") is None and win.get("vram_gb"):
+                    out["mem_total"] = win["vram_gb"] * 2**30
+            except (AttributeError, IndexError, TypeError):
+                pass
         return out

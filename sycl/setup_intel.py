@@ -35,6 +35,7 @@ sys.path.insert(0, str(ROOT))
 import setup as S  # noqa: E402
 
 SYCL_WRAPPER = ROOT / "sycl" / "serve" / "strata-sycl.sh"
+SYCL_WRAPPER_WIN = ROOT / "sycl" / "serve" / "strata-sycl.bat"
 SYCL_IMAGE = "strata-sycl-dev"
 SERVER = ROOT / "sycl" / "serve" / "server_intel.py"
 MOUNT = Path(os.environ.get("STRATA_SYCL_ROOT") or ROOT.parent)   # what strata-sycl.sh mounts at /work
@@ -82,7 +83,11 @@ def intel_gpus():
 def sycl_engine():
     """The SYCL build: (binary, why-not)."""
     if S.WIN:
-        return None, "the SYCL port runs on Linux only"
+        exe = next((b for b in (ROOT / "build-sycl-aot" / "strata.exe", ROOT / "build-sycl" / "strata.exe")
+                    if b.exists()), None)
+        if exe is None:
+            return None, "it is not built (sycl\\tools\\build.bat; docs/INTEL.md: install oneAPI, then build)"
+        return exe, None
     exe = next((b for b in (ROOT / "build-sycl-aot" / "strata", ROOT / "build-sycl" / "strata") if b.exists()), None)
     if exe is None:
         return None, "it is not built (sycl/tools/build.sh; docs/INTEL.md)"
@@ -94,8 +99,10 @@ def sycl_engine():
 
 
 def sycl_path(path) -> str:
-    """A host path as the engine's container sees it: the folder above the Strata checkout (or STRATA_SYCL_ROOT) is
-    mounted at /work."""
+    """A host path as the engine sees it. On Linux the engine runs in a container: the folder above the Strata
+    checkout (or STRATA_SYCL_ROOT) is mounted at /work. On Windows the native exe runs directly: the host path."""
+    if S.WIN:
+        return str(Path(path).resolve())
     p, root = Path(path).resolve(), MOUNT.resolve()
     try:
         return "/work/" + p.relative_to(root).as_posix()
@@ -145,11 +152,18 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict) -> dict:
         drop(args, "--prefill", True)
         args += ["--prefill", "4096"]
     out = {k: v for k, v in cfg.items() if k not in ("lib_dirs", "env", "vision", "gpus")}
-    out.update({"backend": "sycl", "exe": str(SYCL_WRAPPER), "args": args, "sycl_root": str(MOUNT)})
+    if S.WIN:
+        out.update({"backend": "sycl", "exe": str(SYCL_WRAPPER_WIN), "args": args})
+    else:
+        out.update({"backend": "sycl", "exe": str(SYCL_WRAPPER), "args": args, "sycl_root": str(MOUNT)})
     env = {}
-    if exe != ROOT / "build-sycl-aot" / "strata":
-        env["STRATA_SYCL_BIN"] = str(exe.relative_to(ROOT))
-    if MOUNT.resolve() != ROOT.parent.resolve():
+    aot = ROOT / ("build-sycl-aot" / "strata.exe" if S.WIN else "build-sycl-aot" / "strata")
+    if exe != aot:
+        try:
+            env["STRATA_SYCL_BIN"] = str(exe.relative_to(ROOT))
+        except ValueError:
+            env["STRATA_SYCL_BIN"] = str(exe)
+    if not S.WIN and MOUNT.resolve() != ROOT.parent.resolve():
         env["STRATA_SYCL_ROOT"] = str(MOUNT)
     if env:
         out["env"] = env
@@ -158,9 +172,17 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict) -> dict:
 
 
 def install(argv) -> None:
-    intel = [] if S.WIN else intel_gpus()
+    if S.WIN:
+        try:
+            intel = S.intel_gpus_windows()
+        except (OSError, ValueError):
+            intel = []
+    else:
+        intel = intel_gpus()
     if not intel:
-        S.fail("no Intel Arc found (an xe or i915 card in /sys/class/drm)", "on an NVIDIA or AMD card, run ./setup.sh")
+        where = "the display adapters" if S.WIN else "an xe or i915 card in /sys/class/drm"
+        S.fail(f"no Intel Arc found ({where})", "on an NVIDIA or AMD card, run "
+               + ("START-HERE.bat" if S.WIN else "./setup.sh"))
     exe, why = sycl_engine()
     if exe is None:
         S.fail(f"Strata's SYCL engine cannot be used: {why}", "docs/INTEL.md: build it, then run this again")
@@ -168,6 +190,8 @@ def install(argv) -> None:
                  "write_run_script", "start", "say", "main"):
         if not callable(getattr(S, name, None)):
             S.fail(f"setup.py has no {name}() any more: sycl/setup_intel.py needs updating for this setup.py")
+    if S.WIN and not callable(getattr(S, "intel_gpus_windows", None)):
+        S.fail("setup.py has no intel_gpus_windows() any more: sycl/setup_intel.py needs updating for this setup.py")
 
     real_ram = S.ram_gb()
     keep = {}                                           # hand-set keys setup does not write: kept across a rerun
@@ -201,7 +225,9 @@ def install(argv) -> None:
     S.say = say_intel
     S.gpus = lambda *a, **k: []
     S.amd_gpus = lambda *a, **k: intel
-    S.amd_problem = lambda g: None
+    # On Windows the list holds integrated GPUs too (like amd_gpus_windows): filter by the Intel table.
+    # On Linux intel_gpus() already drops the iGPU, so every entry is usable.
+    S.amd_problem = (lambda g: S.intel_problem(g)) if S.WIN else (lambda g: None)
     S.hip_vision = lambda asked: "none"                 # images are not wired on the SYCL port yet
     S.build_engine_hip = lambda *a, **k: stub
     S.hipblaslt_table = lambda *a, **k: None
@@ -224,8 +250,11 @@ def install(argv) -> None:
         cfg = json.loads(Path(cfg_path).read_text(encoding="utf-8-sig"))
         if cfg.get("backend") != "sycl":
             return start(cfg_path, *a, **k)
-        script = ROOT / f"run-{Path(cfg_path).stem[len('strata-'):]}.sh"
+        stem = Path(cfg_path).stem[len('strata-'):]
+        script = ROOT / (f"run-{stem}.bat" if S.WIN else f"run-{stem}.sh")
         S.say(f"\nstarting {script.name} ...")
+        if S.WIN:
+            sys.exit(subprocess.call([str(script)]))
         os.execv("/bin/sh", ["/bin/sh", str(script)])
     S.start = start_sycl
 

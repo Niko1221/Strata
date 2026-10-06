@@ -4118,15 +4118,8 @@ def sycl_setup(argv) -> int:
     warn("Intel Arc (--backend sycl) is EXPERIMENTAL: a community port of the engine, not tested by the Strata "
          "maintainers (no Intel card here). Expect rough edges; issues with your card and driver versions help.")
     if WIN:
-        try:
-            intel = intel_gpus_windows()
-        except (OSError, ValueError):
-            intel = []
-        usable = [g for g in intel if intel_problem(g) is None]
-        found_txt = ("found: " + ", ".join(f"{g['name']} ({g['vram_gb']:.1f} GB)" for g in usable) + ". "
-                     if usable else "")
-        fail("the Intel Arc engine has no Windows setup yet (no ready-made Intel engine either)",
-             f"{found_txt}run it on Linux (Ubuntu 24.04 with Intel's GPU driver and oneAPI): docs/INTEL_ARC.md")
+        say("  Windows native build: install Intel oneAPI (icx/icpx + oneMKL), then sycl\\tools\\build.bat.")
+        say("  docs/INTEL_ARC.md. Setup continues with sycl/setup_intel.py.")
     say("  There is no ready-made Intel engine: it is built from source with Intel oneAPI (icpx + oneMKL),")
     say("  docs/INTEL_ARC.md. Setup continues with sycl/setup_intel.py.")
     rest, skip = [], False

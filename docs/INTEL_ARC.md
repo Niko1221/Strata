@@ -131,13 +131,18 @@ Things that matter on an Arc (details in INTEL.md):
   that path is the one that has hung, and #667 found the likely reason: the GPU does not see the CPU's flag
   stores without a system fence.
 
-## Windows
+## Windows (experimental)
 
-There is no Windows path yet. `setup --backend sycl` on Windows stops and points here. oneAPI exists for Windows,
-but `sycl/CMakeLists.txt` uses GCC-style flags (`-mavx512f`, `-fp-model=precise`, `-qmkl`) and the runner is a
-bash/Docker script, so a native Windows build would need work. Nobody has tried it. WSL2 with an Arc has been
-used by one tester (the B580 row above), but setup cannot detect the card there, because it reads `/sys/class/drm`,
-which WSL2 does not have.
+`setup --backend sycl` on Windows now detects the Intel Arc (display adapters + the
+display-class registry's 64-bit VRAM size) and hands over to `sycl/setup_intel.py`, which runs the
+native Windows build (`build-sycl-aot\\strata.exe` via `sycl/serve/strata-sycl.bat`, no Docker).
+Build it with Intel oneAPI (`icx`/`icpx` 2026.1 + oneMKL, e.g. conda-forge `dpcpp_win-64`) and
+`sycl\\tools\\build.bat`. `sycl/CMakeLists.txt` accepts IntelLLVM flags on Windows; MSVC `cl`
+is not supported. The Monitor tab names the card from the same detection; util/temp/power are
+not read on Windows yet. Needs VS Build Tools (the MSVC linker `icx` invokes) and an Intel
+graphics driver with Level Zero (`ze_intel_gpu.dll`, for `level_zero:0`; without it `sycl-ls`
+lists only `opencl:gpu`). WSL2 with an Arc has been used by one tester (the B580 row above),
+but setup cannot detect the card there, because it reads `/sys/class/drm`, which WSL2 does not have.
 
 ## Reporting a problem
 
