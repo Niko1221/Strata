@@ -130,7 +130,7 @@ MtpDrafter::~MtpDrafter() {
     for (auto& e : prefill_exec_) if (e) cudaGraphExecDestroy(e);
     for (auto& e : prefill_dev_exec_) if (e) cudaGraphExecDestroy(e);
     if (pf_dev_) cudaFree(pf_dev_);
-    if (dense4_) cudaFree(dense4_);
+    if (dense4_ && owns_weights_) cudaFree(dense4_);
     for (auto& e : round_exec_) if (e) cudaGraphExecDestroy(e);
     for (auto& e : step_exec_) if (e) cudaGraphExecDestroy(e);
     for (auto& e : round_exec_c_) if (e) cudaGraphExecDestroy(e);
@@ -257,6 +257,10 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         dense_ = shared->dense_;
         experts_ = shared->experts_;
         tensors_ = shared->tensors_;
+        dense4_ = shared->dense4_;           // --mtp-q4: the Q4_0 copies are shared weights as well
+        q4_off_ = shared->q4_off_;
+        q4_ = shared->q4_;
+        q4_head_ = shared->q4_head_;
         owns_weights_ = false;
         owns_draft_head_ = false;
     }
@@ -609,6 +613,7 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
             return false;
         }
         dhead_ = shared->dhead_;
+        dhead_type_ = shared->dhead_type_;   // the subset's ggml type too: -1 is no type for native_mmvq
         dvocab_ = shared->dvocab_;
         n_dvocab_ = shared->n_dvocab_;
         owns_draft_head_ = false;
