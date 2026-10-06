@@ -1981,6 +1981,26 @@ bool FileExpertSource::transient(int64_t layer, int64_t expert) const {
     return override_.empty() || override_[index] == nullptr;
 }
 
+bool FileExpertSource::copy_staged(int64_t layer, int64_t expert, uint8_t* dst) {
+    if (!staged()) return false;
+    size_t v = 0;
+    {
+        std::lock_guard<std::mutex> lk(stage_mu_);
+        const auto it = stage_of_.find(layer * n_expert_ + expert);
+        if (it == stage_of_.end() || stage_busy_[it->second]) return false;
+        v = it->second;
+        stage_busy_[v] = 1;   // never a victim while it is copied
+    }
+    std::memcpy(dst, stage_buf_[v].get(), (size_t) layer_blob_bytes_[(size_t) layer]);
+    {
+        std::lock_guard<std::mutex> lk(stage_mu_);
+        stage_busy_[v] = 0;
+    }
+    stage_cv_.notify_all();
+    stage_hits_pp_.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
 bool FileExpertSource::copy_blob(int64_t layer, int64_t expert, uint8_t* dst) {
     if (base_ == nullptr || dst == nullptr || layer < 0 || expert < 0 || layer >= n_layers_ || expert >= n_expert_)
         return false;
@@ -1994,6 +2014,10 @@ bool FileExpertSource::copy_blob(int64_t layer, int64_t expert, uint8_t* dst) {
             std::memcpy(dst, held, (size_t) bytes);
             return true;
         }
+    }
+    if (copy_staged(layer, expert, dst)) {
+        TierTrace::get().put(TierTrace::kind(false), layer, expert, bytes);
+        return true;
     }
     const auto t0 = std::chrono::steady_clock::now();
     if (!copy_from_files(layer, expert, dst)) return false;
@@ -2019,6 +2043,10 @@ bool FileExpertSource::copy_blobs(const int32_t* layers, const int32_t* experts,
         if (complement_ready_ &&
             (resident_blob(index) != nullptr || (!override_.empty() && override_[index] != nullptr))) {
             if (!copy_blob(l, e, dst[i])) return false;
+            continue;
+        }
+        if (copy_staged(l, e, dst[i])) {
+            TierTrace::get().put(TierTrace::kind(false), l, e, layer_blob_bytes_[(size_t) l]);
             continue;
         }
         fills.push_back({0, l, e, dst[i]});

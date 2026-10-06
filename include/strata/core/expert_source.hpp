@@ -611,6 +611,8 @@ public:
     /// Of the blobs the file tier read for the decode, how many had been warmed for their layer beforehand.
     int64_t warmed_hits() const { return warm_hits_.load(std::memory_order_relaxed); }
     int64_t warmed() const { return warm_count_.load(std::memory_order_relaxed); }
+    /// Prompt-path blobs found in the stage pool instead of read from the drive (copy_staged).
+    int64_t staged_prompt_hits() const { return stage_hits_pp_.load(std::memory_order_relaxed); }
     /// #286: blobs an unbuffered read could not deliver, read through the mapping instead (0 when all went direct).
     int64_t direct_fallbacks() const { return direct_fallbacks_.load(std::memory_order_relaxed); }
 
@@ -653,6 +655,10 @@ private:
     bool open_gguf(std::string& err);
     const uint8_t* staged_blob(int64_t layer, int64_t expert);
     bool claim_stage(int64_t key, size_t& v, bool& fill, bool ahead = false);
+    /// The blob from its stage buffer when one holds it (an expert a decode window read from the files and the pool
+    /// kept, STRATA_STAGE_KEEP_MIB): copied into `dst` without a drive read.  Neither admits nor refreshes the entry,
+    /// so the prompt path's sweep over every cold expert does not push out what the decode reuses.
+    bool copy_staged(int64_t layer, int64_t expert, uint8_t* dst);
     bool fill_stage(size_t v, int64_t layer, int64_t expert, uint8_t* dst);
     void publish_stage(size_t v, int64_t layer, bool ok, double us);
     struct Fill { size_t v; int64_t layer, e; uint8_t* dst; };
@@ -697,6 +703,7 @@ private:
     std::atomic<uint64_t> file_blob_bytes_{0}, file_us_{0};
     std::unique_ptr<std::atomic<uint32_t>[]> warm_stamp_;   ///< per (layer, expert): epoch_ + 1 when warmed
     std::atomic<int64_t> warm_hits_{0}, warm_count_{0};
+    std::atomic<int64_t> stage_hits_pp_{0};   ///< prompt-path blobs copied from a stage buffer (copy_staged)
     mutable std::atomic<int64_t> direct_fallbacks_{0};
     std::unordered_map<int64_t, size_t> stage_of_;
     uint64_t stage_blob_ = 0;
