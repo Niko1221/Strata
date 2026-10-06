@@ -85,6 +85,15 @@ note; never under WSL, which cannot stream).
 
 Under WSL2 the driver caps what `cudaHostAlloc` may pin at about 1 GiB, so the KV host copy is pinned with `cudaHostRegister` of ordinary memory there (detected through `/dev/dxg`); `STRATA_KV_HOST_REGISTER=1` forces that order on any system and `=0` forces `cudaHostAlloc` first (the other method is the fallback in both cases). On Linux without WSL nothing changes by default; with the switch the engine prints `KV streaming: the host copy is pinned with cudaHostRegister` (#1498 by yjamil8; WSL not tested here, the forced path was run on a Tesla P100: `--kv int8 --kv-resident 32768`, answers and decode speed unchanged).
 
+**One KV pool for all the sessions (`--kv-pool-tokens N`, with `--kv-resident`; ported from PR #1011 by xdbxdbx):**
+KV streaming pins the whole context's K/V per session, so `--batch` slots plus the main session pin (slots + 1) x the
+context (15.5 GiB for four slots at 262,144 cells, 8-bit KV). With the pool, N cells per QSA layer are pinned once
+(524,288 cells: 6.2 GiB) and a session holds only the 4,096-cell chunks its conversation has reached; a conversation
+moves between the main session and a slot by swapping chunks, and when the pool is full an idle slot's cached
+conversation gives way, then a new request is refused (HTTP 503, `Retry-After`, `kv_pool_full`) or a decoding lane ends
+`length` with `"truncated": true`. It works across a layer split. Details and the behaviour when it is full:
+docs/BATCHING.md.
+
 **4-bit KV cache (engine 0.1.8, optional):** `START-HERE.bat --setup` asks above 8K context (or pass `--kv q4_0`). It
 halves the KV cache's memory with a Hadamard rotation before 4-bit rounding (PR #21), about 4% faster at 128K, but it
 is measurably less precise on long documents (perplexity +8-12%; needle tests still pass). 8-bit stays the default.
