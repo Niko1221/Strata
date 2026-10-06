@@ -279,10 +279,11 @@ namespace {
 bool sliced_pin_limit(uint64_t& limit, std::string& why) {
     constexpr uint64_t GiB = 1ull << 30;
     char buf[256];
+    std::string err = "no CUDA device properties";
+#if defined(STRATA_USE_CUDA) || defined(__CUDACC__)
     int dev = 0;
     cudaDeviceProp p{};
     uint64_t budget = 0, usage = 0;
-    std::string err = "no CUDA device properties";
     if (cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&p, dev) == cudaSuccess &&
         strata::platform::gpu_shared_memory_budget(p.luid, budget, usage, err)) {
         limit = budget > usage + 4 * GiB ? budget - usage - 4 * GiB : 0;
@@ -292,6 +293,8 @@ bool sliced_pin_limit(uint64_t& limit, std::string& why) {
         return true;
     }
     (void) cudaGetLastError();
+#endif
+    // SYCL (and non-CUDA): no device properties; size the slice cap from RAM.
     const uint64_t ram = strata::platform::total_physical_memory();
     if (ram == 0) return false;
     limit = ram / 2 > 8 * GiB ? ram / 2 - 8 * GiB : 0;
@@ -499,7 +502,11 @@ LoadStats load_experts(const std::string& path, uint8_t* dst, uint64_t blob_byte
 }
 
 LoadStats load_experts_direct(const std::string& path, uint8_t* dst, const std::vector<uint64_t>& layer_off,
-                              const std::vector<uint64_t>& layer_bytes, int threads, uint64_t chunk) {
+                              const std::vector<uint64_t>& layer_bytes, int threads, uint64_t chunk,
+                              const std::atomic<int>* ready) {
+    // Matches include/strata/core/pinned.hpp (upstream added `ready`: layer L is written only once *ready > L + 1).
+    // The port predates it and its callers pass the default nullptr; re-migration brings the wait logic.
+    (void) ready;
     LoadStats st;
     st.ok = false;
 #ifdef _WIN32
@@ -640,7 +647,10 @@ bool experts_unbuffered(const std::vector<std::string>& files, uint64_t arena_by
 }
 
 LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::vector<uint64_t>& layer_off,
-                              const std::vector<uint64_t>& layer_bytes, int threads, uint64_t chunk) {
+                              const std::vector<uint64_t>& layer_bytes, int threads, uint64_t chunk,
+                              const std::atomic<int>* ready) {
+    // As above: matches pinned.hpp; port predates `ready`, callers pass nullptr.
+    (void) ready;
     LoadStats st;
     const uint64_t layers = (uint64_t) layer_off.size();
     st.layers = layers;

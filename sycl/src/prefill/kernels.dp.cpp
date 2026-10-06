@@ -1501,7 +1501,14 @@ void gr_norm(const float* R, const float* w_norm, float eps, float* xn, uint16_t
     check("gr_norm");
 }
 void gr_norm_rs(const float* R, const float* w_norm, float eps, float* rs, uint16_t* xn16, int64_t T, void* stream,
-                uint16_t* xn16_lo) {
+                uint16_t* xn16_lo, int64_t ldx) {
+    // Matches kernels.hpp (upstream added ldx: xn16's token stride, 0 = packed D). The port's kernel writes
+    // packed rows only; a padded stride needs STRATA_PF_PAD's path (HIP-only) - refuse loudly, as native ldx does.
+    if (ldx != 0 && ldx != D) {
+        std::fprintf(stderr, "prefill gr_norm_rs: a padded xn16 (ldx %lld) needs STRATA_PF_PAD's path\n",
+                     (long long) ldx);
+        std::exit(1);
+    }
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
@@ -1538,7 +1545,12 @@ void gr_mix_r(const float* R, const float* rs, const float* w_norm, const float*
     check("gr_mix_r");
 }
 void gr_write_norm_rs(float* R, const float* bo, const float* inj, int64_t inj_ld, const float* w_norm_next, float eps,
-                      float* rs, uint16_t* xn16, int64_t T, void* stream, uint16_t* xn16_lo) {
+                      float* rs, uint16_t* xn16, int64_t T, void* stream, uint16_t* xn16_lo, int64_t ldx) {
+    if (ldx != 0 && ldx != D) {
+        std::fprintf(stderr, "prefill gr_write_norm_rs: a padded xn16 (ldx %lld) needs STRATA_PF_PAD's path\n",
+                     (long long) ldx);
+        std::exit(1);
+    }
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
@@ -1709,7 +1721,13 @@ void gdn_conv(float* history, const float* qkv, const float* conv_w, float* h, i
     check("gdn_conv");
 }
 void gdn_recurrence(float* state, const float* h, const float* gate, const float* beta, const float* z,
-                    const float* gamma, float eps, float* y, uint16_t* y16, int64_t T, void* stream) {
+                    const float* gamma, float eps, float* y, uint16_t* y16, int64_t T, void* stream, int64_t ld16) {
+    // Matches kernels.hpp (upstream added ld16: y16's row stride, 0 = 6144). Packed rows only on this port.
+    if (ld16 != 0 && ld16 != 6144) {
+        std::fprintf(stderr, "prefill gdn_recurrence: a padded y16 (ld16 %lld) needs STRATA_PF_PAD's path\n",
+                     (long long) ld16);
+        std::exit(1);
+    }
     static const bool serial = std::getenv("STRATA_GDN_REC_HEADS") != nullptr;   // the one-block-per-head kernel (A/B)
     if (serial || T <= 0) {
         /*
@@ -2062,7 +2080,13 @@ void split_q(const float* q_full, float* q, int64_t T, void* stream) {
     }
     check("split_q");
 }
-void gate_attn(const float* attn, const float* q_full, uint16_t* out16, int64_t T, void* stream) {
+void gate_attn(const float* attn, const float* q_full, uint16_t* out16, int64_t T, void* stream, int64_t ld16) {
+    // Matches kernels.hpp (upstream added ld16: out16's row stride, 0 = 24 * 256). Packed rows only on this port.
+    if (ld16 != 0 && ld16 != 24 * 256) {
+        std::fprintf(stderr, "prefill gate_attn: a padded out16 (ld16 %lld) needs STRATA_PF_PAD's path\n",
+                     (long long) ld16);
+        std::exit(1);
+    }
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};

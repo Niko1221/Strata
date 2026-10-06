@@ -1604,7 +1604,7 @@ static float* down_partials(sycl::queue* q) {
     return p;
 }
 
-void fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, void* stream, unsigned long long* stamp_buf,
+bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, void* stream, unsigned long long* stamp_buf,
                          int stamp_i0) {
     if (n_tok < 1 || n_tok > kFusedGrMaxT || xn_scratch == nullptr) {
         std::fprintf(stderr, "fused_gr_read_multi: invalid arguments\n");
@@ -1879,6 +1879,10 @@ void fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
     need to rewrite this code.
     */
     const dpct::err0 e = 0;
+    // SYCL port predates upstream's q8 path (which returns whether q8_1 images were written): none is written here.
+    // Full re-migration (sycl/tools/migrate.sh) will bring the q8 path; until then report none.
+    (void) e;
+    return false;
 }
 
 bool fused_gr_supported(int64_t n_embd, int64_t hc, int64_t hc_lr) {

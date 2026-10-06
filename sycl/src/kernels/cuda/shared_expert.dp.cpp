@@ -230,7 +230,13 @@ __dpct_inline__ void scale_rows_kernel(float *__restrict__ out,
 
 void shared_expert_multi(int n_tok, const float* x, const uint16_t* x_bf16, const NativeSharedWeights& nw,
                          const uint16_t* gate_inp_bf16, float* gate, float* up, float* g, float* out, int64_t n_embd,
-                         int64_t n_ff, void* stream) {
+                         int64_t n_ff, void* stream, const void* x_q8_1_ready, int lfuse) {
+    // Matches shared_expert.hpp (upstream added a caller-quantized q8_1 image and the S26 STRATA_LFUSE fused
+    // SwiGLU+q8_1 path). The port predates both and its caller passes the defaults; refuse loudly if asked.
+    if (x_q8_1_ready != nullptr || lfuse != 0) {
+        std::fprintf(stderr, "shared_expert_multi: x_q8_1_ready/lfuse needs re-migration (sycl/tools/migrate.sh)\n");
+        std::exit(1);
+    }
     if (n_tok < 1 || n_tok > 8 || !nw.q8_1 || !nw.gate_data || !nw.up_data || !nw.down_data || !stream)
         throw std::invalid_argument("shared_expert_multi: needs 1..8 tokens, native weights, scratch and a stream");
     dpct::queue_ptr cs = strata::q_of(stream);

@@ -823,6 +823,22 @@ const uint8_t* FileExpertSource::staged_blob(int64_t layer, int64_t expert) {
     return fill_stage(v, layer, expert, dst) ? dst : nullptr;
 }
 
+// Upstream added these after the port's migration (readahead advise + VirtualUnlock page
+// trimming, both Windows file-mapping optimizations). The port predates them: report the base
+// defaults (nothing asked, nothing reclaimed) so the callers' fallback paths run. Full re-migration
+// (sycl/tools/migrate.sh) brings the real ones.
+bool FileExpertSource::advise_pairs(const std::pair<int32_t, int32_t>* pairs, int64_t n) const {
+    (void) pairs;
+    (void) n;
+    return false;
+}
+
+uint64_t FileExpertSource::release(int64_t layer, int64_t expert) {
+    (void) layer;
+    (void) expert;
+    return 0;
+}
+
 void FileExpertSource::prefetch(int64_t layer, const int64_t* experts, int64_t n) {
     if (!staged() || n <= 0 || layer < 0 || layer >= n_layers_) return;
     std::vector<Fill> todo;
@@ -849,8 +865,7 @@ void FileExpertSource::prefetch(int64_t layer, const int64_t* experts, int64_t n
     fill_many(todo);
 }
 
-void FileExpertSource::prefetch_pairs(const std::pair<int32_t, int32_t>* pairs, int64_t n) {
-    if (direct_.empty() || pairs == nullptr || n <= 0) return;   // unbuffered only: the mapped fill stays as it was
+void FileExpertSource::prefetch_pairs(const std::pair<int32_t, int32_t>* pairs, int64_t n) {    if (direct_.empty() || pairs == nullptr || n <= 0) return;   // unbuffered only: the mapped fill stays as it was
     std::vector<Fill> todo;
     {
         std::lock_guard<std::mutex> lk(stage_mu_);
@@ -2630,7 +2645,11 @@ bool check_experts_gguf(const std::string& gguf, const strata::kernels::cpu::Exp
 // `unbuffered` (Windows, experts_unbuffered): each chunk's 4 KiB-aligned window is read with FILE_FLAG_NO_BUFFERING into
 // an aligned buffer and scattered into the blobs - no copy through the file cache when the drive is read anyway.
 LoadStats load_experts_gguf(const std::string& gguf, uint8_t* dst, const strata::kernels::cpu::ExpertLayout& lay,
-                            int threads, bool unbuffered) {
+                            int threads, bool unbuffered, const std::atomic<int>* ready) {
+    // Matches include/strata/core/expert_source.hpp (upstream added `ready`: layer l is written only once
+    // *ready > l + 1, an arena registering its slices meanwhile). The port predates it and its only caller
+    // passes the default nullptr; full re-migration (sycl/tools/migrate.sh) brings the wait logic.
+    (void) ready;
     LoadStats st;
     st.layers = (uint64_t) lay.n_layers;
     const auto t0 = std::chrono::steady_clock::now();
