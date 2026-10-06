@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import itertools
 import json
 import os
 import sys
@@ -89,6 +90,13 @@ class Context(unittest.TestCase):
         self.assertEqual(setup.ram_ctx("IQ3_XXS", 95.8), 524288)      # 43 + 7.2 + 24 GB fits 96
         self.assertEqual(setup.ram_ctx("IQ3_S", 76.5), 131072)
         self.assertEqual(setup.ram_ctx("IQ3_S", 78.5), 262144)
+        # #608: where the 200K estimate fits and the 256K one does not, the rule stays at 128K (200K is a menu step)
+        self.assertLessEqual(setup.ctx_ram_need("IQ3_S", 204800), 78.5)
+        self.assertGreater(setup.ctx_ram_need("IQ3_S", 262144), 77.5)
+        self.assertEqual(setup.ram_ctx("IQ3_S", 77.5), 131072)
+        for ram in range(16, 200):
+            for model in ("IQ3_S", "IQ3_XXS", "Q2_0"):
+                self.assertNotEqual(setup.ram_ctx(model, float(ram)), 204800)
         self.assertEqual(setup.ram_ctx("Q2_0", 31.9), 524288)          # other sizes: no RAM rule
         self.assertEqual(setup.ram_ctx("IQ3_XXS", 31.9, low_ram=True), 524288)   # the KV cache is in VRAM there
         self.assertIsNone(setup.ctx_ram_need("IQ3_XXS", 262144, low_ram=True))
@@ -106,11 +114,23 @@ class Context(unittest.TestCase):
 
     def test_a_picked_256k_is_kept_and_the_menu_says_the_risk(self):
         code, out, cfg, asked = install(self.RAM64, self.GPU32, ["--family", "qwen", "--model", "IQ3_S", "--no-start"],
-                                        answers={"Context?": "5"})
+                                        answers={"Context?": "6"})
         self.assertEqual(code, 0, out)
         self.assertEqual(arg(cfg, "--max-context"), "262144")
         self.assertIn("256K tokens   (needs ~78 GB RAM, this PC has 64: may run out of memory)", out)
         self.assertIn("128K tokens   (recommended for your GPU)\n", out)
+        self.assertIn("Kept as you chose", out)
+
+    def test_a_200k_choice_is_kept(self):
+        """#406: 200K was added between the 128K rule and 256K - it is inside the trained 262144, so no rope scaling,
+        and a pick of it is kept with the note 256K gets instead of being capped to 128K."""
+        code, out, cfg, _ = install(self.RAM64, self.GPU32, ["--family", "qwen", "--model", "IQ3_S", "--no-start"],
+                                    answers={"Context?": "5"})
+        self.assertEqual(code, 0, out)
+        self.assertEqual(arg(cfg, "--max-context"), "204800")
+        self.assertNotIn("--rope-scaling", cfg["args"])
+        self.assertIn("200K tokens   (needs ~77 GB RAM, this PC has 64: may run out of memory)", out)
+        self.assertIn("200K with IQ3_S needs ~77 GB of RAM by setup's estimate", out)
         self.assertIn("Kept as you chose", out)
 
     def test_low_ram_mode_keeps_262k_without_a_ram_note(self):
@@ -186,6 +206,13 @@ class BrokenEarlierConfig(unittest.TestCase):
 class LowRamGpus(unittest.TestCase):
     """S2/S3 (#364 #384): one GPU recommended in the low-RAM mode, all of them when asked for."""
 
+    def setUp(self):
+        # the behaviour before RESIDENT_SPLIT_ENGINE (an engine from before 0.1.40); the tests of the newer engine
+        # patch MIN_ENGINE themselves, and the default (MIN_ENGINE = 0.1.40) is covered by test_setup_golden
+        p = mock.patch.object(setup, "MIN_ENGINE", (0, 1, 39))
+        p.start()
+        self.addCleanup(p.stop)
+
     def test_explicit_gpus_are_kept_with_the_mapped_variant(self):
         for prof, model in (("32GB-2x24GB", "IQ3_XXS"), ("32GB-2x24GB", "Q2_0"), ("47GB-2x16GB", "IQ3_XXS")):
             with self.subTest(prof=prof, model=model):
@@ -244,9 +271,34 @@ class LowRamGpus(unittest.TestCase):
         self.assertEqual(cfg["gpu"], 0)
         self.assertFalse(any("Low-RAM mode" in q for q in asked), asked)
 
+    def test_low_ram_on_gpus_with_a_resident_split_engine(self):
+        """#642: an engine that runs the resident variant on a layer split keeps the cards together, resident."""
+        ram, found = PROFILES["32GB-2x24GB"]
+        with mock.patch.object(setup, "MIN_ENGINE", setup.RESIDENT_SPLIT_ENGINE):
+            code, out, cfg, asked = install(ram, found, ["--family", "qwen", "--model", "Q2_0", "--no-start"],
+                                            answers="")
+            self.assertEqual(code, 0, out)
+            self.assertEqual(cfg["gpu"], [0, 1])
+            self.assertIn("--resident-experts", cfg["args"])
+            self.assertFalse(any("Low-RAM mode" in q for q in asked), asked)
+            self.assertIn("stay in RAM", out)
+            code, out, cfg, _ = install(ram, found, ["--family", "qwen", "--model", "Q2_0", "--no-start",
+                                                     "--gpus", "0,1", "--low-ram", "resident"])
+            self.assertEqual(code, 0, out)
+            self.assertEqual(cfg["gpu"], [0, 1])
+            self.assertIn("--resident-experts", cfg["args"])
+            self.assertNotIn("no layer split yet", out)
+
 
 class StartOnSeveralGpus(unittest.TestCase):
     """A resident low-RAM config started on several GPUs reads the experts through the file cache (#364 #384)."""
+
+    def setUp(self):
+        # the behaviour before RESIDENT_SPLIT_ENGINE (an engine from before 0.1.40); the tests of the newer engine
+        # patch MIN_ENGINE themselves, and the default (MIN_ENGINE = 0.1.40) is covered by test_setup_golden
+        p = mock.patch.object(setup, "MIN_ENGINE", (0, 1, 39))
+        p.start()
+        self.addCleanup(p.stop)
 
     def test_split_mmap(self):
         cfg = {"args": ["--pack", "p", "--resident-experts", "--kv", "int8"]}
@@ -279,6 +331,18 @@ class StartOnSeveralGpus(unittest.TestCase):
         self.assertEqual(cfg["args"], ["--mmap-experts", "--remote-expert-opt"])   # 0.1.39b: #578 on 2+ GPUs
         code, out, asked, cfg = self.offer(["--mmap-experts"], None)           # other configs: as before
         self.assertEqual(cfg["gpu"], [0, 1])
+
+    def test_resident_split_engine_keeps_a_resident_config(self):
+        """#642: from RESIDENT_SPLIT_ENGINE a resident config is offered both cards as any other, and stays resident."""
+        with mock.patch.object(setup, "MIN_ENGINE", setup.RESIDENT_SPLIT_ENGINE):
+            cfg = {"args": ["--pack", "p", "--resident-experts", "--kv", "int8"]}
+            self.assertFalse(setup.split_mmap(cfg))
+            self.assertEqual(cfg["args"], ["--pack", "p", "--resident-experts", "--kv", "int8"])
+            code, out, asked, cfg = self.offer(["--resident-experts"], None)   # --yes: the recommendation
+            self.assertIsNone(code, out)
+            self.assertEqual(cfg["gpu"], [0, 1])
+            self.assertEqual(cfg["args"], ["--resident-experts", "--remote-expert-opt"])
+            self.assertNotIn("OS file cache", out)
 
     def test_start_with_gpus(self):
         found = PROFILES["32GB-2x24GB"][1]
@@ -395,10 +459,13 @@ class KvStreaming(unittest.TestCase):
         self.assertEqual(arg(cfg, "--kv-resident"), "32768")
         self.assertIn("Kept as you chose (--kv-streaming on)", out)
 
-    def test_on_where_it_cannot(self):
+    def test_k8v4_streams(self):
         code, out, cfg, _ = self.go("Q2_0", "--kv-streaming", "on", "--kv", "k8v4")
-        self.assertNotIn("--kv-resident", cfg["args"])
-        self.assertIn("it refuses the pair", out)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(arg(cfg, "--kv-resident"), "32768")
+        self.assertEqual(arg(cfg, "--kv"), "k8v4")
+
+    def test_on_where_it_cannot(self):
         code, out, cfg, _ = self.go("Q2_0", "--kv-streaming", "on", "--context", "32768")
         self.assertNotIn("--kv-resident", cfg["args"])
         self.assertIn("a context under 64K is not streamed", out)
@@ -408,6 +475,38 @@ class KvStreaming(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertNotIn("--resident-budget-gib", cfg["args"])
         self.assertIn("--resident-budget-gib is for UD-Q4_K_XL", out)
+
+
+class RulesAgreeWithTheWrittenConfig(unittest.TestCase):
+    """The launcher's preset diff asks setup's rules (`kv_streaming_wanted`, `low_ram_wanted`) what "auto" decides on
+    this PC, instead of comparing the word "auto" with a config's flags.  That is only honest if those rules are
+    exactly what setup writes into the model's config: the same PC, the same flags, every size and every
+    --kv-streaming / --low-ram choice."""
+    RAM64, CARDS64 = PROFILES["64GB-1x32GB"]
+    RAM32, CARDS32 = PROFILES["32GB-2x24GB"]
+
+    def go(self, ram, cards, model, *flags):
+        return install(ram, cards, ["--family", "qwen", "--model", model, "--no-start", *flags])
+
+    def test_the_streaming_rule_is_the_flag_setup_writes(self):
+        for model, ctx, kv, choice in itertools.product(("Q2_0", "IQ3_XXS", "IQ3_S"), ("32768", "131072"),
+                                                        ("int8", "q4_0", "k8v4"), ("auto", "on", "off")):
+            code, out, cfg, _ = self.go(self.RAM64, self.CARDS64, model, "--context", ctx, "--kv", kv,
+                                        "--kv-streaming", choice)
+            self.assertEqual(code, 0, out)
+            self.assertEqual("--kv-resident" in cfg["args"],
+                             setup.kv_streaming_wanted(model, int(ctx), kv, self.RAM64, choice),
+                             f"{model} at {ctx} with {kv}, --kv-streaming {choice}: setup wrote {cfg['args']}")
+
+    def test_the_low_ram_rule_is_the_flag_setup_writes(self):
+        pcs = [(self.RAM64, self.CARDS64), (self.RAM32, self.CARDS32)]      # auto is on here, off there
+        for (ram, cards), model, choice in itertools.product(pcs, ("Q2_0", "IQ3_XXS", "IQ3_S"),
+                                                              ("auto", "on", "off", "mmap")):
+            code, out, cfg, _ = self.go(ram, cards, model, "--low-ram", choice)
+            self.assertEqual(code, 0, out)
+            low = "--resident-experts" in cfg["args"] or "--mmap-experts" in cfg["args"]
+            self.assertEqual(low, setup.low_ram_wanted(model, ram, choice),
+                             f"{model} on {ram:.0f} GB of RAM, --low-ram {choice}: setup wrote {cfg['args']}")
 
 
 if __name__ == "__main__":

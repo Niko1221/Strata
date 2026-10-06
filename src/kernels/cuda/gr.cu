@@ -410,6 +410,52 @@ void gr_read(const float* R, const float* w_norm, const uint16_t* w_down, const 
     }
 }
 
+static bool no_multi_gr() {
+    static const bool off = [] {
+        const char* v = std::getenv("STRATA_NO_MULTI_GR");
+        return v != nullptr && v[0] != '\0' && v[0] != '0';
+    }();
+    return off;
+}
+
+void gr_read_multi(const float* R, const float* w_norm, const uint16_t* w_down, const uint16_t* w_up,
+                   const uint16_t* w_inject, float eps, const GrShapes& s, const GrWorkspace& ws,
+                   float* xn_multi, float* lo_multi, float* gated_multi, float* mixed, float* inject,
+                   int n_tok, void* stream) {
+    if (n_tok <= 0 || s.n_embd <= 0 || s.hc <= 0 || s.hc_lr <= 0) return;
+    if (!no_multi_gr() && native_mmvf && n_tok > 1 && xn_multi != nullptr && lo_multi != nullptr && gated_multi != nullptr) {
+        const int n_embd = (int) s.n_embd, hc = (int) s.hc, hc_lr = (int) s.hc_lr;
+        const int hc_dim = (int) (s.hc * s.n_embd);
+        if ((hc_dim & 1) != 0 || (hc_lr & 1) != 0)
+            throw std::invalid_argument("gr_read native MMVF requires even hc*n_embd and hc_lr");
+        native_gr_rms_norm_weighted_multi(R, w_norm, xn_multi, n_embd, hc, n_tok, eps, stream);
+        bf16_gemv_fp32_mmvf_multi(xn_multi, hc_dim, w_down, lo_multi, hc_lr, hc_dim, hc_lr, n_tok, stream);
+        native_gr_down_silu(lo_multi, hc_lr * n_tok, hc, stream);
+        bf16_gemv_fp32_mmvf_multi(lo_multi, hc_lr, w_up, gated_multi, hc_dim, hc_lr, hc_dim, n_tok, stream);
+        native_gr_pre_gated_multi(xn_multi, gated_multi, mixed, n_embd, hc, n_tok, w_inject != nullptr, stream);
+        if (w_inject != nullptr)
+            bf16_gemv_fp32_mmvf_multi(xn_multi, hc_dim, w_inject, inject, hc, hc_dim, hc, n_tok, stream);
+        const cudaError_t e = cudaGetLastError();
+        if (e != cudaSuccess) {
+            std::fprintf(stderr, "gr_read_multi launch: %s\n", cudaGetErrorString(e));
+            std::exit(1);
+        }
+        if (stream == nullptr) {
+            const cudaError_t se = cudaDeviceSynchronize();
+            if (se != cudaSuccess) {
+                std::fprintf(stderr, "gr_read_multi: %s\n", cudaGetErrorString(se));
+                std::exit(1);
+            }
+        }
+        return;
+    }
+    const size_t hc_dim = (size_t) s.hc * (size_t) s.n_embd;
+    for (int t = 0; t < n_tok; ++t) {
+        gr_read(R + (size_t) t * hc_dim, w_norm, w_down, w_up, w_inject, eps, s, ws,
+                mixed + (size_t) t * s.n_embd, inject ? inject + (size_t) t * s.hc : nullptr, stream);
+    }
+}
+
 void gr_write(const float* R, const float* block_out, const float* inject, const GrShapes& s, float* R_out,
               void* stream) {
     if (s.n_embd <= 0 || s.hc <= 0) return;
@@ -426,6 +472,27 @@ void gr_write(const float* R, const float* block_out, const float* inject, const
             std::fprintf(stderr, "gr_write: %s\n", cudaGetErrorString(e));
             std::exit(1);
         }
+    }
+}
+
+void gr_write_multi(const float* R, const float* block_out, const float* inject, const GrShapes& s, float* R_out,
+                    int n_tok, void* stream) {
+    if (n_tok <= 0 || s.n_embd <= 0 || s.hc <= 0) return;
+    if (!no_multi_gr() && native_mmvf && n_tok > 1) {
+        native_gr_post_multi(R, block_out, inject, R_out, (int) s.n_embd, (int) s.hc, n_tok, stream);
+        if (stream == nullptr) {
+            const cudaError_t e = cudaDeviceSynchronize();
+            if (e != cudaSuccess) {
+                std::fprintf(stderr, "gr_write_multi: %s\n", cudaGetErrorString(e));
+                std::exit(1);
+            }
+        }
+        return;
+    }
+    const size_t hc_dim = (size_t) s.hc * (size_t) s.n_embd;
+    for (int t = 0; t < n_tok; ++t) {
+        gr_write(R + (size_t) t * hc_dim, block_out + (size_t) t * s.n_embd, inject + (size_t) t * s.hc, s,
+                 R_out + (size_t) t * hc_dim, stream);
     }
 }
 

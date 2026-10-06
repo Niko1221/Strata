@@ -81,6 +81,26 @@ class HuggingFacePins(unittest.TestCase):
         self.assertEqual([m for m, _ in seen], ["HEAD", "HEAD", "GET"])
         self.assertTrue(all("/resolve/main/" in u for _, u in seen[1:]))
 
+    def test_a_complete_part_is_finished_without_a_request(self):
+        """A .part with every byte (setup stopped between the last byte and the rename): renamed, not resumed with a
+        range past its end - the server answers that with 416, which download() retried 30 times, 10 s apart."""
+        seen = []
+
+        def urlopen(req, timeout=None):
+            seen.append((req.get_method(), req.headers.get("Range")))
+            if req.get_method() == "HEAD":
+                return Response(b"model bytes")
+            raise urllib.error.HTTPError(req.full_url, 416, "Range Not Satisfiable", {}, None)
+
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup.urllib.request, "urlopen", urlopen), \
+                mock.patch.object(setup.time, "sleep", lambda s: None):
+            dst = Path(d) / "m.gguf"
+            dst.with_name("m.gguf.part").write_bytes(b"model bytes")
+            quiet(setup.download, "https://example.com/m.gguf", dst)
+            self.assertEqual(dst.read_bytes(), b"model bytes")
+            self.assertTrue(setup.done(dst))
+        self.assertEqual(seen, [("HEAD", None)])
+
     def test_mtp_fetch_is_pinned_and_falls_back(self):
         import mtp_fetch
         self.assertRegex(mtp_fetch.REPO, SHA)
@@ -215,6 +235,21 @@ class Engine(unittest.TestCase):
                 z = self.root / "engine" / setup.PREBUILT_ASSET
                 self.assertFalse(z.exists())
                 self.assertFalse(z.with_name(z.name + ".done").exists())
+
+    def test_an_archive_that_does_not_unpack_is_not_kept(self):
+        """#397, for an archive that does not unpack (not a zip, or a damaged one): it kept its zip and .done mark,
+        so every later run failed on it, even after the right one was published."""
+        with tempfile.TemporaryDirectory() as folder:  # a --prebuilt folder, through the real download()
+            asset = Path(folder) / setup.PREBUILT_ASSET
+            asset.write_bytes(b"<html>not a zip</html>")
+            with self.assertRaises(zipfile.BadZipFile):
+                quiet(setup.get_prebuilt, folder, {"arch": 89}, "gpu")
+            with zipfile.ZipFile(asset, "w") as z:
+                z.writestr("BUILD.json", json.dumps({"version": ".".join(map(str, setup.MIN_ENGINE)), "archs": [89]}))
+                z.writestr(setup.EXE, b"engine")
+            eng, _ = quiet(setup.get_prebuilt, folder, {"arch": 89}, "gpu")
+        self.assertEqual(eng, self.root / "engine")
+        self.assertEqual((self.root / "engine" / setup.EXE).read_bytes(), b"engine")
 
     def test_an_installed_engine_is_kept(self):
         (self.root / "engine" / "BUILD.json").write_text(json.dumps(

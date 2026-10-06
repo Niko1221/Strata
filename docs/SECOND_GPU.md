@@ -116,8 +116,14 @@ card's truncated candidate tail is not redistributed to another card.
 The optimization uses the existing host scheduling and pinned-host transport,
 not P2P or tensor parallelism. Each layer still waits for its participating
 helpers. It changes floating-point summation order, so enabled output is not
-claimed to be bitwise identical. Only two-card CUDA operation has been measured;
-three/four cards and HIP have not been validated. Without the switch, the
+claimed to be bitwise identical. Only two-card CUDA operation has been measured
+by its author; a community machine measured two cards on HIP (2x RX 6900 XT,
+PCIe 4.0 x8 each, IQ3_S): there the expert plan's PCIe share had been taking
+experts the helper already held, which made the primary card wait 43 ms per
+verify window instead of 19 (decode 40 instead of 66 tok/s). #854 keeps a
+helper's experts out of that share; before it, `--pcie-frac 0` avoided the
+cost ([bench/results/2026-10-04-rdna2-helper-pcie-share](../bench/results/2026-10-04-rdna2-helper-pcie-share/README.md)).
+Three/four cards have not been validated. Without the switch, the
 existing decode path remains in use. This does not optimize the separate
 `--peer-device` path below or change its existing incompatibility with helper
 caches.

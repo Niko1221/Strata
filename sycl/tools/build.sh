@@ -2,7 +2,7 @@
 # Configure + build the SYCL port inside strata-sycl-dev.  sycl/build.sh [target...]
 set -uo pipefail
 source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1 || true
-repo=${REPO:-/work/Strata_B70}
+repo=${REPO:-$(git rev-parse --show-toplevel)}
 b=${BUILD_DIR:-$repo/build-sycl}
 [ -f $b/build.ninja ] || cmake -S $repo/sycl -B $b -G Ninja -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx \
     -DSTRATA_SYCL_AOT="${AOT:-}" 2>&1 | tail -15

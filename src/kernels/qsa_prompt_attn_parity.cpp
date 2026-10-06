@@ -125,6 +125,62 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
         std::sort(v.begin(), v.end());
         std::copy(v.begin(), v.end(), sel);
     }
+    // QA_SAME=1 (S23 probe): every query reads the same first-w cells - the best case of any K/V sharing between queries
+    // (all loads hit the caches); QA_SAME=2: query i reads a window of w cells at i / 4 * 64 (neighbours share ~90%)
+    if (const char* sm = std::getenv("QA_SAME")) {
+        const int mode = std::atoi(sm);
+        for (int64_t i = 0; i < nq; ++i) {
+            const int64_t w = steps[i * k::kStepCount + k::kStepWidth], nkv = ctx - nq + i + 1;
+            if (w == nkv) continue;
+            if (mode == 3 || mode == 4) {   // 3: w random cells per query (no overlap beyond chance); 4: a 4-query group shares
+                // one random set of w - 512 cells (the union of 4 queries = 1x), the last 512 cells recent
+                std::mt19937 r3((unsigned) (mode == 3 ? i : i / 4) * 2654435761u + 7);
+                std::vector<int32_t> all((size_t) (nkv - 512));
+                for (int64_t c = 0; c < nkv - 512; ++c) all[c] = (int32_t) c;
+                std::shuffle(all.begin(), all.end(), r3);
+                std::vector<int32_t> v(all.begin(), all.begin() + (w - 512));
+                for (int64_t c = nkv - 512; c < nkv; ++c) v.push_back((int32_t) c);
+                std::sort(v.begin(), v.end());
+                std::copy(v.begin(), v.end(), ids.data() + i * cap);
+                continue;
+            }
+            const int64_t base = mode == 1 ? 0 : std::min<int64_t>(i / 4 * 64, nkv - w);
+            for (int64_t c = 0; c < w; ++c) ids[i * cap + c] = (int32_t) (base + c);
+        }
+    }
+    // QA_DUMP=<file> QA_LAYER=n (S23 probe): the engine's own selections (STRATA_QSA_DUMP records {layer, pos0, T, cap} +
+    // T*cap cells): the last record of that layer, whose T must be nq and pos0 + T ctx
+    if (const char* df = std::getenv("QA_DUMP")) {
+        const int want = std::getenv("QA_LAYER") ? std::atoi(std::getenv("QA_LAYER")) : 3;
+        std::FILE* f = std::fopen(df, "rb");
+        if (!f) { std::fprintf(stderr, "QA_DUMP: cannot open\n"); std::exit(2); }
+        int32_t h[4];
+        long at = -1;
+        while (std::fread(h, 4, 4, f) == 4) {
+            const long data = std::ftell(f);
+            if (h[0] == want && h[2] == nq && h[1] + h[2] == ctx && h[3] == cap) at = data;
+            std::fseek(f, (long) h[2] * h[3] * 4, SEEK_CUR);
+        }
+        if (at < 0) { std::fprintf(stderr, "QA_DUMP: no record for layer %d, T %lld, ctx %lld\n", want, (long long) nq, (long long) ctx); std::exit(2); }
+        std::fseek(f, at, SEEK_SET);
+        if (std::fread(ids.data(), 4, ids.size(), f) != ids.size()) std::exit(2);
+        std::fclose(f);
+        for (int grp : {2, 4, 8, 16}) {   // the union of `grp` neighbouring queries' cells against grp x the width
+            double su = 0, sw = 0;
+            for (int64_t i0 = 0; i0 + grp <= nq; i0 += grp * 16) {
+                std::vector<int32_t> u;
+                for (int g2 = 0; g2 < grp; ++g2) {
+                    const int64_t w = steps[(i0 + g2) * k::kStepCount + k::kStepWidth];
+                    u.insert(u.end(), ids.begin() + (i0 + g2) * cap, ids.begin() + (i0 + g2) * cap + w);
+                    sw += (double) w;
+                }
+                std::sort(u.begin(), u.end());
+                su += (double) (std::unique(u.begin(), u.end()) - u.begin());
+            }
+            std::printf("QA_DUMP overlap: %d-query groups read %.2fx the cells of one query (%.1f%% of %d x)\n", grp,
+                        su * grp / sw, 100.0 * su / sw, grp);
+        }
+    }
     k::QsaAttnPools pl;
     if (fmt == 2) { pl.k_q4 = up(k4); pl.v_q4 = up(v4); }
     else if (fmt == 1) { pl.k_q = up(kq); pl.v_q = up(vq); pl.k_scale = up(ks); pl.v_scale = up(vs); }
@@ -165,6 +221,11 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
     std::vector<float> o((size_t) (nq * NH * HD)), nw(o.size());
     ck(cudaMemcpy(o.data(), d_old, o.size() * 4, cudaMemcpyDeviceToHost), "down");
     ck(cudaMemcpy(nw.data(), d_new, nw.size() * 4, cudaMemcpyDeviceToHost), "down");
+    {   // a hash of the new kernel's output bits (bitwise A/B of two builds / switches)
+        uint64_t hh = 1469598103934665603ull;
+        for (float x : nw) { uint32_t u; std::memcpy(&u, &x, 4); hh = (hh ^ u) * 1099511628211ull; }
+        std::printf("NEWHASH %016llx\n", (unsigned long long) hh);
+    }
     // 1. FP64 reference on a sample of queries
     double err_old = 0, err_new = 0, ref_scale = 0;
     for (int64_t i = 0; i < nq; i += std::max<int64_t>(1, nq / 16)) {
@@ -246,8 +307,8 @@ int main(int argc, char** argv) {
         int dev = 0;
         hipDeviceProp_t prop{};
         if (hipGetDevice(&dev) != hipSuccess || hipGetDeviceProperties(&prop, dev) != hipSuccess) return 2;
-        if (std::strncmp(prop.gcnArchName, "gfx12", 5) != 0) {
-            std::printf("SKIP: %s is not gfx12 (the matrix-core prompt attention is RDNA4 only)\n", prop.gcnArchName);
+        if (std::strncmp(prop.gcnArchName, "gfx12", 5) != 0 && std::strncmp(prop.gcnArchName, "gfx11", 5) != 0) {
+            std::printf("SKIP: %s is not gfx11 / gfx12 (the matrix-core prompt attention)\n", prop.gcnArchName);
             return 77;
         }
 #if defined(_WIN32)

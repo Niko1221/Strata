@@ -3,15 +3,20 @@
 #include "strata/core/weights.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/kernels/native_mmvq.hpp"
+#include "strata/platform/memory.hpp"
 
 #include <cuda_runtime.h>
 #include <algorithm>
 #include <climits>
+#include <cstdio>
 #include <cstdlib>
 #include <exception>
 #include <limits>
 #include <memory>
 #include <set>
+#include <cmath>
+#include <cstring>
+#include <vector>
 
 namespace strata::core {
 namespace {
@@ -20,6 +25,55 @@ bool in_range(const std::string& name) {
     if (g_layer_lb < 0 || name.rfind("blk.", 0) != 0) return true;
     const int l = std::atoi(name.c_str() + 4);
     return l >= g_layer_lb && l < g_layer_le;
+}
+// S23 experiment (STRATA_HC_Q8=1): the hyper-connection projections' Q8_0 bytes for the verify read
+bool hc_q8_requested() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_HC_Q8"); return v != nullptr && v[0] == '1'; }();
+    return on;
+}
+bool hc_q8_name(const std::string& name) {
+    if (name == "output_hc_down.weight" || name == "output_hc_up.weight") return true;   // S25: the final mixer too
+    if (name.rfind("blk.", 0) != 0) return false;
+    static const char* suffixes[] = {".hc_attn_down.weight", ".hc_attn_up.weight", ".hc_attn_inject.weight",
+                                     ".hc_ffn_down.weight", ".hc_ffn_up.weight", ".hc_ffn_inject.weight"};
+    for (const char* suffix : suffixes) if (name.ends_with(suffix)) return true;
+    return false;
+}
+// S25: the GGUF keeps the inject rows as F32 - quantized here to Q8_0 (ggml's reference rounding) so the Q8_0 read
+// covers every hc projection
+uint16_t half_bits(float f) {
+    uint32_t x;
+    std::memcpy(&x, &f, 4);
+    const uint32_t sign = (x >> 16) & 0x8000u;
+    int32_t e = (int32_t) ((x >> 23) & 0xff) - 127 + 15;
+    uint32_t m = x & 0x7fffffu;
+    if (e <= 0) {                                   // subnormal or zero
+        if (e < -10) return (uint16_t) sign;
+        m |= 0x800000u;
+        const uint32_t shift = (uint32_t) (14 - e);
+        uint32_t h = m >> shift;
+        const uint32_t rem = m & ((1u << shift) - 1), half = 1u << (shift - 1);
+        if (rem > half || (rem == half && (h & 1u))) ++h;
+        return (uint16_t) (sign | h);
+    }
+    if (e >= 31) return (uint16_t) (sign | 0x7c00u);
+    uint32_t h = ((uint32_t) e << 10) | (m >> 13);
+    const uint32_t rem = m & 0x1fffu;
+    if (rem > 0x1000u || (rem == 0x1000u && (h & 1u))) ++h;
+    return (uint16_t) (sign | h);
+}
+std::vector<uint8_t> q8_0_of(const float* x, uint64_t n) {
+    std::vector<uint8_t> out((size_t) (n / 32 * 34));
+    for (uint64_t b = 0; b < n / 32; ++b) {
+        float amax = 0.0f;
+        for (int j = 0; j < 32; ++j) amax = (std::max)(amax, std::fabs(x[b * 32 + j]));
+        const float d = amax / 127.0f, id = d != 0.0f ? 1.0f / d : 0.0f;
+        uint8_t* o = out.data() + b * 34;
+        const uint16_t hb = half_bits(d);
+        std::memcpy(o, &hb, 2);
+        for (int j = 0; j < 32; ++j) o[2 + j] = (uint8_t) (int8_t) std::lround(x[b * 32 + j] * id);
+    }
+    return out;
 }
 bool eligible(const strata::TensorInfo& tensor, bool include_ple_key) {
     const auto& name = tensor.name;
@@ -41,6 +95,7 @@ struct Pending {
     int type;
     uint64_t bytes;
     DevicePtr data;
+    DevicePtr packed;   // STRATA_Q8_PACKED=1 copy, or null
 };
 }
 
@@ -73,6 +128,7 @@ bool NativeDense::keep_unquantized_ple_key(const std::string& pack_dir, std::set
 }
 
 NativeDense::~NativeDense() {
+    for (const void* p : packed_keys_) strata::kernels::native_q8_0_packed_unregister(p);
     if (scratch_) cudaFree(scratch_);
     for (void* p : weights_) cudaFree(p);
 }
@@ -90,7 +146,7 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
         std::vector<Pending> pending;
         std::set<std::string> seen;
         int max_in = 0;
-        uint64_t total = 0;
+        uint64_t total = 0, hc_q8_bytes = 0;
         uint64_t split_count = 0, split_tensors = 0;
         std::set<uint64_t> split_numbers;
         bool have_architecture = false;
@@ -150,6 +206,10 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                 if (next != offsets.end() && bytes > *next - tensor.offset) {
                     err = "native dense: overlapping payload " + tensor.name; return false;
                 }
+                // the uploads below read these: ask for them now so the reads overlap
+                if (eligible(tensor, include_ple_key) && !outside(tensor.name) &&
+                    strata::kernels::native_mmvq_supported(tensor.type))
+                    strata::platform::advise_willneed(gguf.tensor_data(tensor), bytes);
             }
             for (const auto& tensor : gguf.tensors()) {
                 if (!eligible(tensor, include_ple_key) || outside(tensor.name)) continue;
@@ -183,8 +243,53 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                 }
                 max_in = (std::max)(max_in, (int) ref.ne0);
                 total += bytes;
-                pending.push_back(Pending{&ref, (int) tensor.type, bytes, std::move(data)});
+                // STRATA_Q8_PACKED=1: a second, packed copy of an eligible Q8_0 matrix for the decode MMVQ (the GGUF
+                // copy stays: the prompt path's GEMMs read it).
+                DevicePtr packed;
+                if (tensor.type == 8 && tensor.name != "blk.1.ple_key.weight" &&   // the PLE has its own kernel
+                    strata::kernels::native_q8_0_packed_enabled() &&
+                    strata::kernels::native_q8_0_packed_eligible((int) ref.ne0, (int) ref.ne1)) {
+                    std::vector<uint8_t> host(bytes);
+                    strata::kernels::native_q8_0_pack_host(gguf.tensor_data(tensor), host.data(), (int) ref.ne0,
+                                                           (int) ref.ne1);
+                    void* packed_allocation = nullptr;
+                    auto packed_status = cudaMalloc(&packed_allocation, bytes);
+                    packed.reset(packed_allocation);
+                    if (packed_status == cudaSuccess)
+                        packed_status = cudaMemcpy(packed.get(), host.data(), bytes, cudaMemcpyHostToDevice);
+                    if (packed_status != cudaSuccess) {
+                        err = "native dense packed upload " + tensor.name + ": " + cudaGetErrorString(packed_status);
+                        return false;
+                    }
+                }
+                pending.push_back(Pending{&ref, (int) tensor.type, bytes, std::move(data), std::move(packed)});
             }
+            if (hc_q8_requested())
+                for (const auto& tensor : gguf.tensors()) {
+                    // S25: the F32 inject rows hold BF16-exact values: the read takes the pack's BF16 rows unless
+                    // STRATA_HC_Q8_INJECT=1 asks for a Q8_0 copy
+                    static const bool q8_inject = [] { const char* v = std::getenv("STRATA_HC_Q8_INJECT"); return v && v[0] == '1'; }();
+                    const bool f32_inject = q8_inject && tensor.type == 0 && tensor.name.ends_with("_inject.weight");
+                    if ((tensor.type != 8 && !f32_inject) || !hc_q8_name(tensor.name) || tensor.shape.size() != 2) continue;
+                    auto found = table.table_.find(tensor.name);
+                    if (found == table.table_.end() || found->second.hc_q8 != nullptr) continue;
+                    auto& ref = found->second;
+                    if (tensor.shape[0] != (uint64_t) ref.ne0 || tensor.shape[1] != (uint64_t) ref.ne1 || ref.ne0 % 32 != 0) {
+                        err = "native dense (STRATA_HC_Q8): incompatible matrix " + tensor.name; return false;
+                    }
+                    const uint64_t bytes = (uint64_t) ref.ne0 / 32 * 34 * (uint64_t) ref.ne1;
+                    void* p = nullptr;
+                    std::vector<uint8_t> q8;
+                    if (f32_inject) q8 = q8_0_of((const float*) gguf.tensor_data(tensor), (uint64_t) ref.ne0 * (uint64_t) ref.ne1);
+                    if (cudaMalloc(&p, bytes) != cudaSuccess ||
+                        cudaMemcpy(p, f32_inject ? (const void*) q8.data() : gguf.tensor_data(tensor), bytes,
+                                   cudaMemcpyHostToDevice) != cudaSuccess) {
+                        err = "native dense (STRATA_HC_Q8) upload " + tensor.name; return false;
+                    }
+                    ref.hc_q8 = p;
+                    weights_.push_back(p);
+                    hc_q8_bytes += bytes;
+                }
         }
         if (pending.empty()) { err = "native dense: no supported GDN/QSA matrices in supplied shards"; return false; }
         void* allocation = nullptr;
@@ -193,14 +298,30 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
         if (status != cudaSuccess) { err = std::string("native dense scratch: ") + cudaGetErrorString(status); return false; }
         // All checks and allocations finish before publishing any reference.
         weights_.reserve(pending.size());
+        uint64_t packed_bytes = 0;
+        size_t packed_count = 0;
         for (auto& item : pending) {
             item.ref->native_data = item.data.get();
             item.ref->native_type = item.type;
             item.ref->native_q8_1 = scratch.get();
+            if (item.packed) {
+                strata::kernels::native_q8_0_packed_register(item.data.get(), item.packed.get(), (int) item.ref->ne0,
+                                                             (int) item.ref->ne1);
+                packed_keys_.push_back(item.data.get());
+                packed_bytes += item.bytes;
+                ++packed_count;
+                weights_.push_back(item.packed.release());
+            }
             weights_.push_back(item.data.release());
         }
+        if (packed_count)
+            std::fprintf(stderr, "native dense: STRATA_Q8_PACKED=1 packed %zu Q8_0 matrices for decode (+%.1f MiB)\n",
+                         packed_count, packed_bytes / 1048576.0);
         scratch_ = scratch.release();
-        bytes_ = total;
+        bytes_ = total + hc_q8_bytes;
+        if (hc_q8_requested())
+            std::fprintf(stderr, "strata: STRATA_HC_Q8=1: %.2f GiB of Q8_0 hyper-connection projections for the verify read\n",
+                         (double) hc_q8_bytes / 1073741824.0);
         return true;
     } catch (const std::exception& error) {
         err = std::string("native dense: ") + error.what();

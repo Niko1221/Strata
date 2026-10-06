@@ -59,6 +59,22 @@ bool cpu_sse42_ok();
 int cpu_isa_cap();
 /// The experimental older-CPU build this engine is ("avx", "sse4.2"), or "" for the normal build (AVX2 floor).
 const char* isa_floor_build();
+/// STRATA_IQ256_GATHER, the AVX-2 i-quant kernels' gathered grid decode (iq_avx2.cpp): -1 unset (auto, see
+/// cpu_gather_fast_here), 0 the scalar decode on every core, 1 the gathered one on every core.
+int iq256_gather_setting();
+/// Whether this CPU's performance cores gather the IQ grid entries faster than they assemble them from scalar loads:
+/// an Intel CPU with AVX-VNNI, i.e. Alder Lake / Sapphire Rapids or newer, and not one of the E-core-only parts.
+/// The older Intel cores gather slowly (Haswell, Broadwell) or under the Downfall (GDS) microcode (Skylake to Tiger
+/// Lake), AMD Zen 2/3 gather slowly, and Zen 4/5 run the AVX-512 kernels.  STRATA_FORCE_ISA answers no.
+bool cpu_gather_fast();
+/// cpu_gather_fast() and the CALLING THREAD runs on a performance core: CPUID 1Ah core type 40h on a hybrid CPU (its
+/// E-cores, 20h, gather slower than they assemble).  Probed once per thread: the pool pins each worker to one core.
+bool cpu_gather_fast_here();
+/// Whether the AVX-2 expert kernels take their AVX-VNNI forms (vpdpwssd / vpdpbusd: Alder Lake, Sapphire Rapids and
+/// later, P- and E-cores alike; the same integer sums): cpu_avx2_ok() and CPUID 7.1:EAX[4], not capped by
+/// STRATA_FORCE_ISA, and not an older-CPU build (STRATA_ISA_FLOOR, which stays on its floor and AVX2).
+/// STRATA_NO_AVXVNNI=1 answers no.
+bool cpu_avxvnni_ok();
 /// Whether a native pack's layer of this ggml type runs on Strata's own Q2_0 kernels (AVX2 / AVX-512).  On a
 /// CPU without AVX2 (a native, non-portable build: ggml-cpu compiled for this CPU's SSE) a Q2_0 layer takes
 /// ggml-cpu's own Q2_0 vec_dot like every other native type: slower, but it runs.

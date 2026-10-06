@@ -71,6 +71,11 @@ struct PleWeights {
     /// Plan v0.3 P6: the IQ model files keep `ple_key` in BF16 ([n_embd, hc_dim], `w[o*n_embd+i]`); when set it
     /// replaces both key paths above.
     const uint16_t* key_bf16 = nullptr;
+    /// S25 (STRATA_PLE_BATCH=1): the key (hc_dim) and value (n_embd) projections of `emb`, already computed by the
+    /// caller for a window's rows at once (the same kernels' multi-row forms); ple_block then copies them instead of
+    /// running its own GEMVs
+    const float* pre_key = nullptr;
+    const float* pre_value = nullptr;
 };
 
 /// Everything the block produces, in the order `ple_layer_xcheck`'s oracle writes it.  Any pointer may be

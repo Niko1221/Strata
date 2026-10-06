@@ -230,6 +230,22 @@ class WindowsDetection(unittest.TestCase):
         self.assertEqual(g[0]["driver"], "32.0.21013.1000")
         self.assertEqual([setup.amd_problem(x) is None for x in g], [True, False, True])
 
+    def test_rx_6800m_is_gfx1031(self):
+        """#881: PCI 73DF (RX 6700 XT / 6750 XT / 6800M) is gfx1031, not an unknown id."""
+        self.assertEqual(setup.win_amd_arch(0x73DF, "AMD Radeon RX 6800M"), "gfx1031")
+        self.assertIsNone(setup.amd_problem({"arch": "gfx1031"}))
+
+    def test_cpu_vision_build_uses_the_visual_studio_environment(self):
+        """#881: build_vision_cpu on Windows hands cmake_build the vcvars file and a real .bat name (it passed None and
+        an empty name before)."""
+        calls = []
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup, "WIN", True),                 mock.patch.object(setup, "find_vcvars", return_value=Path("C:/vs/vcvars64.bat")),                 mock.patch.object(setup, "cmake_build", lambda *a: calls.append(a)),                 mock.patch.object(setup, "ROOT", Path(d)), mock.patch.object(setup.shutil, "copy2"):
+            eng = Path(d) / "engine"
+            eng.mkdir()
+            setup.build_vision_cpu(eng, eng / "BUILD.json", {}, Path("llama"), "src1")
+        self.assertEqual(calls[0][4], Path("C:/vs/vcvars64.bat"))
+        self.assertTrue(calls[0][5].endswith(".bat"))
+
     def test_registry_alone(self):
         """No WMI answer: the registry's own list (which can hold a removed card)."""
         g = setup.amd_gpus_windows([], self.REGISTRY)
@@ -240,7 +256,7 @@ class WindowsDetection(unittest.TestCase):
                            ("AMD Radeon RX 9060 XT", "gfx1200"), ("AMD Radeon RX 7900 GRE", "gfx1100"),
                            ("AMD Radeon PRO W7800", "gfx1100"), ("AMD Radeon RX 7700 XT", "gfx1101"),
                            ("AMD Radeon RX 7600", "gfx1102"), ("AMD Radeon RX 6950 XT", "gfx1030"),
-                           ("AMD Radeon RX 6800M", ""), ("AMD Radeon 780M Graphics", ""), ("AMD Radeon RX 7700S", "")):
+                           ("AMD Radeon RX 6800M", ""), ("AMD Radeon 780M Graphics", "gfx1103"), ("AMD Radeon RX 7700S", "")):
             self.assertEqual(setup.win_amd_arch(None, name), arch, name)
         self.assertEqual(setup.win_amd_arch(0x744C, "whatever"), "gfx1100")
 
@@ -310,7 +326,7 @@ class WindowsDetection(unittest.TestCase):
 
             def publish(meta):
                 with zipfile.ZipFile(pub / setup.WIN_HIP_ASSET, "w") as z:
-                    z.writestr("strata.exe", "engine")
+                    z.writestr(setup.EXE, "engine")       # #975: "strata" on Linux
                     z.writestr("strata-device.exe", "probe")
                     z.writestr("rocm/bin/amdhip64_7.dll", "dll")
                     z.writestr("BUILD.json", json.dumps(meta))

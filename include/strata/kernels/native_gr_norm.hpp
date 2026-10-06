@@ -15,4 +15,7 @@ namespace strata::kernels {
 void native_gr_rms_norm_weighted(const float* input, const float* gamma, float* output,
                                  int n_cols, int n_rows, float epsilon, void* stream);
 
+void native_gr_rms_norm_weighted_multi(const float* input, const float* gamma, float* output,
+                                       int n_cols, int n_rows, int n_tok, float epsilon, void* stream);
+
 } // namespace strata::kernels

@@ -12,8 +12,9 @@ namespace strata::prefill::mmq {
 
 /// This build has the MMQ path (the ggml sources were available to the build).
 bool built();
-/// MMQ covers this ggml type (the i-quants and Q2_0 the packs use, Q8_0, and in a CUDA build with STRATA_MMQ_KQUANTS
-/// the Q4_K / Q5_K / Q5_1 of Unsloth's UD-Q4_K_XL; IQ1_M is not covered).
+/// MMQ covers this ggml type (the i-quants and Q2_0 the packs use, Q8_0, and with STRATA_MMQ_KQUANTS the
+/// K-quants Q4_K / Q5_K / Q5_1 / Q6_K: Unsloth's UD-Q4_K_XL experts (CUDA), and the dense GGUF projections of
+/// the mixed-quant packs through Gemm::native's STRATA_DENSE_MMQ path (HIP); IQ1_M is not covered).
 bool supported(int ggml_type);
 /// #420: `supported`, and on every visible GPU llama.cpp's MMQ has a tile for this type and a weight matrix of
 /// `w_rows` rows that fits the card's shared memory - the same test its tile choice makes, which aborts the process
@@ -84,5 +85,10 @@ void swiglu(const float* gu, float* h, int64_t rows, int64_t n_ff, bool interlea
 
 /// dst[i] = i for i < n (the identity row map MMQ's MoE mode writes through).
 void iota(int32_t* dst, int64_t n, void* stream);
+
+/// y[i] = float(x[i]) for FP16 bits x.
+void f16_to_f32(const uint16_t* x, float* y, int64_t n, void* stream);
+/// dst = {0, rows} (the bounds of one matrix; dst on the device).
+void set_bounds(int32_t* dst, int32_t rows, void* stream);
 
 }  // namespace strata::prefill::mmq

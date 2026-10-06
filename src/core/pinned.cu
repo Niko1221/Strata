@@ -5,6 +5,7 @@
 #include <cuda_runtime.h>
 
 #include <atomic>
+#include <climits>
 #include <cerrno>
 #include <cstdlib>
 #include <cstdio>
@@ -238,7 +239,29 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
     const uintptr_t end = aligned + bytes, raw_end = start + padded;
     if (raw_end > end) munmap((void*) end, raw_end - end);
     void* p = (void*) aligned;
-    if (std::getenv("STRATA_NO_LARGEPAGES") == nullptr && madvise(p, bytes, MADV_HUGEPAGE) == 0) {
+    // #771: with THP "always" the kernel already backs this mapping with huge pages where it can; the extra
+    // MADV_HUGEPAGE only adds direct reclaim and compaction on every fault (defrag=madvise), which on a fragmented
+    // machine stretched a 25 s start to 432 s.  So it is not asked for there.  STRATA_NO_ARENA_THP=1 skips it
+    // anywhere (the request alone; STRATA_NO_LARGEPAGES also skips the hugetlb try).
+    std::string thp_mode;
+    if (std::FILE* f = std::fopen("/sys/kernel/mm/transparent_hugepage/enabled", "r")) {
+        char line[128] = {0};
+        if (std::fgets(line, sizeof line, f) != nullptr) {
+            const char* open = std::strchr(line, '[');
+            const char* close = open ? std::strchr(open, ']') : nullptr;
+            if (open && close) thp_mode.assign(open + 1, close);
+        }
+        std::fclose(f);
+    }
+    const bool skip_thp_request = std::getenv("STRATA_NO_ARENA_THP") != nullptr || thp_mode == "always";
+    if (std::getenv("STRATA_NO_LARGEPAGES") == nullptr && skip_thp_request) {
+        const std::string four_k = "; using 4 KB pages";
+        if (note.size() >= four_k.size() && note.compare(note.size() - four_k.size(), four_k.size(), four_k) == 0)
+            note.resize(note.size() - four_k.size());
+        note += std::getenv("STRATA_NO_ARENA_THP") != nullptr
+                    ? "; transparent huge pages skipped (STRATA_NO_ARENA_THP)"
+                    : "; transparent huge pages are on for every mapping (THP always): MADV_HUGEPAGE not requested";
+    } else if (std::getenv("STRATA_NO_LARGEPAGES") == nullptr && madvise(p, bytes, MADV_HUGEPAGE) == 0) {
         const std::string four_k = "; using 4 KB pages";
         if (note.size() >= four_k.size() && note.compare(note.size() - four_k.size(), four_k.size(), four_k) == 0)
             note.resize(note.size() - four_k.size());
@@ -389,7 +412,9 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
                    " GiB); " + note;
             if (registered_bytes < bytes) {
                 const char* env = std::getenv("STRATA_ARENA_LOCK");
-                if (env == nullptr || std::string(env) != "0") {
+                if (backing == PageBacking::LargePages) {   // #779: large pages cannot be paged out: nothing to lock
+                    note = "large pages are resident without a lock; " + note;
+                } else if (env == nullptr || std::string(env) != "0") {
                     const strata::platform::LockResult lr =
                         strata::platform::lock_resident((uint8_t*) base + registered_bytes, bytes - registered_bytes);
                     locked_bytes = lr.locked_bytes;
@@ -415,7 +440,9 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
             // and the CPU pool's rate then depends on the OS; locking it through the working set needs no
             // special privilege. STRATA_ARENA_LOCK=0 is the A/B arm.
             const char* env = std::getenv("STRATA_ARENA_LOCK");
-            if (env == nullptr || std::string(env) != "0") {
+            if (backing == PageBacking::LargePages) {       // #779: large pages cannot be paged out: nothing to lock
+                note = "large pages are resident without a lock; " + note;
+            } else if (env == nullptr || std::string(env) != "0") {
                 const strata::platform::LockResult lr = strata::platform::lock_resident(base, bytes);
                 locked_bytes = lr.locked_bytes;
                 note = lr.note + "; " + note;
@@ -424,6 +451,48 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
             }
         }
     }
+}
+
+PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds, Deferred)
+    : capacity(bytes), bounds_(bounds) {
+    if (bytes == 0 || bounds.size() < 2) return;
+    base = reserve(bytes, backing, note, std::string{}, 0, mapping_base, mapping_bytes);
+    if (base != nullptr && mapping_base == nullptr) {
+        mapping_base = base;
+        mapping_bytes = bytes;
+    }
+    slice_bytes = 1;   // sliced: one registration per layer
+}
+
+void PinnedArena::register_slices(std::atomic<int>& ready) {
+    const int n = (int) bounds_.size() - 1;
+    int i = 0;
+    for (; base != nullptr && i < n; ++i) {
+        const uint64_t off = bounds_[(size_t) i], len = bounds_[(size_t) i + 1] - off;
+        if (cudaHostRegister((uint8_t*) base + off, (size_t) len, cudaHostRegisterPortable | cudaHostRegisterMapped) !=
+            cudaSuccess) {
+            (void) cudaGetLastError();
+            break;
+        }
+        slice_starts.push_back(off);
+        registered_bytes = off + len;
+        ++registered_slices;
+        ready.store(i + 1, std::memory_order_release);
+    }
+    note = "cudaHostRegister per layer, pipelined with the load: " + std::to_string(registered_slices) + " of " +
+           std::to_string(n) + " slices pinned; " + note;
+    if (i < n && base != nullptr) {   // the rest stays resident through the working-set lock, as the sliced fallback does
+        const char* env = std::getenv("STRATA_ARENA_LOCK");
+        if (backing == PageBacking::LargePages) {           // #779: large pages cannot be paged out: nothing to lock
+            note = "large pages are resident without a lock; " + note;
+        } else if (env == nullptr || std::string(env) != "0") {
+            const strata::platform::LockResult lr =
+                strata::platform::lock_resident((uint8_t*) base + registered_bytes, capacity - registered_bytes);
+            locked_bytes = lr.locked_bytes;
+            note = lr.note + "; " + note;
+        }
+    }
+    ready.store(INT_MAX, std::memory_order_release);   // every slice done (or given up on)
 }
 
 PinnedArena::~PinnedArena() {
@@ -449,19 +518,20 @@ LoadStats load_experts(const std::string& path, uint8_t* dst, uint64_t blob_byte
 }
 
 LoadStats load_experts_direct(const std::string& path, uint8_t* dst, const std::vector<uint64_t>& layer_off,
-                              const std::vector<uint64_t>& layer_bytes, int threads, uint64_t chunk) {
+                              const std::vector<uint64_t>& layer_bytes, int threads, uint64_t chunk,
+                              const std::atomic<int>* ready) {
     LoadStats st;
     st.ok = false;
 #ifdef _WIN32
     constexpr uint64_t kAlign = 4096;
     if (((uintptr_t) dst % kAlign) != 0 || chunk == 0 || chunk % kAlign != 0) return st;
-    struct Piece { uint64_t off, n; };
+    struct Piece { uint64_t off, n; int layer; };
     std::vector<Piece> pieces;
     uint64_t bytes = 0;
     for (size_t L = 0; L < layer_off.size(); ++L) {
         if (layer_off[L] % kAlign != 0 || layer_bytes[L] % kAlign != 0) return st;
         for (uint64_t p = 0; p < layer_bytes[L]; p += chunk)
-            pieces.push_back({layer_off[L] + p, std::min<uint64_t>(chunk, layer_bytes[L] - p)});
+            pieces.push_back({layer_off[L] + p, std::min<uint64_t>(chunk, layer_bytes[L] - p), (int) L});
         bytes += layer_bytes[L];
     }
     if (threads < 1) threads = 1;
@@ -485,6 +555,8 @@ LoadStats load_experts_direct(const std::string& path, uint8_t* dst, const std::
         for (;;) {
             const size_t i = next.fetch_add(1);
             if (i >= pieces.size()) break;
+            if (ready != nullptr)      // the slice must be registered before its pages are touched
+                while (ready->load(std::memory_order_acquire) <= pieces[i].layer + 1) std::this_thread::yield();
             OVERLAPPED ov{};
             ov.Offset = (DWORD) pieces[i].off;
             ov.OffsetHigh = (DWORD) (pieces[i].off >> 32);
@@ -515,7 +587,7 @@ LoadStats load_experts_direct(const std::string& path, uint8_t* dst, const std::
     st.bytes = bytes;
     st.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 #else
-    (void) path; (void) dst; (void) layer_off; (void) layer_bytes; (void) threads; (void) chunk;
+    (void) path; (void) dst; (void) layer_off; (void) layer_bytes; (void) threads; (void) chunk; (void) ready;
 #endif
     return st;
 }
@@ -590,7 +662,8 @@ bool experts_unbuffered(const std::vector<std::string>& files, uint64_t arena_by
 }
 
 LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::vector<uint64_t>& layer_off,
-                              const std::vector<uint64_t>& layer_bytes, int threads, uint64_t chunk) {
+                              const std::vector<uint64_t>& layer_bytes, int threads, uint64_t chunk,
+                              const std::atomic<int>* ready) {
     LoadStats st;
     const uint64_t layers = (uint64_t) layer_off.size();
     st.layers = layers;
@@ -631,6 +704,8 @@ LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::
         for (;;) {
             const uint64_t L = next_layer.fetch_add(1);
             if (L >= layers) break;
+            if (ready != nullptr)      // the slice must be registered before its pages are touched
+                while (ready->load(std::memory_order_acquire) <= (int) L + 1) std::this_thread::yield();
             const uint64_t off = layer_off[(size_t) L];
             uint64_t remaining = layer_bytes[(size_t) L];
             uint64_t pos = 0;

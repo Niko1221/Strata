@@ -19,6 +19,8 @@
 // reference: (S, h_v, S) with j fastest instead of (S, S, h_v).  A layout mix-up is silent, so the state is
 // filled with a value that encodes its own coordinates.
 #include "strata/kernels/gdn.hpp"
+#include "strata/kernels/fused_gdn.hpp"
+#include "strata/kernels/verify_kernels.hpp"
 
 #include <cuda_runtime.h>
 
@@ -388,6 +390,134 @@ int main(int argc, char** argv) {
                     rel_silu > 0.05 ? "yes" : "*** NO ***", rel_silu * 100);
         if (!(rel_silu > 0.05)) ++bad;
         cudaFree(d_o); cudaFree(d_z); cudaFree(d_sn); cudaFree(d_y);
+    }
+
+    // ================= 5. the verify-window kernels, T = 1..8, bitwise against the single-token kernels =================
+    // gdn_ab_multi and gdn_step_norm_multi are documented as bitwise `fused_gdn_ab` / `fused_gdn_step_norm` per
+    // token (verify_kernels.hpp). Every T from 1 to kVerifyMaxT is its own exact-T instantiation, so each is run,
+    // and every output and the state are compared with memcmp (not a tolerance).
+    {
+        const int n_embd = 2560, qk = S * h_k, C = 2 * qk + S * h_v, vd = S * h_v;
+        const float eps = 1e-6f;
+        auto bf16_of = [](float f) {
+            uint32_t u;
+            std::memcpy(&u, &f, 4);
+            return (uint16_t) (u >> 16);
+        };
+        std::vector<uint16_t> wa((size_t) h_v * n_embd), wb((size_t) h_v * n_embd);
+        for (auto& w : wa) w = bf16_of(gauss(rng) * 0.05f);
+        for (auto& w : wb) w = bf16_of(gauss(rng) * 0.05f);
+        std::vector<float> dt((size_t) h_v), ssm_a((size_t) h_v), gamma((size_t) S);
+        for (auto& x : dt) x = gauss(rng);
+        for (auto& x : ssm_a) x = -(0.1f + (float) (rng() % 100) / 50.0f);
+        for (auto& x : gamma) x = 1.0f + 0.1f * gauss(rng);
+        std::vector<float> st0((size_t) S * h_v * S);
+        for (auto& x : st0) x = gauss(rng) * 0.1f;
+
+        auto dev = [&](size_t bytes) {
+            void* p = nullptr;
+            check(cudaMalloc(&p, bytes), "m5");
+            return p;
+        };
+        auto up = [&](const void* h, size_t bytes) {
+            void* p = dev(bytes);
+            check(cudaMemcpy(p, h, bytes, cudaMemcpyHostToDevice), "u5");
+            return p;
+        };
+        auto down = [&](std::vector<float>& h, const void* d) {
+            check(cudaMemcpy(h.data(), d, h.size() * 4, cudaMemcpyDeviceToHost), "d5");
+        };
+        auto d_wa = (uint16_t*) up(wa.data(), wa.size() * 2);
+        auto d_wb = (uint16_t*) up(wb.data(), wb.size() * 2);
+        auto d_dt = (float*) up(dt.data(), dt.size() * 4);
+        auto d_sa = (float*) up(ssm_a.data(), ssm_a.size() * 4);
+        auto d_gm = (float*) up(gamma.data(), gamma.size() * 4);
+        int ab_bad = 0, sn_bad = 0, ab_n = 0, sn_n = 0;
+        for (int T = 1; T <= strata::kernels::kVerifyMaxT; ++T) {
+            // --- alpha/beta
+            std::vector<float> x((size_t) T * n_embd);
+            for (auto& v : x) v = gauss(rng);
+            auto d_x = (float*) up(x.data(), x.size() * 4);
+            auto d_g = (float*) dev((size_t) T * h_v * 4), d_b = (float*) dev((size_t) T * h_v * 4);
+            auto d_gr = (float*) dev((size_t) T * h_v * 4), d_br = (float*) dev((size_t) T * h_v * 4);
+            strata::kernels::gdn_ab_multi(d_x, d_wa, d_wb, d_dt, d_sa, d_g, d_b, n_embd, h_v, T, nullptr);
+            for (int t = 0; t < T; ++t)
+                strata::kernels::fused_gdn_ab(d_x + (size_t) t * n_embd, d_wa, d_wb, d_dt, d_sa, d_gr + (size_t) t * h_v,
+                                              d_br + (size_t) t * h_v, n_embd, h_v, nullptr);
+            std::vector<float> g((size_t) T * h_v), b(g.size()), gr(g.size()), br(g.size());
+            down(g, d_g); down(b, d_b); down(gr, d_gr); down(br, d_br);
+            ++ab_n;
+            if (std::memcmp(g.data(), gr.data(), g.size() * 4) != 0 || std::memcmp(b.data(), br.data(), b.size() * 4) != 0) {
+                std::printf("    *** gdn_ab_multi T=%d differs from fused_gdn_ab (memcmp) ***\n", T);
+                ++ab_bad;
+            }
+            cudaFree(d_x); cudaFree(d_g); cudaFree(d_b); cudaFree(d_gr); cudaFree(d_br);
+
+            // --- the recurrence + output norm
+            std::vector<float> h((size_t) T * C), gate((size_t) T * h_v), beta((size_t) T * h_v), z((size_t) T * vd);
+            for (auto& v : h) v = gauss(rng) * 0.1f;
+            for (auto& v : gate) v = -(0.5f + 3.0f * (float) (rng() % 100) / 100.0f);
+            for (auto& v : beta) v = (float) (rng() % 100) / 100.0f;
+            for (auto& v : z) v = gauss(rng);
+            auto d_h = (float*) up(h.data(), h.size() * 4);
+            auto d_gate = (float*) up(gate.data(), gate.size() * 4);
+            auto d_beta = (float*) up(beta.data(), beta.size() * 4);
+            auto d_z = (float*) up(z.data(), z.size() * 4);
+            auto d_y = (float*) dev((size_t) T * vd * 4);
+            auto d_yr = (float*) dev((size_t) T * vd * 4);
+            auto d_st = (float*) dev(st0.size() * 4);
+            auto d_sr = (float*) dev(st0.size() * 4);
+            int32_t* d_nk = (int32_t*) dev(4);
+            // the reference chain (the single-token kernel), n tokens, into d_sr / d_yr
+            auto run_ref = [&](int n) {
+                check(cudaMemcpy(d_sr, st0.data(), st0.size() * 4, cudaMemcpyHostToDevice), "r0");
+                for (int t = 0; t < n; ++t)
+                    strata::kernels::fused_gdn_step_norm(d_sr, d_h + (size_t) t * C, d_h + (size_t) t * C + qk,
+                                                         d_h + (size_t) t * C + 2 * qk, d_gate + (size_t) t * h_v,
+                                                         d_beta + (size_t) t * h_v, d_z + (size_t) t * vd, d_gm, eps,
+                                                         d_yr + (size_t) t * vd, h_k, h_v, nullptr);
+            };
+            std::vector<float> y((size_t) T * vd), yr(y.size()), st(st0.size()), sr(st0.size());
+            // (name, n_keep tokens or -1 = verify half, t_out_begin)
+            struct Case { const char* name; int n_keep; int tb; };
+            std::vector<Case> cases = {{"verify", -1, 0}, {"verify tb", -1, T > 1 ? T / 2 : 0}, {"commit", T, 0},
+                                       {"commit tb", T, T / 2}, {"commit state only", T, T}};
+            if (T > 1) cases.push_back({"commit n-1", T - 1, T - 1});
+            for (const Case& c : cases) {
+                check(cudaMemcpy(d_st, st0.data(), st0.size() * 4, cudaMemcpyHostToDevice), "s0");
+                check(cudaMemset(d_y, 0, (size_t) T * vd * 4), "y0");
+                check(cudaMemset(d_yr, 0, (size_t) T * vd * 4), "yr0");
+                const int n = c.n_keep < 0 ? T : c.n_keep;
+                if (c.n_keep >= 0) check(cudaMemcpy(d_nk, &c.n_keep, 4, cudaMemcpyHostToDevice), "nk");
+                strata::kernels::gdn_step_norm_multi(d_st, d_h, C, d_gate, d_beta, d_z, d_gm, eps, d_y, h_k, h_v, T,
+                                                     c.n_keep >= 0 ? d_nk : nullptr, nullptr, c.tb);
+                run_ref(n);
+                down(y, d_y); down(yr, d_yr); down(st, d_st); down(sr, d_sr);
+                bool ok = true;
+                size_t y_bad = 0, y_all = 0;
+                for (int t = c.tb; t < n; ++t) {
+                    for (int i = 0; i < vd; ++i, ++y_all)
+                        if (std::memcmp(&y[(size_t) t * vd + i], &yr[(size_t) t * vd + i], 4) != 0) ++y_bad;
+                }
+                if (y_bad) ok = false;
+                // the verify half leaves the state untouched; the commit half writes the state after n tokens
+                const std::vector<float>& want_st = c.n_keep < 0 ? st0 : sr;
+                if (std::memcmp(st.data(), want_st.data(), st.size() * 4) != 0) ok = false;
+                ++sn_n;
+                if (!ok) {
+                    std::printf("    *** gdn_step_norm_multi T=%d '%s' differs from fused_gdn_step_norm (memcmp): %zu of %zu y words%s ***\n",
+                                T, c.name, y_bad, y_all,
+                                std::memcmp(st.data(), (c.n_keep < 0 ? st0 : sr).data(), st.size() * 4) != 0 ? ", state too" : "");
+                    ++sn_bad;
+                }
+            }
+            cudaFree(d_h); cudaFree(d_gate); cudaFree(d_beta); cudaFree(d_z); cudaFree(d_y); cudaFree(d_yr); cudaFree(d_st);
+            cudaFree(d_sr); cudaFree(d_nk);
+        }
+        cudaFree(d_wa); cudaFree(d_wb); cudaFree(d_dt); cudaFree(d_sa); cudaFree(d_gm);
+        std::printf("\n  %-42s %s (%d cases)\n", "gdn_ab_multi T=1..8 == fused_gdn_ab", ab_bad ? "*** NO ***" : "bitwise", ab_n);
+        std::printf("  %-42s %s (%d cases)\n", "gdn_step_norm_multi T=1..8 == single-token", sn_bad ? "*** NO ***" : "bitwise", sn_n);
+        bad += ab_bad + sn_bad;
     }
 
     std::printf("\ngdn: %d failures\n", bad);

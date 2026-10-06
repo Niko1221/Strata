@@ -118,7 +118,10 @@ def main() -> int:
     for f in (rbin / "rocblas" / "library").iterdir():
         m = re.search(r"gfx[0-9a-f]+", f.name)
         if m is None or m.group() in archs:
-            shutil.copy2(f, lib / f.name)
+            if f.is_dir():                                # the gfx1151 wheel keeps its rocBLAS kernels in library/gfx1151/
+                shutil.copytree(f, lib / f.name)
+            else:
+                shutil.copy2(f, lib / f.name)
     for arch in archs:
         src = rbin / "hipblaslt" / "library" / arch
         if src.is_dir():                                  # hipBLASLt has no RDNA2 (gfx1030) kernels
@@ -142,8 +145,8 @@ def main() -> int:
     (lic / "NOTICE.txt").write_text(NOTICE.format(rocm=a.rocm_version, dlls="\n".join("  " + d for d in shipped)),
                                     encoding="utf-8")
 
-    version = re.search(r"project\(strata VERSION ([\d.]+)", (ROOT / "CMakeLists.txt").read_text()).group(1)
-    hl = (a.rocm / "include" / "hipblaslt" / "hipblaslt-version.h").read_text()
+    version = re.search(r"project\(strata VERSION ([\d.]+)", (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")).group(1)
+    hl = (a.rocm / "include" / "hipblaslt" / "hipblaslt-version.h").read_text(encoding="utf-8")
     hlv = [int(re.search(rf"#define\s+HIPBLASLT_VERSION_{k}\s+(\d+)", hl).group(1)) for k in ("MAJOR", "MINOR", "PATCH")]
     meta = {"source": "prebuilt", "backend": "hip", "platform": "windows-x64", "version": version, "archs": archs,
             "rocm": a.rocm_version, "hipblaslt_version": hlv[0] * 100000 + hlv[1] * 100 + hlv[2], "vision": "none",

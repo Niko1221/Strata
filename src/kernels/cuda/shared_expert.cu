@@ -69,6 +69,7 @@ __global__ void native_swiglu_kernel(const float* gate, const float* up, float* 
     out[i] = __fdividef(gate[i], 1.0f + __expf(-gate[i])) * up[i];
 }
 
+
 __global__ void to_f16_kernel(const float* __restrict__ in, uint16_t* __restrict__ out, int n) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) out[i] = f16_from_f32(in[i]);
@@ -176,6 +177,31 @@ __global__ void sigmoid_scale_rows_kernel(float* __restrict__ out, const float* 
     }
 }
 
+__global__ void sigmoid_scale_rows_vec4_kernel(float4* __restrict__ out4, const float* __restrict__ g, int n4) {
+    const int t = blockIdx.y;
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n4) {
+        const float gt = __fdividef(1.0f, 1.0f + __expf(-__ldg(g + t)));
+        float4 v = out4[(size_t) t * n4 + i];
+        v.x *= gt;
+        v.y *= gt;
+        v.z *= gt;
+        v.w *= gt;
+        out4[(size_t) t * n4 + i] = v;
+    }
+}
+
+void launch_sigmoid_scale_rows(float* out, const float* g, int n_embd, int n_tok, cudaStream_t cs) {
+    if ((n_embd & 3) == 0 && ((uintptr_t) out & 15u) == 0) {
+        const int n4 = n_embd >> 2;
+        sigmoid_scale_rows_vec4_kernel<<<dim3((unsigned) ((n4 + THREADS - 1) / THREADS), (unsigned) n_tok), THREADS, 0, cs>>>(
+            reinterpret_cast<float4*>(out), g, n4);
+    } else {
+        sigmoid_scale_rows_kernel<<<dim3((unsigned) ((n_embd + THREADS - 1) / THREADS), (unsigned) n_tok), THREADS, 0, cs>>>(
+            out, g, n_embd);
+    }
+}
+
 bool fused_swiglu_q81_enabled() {
     static const bool on = [] {
         const char* v = std::getenv("STRATA_FUSED_SWIGLU_Q81");
@@ -187,17 +213,23 @@ bool fused_swiglu_q81_enabled() {
 
 void shared_expert_multi(int n_tok, const float* x, const uint16_t* x_bf16, const NativeSharedWeights& nw,
                          const uint16_t* gate_inp_bf16, float* gate, float* up, float* g, float* out, int64_t n_embd,
-                         int64_t n_ff, void* stream) {
+                         int64_t n_ff, void* stream, const void* x_q8_1_ready, int lfuse) {
+    const bool gate_deferred = (lfuse & 1) != 0, pair = (lfuse & 2) != 0;
     if (n_tok < 1 || n_tok > 8 || !nw.q8_1 || !nw.gate_data || !nw.up_data || !nw.down_data || !stream)
         throw std::invalid_argument("shared_expert_multi: needs 1..8 tokens, native weights, scratch and a stream");
     cudaStream_t cs = (cudaStream_t) stream;
-    const void* x_q8_1 = nw.x_q8_1;
+    // the activation's q8_1: the caller's (STRATA_VERIFY_QDEDUP, x_q8_1_ready) or the descriptor's, else quantized here
+    const void* x_q8_1 = x_q8_1_ready ? x_q8_1_ready : nw.x_q8_1;
     if (!x_q8_1) {
         native_quantize_q8_1(x, nw.q8_1, (int) n_embd, n_tok, stream);
         x_q8_1 = nw.q8_1;
     }
-    native_mmvq(nw.gate_type, nw.gate_data, x_q8_1, gate, (int) n_embd, (int) n_ff, n_tok, stream);
-    native_mmvq(nw.up_type, nw.up_data, x_q8_1, up, (int) n_embd, (int) n_ff, n_tok, stream);
+    // S26 STRATA_LFUSE (gate_deferred): gate and up in one launch where the pair applies (bitwise the two calls)
+    if (!(pair && nw.gate_type == nw.up_type &&
+          native_mmvq_pair(nw.gate_type, nw.gate_data, nw.up_data, x_q8_1, gate, up, (int) n_embd, (int) n_ff, n_tok, stream))) {
+        native_mmvq(nw.gate_type, nw.gate_data, x_q8_1, gate, (int) n_embd, (int) n_ff, n_tok, stream);
+        native_mmvq(nw.up_type, nw.up_data, x_q8_1, up, (int) n_embd, (int) n_ff, n_tok, stream);
+    }
     const int n = (int) (n_ff * n_tok);
     if (fused_swiglu_q81_enabled()) {
         native_swiglu_quantize_q8_1(gate, up, nw.q8_1, (int) n_ff, n_tok, stream);
@@ -206,15 +238,18 @@ void shared_expert_multi(int n_tok, const float* x, const uint16_t* x_bf16, cons
         native_quantize_q8_1(gate, nw.q8_1, (int) n_ff, n_tok, stream);
     }
     native_mmvq(nw.down_type, nw.down_data, nw.q8_1, out, (int) n_ff, (int) n_embd, n_tok, stream);
+    if (gate_deferred) {   // the caller computed g (raw) with the router and scales `out` in the combine
+        const cudaError_t e = cudaGetLastError();
+        if (e != cudaSuccess) throw std::runtime_error(std::string("shared_expert_multi: ") + cudaGetErrorString(e));
+        return;
+    }
     static const bool batch = [] { const char* v = std::getenv("STRATA_DEC_BATCH"); return v == nullptr || std::atoi(v) != 0; }();
     if (native_bf16 && batch && n_tok > 1) {   // one gemv for all rows (outputs identical), fused sigmoid+scale
         bf16_gemv_fp32_mmvf_multi(x, n_embd, gate_inp_bf16, g, 1, n_embd, 1, n_tok, stream);
-        sigmoid_scale_rows_kernel<<<dim3((unsigned) ((n_embd + THREADS - 1) / THREADS), (unsigned) n_tok), THREADS, 0, cs>>>(
-            out, g, (int) n_embd);
+        launch_sigmoid_scale_rows(out, g, (int) n_embd, n_tok, cs);
     } else if (native_bf16 && n_tok == 1) {
         bf16_gemv_fp32_mmvf(x, gate_inp_bf16, g, n_embd, 1, stream);
-        sigmoid_scale_rows_kernel<<<dim3((unsigned) ((n_embd + THREADS - 1) / THREADS), 1u), THREADS, 0, cs>>>(
-            out, g, (int) n_embd);
+        launch_sigmoid_scale_rows(out, g, (int) n_embd, 1, cs);
     } else {
         for (int t = 0; t < n_tok; ++t) {
             if (native_bf16) {
@@ -345,7 +380,7 @@ void shared_expert(const uint8_t* x_q8_0, const uint8_t* x_q8k, const uint16_t* 
     // round trip.  256 threads is the reduction's width, not the problem's size.
     if (use_native) {
         bf16_gemv_fp32_mmvf(x_f32, gate_inp_bf16, g, n_embd, 1, stream);
-        sigmoid_scale_rows_kernel<<<dim3(g_embd, 1u), THREADS, 0, (cudaStream_t) stream>>>(out, g, (int) n_embd);
+        launch_sigmoid_scale_rows(out, g, (int) n_embd, 1, (cudaStream_t) stream);
     } else {
         scalar_gate_kernel<<<1, 256, 0, (cudaStream_t) stream>>>(x_bf16, gate_inp_bf16, g, (int) n_embd);
         scale_kernel<<<g_embd, THREADS, 0, (cudaStream_t) stream>>>(out, g, (int) n_embd);

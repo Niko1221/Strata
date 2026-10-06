@@ -25,6 +25,7 @@
 // fast-math device trig must answer to the same `RopeScaling`, yarn and none alike, so one cache never
 // mixes two rotations.
 #include "strata/kernels/rope.hpp"
+#include "strata/kernels/native_qsa.hpp"
 #include "strata/kernels/native_rope.hpp"
 
 #include <cuda_runtime.h>
@@ -433,6 +434,83 @@ int main(int argc, char** argv) {
         std::printf("  native path vs table path, none            %s (%lld of %d over 3e-3, worst rel %.3e)\n",
                     none_bad5 ? "*** WRONG ***" : "agrees", none_bad5, nrows * head_dim, worst5);
         bad += (int) none_bad5;
+
+        // ---- 6. FUSED RMSNorm + RoPE (`native_qsa_rms_norm_rope`) MUST BE BIT-IDENTICAL to
+        // `native_qsa_rms_norm_weighted` followed by `native_rope_apply` for both contiguous
+        // (`in_stride == head_dim`) and strided Q/gate split (`in_stride == 2 * head_dim`) inputs,
+        // across supported head_dims (128, 256) and both unscaled and YaRN scaling.
+        // The kernel is off by default on the HIP build until this check passes there (native_norm_rope_usable): the
+        // check then reports SKIPPED, and STRATA_NORM_ROPE=1 runs it (gfx1151, Aurora, 0.1.40: it does not pass).
+        const bool run6 = strata::kernels::native_norm_rope_usable(256, 64);
+        if (!run6)
+            std::printf("  native_qsa_rms_norm_rope                   SKIPPED (the fused kernel is not enabled on this build)\n");
+        for (int hd6 : {128, 256}) {
+            if (!run6) break;
+            const int nr6 = 64;
+            const int rows6 = 96;
+            std::vector<float> x6_strided((size_t) rows6 * 2 * hd6);
+            std::vector<float> gamma6((size_t) hd6);
+            std::vector<int> pos6((size_t) rows6);
+            for (auto& v : x6_strided) v = gauss2(rng2);
+            for (auto& g : gamma6) g = 0.5f + std::fabs(gauss2(rng2));
+            for (int r = 0; r < rows6; ++r) pos6[(size_t) r] = (r * 53 + 1) % npos;
+
+            float *d_xs6 = nullptr, *d_g6 = nullptr, *d_ref6 = nullptr, *d_fus6 = nullptr;
+            int* d_pos6 = nullptr;
+            check(cudaMalloc(&d_xs6, x6_strided.size() * sizeof(float)), "malloc xs6");
+            check(cudaMalloc(&d_g6, gamma6.size() * sizeof(float)), "malloc g6");
+            check(cudaMalloc(&d_ref6, (size_t) rows6 * hd6 * sizeof(float)), "malloc ref6");
+            check(cudaMalloc(&d_fus6, (size_t) rows6 * hd6 * sizeof(float)), "malloc fus6");
+            check(cudaMalloc(&d_pos6, pos6.size() * sizeof(int)), "malloc pos6");
+            check(cudaMemcpy(d_xs6, x6_strided.data(), x6_strided.size() * sizeof(float), cudaMemcpyHostToDevice), "copy xs6");
+            check(cudaMemcpy(d_g6, gamma6.data(), gamma6.size() * sizeof(float), cudaMemcpyHostToDevice), "copy g6");
+            check(cudaMemcpy(d_pos6, pos6.data(), pos6.size() * sizeof(int), cudaMemcpyHostToDevice), "copy pos6");
+
+            long long fbad = 0;
+            for (const auto& sc6 : {none5, yarn}) {
+                // (a) strided Q/gate split (in_stride = 2 * hd6) vs cudaMemcpy2DAsync + norm + rope
+                check(cudaMemcpy2DAsync(d_ref6, (size_t) hd6 * sizeof(float), d_xs6, (size_t) 2 * hd6 * sizeof(float),
+                                        (size_t) hd6 * sizeof(float), (size_t) rows6, cudaMemcpyDeviceToDevice, cs5),
+                      "split6");
+                strata::kernels::native_qsa_rms_norm_weighted(d_ref6, d_g6, d_ref6, hd6, rows6, 1e-6f, cs5);
+                strata::kernels::native_rope_apply(d_ref6, d_ref6, rows6, hd6, nr6, sc6, d_pos6, cs5);
+
+                strata::kernels::native_qsa_rms_norm_rope(d_xs6, 2 * hd6, d_g6, d_fus6, rows6, hd6, nr6, 1e-6f, sc6,
+                                                          d_pos6, cs5);
+                check(cudaStreamSynchronize(cs5), "sync6a");
+                std::vector<float> href((size_t) rows6 * hd6), hfus((size_t) rows6 * hd6);
+                check(cudaMemcpy(href.data(), d_ref6, href.size() * sizeof(float), cudaMemcpyDeviceToHost), "back ref6a");
+                check(cudaMemcpy(hfus.data(), d_fus6, hfus.size() * sizeof(float), cudaMemcpyDeviceToHost), "back fus6a");
+                for (size_t i = 0; i < href.size(); ++i) {
+                    if (std::memcmp(&href[i], &hfus[i], 4) != 0) ++fbad;
+                }
+
+                // (b) contiguous in-place (in_stride = hd6, output == input)
+                check(cudaMemcpy2DAsync(d_ref6, (size_t) hd6 * sizeof(float), d_xs6, (size_t) 2 * hd6 * sizeof(float),
+                                        (size_t) hd6 * sizeof(float), (size_t) rows6, cudaMemcpyDeviceToDevice, cs5),
+                      "contig6_ref");
+                check(cudaMemcpy(d_fus6, d_ref6, (size_t) rows6 * hd6 * sizeof(float), cudaMemcpyDeviceToDevice),
+                      "contig6_fus");
+                strata::kernels::native_qsa_rms_norm_weighted(d_ref6, d_g6, d_ref6, hd6, rows6, 1e-6f, cs5);
+                strata::kernels::native_rope_apply(d_ref6, d_ref6, rows6, hd6, nr6, sc6, d_pos6, cs5);
+                strata::kernels::native_qsa_rms_norm_rope(d_fus6, hd6, d_g6, d_fus6, rows6, hd6, nr6, 1e-6f, sc6,
+                                                          d_pos6, cs5);
+                check(cudaStreamSynchronize(cs5), "sync6b");
+                check(cudaMemcpy(href.data(), d_ref6, href.size() * sizeof(float), cudaMemcpyDeviceToHost), "back ref6b");
+                check(cudaMemcpy(hfus.data(), d_fus6, hfus.size() * sizeof(float), cudaMemcpyDeviceToHost), "back fus6b");
+                for (size_t i = 0; i < href.size(); ++i) {
+                    if (std::memcmp(&href[i], &hfus[i], 4) != 0) ++fbad;
+                }
+            }
+            std::printf("  native_qsa_rms_norm_rope hd=%3d nr=%2d      %s (%lld of %d elements differ)\n",
+                        hd6, nr6, fbad ? "*** WRONG ***" : "bit-identical", fbad, rows6 * hd6 * 4);
+            bad += (int) fbad;
+            cudaFree(d_xs6);
+            cudaFree(d_g6);
+            cudaFree(d_ref6);
+            cudaFree(d_fus6);
+            cudaFree(d_pos6);
+        }
     }
 
     std::printf("\nrope: %d failures\n", bad);

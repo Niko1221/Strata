@@ -4,6 +4,7 @@
 #include "strata/kernels/cpu/expert_layout.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <chrono>
 #include <immintrin.h>
@@ -30,7 +31,31 @@ constexpr uint64_t pack_head(uint32_t epoch, uint32_t n, uint32_t i) {
 }
 }  // namespace
 
+namespace {
+std::atomic<int> g_host_core{(int) HostCore::First};
+}  // namespace
+
+void set_host_core(HostCore where) { g_host_core.store((int) where); }
+HostCore host_core_setting() { return (HostCore) g_host_core.load(); }
+
+static CpuTopology detect_cpu_topology_impl(bool skip_first, PoolAffinity affinity);
+
 CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
+    CpuTopology topo = detect_cpu_topology_impl(skip_first, affinity);
+    // --host-core last: the host takes the last core, the workers the others (the first included)
+    if (skip_first && host_core_setting() == HostCore::Last && !topo.is_hybrid && topo.host_core >= 0 &&
+        !topo.worker_cores.empty()) {
+        const int last = topo.worker_cores.back();
+        topo.worker_cores.pop_back();
+        topo.worker_cores.insert(topo.worker_cores.begin(), topo.host_core);
+        topo.host_core = last;
+    }
+    return topo;
+}
+
+int planned_host_core(PoolAffinity affinity) { return detect_cpu_topology(true, affinity).host_core; }
+
+static CpuTopology detect_cpu_topology_impl(bool skip_first, PoolAffinity affinity) {
     CpuTopology topo;
 #if defined(_WIN32)
     // Ask the OS rather than assuming a layout.  `hardware_concurrency()` returns LOGICAL processors, and on
@@ -178,6 +203,30 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
         return v;
     };
 
+    // #798: a cpulist ("0-7,16") of one of the hybrid PMU's CPU sets: /sys/devices/cpu_core/cpus and cpu_atom/cpus
+    auto cpulist_read = [](const char* path, std::vector<int>& out) -> bool {
+        std::FILE* f = std::fopen(path, "r");
+        if (!f) return false;
+        char text[1024] = {0};
+        const size_t n = std::fread(text, 1, sizeof text - 1, f);
+        std::fclose(f);
+        text[n] = '\0';
+        for (const char* p = text; *p;) {
+            char* end = nullptr;
+            const long lo = std::strtol(p, &end, 10);
+            if (end == p) break;
+            long hi = lo;
+            if (*end == '-') {
+                p = end + 1;
+                hi = std::strtol(p, &end, 10);
+            }
+            for (long c = lo; c <= hi && c < 4096; ++c) out.push_back((int) c);
+            p = end;
+            while (*p == ',' || *p == ' ' || *p == '\n')  ++p;
+        }
+        return !out.empty();
+    };
+
     std::vector<int> allowed;
     std::vector<unsigned long> allowed_mask;
     if (detail::get_thread_affinity(allowed_mask, &allowed) != 0) {
@@ -216,10 +265,23 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
         all_cpus.push_back(cl);
     }
 
-    topo.is_hybrid = (max_cap > 0 && max_cap > min_cap);
+    // #798: which CPUs are E-cores.  Intel's hybrid PMU lists them (cpu_atom/cpus beside cpu_core/cpus); without it a
+    // CPU is an E-core when its capacity is under 90% of the largest.  Turbo Boost Max 3.0 gives the "favored"
+    // P-cores a slightly higher capacity (1024 against 1012 on a Core Ultra 7 270K Plus): "capacity == the maximum"
+    // counted 2 of its 8 P-cores and started 1 pool worker.
+    std::vector<int> pmu_core, pmu_atom;
+    const bool pmu = cpulist_read("/sys/devices/cpu_core/cpus", pmu_core) &&
+                     cpulist_read("/sys/devices/cpu_atom/cpus", pmu_atom);
+    auto is_e = [&](const CoreLinux& cl) {
+        if (pmu) return std::find(pmu_atom.begin(), pmu_atom.end(), cl.cpu) != pmu_atom.end();
+        return max_cap > 0 && cl.cap > 0 && cl.cap * 10 < max_cap * 9;
+    };
+    bool any_e = false, any_p = false;
+    for (const auto& cl : all_cpus) (is_e(cl) ? any_e : any_p) = true;
+    topo.is_hybrid = any_e && any_p;
     if (topo.is_hybrid) {
         for (const auto& cl : all_cpus) {
-            if (cl.cap == max_cap) {
+            if (!is_e(cl)) {
                 if (!cl.is_sibling) topo.p_cores++;
                 topo.p_threads++;
             } else {
@@ -234,7 +296,9 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
     if (affinity == PoolAffinity::All || !topo.is_hybrid) {
         if (topo.is_hybrid)   // #642: the P-cores first (see the Windows branch)
             std::stable_sort(all_cpus.begin(), all_cpus.end(),
-                             [](const CoreLinux& x, const CoreLinux& y) { return x.cap > y.cap; });
+                             [&](const CoreLinux& x, const CoreLinux& y) {
+                                 return is_e(x) != is_e(y) ? !is_e(x) : x.cap > y.cap;
+                             });
         for (const auto& cl : all_cpus) {
             if (!cl.is_sibling) topo.worker_cores.push_back(cl.cpu);
         }
@@ -251,7 +315,7 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
     std::vector<int> e_cores;
 
     for (const auto& cl : all_cpus) {
-        if (cl.cap == max_cap) {
+        if (!is_e(cl)) {
             if (!cl.is_sibling) p_primaries.push_back(cl.cpu);
             else p_siblings.push_back(cl.cpu);
         } else {

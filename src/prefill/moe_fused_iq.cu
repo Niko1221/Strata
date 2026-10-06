@@ -33,6 +33,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <mutex>
 
 namespace strata::prefill::fused {
@@ -61,15 +62,28 @@ constexpr int GU_ROWS_K = 2560, D_ROWS_K = 640;   // K of gate/up (n_embd) and o
 // the formats (ggml type ids)
 constexpr int T_IQ2_XXS = GGML_TYPE_IQ2_XXS, T_IQ2_XS = GGML_TYPE_IQ2_XS, T_IQ2_S = GGML_TYPE_IQ2_S,
               T_IQ3_XXS = GGML_TYPE_IQ3_XXS, T_IQ3_S = GGML_TYPE_IQ3_S, T_IQ4_XS = GGML_TYPE_IQ4_XS,
-              T_IQ4_NL = GGML_TYPE_IQ4_NL, T_Q2_0 = GGML_TYPE_Q2_0;
+              T_IQ4_NL = GGML_TYPE_IQ4_NL, T_Q2_0 = GGML_TYPE_Q2_0,
+              // Aurora (opt-in, HIP gfx11 only): Unsloth UD-Q4_K_XL's experts - gate/up Q4_K (one layer Q5_K), down Q5_1
+              // (five layers Q8_0).  Their weights are w = d_w q + m_w (a minimum), so a sub-block's dot is
+              //   sum w x = d_x (d_w sum q a + m_w sum a):
+              // the activation blocks carry sum a per 32 values in their eight spare bytes (quant_act_nat_kernel and
+              // the H epilogue write it for every path; no other format reads it)
+              T_Q4_K = GGML_TYPE_Q4_K, T_Q5_K = GGML_TYPE_Q5_K, T_Q5_1 = GGML_TYPE_Q5_1, T_Q8_0 = GGML_TYPE_Q8_0;
 static_assert(sizeof(block_iq2_xxs) == 66 && sizeof(block_iq2_xs) == 74 && sizeof(block_iq2_s) == 82 &&
               sizeof(block_iq3_xxs) == 98 && sizeof(block_iq3_s) == 110 && sizeof(block_iq4_xs) == 136 &&
-              sizeof(block_iq4_nl) == 18 && sizeof(block_q2_0) == 18, "the block layouts this file decodes");
+              sizeof(block_iq4_nl) == 18 && sizeof(block_q2_0) == 18 && sizeof(block_q4_K) == 144 &&
+              sizeof(block_q5_K) == 176 && sizeof(block_q5_1) == 24 && sizeof(block_q8_0) == 34,
+              "the block layouts this file decodes");
 
 // block bytes, scale per 16 values, codebook bytes in shared memory
 __host__ __device__ constexpr int block_bytes(int t) {
     return t == T_IQ2_XXS ? 66 : t == T_IQ2_XS ? 74 : t == T_IQ2_S ? 82 : t == T_IQ3_XXS ? 98 : t == T_IQ3_S ? 110
-         : t == T_IQ4_XS ? 136 : 18;
+         : t == T_IQ4_XS ? 136 : t == T_Q4_K ? 144 : t == T_Q5_K ? 176 : t == T_Q5_1 ? 24 : t == T_Q8_0 ? 34 : 18;
+}
+// the formats with a minimum (w = d q + m), and the raw words a sub-block's load stage holds
+__host__ __device__ constexpr bool has_min(int t) { return t == T_Q4_K || t == T_Q5_K || t == T_Q5_1; }
+__host__ __device__ constexpr int raw_words(int t) {
+    return t == T_Q4_K ? 10 : t == T_Q5_K ? 18 : t == T_Q5_1 ? 6 : t == T_Q8_0 ? 9 : 5;
 }
 __host__ __device__ constexpr bool per16(int t) { return t == T_IQ2_XS || t == T_IQ2_S; }
 __host__ __device__ constexpr int grid_bytes(int t) {
@@ -106,9 +120,16 @@ __global__ void quant_act_nat_kernel(const float* __restrict__ x, int64_t nblk, 
         a1 = fmaxf(a1, __shfl_xor_sync(0xffffffffu, a1, o));
     }
     uint8_t* out = xa + w * AB;
-    out[lane] = (uint8_t) (int8_t) (a0 > 0.0f ? __float2int_rn(v0 * (127.0f / a0)) : 0);
-    out[32 + lane] = (uint8_t) (int8_t) (a1 > 0.0f ? __float2int_rn(v1 * (127.0f / a1)) : 0);
-    if (lane == 0) *(float4*) (out + 64) = make_float4(a0 / 127.0f, a1 / 127.0f, 0.0f, 0.0f);
+    const int c0 = a0 > 0.0f ? __float2int_rn(v0 * (127.0f / a0)) : 0, c1 = a1 > 0.0f ? __float2int_rn(v1 * (127.0f / a1)) : 0;
+    out[lane] = (uint8_t) (int8_t) c0;
+    out[32 + lane] = (uint8_t) (int8_t) c1;
+    int s0 = c0, s1 = c1;   // the codes' sums per 32 values (the formats with a minimum read them)
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) {
+        s0 += __shfl_xor_sync(0xffffffffu, s0, o);
+        s1 += __shfl_xor_sync(0xffffffffu, s1, o);
+    }
+    if (lane == 0) *(float4*) (out + 64) = make_float4(a0 / 127.0f, a1 / 127.0f, (float) s0, (float) s1);
 }
 
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
@@ -142,6 +163,11 @@ __device__ __forceinline__ void ldsm4(uint32_t (&r)[4], const void* p) {
                  : "memory");
 }
 
+#endif
+#if (defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800) || defined(__HIPCC__)
+#if defined(__HIPCC__)
+__device__ __forceinline__ float dotf(int d) { return __int_as_float(d) - MAGICF; }
+#endif
 // ---- the load stage: a 32-value sub-block's bytes into registers, then int8 and scales
 __device__ __forceinline__ uint32_t ld16(const uint8_t* p) { return *(const uint16_t*) p; }
 __device__ __forceinline__ uint32_t ld32(const uint8_t* p) { return ld16(p) | (ld16(p + 2) << 16); }
@@ -158,7 +184,39 @@ __device__ __forceinline__ void signed8(uint32_t gx, uint32_t gy, uint32_t s, ui
     qx = __vsub4(gx ^ m0, m0);
     qy = __vsub4(gy ^ m1, m1);
 }
+#if defined(__HIPCC__)
+// gfx11 (Aurora): the signs from a shared-memory table instead of the compare / subtract emulation.  An entry (one per
+// sign byte b; for the 7-bit sign formats per 7 bits, the parity bit folded in) is {m0, c0, m1, c1}: m = 0xFF in the
+// bytes whose sign bit is set (bits 0-3 for .x, 4-7 for .y), c = m & 0x01010101.  q = (g ^ m) + c is -g where the sign
+// is set - the two's complement, byte-wise - and g elsewhere; no byte carries into the next, because no codebook entry
+// has a zero byte (256 - g with g in 1..127; the grids' bytes are 1..62), so it is the bytes signed8 gives.
+__device__ __forceinline__ void signed8t(uint32_t gx, uint32_t gy, const uint4 sg, uint32_t& qx, uint32_t& qy) {
+    qx = (gx ^ sg.x) + sg.y;
+    qy = (gy ^ sg.z) + sg.w;
+}
+__host__ __device__ constexpr int sign_entries(int t) { return t == T_IQ2_S || t == T_IQ3_S ? 256 : 128; }
+__device__ __forceinline__ uint4 sign_entry(int i, bool parity) {
+    uint32_t b = (uint32_t) i;
+    if (parity) b ^= (__popc(b) & 1) << 7;
+    const uint32_t m0 = __vcmpne4(((b & 15) * 0x01010101u) & 0x08040201u, 0),
+                   m1 = __vcmpne4(((b >> 4) * 0x01010101u) & 0x08040201u, 0);
+    return make_uint4(m0, m0 & 0x01010101u, m1, m1 & 0x01010101u);
+}
+#endif
 // 8 nibbles of q4 through a 16-entry int8 table (4 words): the low nibbles' values in .x, the high ones' in .y
+// W (X5): direct-selector form on gfx: p = low 3 bits of each nibble picks within the table half, bit 3 picks the half;
+// exhaustively bit-exact over all 2^32 inputs (X5). Disable with -DSTRATA_W_NO_T16.
+#if defined(__HIPCC__) && !defined(STRATA_W_NO_T16)
+__device__ __forceinline__ uint32_t table16_one(uint32_t x, const uint32_t (&t)[4]) {
+    const uint32_t p = x & 0x07070707u;
+    const uint32_t a = __builtin_amdgcn_perm(t[1], t[0], p), b = __builtin_amdgcn_perm(t[3], t[2], p);
+    return __builtin_amdgcn_perm(b, a, ((x >> 1) & 0x04040404u) | 0x03020100u);
+}
+__device__ __forceinline__ void table16(uint32_t q4, const uint32_t (&t)[4], uint32_t& lo, uint32_t& hi) {
+    lo = table16_one(q4, t);
+    hi = table16_one(q4 >> 4, t);
+}
+#else
 __device__ __forceinline__ void table16(uint32_t q4, const uint32_t (&t)[4], uint32_t& lo, uint32_t& hi) {
     uint32_t tmp[2];
     const uint32_t sel = 0x32103210u | ((q4 & 0x88888888u) >> 1);
@@ -171,10 +229,16 @@ __device__ __forceinline__ void table16(uint32_t q4, const uint32_t (&t)[4], uin
     lo = __byte_perm(tmp[0], tmp[1], 0x6420);
     hi = __byte_perm(tmp[0], tmp[1], 0x7531);
 }
+#endif
 
 // Raw bytes of sub-block `ib` of the block at `bp` (IQ: the 256-value super-block, ib 0..7; Q2_0: the 64-value block,
 // ib 0..1; IQ4_NL: the 32-value block).
-template <int T> __device__ __forceinline__ void load_unit(const uint8_t* bp, int ib, uint32_t (&w)[5]) {
+// 32 bits at a 2-byte aligned address (one load when it is 4-byte aligned)
+__device__ __forceinline__ uint32_t ld32a(const uint8_t* p) {
+    return ((uintptr_t) p & 3) == 0 ? *(const uint32_t*) p : ld32(p);
+}
+template <int T, int NW> __device__ __forceinline__ void load_unit(const uint8_t* bp, int ib, uint32_t (&w)[NW]) {
+    static_assert(NW >= raw_words(T), "raw words");
     if constexpr (T == T_IQ2_XXS) {
         w[0] = ld32(bp + 2 + 8 * ib); w[1] = ld32(bp + 6 + 8 * ib); w[2] = ld16(bp);
     } else if constexpr (T == T_IQ2_XS) {
@@ -196,21 +260,78 @@ template <int T> __device__ __forceinline__ void load_unit(const uint8_t* bp, in
 #pragma unroll
         for (int k = 0; k < 4; ++k) w[k] = ld32(bp + 2 + 4 * k);
         w[4] = ld16(bp);
+    } else if constexpr (T == T_Q4_K || T == T_Q5_K) {
+        // qs: 32 bytes of the sub-block pair (ib / 2), the nibble chosen in convert; w[8] = d | dmin << 16; w[9]: the
+        // scale/min bytes (get_scale_min_k4's: ib < 4: sc[ib], sc[ib + 4]; else sc[ib + 4], sc[ib - 4], sc[ib]), ib << 24
+        constexpr int QS = T == T_Q4_K ? 16 : 48;
+        const uint8_t* q = bp + QS + 32 * (ib >> 1);
+#pragma unroll
+        for (int k = 0; k < 8; ++k) w[k] = ld32a(q + 4 * k);
+        w[8] = ld32a(bp);
+        const uint8_t* sc = bp + 4;
+        w[9] = ib < 4 ? (uint32_t) sc[ib] | ((uint32_t) sc[ib + 4] << 8)
+                      : (uint32_t) sc[ib + 4] | ((uint32_t) sc[ib - 4] << 8) | ((uint32_t) sc[ib] << 16);
+        w[9] |= (uint32_t) ib << 24;
+        if constexpr (T == T_Q5_K) {
+#pragma unroll
+            for (int k = 0; k < 8; ++k) w[10 + k] = ld32a(bp + 16 + 4 * k);   // qh
+        }
+    } else if constexpr (T == T_Q5_1) {   // d, m, qh, qs[16]
+#pragma unroll
+        for (int k = 0; k < 4; ++k) w[k] = ld32a(bp + 8 + 4 * k);
+        w[4] = ld32a(bp + 4);
+        w[5] = ld32a(bp);
+    } else if constexpr (T == T_Q8_0) {   // d, qs[32]
+#pragma unroll
+        for (int k = 0; k < 8; ++k) w[k] = ld32(bp + 2 + 4 * k);
+        w[8] = ld16(bp);
     } else {   // Q2_0
         w[0] = ld32(bp + 2 + 8 * ib); w[1] = ld32(bp + 6 + 8 * ib); w[2] = ld16(bp);
     }
 }
 
 // The sub-block as 32 int8 (q[0..7], natural order) and its scales (s0: values 0-15, s1: 16-31).
-template <int T>
-__device__ __forceinline__ void convert(const uint32_t (&w)[5], const uint8_t* grid, const uint32_t (&kv)[4],
-                                        uint32_t (&q)[8], float& s0, float& s1) {
-    if constexpr (T == T_IQ2_XXS) {
+template <int T, int NW>
+__device__ __forceinline__ void convert(const uint32_t (&w)[NW], const uint8_t* grid, const uint32_t (&kv)[4],
+                                        uint32_t (&q)[8], float& s0, float& s1, const uint4* sgn = nullptr) {
+    if constexpr (T == T_Q4_K || T == T_Q5_K) {
+        const int ib = (int) (w[9] >> 24), sh = 4 * (ib & 1);
+        uint32_t sc, mn;
+        if (ib < 4) { sc = w[9] & 63; mn = (w[9] >> 8) & 63; }
+        else {
+            sc = ((w[9] & 0xF) | (((w[9] >> 8) & 0xC0) >> 2));   // sc[ib + 4] & 15 | (sc[ib - 4] >> 6) << 4
+            mn = (((w[9]) >> 4) & 0xF) | (((w[9] >> 16) & 0xC0) >> 2);   // sc[ib + 4] >> 4 | (sc[ib] >> 6) << 4
+        }
+#pragma unroll
+        for (int k = 0; k < 8; ++k) {
+            q[k] = (w[k] >> sh) & 0x0F0F0F0Fu;
+            if constexpr (T == T_Q5_K) q[k] |= ((w[10 + k] >> ib) & 0x01010101u) << 4;
+        }
+        s0 = half_at(w[8]) * (float) sc;
+        s1 = -(half_at(w[8] >> 16) * (float) mn);
+    } else if constexpr (T == T_Q5_1) {
+#pragma unroll
+        for (int k = 0; k < 4; ++k) {
+            const uint32_t lo = ((w[4] >> (4 * k)) & 0xF) * 0x00204081u, hi = ((w[4] >> (16 + 4 * k)) & 0xF) * 0x00204081u;
+            q[k] = (w[k] & 0x0F0F0F0Fu) | ((lo & 0x01010101u) << 4);
+            q[4 + k] = ((w[k] >> 4) & 0x0F0F0F0Fu) | ((hi & 0x01010101u) << 4);
+        }
+        s0 = half_at(w[5]);
+        s1 = half_at(w[5] >> 16);
+    } else if constexpr (T == T_Q8_0) {
+#pragma unroll
+        for (int k = 0; k < 8; ++k) q[k] = w[k];
+        s0 = s1 = half_at(w[8]);
+    } else if constexpr (T == T_IQ2_XXS) {
         const uint2* g = (const uint2*) grid;
 #pragma unroll
         for (int l = 0; l < 4; ++l) {
             const uint2 e = g[(w[0] >> (8 * l)) & 255];
+#if defined(__HIPCC__)
+            signed8t(e.x, e.y, sgn[(w[1] >> (7 * l)) & 127], q[2 * l], q[2 * l + 1]);
+#else
             signed8(e.x, e.y, unpack_ksigns(w[1] >> (7 * l)), q[2 * l], q[2 * l + 1]);
+#endif
         }
         s0 = s1 = half_at(w[2]) * (float) ((w[1] >> 27) | 1) * 0.125f;
     } else if constexpr (T == T_IQ2_XS) {
@@ -219,7 +340,11 @@ __device__ __forceinline__ void convert(const uint32_t (&w)[5], const uint8_t* g
         for (int l = 0; l < 4; ++l) {
             const uint32_t c = (w[l >> 1] >> (16 * (l & 1))) & 0xFFFF;
             const uint2 e = g[c & 511];
+#if defined(__HIPCC__)
+            signed8t(e.x, e.y, sgn[(c >> 9) & 127], q[2 * l], q[2 * l + 1]);
+#else
             signed8(e.x, e.y, unpack_ksigns(c >> 9), q[2 * l], q[2 * l + 1]);
+#endif
         }
         const float d = half_at(w[2]);
         const uint32_t sc = w[2] >> 16;
@@ -231,7 +356,11 @@ __device__ __forceinline__ void convert(const uint32_t (&w)[5], const uint8_t* g
 #pragma unroll
         for (int l = 0; l < 4; ++l) {
             const uint2 e = g[((w[0] >> (8 * l)) & 255) | ((qh << (8 - 2 * l)) & 0x300)];
+#if defined(__HIPCC__)
+            signed8t(e.x, e.y, sgn[(w[1] >> (8 * l)) & 255], q[2 * l], q[2 * l + 1]);
+#else
             signed8(e.x, e.y, ((w[1] >> (8 * l)) & 255) * 0x01010101u, q[2 * l], q[2 * l + 1]);
+#endif
         }
         const float d = half_at(w[2]);
         const uint32_t sc = w[2] >> 24;
@@ -242,7 +371,11 @@ __device__ __forceinline__ void convert(const uint32_t (&w)[5], const uint8_t* g
 #pragma unroll
         for (int l = 0; l < 4; ++l) {
             const uint32_t i0 = (w[l >> 1] >> (16 * (l & 1))) & 255, i1 = (w[l >> 1] >> (16 * (l & 1) + 8)) & 255;
+#if defined(__HIPCC__)
+            signed8t(g[i0], g[i1], sgn[(w[2] >> (7 * l)) & 127], q[2 * l], q[2 * l + 1]);
+#else
             signed8(g[i0], g[i1], unpack_ksigns(w[2] >> (7 * l)), q[2 * l], q[2 * l + 1]);
+#endif
         }
         s0 = s1 = half_at(w[3]) * (float) (2 * (w[2] >> 28) + 1) * 0.25f;
     } else if constexpr (T == T_IQ3_S) {
@@ -251,8 +384,13 @@ __device__ __forceinline__ void convert(const uint32_t (&w)[5], const uint8_t* g
 #pragma unroll
         for (int l = 0; l < 4; ++l) {
             const uint32_t i0 = (w[l >> 1] >> (16 * (l & 1))) & 255, i1 = (w[l >> 1] >> (16 * (l & 1) + 8)) & 255;
+#if defined(__HIPCC__)
+            signed8t(g[i0 | ((qh << (8 - 2 * l)) & 256)], g[i1 | ((qh << (7 - 2 * l)) & 256)],
+                     sgn[(w[2] >> (8 * l)) & 255], q[2 * l], q[2 * l + 1]);
+#else
             signed8(g[i0 | ((qh << (8 - 2 * l)) & 256)], g[i1 | ((qh << (7 - 2 * l)) & 256)],
                     ((w[2] >> (8 * l)) & 255) * 0x01010101u, q[2 * l], q[2 * l + 1]);
+#endif
         }
         s0 = s1 = half_at(w[3]) * (float) (1 + 2 * (w[3] >> 24));
     } else if constexpr (T == T_IQ4_XS || T == T_IQ4_NL) {
@@ -506,6 +644,251 @@ native_kernel(const Batch b, const NativeGeom geo, const Tables tb, const uint8_
 #endif
 }
 
+#if defined(__HIPCC__)
+// ---- Aurora (S23): the native packs' fused experts on gfx11 (RDNA3 / RDNA3.5) matrix cores, v_wmma_i32_16x16x16_iu8
+// (wave32).  The CUDA kernel's arithmetic: a 32-value sub-block decoded to int8 (load_unit / convert above) and its
+// scales; per 32 values the int32 dot starts from MAGIC (the C operand), so as_float(d) - 1.5 * 2^23 is the dot; the
+// formats with a scale per 16 values take each 16-value k-step's dot alone.  Fragments (gfx11): A lane l holds the 16
+// k of row l % 16 (lanes 16..31 repeat lanes 0..15), B lane l the 16 k of column l % 16, C/D lane l holds
+// D[2i + l / 16][l % 16].  Both operands are in natural order: the decoded weights (LDS, double-buffered) and the
+// activations (quant_act_nat_kernel; read by each lane from global/L2, a stage ahead).
+// A work item = NW_ROWS weight rows x a 64-row tile; 8 waves: 4 along the weight rows (32 each) x 2 along the tile
+// (32 each), each 2 x 2 WMMA tiles.  Gate/up: local row r is feature r / 2, its gate (r even) or up (r odd) row, so a
+// lane pair l, l + 16 holds gate and up of one feature.
+#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1150__) || defined(__gfx1151__)
+#define STRATA_NAT_W11 1
+#else
+#define STRATA_NAT_W11 0
+#endif
+typedef int nw_i4 __attribute__((ext_vector_type(4)));
+typedef int nw_i8 __attribute__((ext_vector_type(8)));
+constexpr int NW_ROWS = 128;
+constexpr int NW_THREADS = 256;
+
+__device__ __forceinline__ nw_i8 nw_wmma(nw_i4 a, nw_i4 b, nw_i8 c) {
+#if STRATA_NAT_W11
+    return __builtin_amdgcn_wmma_i32_16x16x16_iu8_w32(true, a, true, b, c, false);
+#else
+    __builtin_trap();
+    return c;
+#endif
+}
+__device__ __forceinline__ nw_i4 nw_u4(uint4 v) { return nw_i4{(int) v.x, (int) v.y, (int) v.z, (int) v.w}; }
+
+// W (X1): ALIAS = the H tile lives on the weight buffers (one extra barrier); LB > 0 = amdgpu_waves_per_eu(LB) (VGPR cap).
+// Disable both with -DSTRATA_W_NO_OCC (the launch sites then use <WT, GU, false, 0> and grid factor wgp_blocks).
+template <int WT, bool GU, bool ALIAS = false, int LB = 0>
+__global__ void __launch_bounds__(NW_THREADS) __attribute__((amdgpu_waves_per_eu(LB > 0 ? LB : 1)))
+native_w11_kernel(const Batch b, const NativeGeom geo, const Tables tb, const uint8_t* __restrict__ act,
+                  const int32_t* __restrict__ src, uint8_t* __restrict__ out, float* __restrict__ dm) {
+#if STRATA_NAT_W11
+    constexpr int NS = (GU ? GU_ROWS_K : D_ROWS_K) / 64;  // 64-value stages along K
+    constexpr int NFB = (GU ? 1280 : 2560) / NW_ROWS;     // work items per tile
+    constexpr int ACT_LD = NS * AB;
+    constexpr int BS = block_bytes(WT);
+    constexpr bool K16 = per16(WT);
+    constexpr int GB = grid_bytes(WT) > 0 ? grid_bytes(WT) : 16;
+    __shared__ __align__(16) uint8_t wtbuf[2 * NW_ROWS * WLD];
+    uint8_t(*wt)[NW_ROWS][WLD] = reinterpret_cast<uint8_t(*)[NW_ROWS][WLD]>(wtbuf);
+    __shared__ __align__(16) float ws[2][NW_ROWS][4];           // their scales per 16 values
+    __shared__ __align__(16) uint8_t sgrid[GB];
+    constexpr int SGN = (WT == T_IQ2_XXS || WT == T_IQ2_XS || WT == T_IQ2_S || WT == T_IQ3_XXS || WT == T_IQ3_S)
+                            ? sign_entries(WT) : 1;
+    __shared__ __align__(16) uint4 ssign[SGN];                   // the signs of a sign byte, as byte masks
+    __shared__ int srow[kTileRows];
+    __shared__ float hs_sep[(GU && !ALIAS) ? kTileRows : 1][65];
+    static_assert(!ALIAS || (size_t) kTileRows * 65 * 4 <= (size_t) 2 * NW_ROWS * WLD, "H tile must fit the weight buffers");
+    float(*hs)[65] = ALIAS ? reinterpret_cast<float(*)[65]>(wtbuf) : hs_sep;
+    const int tid = threadIdx.x, lane = tid & 31, wave = tid >> 5;
+    const int wm = wave & 3, wn = wave >> 2, l16 = lane & 15, hi = lane >> 4;
+    if constexpr (grid_bytes(WT) > 0) {
+        const uint32_t* gs = (const uint32_t*) grid_src<WT>();
+        for (int i = tid; i < grid_bytes(WT) / 4; i += NW_THREADS) ((uint32_t*) sgrid)[i] = gs[i];
+    }
+    if constexpr (SGN > 1) {
+        for (int i = tid; i < SGN; i += NW_THREADS) ssign[i] = sign_entry(i, SGN == 128);
+    }
+    uint32_t kv[4] = {0, 0, 0, 0};
+    if constexpr (WT == T_IQ4_XS || WT == T_IQ4_NL) {
+#pragma unroll
+        for (int k = 0; k < 16; ++k) kv[k >> 2] |= (uint32_t) (uint8_t) kvalues_iq4nl[k] << (8 * (k & 3));
+    }
+    const int ur = tid >> 1, uj = tid & 1;                       // this thread's decode unit: row ur, sub-block uj
+    const int t0 = tb.ts[b.e0], nwork = (tb.ts[b.e1] - t0) * NFB;
+    for (int w = blockIdx.x; w < nwork; w += gridDim.x) {
+        const int2 tl = tb.tiles[t0 + w / NFB];
+        const int fb = w % NFB, e = tl.x, row0 = tl.y, nrows = min(kTileRows, tb.off[e + 1] - row0);
+        const uint8_t* blob = b.blob[e - b.e0];
+        const int rbase = fb * NW_ROWS;
+        const uint8_t* wrow = GU ? blob + ((ur & 1) ? geo.up_off : 0) + (size_t) (fb * (NW_ROWS / 2) + (ur >> 1)) * geo.gu_row
+                                 : blob + geo.down_off + (size_t) (rbase + ur) * geo.d_row;
+        auto unit = [&](int s) -> const uint8_t* {
+            if (GU) return wrow + (s >> 2) * BS;
+            return (WT == T_IQ4_NL || WT == T_Q5_1 || WT == T_Q8_0) ? wrow + (2 * s + uj) * BS : wrow + s * BS;
+        };
+        auto sub = [&](int s) { return GU ? 2 * (s & 3) + uj : uj; };
+        auto put = [&](const uint32_t (&raw)[raw_words(WT)], int buf) {
+            uint32_t q[8];
+            float s0, s1;
+            convert<WT>(raw, sgrid, kv, q, s0, s1, ssign);
+            uint4* d = (uint4*) &wt[buf][ur][32 * uj];
+            d[0] = make_uint4(q[0], q[1], q[2], q[3]);
+            d[1] = make_uint4(q[4], q[5], q[6], q[7]);
+            *(float2*) &ws[buf][ur][2 * uj] = make_float2(s0, s1);
+        };
+        __syncthreads();                                          // the previous item is done with the buffers
+        if (tid < kTileRows) {
+            const int r = row0 + min(tid, nrows - 1);             // rows past the tile's end repeat its last one
+            srow[tid] = GU ? src[r] : r;
+        }
+        uint32_t raw[raw_words(WT)] = {};
+        load_unit<WT>(unit(0), sub(0), raw);
+        put(raw, 0);
+        if (NS > 1) load_unit<WT>(unit(1), sub(1), raw);
+        __syncthreads();                                          // srow
+        const bool on = 32 * wn < nrows;
+        const uint8_t* brow[2];
+#pragma unroll
+        for (int nt = 0; nt < 2; ++nt) brow[nt] = act + (size_t) srow[32 * wn + 16 * nt + l16] * ACT_LD;
+        float acc[2][2][8];
+#pragma unroll
+        for (int mt = 0; mt < 2; ++mt)
+#pragma unroll
+            for (int nt = 0; nt < 2; ++nt)
+#pragma unroll
+                for (int i = 0; i < 8; ++i) acc[mt][nt][i] = 0.0f;
+        uint4 bq[2][4];
+        float2 bx[2], bsum[2];   // the activation scales, and (the formats with a minimum) the codes' sums per 32 values
+        auto fetch_b = [&](int s, uint4 (&q)[2][4], float2 (&x)[2], float2 (&sm)[2]) {
+#pragma unroll
+            for (int nt = 0; nt < 2; ++nt) {
+                const uint4* p = reinterpret_cast<const uint4*>(brow[nt] + s * AB);
+                q[nt][0] = p[0]; q[nt][1] = p[1]; q[nt][2] = p[2]; q[nt][3] = p[3];
+                x[nt] = *reinterpret_cast<const float2*>(brow[nt] + s * AB + 64);
+                if constexpr (has_min(WT)) sm[nt] = *reinterpret_cast<const float2*>(brow[nt] + s * AB + 72);
+                else sm[nt] = make_float2(0.0f, 0.0f);
+            }
+        };
+        if (on) fetch_b(0, bq, bx, bsum);
+        for (int s = 0; s < NS; ++s) {
+            __syncthreads();                                      // stage s's weights are in buffer s & 1
+            uint4 nbq[2][4];
+            float2 nbx[2], nbsum[2];
+            if (on && s + 1 < NS) fetch_b(s + 1, nbq, nbx, nbsum);
+            if (on) {
+                const int bf = s & 1;
+#pragma unroll
+                for (int h = 0; h < 2; ++h) {
+#pragma unroll
+                    for (int mt = 0; mt < 2; ++mt) {
+                        const int rb = 32 * wm + 16 * mt;
+                        const uint4* ap = reinterpret_cast<const uint4*>(&wt[bf][rb + l16][32 * h]);
+                        const nw_i4 A0 = nw_u4(ap[0]), A1 = nw_u4(ap[1]);
+                        float w0[8], w1[8];
+#pragma unroll
+                        for (int i = 0; i < 8; ++i) {
+                            const float2 sw = *reinterpret_cast<const float2*>(&ws[bf][rb + 2 * i + hi][2 * h]);
+                            w0[i] = sw.x; w1[i] = sw.y;
+                        }
+#pragma unroll
+                        for (int nt = 0; nt < 2; ++nt) {
+                            const float dx = h ? bx[nt].y : bx[nt].x;
+                            const nw_i4 B0 = nw_u4(bq[nt][2 * h]), B1 = nw_u4(bq[nt][2 * h + 1]);
+                            const nw_i8 m = nw_i8{MAGIC, MAGIC, MAGIC, MAGIC, MAGIC, MAGIC, MAGIC, MAGIC};
+                            if constexpr (K16) {
+                                const nw_i8 d0 = nw_wmma(A0, B0, m), d1 = nw_wmma(A1, B1, m);
+#pragma unroll
+                                for (int i = 0; i < 8; ++i) {
+                                    const float v = fmaf(w1[i], dotf(d1[i]), w0[i] * dotf(d0[i]));
+                                    acc[mt][nt][i] = fmaf(dx, v, acc[mt][nt][i]);
+                                }
+                            } else {
+                                const nw_i8 d = nw_wmma(A1, B1, nw_wmma(A0, B0, m));
+#pragma unroll
+                                for (int i = 0; i < 8; ++i) {
+                                    acc[mt][nt][i] = fmaf(w0[i] * dx, dotf(d[i]), acc[mt][nt][i]);
+                                    if constexpr (has_min(WT)) acc[mt][nt][i] = fmaf(w1[i] * dx, h ? bsum[nt].y : bsum[nt].x, acc[mt][nt][i]);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (s + 1 < NS) {
+                put(raw, (s + 1) & 1);                            // the other buffer: its readers passed this barrier
+                if (s + 2 < NS) load_unit<WT>(unit(s + 2), sub(s + 2), raw);
+                if (on) {
+#pragma unroll
+                    for (int nt = 0; nt < 2; ++nt) {
+                        bx[nt] = nbx[nt];
+                        bsum[nt] = nbsum[nt];
+#pragma unroll
+                        for (int j = 0; j < 4; ++j) bq[nt][j] = nbq[nt][j];
+                    }
+                }
+            }
+        }
+        if constexpr (GU) {
+            if constexpr (ALIAS) __syncthreads();                 // every wave is done reading the weight buffers
+            if (on) {
+#pragma unroll
+                for (int mt = 0; mt < 2; ++mt)
+#pragma unroll
+                    for (int nt = 0; nt < 2; ++nt)
+#pragma unroll
+                        for (int i = 0; i < 8; ++i) {
+                            const float up = __shfl_xor_sync(0xffffffffu, acc[mt][nt][i], 16);
+                            const float gt = acc[mt][nt][i];
+                            if (hi == 0) hs[32 * wn + 16 * nt + l16][16 * wm + 8 * mt + i] = gt / (1.0f + __expf(-gt)) * up;
+                        }
+            }
+            __syncthreads();
+            // H block fb (features 64 fb ..) to int8 per 32, natural order: a thread per (tile row, half)
+            if (tid < 2 * kTileRows) {
+                const int r = tid >> 1, hh = tid & 1;
+                if (r < nrows) {
+                    float am = 0.0f;
+#pragma unroll 8
+                    for (int j = 0; j < 32; ++j) am = fmaxf(am, fabsf(hs[r][32 * hh + j]));
+                    const float inv = am > 0.0f ? 127.0f / am : 0.0f;
+                    uint8_t* o = out + (size_t) (row0 + r) * (10 * AB) + (size_t) fb * AB;
+                    uint32_t wd[8] = {};
+                    int csum = 0;
+#pragma unroll
+                    for (int j = 0; j < 32; ++j) {
+                        const int c = __float2int_rn(hs[r][32 * hh + j] * inv);
+                        csum += c;
+                        wd[j >> 2] |= (uint32_t) (uint8_t) (int8_t) c << (8 * (j & 3));
+                    }
+                    uint4* o4 = reinterpret_cast<uint4*>(o + 32 * hh);
+                    o4[0] = make_uint4(wd[0], wd[1], wd[2], wd[3]);
+                    o4[1] = make_uint4(wd[4], wd[5], wd[6], wd[7]);
+                    *reinterpret_cast<float*>(o + 64 + 4 * hh) = am / 127.0f;
+                    *reinterpret_cast<float*>(o + 72 + 4 * hh) = (float) csum;   // (the formats with a minimum)
+                }
+            }
+        } else {
+            if (on) {
+#pragma unroll
+                for (int mt = 0; mt < 2; ++mt)
+#pragma unroll
+                    for (int nt = 0; nt < 2; ++nt) {
+                        const int r = 32 * wn + 16 * nt + l16;
+                        if (r < nrows) {
+                            float* d = dm + (size_t) (row0 + r) * 2560 + rbase + 32 * wm + 16 * mt + hi;
+#pragma unroll
+                            for (int i = 0; i < 8; ++i) d[2 * i] = acc[mt][nt][i];
+                        }
+                    }
+            }
+        }
+    }
+#else
+    __builtin_trap();
+#endif
+}
+#endif  // __HIPCC__
+
 unsigned blocks(int64_t n, int per) { return (unsigned) ((n + per - 1) / per); }
 
 // per device: whether every kernel here runs (sm_80+, device code in this build, fits), and their occupancy
@@ -516,7 +899,7 @@ struct DevInfo {
 std::mutex g_mu;
 DevInfo g_dev[32];
 
-#if !defined(STRATA_HIP_GFX906)
+#if !defined(__HIPCC__)
 template <int T, bool GU, int WW> bool setup_ww(int& occ) {
     cudaFuncAttributes fa{};
     if (cudaFuncGetAttributes(&fa, native_kernel<T, GU, WW>) != cudaSuccess || fa.ptxVersion < 80) return false;
@@ -533,6 +916,20 @@ template <int T, bool GU, int WW> bool setup_ww(int& occ) {
 template <int T, bool GU> bool setup_one(int& occ) { return setup_ww<T, GU, 4>(occ) && setup_ww<T, GU, 2>(occ); }
 #endif
 
+#if defined(__HIPCC__)
+// Resident blocks per multiprocessor for the gfx11 WMMA prompt-expert kernels' persistent grids.  HIP counts a gfx11
+// WGP (two CUs, which these kernels use as one in the default WGP mode) as one multiprocessor, and the occupancy query
+// answers 1 block for these kernels where 2 run side by side - so the grid was half the GPU's room.  gfx1151 (20
+// WGPs), 8192 tokens x top 10, IQ3_S / IQ4_NL, one layer: 1 block per WGP 60.7 ms, 2 44.7, 3 49.9, 4 45.2 (the same
+// work items and arithmetic: the results do not change).  STRATA_PF_OCC=N sets the blocks per WGP (an experiment knob).
+static int wgp_blocks(int occ) {
+    static const int env = [] {
+        const char* v = std::getenv("STRATA_PF_OCC");
+        return v != nullptr ? std::atoi(v) : 0;
+    }();
+    return env > 0 ? env : 2 * std::max(occ, 1);
+}
+#endif
 const DevInfo& dev_info() {
     int dev = 0;
     cudaGetDevice(&dev);
@@ -544,6 +941,24 @@ const DevInfo& dev_info() {
     // gfx906 reports compute capability 9.0 through HIP, but the mma.sync bodies above are CUDA sm_80+ only and
     // empty in a hipcc build: never available here (the prompt path keeps its own expert GEMMs)
     return d;
+#elif defined(__HIPCC__)
+    {   // gfx11 with this build's code: the WMMA kernels (one occupancy for all: the same shape and LDS budget)
+        cudaDeviceGetAttribute(&d.sms, cudaDevAttrMultiProcessorCount, dev);
+        cudaDeviceProp prop;
+        hipFuncAttributes fa{};
+        if (cudaGetDeviceProperties(&prop, dev) != cudaSuccess || std::strncmp(prop.gcnArchName, "gfx11", 5) != 0 ||
+            hipFuncGetAttributes(&fa, reinterpret_cast<const void*>(native_w11_kernel<T_IQ3_XXS, true>)) != hipSuccess) {
+            cudaGetLastError();
+            return d;
+        }
+        int o = 0;
+        if (hipOccupancyMaxActiveBlocksPerMultiprocessor(&o, native_w11_kernel<T_IQ2_S, true>, NW_THREADS, 0) != hipSuccess)
+            o = 0;
+        d.ok = o >= 1;
+        d.occ = d.ok ? o : 1;
+        cudaGetLastError();
+        return d;
+    }
 #else
     int major = 0;
     cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
@@ -559,10 +974,29 @@ const DevInfo& dev_info() {
     return d;
 }
 
-bool gu_covered(int t) {
-    return t == T_IQ2_XXS || t == T_IQ2_XS || t == T_IQ2_S || t == T_IQ3_XXS || t == T_IQ3_S || t == T_IQ4_XS;
+// opt-in on top of STRATA_PF_FUSED=1: STRATA_PF_FUSED_KQ=1 takes UD-Q4_K_XL's formats (the output differs from the FP16
+// expert path's at rounding level; KL-gated, see aurora_s23.md)
+bool kq_on() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_PF_FUSED_KQ");
+        return v != nullptr && v[0] == '1';
+    }();
+    return on;
 }
-bool d_covered(int t) { return t == T_Q2_0 || t == T_IQ4_NL; }
+bool gu_covered(int t) {
+    return t == T_IQ2_XXS || t == T_IQ2_XS || t == T_IQ2_S || t == T_IQ3_XXS || t == T_IQ3_S || t == T_IQ4_XS
+#if defined(__HIPCC__)
+           || ((t == T_Q4_K || t == T_Q5_K) && kq_on())   // the gfx11 kernels only
+#endif
+        ;
+}
+bool d_covered(int t) {
+    return t == T_Q2_0 || t == T_IQ4_NL
+#if defined(__HIPCC__)
+           || ((t == T_Q5_1 || t == T_Q8_0) && kq_on())
+#endif
+        ;
+}
 
 template <int T, bool GU>
 void launch(int ww, unsigned grid, const Batch& b, const NativeGeom& g, const Tables& tb, const void* act,
@@ -616,6 +1050,45 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
     }
     const cudaStream_t s = (cudaStream_t) stream;
     const Tables tb = tables(const_cast<void*>(scratch), n_expert);
+#if defined(__HIPCC__)
+    {
+        const int64_t tiles = (n + kTileRows - 1) / kTileRows + (b.e1 - b.e0);
+        // W (X1): LDS alias of the H tile + waves_per_eu(8) (192 VGPRs) + 4 blocks per WGP, only for the types whose
+        // kernels do not spill under the cap (measured: gate/up IQ2_*, IQ3_*, IQ4_XS 0-5 regs; down IQ4_NL 11, Q8_0 / Q2_0 0;
+        // Q4_K / Q5_K gate/up and Q5_1 down spill 100+ and keep the old launch).
+#ifdef STRATA_W_NO_OCC
+        const bool occ_gu = false, occ_d = false;
+#else
+        const bool occ_gu = g.gu_type == T_IQ2_XXS || g.gu_type == T_IQ2_XS || g.gu_type == T_IQ2_S ||
+                            g.gu_type == T_IQ3_XXS || g.gu_type == T_IQ3_S || g.gu_type == T_IQ4_XS;
+        const bool occ_d = g.d_type == T_Q2_0 || g.d_type == T_Q8_0 || g.d_type == T_IQ4_NL;
+#endif
+        const unsigned g_gu = (unsigned) std::min<int64_t>(tiles * (1280 / NW_ROWS), (int64_t) d.sms * (occ_gu ? 4 : wgp_blocks(d.occ)));
+        const unsigned g_d = (unsigned) std::min<int64_t>(tiles * (2560 / NW_ROWS), (int64_t) d.sms * (occ_d ? 4 : wgp_blocks(d.occ)));
+        const uint8_t* xa8 = (const uint8_t*) xa;
+        uint8_t* ha8 = (uint8_t*) ha;
+#define STRATA_NW_GU(T) do { if (occ_gu) native_w11_kernel<T, true, true, 8><<<g_gu, NW_THREADS, 0, s>>>(b, g, tb, xa8, src, ha8, nullptr); else native_w11_kernel<T, true><<<g_gu, NW_THREADS, 0, s>>>(b, g, tb, xa8, src, ha8, nullptr); } while (0)
+        switch (g.gu_type) {
+            case T_IQ2_XXS: STRATA_NW_GU(T_IQ2_XXS); break;
+            case T_IQ2_XS: STRATA_NW_GU(T_IQ2_XS); break;
+            case T_IQ2_S: STRATA_NW_GU(T_IQ2_S); break;
+            case T_IQ3_XXS: STRATA_NW_GU(T_IQ3_XXS); break;
+            case T_IQ3_S: STRATA_NW_GU(T_IQ3_S); break;
+            case T_Q4_K: STRATA_NW_GU(T_Q4_K); break;
+            case T_Q5_K: STRATA_NW_GU(T_Q5_K); break;
+            default: STRATA_NW_GU(T_IQ4_XS); break;
+        }
+#undef STRATA_NW_GU
+#define STRATA_NW_D(T) do { if (occ_d) native_w11_kernel<T, false, true, 8><<<g_d, NW_THREADS, 0, s>>>(b, g, tb, ha8, src, nullptr, dm); else native_w11_kernel<T, false><<<g_d, NW_THREADS, 0, s>>>(b, g, tb, ha8, src, nullptr, dm); } while (0)
+        if (g.d_type == T_Q2_0) STRATA_NW_D(T_Q2_0);
+        else if (g.d_type == T_Q5_1) STRATA_NW_D(T_Q5_1);
+        else if (g.d_type == T_Q8_0) STRATA_NW_D(T_Q8_0);
+        else STRATA_NW_D(T_IQ4_NL);
+#undef STRATA_NW_D
+        ck(cudaGetLastError(), "experts_native");
+        return;
+    }
+#endif
     const int ww = pick_ww(n, n_expert);
     // the most 64-row tiles the batch can have (every row in it, plus a partial tile per expert) - the items of the
     // ones inside a larger item end at once

@@ -4,7 +4,8 @@ Closing the console window, Task Manager or a crash end the server without runni
 the vision encoder and the MCP servers kept running on their own. `contain(proc)` puts a child in a job object that
 is set to kill everything in it when its last handle closes - and the only handle is this process's, which the OS
 closes however the server ends. Processes the child starts later join the same job. The server itself stays out of
-the job, so a browser that `--open` starts is not tied to it. Elsewhere, and if the job cannot be made, a no-op.
+the job, so a browser that `--open` starts is not tied to it. Each child (and the server) is also opted out of Windows
+power throttling, see `no_throttle` (#691). Elsewhere, and if the job cannot be made, a no-op.
 """
 from __future__ import annotations
 
@@ -57,6 +58,27 @@ if os.name == "nt":
             return None
         return job
 
+    class _PowerThrottling(ctypes.Structure):
+        _fields_ = [("Version", wintypes.ULONG), ("ControlMask", wintypes.ULONG), ("StateMask", wintypes.ULONG)]
+
+    _k32.SetProcessInformation.argtypes = (wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD)
+    _k32.GetCurrentProcess.restype = wintypes.HANDLE
+
+    def no_throttle(handle) -> bool:
+        """Opt a process out of Windows power throttling (EcoQoS).  Without it Windows 11 treats a process whose console
+        window is minimized as background work and, on a hybrid CPU, moves its threads to the E-cores: generation
+        slowed by about 20% while the server window was minimized (#691, i9-13980HX: 36.6 -> 43.2 tok/s)."""
+        for mask in (0x1 | 0x4, 0x1):               # EXECUTION_SPEED and IGNORE_TIMER_RESOLUTION, both off (Windows 11);
+            info = _PowerThrottling(1, mask, 0)     # Windows 10 knows the first only: ERROR_INVALID_PARAMETER for both
+            if _k32.SetProcessInformation(handle, 4, ctypes.byref(info), ctypes.sizeof(info)):   # ProcessPowerThrottling
+                return True
+        return False
+
+    no_throttle(_k32.GetCurrentProcess())           # the server itself (tokenizing, streaming) too
+else:
+    def no_throttle(handle) -> bool:
+        return False
+
 
 def contain(proc) -> bool:
     """Put a started subprocess.Popen in the kill-on-close job. True if it is in; False (harmlessly) otherwise."""
@@ -69,6 +91,7 @@ def contain(proc) -> bool:
         if not _job:
             return False
     try:
+        no_throttle(int(proc._handle))
         return bool(_k32.AssignProcessToJobObject(_job, int(proc._handle)))
     except (AttributeError, OSError, ValueError):
         return False

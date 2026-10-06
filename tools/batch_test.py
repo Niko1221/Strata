@@ -74,6 +74,7 @@ def main():
     ap.add_argument("--skip-solo", action="store_true")
     ap.add_argument("--keys", default="", help='sampling keys for every request, e.g. "temperature=0.7 top_k=20"')
     ap.add_argument("--extra", default="", help='more engine arguments in one string, e.g. "--adapt-every 1000000"')
+    ap.add_argument("--dump", default="", help="write every slot's tokens (solo and batch) as JSON: an A/B of two engine builds")
     ap.add_argument("--mt-min", default="1", help="STRATA_IQ_MT_MIN for the engine (1: exact; empty: the default)")
     a = ap.parse_args()
     cfg = json.loads(Path(a.config).read_text())
@@ -152,6 +153,8 @@ def main():
             first_diff = next((k for k in range(min(len(b), len(solo[i]))) if b[k] != solo[i][k]), None)
             print(f"slot {i}: {len(b)} tokens, solo {len(solo[i])}: {'IDENTICAL' if same else f'DIFFERS at {first_diff}'}")
         print("   ", ascii(tok.decode(b)[:160]))
+    if a.dump:
+        Path(a.dump).write_text(json.dumps({"solo": solo, "batch": [got[i] for i in range(len(prompts))]}), encoding="utf-8")
     eng.send("QUIT")
     eng.p.wait(timeout=180)   # the next run needs the GPUs back
     return 0 if ok else 2

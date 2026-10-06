@@ -80,7 +80,7 @@ __device__ __forceinline__ void load8(const QsaAttnPools& p, bool value, long lo
     } else load8_q4(p, value, row, d0, out);
 }
 
-template <int KV_MODE>
+template <int KV_MODE, bool LANE_CELL = false>
 __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __restrict__ q, QsaAttnPools p,
                                                              const int32_t* __restrict__ ids,
                                                              const int32_t* __restrict__ step, int n_kv_heads,
@@ -120,6 +120,41 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
         srow[t] = r;
     }
     __syncthreads();
+    if constexpr (LANE_CELL) {
+        // S25 (STRATA_ATTN_LANECELL=1): thread t scores cell t % 64 for heads 3 (t / 64) .. +2 by itself - the same
+        // 8-dimension partial per former lane (the identical expression), then the former warp_sum's butterfly as
+        // lane 0 ran it (a[l] += a[l + o] for o = 16 .. 1), so every score is bit-identical without 12 shuffle
+        // reductions per cell
+        constexpr int HPT = G * CHUNK / THREADS;   // heads per thread (3)
+        const int c = t % CHUNK, h0 = (t / CHUNK) * HPT;
+        if (c >= n_here || srow[c] < 0) {
+#pragma unroll
+            for (int j = 0; j < HPT; ++j) sp[h0 + j][c] = -FLT_MAX;
+        } else {
+            float a[HPT][32];
+#pragma unroll
+            for (int l = 0; l < 32; ++l) {
+                float k8[8];
+                load8<KV_MODE>(p, false, srow[c], l * 8, k8);
+#pragma unroll
+                for (int j = 0; j < HPT; ++j) {
+                    const float4 qa = *reinterpret_cast<const float4*>(&sq[h0 + j][l * 8]);
+                    const float4 qb = *reinterpret_cast<const float4*>(&sq[h0 + j][l * 8 + 4]);
+                    float s = k8[0] * qa.x + k8[1] * qa.y + k8[2] * qa.z + k8[3] * qa.w +
+                              k8[4] * qb.x + k8[5] * qb.y + k8[6] * qb.z + k8[7] * qb.w;
+                    a[j][l] = s;
+                }
+            }
+#pragma unroll
+            for (int j = 0; j < HPT; ++j) {
+#pragma unroll
+                for (int o = 16; o > 0; o >>= 1)
+#pragma unroll
+                    for (int l = 0; l < o; ++l) a[j][l] = a[j][l] + a[j][l + o];
+                sp[h0 + j][c] = a[j][0] * scale;
+            }
+        }
+    } else
     // scores: each warp takes cells warp, warp+8, ...; each lane holds 8 of the 256 dimensions.
     for (int c = warp; c < CHUNK; c += WARPS) {
         if (c >= n_here || srow[c] < 0) {
@@ -466,6 +501,16 @@ void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int3
     const float scale = 1.0f / sqrtf((float) HD);
     const dim3 grid((unsigned) n_chunks, (unsigned) s.n_head_kv, (unsigned) n_q);
     cudaStream_t st = (cudaStream_t) stream;
+    // S25: STRATA_ATTN_LANECELL=1 - the score phase one cell per thread (bit-identical scores, no shuffle reductions)
+    static const bool lane_cell = [] { const char* v = std::getenv("STRATA_ATTN_LANECELL"); return v && v[0] == '1'; }();
+#define STRATA_ATTN_LC(M) attn_chunk_kernel<M, true><<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv, (int) s.page_size, scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride)
+    if (lane_cell) {
+        if (kv_mode == 3) STRATA_ATTN_LC(3);
+        else if (kv_mode == 2) STRATA_ATTN_LC(2);
+        else if (kv_mode == 1) STRATA_ATTN_LC(1);
+        else STRATA_ATTN_LC(0);
+    } else
+#undef STRATA_ATTN_LC
     if (kv_mode == 3)
         STRATA_ATTN_CHUNK(3)<<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv, (int) s.page_size,
                                                         scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride);

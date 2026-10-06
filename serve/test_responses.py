@@ -264,6 +264,22 @@ class OverHttp(Server):
         code, r = self.post({"model": "m", "input": "hi"}, headers={"Origin": "https://evil.example.com"})
         self.assertEqual(code, 403)
 
+    def test_a_foreign_page_cannot_name_a_file_as_an_image(self):
+        """#553: the chat routes refuse a file image from another origin; so does /v1/responses."""
+        def body(src):
+            return {"model": "m", "input": [{"role": "user", "content": [
+                {"type": "input_text", "text": "what is it?"}, {"type": "input_image", "image_url": src}]}]}
+        self.svc.cors_origins = ["*"]                  # a page cors_origins lets in may send JSON, not name a file
+        for src in (r"\\host\share\x.png", "/etc/passwd", "file:///C:/x.png"):
+            with self.subTest(src=src):
+                code, r = self.post(body(src), headers={"Origin": "https://evil.example.com"})
+                self.assertEqual(code, 400, r)
+                self.assertIn("another origin", r["error"]["message"])
+        # data: and http(s) are the page's own to send: not refused by this check (no vision here, so a 400 of another kind)
+        for src in ("data:image/png;base64,iVBORw0KGgo=", "https://example.com/x.png"):
+            code, r = self.post(body(src), headers={"Origin": "https://evil.example.com"})
+            self.assertNotIn("another origin", json.dumps(r))
+
     def test_json_schema_text_format(self):
         self.engine.scripts = [self.tok.encode("</think>\n\n{\"n\": 3}<|im_end|>", parse_special=True)]
         self.engine.script = self.engine.scripts[0]
@@ -275,7 +291,12 @@ class OverHttp(Server):
         code, events = self.post({"model": "m", "input": "a number", "text": {"format": fmt}, "stream": True})
         self.assertEqual([e["delta"] for e in events if e["type"] == "response.output_text.delta"], ["{\"n\":3}"])
         self.assertEqual(events[-1]["type"], "response.completed")
-        # an answer that fails the schema
+        # an answer that fails the schema - only jsonschema can tell: it is optional (serve/structured.py), and
+        # without it a json_schema answer is checked to be one JSON object, which {"n": 3} is
+        try:
+            import jsonschema  # noqa: F401
+        except ImportError:
+            return
         bad = {**fmt, "schema": {**fmt["schema"], "properties": {"n": {"type": "string"}}}}
         code, r = self.post({"model": "m", "input": "a number", "text": {"format": bad}})
         self.assertEqual((code, r["error"]["code"]), (502, "structured_output_failed"))
@@ -331,6 +352,22 @@ class ToolRoundTrip(Server):
         self.assertTrue(second_prompt.startswith(first_prompt + CALL + "<|im_end|>"), second_prompt[-600:])
         self.assertIn("<tool_response>\nbefore\n</tool_response>", second_prompt)
         self.assertEqual(r["output"][-1]["content"][0]["text"], "The file says before.")
+
+    def test_namespace_call_written_with_double_underscore(self):
+        # Qwen writes Codex's MCP tools in their flat `mcp__server__tool` form; Codex only
+        # runs the call when it comes back with its namespace.
+        self.engine.scripts = [self.tok.encode(
+            "</think>\n\n<tool_call>\n<function=mcp__websearch__web_search>\n<parameter=query>\nstrata\n"
+            "</parameter>\n</function>\n</tool_call><|im_end|>", parse_special=True)]
+        self.engine.script = self.engine.scripts[0]
+        tools = [{"type": "namespace", "name": "mcp__websearch", "description": "Search.", "tools": [
+            {"type": "function", "name": "web_search",
+             "parameters": {"type": "object", "properties": {"query": {"type": "string"}}}}]}]
+        code, r = self.post({"model": "m", "input": "go", "tools": tools})
+        self.assertEqual(code, 200, r)
+        call, = r["output"]
+        self.assertEqual((call["namespace"], call["name"], json.loads(call["arguments"])),
+                         ("mcp__websearch", "web_search", {"query": "strata"}))
 
     def test_namespace_and_custom_calls_come_back_under_their_own_names(self):
         self.engine.scripts = [self.tok.encode(

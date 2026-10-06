@@ -60,6 +60,7 @@ const char* name_of(int t) {
         case 42: return "Q2_0";
         case 12: return "Q4_K";
         case 13: return "Q5_K";
+        case 14: return "Q6_K";
         case 7: return "Q5_1";
         case 8: return "Q8_0";
         default: return "?";
@@ -340,7 +341,11 @@ int main(int argc, char** argv) {
     cudaStream_t s;
     ck(cudaStreamCreate(&s), "stream");
     std::mt19937 rng(316);
-    for (int gu : {16, 17, 18, 21, 22, 23, 29, 42, 12, 13, 8})        // STRATA_GU_FMTS
+    for (int gu : {16, 17, 18, 21, 22, 23, 29, 42, 12, 13,
+#ifdef STRATA_Q6K_EXPERTS
+                   14,
+#endif
+                   8})        // STRATA_GU_FMTS
         for (int dt : {20, 23, 42, 7, 8}) check(gu, dt, 512, 256, s, rng);   // STRATA_D_FMTS; IQ4_XS: n_ff % 256
     check(21, 20, 2560, 640, s, rng);                                   // a model's shapes
     check(21, 23, 2560, 768, s, rng);

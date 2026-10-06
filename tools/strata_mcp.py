@@ -78,7 +78,7 @@ FALLBACK_FAMILIES = {
                                                                   "(UD-Q4_K_XL, 111 GB: experimental)",
                 "tag": "unsloth-", "vision": False},
 }
-FALLBACK_CONTEXTS = [8192, 32768, 65536, 131072, 262144, 393216, 524288]
+FALLBACK_CONTEXTS = [8192, 32768, 65536, 131072, 204800, 262144, 393216, 524288]
 BENCH_PROMPT = ("Write a short story (about 300 words) about a lighthouse keeper who finds a message in a bottle. "
                 "Plain prose, no title.")
 
@@ -480,7 +480,8 @@ class Strata:
 
     # ---- what is installed
     def configs(self) -> list[Path]:
-        return sorted(self.root.glob("strata-*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        return sorted((p for p in self.root.glob("strata-*.json") if not p.name.endswith(".shared-settings.json")),
+                      key=lambda p: p.stat().st_mtime, reverse=True)   # #346: the Chat settings file is no config
 
     @staticmethod
     def read_config(path: Path) -> dict:
