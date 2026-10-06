@@ -2061,7 +2061,9 @@ void FileExpertSource::lru_shrink_to(uint64_t bytes) {
 }
 
 void FileExpertSource::lru_watch_loop(uint64_t keep_free) {
-    constexpr uint64_t kSlack = 512ull << 20, kGrowStep = 1ull << 30, kHysteresis = 2ull << 30;
+    // kFloor: the pool never shrinks below it - a decode window claims a few dozen buffers at once, and a pool smaller than
+    // that allocated and freed them every window (measured: decode 43 tok/s with the LRU squeezed to ~50 MB)
+    constexpr uint64_t kSlack = 512ull << 20, kGrowStep = 1ull << 30, kHysteresis = 2ull << 30, kFloor = 1ull << 30;
     std::unique_lock<std::mutex> wl(lru_watch_mu_);
     while (!lru_watch_cv_.wait_for(wl, std::chrono::milliseconds(500), [&] { return lru_watch_quit_; })) {
         uint64_t avail = 0;
@@ -2078,7 +2080,7 @@ void FileExpertSource::lru_watch_loop(uint64_t keep_free) {
         if (avail < keep_free) {
             // another program wants the RAM: give back the deficit and a little more, coldest blobs first
             const uint64_t deficit = keep_free - avail + kSlack;
-            lru_cap_ = live > deficit ? live - deficit : 0;
+            lru_cap_ = std::max(kFloor, live > deficit ? live - deficit : 0);
             lru_shrink_to(lru_cap_);
         } else if (avail > keep_free + kHysteresis && lru_cap_ < stage_keep_) {
             // RAM is free again: let the pool grow back, a step at a time
