@@ -422,6 +422,23 @@ struct Options {
     /// Plan v0.3 P4: `--expert-cache auto` sizes the VRAM tier from what is free after the weights, the session
     /// and the KV state, minus this reserve for the graphs, the hit scratch and the head.
     int vram_reserve_mib = 700;
+    /// --elastic (opt-in): an AUTOMATIC elastic expert cache (`--serve`, one GPU).  The startup sizes the cache with
+    /// `--vram-reserve-mib` as before, then the cache follows the free VRAM while it runs: it keeps
+    /// `elastic_reserve_mib` free, grows with the most-used missing experts (then the profile's order) once the
+    /// VRAM has stayed free for `elastic_stable_ms`, and shrinks at once when it has not - the tail's hottest
+    /// experts moving into colder slots first, never a flush.  Checked every `elastic_period_ms` at the decode's
+    /// safe point and at every request's start.
+    bool elastic = false;
+    int elastic_reserve_mib = 500;
+    int elastic_chunk_mib = 64;
+    int elastic_period_ms = 1000;
+    int elastic_stable_ms = 5000;
+    /// The TWO-ZONE cache.  The first slots (filled from the profile at startup) are the CORE: the adaptive swaps
+    /// never pick their experts to leave, the elastic cache never shrinks below them and the prompt path never
+    /// borrows them.  Only the TAIL - at most this many MiB of the startup cache, -1 = min(6144, half of it), 0 = no
+    /// core - rotates, shrinks, grows and is lent.  A shrink gives back at most `elastic_shrink_step_mib` per check.
+    int elastic_tail_mib = -1;
+    int elastic_shrink_step_mib = 1024;
     bool vram_reserve_given = false;   ///< --vram-reserve-mib on the command line (#496: no smaller automatic reserve)
     /// #533 (opt-in): the expert cache in physical segments (CUDA virtual memory management), so the serve loop's
     /// `VRAM <reserve_mib>` command can give part of it back to other programs and take it again.  Off: one cudaMalloc.
@@ -640,6 +657,13 @@ void usage() {
                  "  --cvec-dir per-layer|single:L  each layer's own direction (default) or layer L's everywhere (project)\n"
                  "  --no-token-graph     A/B: two graphs per layer (the host launches each) instead of one per token\n"
                  "  --no-fused-gr        A/B: the six-kernel hyper-connection read and a separate write (native)\n"
+                 "  --elastic           --serve, single CUDA GPU: resize the expert-cache tail (default off)\n"
+                 "  --elastic-reserve-mib N  free-memory target (default 500, >=0)\n"
+                 "  --elastic-chunk-mib N    VMM mapping chunk (default 64, >=1)\n"
+                 "  --elastic-period-ms N    minimum policy-check interval (default 1000, >=0)\n"
+                 "  --elastic-stable-ms N    sustained room before growth (default 5000, >=0)\n"
+                 "  --elastic-tail-mib N     initial tail limit (-1 auto, 0 no fixed core, >0 MiB)\n"
+                 "  --elastic-shrink-step-mib N  maximum reduction per check (default 1024, >=1)\n"
                  "  --prefill CHUNK      batched prompt processing in chunks of CHUNK tokens (needs --native); auto =\n"
                  "                       the largest chunk up to 8192 whose buffers the expert cache can lend;\n"
                  "                       auto:16384 / auto:32768 (or STRATA_PREFILL_AUTO_MAX) allow bigger ones\n"
@@ -673,6 +697,18 @@ void usage() {
                  "                       GPU via `moe_hit_grouped_s2`.  DEFAULT 0.  Measured at 4096 slots\n"
                  "                       with --expert-cache-per-layer: 54.4%% hits, CPU pool drain 19.1 -> 10.3\n"
                  "                       ms/token, -2.7 ms/token end to end.\n"
+                 "  --elastic            (serve, one GPU) the expert cache follows the free VRAM while it runs:\n"
+                 "                       grows with the most-used missing experts, shrinks the least-used first;\n"
+                 "                       automatic, never together with --vram-elastic (#533, resized on request)\n"
+                 "  --elastic-reserve-mib N  VRAM it keeps free (default 500)\n"
+                 "  --elastic-chunk-mib N    granularity of growing and shrinking (default 64)\n"
+                 "  --elastic-period-ms N    how often it checks (default 1000)\n"
+                 "  --elastic-stable-ms N    how long the room must last before it grows (default 5000; doubles after a\n"
+                 "                           shrink that follows a growth, back to N after 5 minutes without one)\n"
+                 "  --elastic-tail-mib N     two zones: only this much of the startup cache (its tail) rotates, shrinks\n"
+                 "                           and is lent to the prompt path; the rest is a fixed core (default\n"
+                 "                           min(6144, half the cache); 0 = the whole cache is tail)\n"
+                 "  --elastic-shrink-step-mib N  at most this much given back per check (default 1024)\n"
                  "  --expert-cache-device1 N|auto  fill CUDA1 with N experts or as many as fit\n"
                  "  --expert-cache-device2 N|auto  fill CUDA2 with more experts\n"
                  "  --expert-cache-device3 N|auto  fill CUDA3 with more experts\n"
@@ -1376,6 +1412,26 @@ int main(int argc, char** argv) {
         else if (a == "--expert-cache-remote-placement")
             o.expert_cache_remote_placement = next("--expert-cache-remote-placement");
         else if (a == "--vram-reserve-mib") { o.vram_reserve_mib = std::atoi(next("--vram-reserve-mib")); o.vram_reserve_given = true; }
+        else if (a == "--elastic") o.elastic = true;
+        else if (a == "--elastic-reserve-mib" || a == "--elastic-chunk-mib" ||
+                 a == "--elastic-period-ms" || a == "--elastic-stable-ms" ||
+                 a == "--elastic-tail-mib" || a == "--elastic-shrink-step-mib") {
+            const std::string value = next(a.c_str());
+            int number = 0;
+            const auto parsed = std::from_chars(value.data(), value.data() + value.size(), number);
+            const int minimum = a == "--elastic-tail-mib" ? -1 :
+                (a == "--elastic-chunk-mib" || a == "--elastic-shrink-step-mib") ? 1 : 0;
+            if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || number < minimum) {
+                std::fprintf(stderr, "%s needs an integer >= %d within int32 range\n", a.c_str(), minimum);
+                return 2;
+            }
+            if (a == "--elastic-reserve-mib") o.elastic_reserve_mib = number;
+            else if (a == "--elastic-chunk-mib") o.elastic_chunk_mib = number;
+            else if (a == "--elastic-period-ms") o.elastic_period_ms = number;
+            else if (a == "--elastic-stable-ms") o.elastic_stable_ms = number;
+            else if (a == "--elastic-tail-mib") o.elastic_tail_mib = number;
+            else o.elastic_shrink_step_mib = number;
+        }
         else if (a == "--prefill") {
             const std::string v = next("--prefill");
             o.prefill_auto = v == "auto" || v.rfind("auto:", 0) == 0;
@@ -1530,6 +1586,11 @@ int main(int argc, char** argv) {
         }
     }
     strata::core::set_coupled_draft(o.coupled_draft);
+    if (o.elastic && (o.peer_device >= 1 || std::any_of(o.expert_cache_remote.begin(), o.expert_cache_remote.end(),
+                                                     [](int slots) { return slots > 0; }))) {
+        std::fprintf(stderr, "strata: elastic cache does not support peer or remote expert tiers; using fixed cache\n");
+        o.elastic = false;
+    }
     strata::core::set_peer_portable(o.peer_device >= 1);   // multi-GPU: the Portable flag on mapped host buffers only with a peer device (before any allocation)
     if (o.serve && o.conversation_cache_mib > 0 && (o.prompt_cache == 0 || o.conversation_cache_slots == 0))
         std::fprintf(stderr, "strata serve: warning: conversation caching is disabled by %s\n",
@@ -3319,7 +3380,9 @@ int main(int argc, char** argv) {
                         : multi_gpu ? "a layer split has a cache per GPU"
                         : std::any_of(o.expert_cache_remote.begin(), o.expert_cache_remote.end(),
                                       [](int n) { return n > 0; }) ? "the helper caches on other GPUs"
-                        : o.vram_segment_mib < 64 ? "--vram-segment-mib is below 64" : nullptr;
+                        : o.vram_segment_mib < 64 ? "--vram-segment-mib is below 64"
+                        : (o.elastic && !o.resident_cpu_experts) ? "--elastic (the automatic elastic cache) resizes it"
+                        : nullptr;
 #if defined(STRATA_USE_HIP)
         if (why == nullptr) why = "it is NVIDIA-only for now";
 #endif
@@ -3359,6 +3422,8 @@ int main(int argc, char** argv) {
         // page back while the verify graph spun on a host flag never finished.  So the slots are zeroed and the
         // free figure read again; while it is short of the reserve the cache is reopened smaller.
         // STRATA_TEST_CACHE_FAIL=N: the first N opens fail as an out-of-commit cudaMalloc does (tests the retry)
+        if (o.elastic && (!o.serve || multi_gpu || o.resident_cpu_experts))
+            std::fprintf(stderr, "strata: elastic cache requires single-GPU serve without resident CPU complement; using fixed cache\n");
         int fake_fails = std::getenv("STRATA_TEST_CACHE_FAIL") ? std::atoi(std::getenv("STRATA_TEST_CACHE_FAIL")) : 0;
         int failed = 0;
         int zero_reads = 0;
@@ -3368,9 +3433,22 @@ int main(int argc, char** argv) {
                 --fake_fails;
                 err = "ExpertCache: cudaMalloc failed: out of memory (STRATA_TEST_CACHE_FAIL)";
             } else {
-                ok = sized_slots.empty()
-                    ? xcache.open(o.expert_cache, g.n_layers, g.n_expert, (int64_t) strata::kernels::cpu::expert_layout().max_blob, err)
-                    : xcache.open_sized(sized_slots, g.n_layers, g.n_expert, err);
+                if (!sized_slots.empty() && o.elastic && o.serve && !multi_gpu && !o.resident_cpu_experts) {
+                    // --elastic: the elastic arena reserves the whole card's address range; without VMM, the plain one
+                    size_t fb = 0, tb = 0;
+                    cudaMemGetInfo(&fb, &tb);
+                    ok = xcache.open_sized_elastic(sized_slots, g.n_layers, g.n_expert, (uint64_t) tb,
+                                                   (uint64_t) o.elastic_chunk_mib << 20, err);
+                    if (!ok) {
+                        std::fprintf(stderr, "strata generate: %s - the cache stays fixed\n", err.c_str());
+                        o.elastic = false;
+                        ok = xcache.open_sized(sized_slots, g.n_layers, g.n_expert, err);
+                    }
+                } else {
+                    ok = sized_slots.empty()
+                        ? xcache.open(o.expert_cache, g.n_layers, g.n_expert, (int64_t) strata::kernels::cpu::expert_layout().max_blob, err)
+                        : xcache.open_sized(sized_slots, g.n_layers, g.n_expert, err);
+                }
             }
             if (!ok) {
                 // Issue #60: on Windows a device allocation is also charged to the system commit (RAM + page file),
@@ -4420,6 +4498,18 @@ int main(int argc, char** argv) {
                                     : ((tokens + 255) / 256) * 256;
         return std::min(max_chunk, rounded);
     };
+    // --elastic: the TWO-ZONE cache.  Slots [0, el_core) are the core - filled from the profile at startup, never
+    // picked by the adaptive swaps to leave, never shrunk, never lent; the tail after it is the elastic zone.
+    int64_t el_core = 0;
+    if (o.elastic && o.serve && xcache.elastic() && !multi_gpu && xcache.slot_offsets() != nullptr) {
+        const uint64_t* off = xcache.slot_offsets();
+        const int64_t S = xcache.slots();
+        const uint64_t tail = o.elastic_tail_mib >= 0 ? (uint64_t) o.elastic_tail_mib << 20
+                                                      : std::min<uint64_t>(6144ull << 20, off[S] / 2);
+        int64_t c = S;
+        while (c > 0 && off[S] - off[c - 1] <= tail) --c;   // the smallest core whose tail fits in `tail`
+        el_core = tail == 0 ? 0 : c;
+    }
     // The prompt path's chunk and the slots it borrows for its buffers: the requested chunk halved until it fits,
     // or with --prefill auto the largest chunk whose buffers take at most kAutoLendPct % of the slots (a
     // lent slot's expert is streamed during the prompt and refilled after it; measured on a 12 GB card, 32K Q2_0
@@ -4456,6 +4546,7 @@ int main(int argc, char** argv) {
     };
     auto plan_lend = [&](int64_t& chunk) -> int64_t {
         auto slots_for = lend_slots;
+        const int64_t tail_slots = xcache.slots() - el_core;   // --elastic: only the tail is lent (all of it without a core)
         // 0.1.39's list with its ring (also the size up to which a prompt keeps that ring under #583)
         auto old_rule = [&]() -> int64_t {
             strata::prefill::Prefill::set_ring_budget(0, 0);
@@ -4464,7 +4555,7 @@ int main(int argc, char** argv) {
                 // above 8192: only when asked for, and only when a prompt of the context can use it
                 if (c > 8192 && (c > o.prefill_auto_max || c > o.max_context)) continue;
                 const int64_t k = slots_for(c);
-                if (k + 128 <= xcache.slots() && k * 100 <= kAutoLendPct * xcache.slots()) return c;
+                if (k + 128 <= xcache.slots() && k * 100 <= kAutoLendPct * xcache.slots() && k <= tail_slots) return c;
             }
             return 0;
         };
@@ -4486,7 +4577,7 @@ int main(int argc, char** argv) {
             constexpr int64_t kRingMin = 16;
             const int64_t small = old_rule();   // 0.1.39's chunk (and its ring for the prompts that fit it)
             const int64_t ring_max = strata::prefill::Prefill::ring_cap_for(small);
-            const int64_t budget = std::min(xcache.slots() - 128, kAutoLendPct * xcache.slots() / 100);
+            const int64_t budget = std::min({xcache.slots() - 128, kAutoLendPct * xcache.slots() / 100, tail_slots});
             // The room is a BYTE budget.  A ring slot is max_blob bytes (`carve` lays out one whole blob each),
             // while these cache slots hold their own layer's blob, which is smaller than max_blob unless the cache
             // happens to hold the pack's biggest layer - on the 4-way IQ3_S rig that is 2.15 MiB a slot against a
@@ -4509,7 +4600,8 @@ int main(int argc, char** argv) {
                     // ring_slots() now returns `room` - unless STRATA_PREFILL_RING overrides it, in which case the
                     // chunk has to fit THAT ring, which is the pre-fix rule and the A/B arm
                     const int64_t k = slots_for(t);
-                    return k + 128 <= xcache.slots() && k * 100 <= kAutoLendPct * xcache.slots();
+                    return k + 128 <= xcache.slots() && k * 100 <= kAutoLendPct * xcache.slots() &&
+                           k <= tail_slots;
                 });
             };
             int64_t c = scan(ring_max);
@@ -4526,7 +4618,7 @@ int main(int argc, char** argv) {
         }
         for (int64_t c = chunk; c >= 256; c /= 2) {
             const int64_t k = slots_for(c);
-            if (k + 128 <= xcache.slots()) { chunk = c; return k; }
+            if (k + 128 <= xcache.slots() && k <= tail_slots) { chunk = c; return k; }
         }
         return 0;
     };
@@ -4687,6 +4779,7 @@ int main(int argc, char** argv) {
             // (no split) this reduces to plan_lend exactly, so the single-GPU loan is unchanged from main.
             auto fits_one = [&](const PfPart& p, int64_t c, bool cap) -> bool {
                 const int64_t k = part_slots(p, c);
+                if (p.cache == &xcache && k > xcache.slots() - el_core) return false;
                 if (k <= 0 || k + 128 > p.cache->slots()) return false;
                 return !(cap && k * 100 > kAutoLendPct * p.cache->slots());
             };
@@ -4719,8 +4812,10 @@ int main(int argc, char** argv) {
                     // clamped at 0: a cache under 128 slots has a negative lend budget, and `slots - budget` is
                     // then `slots`, which is off_[slots] - the end of the prefix sum, so that cache lends 0 bytes
                     // rather than reading one entry past its offsets
-                    const int64_t budget = std::max<int64_t>(0, std::min(p.cache->slots() - 128,
-                                                                        kAutoLendPct * p.cache->slots() / 100));
+                    int64_t budget = std::max<int64_t>(0, std::min(p.cache->slots() - 128,
+                                                                  kAutoLendPct * p.cache->slots() / 100));
+                    // --elastic: the two-zone cache lends only its tail (fits_one refuses the core as well)
+                    if (p.cache == &xcache) budget = std::min(budget, std::max<int64_t>(0, xcache.slots() - el_core));
                     const uint64_t avail = part_bytes(p, (int32_t) (p.cache->slots() - budget));
                     const uint64_t nonring = strata::prefill::Prefill::bytes_needed_no_ring(g, *p.ses, c);
                     room = std::min(room, (int64_t) ((avail - std::min(avail, nonring)) / (uint64_t) kBlob));
@@ -4886,6 +4981,7 @@ int main(int argc, char** argv) {
         // the prompt path's own buffers (no loan) are not priced into them: with the whole arena pinned (#253) a
         // `--prefill auto` split could stop at start with "device buffers for a chunk of 2048 tokens do not fit".  A
         // chunk that does not fit is tried again one size smaller, down to 512 tokens (a smaller chunk only reads slower).
+        const int64_t sp_chunk_max = (o.elastic && xcache.elastic() && o.prefill_auto && borrow != nullptr) ? o.prefill_auto_max : 0;
         auto init_prompt_paths = [&]() -> int {   // 0: ready; 1: failed (err set); 2: failed with "do not fit"
             for (size_t i = 0; i < stages.size(); ++i) {
                 GpuStage& st = *stages[i];
@@ -4905,7 +5001,7 @@ int main(int argc, char** argv) {
                 }
             }
             if (multi_gpu) sp.set_stage(0, split_at[0], &stages[0]->sp);
-            if (!sp.init(wt, g, ss, srcp, &xcache, host_res.data(), o.prefill_chunk, main_cs, err, borrow, borrow_bytes))
+            if (!sp.init(wt, g, ss, srcp, &xcache, host_res.data(), o.prefill_chunk, main_cs, err, borrow, borrow_bytes, sp_chunk_max))
                 return err.find("do not fit") != std::string::npos ? 2 : 1;
             return 0;
         };
@@ -5501,7 +5597,7 @@ int main(int argc, char** argv) {
                 const int32_t* r = host_res.data() + l * g.n_expert;
                 for (int32_t e = 0; e < (int32_t) g.n_expert; ++e) {
                     if (r[e] < 0) { if (u[e] >= 2.0f && !(peer.valid() && peer.has(l, e)) && !(remote_opt && remote_opt->owns(l, e))) cand.emplace_back(u[e], e); }
-                    else vict.emplace_back(u[e], e);
+                    else if (r[e] >= el_core) vict.emplace_back(u[e], e);   // --elastic: the core never leaves
                 }
                 if (cand.empty() || vict.empty()) continue;
                 std::sort(cand.begin(), cand.end(), [](auto& a, auto& b) { return a.first > b.first; });
@@ -5570,6 +5666,239 @@ int main(int argc, char** argv) {
             for (float& v : drive.d.usage) v *= o.adapt_decay;
             return true;
         };
+        // ---- --elastic: THE AUTOMATIC ELASTIC EXPERT CACHE.  The arena is a reserved address range backed by
+        // chunks (ExpertCache::open_sized_elastic), so its slots can be added or dropped at the TAIL without any
+        // pointer moving.  `host_res` stays the one truth about which expert sits where (the adaptive tier writes it
+        // too); the prompt path borrows the tail, so after the tail moved its buffers are laid out again (and a cache
+        // that shrank too far lends a smaller chunk, the same rule as plan_lend).  Run only where nothing is in
+        // flight: a request's start (nothing lent yet) and the decode's safe point (window, commit, draft and the
+        // adaptive swaps all finished).
+        const bool el_on = o.elastic && xcache.elastic() && d_res != nullptr && !multi_gpu && !host_res.empty();
+        const int64_t el_reserve = (int64_t) o.elastic_reserve_mib << 20;
+        const int64_t el_hyst_min = 192ll << 20;   // growth only past the reserve plus max(this, the measured noise)
+        static const bool el_trace = std::getenv("STRATA_ELASTIC_TRACE") != nullptr;
+        const int64_t el_step_max = 512ll << 20;   // at most this much per growth step (its copies are async)
+        const int64_t el_shrink_step = std::max<int64_t>(64ll << 20, (int64_t) o.elastic_shrink_step_mib << 20);
+        const int64_t el_min_slots = std::max<int64_t>(256, el_core);   // the core is never shrunk
+        const int64_t el_chunk_max = sp_chunk_max > 0 ? sp_chunk_max : o.prefill_chunk;
+        Clock::time_point el_last{};
+        Clock::time_point el_stable_since = Clock::now();
+        // growth against noise: the free readings since the last resize (a resize changes the level, so it clears
+        // them); a growth must hold on the MINIMUM of the stable window and leaves reserve + margin free, where the
+        // margin is the spread the readings have shown.  A shrink soon after a growth doubles the wait (at most 8x),
+        // five quiet minutes restore it.
+        std::deque<std::pair<Clock::time_point, int64_t>> el_seen;
+        Clock::time_point el_last_grow{}, el_last_shrink{};
+        int el_backoff = 1;
+        auto el_free = []() -> int64_t {
+            size_t f = 0, t = 0;
+            return cudaMemGetInfo(&f, &t) == cudaSuccess ? (int64_t) f : -1;
+        };
+        // the tail moved: the prompt path's chunk and first lendable slot are planned again by the startup's own rule
+        // (plan_lend: auto takes the largest chunk that lends at most its share of the slots), and the next lend lays
+        // the buffers out again
+        auto el_replan_lend = [&]() {
+            if (pf_parts.empty() || pf_parts[0].first < 0) return;
+            int64_t c = el_chunk_max;
+            const int64_t k = plan_lend(c);
+            if (k <= 0 || c > el_chunk_max) return;   // nothing fits (not above el_min_slots): keep the plan
+            o.prefill_chunk = c;
+            // 0.1.30: the loan lives in the participant (CUDA0 is the first; the elastic cache is single-GPU)
+            pf_parts[0].first = (int32_t) (xcache.slots() - part_slots(pf_parts[0], c));
+            pf_parts[0].first_now = -1;               // the next lend lays the buffers out again
+            lend_first = pf_parts[0].first;
+        };
+        // SHRINK to `n` slots: in each layer the tail's experts, hottest first, move (a device copy) into the slots
+        // below `n` that hold that layer's coldest experts, while they are clearly hotter; the rest leave the tier
+        // (the CPU computes them) and the tail's chunks go back to the driver
+        auto el_shrink = [&](int64_t n, std::string& e) -> bool {
+            const int64_t S = xcache.slots();
+            if (n >= S) return true;
+            apply_pending(true);
+            cudaDeviceSynchronize();
+            const auto& lay = strata::kernels::cpu::expert_layout();
+            const bool have_usage = !drive.d.usage.empty();
+            std::vector<std::vector<std::pair<float, int32_t>>> keep((size_t) g.n_layers), tail((size_t) g.n_layers);
+            for (int64_t l = 0; l < g.n_layers; ++l)
+                for (int32_t ex = 0; ex < (int32_t) g.n_expert; ++ex) {
+                    const size_t i = (size_t) (l * g.n_expert + ex);
+                    if (host_res[i] < el_core) continue;   // not resident, or in the core (never displaced)
+                    const float u = have_usage ? drive.d.usage[i] : 0.0f;
+                    (host_res[i] >= n ? tail : keep)[(size_t) l].emplace_back(u, ex);
+                }
+            int moved = 0, dropped = 0;
+            for (int64_t l = 0; l < g.n_layers; ++l) {
+                auto& tl = tail[(size_t) l];
+                if (tl.empty()) continue;
+                auto& kp = keep[(size_t) l];
+                std::sort(tl.begin(), tl.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+                std::sort(kp.begin(), kp.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+                size_t ci = 0;
+                for (const auto& [u, ex] : tl) {
+                    const size_t from = (size_t) (l * g.n_expert + ex);
+                    if (have_usage && ci < kp.size() && u > kp[ci].first + 1.0f) {
+                        const size_t to = (size_t) (l * g.n_expert + kp[ci].second);
+                        const int32_t to_slot = host_res[to];
+                        if (cudaMemcpyAsync(xcache.device_slot(to_slot), xcache.device_slot(host_res[from]),
+                                            (size_t) lay.blob_bytes(l), cudaMemcpyDeviceToDevice, adapt_stream) != cudaSuccess) {
+                            e = "elastic cache: a device copy failed";
+                            return false;
+                        }
+                        host_res[to] = strata::core::kNotResident;
+                        host_res[from] = to_slot;
+                        ++ci;
+                        ++moved;
+                    } else {
+                        host_res[from] = strata::core::kNotResident;
+                        ++dropped;
+                    }
+                }
+            }
+            if (cudaStreamSynchronize(adapt_stream) != cudaSuccess) { e = "elastic cache: the copy stream failed"; return false; }
+            res_upload();
+            cudaDeviceSynchronize();
+            if (!xcache.elastic_shrink(n, e)) return false;
+            el_replan_lend();
+            std::fprintf(stderr, "strata elastic: -%lld slots (%d moved in, %d out) -> %lld slots, %.2f GiB; %lld MiB free, "
+                                 "prompt chunk %lld\n", (long long) (S - n), moved, dropped, (long long) xcache.slots(),
+                         xcache.gib(), (long long) (el_free() >> 20), (long long) o.prefill_chunk);
+            return true;
+        };
+        // GROW by at most `room` bytes: the missing experts the conversation routes most (usage >= 2, as the adaptive
+        // tier's candidates), then the profile's order for what it has not asked for yet; filled on the refill
+        // stream and published like the adaptive swaps (apply_pending), so the windows never wait for them
+        auto el_grow = [&](int64_t room, std::string& e) -> bool {
+            const auto& lay = strata::kernels::cpu::expert_layout();
+            std::vector<std::pair<float, int32_t>> cand;
+            if (!drive.d.usage.empty())
+                for (size_t i = 0; i < host_res.size(); ++i)
+                    if (host_res[i] < 0 && drive.d.usage[i] >= 2.0f) cand.emplace_back(drive.d.usage[i], (int32_t) i);
+            std::sort(cand.begin(), cand.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+            std::vector<char> chosen(host_res.size(), 0);
+            std::vector<int32_t> pick;
+            std::vector<int64_t> bytes;
+            int64_t used = 0;
+            auto take = [&](int32_t i) -> bool {
+                const int64_t b = (int64_t) lay.blob_bytes(i / g.n_expert);
+                const int64_t al = (b + 255) / 256 * 256;
+                if (used + al > room) return false;
+                used += al;
+                chosen[(size_t) i] = 1;
+                pick.push_back(i);
+                bytes.push_back(b);
+                return true;
+            };
+            for (const auto& c : cand)
+                if (!take(c.second)) break;
+            for (const auto& pr : profile) {
+                if (used + (int64_t) lay.max_blob > room) break;
+                const int32_t i = (int32_t) (pr.first * g.n_expert + pr.second);
+                if (host_res[(size_t) i] >= 0 || chosen[(size_t) i]) continue;
+                if (!take(i)) break;
+            }
+            if (pick.empty()) return true;
+            const int64_t first = xcache.slots();
+            if (!xcache.elastic_grow(bytes, e)) {
+                std::fprintf(stderr, "strata elastic: growing failed (%s); staying at %lld slots\n", e.c_str(), (long long) first);
+                e.clear();
+                return true;
+            }
+            // under WDDM the free figure is only trustworthy once the pages are written: `grow` zeroed them
+            cudaDeviceSynchronize();
+            if (el_free() < el_reserve) {
+                xcache.elastic_shrink(first, e);
+                std::fprintf(stderr, "strata elastic: growth undone, the VRAM was not really free\n");
+                e.clear();
+                return true;
+            }
+            for (size_t j = 0; j < pick.size(); ++j) {
+                const int32_t i = pick[j];
+                const uint8_t* b = srcp->blob(i / g.n_expert, i % g.n_expert);
+                if (b == nullptr || cudaMemcpyAsync(xcache.device_slot((int32_t) (first + (int64_t) j)), b, (size_t) bytes[j],
+                                                    cudaMemcpyHostToDevice, adapt_stream) != cudaSuccess) {
+                    e = "elastic cache: a fill copy failed";
+                    return false;
+                }
+                pending.emplace_back(i, (int32_t) (first + (int64_t) j));
+            }
+            cudaEventRecord(adapt_ev, adapt_stream);
+            // a bigger cache may lend a bigger chunk (the prompt reads faster)
+            el_replan_lend();
+            std::fprintf(stderr, "strata elastic: +%lld experts (%.0f MiB) -> %lld slots, %.2f GiB; %lld MiB free\n",
+                         (long long) pick.size(), (double) used / 1048576.0, (long long) xcache.slots(), xcache.gib(),
+                         (long long) (el_free() >> 20));
+            return true;
+        };
+        // one step of the policy: shrink at once below the reserve; grow once the room has stayed for stable_ms.  At a
+        // request's start it only shrinks: a growth's fills land asynchronously in the tail, and the prompt is about
+        // to borrow the tail - the decode's safe point grows, and apply_pending publishes the fills before any lend
+        auto elastic_step = [&](bool request_start, std::string& e) -> bool {
+            if (!el_on) return true;
+            const Clock::time_point t = Clock::now();
+            if (!request_start && t - el_last < std::chrono::milliseconds(o.elastic_period_ms)) return true;
+            el_last = t;
+            apply_pending(true);
+            const int64_t fr = el_free();
+            if (fr < 0) return true;
+            if (el_trace)
+                std::fprintf(stderr, "strata elastic trace: %s free %lld MiB, %lld slots (%.2f GiB), room held %lld ms\n",
+                             request_start ? "request" : "decode", (long long) (fr >> 20), (long long) xcache.slots(),
+                             xcache.gib(),
+                             (long long) std::chrono::duration_cast<std::chrono::milliseconds>(t - el_stable_since).count());
+            if (fr < el_reserve) {
+                // in steps: at most el_shrink_step per check, the next check takes the next step if still short;
+                // never below the core
+                // under WDDM a reading of ~0 only says "at least this short" (the startup sizing gives back a whole
+                // GiB for it too): take the full step, not reserve + one chunk
+                const int64_t need = fr < (16ll << 20) ? el_shrink_step
+                                                       : std::min(el_reserve - fr + (int64_t) xcache.chunk_bytes(),
+                                                                  el_shrink_step);
+                const uint64_t* off = xcache.slot_offsets();
+                const int64_t S = xcache.slots();
+                int64_t n = S;
+                while (n > el_min_slots && (int64_t) (off[S] - off[n]) < need) --n;
+                el_stable_since = t;
+                if (n >= S) return true;
+                if (el_last_grow.time_since_epoch().count() != 0 && t - el_last_grow < std::chrono::seconds(60))
+                    el_backoff = std::min(el_backoff * 2, 8);   // a shrink right after a growth: it grew too far
+                el_last_shrink = t;
+                el_seen.clear();
+                return el_shrink(n, e);
+            }
+            if (el_last_shrink.time_since_epoch().count() != 0 && t - el_last_shrink > std::chrono::minutes(5))
+                el_backoff = 1;
+            el_seen.emplace_back(t, fr);
+            while (!el_seen.empty() && t - el_seen.front().first > std::chrono::seconds(30)) el_seen.pop_front();
+            const auto hold = std::chrono::milliseconds((int64_t) o.elastic_stable_ms * el_backoff);
+            if (request_start || t - el_stable_since < hold) return true;
+            // the room must have held on its minimum over the wait, past the reserve plus the noise seen
+            const int64_t none = std::numeric_limits<int64_t>::max();
+            int64_t lo = none, hi = 0;
+            for (const auto& [ts, v] : el_seen) {
+                hi = std::max(hi, v);
+                if (t - ts <= hold) lo = std::min(lo, v);
+            }
+            if (lo == none) lo = fr;
+            const int64_t margin = std::max(el_hyst_min, hi - lo);
+            const int64_t spare = lo - el_reserve - margin;
+            if (spare < (int64_t) xcache.chunk_bytes()) return true;
+            el_stable_since = t;
+            el_last_grow = t;
+            el_seen.clear();
+            return el_grow(std::min(spare, el_step_max), e);
+        };
+        if (el_on) {
+            std::fprintf(stderr, "strata elastic: on - keeps %d MiB of VRAM free, grows after %d ms of room, checks every "
+                                 "%d ms (%lld slots now, %.2f GiB, chunks of %lld MiB)\n", o.elastic_reserve_mib,
+                         o.elastic_stable_ms, o.elastic_period_ms, (long long) xcache.slots(), xcache.gib(),
+                         (long long) (xcache.chunk_bytes() >> 20));
+            const uint64_t* off = xcache.slot_offsets();
+            std::fprintf(stderr, "strata elastic: two zones - core %lld slots (%.2f GiB, fixed), tail %lld slots (%.2f GiB: "
+                                 "rotates, shrinks in steps of %lld MiB, is lent to the prompt path)\n",
+                         (long long) el_core, (double) off[el_core] / 1073741824.0, (long long) (xcache.slots() - el_core),
+                         (double) (off[xcache.slots()] - off[el_core]) / 1073741824.0,
+                         (long long) (el_shrink_step >> 20));
+        }
         // #477: write the learned profile (between requests and at QUIT: a prompt's lent slots are back by then).
         // A swap still in flight counts as done - its expert is resident once the copy lands.  `why`: for the log.
         auto save_profile = [&](const char* why) {
@@ -6794,6 +7123,7 @@ int main(int argc, char** argv) {
             // participant's own cache, and marking only that participant's own layers
             auto lend = [&](int64_t tokens, std::string& e) -> bool {
                 if (pf_parts.empty()) return true;                     // its own buffers: nothing to lend
+                if (el_on) apply_pending(true);   // elastic fills must be published before the tail is lent
                 const auto t_ln = Clock::now();
                 // what this segment needs, capped by the configured chunk: a request lends only what its own
                 // prompt needs, so a large chunk costs a short prompt nothing
@@ -6936,6 +7266,14 @@ int main(int argc, char** argv) {
                 return true;
             };
             apply_pending(true);
+            // --elastic: the cache follows the VRAM before the prompt borrows its tail (nothing is lent yet)
+            {
+                std::string ee;
+                if (!elastic_step(true, ee)) {
+                    std::printf("ERR %s\n", ee.c_str());
+                    return 1;
+                }
+            }
             // per-request sampling for the verify window's head (greedy when temperature is absent)
             strata::kernels::SamplerParams req_sp;
             req_sp.greedy = req_temperature <= 0.0f;
@@ -7187,6 +7525,14 @@ int main(int argc, char** argv) {
                                    std::chrono::duration<double, std::milli>(Clock::now() - round0).count());
                 if (eos) { finish = "stop"; break; }
                 if (stop_req.load()) { finish = "cancel"; break; }
+                // --elastic: the cache's step, after the round's timing is recorded (the draft policy reads it)
+                {
+                    std::string ee;
+                    if (!elastic_step(false, ee)) {
+                        std::printf("ERR %s\n", ee.c_str());
+                        return 1;
+                    }
+                }
                 x = outv[(size_t) a];
                 p += a + 1;
             }
