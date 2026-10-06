@@ -263,6 +263,17 @@ public:
     void set_pcie_mode(int mode) { sink_.pcie_mode = mode; }
     /// the pool never plans a PCIe share (--pcie-frac 0): the window skips that path.  Before the first run.
 
+    /// The PCIe count of each layer from measured costs (PcieModel) instead of a fixed share: the spin kernels stamp
+    /// each step's GPU work (the plan's arrival, the PCIe part's start, the wait for the CPU's rows; GPU clock), the host
+    /// times its pool, and after each window *model (the dispatch's) takes the costs. One GPU, no batch slots. Set
+    /// before `init` (the stamps are captured). `paused`: a request's own --pcie-frac holds meanwhile.
+    void set_pcie_balance(PcieModel* model) { bal_ = model; }
+    void pause_pcie_balance(bool paused) {
+        bal_paused_ = paused;
+        if (bal_ != nullptr && m_bal_ != nullptr) bal_->on = !paused;
+    }
+    bool pcie_balance_on() const { return bal_ != nullptr && m_bal_ != nullptr; }
+
     double ms_wait = 0, ms_pool = 0, ms_host = 0, ms_commit = 0;
     int64_t windows = 0;
     /// STRATA_VERIFY_PROFILE=1 - GPU stage times of the windows since the last call (ms per
@@ -421,6 +432,16 @@ private:
     uint32_t* h_flag_ = nullptr; uint32_t* m_flag_ = nullptr;
     uint32_t* h_flagA_ = nullptr; uint32_t* m_flagA_ = nullptr;  // the GPU plan is in place
     uint32_t* h_flagB_ = nullptr; uint32_t* m_flagB_ = nullptr;  // the PCIe share's DMA copies have landed
+    // set_pcie_balance: per step (layer x group, stride 2 groups) the GPU's clock as the plan arrives, as the PCIe
+    // part starts and as it waits for the CPU rows (4 words a step); the pool's ms, its experts, the PCIe ones, and
+    // whether the step had a plan
+    unsigned long long* h_bal_ = nullptr; unsigned long long* m_bal_ = nullptr;
+    std::vector<double> bal_p_;
+    std::vector<int32_t> bal_nc_, bal_np_;
+    std::vector<char> bal_ok_;
+    PcieModel* bal_ = nullptr;
+    bool bal_paused_ = false;
+    void pcie_balance_window(int64_t steps, int G);
     cudaEvent_t commit_done_ = nullptr;   // recorded after an async commit (set_commit_async); see wait_commit
     bool commit_pending_ = false;
     cudaStream_t copy_ = nullptr;                                 // the copy engine's stream (DMA of missed experts)
