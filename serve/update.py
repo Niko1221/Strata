@@ -672,7 +672,7 @@ class Updater:
 
     def _do_backup(self) -> str:
         self.backup = self._backup()
-        return self.backup.name
+        return f"engine/{PREVIOUS_ENGINE}"
 
     def _do_apply(self) -> str:
         self._apply(self.staging)      # _changed and _placed are armed inside it, before the swap
