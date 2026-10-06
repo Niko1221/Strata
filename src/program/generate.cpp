@@ -682,8 +682,9 @@ void usage() {
                  "                       allocated at start\n"
                  "  --kv-pool-tokens N   with --kv-resident: the sessions (the batch slots and the main one) share\n"
                  "                       one pinned K/V pool of N cells instead of each pinning the whole context;\n"
-                 "                       a conversation holds what it has reached, in steps of 4096 cells. N must\n"
-                 "                       hold one whole context. When it is full an idle slot's cached\n"
+                 "                       a conversation holds what it has reached, in steps of 4096 cells (across the\n"
+                 "                       stages of a layer split alike). N must hold one whole context. When it is\n"
+                 "                       full an idle slot's cached\n"
                  "                       conversation gives way, then a new request is refused and a decoding\n"
                  "                       lane ends with finish \"pool\" (the server: \"length\", truncated)\n"
                  "  --stream-token       enqueue token work on the session stream (experimental)\n"
@@ -3833,21 +3834,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: session_init failed\n");
             return 1;
         }
-        if (o.kv_pool_tokens > 0) {
-            if (multi_gpu) {
-                std::fprintf(stderr, "strata generate: --kv-pool-tokens does not support a layer split\n");
-                return 2;
-            }
-            if (!kv_pool.init(g, ss, o.kv_pool_tokens, err) || !kv_pool.attach(ss, err)) {
-                std::fprintf(stderr, "strata generate: %s\n", err.c_str());
-                return 1;
-            }
-            // outside --serve one sequence runs, from the prompt to the context's end
-            if (!o.serve) (void) kv_pool.reserve(ss, o.max_context);
-            std::fprintf(stderr, "strata generate: KV pool: %lld cells shared by the sessions, %.2f GiB of pinned RAM\n",
-                         (long long) kv_pool.total_cells(), (double) kv_pool.pinned_bytes() / 1073741824.0);
-        }
-        if (g.n_qsa_layers() > 0 && ss.qsa_states[ss.qsa_primary()].kv_mode == 1 && !kv_pool.active())
+        if (g.n_qsa_layers() > 0 && ss.qsa_states[ss.qsa_primary()].kv_mode == 1 && o.kv_pool_tokens <= 0)
             std::fprintf(stderr, "strata generate: KV streaming: %lld of %lld cells per QSA layer in VRAM, the K/V in "
                                  "%.2f GiB of pinned RAM\n",
                          (long long) (ss.qsa_states[ss.qsa_primary()].n_slots * 4),
@@ -3893,6 +3880,23 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: layer split: CUDA%d holds its weights, session [%lld, %lld)%s; "
                              "%.2f GiB free\n", st.dev, (long long) st.lb, (long long) st.le,
                      last ? " and the head" : "", (double) fb / 1073741824.0);
+    }
+    // --kv-pool-tokens: one pinned K/V pool for the main session, the batch slots and every stage of a layer split
+    // (each stage pins its own QSA layers' share, on its GPU's context; a lane's chunk table is the same on every stage)
+    if (o.kv_pool_tokens > 0) {
+        std::vector<strata::core::KvPool::StageRef> refs{{&ss, 0}};
+        for (const auto& st : stages) refs.push_back({&st->ss, st->dev});
+        bool ok = kv_pool.init(g, refs, o.kv_pool_tokens, err) && kv_pool.attach(ss, err);
+        for (size_t i = 0; ok && i < stages.size(); ++i) ok = kv_pool.attach_stage(ss, stages[i]->ss, i + 1, err);
+        if (!ok) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        // outside --serve one sequence runs, from the prompt to the context's end
+        if (!o.serve) (void) kv_pool.reserve(ss, o.max_context);
+        std::fprintf(stderr, "strata generate: KV pool: %lld cells shared by the sessions%s, %.2f GiB of pinned RAM\n",
+                     (long long) kv_pool.total_cells(), stages.empty() ? "" : " and the stages of the layer split",
+                     (double) kv_pool.pinned_bytes() / 1073741824.0);
     }
 
     // --batch: every stage carves o.batch more sessions like its own (same layer range and context), one per
@@ -3976,7 +3980,8 @@ int main(int argc, char** argv) {
                     fit = b;
                     break;
                 }
-                if (kv_pool.active() && !kv_pool.attach(*u, err)) {
+                // --kv-pool-tokens: slot b is one lane across the stages (stage k's session joins stage 0's)
+                if (kv_pool.active() && !(k == 0 ? kv_pool.attach(*u, err) : kv_pool.attach_stage(*bslot_ss[0][(size_t) b], *u, k, err))) {
                     std::fprintf(stderr, "strata generate: --batch: slot %d: %s\n", b, err.c_str());
                     return 1;
                 }
@@ -3989,10 +3994,15 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: --batch: %d slot sessions on CUDA%d (%.2f GiB each); %.2f GiB free\n",
                          (int) bslot_ss[k].size(), dev, (double) bytes / 1073741824.0, (double) fb / 1073741824.0);
         }
-        for (auto& v : bslot_ss) if ((int) v.size() > fit) v.resize((size_t) fit);   // the same count on every stage
+        for (auto& v : bslot_ss)   // the same count on every stage; a dropped session leaves the pool's lanes
+            if ((int) v.size() > fit) {
+                for (size_t b = (size_t) fit; b < v.size(); ++b) kv_pool.detach(*v[b]);
+                v.resize((size_t) fit);
+            }
         if (fit < 2) {
             std::fprintf(stderr, "strata generate: WARNING: --batch is off: not two slot sessions fit (a smaller "
                                  "--max-context or KV streaming, --kv-resident, makes them smaller)\n");
+            for (auto& v : bslot_ss) for (auto& u : v) kv_pool.detach(*u);
             bslot_ss.clear();
             o.batch = 0;
         } else {
@@ -8389,31 +8399,45 @@ int main(int argc, char** argv) {
             in_lines.pop_front();
             return true;
         };
-        // --kv-pool-tokens: the streamed layers' K/V of cells [0, upto) changes session by exchanging the two
-        // sessions' pool chunks, without a byte copied and without the pool holding the conversation twice. `from`
-        // gives back the chunks it receives. What the chunks do not carry - the indexer's pooled keys (VRAM) - is
-        // copied here; the VRAM residency of both sessions names blocks that moved, so both start over from the host.
-        // The caller copies the layers that do not stream.
-        auto pool_move = [&](strata::core::SessionState& from, strata::core::SessionState& to, int64_t upto,
-                             std::string& e) -> bool {
-            if (cudaDeviceSynchronize() != cudaSuccess) { e = "KV pool move: device sync failed"; return false; }
-            if (!kv_pool.swap(from, to)) { e = "KV pool move: a session without a chunk table"; return false; }
-            kv_pool.release(from);
-            const int64_t rows = upto > 0 ? upto / strata::kernels::qsa_real_shapes().idx_block + 1 : 0;
-            for (int64_t j = 0; j < from.qsa_alloc; ++j) {
-                const strata::core::QsaState& fs = from.qsa_states[from.qsa_ord0 + j];
-                const strata::core::QsaState& ts = to.qsa_states[to.qsa_ord0 + j];
-                if (fs.kv_mode != 1) continue;
-                if (rows > std::min(fs.idx_pooled_rows, ts.idx_pooled_rows) ||
-                    (rows > 0 && cudaMemcpy(ts.idx_pooled, fs.idx_pooled, (size_t) rows * g.idx_key_dim * sizeof(float),
-                                            cudaMemcpyDeviceToDevice) != cudaSuccess)) {
-                    e = "KV pool move: indexer copy failed";
-                    return false;
-                }
-                strata::kernels::kv_stream_reset(fs.map, nullptr);
-                strata::kernels::kv_stream_reset(ts.map, nullptr);
+        // lane -1 is the main session, lane b batch slot b: its session on stage k (0 = CUDA0's)
+        auto lane_ss = [&](size_t k, int lane) -> strata::core::SessionState& {
+            return lane < 0 ? (k == 0 ? ss : stages[k - 1]->ss) : *bslot_ss[k][(size_t) lane];
+        };
+        // --kv-pool-tokens: the streamed layers' K/V of cells [0, upto) changes lane by exchanging the two lanes'
+        // pool chunks (one table for every stage), without a byte copied and without the pool holding the conversation
+        // twice. `from` gives back the chunks it receives. What the chunks do not carry - the indexer's pooled keys
+        // (VRAM, each stage's own) - is copied here; the VRAM residency of both lanes names blocks that moved, so both
+        // start over from the host. The caller copies the layers that do not stream.
+        auto pool_move = [&](int from_lane, int to_lane, int64_t upto, std::string& e) -> bool {
+            for (size_t k = 0; k <= stages.size(); ++k) {
+                const strata::core::OnDevice on_k(k == 0 ? 0 : stages[k - 1]->dev);
+                if (cudaDeviceSynchronize() != cudaSuccess) { e = "KV pool move: device sync failed"; return false; }
             }
-            if (cudaDeviceSynchronize() != cudaSuccess) { e = "KV pool move: device sync failed"; return false; }
+            if (!kv_pool.swap(lane_ss(0, from_lane), lane_ss(0, to_lane))) {
+                e = "KV pool move: a session without a chunk table";
+                return false;
+            }
+            kv_pool.release(lane_ss(0, from_lane));
+            const int64_t rows = upto > 0 ? upto / strata::kernels::qsa_real_shapes().idx_block + 1 : 0;
+            for (size_t k = 0; k <= stages.size(); ++k) {
+                const strata::core::OnDevice on_k(k == 0 ? 0 : stages[k - 1]->dev);
+                const strata::core::SessionState& from = lane_ss(k, from_lane);
+                const strata::core::SessionState& to = lane_ss(k, to_lane);
+                for (int64_t j = 0; j < from.qsa_alloc; ++j) {
+                    const strata::core::QsaState& fs = from.qsa_states[from.qsa_ord0 + j];
+                    const strata::core::QsaState& ts = to.qsa_states[to.qsa_ord0 + j];
+                    if (fs.kv_mode != 1) continue;
+                    if (rows > std::min(fs.idx_pooled_rows, ts.idx_pooled_rows) ||
+                        (rows > 0 && cudaMemcpy(ts.idx_pooled, fs.idx_pooled, (size_t) rows * g.idx_key_dim * sizeof(float),
+                                                cudaMemcpyDeviceToDevice) != cudaSuccess)) {
+                        e = "KV pool move: indexer copy failed";
+                        return false;
+                    }
+                    strata::kernels::kv_stream_reset(fs.map, nullptr);
+                    strata::kernels::kv_stream_reset(ts.map, nullptr);
+                }
+                if (cudaDeviceSynchronize() != cudaSuccess) { e = "KV pool move: device sync failed"; return false; }
+            }
             return true;
         };
         // the session a request just left behind (its prompt) -> slot b's sessions, on every stage. `move`: the main
@@ -8422,7 +8446,7 @@ int main(int argc, char** argv) {
             const int64_t upto = (int64_t) ids.size();
             const bool moved = move && kv_pool.active();
             if (moved) {
-                if (!pool_move(ss, *bslot_ss[0][(size_t) b], upto, e)) return false;
+                if (!pool_move(-1, b, upto, e)) return false;
                 kv_pool.shrink(*bslot_ss[0][(size_t) b], upto + 8);
             } else if (kv_pool.active()) {   // the conversation, and the next windows' cells (each one grows it further)
                 if (!pool_reserve(*bslot_ss[0][(size_t) b], upto + 8, b)) { e = "the KV pool is full"; return false; }
@@ -8439,7 +8463,7 @@ int main(int argc, char** argv) {
                     !strata::core::conversation_checkpoint_restore(ck, to, g, e))
                     return false;
                 for (int64_t j = 0; j < from.qsa_alloc; ++j) {
-                    if (moved && k == 0 && from.qsa_states[from.qsa_ord0 + j].kv_mode == 1) continue;
+                    if (moved && from.qsa_states[from.qsa_ord0 + j].kv_mode == 1) continue;   // the pool carried it
                     strata::core::ConversationKv img;
                     if (!strata::core::conversation_kv_save(img, from.qsa_states[from.qsa_ord0 + j], g, upto, true, e))
                         return false;
@@ -8471,7 +8495,7 @@ int main(int argc, char** argv) {
             const int64_t upto = at != nullptr ? (int64_t) at->ids.size() : (int64_t) bs[(size_t) b].ids.size();
             if (at != nullptr && at->stage_parts.size() != stages.size()) { e = "a checkpoint without its stage parts"; return false; }
             const bool moved = kv_pool.active();
-            if (moved && !pool_move(*bslot_ss[0][(size_t) b], ss, upto, e)) return false;
+            if (moved && !pool_move(b, -1, upto, e)) return false;
             for (size_t k = 0; k < bslot_ss.size(); ++k) {
                 strata::core::SessionState& from = *bslot_ss[k][(size_t) b];
                 strata::core::SessionState& to = k == 0 ? ss : stages[k - 1]->ss;
@@ -8488,7 +8512,7 @@ int main(int argc, char** argv) {
                         return false;
                 }
                 for (int64_t j = 0; j < from.qsa_alloc; ++j) {
-                    if (moved && k == 0 && from.qsa_states[from.qsa_ord0 + j].kv_mode == 1) continue;
+                    if (moved && from.qsa_states[from.qsa_ord0 + j].kv_mode == 1) continue;   // the pool carried it
                     strata::core::ConversationKv img;
                     if (!strata::core::conversation_kv_save(img, from.qsa_states[from.qsa_ord0 + j], g, upto, true, e))
                         return false;
