@@ -1,0 +1,97 @@
+{
+ "label": "parallel2_instruct",
+ "mode": "instruct",
+ "ts": "2026-10-05T18:34:40",
+ "size": 131072,
+ "delay_s": 5.0,
+ "profile_mirror": {
+  "temperature": 0.7,
+  "top_p": 0.8,
+  "top_k": 20,
+  "min_p": 0.0,
+  "presence_penalty": 1.5,
+  "repetition_penalty": 1.0,
+  "chat_template_kwargs": {
+   "enable_thinking": false
+  },
+  "a_max_tokens": 32
+ },
+ "reps": [
+  {
+   "B": {
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 48,
+     "prompt_ms": 420.2,
+     "prompt_per_token_ms": 8.754,
+     "prompt_per_second": 114.2,
+     "predicted_n": 2,
+     "predicted_ms": 9.8,
+     "predicted_per_token_ms": 9.8,
+     "predicted_per_second": 102.0,
+     "draft_n": 0,
+     "draft_n_accepted": 0
+    },
+    "wall_s": 5.15,
+    "finish": "stop",
+    "serve_ms": 430.0,
+    "queue_wait_s": 4.72
+   },
+   "A": {
+    "timings": {
+     "cache_n": 32768,
+     "prompt_n": 92413,
+     "prompt_ms": 27138.9,
+     "prompt_per_token_ms": 0.294,
+     "prompt_per_second": 3405.2,
+     "predicted_n": 22,
+     "predicted_ms": 10.7,
+     "predicted_per_token_ms": 10.7,
+     "predicted_per_second": 93.5,
+     "draft_n": 0,
+     "draft_n_accepted": 0
+    },
+    "wall_s": 38.4,
+    "finish": "stop"
+   }
+  },
+  {
+   "B": {
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 52,
+     "prompt_ms": 411.6,
+     "prompt_per_token_ms": 7.915,
+     "prompt_per_second": 126.3,
+     "predicted_n": 2,
+     "predicted_ms": 9.9,
+     "predicted_per_token_ms": 9.9,
+     "predicted_per_second": 101.0,
+     "draft_n": 0,
+     "draft_n_accepted": 0
+    },
+    "wall_s": 5.23,
+    "finish": "stop",
+    "serve_ms": 421.5,
+    "queue_wait_s": 4.81
+   },
+   "A": {
+    "timings": {
+     "cache_n": 32768,
+     "prompt_n": 92413,
+     "prompt_ms": 27200.0,
+     "prompt_per_token_ms": 0.294,
+     "prompt_per_second": 3397.5,
+     "predicted_n": 32,
+     "predicted_ms": 452.9,
+     "predicted_per_token_ms": 14.153,
+     "predicted_per_second": 70.7,
+     "draft_n": 0,
+     "draft_n_accepted": 0
+    },
+    "wall_s": 38.69,
+    "finish": "length"
+   }
+  }
+ ]
+}

@@ -1,0 +1,98 @@
+{
+ "label": "parallel2_xhigh",
+ "mode": "xhigh",
+ "ts": "2026-10-05T18:32:46",
+ "size": 131072,
+ "delay_s": 5.0,
+ "profile_mirror": {
+  "temperature": 1.0,
+  "top_p": 0.95,
+  "top_k": 20,
+  "min_p": 0.0,
+  "presence_penalty": 0.0,
+  "frequency_penalty": 0.0,
+  "chat_template_kwargs": {
+   "preserve_thinking": true,
+   "reasoning_effort": "xhigh"
+  },
+  "a_max_tokens": 8192
+ },
+ "reps": [
+  {
+   "B": {
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 91,
+     "prompt_ms": 667.8,
+     "prompt_per_token_ms": 7.338,
+     "prompt_per_second": 136.3,
+     "predicted_n": 30,
+     "predicted_ms": 10.5,
+     "predicted_per_token_ms": 10.5,
+     "predicted_per_second": 95.2,
+     "draft_n": 0,
+     "draft_n_accepted": 0
+    },
+    "wall_s": 8.23,
+    "finish": "stop",
+    "serve_ms": 678.3,
+    "queue_wait_s": 7.56
+   },
+   "A": {
+    "timings": {
+     "cache_n": 125223,
+     "prompt_n": 0,
+     "prompt_ms": 995.7,
+     "prompt_per_token_ms": null,
+     "prompt_per_second": null,
+     "predicted_n": 1689,
+     "predicted_ms": 16570.4,
+     "predicted_per_token_ms": 9.834,
+     "predicted_per_second": 101.7,
+     "draft_n": 1114,
+     "draft_n_accepted": 644
+    },
+    "wall_s": 56.44,
+    "finish": "stop"
+   }
+  },
+  {
+   "B": {
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 92,
+     "prompt_ms": 678.1,
+     "prompt_per_token_ms": 7.371,
+     "prompt_per_second": 135.7,
+     "predicted_n": 68,
+     "predicted_ms": 10.4,
+     "predicted_per_token_ms": 10.4,
+     "predicted_per_second": 96.2,
+     "draft_n": 0,
+     "draft_n_accepted": 0
+    },
+    "wall_s": 11.5,
+    "finish": "stop",
+    "serve_ms": 688.5,
+    "queue_wait_s": 10.81
+   },
+   "A": {
+    "timings": {
+     "cache_n": 125225,
+     "prompt_n": 0,
+     "prompt_ms": 796.8,
+     "prompt_per_token_ms": null,
+     "prompt_per_second": null,
+     "predicted_n": 1241,
+     "predicted_ms": 11857.2,
+     "predicted_per_token_ms": 9.585,
+     "predicted_per_second": 104.3,
+     "draft_n": 793,
+     "draft_n_accepted": 490
+    },
+    "wall_s": 52.47,
+    "finish": "stop"
+   }
+  }
+ ]
+}

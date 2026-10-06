@@ -1,0 +1,98 @@
+{
+ "label": "parallel1_xhigh",
+ "mode": "xhigh",
+ "ts": "2026-10-05T18:37:30",
+ "size": 131072,
+ "delay_s": 5.0,
+ "profile_mirror": {
+  "temperature": 1.0,
+  "top_p": 0.95,
+  "top_k": 20,
+  "min_p": 0.0,
+  "presence_penalty": 0.0,
+  "frequency_penalty": 0.0,
+  "chat_template_kwargs": {
+   "preserve_thinking": true,
+   "reasoning_effort": "xhigh"
+  },
+  "a_max_tokens": 8192
+ },
+ "reps": [
+  {
+   "A": {
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 125221,
+     "prompt_ms": 36070.4,
+     "prompt_per_token_ms": 0.288,
+     "prompt_per_second": 3471.6,
+     "predicted_n": 3016,
+     "predicted_ms": 25735.0,
+     "predicted_per_token_ms": 8.533,
+     "predicted_per_second": 117.2,
+     "draft_n": 2030,
+     "draft_n_accepted": 1328
+    },
+    "wall_s": 62.1,
+    "finish": "stop"
+   },
+   "B": {
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 90,
+     "prompt_ms": 663.4,
+     "prompt_per_token_ms": 7.371,
+     "prompt_per_second": 135.7,
+     "predicted_n": 30,
+     "predicted_ms": 190.9,
+     "predicted_per_token_ms": 6.363,
+     "predicted_per_second": 157.2,
+     "draft_n": 25,
+     "draft_n_accepted": 20
+    },
+    "wall_s": 57.96,
+    "finish": "stop",
+    "serve_ms": 854.3,
+    "queue_wait_s": 57.11
+   }
+  },
+  {
+   "A": {
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 125221,
+     "prompt_ms": 35956.3,
+     "prompt_per_token_ms": 0.287,
+     "prompt_per_second": 3482.6,
+     "predicted_n": 1167,
+     "predicted_ms": 10121.8,
+     "predicted_per_token_ms": 8.673,
+     "predicted_per_second": 115.3,
+     "draft_n": 707,
+     "draft_n_accepted": 445
+    },
+    "wall_s": 46.37,
+    "finish": "stop"
+   },
+   "B": {
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 89,
+     "prompt_ms": 638.0,
+     "prompt_per_token_ms": 7.169,
+     "prompt_per_second": 139.5,
+     "predicted_n": 33,
+     "predicted_ms": 210.1,
+     "predicted_per_token_ms": 6.367,
+     "predicted_per_second": 157.1,
+     "draft_n": 28,
+     "draft_n_accepted": 24
+    },
+    "wall_s": 42.22,
+    "finish": "stop",
+    "serve_ms": 848.1,
+    "queue_wait_s": 41.37
+   }
+  }
+ ]
+}
