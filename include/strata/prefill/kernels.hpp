@@ -88,6 +88,15 @@ void gather_rows16(const uint16_t* x16, const int32_t* src, uint16_t* dst16, int
 /// bo[t, :] = shared[t, :] * sigmoid(sg[t]) + sum_k w[t, k] * D[slot[t, k], :]
 void moe_combine(const float* D, const int32_t* slot, const float* w, const float* shared, const float* sg, float* bo,
                  int64_t T, void* stream);
+/// --peer-device's prompt share as sums: bo[t, :] = (sum over the k with slot[t, k] < rows_local of w[t, k] *
+/// D[slot[t, k], :], in k order) + peer[t, :] + shared[t, :] * sigmoid(sg[t]).  `peer` (the peer's per-token sums)
+/// may be mapped host memory.
+void moe_combine_peer(const float* D, const int32_t* slot, const float* w, const float* shared, const float* sg,
+                      const float* peer, int64_t rows_local, float* bo, int64_t T, void* stream);
+/// sum[t, :] += wk[p] * rows[r, :] with p = pair[r], t = p / 10 (the routed pair's token), for n rows of ONE expert
+/// (no token twice: launches in a fixed expert order make the sums repeatable).  After eddoursul/Strata's
+/// moe_scatter_add (f8de703).
+void peer_scatter_add(float* sum, const float* rows, const float* wk, const int32_t* pair, int64_t n, void* stream);
 
 // ---- QSA helpers
 /// In place: x[r, :] = x[r, :] * rsqrt(mean x^2 + eps) * w  over rows of `cols` (row stride `ld`).
