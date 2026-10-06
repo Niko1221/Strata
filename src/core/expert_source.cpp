@@ -1166,9 +1166,17 @@ bool FileExpertSource::claim_stage(int64_t key, size_t& v, bool& fill, bool ahea
         if (!ahead && stage_pf_[v]) { stage_pf_[v] = 0; io_pf_used_.fetch_add(1, std::memory_order_relaxed); }   // a layer asked for what was read ahead
         return true;
     }
+    // STRATA_STAGE_KEEP_MIB: the pool keeps that many MiB of blobs before it reuses any buffer, so a file-tier expert
+    // routed again a few decode windows later is found here instead of read from the drive a second time (the
+    // unbuffered reads have no file cache behind them).  Unset or 0: a buffer is reused as soon as it is free.
+    static const uint64_t keep_bytes = [] {
+        const char* v = std::getenv("STRATA_STAGE_KEEP_MIB");
+        return v != nullptr && std::atoll(v) > 0 ? (uint64_t) std::atoll(v) << 20 : 0ull;
+    }();
+    const bool grow = stage_blob_ > 0 && (uint64_t) (stage_buf_.size() + 1) * stage_blob_ <= keep_bytes;
     v = stage_buf_.size();
     uint64_t oldest = std::numeric_limits<uint64_t>::max();
-    for (size_t i = 0; i < stage_buf_.size(); ++i)
+    for (size_t i = 0; !grow && i < stage_buf_.size(); ++i)
         if (!stage_busy_[i] && (stage_epoch_[i] + kStageAge <= epoch_ || stage_used_[i] + kStageSeq <= seq) &&
             stage_used_[i] < oldest) {
             oldest = stage_used_[i];
