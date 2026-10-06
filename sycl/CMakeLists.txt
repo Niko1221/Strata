@@ -217,10 +217,17 @@ target_link_libraries(strata PRIVATE strata_engine strata_prefill strata_spec)
 if(WIN32 AND EXISTS "${STRATA_ONEMKL_LIB}")
   # Installer-free oneMKL (PyPI onemkl-sycl-blas + mkl wheels): the SYCL BLAS DLLs beside the engine.
   get_filename_component(_onemkl_bin "${STRATA_ONEMKL_LIB}" DIRECTORY)
+  get_filename_component(_icx_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
   foreach(_dll mkl_sycl_blas.6.dll mkl_core.3.dll mkl_def.3.dll mkl_avx2.3.dll mkl_avx512.3.dll
                mkl_mc3.3.dll mkl_sequential.3.dll mkl_tbb_thread.3.dll libimalloc.dll)
     add_custom_command(TARGET strata POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_onemkl_bin}/${_dll}" "$<TARGET_FILE_DIR:strata>"
+      COMMENT "copying ${_dll} beside strata.exe")
+  endforeach()
+  # The SYCL runtime beside the compiler (conda dpcpp: sycl9.dll): the server's env may not have it on PATH.
+  foreach(_dll sycl9.dll)
+    add_custom_command(TARGET strata POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_icx_bin}/${_dll}" "$<TARGET_FILE_DIR:strata>"
       COMMENT "copying ${_dll} beside strata.exe")
   endforeach()
 endif()

@@ -187,7 +187,7 @@ def install(argv) -> None:
     if exe is None:
         S.fail(f"Strata's SYCL engine cannot be used: {why}", "docs/INTEL.md: build it, then run this again")
     for name in ("gpus", "amd_gpus", "amd_problem", "hip_vision", "build_engine_hip", "hipblaslt_table", "ram_gb",
-                 "write_run_script", "start", "say", "main"):
+                 "write_run_script", "start", "say", "main", "get_prebuilt_hip", "hip_card"):
         if not callable(getattr(S, name, None)):
             S.fail(f"setup.py has no {name}() any more: sycl/setup_intel.py needs updating for this setup.py")
     if S.WIN and not callable(getattr(S, "intel_gpus_windows", None)):
@@ -230,6 +230,9 @@ def install(argv) -> None:
     S.amd_problem = (lambda g: S.intel_problem(g)) if S.WIN else (lambda g: None)
     S.hip_vision = lambda asked: "none"                 # images are not wired on the SYCL port yet
     S.build_engine_hip = lambda *a, **k: stub
+    S.get_prebuilt_hip = lambda *a, **k: stub   # Windows: skip the ready-made HIP engine (its arch check
+    S.hip_card = lambda eng, gpu, listed: {**gpu, "count": len(listed)}  # would refuse xe; the SYCL build is
+    # already in place (sycl_engine above), and there is no HIP runtime to number against on Intel
     S.hipblaslt_table = lambda *a, **k: None
     S.ram_gb = lambda: fake_ram                         # the experts are in VRAM: setup's RAM rule does not apply
 
