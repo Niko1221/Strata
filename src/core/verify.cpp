@@ -227,6 +227,19 @@ const int64_t g_test_stall = [] {
     const char* e = std::getenv("STRATA_TEST_VERIFY_STALL");
     return e != nullptr ? (int64_t) std::atoll(e) : (int64_t) 0;
 }();
+// The overlapped split's hand-off wait on the GPU is bounded: STRATA_SPLIT_WAIT_MS (default 30000, 0 = no bound).
+// The host's own per-layer wait (20 s, #267) normally ends a stalled window first; this bound is the backstop for
+// a host that is gone (a killed process must not leave a kernel spinning on its card).
+const unsigned long long g_split_wait_ns = [] {
+    const char* e = std::getenv("STRATA_SPLIT_WAIT_MS");
+    return (unsigned long long) (e != nullptr ? std::atoll(e) : 30000) * 1000000ull;
+}();
+// test hook: STRATA_TEST_HANDOFF_DROP=N - the writing stage's N-th window (1-based) leaves its hand-off flag down, as
+// if the publish were lost; the reading stage's bounded wait (or the host's) must then end the window cleanly.
+const int64_t g_test_drop = [] {
+    const char* e = std::getenv("STRATA_TEST_HANDOFF_DROP");
+    return e != nullptr ? (int64_t) std::atoll(e) : (int64_t) 0;
+}();
 }  // namespace
 
 bool Verifier::release_gpu_waits(int timeout_ms) {
@@ -358,7 +371,7 @@ Verifier::~Verifier() {
     if (arena_) cudaFree(arena_);
     if (hcount_d_) cudaFree(hcount_d_);
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_commit_, h_ple_, h_out_, h_x_, h_ids_, h_w_, h_seq_, h_flag_, h_ymiss_,
-                     h_flagA_, h_plan_, h_flagB_, h_plan_err_};
+                     h_flagA_, h_plan_, h_flagB_, h_plan_err_, herr_h_, hdrop_h_};
     for (void* h : hosts)
         if (h) cudaFreeHost(h);
 }
@@ -516,7 +529,10 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     if (hflag_out_d_ != nullptr && hcount_d_ == nullptr) {   // the overlapped split's hand-off counter
         if (cudaMalloc((void**) &hcount_d_, 64) != cudaSuccess) { err = "verify: hand-off counter allocation failed"; return false; }
         cudaMemset(hcount_d_, 0, 64);
+        if (!mapped(64, (void**) &hdrop_h_, (void**) &hdrop_d_)) { err = "verify: hand-off test word allocation failed"; return false; }
     }
+    if (hflag_in_d_ != nullptr && herr_h_ == nullptr &&
+        !mapped(64, (void**) &herr_h_, (void**) &herr_d_)) { err = "verify: hand-off error word allocation failed"; return false; }
     if (g_trace && trace_h_ == nullptr) {   // #649: the breadcrumbs, mapped so they read while the GPU hangs
         trace_n_ = (size_t) (g.n_layers + 1) * kProfPer * 2;
         if (!mapped(trace_n_ * 8, (void**) &trace_h_, (void**) &trace_m_)) {
@@ -686,7 +702,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     if (lb_ > 0) {
         const float* hin = hand_in_ + (size_t) hrow0 * HB;   // the group's rows: [R][bo][inj] contiguous
         // the overlapped split: this graph was launched before the previous stage finished - wait for its hand-off
-        if (hflag_in_d_ != nullptr && !batch_rec_) wait_flag_ge(hflag_in_d_, 1u, cs);
+        if (hflag_in_d_ != nullptr && !batch_rec_) wait_handoff(hflag_in_d_, 1u, herr_d_, g_split_wait_ns, cs);
         copy_from_mapped(R_, hin, (int64_t) T * HC * N, cs);
         copy_from_mapped(bo_, hin + (size_t) T * HC * N, (int64_t) T * N, cs);
         copy_from_mapped(inj2_, hin + (size_t) T * (HC + 1) * N, (int64_t) T * HC, cs);
@@ -1343,7 +1359,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         float* hout = hand_out_ + (size_t) hrow0 * HB;
         if (hflag_out_d_ != nullptr && !batch_rec_) {   // the overlapped split: payload + the next stage's flag
             handoff_publish(hout, R_, (int64_t) T * HC * N, bo_, (int64_t) T * N, inj2_, (int64_t) T * HC, hcount_d_,
-                            hflag_out_d_, cs);
+                            hflag_out_d_, cs, hdrop_d_);
             return true;
         }
         copy_from_mapped(hout, R_, (int64_t) T * HC * N, cs);
@@ -1644,6 +1660,8 @@ void Verifier::stage_inputs(int T, const int32_t* tokens, int64_t pos0) {
     *(volatile uint32_t*) h_flagB_ = 0;
     // the overlapped split: the next stage's graph is launched after this, and must see THIS window's raise
     if (hflag_out_h_ != nullptr) *(volatile uint32_t*) hflag_out_h_ = 0;
+    if (herr_h_ != nullptr) *(volatile uint32_t*) herr_h_ = 0;
+    if (hdrop_h_ != nullptr) *(volatile uint32_t*) hdrop_h_ = (g_test_drop > 0 && windows + 1 == g_test_drop) ? 1u : 0u;
     std::atomic_thread_fence(std::memory_order_seq_cst);
     _mm_sfence();
     last_t_ = T;
@@ -1689,6 +1707,15 @@ void Verifier::accumulate_profile(const unsigned long long* stamps) {
     }
     if (le_ == L) prof_sum_[0][26] += gap(at(L, 1), at(L, 0));
     ++prof_windows_;
+}
+
+bool Verifier::handoff_failed(std::string& err) const {
+    if (herr_h_ == nullptr || *(const volatile uint32_t*) herr_h_ == 0) return false;
+    err = "verify: layer split: the hand-off into layer " + std::to_string(lb_) + " did not arrive within " +
+          std::to_string(g_split_wait_ns / 1000000ull) + " ms (STRATA_SPLIT_WAIT_MS); the window was not used. "
+          "STRATA_SPLIT_OVERLAP=0 runs the serial order";
+    trace_ev("HANDOFF-TIMEOUT", -1, lb_, (int64_t) (g_split_wait_ns / 1000000ull));
+    return true;
 }
 
 bool Verifier::chain_overlap() const {
@@ -1906,6 +1933,12 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         }
         if (!ok) return false;
         if (se != cudaSuccess) { err = std::string("verify: ") + cudaGetErrorString(se); return false; }
+        if (handoff_failed(err)) return false;   // a middle stage of three or more: its own hand-in
+        if (ar_on() && h_plan_err_ != nullptr && *(volatile uint32_t*) h_plan_err_ != 0) {   // #871, as below
+            *(volatile uint32_t*) h_plan_err_ = 0;
+            err = "verify: the all-resident plan met an expert that is not in VRAM (the residency table changed during the window)";
+            return false;
+        }
         commit_pending_ = false;
         if (prof_on_ && G == 1) collect_profile();
         return true;
@@ -1920,6 +1953,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     const cudaError_t se = cudaStreamSynchronize(cs_);
     trace_ev("SYNCED", -1, -1, (int64_t) se);
     if (se != cudaSuccess) { err = std::string("verify: ") + cudaGetErrorString(se); return false; }
+    if (handoff_failed(err)) return false;   // a stale hand-off: nothing of this window is used
     if (ar_on() && h_plan_err_ != nullptr && *(volatile uint32_t*) h_plan_err_ != 0) {   // #871: refresh_ar saw the table whole
         *(volatile uint32_t*) h_plan_err_ = 0;
         err = "verify: the all-resident plan met an expert that is not in VRAM (the residency table changed during the window)";

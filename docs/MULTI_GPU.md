@@ -166,6 +166,13 @@ KV, layers 0-25 / 26-47; 512-token greedy answers, median of 8 runs:
 Greedy output is byte-identical with the flag at 0 and 1; the quiz set scored the same (47/51). Not measured on
 NVIDIA yet, where a sync and a graph launch cost less.
 
+The reading stage's wait for the flag is bounded on the GPU: `STRATA_SPLIT_WAIT_MS` (default 30000, 0 = no bound).
+If the flag does not arrive in time, the wait marks an error word and returns, the window's graph completes, and the
+host fails that window with an error naming the setting (the server then restarts the engine) instead of using a
+stale hand-off. Normally the host's own per-layer wait (20 s, #267) ends a stalled window first and releases every
+GPU wait, the hand-off's included. Test hook: `STRATA_TEST_HANDOFF_DROP=N` withholds the flag in the first stage's
+N-th window, as if the publish were lost.
+
 ## Limits (for now)
 
 - **Works across cards** (bench/results/2026-09-29-layer-split-limits):

@@ -352,6 +352,11 @@ private:
     uint32_t* hflag_out_h_ = nullptr;    ///< ... and the outgoing one's
     uint32_t* hflag_out_d_ = nullptr;
     uint32_t* hcount_d_ = nullptr;       ///< handoff_publish's block counter (device memory)
+    uint32_t* herr_h_ = nullptr;         ///< the bounded hand-off wait gave up (mapped; the reading stage's)
+    uint32_t* herr_d_ = nullptr;
+    uint32_t* hdrop_h_ = nullptr;        ///< STRATA_TEST_HANDOFF_DROP: the writing stage withholds its flag (mapped)
+    uint32_t* hdrop_d_ = nullptr;
+    bool handoff_failed(std::string& err) const;   ///< the bounded hand-off wait timed out in the last window
     int prelaunched_ = 0;                ///< prelaunch ran for a window of this size: run skips staging + launch
     /// The overlapped split: stage this window's inputs and launch its graph now (the graph waits on the hand-off
     /// flag); `run` then only serves the host side.  Called on a helper thread while the previous stage runs.
