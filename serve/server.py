@@ -4728,7 +4728,7 @@ def make_handler(svc: Service):
                     self._count_tokens(req)
                 else:
                     self._json(404, {"error": {"message": "not found"}})
-            except PoolFull as e:                            # retryable: the lanes hold the KV pool for now
+            except PoolFull as e:                            # retryable: the pool frees as the lanes finish
                 retry = {"Retry-After": str(POOL_RETRY_S)}
                 if path == "/v1/responses":
                     self._json(503, responses_error_body(str(e), "server_error", code="kv_pool_full"), retry)
