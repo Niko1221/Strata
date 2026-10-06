@@ -4044,6 +4044,13 @@ int main(int argc, char** argv) {
             }
             o.resident_budget -= o.resident_lru;
             src.set_stage_keep(o.resident_lru);
+            // STRATA_LRU_KEEP_FREE_GIB=G: the LRU part is elastic - it shrinks when the available RAM falls below G (other
+            // programs get it back at once, nothing paged) and grows back towards its size when RAM is free again
+            if (const char* kf = std::getenv("STRATA_LRU_KEEP_FREE_GIB"); kf != nullptr && std::atof(kf) > 0.0) {
+                src.start_elastic_lru((uint64_t) (std::atof(kf) * 1073741824.0));
+                std::fprintf(stderr, "strata generate: RAM tier LRU is elastic: it keeps %.1f GiB of RAM available to "
+                                     "other programs\n", std::atof(kf));
+            }
             std::fprintf(stderr, "strata generate: RAM tier: %.2f GiB by the expert profile, %.2f GiB of the experts the "
                                  "decode reads from the files (LRU)\n", (double) o.resident_budget / 1073741824.0,
                          (double) o.resident_lru / 1073741824.0);
@@ -10837,6 +10844,10 @@ int main(int argc, char** argv) {
                                      "blobs found in it\n", (double) src.stage_keep() / 1073741824.0,
                              src.unbuffered() ? "" : ", inactive: the reads go through the file cache",
                              (long long) src.staged_decode_hits(), (long long) src.staged_prompt_hits());
+            if (srcp == &src && src.lru_freed() > 0)
+                std::fprintf(stderr, "strata serve: RAM tier LRU elastic: %.2f GiB held now, %lld blobs given back to other "
+                                     "programs since the start\n", (double) src.lru_live_bytes() / 1073741824.0,
+                             (long long) src.lru_freed());
             if (srcp == &src && src.lru_offered() > 0)
                 std::fprintf(stderr, "strata serve: RAM tier LRU offered to the OS: %lld buffers; reclaimed %lld intact, "
                                      "%lld discarded by the OS (read again)\n", (long long) src.lru_offered(),

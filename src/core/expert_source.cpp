@@ -935,6 +935,7 @@ bool FileExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64
 }
 
 void FileExpertSource::close() {
+    stop_elastic_lru();   // before the stage buffers it frees go away
     io_stop();
     inputs_.clear();
     if (complement_arena_ != nullptr) {
@@ -997,6 +998,9 @@ void FileExpertSource::close() {
         stage_buf_.clear();
         stage_offered_.clear();
         stage_alloc_ = 0;
+        stage_live_ = 0;
+        stage_free_.clear();
+        lru_cap_ = ~0ull;
         stage_key_.clear();
         stage_epoch_.clear();
         stage_used_.clear();
@@ -1214,30 +1218,43 @@ bool FileExpertSource::claim_stage(int64_t key, size_t& v, bool& fill, bool ahea
     // the RAM tier's LRU part (set_stage_keep): the pool keeps that many bytes of blobs before it reuses any buffer, so
     // a file-tier expert routed again a few decode windows later is found here instead of read from the drive a second
     // time (the unbuffered reads have no file cache behind them).  0: a buffer is reused as soon as it is free.
-    const bool grow = stage_blob_ > 0 && (uint64_t) (stage_buf_.size() + 1) * stage_blob_ <= stage_keep_;
+    // (the elastic LRU lowers lru_cap_ below that when other programs need the RAM)
+    const bool grow = stage_blob_ > 0 && (uint64_t) (stage_live_ + 1) * stage_blob_ <= std::min(stage_keep_, lru_cap_);
     v = stage_buf_.size();
     uint64_t oldest = std::numeric_limits<uint64_t>::max();
     for (size_t i = 0; !grow && i < stage_buf_.size(); ++i)
-        if (!stage_busy_[i] && (stage_epoch_[i] + kStageAge <= epoch_ || stage_used_[i] + kStageSeq <= seq) &&
+        if (stage_buf_[i] && !stage_busy_[i] && (stage_epoch_[i] + kStageAge <= epoch_ || stage_used_[i] + kStageSeq <= seq) &&
             stage_used_[i] < oldest) {
             oldest = stage_used_[i];
             v = i;
         }
-    if (v == stage_buf_.size()) {
+    if (v == stage_buf_.size() && !stage_free_.empty()) {   // a slot the elastic LRU freed: allocated again below
+        v = stage_free_.back();
+        stage_free_.pop_back();
+    }
+    if (v == stage_buf_.size() || !stage_buf_[v]) {
         if (stage_alloc_ == 0) stage_alloc_ = (stage_blob_ + 4095) / 4096 * 4096;
 #if defined(_WIN32)
-        stage_buf_.emplace_back((uint8_t*) VirtualAlloc(nullptr, (SIZE_T) stage_alloc_, MEM_COMMIT | MEM_RESERVE,
-                                                        PAGE_READWRITE));
+        uint8_t* p = (uint8_t*) VirtualAlloc(nullptr, (SIZE_T) stage_alloc_, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 #else
-        stage_buf_.emplace_back(new (std::nothrow) uint8_t[(size_t) stage_alloc_]);
+        uint8_t* p = new (std::nothrow) uint8_t[(size_t) stage_alloc_];
 #endif
-        if (!stage_buf_.back()) { stage_buf_.pop_back(); return false; }
-        stage_offered_.push_back(0);
-        stage_key_.push_back(-1);
-        stage_epoch_.push_back(0);
-        stage_used_.push_back(0);
-        stage_busy_.push_back(0);
-        stage_pf_.push_back(0);
+        if (p == nullptr) {
+            if (v != stage_buf_.size()) stage_free_.push_back(v);
+            return false;
+        }
+        ++stage_live_;
+        if (v != stage_buf_.size()) {
+            stage_buf_[v].reset(p);
+        } else {
+            stage_buf_.emplace_back(p);
+            stage_offered_.push_back(0);
+            stage_key_.push_back(-1);
+            stage_epoch_.push_back(0);
+            stage_used_.push_back(0);
+            stage_busy_.push_back(0);
+            stage_pf_.push_back(0);
+        }
         if (stage_buf_.size() == 512 && !stage_grew_) {
             stage_grew_ = true;
             std::fprintf(stderr, "FileExpertSource: %zu blobs assembled from the GGUF are in use at once (%.2f GiB)\n",
@@ -2021,6 +2038,73 @@ void FileExpertSource::begin_layer(int64_t layer, const int32_t* ids, int64_t k)
         if (layer == 0) offer_cold_stages();   // once a window
         last_layer_ = layer;
     }
+}
+
+void FileExpertSource::lru_shrink_to(uint64_t bytes) {
+    if (stage_blob_ == 0 || (uint64_t) stage_live_ * stage_blob_ <= bytes) return;
+    // the coldest first; a buffer handed out for this layer or the next ones (kStageAge) or being filled stays
+    std::vector<size_t> cold;
+    for (size_t i = 0; i < stage_buf_.size(); ++i)
+        if (stage_buf_[i] && !stage_busy_[i] && stage_epoch_[i] + kStageAge <= epoch_) cold.push_back(i);
+    std::sort(cold.begin(), cold.end(), [&](size_t a, size_t b) { return stage_used_[a] < stage_used_[b]; });
+    for (size_t i : cold) {
+        if ((uint64_t) stage_live_ * stage_blob_ <= bytes) break;
+        if (stage_key_[i] >= 0) stage_of_.erase(stage_key_[i]);
+        stage_key_[i] = -1;
+        stage_offered_[i] = 0;
+        stage_pf_[i] = 0;
+        stage_buf_[i].reset();
+        --stage_live_;
+        stage_free_.push_back(i);
+        lru_freed_.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void FileExpertSource::lru_watch_loop(uint64_t keep_free) {
+    constexpr uint64_t kSlack = 512ull << 20, kGrowStep = 1ull << 30, kHysteresis = 2ull << 30;
+    std::unique_lock<std::mutex> wl(lru_watch_mu_);
+    while (!lru_watch_cv_.wait_for(wl, std::chrono::milliseconds(500), [&] { return lru_watch_quit_; })) {
+        uint64_t avail = 0;
+#if defined(_WIN32)
+        MEMORYSTATUSEX ms{};
+        ms.dwLength = sizeof ms;
+        if (!GlobalMemoryStatusEx(&ms)) continue;
+        avail = ms.ullAvailPhys;
+#else
+        if (!available_memory_bytes(avail)) continue;
+#endif
+        std::lock_guard<std::mutex> lk(stage_mu_);
+        const uint64_t live = (uint64_t) stage_live_ * stage_blob_;
+        if (avail < keep_free) {
+            // another program wants the RAM: give back the deficit and a little more, coldest blobs first
+            const uint64_t deficit = keep_free - avail + kSlack;
+            lru_cap_ = live > deficit ? live - deficit : 0;
+            lru_shrink_to(lru_cap_);
+        } else if (avail > keep_free + kHysteresis && lru_cap_ < stage_keep_) {
+            // RAM is free again: let the pool grow back, a step at a time
+            const uint64_t room = avail - keep_free - kHysteresis;
+            lru_cap_ = std::min(stage_keep_, std::max(lru_cap_, live) + std::min(kGrowStep, room));
+        }
+    }
+}
+
+void FileExpertSource::start_elastic_lru(uint64_t keep_free_bytes) {
+    stop_elastic_lru();
+    {
+        std::lock_guard<std::mutex> lk(lru_watch_mu_);
+        lru_watch_quit_ = false;
+    }
+    lru_watch_ = std::thread([this, keep_free_bytes] { lru_watch_loop(keep_free_bytes); });
+}
+
+void FileExpertSource::stop_elastic_lru() {
+    if (!lru_watch_.joinable()) return;
+    {
+        std::lock_guard<std::mutex> lk(lru_watch_mu_);
+        lru_watch_quit_ = true;
+    }
+    lru_watch_cv_.notify_all();
+    lru_watch_.join();
 }
 
 void FileExpertSource::StageFree::operator()(uint8_t* p) const {

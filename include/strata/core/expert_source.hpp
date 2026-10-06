@@ -638,6 +638,12 @@ public:
     int64_t lru_offered() const { return lru_offered_.load(std::memory_order_relaxed); }
     int64_t lru_kept() const { return lru_kept_.load(std::memory_order_relaxed); }
     int64_t lru_lost() const { return lru_lost_.load(std::memory_order_relaxed); }
+    /// The elastic LRU (STRATA_LRU_KEEP_FREE_GIB): a watcher keeps at least `keep_free_bytes` of RAM available to the
+    /// system - when other programs take it, the LRU frees its coldest buffers (back to the OS at once, never paged);
+    /// when RAM is free again it grows back towards set_stage_keep's size.
+    void start_elastic_lru(uint64_t keep_free_bytes);
+    int64_t lru_freed() const { return lru_freed_.load(std::memory_order_relaxed); }
+    uint64_t lru_live_bytes() const { return (uint64_t) stage_live_ * stage_blob_; }
     /// #286: blobs an unbuffered read could not deliver, read through the mapping instead (0 when all went direct).
     int64_t direct_fallbacks() const { return direct_fallbacks_.load(std::memory_order_relaxed); }
 
@@ -730,6 +736,19 @@ private:
     std::atomic<int64_t> lru_offered_{0}, lru_kept_{0}, lru_lost_{0};
     bool reclaim_stage(size_t v, bool count = true);   ///< stage_mu_ held: whether buffer v still holds its blob
     void offer_cold_stages();                 ///< stage_mu_ held: offers the buffers unused for a while
+    // the elastic LRU (start_elastic_lru): the pool grows to lru_cap_ (at most stage_keep_), a watcher lowers lru_cap_
+    // and frees the coldest buffers when the available RAM falls below the floor, and raises it again when RAM is free
+    uint64_t lru_cap_ = ~0ull;
+    size_t stage_live_ = 0;                   ///< stage buffers allocated (a freed one leaves a null slot)
+    std::vector<size_t> stage_free_;          ///< null slots, reused before the vector grows
+    std::thread lru_watch_;
+    std::mutex lru_watch_mu_;
+    std::condition_variable lru_watch_cv_;
+    bool lru_watch_quit_ = false;
+    std::atomic<int64_t> lru_freed_{0};
+    void lru_watch_loop(uint64_t keep_free);
+    void lru_shrink_to(uint64_t bytes);       ///< stage_mu_ held: frees the coldest free buffers down to `bytes`
+    void stop_elastic_lru();
     std::vector<int64_t> stage_key_;
     std::vector<uint64_t> stage_epoch_, stage_used_;
     std::vector<char> stage_busy_;            ///< being filled (outside stage_mu_): never a victim
