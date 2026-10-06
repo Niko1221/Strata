@@ -143,10 +143,7 @@ public:
     QsaState& kv_state_rw() { return st_; }
     int64_t first_needed() const { return (window_ > 0 && prompt_len_ > 0) ? prompt_len_ - window_ - 64 : 0; }
     int device() const { return device_; }
-    bool idle(std::string& err) {
-        if (cs_ && cudaStreamSynchronize(cs_) != cudaSuccess) { err = "mtp: its stream failed"; return false; }
-        return true;
-    }
+    bool idle(std::string& err);
 
 private:
     bool record_forward(int T, int step_row0, cudaStream_t cs, std::string& err);

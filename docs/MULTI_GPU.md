@@ -13,6 +13,18 @@ is every card's share and skips those probes; there is no per-card setting yet.
 
 ## Using it
 
+**Batch MTP on a layer split (opt-in).** With `--serve --batch N --batch-mtp --mtp PATH --spec T`, where N and T
+are at least 2, each active slot verifies its current token and one draft proposal. Use `--batch-groups 1`:
+the grouped rows run through the stages in order, and every stage commits the same accepted prefix per slot.
+The last GPU holds the slot drafters, output head and residual buffers; each stage keeps its own slot state and
+image positions. More than four active slots rotate through windows of at most eight rows.
+
+Batch MTP stays off with `--batch-groups > 1`, stages sharing one GPU, helper expert caches, remote expert
+optimization or peer devices. `--pipeline-windows` stays off with batch slots. These modes keep their existing
+fallbacks. Exact text comparisons with decoding during prompt admission also need `--no-prefill-borrow`,
+`--pcie-frac 0`, fixed expert placement and `STRATA_IQ_MT_MIN=1`, as for plain batching. The lifecycle regression
+is `tools/batch_mtp_split_test.py`; test each model and placement before using the option.
+
 **Nothing to type.** `START-HERE.bat` (Linux: `./setup.sh`) lists your NVIDIA cards and says for each one whether
 Strata can use it:
 

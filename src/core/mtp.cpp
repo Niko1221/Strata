@@ -127,6 +127,7 @@ bool read_file(const std::string& path, std::vector<uint8_t>& out) {
 }  // namespace
 
 MtpDrafter::~MtpDrafter() {
+    const OnDevice on_device(device_);
     if (cs_) cudaStreamSynchronize(cs_);
     for (auto& e : prefill_exec_) if (e) cudaGraphExecDestroy(e);
     for (auto& e : prefill_dev_exec_) if (e) cudaGraphExecDestroy(e);
@@ -157,6 +158,12 @@ MtpDrafter::~MtpDrafter() {
     for (cudaEvent_t e : ev_step_) if (e) cudaEventDestroy(e);
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_row_, h_out_, h_prob_, h_force_};
     for (void* h : hosts) if (h) cudaFreeHost(h);
+}
+
+bool MtpDrafter::idle(std::string& err) {
+    const OnDevice on_device(device_);
+    if (cs_ && cudaStreamSynchronize(cs_) != cudaSuccess) { err = "mtp: its stream failed"; return false; }
+    return true;
 }
 
 const float* MtpDrafter::f32(const char* name) const {
@@ -613,6 +620,7 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
         // The shared subset keeps its source format (including a --mtp-q4 head).
         dhead_type_ = shared->dhead_type_;
         dvocab_ = shared->dvocab_;
+        dvocab_host_ = shared->dvocab_host_;
         n_dvocab_ = shared->n_dvocab_;
         owns_draft_head_ = false;
     }

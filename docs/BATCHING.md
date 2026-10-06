@@ -19,12 +19,13 @@ asked, with a note when it is more than setup would recommend.
 "parallel": 2
 ```
 
-On one GPU with MTP (`--mtp` and `--spec`), `--batch-mtp` (in the config's `args`, or `STRATA_BATCH_MTP=1` in the
+With MTP (`--mtp` and `--spec`), `--batch-mtp` (in the config's `args`, or `STRATA_BATCH_MTP=1` in the
 server's environment) lets each batch slot verify one MTP proposal per window. It is opt-in; without it the batch
 behaviour described below is exactly the one without MTP. It needs VRAM per slot for the draft state and buffers, so
-check the engine's free-memory log before using it on a smaller card. If it cannot run (one slot, no `--mtp`, a layer
-split or helper GPU) the engine says so and batches as usual. RTX PRO 5000 owners measured +31% to +39% total
-throughput with 2 to 4 clients (a RX R9700 run too); it has not been validated with a layer split.
+check the engine's free-memory log before using it on a smaller card. It also supports a serial layer split with
+`--batch-groups 1`; see [MULTI_GPU.md](MULTI_GPU.md). If it cannot run (one slot, no `--mtp`, pipelined groups or
+helper GPUs) the engine says so and batches as usual. RTX PRO 5000 owners measured +31% to +39% total
+throughput with 2 to 4 clients (a RX R9700 run too); those are single-GPU measurements.
 
 With a layer split, the engine options go into the config's `args`:
 
@@ -123,7 +124,8 @@ counter-based draw (Philox(seed, position)).
 
 - By default, batch windows carry no MTP drafts: a conversation in a slot decodes one token per window (the solo
   path keeps its drafts, which is why a request alone is not put in a slot, and goes back to it when left alone).
-- Grouped MTP currently uses one proposal per slot and requires one GPU; it does not support a layer split.
+- Grouped MTP uses one proposal per slot on one GPU or a serial layer split (`--batch-groups 1`); it does not
+  support pipelined groups, stages sharing a device, helper expert caches or peer devices.
 - Repetition / frequency / presence penalties are not applied in batch windows.
 - A prompt shorter than one chunk is read in one piece (the slots wait for it); a read gives way only at a chunk
   boundary, and not for pictures.
