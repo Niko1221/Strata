@@ -4938,7 +4938,16 @@ int main(int argc, char** argv) {
     int32_t* d_hit_count = nullptr;
     strata::core::TokenHits thits;
     const bool graph_hits = hit_fn != nullptr && !profile.empty() && !o.no_pool;
-    if (graph_hits && !o.no_capture && !o.no_token_graph && layer_dump == nullptr && half_dump == nullptr) {
+    // The residency table has two readers.  The token graph's hit path reads it on the device - that is
+    // `graph_residency`, the gate it always had.  The prompt loan is the other reader, whoever else is
+    // listening: a lend marks the lent slots' experts not-resident and the refill restores them (and the
+    // prompt path itself reads the host table to stream only what the cache does not hold).  So borrowing
+    // builds it too, token graph or not - with --no-token-graph or --no-capture the loan used to lose its
+    // bookkeeping here and silently fall back to buffers the cache sizing never reserved for it.
+    const bool graph_residency = graph_hits && !o.no_capture && !o.no_token_graph &&
+                                 layer_dump == nullptr && half_dump == nullptr;
+    const bool borrow_residency = strata::prefill::borrow_residency(pf_borrow, o.prefill_chunk);
+    if (graph_residency || borrow_residency) {
         host_res.assign((size_t) (g.n_layers * g.n_expert), strata::core::kNotResident);
         int64_t resident = 0;
         for (int64_t l = 0; l < g.n_layers; ++l)
@@ -4948,60 +4957,104 @@ int main(int argc, char** argv) {
                 host_res[(size_t) (l * g.n_expert + e)] = slot;
                 if (slot != strata::core::kNotResident) ++resident;
             }
-        if (cudaMalloc((void**) &d_res, host_res.size() * sizeof(int32_t)) != cudaSuccess ||
-            cudaMalloc((void**) &d_hit_count, sizeof(int32_t)) != cudaSuccess ||
-            res_put(d_res) != cudaSuccess) {
-            std::fprintf(stderr, "strata generate: the device residency table could not be staged\n");
-            return 1;
-        }
-        thits.d_res = d_res;
-        thits.n_expert = g.n_expert;
-        // a file-backed arena (STRATA_ARENA_MMAP): the experts no GPU holds are the ones the CPU pool and the
-        // prompt path will read - start reading them now instead of faulting them in 4 KB at a time mid-request
-        // ... and the ones a GPU holds are handed back first (STRATA_ARENA_RELEASE=0 keeps them): the fill read the
-        // whole arena, and left mapped and referenced it crowds every other allocation into swap
-        {
-            static const bool keep = std::getenv("STRATA_ARENA_RELEASE") && std::getenv("STRATA_ARENA_RELEASE")[0] == '0';
-            rss_probe("before the release");
-            uint64_t released = 0;
-            if (!keep)
-                for (size_t i = 0; i < host_res.size(); ++i)
-                    if (host_res[i] != strata::core::kNotResident)
-                        released += srcp->release((int64_t) i / g.n_expert, (int64_t) i % g.n_expert);
-            if (released > 0)
-                std::fprintf(stderr, "strata generate: expert arena: %.2f GiB of VRAM-held experts handed back to the OS\n",
-                             (double) released / (1024.0 * 1024.0 * 1024.0));
-            rss_probe("after the release");
-            int64_t pf = 0;
-            for (size_t i = 0; i < host_res.size(); ++i)
-                if (host_res[i] == strata::core::kNotResident) {
-                    srcp->prefetch((int64_t) i / g.n_expert, (int64_t) i % g.n_expert);
-                    ++pf;
-                }
-            (void) pf;
-            rss_probe("after the prefetch hints");
-        }
-        for (auto& st : stages) {   // layer split across GPUs: the same table on every device
-            const strata::core::OnDevice on(st->dev);
-            if (cudaMalloc((void**) &st->d_res, host_res.size() * sizeof(int32_t)) != cudaSuccess ||
-                res_put(st->d_res) !=
-                    cudaSuccess) {
-                std::fprintf(stderr, "strata generate: layer split: CUDA%d residency table failed\n", st->dev);
-                return 1;
+        // Staging the table.  A failure means different things for its two readers: the token graph's hit path
+        // cannot run without it - that refusal is the engine's own and stays.  The loan only loses its
+        // bookkeeping, so a borrowing-only run warns and carries on WITHOUT borrowing: the table is freed, the
+        // loan scans below see no residency state and fall back to the prompt path's own buffers, which the
+        // cache sizing reserved for exactly this case.  (Before the borrowing gate existed, this allocation was
+        // never attempted without the graph, so borrowing-only must not turn it into a new hard failure.)
+        bool staged = cudaMalloc((void**) &d_res, host_res.size() * sizeof(int32_t)) == cudaSuccess;
+        if (staged && graph_residency)
+            staged = cudaMalloc((void**) &d_hit_count, sizeof(int32_t)) == cudaSuccess;
+        if (staged) staged = res_put(d_res) == cudaSuccess;
+        int failed_stage = -1;   // the layer split's stage whose table failed, for the upstream fatal line
+        for (size_t si = 0; staged && si < stages.size(); ++si) {
+            GpuStage& st = *stages[si];
+            const strata::core::OnDevice on(st.dev);
+            if (cudaMalloc((void**) &st.d_res, host_res.size() * sizeof(int32_t)) != cudaSuccess ||
+                res_put(st.d_res) != cudaSuccess) {
+                staged = false;
+                failed_stage = (int) si;
             }
         }
-        thits.cache_base = drive.d.cache_base;
-        thits.blob = drive.d.cache_blob;
-        thits.d_slot = drive.d.d_slot;
-        thits.d_dst = drive.d.d_dst;
-        thits.d_count = d_hit_count;
-        thits.x_q8 = drive.d.x_q8_0_hit;
-        thits.x_scale = drive.d.x_q8_0_hit_scale;
-        thits.scratch = drive.d.hit_scratch;
-        thits.hit_out = drive.d.hit_out;
-        drive.d.host_res = host_res.data();
-        std::fprintf(stderr, "strata generate: token graph hit path: %lld resident experts, decided on the device\n",
-                     (long long) resident);
+        if (!staged) {
+            (void) cudaGetLastError();
+            // leave nothing half-built behind: every consumer below keys off host_res/d_res
+            for (auto& st : stages)
+                if (st->d_res != nullptr) {
+                    cudaFree(st->d_res);
+                    st->d_res = nullptr;
+                }
+            if (d_hit_count != nullptr) {
+                cudaFree(d_hit_count);
+                d_hit_count = nullptr;
+            }
+            if (d_res != nullptr) {
+                cudaFree(d_res);
+                d_res = nullptr;
+            }
+            host_res.clear();
+            host_res.shrink_to_fit();
+            if (strata::prefill::residency_staging_failure_is_fatal(graph_residency)) {
+                if (failed_stage >= 0)
+                    std::fprintf(stderr, "strata generate: layer split: CUDA%d residency table failed\n",
+                                 stages[(size_t) failed_stage]->dev);
+                else
+                    std::fprintf(stderr, "strata generate: the device residency table could not be staged\n");
+                return 1;
+            }
+            std::fprintf(stderr, "strata generate: warning: prompt-path residency bookkeeping could not be staged "
+                                 "(%s); prefill borrowing is disabled for this run and the prompt path will use "
+                                 "its own buffers\n", cudaGetErrorString(cudaGetLastError()));
+        }
+        if (staged) {
+            if (graph_residency) {
+                thits.d_res = d_res;
+                thits.n_expert = g.n_expert;
+            }
+            // a file-backed arena (STRATA_ARENA_MMAP): the experts no GPU holds are the ones the CPU pool and the
+            // prompt path will read - start reading them now instead of faulting them in 4 KB at a time mid-request
+            // ... and the ones a GPU holds are handed back first (STRATA_ARENA_RELEASE=0 keeps them): the fill read the
+            // whole arena, and left mapped and referenced it crowds every other allocation into swap
+            {
+                static const bool keep = std::getenv("STRATA_ARENA_RELEASE") && std::getenv("STRATA_ARENA_RELEASE")[0] == '0';
+                rss_probe("before the release");
+                uint64_t released = 0;
+                if (!keep)
+                    for (size_t i = 0; i < host_res.size(); ++i)
+                        if (host_res[i] != strata::core::kNotResident)
+                            released += srcp->release((int64_t) i / g.n_expert, (int64_t) i % g.n_expert);
+                if (released > 0)
+                    std::fprintf(stderr, "strata generate: expert arena: %.2f GiB of VRAM-held experts handed back to the OS\n",
+                                 (double) released / (1024.0 * 1024.0 * 1024.0));
+                rss_probe("after the release");
+                int64_t pf = 0;
+                for (size_t i = 0; i < host_res.size(); ++i)
+                    if (host_res[i] == strata::core::kNotResident) {
+                        srcp->prefetch((int64_t) i / g.n_expert, (int64_t) i % g.n_expert);
+                        ++pf;
+                    }
+                (void) pf;
+                rss_probe("after the prefetch hints");
+            }
+            if (graph_residency) {
+                thits.cache_base = drive.d.cache_base;
+                thits.blob = drive.d.cache_blob;
+                thits.d_slot = drive.d.d_slot;
+                thits.d_dst = drive.d.d_dst;
+                thits.d_count = d_hit_count;
+                thits.x_q8 = drive.d.x_q8_0_hit;
+                thits.x_scale = drive.d.x_q8_0_hit_scale;
+                thits.scratch = drive.d.hit_scratch;
+                thits.hit_out = drive.d.hit_out;
+                drive.d.host_res = host_res.data();
+                std::fprintf(stderr, "strata generate: token graph hit path: %lld resident experts, decided on the device\n",
+                             (long long) resident);
+            } else {
+                std::fprintf(stderr, "strata generate: prompt-path residency map: %lld resident experts (the loan's "
+                                     "bookkeeping, without the token graph)\n", (long long) resident);
+            }
+        }
     }
     if (!o.no_capture && !o.no_token_graph && layer_dump == nullptr && half_dump == nullptr &&
         (hit_fn == nullptr || thits.on()) && !native_pack && !multi_gpu) {   // a split's token graph cannot span stages
@@ -8711,8 +8764,10 @@ int main(int argc, char** argv) {
                 }
                 if (n_parts > 0) res_upload();
                 if (trace && n_parts > 0) {
-                    std::fprintf(stderr, "strata trace: refilled %lld slots on %lld stage(s) in %.1f ms\n",
-                                 (long long) n_lent, (long long) n_parts,
+                    int64_t left_lent = 0;
+                    for (const PfPart& p : pf_parts) left_lent += (int64_t) p.lent.size();
+                    std::fprintf(stderr, "strata trace: request refill: %lld experts restored, %lld left lent, in %.1f ms\n",
+                                 (long long) n_lent, (long long) left_lent,
                                  std::chrono::duration<double, std::milli>(Clock::now() - t_rf).count());
                     std::fflush(stderr);
                 }
@@ -8764,9 +8819,16 @@ int main(int argc, char** argv) {
                 if (any) res_upload();
                 if (trace) {
                     int64_t n_lent = 0;
-                    for (const PfPart& p : pf_parts) n_lent += (int64_t) p.lent.size();
-                    std::fprintf(stderr, "strata trace: lent %lld slots for %lld tokens in %.1f ms\n", (long long) n_lent,
-                                 (long long) want, std::chrono::duration<double, std::milli>(Clock::now() - t_ln).count());
+                    int32_t first_slot = -1;
+                    for (const PfPart& p : pf_parts)
+                        for (const auto& [i, slot] : p.lent) {
+                            n_lent += 1;
+                            if (first_slot < 0 || slot < first_slot) first_slot = slot;
+                        }
+                    std::fprintf(stderr, "strata trace: request loan: %lld slots, first slot %d, %lld experts marked "
+                                         "non-resident, for %lld tokens in %.1f ms\n", (long long) n_lent, first_slot,
+                                 (long long) n_lent, (long long) want,
+                                 std::chrono::duration<double, std::milli>(Clock::now() - t_ln).count());
                     std::fflush(stderr);
                 }
                 return true;

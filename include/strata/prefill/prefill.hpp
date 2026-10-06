@@ -188,4 +188,19 @@ private:
     PrefillStats stats_;
 };
 
+/// Whether the prompt loan needs the residency table built (generate.cpp): borrowing must be possible (an expert
+/// profile to fill the cache from, and not `--no-prefill-borrow`) and a prompt path with a chunk must exist.  The
+/// table is the loan's bookkeeping - a lend marks the lent slots' experts not-resident and the refill restores
+/// them - so it exists whenever borrowing can happen, whether or not the token graph (its other reader) is
+/// captured.  `--no-prefill-borrow` and chunkless runs build nothing extra.
+inline bool borrow_residency(bool prefill_borrow_available, int64_t prefill_chunk) {
+    return prefill_borrow_available && prefill_chunk > 0;
+}
+
+/// How a staging failure of the residency table must be handled: the token graph's hit path cannot run without
+/// it - that refusal is the engine's own and stays fatal.  The prompt loan only loses its bookkeeping, so a
+/// borrowing-only run warns and continues WITHOUT borrowing (the table is freed, the loan scans see no
+/// residency state and fall back to the prompt path's own buffers) instead of gaining a new hard failure.
+inline bool residency_staging_failure_is_fatal(bool graph_residency) { return graph_residency; }
+
 }  // namespace strata::prefill
