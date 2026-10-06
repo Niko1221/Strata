@@ -613,6 +613,13 @@ public:
     int64_t warmed() const { return warm_count_.load(std::memory_order_relaxed); }
     /// Prompt-path blobs found in the stage pool instead of read from the drive (copy_staged).
     int64_t staged_prompt_hits() const { return stage_hits_pp_.load(std::memory_order_relaxed); }
+    /// Decode-window file-tier experts found in the stage pool instead of read from the drive.
+    int64_t staged_decode_hits() const { return stage_hits_dec_.load(std::memory_order_relaxed); }
+    /// The RAM tier's LRU part (--resident-lru-gib): the stage pool keeps up to `bytes` of the blobs the decode read
+    /// from the files, least recently used out first, and the prompt path copies from it.  Needs unbuffered reads (the
+    /// pool is where they land); STRATA_STAGE_KEEP_MIB sets it without the flag.
+    void set_stage_keep(uint64_t bytes);
+    uint64_t stage_keep() const { return stage_keep_; }
     /// #286: blobs an unbuffered read could not deliver, read through the mapping instead (0 when all went direct).
     int64_t direct_fallbacks() const { return direct_fallbacks_.load(std::memory_order_relaxed); }
 
@@ -704,6 +711,9 @@ private:
     std::unique_ptr<std::atomic<uint32_t>[]> warm_stamp_;   ///< per (layer, expert): epoch_ + 1 when warmed
     std::atomic<int64_t> warm_hits_{0}, warm_count_{0};
     std::atomic<int64_t> stage_hits_pp_{0};   ///< prompt-path blobs copied from a stage buffer (copy_staged)
+    std::atomic<int64_t> stage_hits_dec_{0};  ///< decode misses the stage pool already held (prefetch)
+    static uint64_t stage_keep_env();         ///< STRATA_STAGE_KEEP_MIB in bytes, 0 when unset
+    uint64_t stage_keep_ = stage_keep_env();  ///< bytes of blobs the stage pool keeps before reusing a buffer
     mutable std::atomic<int64_t> direct_fallbacks_{0};
     std::unordered_map<int64_t, size_t> stage_of_;
     uint64_t stage_blob_ = 0;

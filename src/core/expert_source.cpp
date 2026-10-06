@@ -1166,14 +1166,10 @@ bool FileExpertSource::claim_stage(int64_t key, size_t& v, bool& fill, bool ahea
         if (!ahead && stage_pf_[v]) { stage_pf_[v] = 0; io_pf_used_.fetch_add(1, std::memory_order_relaxed); }   // a layer asked for what was read ahead
         return true;
     }
-    // STRATA_STAGE_KEEP_MIB: the pool keeps that many MiB of blobs before it reuses any buffer, so a file-tier expert
-    // routed again a few decode windows later is found here instead of read from the drive a second time (the
-    // unbuffered reads have no file cache behind them).  Unset or 0: a buffer is reused as soon as it is free.
-    static const uint64_t keep_bytes = [] {
-        const char* v = std::getenv("STRATA_STAGE_KEEP_MIB");
-        return v != nullptr && std::atoll(v) > 0 ? (uint64_t) std::atoll(v) << 20 : 0ull;
-    }();
-    const bool grow = stage_blob_ > 0 && (uint64_t) (stage_buf_.size() + 1) * stage_blob_ <= keep_bytes;
+    // the RAM tier's LRU part (set_stage_keep): the pool keeps that many bytes of blobs before it reuses any buffer, so
+    // a file-tier expert routed again a few decode windows later is found here instead of read from the drive a second
+    // time (the unbuffered reads have no file cache behind them).  0: a buffer is reused as soon as it is free.
+    const bool grow = stage_blob_ > 0 && (uint64_t) (stage_buf_.size() + 1) * stage_blob_ <= stage_keep_;
     v = stage_buf_.size();
     uint64_t oldest = std::numeric_limits<uint64_t>::max();
     for (size_t i = 0; !grow && i < stage_buf_.size(); ++i)
@@ -1307,7 +1303,9 @@ void FileExpertSource::prefetch(int64_t layer, const int64_t* experts, int64_t n
             if (only_uncached && !cold[(size_t) i] && stage_of_.find(layer * n_expert_ + e) == stage_of_.end()) continue;
             size_t v = 0;
             bool fill = false;
-            if (!claim_stage(layer * n_expert_ + e, v, fill) && fill) {
+            const bool have = claim_stage(layer * n_expert_ + e, v, fill);
+            if (have) stage_hits_dec_.fetch_add(1, std::memory_order_relaxed);
+            if (!have && fill) {
                 todo.push_back({v, layer, e, stage_buf_[v].get()});
                 if (warm_stamp_) {
                     const uint32_t s = warm_stamp_[index].load(std::memory_order_relaxed);
@@ -1979,6 +1977,16 @@ bool FileExpertSource::transient(int64_t layer, int64_t expert) const {
     if (complement_ready_ && resident_blob(index) != nullptr)
         return false;
     return override_.empty() || override_[index] == nullptr;
+}
+
+uint64_t FileExpertSource::stage_keep_env() {
+    const char* v = std::getenv("STRATA_STAGE_KEEP_MIB");
+    return v != nullptr && std::atoll(v) > 0 ? (uint64_t) std::atoll(v) << 20 : 0ull;
+}
+
+void FileExpertSource::set_stage_keep(uint64_t bytes) {
+    std::lock_guard<std::mutex> lk(stage_mu_);
+    stage_keep_ = bytes;
 }
 
 bool FileExpertSource::copy_staged(int64_t layer, int64_t expert, uint8_t* dst) {
