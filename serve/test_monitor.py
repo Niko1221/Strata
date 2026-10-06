@@ -256,6 +256,107 @@ class ConversationCacheCard(unittest.TestCase):
             self.assertIn(f'id="{el}"', html)
             self.assertIn(f'"{el}"', js)
 
+    def test_gpu_selector_is_on_the_page(self):
+        web = Path(__file__).parent / "web"
+        html, js = (web / "index.html").read_text(encoding="utf-8"), (web / "app.js").read_text(encoding="utf-8")
+        self.assertIn('id="gpu-seg"', html)
+        state_card = html.split('<div class="st-card state-card">', 1)[1].split('<div class="metric-area"', 1)[0]
+        self.assertIn('id="gpu-selector"', state_card)
+        self.assertIn('id="gpu-seg"', state_card)
+        self.assertIn('id="gpu-select-wrap"', state_card)
+        self.assertIn('GPU to show</span>', state_card)
+        self.assertIn('"gpu-seg"', js)
+        self.assertIn('"monitor.gpu"', js)
+        self.assertIn("hw.other_gpus", js)
+        self.assertIn("other_gpu_names", js)
+        self.assertIn("is not in use by the model", js)
+        self.assertIn("not in use", js)
+        self.assertIn('id="gn-${card.key}"', js)
+        self.assertIn("graph after 2 requests", js)
+        self.assertIn("No requests yet", js)
+        self.assertIn("Not reported by this engine", js)
+        self.assertIn("options.mutedValue", js)
+        self.assertIn('options.graphState === "unreported"', js)
+        self.assertIn("if (cards.length === 1) return {text: full, title: full}", js)
+        for card in ("speculation", "reuse", "prefill-time", "vram-free", "all-power", "session", "forge"):
+            self.assertIn(f'key: "{card}"', js)
+        self.assertIn('label: "Forge", icon: "forge", spark: false', js)
+        self.assertIn('name === "forge"', js)
+        self.assertIn('viewBox="0 0 24 24"', js)
+        self.assertIn('m.forge', js)
+        self.assertIn('forge.stale', js)
+        self.assertIn('cardTitle: forgeTitle', js)
+        self.assertIn('"session" in forge', js)  # the active chat, not the day
+        self.assertIn('No active Forge chat', js)
+        self.assertIn('Forge · this chat', js)
+
+    def test_optional_cpu_sensors_are_on_the_page(self):
+        web = Path(__file__).parent / "web"
+        html, js = (web / "index.html").read_text(encoding="utf-8"), (web / "app.js").read_text(encoding="utf-8")
+        for el in ("cpu-temp-text", "cpu-temp-bar"):
+            self.assertIn(f'id="{el}"', html)
+            self.assertIn(f'"{el}"', js)
+        self.assertIn("hw.cpu_temp", js)
+        self.assertIn("hw.cpu_power", js)
+        self.assertIn('key: "cpu-temp", label: "CPU temp", icon: "thermometer", spark: true', js)
+        self.assertIn('"power", "all-power", "pcie", "cpu-temp"', js)
+        self.assertIn('const cpuTempNotice = cpuTempMissing && st.os === "windows"', js)
+        self.assertIn('Needs LibreHardwareMonitor', js)
+        self.assertIn('Options > Remote Web Server, port 8085', js)
+        self.assertIn('"os": platform.system().lower()', (Path(__file__).parent / "telemetry.py").read_text(encoding="utf-8"))
+        self.assertIn('hw.cpu_power == null ? "" : `${fmt(hw.cpu_power, 1)} W package`', js)
+        self.assertIn("hw.measured_power", js)
+        self.assertIn('"GPUs + CPU"', js)
+
+    def test_recent_requests_clear_is_page_local_and_uses_row_time(self):
+        web = Path(__file__).parent / "web"
+        html, js = (web / "index.html").read_text(encoding="utf-8"), (web / "app.js").read_text(encoding="utf-8")
+        self.assertIn('id="req-clear"', html)
+        self.assertIn('let reqClearedAfter = null', js)
+        self.assertIn('$("req-clear").addEventListener("click"', js)
+        self.assertIn('Math.max(...rows.map((r) => r.time))', js)
+        self.assertIn('requests.filter((r) => r.time > reqClearedAfter)', js)
+        self.assertIn('Cleared. New requests will appear here (refresh to see all)', js)
+        self.assertIn('reqClearedAfter == null ? (kept == null ? requests.length : kept) : visibleRequests.length', js)
+
+    def test_metric_cards_can_be_hidden(self):
+        web = Path(__file__).parent / "web"
+        js, css = (web / "app.js").read_text(encoding="utf-8"), (web / "app.css").read_text(encoding="utf-8")
+        self.assertIn('data-hide-card="${m.key}"', js)
+        self.assertIn('data-hide-card="${card.key}"', js)
+        self.assertIn('title="Hide ${esc(m.label)}"', js)
+        self.assertIn('document.addEventListener("click"', js)
+        self.assertIn('userHiddenCards.add(button.dataset.hideCard)', js)
+        self.assertIn('card.hidden = Boolean(dataHidden) || userHiddenCards.has(card.dataset.cardKey || card.id)', js)
+        self.assertIn('setCardHidden(card, options.hidden)', js)
+        self.assertNotIn('updateMetricSections', js)
+        self.assertIn('.metric-card:hover .metric-card__hide', css)
+        self.assertIn('.metric-card:focus-within .metric-card__hide', css)
+        self.assertIn('@media (hover: none)', css)
+
+    def test_metric_cards_can_be_reordered_anywhere(self):
+        web = Path(__file__).parent / "web"
+        js, html = (web / "app.js").read_text(encoding="utf-8"), (web / "index.html").read_text(encoding="utf-8")
+        self.assertIn('const CARD_ORDER_KEY = "monitor.cardOrder"', js)
+        self.assertIn('store.set(CARD_ORDER_KEY', js)
+        self.assertIn('if (cardDrag) event.preventDefault(); }, {passive: false}', js)
+        self.assertIn('id="reset-card-order"', html)
+        self.assertIn('id="card-position-live"', html)
+        self.assertIn('drag.grid.insertBefore(drag.card, drag.placeholder)', js)
+        # One grid holds every card, so a card can move to any row; no row headings.
+        self.assertIn('<div class="metric-grid" id="metric-cards"></div>', html)
+        self.assertEqual(html.count('class="metric-grid"'), 1)
+        self.assertNotIn('metric-section__head', html)
+        self.assertIn('store.set(CARD_ORDER_KEY, cardKeys())', js)
+        self.assertIn('?.closest("#metrics")', js)
+        # Hidden cards persist; the reset link counts them and clears them.
+        self.assertIn('const HIDDEN_CARDS_KEY = "monitor.hiddenCards"', js)
+        self.assertIn('store.set(HIDDEN_CARDS_KEY, [...userHiddenCards])', js)
+        self.assertIn('localStorage.removeItem("strata." + HIDDEN_CARDS_KEY)', js)
+        self.assertIn('icon${hidden === 1 ? "" : "s"} hidden', js)
+        self.assertIn('event.altKey || !["ArrowLeft", "ArrowRight"].includes(event.key)', js)
+        self.assertIn('Moved ${label} to position ${next + 1} of ${cards.length}', js)
+
 
 if __name__ == "__main__":
     unittest.main()
