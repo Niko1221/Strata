@@ -572,6 +572,8 @@ public:
     /// expert bytes outside it; switches either way (startup only, nothing reading).  Returns whether unbuffered.
     bool recheck_unbuffered(std::string& why);
     bool unbuffered() const { return !direct_.empty(); }
+    /// Whether the unbuffered reads are spread over experts.bin and its mirror (STRATA_EXPERTS_MIRROR).
+    bool mirrored() const { return mirror_ != nullptr; }
     /// pp-opt (Windows, experts.bin, unbuffered): close the mapped view once startup no longer needs it.  NTFS runs
     /// the unbuffered reads of a mapped file one at a time - on a PCIe 4 NVMe (WD SN580) 2 MiB reads at queue depth
     /// 32 measured 2.35 GB/s with experts.bin mapped and 3.57 GB/s without.  After this every file read goes through
@@ -664,6 +666,10 @@ private:
     bool open_direct(std::string& why);
     std::vector<std::string> paths_;          ///< the mapped files, as maps_
     std::vector<void*> direct_;               ///< #286: per file, an unbuffered handle (Windows) or O_DIRECT fd (Linux)
+    /// STRATA_EXPERTS_MIRROR (Windows, experts.bin): an unbuffered handle on a byte-identical copy of experts.bin on
+    /// another drive.  read_direct then reads each request's slices from the two files in turn, both drives at once.
+    void* mirror_ = nullptr;
+    void close_mirror();
     std::vector<int> role_file_;              ///< 3 x n_layers: index into maps_ / direct_
     /// blobs assembled in the stage buffers (`blob` hands those out): the GGUF in place, or any unbuffered source
     bool staged() const { return !role_ptr_.empty() || !direct_.empty() || io_pf_; }

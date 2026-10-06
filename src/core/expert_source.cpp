@@ -954,6 +954,7 @@ void FileExpertSource::close() {
     paths_.clear();
     for (void* h : direct_) close_direct(h);
     direct_.clear();
+    close_mirror();
     {
         std::lock_guard<std::mutex> lk(stage_mu_);
         stage_buf_.clear();
@@ -1419,6 +1420,13 @@ uint64_t FileExpertSource::expert_bytes() const {
     return total;
 }
 
+void FileExpertSource::close_mirror() {
+#if defined(_WIN32)
+    if (mirror_ != nullptr) CloseHandle((HANDLE) mirror_);
+#endif
+    mirror_ = nullptr;
+}
+
 bool FileExpertSource::open_direct(std::string& why) {
 #if defined(_WIN32)
     for (const std::string& path : paths_) {
@@ -1439,6 +1447,26 @@ bool FileExpertSource::open_direct(std::string& why) {
     if (role_ptr_.empty()) {   // experts.bin: blob() now assembles into the stage buffers, sized for the largest blob
         std::lock_guard<std::mutex> lk(stage_mu_);
         for (uint64_t b : layer_blob_bytes_) stage_blob_ = std::max(stage_blob_, b);
+    }
+    if (const char* mp = std::getenv("STRATA_EXPERTS_MIRROR"); mp != nullptr && *mp != 0 && role_ptr_.empty() &&
+                                                              direct_.size() == 1 && mirror_ == nullptr) {
+        const std::string path = mp;
+        const int wide = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
+        std::vector<wchar_t> w((size_t) (wide > 0 ? wide : 1), L'\0');
+        if (wide > 0) MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, w.data(), wide);
+        HANDLE m = CreateFileW(w.data(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                               FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED, nullptr);
+        LARGE_INTEGER a{}, b{};
+        if (m == INVALID_HANDLE_VALUE) {
+            why += "; the mirror " + path + " cannot be opened (error " +
+                   std::to_string((unsigned long long) GetLastError()) + "): one drive";
+        } else if (!GetFileSizeEx((HANDLE) direct_[0], &a) || !GetFileSizeEx(m, &b) || a.QuadPart != b.QuadPart) {
+            why += "; the mirror " + path + " is not the size of experts.bin: one drive";
+            CloseHandle(m);
+        } else {
+            mirror_ = m;
+            why += "; each read split over experts.bin and its mirror " + path;
+        }
     }
     return true;
 #elif defined(__linux__)
@@ -1509,6 +1537,7 @@ bool FileExpertSource::recheck_unbuffered(std::string& why) {
     // through the file cache after all: the mapped reads take over (staged() stays true for the GGUF in place)
     for (void* d : direct_) close_direct(d);
     direct_.clear();
+    close_mirror();
     return false;
 #else
     why = "through the file cache (no unbuffered reads on this platform)";
@@ -1545,7 +1574,7 @@ bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
     constexpr uint64_t kSector = 4096, kGap = 1ull << 20, kMerge = 32ull << 20;
     struct Window { int file; uint64_t a0, size, skip, n, at; uint8_t* dst; size_t req; uint64_t in_req; };
     struct Req { HANDLE h; uint64_t a0, size, pos; };
-    struct Part { size_t req; uint64_t off, size; };   // a slice of a request read on its own (STRATA_DIRECT_SPLIT_KIB)
+    struct Part { size_t req; uint64_t off, size; HANDLE h; };   // a slice of a request read on its own
     // this thread's aligned buffer and events, kept for its next batch
     struct Scratch {
         uint8_t* buf = nullptr;
@@ -1627,11 +1656,18 @@ bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
         const long long k = v != nullptr ? std::atoll(v) : 0;
         return k > 0 ? std::max<uint64_t>(4096, ((uint64_t) k << 10) / 4096 * 4096) : 0ull;   // whole sectors
     }();
+    // with a mirror (STRATA_EXPERTS_MIRROR) the slices alternate between the two drives, and without a slice size each
+    // request is read as two halves, one from each
+    const HANDLE mirror = (HANDLE) mirror_;
     sc.part.clear();
     for (size_t q = 0; q < sc.req.size(); ++q) {
-        const uint64_t size = sc.req[q].size;
-        if (split == 0 || size <= split) { sc.part.push_back({q, 0, size}); continue; }
-        for (uint64_t off = 0; off < size; off += split) sc.part.push_back({q, off, std::min(split, size - off)});
+        const Req& r = sc.req[q];
+        uint64_t slice = split;
+        if (mirror != nullptr && slice == 0) slice = (r.size / 2 + kSector - 1) / kSector * kSector;
+        if (slice == 0 || r.size <= slice) { sc.part.push_back({q, 0, r.size, r.h}); continue; }
+        size_t k = 0;
+        for (uint64_t off = 0; off < r.size; off += slice, ++k)
+            sc.part.push_back({q, off, std::min(slice, r.size - off), mirror != nullptr && (k & 1) ? mirror : r.h});
     }
     while (sc.ev.size() < sc.part.size()) {
         HANDLE e = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -1650,7 +1686,7 @@ bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
         o.Offset = (DWORD) at;
         o.OffsetHigh = (DWORD) (at >> 32);
         o.hEvent = sc.ev[k];
-        if (!ReadFile(r.h, sc.buf + r.pos + pt.off, (DWORD) pt.size, nullptr, &o) && GetLastError() != ERROR_IO_PENDING) {
+        if (!ReadFile(pt.h, sc.buf + r.pos + pt.off, (DWORD) pt.size, nullptr, &o) && GetLastError() != ERROR_IO_PENDING) {
             ok = false;
             break;
         }
@@ -1660,7 +1696,7 @@ bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
     got.assign(sc.req.size(), 0);
     for (size_t k = 0; k < issued; ++k) {
         DWORD n = 0;
-        if (!GetOverlappedResult(sc.req[sc.part[k].req].h, &sc.ov[k], &n, TRUE)) ok = false;
+        if (!GetOverlappedResult(sc.part[k].h, &sc.ov[k], &n, TRUE)) ok = false;
         got[sc.part[k].req] += n;
     }
     if (!ok || issued < sc.part.size()) return false;
