@@ -838,6 +838,8 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
         const bool f16_io = prompt_f16();   // this device's gr_* kernels write the image its GEMMs read
         m.gemm.set_f16_io(f16_io);
         set_act_f16(f16_io);
+        static const bool f16_range = std::getenv("STRATA_F16_RANGE") != nullptr;   // what reaches FP16's range
+        if (f16_range) { set_f16_range(true); gemm_set_f16_range(true); }
     }
     if (!carve(T, &o)) {
         err = "prefill: device buffers for a chunk of " + std::to_string(chunk) + " tokens do not fit";
@@ -3002,6 +3004,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         return false;
     }
     stats_.ms_total += ms_since(t_start);
+    {
+        static const bool f16_range = std::getenv("STRATA_F16_RANGE") != nullptr;
+        float xm = 0.0f, wy[2] = {0.0f, 0.0f}; unsigned long long xo = 0, wyo[2] = {0, 0};
+        if (f16_range && f16_range_read(xm, xo, true) && gemm_f16_range_read(wy, wyo, true))
+            std::fprintf(stderr, "strata f16 range: %lld tokens: activation images max |x| %.1f (%llu beyond 65504 or NaN), "
+                                 "BF16 weights max |w| %.3f (%llu), FP16 GEMM outputs max |y| %.1f (%llu not finite)\n",
+                         (long long) n, xm, xo, wy[0], wyo[0], wy[1], wyo[1]);
+    }
     if (pt.on) {
         pt.fold();
         double total = 0.0;

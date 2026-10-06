@@ -44,6 +44,18 @@
 namespace strata::prefill {
 namespace {
 #if defined(__HIPCC__)
+// STRATA_F16_RANGE (gemm_set_f16_range): the largest |value| and the count beyond 65504 / non-finite, for the BF16
+// weights converted to FP16 (slot 0, bf16_to_f16_rows) and the FP16 GEMM outputs widened (slot 1, widen_rows_f16 -
+// an output rocBLAS wrote as FP16 is Inf there, not saturated).  As the activation counter in kernels.cu.
+__device__ int g_f16_range_on_g = 0;
+__device__ unsigned g_f16_range_max_g[2] = {0, 0};
+__device__ unsigned long long g_f16_range_over_g[2] = {0, 0};
+__device__ __forceinline__ void f16_range_note_g(int k, float f) {
+    const float a = fabsf(f);
+    const unsigned bits = __float_as_uint(a);
+    if (bits > g_f16_range_max_g[k]) atomicMax(&g_f16_range_max_g[k], bits);
+    if (a > 65504.0f || isnan(f)) atomicAdd(&g_f16_range_over_g[k], 1ull);
+}
 // Y's rows, written by an FP16-out GEMM as FP16 at the start of each FP32 row (ldc = 2 ldy halves), widened in place.
 // Float c overwrites halves 2c and 2c+1, so a row is walked from its end in blocks: a block's halves are read into
 // registers, the block syncs, then writes its floats - which only cover halves of blocks already read.
@@ -54,6 +66,7 @@ __global__ void widen_rows_f16(float* __restrict__ Y, int64_t n, int64_t ldy) {
     for (int64_t b = nb - 1; b >= 0; --b) {
         const int64_t c = b * blockDim.x + threadIdx.x;
         const float v = c < n ? __half2float(h[c]) : 0.0f;
+        if (c < n && g_f16_range_on_g) f16_range_note_g(1, v);
         __syncthreads();
         if (c < n) y[c] = v;
         __syncthreads();
@@ -63,10 +76,42 @@ __global__ void widen_rows_f16(float* __restrict__ Y, int64_t n, int64_t ldy) {
 __global__ void bf16_to_f16_rows(const uint16_t* __restrict__ s, __half* __restrict__ d, int64_t n) {
     for (int64_t i = blockIdx.x * (int64_t) blockDim.x + threadIdx.x; i < n; i += (int64_t) gridDim.x * blockDim.x) {
         const float f = __uint_as_float((uint32_t) s[i] << 16);
+        if (g_f16_range_on_g) f16_range_note_g(0, f);
         d[i] = __float2half(isnan(f) ? f : fminf(fmaxf(f, -65504.0f), 65504.0f));   // as hf_sat: a NaN stays NaN
     }
 }
 #endif
+}  // namespace
+
+void gemm_set_f16_range(bool on) {
+#if defined(__HIPCC__)
+    const int v = on ? 1 : 0;
+    if (cudaMemcpyToSymbol(g_f16_range_on_g, &v, sizeof v) != cudaSuccess) {
+        std::fprintf(stderr, "prefill gemm: setting the FP16 range check failed: %s\n", cudaGetErrorString(cudaGetLastError()));
+        std::exit(1);
+    }
+#else
+    (void) on;
+#endif
+}
+bool gemm_f16_range_read(float max_abs[2], unsigned long long over[2], bool reset) {
+#if defined(__HIPCC__)
+    unsigned bits[2] = {0, 0}; unsigned long long o[2] = {0, 0};
+    if (cudaMemcpyFromSymbol(bits, g_f16_range_max_g, sizeof bits) != cudaSuccess ||
+        cudaMemcpyFromSymbol(o, g_f16_range_over_g, sizeof o) != cudaSuccess) { cudaGetLastError(); return false; }
+    for (int k = 0; k < 2; ++k) { union { unsigned u; float f; } c; c.u = bits[k]; max_abs[k] = c.f; over[k] = o[k]; }
+    if (reset) {
+        const unsigned z[2] = {0, 0}; const unsigned long long zz[2] = {0, 0};
+        cudaMemcpyToSymbol(g_f16_range_max_g, z, sizeof z); cudaMemcpyToSymbol(g_f16_range_over_g, zz, sizeof zz);
+    }
+    return true;
+#else
+    (void) max_abs; (void) over; (void) reset;
+    return false;
+#endif
+}
+
+namespace {
 
 void ck(cublasStatus_t s, const char* what) {
     if (s != CUBLAS_STATUS_SUCCESS) {
