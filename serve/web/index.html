@@ -50,6 +50,7 @@
         <div class="attachments" id="attachments" hidden></div>
         <textarea id="input" rows="2" placeholder="Ask anything&hellip;" aria-label="Message"></textarea>
         <div class="st-composer__bar">
+          <div class="skill-controls" id="skill-controls" hidden></div>
           <button type="button" class="st-btn st-btn--icon" id="attach-btn" title="Attach a text file (or drop it here)" aria-label="Attach a file">
             <svg class="st-icon"><use href="web/sprite.svg#i-attach"/></svg></button>
           <input type="file" id="file" multiple hidden>
@@ -238,6 +239,7 @@
 </aside>
 <div class="scrim" id="scrim" hidden></div>
 <div class="st-toasts" id="toasts" aria-live="polite"></div>
+<script src="web/skill-controls.js"></script>
 <script src="web/app.js"></script>
 </body>
 </html>

@@ -65,7 +65,7 @@ main { flex: 1; min-height: 0; display: flex; }
                   border: 1px solid var(--st-line-soft); border-radius: var(--st-r-sm); }
 
 .composer-wrap { flex: none; padding: 0 var(--st-s-6) var(--st-s-6); }
-.st-composer { max-width: 860px; margin: 0 auto; }
+.st-composer { max-width: 860px; margin: 0 auto; position: relative; }
 .st-composer textarea { max-height: 40vh; }
 .st-btn--send { width: 42px; padding: 0; }
 .composer-hint { font-size: var(--st-fs-xs); color: var(--st-ink-muted); margin-right: var(--st-s-2); font-variant-numeric: tabular-nums; }
@@ -75,6 +75,29 @@ main { flex: 1; min-height: 0; display: flex; }
         background: var(--st-surface-2); border: 1px solid var(--st-line); font-size: var(--st-fs-xs); color: var(--st-ink-soft); }
 .chip .st-btn--icon { width: 22px; height: 22px; border-radius: 50%; }
 .chip .st-btn--icon .st-icon { width: 14px; height: 14px; }
+
+/* Instruction skills: catalog metadata only, with selection in the existing composer. */
+.skill-controls[hidden] { display: none; }
+.skill-controls { display: flex; align-items: center; gap: var(--st-s-2); min-width: 0; }
+.skill-controls__button { height: 36px; padding: 0 var(--st-s-2); font-size: var(--st-fs-xs); white-space: nowrap; }
+.skill-controls__status, .skill-controls__heading { font-size: var(--st-fs-xs); color: var(--st-ink-muted); overflow-wrap: anywhere; }
+.skill-controls > .skill-controls__status { position: absolute; left: 10px; right: 10px; bottom: calc(100% + 4px); }
+.skill-controls__picker { position: absolute; z-index: 3; left: 0; right: 0; bottom: calc(100% + 8px);
+  border: 1px solid var(--st-line); border-radius: var(--st-r-md); background: var(--st-surface); box-shadow: var(--st-sh-pop); overflow: hidden; }
+.skill-controls__heading, .skill-controls__picker > .skill-controls__status { padding: var(--st-s-2) var(--st-s-3); }
+.skill-controls__heading { border-bottom: 1px solid var(--st-line-soft); }
+.skill-controls__list { max-height: min(260px, 35vh); overflow-y: auto; overscroll-behavior: contain; }
+.skill-controls__option { display: flex; flex-direction: column; gap: 3px; width: 100%; min-height: 44px;
+  padding: var(--st-s-2) var(--st-s-3); border: 0; background: transparent; color: var(--st-ink); font-family: var(--st-font); text-align: left; cursor: pointer; }
+.skill-controls__option[aria-selected="true"] { background: var(--st-accent-tint); }
+.skill-controls__option:focus-visible { outline-offset: -2px; }
+.skill-controls__name { font-size: var(--st-fs-sm); font-weight: var(--st-fw-medium); overflow-wrap: anywhere; }
+.skill-controls__description { font-size: var(--st-fs-xs); color: var(--st-ink-soft); overflow-wrap: anywhere; }
+@media (hover: hover) and (pointer: fine) { .skill-controls__option:hover { background: var(--st-surface-2); } }
+@media (max-width: 420px) {
+  .st-composer__bar { flex-wrap: wrap; }
+  .skill-controls { flex-basis: 100%; }
+}
 
 /* ---------------------------------------------------------------- monitor */
 .view--monitor, .view--about { overflow-y: auto; }
