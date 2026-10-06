@@ -7624,6 +7624,7 @@ int main(int argc, char** argv) {
             int32_t tok[strata::kernels::kVerifyMaxT] = {};
             int64_t pos[strata::kernels::kVerifyMaxT] = {};
             int64_t since = 0;              ///< tick it started waiting (fairness)
+            int S = 0;                      ///< slots in its window: up to its last active one (idle ones cost rows)
         };
         std::vector<PGroup> pg((size_t) (piped ? o.batch_groups : 0));
         std::vector<int> stage_group((size_t) n_pipe, -1);
@@ -7654,7 +7655,7 @@ int main(int argc, char** argv) {
                 if (k + 1 < n_pipe) { G.stage = k + 1; G.since = pipe_tick; continue; }
                 // the last stage: the group's picks
                 const int32_t* outb = vk.batch_out();
-                for (int t = 0; t < GS; ++t) {
+                for (int t = 0; t < G.S; ++t) {
                     BSlot& sl = bs[(size_t) (gi * GS + t)];
                     if (!sl.active) continue;
                     const int32_t y = outb[t];
@@ -7698,7 +7699,9 @@ int main(int argc, char** argv) {
                     if (pick < 0) continue;
                     rr = pick + 1;
                     PGroup& G = pg[(size_t) pick];
-                    for (int t = 0; t < GS; ++t) {
+                    G.S = 0;
+                    for (int t = 0; t < GS; ++t) if (bs[(size_t) (pick * GS + t)].active) G.S = t + 1;
+                    for (int t = 0; t < G.S; ++t) {
                         BSlot& sl = bs[(size_t) (pick * GS + t)];
                         G.tok[t] = sl.active ? sl.x : 0;
                         G.pos[t] = sl.active ? sl.p : 0;
@@ -7711,7 +7714,7 @@ int main(int argc, char** argv) {
                 }
                 PGroup& G = pg[(size_t) pick];
                 strata::core::progress().busy.store(true);
-                if (!stage_verifier(k).batch_launch(pick * GS, GS, G.tok, G.pos, err)) {
+                if (!stage_verifier(k).batch_launch(pick * GS, G.S, G.tok, G.pos, err)) {
                     std::printf("ERR %s\n", err.c_str());
                     return false;
                 }
