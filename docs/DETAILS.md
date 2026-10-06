@@ -1040,6 +1040,69 @@ unmeasured: all the runs above are text.
 
 ---
 
+## Instruction skills in Chat
+
+A skill is a set of written instructions you choose for one request. It does not install
+programs, start a workflow or grant the model extra tools. This option is off by default.
+When enabled, **/ Skills** beside the composer lists names and descriptions; typing `/`
+at the start of a message opens the same picker. Up/Down selects a row, Enter inserts it,
+and Escape closes the picker. Existing draft text and attachments stay in place.
+Ordinary slash text and unknown commands stay ordinary messages.
+
+The operator connects an existing MCP adapter in the usual `mcp_servers` configuration,
+then binds two of its namespaced tools in the run config:
+
+```json
+"skills": {"list_tool": "skills__list", "read_tool": "skills__read"}
+```
+
+Here `skills` is the configured MCP server name and `list`/`read` are its tool names.
+They are examples: the two names can refer to any configured MCP tools that satisfy the
+following contract. Restart the server after changing the configuration. Omit `skills`
+to disable the feature. The adapter owns skill storage, access policy and updates.
+Strata does not scan your filesystem or ship a skill catalog.
+
+**Adapter contract.** This catalog/read convention is specific to this feature, not a
+standard MCP Skills API. Both tools return one complete, successful MCP text result
+containing a JSON object:
+
+- `list_tool`, called with `{}`, returns `{"skills":[{"name":"outline","description":"Write a concise outline"}]}`.
+  At most 20 skills; distinct names match `[a-z0-9][a-z0-9-]{0,63}`. The catalog exposes
+  only name and description (at most 400 characters), never instruction bodies or paths.
+- `read_tool`, called with `{"name":"outline"}`, returns
+  `{"name":"outline","content":"Present a short numbered outline."}`. The returned
+  name must match; content must be nonempty and at most 14,000 UTF-8 bytes. The MCP
+  result cap (`mcp.max_result_chars`) must be large enough for the complete JSON result;
+  failed, truncated or malformed results are refused.
+
+The two helpers are omitted from the model's MCP tool list when this configuration is
+present. Other configured tools and their permissions stay the same. Keep **Use tools
+from MCP servers** enabled in Chat to select a skill. With that setting off, the picker
+is hidden and slash text stays ordinary input.
+
+**Request contract.** `GET /skills` returns only `{"enabled":true,"skills":[...]}`;
+without configuration it returns `{"enabled":false,"skills":[]}`. It uses the existing
+API key and trusted-origin checks. Bodies are read on demand only when a Chat Completions
+request explicitly supplies `"strata_skill":"outline"` and `"strata_mcp":true`, and
+its final user message starts with `/outline` followed by whitespace or the end of text.
+The server checks the current catalog again, so an old picker cannot select a removed
+skill. Instructions are appended to that user turn; earlier turns and the system prompt
+are retained. The visible slash message is retained too. A skill must never be treated
+as permission to execute code or change settings; only configured MCP tools are available.
+
+`POST /v1/chat/count_tokens` accepts the same OpenAI messages/options, including the
+explicit skill selection, and returns `{"input_tokens":123,"count_exact":true}`. For
+text, it renders the same selected instructions and admitted tool schemas as generation,
+without loading or running the model. Both routes read the selected body independently:
+if the operator changes a skill between counting and generation, count it again. Image
+requests are refused by this count endpoint; it does not run a vision encoder or claim
+an exact image count. Skill selection is currently supported by Chat Completions and
+this count endpoint only; other dialects reject the field instead of silently ignoring it.
+
+Skill retrieval uses the configured MCP timeout and cancellation. Closing a pending
+catalog/read request cancels that call before model dispatch. This adds no filesystem
+access, execution rights, account policy, web search or provider routing to Strata.
+
 ## Manage Strata from your AI assistant (MCP server)
 
 `tools/strata_mcp.py` is an MCP server for Claude Code, Claude Desktop, Cursor, VS Code, Codex and other assistants.

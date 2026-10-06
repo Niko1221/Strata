@@ -58,6 +58,7 @@ from serve.frontend import (ChatTemplate, Event, OutputParser, anthropic_to_mess
                             forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages,
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
+from serve.skills import InstructionSkills  # noqa: E402
 from serve import runconfig  # noqa: E402
 from serve.winjob import contain  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
@@ -2192,6 +2193,7 @@ class Service:
         self.started_at = time.time()
         self.status_lock = threading.Lock()
         self.mcp = None                                  # serve/mcp.py's McpHub when MCP servers are configured
+        self.skills = InstructionSkills()                    # off unless the operator binds a catalog adapter
         # sharing the GPU with other programs (all off by default): unload the engine after this many idle seconds,
         # only start it again when this much VRAM is free, and run this command first (e.g. to unload another
         # server's model); the next request after an unload starts the engine again
@@ -3815,6 +3817,23 @@ def make_handler(svc: Service):
                 if self._authorized():
                     self._config_get()
                 return
+            if path == "/skills":
+                if not self._authorized():
+                    return
+                if self._foreign_origin():
+                    self._json(403, {"error": {"message": "skills only from Strata's own page or a trusted origin"}})
+                    return
+                cancel = threading.Event()
+                self._watch_client(cancel)
+                try:
+                    self._json(200, svc.skills.catalog(svc.mcp, cancel))
+                except ValueError as e:
+                    self._json(502, {"error": {"message": str(e)}})
+                except McpCancelled:
+                    pass                                    # its browser closed the request
+                finally:
+                    self.watch_done.set()
+                return
             if path == "/mcp":
                 # the MCP servers, their state and tools (the web app's switch and Monitor card)
                 if self._authorized():
@@ -3953,6 +3972,9 @@ def make_handler(svc: Service):
                     except EngineDied as e:
                         self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                     return
+                if req.get("strata_skill") is not None and path not in (
+                        "/v1/chat/completions", "/v1/chat/count_tokens"):
+                    raise ValueError("strata_skill is supported by Chat Completions and its count endpoint only")
                 if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):
                     self.record = svc.begin_request(path, req)
                 if path == "/v1/responses":
@@ -3970,6 +3992,8 @@ def make_handler(svc: Service):
                     self._openai(req)
                 elif path == "/v1/messages":
                     self._anthropic(req)
+                elif path == "/v1/chat/count_tokens":
+                    self._count_chat_tokens(req)
                 elif path == "/v1/messages/count_tokens":
                     self._count_tokens(req)
                 else:
@@ -3980,6 +4004,8 @@ def make_handler(svc: Service):
                     self._json(400, responses_error_body(str(e)))
                 else:
                     self._json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
+            except McpCancelled:
+                self._note(outcome="disconnected")            # catalog/read cancelled before model dispatch
             except ModelBusy as e:
                 self._json(409, {"error": {"type": "model_busy", "message": str(e)}})
             except StructuredOutputError as e:
@@ -4188,37 +4214,71 @@ def make_handler(svc: Service):
             finally:
                 items.close()
 
-        def _openai(self, req):
-            req = svc.with_shared(req, "openai")
+        def _chat_input(self, req, cancel):
+            """The same instructions and MCP schemas for generation and text token counting."""
             messages, tools, kw = openai_to_messages(req)
             self._no_local_images(messages)
-            if tool_choice_of(req.get("tool_choice"))[0] == "none":   # as the Responses route: no tools are offered
+            if tool_choice_of(req.get("tool_choice"))[0] == "none":
                 tools = None
-            force = forced_call(req.get("tool_choice"), tools)      # a bad value is a 400 before anything is sent
+            force = forced_call(req.get("tool_choice"), tools)
             messages, validator = prepare_format(req.get("response_format"), messages)
             if validator is not None and (tools or req.get("strata_mcp")):
                 raise ValueError("structured response_format with tools/MCP is not supported")
-            svc.load()
-            max_req = max_new = int(req.get("max_completion_tokens") or req.get("max_tokens") or 0)   # 0/-1: the rest
-            use_mcp = req.get("strata_mcp") is True and svc.mcp is not None      # the web app's opt-in (serve/mcp.py)
-            own = {t.get("name") for t in tools or [] if isinstance(t, dict)}   # #592: a second line of defence
+            if req.get("strata_skill") is not None:
+                # Normalization turns a late developer/system message into a user
+                # message for the template. It must not become a human selection.
+                wire = req.get("messages")
+                if isinstance(wire, str):
+                    wire = json.loads(wire)
+                if not wire or wire[-1].get("role") != "user":
+                    raise ValueError("Skill selection needs a final user message")
+                if not self._own_page("skill instructions can be read"):
+                    return None
+            use_mcp = req.get("strata_mcp") is True and svc.mcp is not None
+            own = {t.get("name") for t in tools or [] if isinstance(t, dict)}
+            extra = []
             if use_mcp:
-                if not self._own_page("MCP tools can be used"):   # tools run with the user's rights on this PC
-                    return
-                svc.mcp.wait(10)                                  # servers still starting (only right after start)
-                extra = svc.mcp.template_tools(exclude=own)       # the request's own tools win a name clash
-                use_mcp = bool(extra)
+                if not self._own_page("MCP tools can be used"):
+                    return None
+                self._watch_client(cancel)                   # also cancels catalog/read calls before generation
+                svc.mcp.wait(10)
+                extra = svc.mcp.template_tools(exclude=own | svc.skills.tools)
                 tools = (tools or []) + extra or None
-            if force and use_mcp:
+            if force and extra:
                 raise ValueError("a forced tool_choice with MCP tools is not supported")
-            svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
-            stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
+            svc.reasoning_budget(req)
+            stop_strings(req)
+            messages = svc.skills.select(svc.mcp, messages, req, cancel)
+            return messages, tools, kw, force, validator, extra
+
+        def _count_chat_tokens(self, req):
+            req = svc.with_shared(req, "openai")
+            prepared = self._chat_input(req, threading.Event())
+            if prepared is None:
+                return
+            messages, tools, kw, force, _, _ = prepared
+            if images_of(messages):
+                raise ValueError("chat count_tokens supports text only; image encoding is not performed")
+            ids = svc.encode_prompt(messages, tools, kw)
+            if force and kw.get("enable_thinking", True) is False:
+                ids += svc.tok.encode(force, parse_special=True)
+            self._json(200, {"input_tokens": len(ids), "count_exact": True})
+
+        def _openai(self, req):
+            req = svc.with_shared(req, "openai")
+            cancel = threading.Event()
+            prepared = self._chat_input(req, cancel)
+            if prepared is None:
+                return
+            messages, tools, kw, force, validator, extra = prepared
+            svc.load()
+            max_req = max_new = int(req.get("max_completion_tokens") or req.get("max_tokens") or 0)
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force)
             _debug_req("openai", req, messages, tools, max_new, thinking, len(ids))
-            cancel = threading.Event()
-            self._watch_client(cancel)                       # #430 #431
+            if self.watch_done is None:
+                self._watch_client(cancel)
             run = run_with_mcp(svc, svc.mcp, messages, tools, kw, ids, thinking, max_new, max_req, req, cancel,
-                               {t["name"] for t in extra}) if use_mcp else None
+                               {t["name"] for t in extra}) if extra else None
             chunks = openai_chunks(svc, req, ids, thinking, tools, max_new, cancel, run=run, force=force)
             if validator is not None:
                 chunks = structured_chunks(chunks, validator)
@@ -4812,6 +4872,10 @@ def main() -> int:
         types = json.loads((tpath / "token_type.json").read_text())
         tok = ST.Tokenizer(tokens, merges, types)
     hub = hub_from_config(cfg, a.mcp_config)            # before the minutes of loading: a bad entry stops here
+    try:
+        skills = InstructionSkills(cfg.get("skills"))
+    except ValueError as e:
+        ap.error(str(e))
     if a.engine == "strata":
         if not cfg:
             ap.error("--engine strata needs --config")
@@ -4953,6 +5017,7 @@ def main() -> int:
                       ", ".join(f"{k}={v}" for k, v in svc.shared.items()), flush=True)
         except (OSError, ValueError):
             svc.shared = {}
+    svc.skills = skills
     if hub is not None:
         import atexit
         svc.mcp = hub
