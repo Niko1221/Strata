@@ -425,6 +425,19 @@ struct ExpertDispatch {
 void expert_pool_dispatch(void* user, const float* x_f, const int32_t* ids, const float* weights, int64_t n_embd,
                           int64_t k, float* out);
 
+/// STRATA_TIER_TRACE: what the calling thread is doing while it asks a source for blobs - 'D' a decode window, 'P' the
+/// prompt path, 0 anything else (the GPU caches' fills and refills, the adaptive tier) - so each traced blob says
+/// which part of the engine read it.  A guard sets it for its scope.
+struct TierPhase {
+    explicit TierPhase(char p) : prev_(current()) { current() = p; }
+    ~TierPhase() { current() = prev_; }
+    TierPhase(const TierPhase&) = delete;
+    TierPhase& operator=(const TierPhase&) = delete;
+    static char& current() { thread_local char p = 0; return p; }
+private:
+    char prev_;
+};
+
 /// Plan v0.3 P6: the pool for a verify window of `n_tok` tokens.  `x_f` is (n_tok, n_embd), `ids` (n_tok, k) and
 /// `out` (n_tok * k, n_embd).  Each distinct missed expert is computed once for all the tokens routed to it;
 /// resident experts' rows are zeroed (the GPU adds them).  Requires `host_res` (the token-graph residency).

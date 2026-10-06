@@ -418,6 +418,7 @@ struct Stager {
     }
     void work() {
         cudaSetDevice(device);
+        core::TierPhase::current() = 'P';
         uint32_t seen = 0;
         for (;;) {
             {
@@ -1781,6 +1782,7 @@ struct PeTimer {
 
 bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err) {
     err.clear();
+    const core::TierPhase tier_phase('P');
     Impl& m = *impl_;
     const core::OnDevice on_device(m.device);
     const core::ModelGeometry& g = *m.g;

@@ -458,12 +458,19 @@ bool file_tier_unbuffered(const std::vector<std::string>& paths, uint64_t arena_
 namespace {
 
 /// STRATA_TIER_TRACE=<file>: one line per expert blob served outside the GPU caches - "<ms> <kind> <layer> <expert>
-/// <bytes>", kind R (decode, RAM copy), F (decode, files), Q (prompt path, RAM copy), P (prompt path, files) - for
-/// studying which experts the RAM tier should hold.  Unset: nothing is written.
+/// <bytes>", kind R (decode, RAM copy), F (decode, files), Q (prompt path, RAM copy), P (prompt path, files), r / f
+/// (anything else: the GPU caches' fills, the adaptive tier) - for studying which experts the RAM tier should hold.
+/// Unset: nothing is written.
 class TierTrace {
 public:
     static TierTrace& get() { static TierTrace t; return t; }
     bool on() const { return f_ != nullptr; }
+    /// The trace letter of a blob served from the RAM copy or from the files, by the calling thread's TierPhase:
+    /// decode R/F, prompt path Q/P, anything else r/f.
+    static char kind(bool files) {
+        const char p = TierPhase::current();
+        return p == 'D' ? (files ? 'F' : 'R') : p == 'P' ? (files ? 'P' : 'Q') : (files ? 'f' : 'r');
+    }
     void put(char kind, int64_t layer, int64_t expert, uint64_t bytes) {
         if (f_ == nullptr) return;
         const long long ms = (long long) std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -2051,7 +2058,7 @@ bool FileExpertSource::copy_blob(int64_t layer, int64_t expert, uint8_t* dst) {
         if (held == nullptr && !override_.empty()) held = override_[index];
         if (held != nullptr) {
             std::memcpy(dst, held, (size_t) bytes);
-            TierTrace::get().put('Q', layer, expert, bytes);
+            TierTrace::get().put(TierTrace::kind(false), layer, expert, bytes);
             return true;
         }
     }
@@ -2061,7 +2068,7 @@ bool FileExpertSource::copy_blob(int64_t layer, int64_t expert, uint8_t* dst) {
     }
     const auto t0 = std::chrono::steady_clock::now();
     if (!copy_from_files(layer, expert, dst)) return false;
-    TierTrace::get().put('P', layer, expert, bytes);
+    TierTrace::get().put(TierTrace::kind(true), layer, expert, bytes);
     file_us_.fetch_add((uint64_t) std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count(),
                        std::memory_order_relaxed);
     file_read_bytes_.fetch_add(bytes, std::memory_order_relaxed);
@@ -2094,7 +2101,7 @@ bool FileExpertSource::copy_blobs(const int32_t* layers, const int32_t* experts,
         bytes += layer_blob_bytes_[(size_t) l];
     }
     if (fills.empty()) return true;
-    for (const Fill& f : fills) TierTrace::get().put('P', f.layer, f.e, layer_blob_bytes_[(size_t) f.layer]);
+    for (const Fill& f : fills) TierTrace::get().put(TierTrace::kind(true), f.layer, f.e, layer_blob_bytes_[(size_t) f.layer]);
     const auto t0 = std::chrono::steady_clock::now();
     if (!read_direct(fills.data(), fills.size()))
         for (const Fill& f : fills)   // a failed batch: each blob on its own (copy_from_files falls back to the mapping)
@@ -2926,7 +2933,7 @@ const uint8_t* FileExpertSource::blob(int64_t layer, int64_t expert) {
         if (complement_ready_ && result != nullptr) file_reads_.fetch_add(1, std::memory_order_relaxed);
     }
     if (result != nullptr && TierTrace::get().on())
-        TierTrace::get().put(from_files ? 'F' : 'R', layer, expert, layer_blob_bytes_[(size_t) layer]);
+        TierTrace::get().put(TierTrace::kind(from_files), layer, expert, layer_blob_bytes_[(size_t) layer]);
     if (result != nullptr) ++reads_;
     return result;
 }
@@ -3090,6 +3097,7 @@ static_assert(strata::kernels::cpu::MAXT * 10 <= kMaxWindowEntries, "a verify wi
 void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k,
                                 float* out) {
     using namespace strata::kernels::cpu;
+    const TierPhase tier_phase('D');
     if (d.failed) return;
     if (n_tok < 1 || n_tok > MAXT) {
         d.failed = true;
