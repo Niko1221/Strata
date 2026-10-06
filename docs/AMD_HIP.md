@@ -287,8 +287,9 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
 ## Community-validated cards
 
 Run by their owners, not on the maintainers' machines; setup accepts them like gfx1100 / gfx1201. setup ships a
-hipBLASLt table for gfx1200 (the numbers below); gfx1101 has none (make one with [Tuning table](#tuning-table)
-and compare the prompt speed with and without it).
+hipBLASLt table for gfx1200 (the numbers below). For gfx1101, the RX 7700 XT container's
+hipBLASLt 1.2.2 has a [Swift IQ3_XXS calibration](AMD_HIP_GFX1101_TUNING.md); other library builds
+need their own table (see [Tuning table](#tuning-table)).
 
 - **gfx1101, RX 7800 XT 16 GB** (jhohertz, #254; engine 0.1.29, Ryzen 9 5950X, 121 GiB RAM, system ROCm with
   hipBLASLt 1.4.1): `./setup.sh --backend hip` detected the card and compiled the engine; `strata-device --selftest`
@@ -432,6 +433,9 @@ prompt speed with and without it before keeping it.
 
 Shipped tables:
 
+- `gfx1101-hipblaslt-100202.txt`: RX 7700 XT, Swift 1.5 IQ3_XXS, ROCm 7.2.1-complete.
+  58 rows, including dense T=128/512/2048. The container selects it for the measured model and
+  library digest; [calibration, validation and measurements](AMD_HIP_GFX1101_TUNING.md).
 - `gfx1100-hipblaslt-100100.txt`, `gfx1100-hipblaslt-100200.txt`: RX 7900 XTX.
 - `gfx1201-hipblaslt-100500.txt`: Radeon AI PRO R9700 (gfx1201, 32 GB), calibrated with ROCm 10.2.0a20260914
   (AMD's `gfx120X-all` nightly, hipBLASLt 1.5.0, library build `d3164197`). 16 dense GEMM geometries at T=4096 and

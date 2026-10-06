@@ -19,6 +19,7 @@
 #include <iostream>
 #include <iterator>
 #include <limits>
+#include <numeric>
 #include <random>
 #include <regex>
 #include <sstream>
@@ -49,6 +50,7 @@ struct Events {
 struct Shape { int t, n, k, ldy; bool bf16; };
 struct Options {
     size_t workspace = 32U * 1024U * 1024U;
+    int warmups = 2, repetitions = 3, iterations = 1, max_algos = 16;
     std::vector<Shape> shapes;
     std::vector<int> tokens{4096, 8192};
     std::string shapes_file, tuning_out;
@@ -64,9 +66,6 @@ struct Best {
     std::string solution, kernel, config;
 };
 
-constexpr int WARMUPS = 2;
-constexpr int REPS = 3;
-constexpr int MAX_ALGOS = 16;
 constexpr double REL_L2_TOL = 1e-4;
 constexpr double MAX_ABS_TOL = 1e-2;
 constexpr float PADDING_CANARY = 123456.25f;
@@ -111,16 +110,16 @@ void fill(std::vector<uint16_t> &v, uint32_t seed, bool bf16) {
     std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
     for (auto &x : v) x = input_bits(dist(rng), bf16);
 }
-float time_call(hipStream_t stream, const std::function<void()> &f) {
+float time_call(hipStream_t stream, const std::function<void()> &f, int iterations) {
     Events ev;
     HIP_CHECK(hipEventRecord(ev.a, stream));
-    f();
+    for (int i = 0; i < iterations; ++i) f();
     HIP_CHECK(hipEventRecord(ev.b, stream));
     HIP_CHECK(hipEventSynchronize(ev.b));
     HIP_CHECK(hipDeviceSynchronize());
     float ms = 0;
     HIP_CHECK(hipEventElapsedTime(&ms, ev.a, ev.b));
-    return ms;
+    return ms / iterations;
 }
 Err compare(const std::vector<float> &ref, const std::vector<float> &got, int n, int t, int ld) {
     long double d2 = 0, r2 = 0; double max_abs = 0; bool finite = true;
@@ -207,6 +206,7 @@ void load_shapes(Options &o) {
 void usage(const char *p) {
     std::printf("Usage: %s [--workspace-mib N] [--shape T,N,K]... [--case dtype,T,N,K,ldy]...\n",p);
     std::printf("       [--shapes-file PATH [--tokens T1,T2,...]] [--tuning-out PATH]\n");
+    std::printf("       [--warmups N] [--repetitions N>=3] [--iterations N] [--max-algos N]\n");
     std::printf("Defaults: original three shapes, f16+bf16, T=8192, workspace=32 MiB.\n");
 }
 Options options(int argc,char **argv) {
@@ -224,9 +224,17 @@ Options options(int argc,char **argv) {
         else if(a=="--shapes-file"){o.shapes_file=next();o.explicit_shapes=true;}
         else if(a=="--tokens") o.tokens=parse_tokens(next());
         else if(a=="--tuning-out") o.tuning_out=next();
+        else if(a=="--warmups") o.warmups=positive(next(),"warmups");
+        else if(a=="--repetitions") o.repetitions=positive(next(),"repetitions");
+        else if(a=="--iterations") o.iterations=positive(next(),"iterations");
+        else if(a=="--max-algos") o.max_algos=positive(next(),"max-algos");
         else {std::fprintf(stderr,"unknown option: %s\n",a.c_str());usage(argv[0]);std::exit(2);}
     }
     if(!o.shapes_file.empty()) load_shapes(o);
+    if(o.repetitions<3 || o.repetitions>10000 || o.warmups>10000 || o.iterations>10000 || o.max_algos>4096) {
+        std::fprintf(stderr,"repetitions must be 3..10000; warmups/iterations <=10000; max-algos <=4096\n");
+        std::exit(2);
+    }
     if(!o.explicit_shapes) {
         struct DefaultShape { int n,k,ldy; bool bf16; };
         const DefaultShape defs[]={{10240,2560,10240,false},{320,10240,320,false},{2560,320,2560,false},
@@ -266,8 +274,9 @@ void emit_best(const Best &b,size_t workspace,const std::string &arch,int versio
       <<",\"algo_config_hex\":"<<json(b.config)<<"}\n";
 }
 
-void run_case(hipblasHandle_t blas,hipblasLtHandle_t lt,const Shape&s,int case_id,size_t ws,hipStream_t stream,
+void run_case(hipblasHandle_t blas,hipblasLtHandle_t lt,const Shape&s,int case_id,const Options&o,hipStream_t stream,
               const std::string&arch,int version,int hipver,std::vector<Best>&bests) {
+    const size_t ws=o.workspace;
     const size_t na=(size_t)s.k*s.n, nb=(size_t)s.k*s.t, out_elems=(size_t)s.ldy*s.t;
     const hipDataType it=s.bf16?HIP_R_16BF:HIP_R_16F;
     const hipblasOperation_t ta=HIPBLAS_OP_T,tb=HIPBLAS_OP_N;
@@ -298,19 +307,19 @@ void run_case(hipblasHandle_t blas,hipblasLtHandle_t lt,const Shape&s,int case_i
 
     BLAS_CHECK(hipblasSetStream(blas,stream));
     auto base=[&]{BLAS_CHECK(hipblasGemmEx(blas,ta,tb,m,n,k,&alpha,da.p,it,lda,db.p,it,ldb,&beta,dc.p,HIP_R_32F,ldc,HIPBLAS_COMPUTE_32F,HIPBLAS_GEMM_DEFAULT));};
-    for(int i=0;i<WARMUPS;++i){base();HIP_CHECK(hipDeviceSynchronize());}
-    float base_ms[REPS]{};
-    for(int i=0;i<REPS;++i)base_ms[i]=time_call(stream,base);
+    for(int i=0;i<o.warmups;++i){base();HIP_CHECK(hipDeviceSynchronize());}
+    std::vector<float> base_ms(o.repetitions);
+    for(auto &ms:base_ms) ms=time_call(stream,base,o.iterations);
     std::vector<float> ref(out_elems);
     HIP_CHECK(hipMemcpyAsync(ref.data(),dc.p,out_elems*sizeof(float),hipMemcpyDeviceToHost,stream));
     HIP_CHECK(hipStreamSynchronize(stream));
     const size_t baseline_padding=padding_writes(ref,s.n,s.t,s.ldy);
     std::printf("baseline dtype=%s T=%d N=%d K=%d ldy=%d padding_writes=%zu\n",dtype(s.bf16),s.t,s.n,s.k,s.ldy,baseline_padding);
-    float base_mean=(base_ms[0]+base_ms[1]+base_ms[2])/REPS;
+    float base_mean=std::accumulate(base_ms.begin(),base_ms.end(),0.0f)/o.repetitions;
 
-    hipblasLtMatmulHeuristicResult_t hs[MAX_ALGOS]{};
+    std::vector<hipblasLtMatmulHeuristicResult_t> hs(o.max_algos);
     int count=0;
-    const hipblasStatus_t query=hipblasLtMatmulAlgoGetHeuristic(lt,op,ad,bd,cd,cd,pref,MAX_ALGOS,hs,&count);
+    const hipblasStatus_t query=hipblasLtMatmulAlgoGetHeuristic(lt,op,ad,bd,cd,cd,pref,o.max_algos,hs.data(),&count);
     std::printf("case dtype=%s T=%d N=%d K=%d ldy=%d workspace_limit_bytes=%zu baseline=hipblasGemmEx rep1_ms=%.4f rep2_ms=%.4f rep3_ms=%.4f mean_ms=%.4f\n",
       dtype(s.bf16),s.t,s.n,s.k,s.ldy,ws,base_ms[0],base_ms[1],base_ms[2],base_mean);
     if(query!=HIPBLAS_STATUS_SUCCESS||count==0){
@@ -353,7 +362,7 @@ void run_case(hipblasHandle_t blas,hipblasLtHandle_t lt,const Shape&s,int case_i
             }
 
             bool failed=false;
-            for(int i=0;i<WARMUPS;++i){
+            for(int i=0;i<o.warmups;++i){
                 const hipblasStatus_t st=hipblasLtMatmul(lt,op,&alpha,da.p,ad,db.p,bd,&beta,dy.p,cd,dy.p,cd,&algo,dws.p,ws,stream);
                 if(st!=HIPBLAS_STATUS_SUCCESS){
                     std::printf("lt_unsupported dtype=%s T=%d N=%d K=%d ldy=%d heuristic_index=%d solution_id=%d status=%s(%d)\n",
@@ -362,9 +371,9 @@ void run_case(hipblasHandle_t blas,hipblasLtHandle_t lt,const Shape&s,int case_i
                 HIP_CHECK(hipDeviceSynchronize());
             }
             if(failed)continue;
-            float ms[REPS]{};
-            for(int i=0;i<REPS;++i)ms[i]=time_call(stream,run);
-            const float mean=(ms[0]+ms[1]+ms[2])/REPS;
+            std::vector<float> ms(o.repetitions);
+            for(auto &sample:ms) sample=time_call(stream,run,o.iterations);
+            const float mean=std::accumulate(ms.begin(),ms.end(),0.0f)/o.repetitions;
             std::printf("lt dtype=%s T=%d N=%d K=%d ldy=%d heuristic_index=%d solution_id=%d solution=%s kernel=%s algo_config_hex=%s required_workspace_bytes=%zu algo_max_workspace_bytes=%zu finite=%s relative_l2=%.12g max_abs=%.12g padding_writes=%zu rep1_ms=%.4f rep2_ms=%.4f rep3_ms=%.4f mean_ms=%.4f\n",
               dtype(s.bf16),s.t,s.n,s.k,s.ldy,h,id,sol.c_str(),kernel.c_str(),config.c_str(),hs[h].workspaceSize,algo.max_workspace_bytes,
               error.finite?"true":"false",error.rel_l2,error.max_abs,error.padding_writes,ms[0],ms[1],ms[2],mean);
@@ -410,9 +419,11 @@ int main(int argc,char **argv){
     const std::string arch=arch_name(prop.gcnArchName);
     std::printf("meta device_arch=%s hipblaslt_version=%d hipblaslt_header_version=%d.%d.%d hip_runtime_version=%d\n",
       arch.c_str(),version,HIPBLASLT_VERSION_MAJOR,HIPBLASLT_VERSION_MINOR,HIPBLASLT_VERSION_PATCH,hipver);
+    std::printf("meta warmups=%d repetitions=%d iterations_per_sample=%d max_algos=%d workspace_limit_bytes=%zu\n",
+                o.warmups,o.repetitions,o.iterations,o.max_algos,o.workspace);
     hipStream_t stream=nullptr;HIP_CHECK(hipStreamCreateWithFlags(&stream,hipStreamNonBlocking));
     std::vector<Best>bests;
-    for(size_t i=0;i<o.shapes.size();++i)run_case(blas,lt,o.shapes[i],(int)i,o.workspace,stream,arch,version,hipver,bests);
+    for(size_t i=0;i<o.shapes.size();++i)run_case(blas,lt,o.shapes[i],(int)i,o,stream,arch,version,hipver,bests);
     tuning_file(o.tuning_out,arch,version,bests);
     HIP_CHECK(hipStreamSynchronize(stream));HIP_CHECK(hipStreamDestroy(stream));
     LT_CHECK(hipblasLtDestroy(lt));BLAS_CHECK(hipblasDestroy(blas));

@@ -1,5 +1,6 @@
 // Opt-in HIP smoke test for the calibrated hipBLASLt prefill route; it needs STRATA_HIPBLASLT_TUNING (SKIP otherwise).
-// It checks that the table loads for this device and hipBLASLt version, that the two rows it uses exist (bf16
+// --all checks every row at its calibrated T with beta=0 and beta=1/offset output; it skips timing loops.
+// The default smoke checks that the table loads for this device and hipBLASLt version, that its rows exist (bf16
 // N=48 K=2560 ldy=96 and f16 N=512 K=2560 ldy=512, T bucket 4096), and that Gemm's output matches hipBLASEx on those
 // two rows. It does NOT check the other rows, and it does not check that hipBLASLt ran the table's solution: an id
 // the library rejects falls back to hipBLASEx and the test still passes. Set STRATA_HIPBLASLT_VERBOSE=1 to read the
@@ -21,6 +22,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <random>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -57,7 +59,7 @@ uint16_t encode(float value, bool bf16) {
 }
 
 bool run_case(strata::prefill::Gemm& gemm, hipblasHandle_t blas, hipStream_t stream, bool bf16, int t, int n,
-              int k, int ldy, int output_offset, float beta, uint32_t seed) {
+              int k, int ldy, int output_offset, float beta, uint32_t seed, int repeats = 200) {
     std::mt19937 rng(seed);
     std::uniform_real_distribution<float> dist(-0.25f, 0.25f);
     const size_t x_count = (size_t) t * k;
@@ -100,8 +102,7 @@ bool run_case(strata::prefill::Gemm& gemm, hipblasHandle_t blas, hipStream_t str
     HIP_CHECK(hipStreamSynchronize(stream));
     // Repeated beta=0 calls exercise descriptor-cache hits without changing the
     // mathematical result. Include host launch overhead and completion time.
-    if (beta == 0.0f) {
-        constexpr int repeats = 200;
+    if (beta == 0.0f && repeats > 0) {
         const auto start = std::chrono::steady_clock::now();
         for (int repeat = 0; repeat < repeats; ++repeat) {
             if (bf16) gemm.bf16((const uint16_t*) dx.p, (const uint16_t*) dw.p,
@@ -152,7 +153,12 @@ bool run_case(strata::prefill::Gemm& gemm, hipblasHandle_t blas, hipStream_t str
     return passed;
 }
 
-int main() {
+int main(int argc, char** argv) {
+    const bool all_rows = argc == 2 && std::string(argv[1]) == "--all";
+    if (argc > 1 && !all_rows) {
+        std::fprintf(stderr, "usage: %s [--all] (validate every tuning row, including beta=1 and offset output)\n", argv[0]);
+        return 2;
+    }
     const char* tuning_path = std::getenv("STRATA_HIPBLASLT_TUNING");
     if (!tuning_path || !*tuning_path) {
         std::fprintf(stderr, "SKIP: set STRATA_HIPBLASLT_TUNING to a tuning table for this GPU and hipBLASLt version\n");
@@ -178,10 +184,19 @@ int main() {
         std::fprintf(stderr, "tuning table rejected: %s\n", error.c_str());
         return 1;
     }
-    if (!table.closest(strata::prefill::hipblaslt::InputType::bf16, 48, 2560, 96, 4096) ||
-        !table.closest(strata::prefill::hipblaslt::InputType::f16, 512, 2560, 512, 4096)) {
+    if (!all_rows && (!table.closest(strata::prefill::hipblaslt::InputType::bf16, 48, 2560, 96, 4096) ||
+        !table.closest(strata::prefill::hipblaslt::InputType::f16, 512, 2560, 512, 4096))) {
         std::fprintf(stderr, "tuning table lacks the rows this smoke test uses (bf16 N=48 K=2560 ldy=96, f16 N=512 K=2560 ldy=512)\n");
         return 1;
+    }
+    size_t checked_rows = table.rows().size();
+    if (!all_rows) {
+        std::set<const strata::prefill::hipblaslt::TuningRow*> rows;
+        for (int t : {37, 4096}) {
+            rows.insert(table.closest(strata::prefill::hipblaslt::InputType::bf16, 48, 2560, 96, t));
+            rows.insert(table.closest(strata::prefill::hipblaslt::InputType::f16, 512, 2560, 512, t));
+        }
+        checked_rows = rows.size();
     }
 
     hipStream_t stream = nullptr;
@@ -199,21 +214,35 @@ int main() {
         HIPBLAS_CHECK(hipblasCreate(&blas));
         HIPBLAS_CHECK(hipblasSetStream(blas, stream));
 
-        // T=4096 is an exact calibrated bucket; T=37 resolves to the same T=4096 row (the closest bucket), validates the
-        // actual shape before launch, and tests a non-tile-multiple tail. So the four cases use two table rows.
-        ok &= run_case(gemm, blas, stream, true, 4096, 48, 2560, 96, 0, 0.0f, 101);
-        ok &= run_case(gemm, blas, stream, true, 37, 48, 2560, 96, 48, 1.0f, 102);
-        ok &= run_case(gemm, blas, stream, false, 4096, 512, 2560, 512, 0, 0.0f, 103);
-        ok &= run_case(gemm, blas, stream, false, 37, 512, 2560, 512, 7, 1.0f, 104);
-        // Second exact call reuses descriptors; final differing beta/stride
-        // cases above exercise separate keys and fallback support checks.
-        ok &= run_case(gemm, blas, stream, true, 4096, 48, 2560, 96, 0, 0.0f, 105);
-        ok &= run_case(gemm, blas, stream, true, 37, 48, 2560, 96, 0, 0.0f, 106);
-        ok &= run_case(gemm, blas, stream, false, 37, 512, 2560, 512, 0, 0.0f, 107);
+        if (all_rows) {
+            if (table.rows().empty()) {
+                std::fprintf(stderr, "tuning table has no rows\n");
+                ok = false;
+            }
+            uint32_t seed = 1000;
+            for (const auto& row : table.rows()) {
+                const bool bf16 = row.type == strata::prefill::hipblaslt::InputType::bf16;
+                ok &= run_case(gemm, blas, stream, bf16, row.t_bucket, row.n, row.k, row.ldy, 0, 0.0f, seed++, 0);
+                ok &= run_case(gemm, blas, stream, bf16, row.t_bucket, row.n, row.k, row.ldy, 7, 1.0f, seed++, 0);
+            }
+        } else {
+            // Resolve both a large call and a non-tile-multiple tail through the table's closest buckets.
+            // They use the same row when the table has only a T=4096 bucket for these two geometries.
+            ok &= run_case(gemm, blas, stream, true, 4096, 48, 2560, 96, 0, 0.0f, 101);
+            ok &= run_case(gemm, blas, stream, true, 37, 48, 2560, 96, 48, 1.0f, 102);
+            ok &= run_case(gemm, blas, stream, false, 4096, 512, 2560, 512, 0, 0.0f, 103);
+            ok &= run_case(gemm, blas, stream, false, 37, 512, 2560, 512, 7, 1.0f, 104);
+            // Second exact call reuses descriptors; final differing beta/stride
+            // cases above exercise separate keys and fallback support checks.
+            ok &= run_case(gemm, blas, stream, true, 4096, 48, 2560, 96, 0, 0.0f, 105);
+            ok &= run_case(gemm, blas, stream, true, 37, 48, 2560, 96, 0, 0.0f, 106);
+            ok &= run_case(gemm, blas, stream, false, 37, 512, 2560, 512, 0, 0.0f, 107);
+        }
         HIPBLAS_CHECK(hipblasDestroy(blas));
     }
     HIP_CHECK(hipStreamDestroy(stream));
-    std::printf("smoke test: 4 cases on 2 of the table's %zu rows; %s\n", table.rows().size(),
+    std::printf("smoke test: %zu cases on %zu of the table's %zu rows; %s\n",
+                all_rows ? 2 * table.rows().size() : size_t(7), checked_rows, table.rows().size(),
                 ok ? "outputs match hipBLASEx (solution ids are not verified; see STRATA_HIPBLASLT_VERBOSE)"
                    : "FAILED");
     return ok ? 0 : 1;

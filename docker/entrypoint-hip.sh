@@ -106,6 +106,23 @@ POOL_WORKERS="${STRATA_POOL_WORKERS:-0}"  # engine selects one worker per allowe
 MODEL_NAME="${STRATA_MODEL_NAME:-${STRATA_MODEL_NAME_DEFAULT:-qwen3.8-flash-next-$(printf '%s' "$MODEL" | tr '[:upper:]' '[:lower:]')}}"
 [ "${STRATA_VISION:-0}" = "1" ] && die "images/vision are NVIDIA-only on this backend (docs/AMD_HIP.md:101)"
 
+# The measured Swift IQ3_XXS line on the RX 7700 XT: select its dense GEMM table
+# only for the calibrated library build. Solution ids can change between builds
+# bearing the same version. An explicit value (including empty to disable) wins.
+# The engine additionally checks architecture, version, actual shape and workspace.
+if [ "${STRATA_HIPBLASLT_TUNING+x}" != x ] && [ "$ARCH:$MODEL" = gfx1101:IQ3_XXS ] \
+   && [ "${STRATA_REPO:-}" = ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF ]; then
+  lt_table="$REPO/tools/hip/gfx1101-hipblaslt-100202.txt"
+  lt_library=/opt/rocm/lib/libhipblaslt.so
+  lt_library_hash="$(sha256sum "$lt_library" 2>/dev/null | cut -d ' ' -f 1 || true)"
+  if [ -f "$lt_table" ] && [ "$lt_library_hash" = c40df6fe45de5ae3ee60eccf5885536b21486cfff7d361ccdf4955a1db971c1f ]; then
+    export STRATA_HIPBLASLT_TUNING="$lt_table"
+    log "using the calibrated gfx1101 hipBLASLt table (docs/AMD_HIP_GFX1101_TUNING.md)"
+  else
+    log "no calibration for this hipBLASLt build; keeping plain hipBLAS"
+  fi
+fi
+
 # Check-and-fetch: downloads the quant into the mounted HF cache and builds the pack if either is
 # missing (with a free-space gate first).  STRATA_AUTO_PREPARE=0 makes it a pure check that fails
 # with the commands to run instead - what you want on a metered link.

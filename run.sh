@@ -24,6 +24,9 @@
 # 8,723 MiB.  All under the same 10 GiB ceiling, which is NOT raised (the 12 272 MiB card keeps
 # its ~2 GiB for the desktop and the GUI).  Unmeasured release+quant combinations run the
 # conservative 0.1.39 pins and say so.
+# The container also selects a calibrated gfx1101 hipBLASLt table for Swift IQ3_XXS
+# when its library matches the measured build (docs/AMD_HIP_GFX1101_TUNING.md).
+# Pass -e STRATA_HIPBLASLT_TUNING= to compare with plain hipBLAS.
 #
 # Models are read from, and downloaded into, a Hugging Face cache in ~/Development/models (mounted
 # at /hf-cache) - the big filesystem, not the root disk that holds ~/.cache/huggingface.  One download
