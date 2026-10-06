@@ -413,6 +413,31 @@ START-HERE.bat --calibrate                      tune the engine for this PC (abo
 ```
 
 With more than one model installed, it asks which one to start. `run-<model>.bat` starts a model directly.
+  **The engine archive is checked before it is installed.** Setup normally downloads a ready-made engine from
+  the project's GitHub release, and a release asset that is replaced or served by something hostile would
+  otherwise become code that runs on this PC. So setup reads the asset's size and SHA-256 from the releases
+  API - a different origin from the download - and hashes the file it just downloaded. It does this *before*
+  the archive is opened, so a file that does not match never reaches the engine directory. A file that does
+  not match is deleted, so the next run downloads the published one again, and the verified hash is kept in
+  the download's finish mark so the ~190 MB is not hashed twice. The check reuses the same `verify_sha256()`
+  the Unsloth shards already use.
+  
+  Measured on v0.1.40's `strata-windows-x64.zip`: the API reported 131,707,082 bytes and
+  `cd264b2125fdb85e84a8264da2ab2343463e6c7f9a12f317d4ce7192cd2c6b33`; the download hashed to the same, and a
+  file of exactly the same size but different bytes was refused and deleted. The size check on its own could
+  not have caught that case.
+  
+  What this does not cover, stated plainly: it proves the bytes are the ones GitHub published for that asset,
+  so it catches a corrupted download, a mirror or proxy that substituted the file, and a hostile network. It
+  does not make a malicious *release* safe - if whoever can publish a release publishes a hostile engine, the
+  published hash matches it. Only a hash pinned in the source closes that, at the cost of a commit per
+  release; `REPO` and `engine_digest()` in `setup.py` are where one would go. A hash from the API is also
+  only as available as the API: if GitHub will not answer, setup stops rather than install unchecked, and
+  `STRATA_ALLOW_UNVERIFIED_ENGINE=1` is the explicit, recorded way to accept that (for an air-gapped or
+  mirrored install).
+  
+  The hash is read from `api.github.com` even when `--prebuilt` points the *download* somewhere else, which is
+  the point: a compromised mirror cannot supply bytes with a matching digest.
 
 **Tuning for your PC (`--calibrate`, engine 0.1.19).** Three engine settings depend on the PC more than on the model:
 - the share of the experts missing from VRAM that are copied to the GPU instead of computed by the CPU

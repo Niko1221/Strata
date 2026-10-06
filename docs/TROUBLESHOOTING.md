@@ -34,6 +34,14 @@ settings; it cannot be turned back on without a reset of Windows), or, if only t
 An update keeps the engine it replaced in `engine\.previous` (one generation, about 210 MiB).
 `python setup.py --rollback-engine` puts it back (and keeps the newer one there: run it again to go forward) (#670).
 
+**Setup stopped: `cannot verify strata-*.zip: GitHub's API did not give a SHA-256 for it`.**
+  The engine archive is installed only once it matches the size and SHA-256 the releases API publishes for it,
+  and setup will not install it unchecked. The usual cause is that GitHub's API did not answer - no internet,
+  or the anonymous rate limit (60 requests an hour, counted per internet address, so a shared or office
+  connection can run out). Nothing is lost and the downloaded file is left alone; run setup again in a few
+  minutes. If you install from your own mirror with `--prebuilt` and accept that the archive cannot be checked
+  against GitHub, set `STRATA_ALLOW_UNVERIFIED_ENGINE=1` - setup then says so in its output.
+
 **Python or the build tools could not be installed.**
 Install what it names (links are printed), then run it again. Everything already done is kept.
 

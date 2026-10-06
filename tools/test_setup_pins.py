@@ -7,6 +7,7 @@ requirements file, and an existing install left as it is.  Mocked network - noth
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 import re
@@ -176,16 +177,31 @@ class Engine(unittest.TestCase):
             p.stop()
         self.tmp.cleanup()
 
-    def fake_download(self, got):
+    def fake_download(self, got, wrote=None):
         def download(url, dst, what=None):
             got.append(url)
+            if wrote is not None:
+                wrote.append(Path(dst))
             with zipfile.ZipFile(dst, "w") as z:
                 z.writestr("BUILD.json", json.dumps({"version": ".".join(map(str, setup.MIN_ENGINE)), "archs": [89]}))
                 z.writestr(setup.EXE, b"engine")
         return download
 
+    def fake_digest(self, wrote):
+        """The SHA-256 of whatever the fake download just wrote, computed for real.
+
+        `get_prebuilt()` now checks the archive against GitHub's size and SHA-256 before it unpacks
+        anything, so a test that mocks the download has to supply a hash or it stops at the check. These
+        tests are about WHICH release and WHICH asset are chosen, not about the bytes; what happens when
+        the hash is wrong has its own file (tools/test_setup_engine_hash.py).
+        """
+        def digest(asset, base):
+            data = Path(wrote[-1]).read_bytes()
+            return len(data), hashlib.sha256(data).hexdigest()
+        return digest
+
     def run_get(self, published):
-        heads, got = [], []
+        heads, got, wrote = [], [], []
 
         def urlopen(req, timeout=None):
             heads.append(req.full_url)
@@ -194,7 +210,8 @@ class Engine(unittest.TestCase):
             return Response()
 
         with mock.patch.object(setup.urllib.request, "urlopen", urlopen), \
-                mock.patch.object(setup, "download", self.fake_download(got)):
+                mock.patch.object(setup, "download", self.fake_download(got, wrote)), \
+                mock.patch.object(setup, "engine_digest", self.fake_digest(wrote)):
             eng, out = quiet(setup.get_prebuilt, setup.PREBUILT_URL, {"arch": 89}, "gpu")
         return eng, out, heads, got
 
@@ -222,14 +239,18 @@ class Engine(unittest.TestCase):
         for meta in ({"version": "0.1.0", "archs": [89]},
                      {"version": ".".join(map(str, setup.MIN_ENGINE)), "archs": [120]}):
             with self.subTest(meta=meta):
+                wrote = []
+
                 def download(url, dst, what=None):
+                    wrote.append(Path(dst))
                     with zipfile.ZipFile(dst, "w") as z:
                         z.writestr("BUILD.json", json.dumps(meta))
                         z.writestr(setup.EXE, b"engine")
                     setup.mark(dst)
 
                 with mock.patch.object(setup.urllib.request, "urlopen", lambda req, timeout=None: Response()), \
-                        mock.patch.object(setup, "download", download):
+                        mock.patch.object(setup, "download", download), \
+                        mock.patch.object(setup, "engine_digest", self.fake_digest(wrote)):
                     eng, _ = quiet(setup.get_prebuilt, setup.PREBUILT_URL, {"arch": 89}, "gpu")
                 self.assertIsNone(eng)
                 z = self.root / "engine" / setup.PREBUILT_ASSET
@@ -241,13 +262,24 @@ class Engine(unittest.TestCase):
         so every later run failed on it, even after the right one was published."""
         with tempfile.TemporaryDirectory() as folder:  # a --prebuilt folder, through the real download()
             asset = Path(folder) / setup.PREBUILT_ASSET
+
+            # The archive is now hashed before it is opened, so the test has to say what the hash of
+            # whatever is in the folder is, to get as far as the unpacking it is about. A --prebuilt URL
+            # points somewhere that is not this repository, so no GitHub digest covers it either.
+            def digest(name, base):
+                p = Path(folder, name)
+                data = p.read_bytes() if p.exists() else b""
+                return len(data), hashlib.sha256(data).hexdigest()
+
             asset.write_bytes(b"<html>not a zip</html>")
             with self.assertRaises(zipfile.BadZipFile):
-                quiet(setup.get_prebuilt, folder, {"arch": 89}, "gpu")
+                with mock.patch.object(setup, "engine_digest", digest):
+                    quiet(setup.get_prebuilt, folder, {"arch": 89}, "gpu")
             with zipfile.ZipFile(asset, "w") as z:
                 z.writestr("BUILD.json", json.dumps({"version": ".".join(map(str, setup.MIN_ENGINE)), "archs": [89]}))
                 z.writestr(setup.EXE, b"engine")
-            eng, _ = quiet(setup.get_prebuilt, folder, {"arch": 89}, "gpu")
+            with mock.patch.object(setup, "engine_digest", digest):
+                eng, _ = quiet(setup.get_prebuilt, folder, {"arch": 89}, "gpu")
         self.assertEqual(eng, self.root / "engine")
         self.assertEqual((self.root / "engine" / setup.EXE).read_bytes(), b"engine")
 

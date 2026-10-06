@@ -99,6 +99,10 @@ LLAMA_CPP_ZIP = f"https://github.com/ggml-org/llama.cpp/archive/{LLAMA_CPP_COMMI
 # With the default, the release of this checkout's own version (PREBUILT_TAG_URL, CMakeLists.txt's version) is
 # tried first and the latest release is the fallback (#214): an older checkout keeps the engine it shipped with.
 PREBUILT_URL = "https://github.com/Niko1221/Strata/releases/latest/download/"
+# The repository the release assets and their SHA-256 come from; `engine_digest` reads the API here even
+# when --prebuilt points the download somewhere else, because the hash is only worth having if it comes
+# from somewhere the download does not.
+REPO = "Niko1221/Strata"
 PREBUILT_TAG_URL = "https://github.com/Niko1221/Strata/releases/download/v{version}/"
 PREBUILT_ASSET = "strata-windows-x64.zip" if WIN else "strata-linux-x64.zip"
 # the CUDA libraries the ready-made engine loads (the same CUDA 13.0 it is built with), from NVIDIA's pip packages
@@ -2237,6 +2241,68 @@ def driver_major(gpu):
         return 0
 
 
+def engine_digest(asset: str, base: str) -> tuple[int, str] | None:
+    """(size, "sha256:<hex>") for `asset` in the release `base` points at, or None if GitHub will not say.
+
+    The release download URLs name their tag (`releases/download/v0.1.40/`), or say "latest", so the tag
+    comes out of the URL rather than being looked up separately.  The size and hash come from the
+    releases API - a different origin from the download, which is the whole point: a mirrored, substituted
+    or TLS-intercepted download does not come with a matching digest, while a compromised release does
+    (see `verify_engine_archive` for what that leaves uncovered).
+
+    GitHub populates `digest` for every asset, including ones uploaded before the field existed
+    (measured on v0.1.34 through v0.1.40.1).  None means no answer - no network, a rate limit, an asset
+    published some other way, or a --prebuilt URL that is not this repository - and the caller decides
+    what to do about it rather than treating it as a pass.
+    """
+    tag = None
+    m = re.search(r"/releases/download/v([^/]+)/", base)
+    if m:
+        tag = m.group(1)
+    url = (f"https://api.github.com/repos/{REPO}/releases/tags/v{tag}" if tag
+           else f"https://api.github.com/repos/{REPO}/releases/latest")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "strata-setup",
+                                                   "Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            rel = json.loads(r.read().decode("utf-8"))
+    except Exception:
+        return None                                     # offline, rate-limited, or not a GitHub URL
+    for a in rel.get("assets") or []:
+        if a.get("name") == asset and a.get("digest") and str(a.get("digest")).startswith("sha256:"):
+            return int(a.get("size") or 0), str(a["digest"]).split(":", 1)[1]
+    return None
+
+
+def verify_engine_archive(z: Path, asset: str, base: str) -> None:
+    """The downloaded engine archive against GitHub's size and SHA-256, before it is unpacked.
+
+    Without this, a ready-made engine is installed on nothing but its byte count matching the server's
+    Content-Length - and a substituted file of the same length passes that.  It runs before the archive is
+    opened, so a wrong engine never reaches `_unpack`, let alone the engine directory.
+
+    What a digest from the API does NOT cover, stated plainly: it proves the bytes are the ones GitHub
+    published for that asset, so it catches a corrupted transfer, a mirror or proxy that substituted the
+    file, and a hostile network.  It does not make a malicious RELEASE safe - if whoever can publish a
+    release publishes a hostile engine, the digest matches it.  Only a hash pinned in this file closes
+    that, at the cost of a commit per release; `ENGINE_SHA256` below is where one would go.
+
+    The result is kept in the download's finish mark, so the ~190 MB is hashed once and not again on the
+    next run - the same idiom as `verify_sha256` for the Unsloth shards, which is what this reuses.
+    """
+    want = engine_digest(asset, base)
+    if not want:
+        if os.environ.get("STRATA_ALLOW_UNVERIFIED_ENGINE"):
+            warn(f"no SHA-256 available from GitHub for {asset}; installing it UNVERIFIED "
+                 f"(STRATA_ALLOW_UNVERIFIED_ENGINE)")
+            return
+        fail(f"cannot verify {asset}: GitHub's API did not give a SHA-256 for it",
+             "this engine will not be installed unchecked - re-run when GitHub answers, or set "
+             "STRATA_ALLOW_UNVERIFIED_ENGINE=1 to accept an unverified engine")
+    size, sha = want
+    verify_sha256(z, size, sha)
+
+
 def prebuilt_bases(url_base) -> list[str]:
     """Where to look for the ready-made engine, in order (each ending in a slash).  The default: the release of this
     checkout's version first, then the latest (#214); an explicit --prebuilt / STRATA_PREBUILT_URL: only that."""
@@ -2354,6 +2420,7 @@ def get_prebuilt(url_base, gpu, vision, updating=False, toolkit=13) -> Path | No
             return None
     say("  Downloading the ready-made Strata engine" + (" (CUDA 12, experimental)" if int(toolkit) == 12 else "") + " ...")
     download(base + asset, z, "Strata engine")
+    verify_engine_archive(z, asset, base)
     tmp = eng / "_unpack"
     shutil.rmtree(tmp, ignore_errors=True)
     try:
