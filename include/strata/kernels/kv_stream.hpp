@@ -64,6 +64,22 @@ struct KvHostPools {
         const long long left = (1ll << chunk_shift) - (b & ((1ll << chunk_shift) - 1));
         return left < n ? left : n;
     }
+    /// Bytes [at, at + n) of one array as the session numbers them (block b at b * block_bytes), cut where a chunk
+    /// ends: f(offset in the array, bytes already given, piece length) for each piece, in order; false as soon as f
+    /// says false. Without a chunk table the bytes are one piece at `at`.
+    template <class F>
+    bool for_each_piece(size_t block_bytes, size_t at, size_t n, F&& f) const {
+        if (chunk_host == nullptr || block_bytes == 0) return n == 0 || f(at, size_t(0), n);
+        for (size_t done = 0; done < n;) {
+            const size_t pos = at + done, in = pos % block_bytes;
+            const long long b = (long long) (pos / block_bytes);
+            const size_t room = (size_t) contiguous(b, (long long) 1 << 40) * block_bytes - in;
+            const size_t len = room < n - done ? room : n - done;
+            if (!f((size_t) block_host(b) * block_bytes + in, done, len)) return false;
+            done += len;
+        }
+        return true;
+    }
 };
 
 /// The KV storage format, for the functions below that move whole blocks (`fmt`): fp16, int8 (+ scales), q4_0, and

@@ -30,8 +30,8 @@ public:
     /// Backs the lane's chunks [0, need) (`need` is clamped to the table). False, with nothing changed, when the
     /// free chunks do not cover the ones it lacks. True when it changed the table, `changed` says so.
     bool reserve(Lane lane, int64_t need, bool* changed = nullptr);
-    /// The lane's chunks [keep, held) back to the pool (the lowest-numbered free chunk is handed out first again).
-    /// True when it changed the table.
+    /// The lane's chunks [keep, held) back to the pool (a fresh pool hands out chunk 0, 1, 2 ..; after that a chunk
+    /// freed is the next one handed out). True when it changed the table.
     bool shrink(Lane lane, int64_t keep);
     /// Exchanges two lanes' tables in place (same logical size): their buffers stay where they are, since
     /// the kernels and the DMA movers hold pointers to them.
@@ -53,7 +53,7 @@ private:
     };
     int64_t n_chunks_ = 0;
     uint64_t version_ = 0;
-    std::vector<int32_t> free_;       ///< a stack: the lowest chunk is on top
+    std::vector<int32_t> free_;       ///< a stack: the next chunk to hand out is on top (a fresh pool: chunk 0)
     std::vector<std::unique_ptr<LaneData>> lanes_;
 };
 
