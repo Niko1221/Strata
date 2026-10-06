@@ -6102,6 +6102,65 @@ int main(int argc, char** argv) {
             for (int64_t l = st->lb; l < st->le; ++l)
                 for (int64_t e = 0; e < g.n_expert; ++e)
                     if (st->cache.slot_of(l, e) >= 0) stage_pairs.emplace_back((int32_t) l, (int32_t) e);
+        // The split's lend regions.  The serve scan lends the tail slots of EVERY part's cache - CUDA0's own
+        // part first, then every stage (the `pf_parts` loop below) - and `lend_from` above is switched off in
+        // pin_cache_complement the moment `additional_gpu_pairs` is non-empty, so until now none of those experts
+        // were in the RAM copy: during a prompt they came back through page faults from the mapped files.
+        // Measured 2026-10-06 on an RTX 2000 Ada + 5060 Ti rig (17/48 split, IQ3_S mapped from the GGUF,
+        // --prefill auto, one 73K-token prompt): 3.7 GiB read from the NVMe for the one prompt (the arena
+        // mode reads 1.1 GiB), and one 8192-token chunk spent 1.5 s of its 3.9 s on host staging (arena:
+        // 0.37 s).  Size each part's region at the largest chunk the scan can ever pick - auto's ceiling, or an
+        // explicit --prefill, which the scan only walks down - take its tail slots with the scan's own
+        // arithmetic, and list the pairs from the highest slot down, as the borrowing takes them.  #340 is
+        // honoured the same way (the same free-VRAM test, at this startup moment): a part whose card can
+        // fund the bound chunk's buffers outright lends nothing at any pick, so it gets no region and no RAM
+        // is spent on it.  The single-GPU loan is untouched: without a split the lend region stays in
+        // pin_cache_complement's own path, and no regions are set.
+        std::vector<std::vector<std::pair<int32_t, int32_t>>> stage_lends;
+        if (pf_borrow && d_res != nullptr && o.prefill_chunk > 0 && multi_gpu && !stages.empty()) {
+            const int64_t bound = o.prefill_auto ? auto_ceiling : o.prefill_chunk;
+            static const bool own_ok = [] {
+                const char* v = std::getenv("STRATA_SPLIT_OWN_BUFFERS");
+                return v == nullptr || v[0] != '0';
+            }();
+            for (size_t i = 0; i <= stages.size(); ++i) {   // the scan's part order: CUDA0, then every stage
+                strata::core::ExpertCache& xc = i == 0 ? xcache : stages[i - 1]->cache;
+                const strata::core::SessionState& ses = i == 0 ? ss : stages[i - 1]->ss;
+                const int64_t dev = i == 0 ? -1 : stages[i - 1]->dev;
+                const int64_t lb = i == 0 ? 0 : stages[i - 1]->lb;
+                const int64_t le = i == 0 ? split_at[0] : stages[i - 1]->le;
+                if (xc.slots() <= 0 || le <= lb) continue;
+                const uint64_t need = strata::prefill::Prefill::bytes_needed(g, ses, bound);
+                if (own_ok) {   // the card funds its buffers at any chunk the scan can pick: nothing is lent
+                    const strata::core::OnDevice on(dev);
+                    size_t fb = 0, tb = 0;
+                    if (cudaMemGetInfo(&fb, &tb) == cudaSuccess) {
+                        if ((uint64_t) fb >= need + (3ull << 29)) continue;
+                    } else (void) cudaGetLastError();
+                }
+                int64_t k = 0;   // its tail slots, as the scan's `cache_slots_for` counts them
+                if (xc.slot_offsets() != nullptr) {
+                    while (k < xc.slots() &&
+                           (uint64_t) (xc.bytes() - (int64_t) xc.slot_offsets()[xc.slots() - k]) < need) ++k;
+                } else {
+                    const int64_t blob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
+                    k = (int64_t) ((need + (uint64_t) blob - 1) / (uint64_t) blob);
+                }
+                k = std::min(k, xc.slots() - 128);                       // the scan's 128-slot floor
+                if (o.prefill_auto) k = std::min(k, kAutoLendPct * xc.slots() / 100);   // the auto cap
+                if (k <= 0) continue;
+                std::vector<std::pair<int32_t, int32_t>> region;
+                for (int64_t l = lb; l < le; ++l)
+                    for (int64_t e = 0; e < g.n_expert; ++e)
+                        if (xc.slot_of(l, e) >= xc.slots() - k) region.emplace_back((int32_t) l, (int32_t) e);
+                std::sort(region.begin(), region.end(),
+                          [&](const std::pair<int32_t, int32_t>& a, const std::pair<int32_t, int32_t>& b) {
+                              return xc.slot_of(a.first, a.second) > xc.slot_of(b.first, b.second);
+                          });
+                if (!region.empty()) stage_lends.push_back(std::move(region));
+            }
+            src.stage_lend_regions(std::move(stage_lends));
+        }
         const std::vector<std::pair<int32_t, int32_t>>& rank_all = profile_all.empty() ? profile : profile_all;
         bool resident_ok = src.pin_cache_complement(xcache, err, o.resident_pin, stage_pairs, lend_from,
                                                     o.resident_headroom, o.resident_budget, &rank_all);
