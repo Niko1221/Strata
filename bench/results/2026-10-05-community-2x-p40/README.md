@@ -99,6 +99,12 @@ The task definitions and graders are in [scripts/bench.py](scripts/bench.py) (`p
 
 Limitations: one machine, one day, a synthetic workload; the first run of each cell includes warm-up; the two-card runs were not NUMA-pinned while the one-card runs were; GPU 0 and GPU 1 are not equally close to the CPU that holds the pinned workers.
 
+## Related reports
+
+- #875 (a P40 + RTX 3070 pair on v0.1.39, IQ3_XXS, P40 power-capped at 130 W, DDR4-2400, PCIe 3.0 x8) and #395 (a P40 on IQ3_S, engine 0.1.30) are other Pascal measurements. The setups differ (quantisation, power cap, memory and PCIe), so the numbers are not directly comparable;
+  in this report the decode rate on a P40 varies between about 10 and 36 tok/s across the short generations (warm-up and draft acceptance), which is why every run is listed.
+- The wider study (llama.cpp and Ollama on the same weights, a 27B control model, accuracy and repeatability) is in [sarge18/p40-llm-engine-bakeoff](https://github.com/sarge18/p40-llm-engine-bakeoff).
+
 ## Build notes for Ubuntu 26.04 (glibc 2.43) and Pascal
 
 - CUDA 12.4 (Ubuntu's package) with **g++ 13** built the engine; `docs/TROUBLESHOOTING.md` suggests g++ 14 for newer GCC, but CUDA 12.4 rejects anything newer than GCC 13 ("gcc versions later than 13 are not supported"), so g++-13 was needed with this toolkit.
