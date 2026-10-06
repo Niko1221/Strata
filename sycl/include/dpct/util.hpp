@@ -472,7 +472,7 @@ T select_from_sub_group(unsigned int member_mask,
       g.get_local_linear_id() / logical_sub_group_size * logical_sub_group_size;
   unsigned logical_remote_id =
       start_index + remote_local_id % logical_sub_group_size;
-  return __spirv_GroupNonUniformShuffle(__spv::Scope::Subgroup, x, logical_remote_id);
+  return static_cast<T>(__spirv_GroupNonUniformShuffle(__spv::Scope::Subgroup, static_cast<long>(x), logical_remote_id));
 #elif defined(__NVPTX__)
   T result;
   int cVal = ((32 - logical_sub_group_size) << 8) | 31;

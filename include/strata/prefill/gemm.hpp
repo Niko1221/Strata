@@ -40,6 +40,11 @@ public:
     void f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy = 0,
              float beta = 0.0f);
 
+    /// b identical FP16 products in one strided batch: Y[i] = X[i] . W[i]^T, W[i] = W + i*w_stride,
+    /// X[i] = X + i*x_stride, Y[i] = Y + i*y_stride, all T rows (padded), N outputs, K inner.
+    void f16_batch(const uint16_t* W, int64_t w_stride, const uint16_t* X, int64_t x_stride, float* Y,
+                   int64_t y_stride, int64_t T, int64_t N, int64_t K, int b);
+
     /// W given as native GGUF blocks of `ggml_type`, dequantized to FP16 in the scratch, X in FP16.  `ldx` (> K) is
     /// X's padded row stride, taken only by STRATA_PF_PAD's path (0 = K).
     /// On an MMQ build a beta = 0 product whose type is covered, whose K is a multiple of 256 values and whose matrix fits

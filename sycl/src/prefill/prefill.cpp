@@ -170,7 +170,20 @@ inline int ring_slots(size_t T) {
     const int big = r < 16 ? 16 : r > ring_cap() ? ring_cap() : r;
     return (int64_t) T >= stream_all_min() ? big : STAGE;
 }
-constexpr int DQ = 2;              // dequantized-expert ring (FP16 gate/up + down)
+constexpr int DQ = 16;             // dequantized-expert ring (FP16 gate/up + down); 16 = the MoE batch group
+// STRATA_MOE_BATCH=1: batched MoE GEMMs (one strided gemm_batch per 16 experts, rows padded to the group's
+// max row count, `order` sorted by cnt desc within windows so padding stays ~1.1x). Measured on the B70
+// 2026-10-06 at the live chunk-32768 shape: gate/up 2.06x (65.6 -> 135.3 TF/s), down 1.22x.
+// STRATA_MOE_BATCH_W overrides the sort window (clamped to ring/2: the streamed walk's slot release lags
+// by at most one window, and the issuer is held back by the longest contiguous consumed prefix).
+inline bool moe_batch_on() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_MOE_BATCH"); return v && v[0] == '1'; }();
+    return on;
+}
+inline int moe_batch_w() {
+    static const int w = [] { const char* v = std::getenv("STRATA_MOE_BATCH_W"); return v ? std::atoi(v) : 128; }();
+    return w;
+}
 // The BF16-weight projections (hyper-connection, SSM alpha/beta, indexer, router, shared gate, PLE key/value) take
 // BF16 activations here and FP32 ones in decode. STRATA_PREFILL_BF16X2=1 adds each activation's BF16 remainder as a
 // second GEMM (Y = W.hi + W.lo, ~16 mantissa bits): a router that picks its top 10 from the same x decode would.
@@ -1009,7 +1022,13 @@ bool Prefill::carve(size_t T, void* alloc) {
         }
         if (base == nullptr) ok = false;
     }
-    for (int i = 0; i < DQ; ++i) { m.dq_gu[i] = o.take<uint16_t>(1280 * 2560, ok); m.dq_d[i] = o.take<uint16_t>(2560 * 640, ok); }
+    { // one block each when batching (the strided gemm_batch needs exact `count * 2` strides); the flag
+      // also decides the width, so an off run costs exactly what 0.1.39 cost
+      const int dq_n = moe_batch_on() ? DQ : 2;
+      uint16_t* gub = o.take<uint16_t>((size_t) dq_n * 1280 * 2560, ok);
+      uint16_t* db = o.take<uint16_t>((size_t) dq_n * 2560 * 640, ok);
+      for (int i = 0; i < dq_n; ++i) { m.dq_gu[i] = gub + (size_t) i * 1280 * 2560; m.dq_d[i] = db + (size_t) i * 2560 * 640; }
+    }
     if (mmq_plan().any) {
         const MmqPlan& mp = mmq_plan();
         m.ids_identity = o.take<int32_t>(T * K, ok);
@@ -1440,7 +1459,8 @@ uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::Session
     const int64_t max_blocks = ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;
     o.take<uint8_t>((size_t) std::max({gdn_set_bytes(T), qsa_set_bytes(T, cap, max_blocks, 256, 32, s),
                                        moe_set_bytes(T, g.n_expert, fused_layout(T, true))}), ok);
-    for (int i = 0; i < DQ; ++i) { o.take<uint16_t>(1280 * 2560, ok); o.take<uint16_t>(2560 * 640, ok); }
+    { const int dq_n = moe_batch_on() ? DQ : 2;
+      o.take<uint16_t>((size_t) dq_n * 1280 * 2560, ok); o.take<uint16_t>((size_t) dq_n * 2560 * 640, ok); }
     if (mmq_plan().any) {
         const MmqPlan& mp = mmq_plan();
         o.take<int32_t>(T * K, ok);
@@ -1920,6 +1940,7 @@ bool Prefill::run(const int64_t *tokens, int64_t n, int64_t pos0,
         std::vector<StreamEntry> seq;
         std::vector<size_t> seq_start;
         size_t issued = 0, consumed = 0;
+        bool mbatch_active = false;   // STRATA_MOE_BATCH: this layer runs the batched fallback walk
         static const bool plan_reads = [] { const char* v = std::getenv("STRATA_GGUF_PLAN_READ"); return v && v[0] == '1'; }();
         const core::GgufExpertSource* gsrc = plan_reads ? nullptr : dynamic_cast<const core::GgufExpertSource*>(m.src);
         if (stream_all) {
@@ -2688,10 +2709,56 @@ bool Prefill::run(const int64_t *tokens, int64_t n, int64_t pos0,
                             }
                             rows_local = T * K - rows_peer;
                         }
+                        // the experts, in id order: resident ones from VRAM, the others through the staging ring
+                        std::vector<int32_t> order, order_peer;
+                        for (int32_t e = 0; e < m.g->n_expert; ++e)
+                            if (m.cnt[(size_t) e] > 0 && (on_peer.empty() || on_peer[(size_t) e] != 2))
+                                (!on_peer.empty() && on_peer[(size_t) e] ? order_peer : order).push_back(e);
+                        for (int32_t e = 0; e < m.g->n_expert && !on_peer.empty(); ++e)   // the peer-streamed ones last:
+                            if (on_peer[(size_t) e] == 2) order_peer.push_back(e);        // their copies get the most time
+                        n_order = order.size();
+                        // STRATA_MOE_BATCH: sort by cnt desc within windows of SEQ positions (so the streamed walk's
+                        // slot release lags by at most one window), group 16, pad each expert's rows to the group's
+                        // max.  The padding must fit the T*K-row buffers; if not, the layer is sequential.
+                        mbatch_active = false;
+                        if (moe_batch_on() && stream_all && on_peer.empty() && !pre_mmq && order.size() >= 16) {
+                            int W = std::min(moe_batch_w(), m.ring / 2);
+                            W = std::max(16, W);
+                            const size_t k0 = seq_start[(size_t) l], k1 = seq_start[(size_t) l + 1];
+                            std::vector<char> routed((size_t) m.g->n_expert, 0);
+                            for (int32_t e : order) routed[(size_t) e] = 1;
+                            std::vector<int32_t> ord2; ord2.reserve(order.size());
+                            for (size_t w0 = k0; w0 < k1; w0 += (size_t) W) {
+                                std::vector<int32_t> win;
+                                for (size_t kk = w0; kk < std::min(k1, w0 + (size_t) W); ++kk)
+                                    if (routed[(size_t) seq[kk].e]) win.push_back(seq[kk].e);
+                                std::sort(win.begin(), win.end(),
+                                          [&](int32_t a, int32_t b) { return m.cnt[(size_t) a] > m.cnt[(size_t) b]; });
+                                ord2.insert(ord2.end(), win.begin(), win.end());
+                            }
+                            if (ord2.size() == order.size()) order.swap(ord2);
+                            int64_t padded = 0;
+                            for (size_t j0 = 0; j0 < order.size(); j0 += 16) {
+                                int32_t mx = 0;
+                                for (size_t j = j0; j < order.size() && j < j0 + 16; ++j)
+                                    mx = std::max(mx, m.cnt[(size_t) order[j]]);
+                                padded += (int64_t) mx * (int64_t) (std::min(order.size(), j0 + 16) - j0);
+                            }
+                            mbatch_active = padded <= (int64_t) T * K;
+                        }
                         {
                             int32_t r = 0;
-                            for (int32_t e = 0; e < m.g->n_expert; ++e)
-                                if (on_peer.empty() || !on_peer[(size_t) e]) { m.off[(size_t) e] = r; r += m.cnt[(size_t) e]; }
+                            if (mbatch_active) {
+                                for (size_t j0 = 0; j0 < order.size(); j0 += 16) {
+                                    int32_t mx = 0;
+                                    for (size_t j = j0; j < order.size() && j < j0 + 16; ++j)
+                                        mx = std::max(mx, m.cnt[(size_t) order[j]]);
+                                    for (size_t j = j0; j < order.size() && j < j0 + 16; ++j)
+                                        m.off[(size_t) order[j]] = r, r += mx;
+                                }
+                            } else
+                                for (int32_t e = 0; e < m.g->n_expert; ++e)
+                                    if (on_peer.empty() || !on_peer[(size_t) e]) { m.off[(size_t) e] = r; r += m.cnt[(size_t) e]; }
                             // the peer's rows in order_peer's order (peer-held, then peer-streamed): its groups need them contiguous
                             for (int kind = 1; kind <= 2 && !on_peer.empty(); ++kind)
                                 for (int32_t e = 0; e < m.g->n_expert; ++e)
@@ -2730,14 +2797,6 @@ bool Prefill::run(const int64_t *tokens, int64_t n, int64_t pos0,
                             m.cs->memcpy(m.src_dev, m.src_host.data(),
                                          (size_t)T * K * 4);
                         }
-                        // the experts, in id order: resident ones from VRAM, the others through the staging ring
-                        std::vector<int32_t> order, order_peer;
-                        for (int32_t e = 0; e < m.g->n_expert; ++e)
-                            if (m.cnt[(size_t) e] > 0 && (on_peer.empty() || on_peer[(size_t) e] != 2))
-                                (!on_peer.empty() && on_peer[(size_t) e] ? order_peer : order).push_back(e);
-                        for (int32_t e = 0; e < m.g->n_expert && !on_peer.empty(); ++e)   // the peer-streamed ones last:
-                            if (on_peer[(size_t) e] == 2) order_peer.push_back(e);        // their copies get the most time
-                        n_order = order.size();
                         const size_t mmq_gub = use_mmq ? mmq::matrix_bytes(mmq_gt, 1280, N) : 0;
                         const size_t mmq_db = use_mmq ? mmq::matrix_bytes(mmq_dt, N, 640) : 0;
                         pt.mark(kPfGather, cs);
@@ -3254,7 +3313,7 @@ bool Prefill::run(const int64_t *tokens, int64_t n, int64_t pos0,
                                 m.mmq_ctx->run(dn, m.cs);
                                 return true;
                             }
-                            const int q = (int) (j % DQ);
+                            const int q = (int) (j % (mbatch_active ? DQ : 2));   // ring width follows the flag
                             if (lay.native) {
                                 // plan v0.3 P6: a native pack's layer, dequantized by llama.cpp's own formulas
                                 const auto& f = lay.fmt[(size_t) l];
@@ -3269,11 +3328,28 @@ bool Prefill::run(const int64_t *tokens, int64_t n, int64_t pos0,
                                 m.used_of[slot] = slot;
                             }
                             const int64_t o0 = m.off[(size_t) e], ne = m.cnt[(size_t) e];
+                            if (!mbatch_active) {
+                                pt.mark(kPfGemmGU, cs);
+                                m.gemm.f16(m.Xs + o0 * N, m.dq_gu[q], m.GU + o0 * 1280, ne, 1280, N);
+                                swiglu_interleaved(m.GU + o0 * 1280, m.Hh + o0 * 640, ne, m.cs);
+                                pt.mark(kPfGemmD, cs);
+                                m.gemm.f16(m.Hh + o0 * 640, m.dq_d[q], m.Dm + o0 * N, ne, N, 640);
+                                return true;
+                            }
+                            // the group's products: one strided gemm_batch per product, rows padded to the group max
+                            if (q + 1 < DQ && j + 1 < order.size()) return true;
+                            const size_t j0 = j - q;
+                            const int b = (int) std::min<size_t>(DQ, order.size() - j0);
+                            int32_t mx = 0;
+                            for (int i = 0; i < b; ++i) mx = std::max(mx, m.cnt[(size_t) order[j0 + i]]);
+                            const int64_t g0 = m.off[(size_t) order[j0]];
                             pt.mark(kPfGemmGU, cs);
-                            m.gemm.f16(m.Xs + o0 * N, m.dq_gu[q], m.GU + o0 * 1280, ne, 1280, N);
-                            swiglu_interleaved(m.GU + o0 * 1280, m.Hh + o0 * 640, ne, m.cs);
+                            m.gemm.f16_batch(m.dq_gu[0], 1280 * N, m.Xs + g0 * N, (int64_t) mx * N,
+                                             m.GU + g0 * 1280, (int64_t) mx * 1280, mx, 1280, N, b);
+                            swiglu_interleaved(m.GU + g0 * 1280, m.Hh + g0 * 640, (int64_t) mx * b, m.cs);
                             pt.mark(kPfGemmD, cs);
-                            m.gemm.f16(m.Hh + o0 * 640, m.dq_d[q], m.Dm + o0 * N, ne, N, 640);
+                            m.gemm.f16_batch(m.dq_d[0], N * 640, m.Hh + g0 * 640, (int64_t) mx * 640,
+                                             m.Dm + g0 * N, (int64_t) mx * N, mx, N, 640, b);
                             return true;
                         }
                         catch (sycl::exception const &exc) {
@@ -3326,6 +3402,39 @@ bool Prefill::run(const int64_t *tokens, int64_t n, int64_t pos0,
                               std::exit(1);
                             }
                             };
+                            if (mbatch_active) {
+                                // the sorted walk: a slot is reusable once every entry mapped to it is consumed; the
+                                // issuer is held back by the longest contiguous consumed prefix (the sort windows
+                                // bound the lag to one window, and W <= ring/2 keeps the ring live)
+                                std::vector<int32_t> k_of_e((size_t) m.g->n_expert, -1);
+                                for (size_t kk = k; kk < kend; ++kk) k_of_e[(size_t) seq[kk].e] = (int32_t) kk;
+                                std::vector<char> done(kend > k ? kend - k : 0, 0);
+                                size_t prefix = k;
+                                for (size_t j = 0; j < order.size(); ++j) {
+                                    const int32_t e = order[j];
+                                    const int32_t kp = k_of_e[(size_t) e];
+                                    if (kp >= 0) {
+                                        const int sl = (int) ((size_t) kp % (size_t) m.ring);
+                                        wait_issued((size_t) kp);
+                                        pt.mark(kPfWaitCopy, cs);
+                                        (m.cs)->ext_oneapi_submit_barrier(
+                                            {*m.copied[sl]});
+                                        if (!compute(j, m.stage_dev[sl], sl)) return false;
+                                        done[(size_t) (kp - k)] = 1;
+                                        while (prefix < kend && done[(size_t) (prefix - k)]) ++prefix;
+                                        if (prefix > k) { consumed = prefix - 1; give_back(consumed); }
+                                    } else {
+                                        const bool r0 = m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0;
+                                        const uint8_t* bp = r0 ? m.cache->device_slot(m.host_res[(size_t) l * m.g->n_expert + e])
+                                                               : (m.pp ? m.pp->peer->slot_ptr(l, e) : nullptr);
+                                        if (bp == nullptr) { err = "prefill: an expert is neither resident, streamed nor on the peer"; return false; }
+                                        ++stats_.experts_resident;
+                                        if (!compute(j, bp, -1)) return false;
+                                    }
+                                }
+                                if (kend > k) { consumed = kend - 1; give_back(consumed); }
+                                k = kend;
+                            } else
                             for (size_t j = 0; j < order.size(); ++j) {
                                 const int32_t e = order[j];
                                 release_to(e);

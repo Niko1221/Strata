@@ -9,7 +9,13 @@
 #if defined(_MSC_VER)
 #include <intrin.h>
 #else
+// clang 22 (oneAPI 2026 nightly) exposes __cpuidex as a builtin under -fsycl while
+// cpuid.h still ships its own static __cpuidex: static-decl-follows-builtin error.
+// Rename the header's definition away at preprocessing time (unused on this path;
+// call sites use __cpuid_count / __cpuid).
+#define __cpuidex strata_cpuidex_header_unused
 #include <cpuid.h>
+#undef __cpuidex
 #endif
 
 #include <cmath>
