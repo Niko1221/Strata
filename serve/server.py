@@ -8,9 +8,9 @@ non-stream), GET /v1/models, GET /models, GET /props, GET /slots, GET /health, G
 Tools from MCP servers (serve/mcp.py, `"mcp_servers"` in the config or --mcp-config) are offered only to requests that
 ask for them with `"strata_mcp": true` - the web app does; other clients see exactly the API they always saw.
 Images (optional, when the config has a "vision" entry): OpenAI image_url parts and Anthropic image blocks (base64
-data, http(s) URLs or local file paths) go through `strata-vision` (the model's mmproj file) and reach the engine as
-embeddings (`GENI`).  JPEG/PNG/BMP/GIF go straight in; WebP, TIFF, AVIF, ... (agents like omp send WebP) are
-converted to PNG first with Pillow.
+data or http(s) URLs; local file paths are refused) go through `strata-vision` (the model's mmproj file) and reach
+the engine as embeddings (`GENI`).  JPEG/PNG/BMP/GIF go straight in; WebP, TIFF, AVIF, ... (agents like omp send
+WebP) are converted to PNG first with Pillow.
 Requests whose prompt plus max tokens exceed the engine's context are REJECTED with 400, never truncated.
 An unset (or 0, or -1) max tokens means "unlimited": whatever the prompt leaves of the context.
 
@@ -28,12 +28,14 @@ import hashlib
 import hmac
 import codecs
 import ctypes
+import ipaddress
 import json
 import math
 import os
 import queue
 import re
 import select
+import shlex
 import signal
 import socket
 import struct
@@ -49,7 +51,7 @@ from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Iterator, Protocol
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -211,6 +213,15 @@ SESSION_WAIT_MAX_S = 3600
 PP_CHUNK_MAX = 32768
 PP_FLOOR_TOK_S = 50.0
 PP_SLACK = 3.0
+# Request-body limits: every POST body is capped before it is buffered, so one
+# Content-Length cannot OOM the server. Vision/data-URL posts need headroom.
+MAX_BODY_BYTES = 64 * 1024 * 1024
+MAX_SETTINGS_BODY_BYTES = 256 * 1024
+# Vision fetch limits (SSRF + decompression-bomb hardening).
+VISION_MAX_BYTES = 20 * 1024 * 1024
+VISION_MAX_REDIRECTS = 2
+VISION_MAX_DIM = 8192
+VISION_MAX_PIXELS = 50_000_000
 
 
 # ------------------------------------------------------------------------------------------------ engines
@@ -1590,6 +1601,16 @@ def network_path(path: str) -> bool:
     return p.startswith("\\\\") or p.startswith("\\??\\")
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """An opener that surfaces 3xx instead of following them, so each hop is allowlisted first (SSRF)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_VISION_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 class Vision:
     """The resident image encoder: `strata-vision` (llama.cpp mtmd + the mmproj file) reads `ENC <image> <out>`
     lines and writes each image's embeddings; results are cached by the image's hash, so a conversation that
@@ -1685,25 +1706,100 @@ class Vision:
         raise ValueError("an image must be a data: URL, an http(s) URL or a local file path")
 
     @staticmethod
-    def download(url: str) -> bytes:
-        """An image URL's bytes, at most IMAGE_URL_MAX of them: the whole response was read, so a huge or endless one
-        filled the memory.  One that cannot be read is a ValueError (a 400 that says so), not a dropped connection."""
-        too_big = f"the image URL's file is over {IMAGE_URL_MAX >> 20} MiB"
+    def _assert_public_url(url: str) -> None:
+        """Reject URLs that resolve to loopback / private / metadata addresses. Checked before each hop; the
+        connected peer is re-checked separately (see _assert_peer)."""
         try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "strata"}), timeout=60) as r:
-                size = r.headers.get("Content-Length") or ""
-                if size.isdigit() and int(size) > IMAGE_URL_MAX:
-                    raise ValueError(too_big)
-                data = r.read(IMAGE_URL_MAX + 1)
-        except (OSError, HTTPException) as e:
-            raise ValueError(f"the image URL could not be read: {e}") from None
-        if len(data) > IMAGE_URL_MAX:
-            raise ValueError(too_big)
-        return data
+            host = urlsplit(url).hostname or ""
+        except ValueError:
+            raise ValueError("the image URL is not valid") from None
+        if not host:
+            raise ValueError("the image URL is not valid")
+        try:
+            infos = socket.getaddrinfo(host, None)
+        except socket.gaierror:
+            raise ValueError("the image host could not be resolved") from None
+        if not infos:
+            raise ValueError("the image host could not be resolved")
+        for info in infos:
+            try:
+                ip = ipaddress.ip_address(info[4][0])
+            except ValueError:
+                continue
+            if Vision._is_blocked_ip(ip):
+                raise ValueError("the image host is not allowed")
+
+    @staticmethod
+    def _is_blocked_ip(ip) -> bool:
+        return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast \
+            or ip.is_reserved or ip.is_unspecified or str(ip) == "169.254.169.254"
+
+    @staticmethod
+    def _assert_peer(r, url: str) -> None:
+        """Re-check the IP the connection actually reached. Best effort: when the peer cannot be determined,
+        the pre-connect hostname check above is the guard."""
+        peer = None
+        try:
+            fp = getattr(r, "fp", None)
+            raw = getattr(fp, "raw", None)
+            sock = getattr(raw, "_sock", None) or getattr(fp, "_sock", None) or getattr(fp, "fp", None)
+            if sock is not None and hasattr(sock, "getpeername"):
+                peer = sock.getpeername()[0]
+        except (OSError, ValueError, AttributeError):
+            peer = None
+        if peer is None:
+            return
+        try:
+            if Vision._is_blocked_ip(ipaddress.ip_address(peer)):
+                raise ValueError("the image host is not allowed")
+        except ValueError as e:
+            if "not allowed" in str(e):
+                raise
+            return
+
+    @staticmethod
+    def download(url: str) -> bytes:
+        """An image URL's bytes, at most IMAGE_URL_MAX of them. Every redirect hop is allowlisted before connecting
+        (a no-redirect opener surfaces 3xx instead of following them), and the connected peer IP is re-checked, so
+        loopback / private / metadata addresses are refused. One that cannot be read is a ValueError (a 400 that
+        says so), not a dropped connection."""
+        too_big = f"the image URL's file is over {IMAGE_URL_MAX >> 20} MiB"
+        first = url
+        for _ in range(VISION_MAX_REDIRECTS + 1):
+            Vision._assert_public_url(first)
+            try:
+                with _VISION_OPENER.open(urllib.request.Request(first, headers={"User-Agent": "strata"}),
+                                         timeout=60) as r:
+                    if r.status is not None and r.status not in (200, 301, 302, 303, 307, 308):
+                        raise ValueError(f"the image URL returned {r.status}")
+                    loc = r.headers.get("Location")
+                    if loc and r.status in (301, 302, 303, 307, 308):
+                        first = urljoin(first, loc)
+                        continue
+                    Vision._assert_peer(r, first)
+                    size = r.headers.get("Content-Length") or ""
+                    if size.isdigit() and int(size) > IMAGE_URL_MAX:
+                        raise ValueError(too_big)
+                    out = bytearray()
+                    while len(out) <= IMAGE_URL_MAX:
+                        chunk = r.read(min(65536, IMAGE_URL_MAX + 1 - len(out)))
+                        if not chunk:
+                            break
+                        out += chunk
+                    if len(out) > IMAGE_URL_MAX:
+                        raise ValueError(too_big)
+                    return bytes(out)
+            except ValueError:
+                raise
+            except (OSError, HTTPException) as e:
+                raise ValueError(f"the image URL could not be read: {e}") from None
+        raise ValueError("the image URL redirected too many times")
 
     @staticmethod
     def normalize(data: bytes) -> bytes:
         """The formats strata-vision's decoder (stb_image) reads pass through; anything else is converted to PNG."""
+        if len(data) > VISION_MAX_BYTES:
+            raise ValueError(f"the image is too large (over {VISION_MAX_BYTES // 1048576} MiB)")
         if data[:3] == b"\xff\xd8\xff" or data[:8] == b"\x89PNG\r\n\x1a\n" or data[:2] == b"BM" or \
                 data[:6] in (b"GIF87a", b"GIF89a"):
             return data
@@ -1714,10 +1810,14 @@ class Vision:
             raise ValueError("this image format needs Pillow (python -m pip install pillow); JPEG, PNG, BMP and "
                              "GIF work without it") from None
         try:
+            Image.MAX_IMAGE_PIXELS = VISION_MAX_PIXELS
             im = Image.open(io.BytesIO(data))
             im.load()
         except Exception as e:
             raise ValueError(f"the image could not be read ({e})") from None
+        w, h = im.size
+        if w * h > VISION_MAX_PIXELS or w > VISION_MAX_DIM or h > VISION_MAX_DIM:
+            raise ValueError("the image has too many pixels")
         if im.mode in ("RGBA", "LA", "P") and "transparency" in im.info or im.mode in ("RGBA", "LA"):
             im = im.convert("RGBA")
             bg = Image.new("RGB", im.size, (255, 255, 255))   # transparent areas become white, not black
@@ -2192,6 +2292,7 @@ class Service:
         self.started_at = time.time()
         self.status_lock = threading.Lock()
         self.mcp = None                                  # serve/mcp.py's McpHub when MCP servers are configured
+        self.mcp_allow_remote = False                    # opt-in: non-browser clients may use MCP tools without a key
         # sharing the GPU with other programs (all off by default): unload the engine after this many idle seconds,
         # only start it again when this much VRAM is free, and run this command first (e.g. to unload another
         # server's model); the next request after an unload starts the engine again
@@ -2338,9 +2439,11 @@ class Service:
             return
         if self.before_load:
             cmd = self.before_load
-            print(f"[strata] before loading: {cmd if isinstance(cmd, str) else ' '.join(map(str, cmd))}", flush=True)
+            if isinstance(cmd, str):
+                cmd = shlex.split(cmd, posix=os.name != "nt")
+            print(f"[strata] before loading: {' '.join(map(str, cmd))}", flush=True)
             try:
-                subprocess.run(cmd, shell=isinstance(cmd, str), timeout=120, stdin=subprocess.DEVNULL)
+                subprocess.run(cmd, shell=False, timeout=120, stdin=subprocess.DEVNULL)
             except (OSError, subprocess.SubprocessError) as e:
                 print(f"[strata] the before_load command failed ({e}); loading anyway", flush=True)
         if self.min_free_vram_mib:
@@ -3748,6 +3851,31 @@ def make_handler(svc: Service):
             self.end_headers()
             self.wfile.write(body)
 
+        def _read_body(self, limit: int = MAX_BODY_BYTES) -> bytes | None:
+            """Bounded request-body read through _body (which marks it read for the drain). None after 400/413."""
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                self.body_read = True
+                self._json(400, {"error": {"message": "invalid Content-Length"}})
+                return None
+            if length < 0 or length > limit:
+                self.body_read = True
+                self._json(413, {"error": {"message": f"request body is limited to {limit // 1024} KiB"}})
+                return None
+            if length == 0:
+                self.body_read = True
+                return b""
+            try:
+                data = self._body()
+            except OSError:
+                self._json(400, {"error": {"message": "incomplete request body"}})
+                return None
+            if len(data) != length:
+                self._json(400, {"error": {"message": "incomplete request body"}})
+                return None
+            return data
+
         def _authorized(self) -> bool:
             if not svc.api_key:
                 return True
@@ -3911,7 +4039,10 @@ def make_handler(svc: Service):
                     self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                 return
             try:
-                req = json.loads(self._body() or b"{}")
+                body = self._read_body()
+                if body is None:
+                    return
+                req = json.loads(body or b"{}")
                 if not isinstance(req, dict):
                     raise ValueError("send a JSON object")
                 if path.startswith("/v1/responses/"):        # retrieve/delete/cancel/compact: nothing is stored
@@ -4081,7 +4212,9 @@ def make_handler(svc: Service):
         def _config_post(self):
             """#564: change a few documented keys of the run config - JSON from Strata's own page only, as
             /settings (the key is checked before); every other key of the file stays as it is."""
-            body = self._body()
+            body = self._read_body(MAX_SETTINGS_BODY_BYTES)
+            if body is None:
+                return
             if not self._own_page("the run config can be changed"):
                 return
             if not svc.config_path:
@@ -4127,7 +4260,9 @@ def make_handler(svc: Service):
 
         def _settings(self):
             # They change what every client gets, so only the app's own page may set them
-            body = self._body()
+            body = self._read_body(MAX_SETTINGS_BODY_BYTES)
+            if body is None:
+                return
             if not self._own_page("settings can be changed"):
                 return
             try:
@@ -4204,6 +4339,17 @@ def make_handler(svc: Service):
             own = {t.get("name") for t in tools or [] if isinstance(t, dict)}   # #592: a second line of defence
             if use_mcp:
                 if not self._own_page("MCP tools can be used"):   # tools run with the user's rights on this PC
+                    return
+                # Origin is forgeable by non-browser clients, so it cannot tell the web app from curl on the
+                # LAN. Gate on the interface instead: loopback (this PC's own browser/scripts) keeps working
+                # keyless; a request that arrived on a LAN interface needs an API key or explicit opt-in.
+                served = host_name(self.headers.get("Host") or "")
+                on_loopback = served in LOOPBACK_NAMES or served.endswith(".localhost")
+                if not on_loopback and not svc.api_key and not svc.mcp_allow_remote:
+                    self._json(403, {"error": {"message": "MCP tools need an API key (or the config's "
+                                                           "\"mcp_allow_remote\": true) when the server is reached "
+                                                           "on a network address; this PC's own page keeps working "
+                                                           "without one"}})
                     return
                 svc.mcp.wait(10)                                  # servers still starting (only right after start)
                 extra = svc.mcp.template_tools(exclude=own)       # the request's own tools win a name clash
@@ -4600,10 +4746,10 @@ def host_allowed(host, names, any_host=False) -> bool:
 
 def origin_allowed(origin: str, host, names, origins=()) -> bool:
     """A browser page's Origin that may use the model without an API key: this server's own page (the Origin is the
-    request's own Host), a page on one of the names this server answers to (any port), or an origin the config lists
-    (trusted_origins, cors_origins).  Unlike the Host check no IP passes on trust: a page served from any other IP is
-    another site.  "null" (a sandboxed frame, a file:// page) does not pass: any site can send it.  An origin of another
-    scheme (chrome-extension://, moz-extension://, an Electron app's app://) does: no web site can send one."""
+    request's own Host), or an origin the config lists (trusted_origins, cors_origins).  Unlike the Host check no IP
+    passes on trust: a page served from any other IP is another site.  "null" (a sandboxed frame, a file:// page)
+    does not pass: any site can send it.  Another scheme (chrome-extension://, app://) passes only when listed:
+    any local app can send one, so keyless trust would let any program on this PC use the model."""
     origin = (origin or "").strip().rstrip("/")
     if origin in origins or "*" in origins:             # cors_origins ["*"]: the config lets every page in
         return True
@@ -4611,11 +4757,15 @@ def origin_allowed(origin: str, host, names, origins=()) -> bool:
     if not sep or not scheme:
         return False
     if scheme not in ("http", "https"):
-        return True
+        return False
     if host and rest == host.strip().lower():
         return True
     name = host_name(rest)
-    return bool(name) and (name in LOOPBACK_NAMES or name.endswith(".localhost") or _name_in(name, names))
+    if not name:
+        return False
+    if name in LOOPBACK_NAMES or name.endswith(".localhost"):
+        return False
+    return _name_in(name, names)
 
 
 def serve(svc: Service, host="127.0.0.1", port=8095) -> ThreadingHTTPServer:
@@ -4897,9 +5047,10 @@ def main() -> int:
               "memory" + ("" if svc.api_key else "; anyone who can reach this server can read them (no API key)"),
               flush=True)
     if svc.cors_origins:
-        print(f"[strata] CORS on /v1/* for {', '.join(svc.cors_origins)}"
-              + ("" if svc.api_key or "*" not in svc.cors_origins else
-                 " - WARNING: any web page may use the model (no API key)"), flush=True)
+        if "*" in svc.cors_origins and not svc.api_key:
+            raise SystemExit("[strata] config cors_origins [\"*\"] needs \"api_key\": any web page could use the model")
+        print(f"[strata] CORS on /v1/* for {', '.join(svc.cors_origins)}", flush=True)
+    svc.mcp_allow_remote = cfg.get("mcp_allow_remote") is True
     svc.idle_unload_s = a.idle_unload if a.idle_unload is not None else float(cfg.get("idle_unload_s") or 0)
     svc.min_free_vram_mib = a.min_free_vram_mib if a.min_free_vram_mib is not None else \
         int(cfg.get("min_free_vram_mib") or 0)

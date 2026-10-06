@@ -1190,6 +1190,8 @@ bool embed_row(const WeightTable& tables, const ModelGeometry& g, int64_t token,
                void* stream, std::string& err) {
     if (const NativeEmbed* ne = native_embed()) {   // plan v0.3 P6: the GGUF-form table (IQ model files)
         if (token < 0 || out_dev == nullptr) { err = "embed_row: invalid token or output"; return false; }
+        if (token >= ne->n_vocab()) { err = "embed_row: token " + std::to_string(token) + " is outside 0.." +
+            std::to_string(ne->n_vocab() - 1); return false; }
         ne->gather_one(token, out_dev, stream);
         return true;
     }

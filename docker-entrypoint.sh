@@ -24,6 +24,9 @@ LOW_RAM="${LOW_RAM:-auto}"      # on: the experts come from the pack's experts.b
 # this family and model were set up with. The config is the recorded output of
 # that setup (the pack, the profile, the quant, the KV decision), not settings
 # the entry point could rebuild from env vars. qwen has an empty family tag.
+# MODEL/FAMILY are allowlisted: they become a filename, so traversal is refused.
+case "$FAMILY" in qwen|swift|coder|unsloth) ;; *) echo "FAMILY must be qwen|swift|coder|unsloth" >&2; exit 1 ;; esac
+case "$MODEL" in Q2_0|IQ2_XS|IQ3_XXS|IQ3_S|IQ1_M|UD-Q4_K_XL|UD-IQ4_XS) ;; *) echo "bad MODEL" >&2; exit 1 ;; esac
 case "$FAMILY" in qwen) prefix="" ;; *) prefix="${FAMILY}-" ;; esac
 tag="${prefix}$(printf '%s' "$MODEL" | tr 'A-Z' 'a-z')"
 cfg="$STRATA_DATA/config/strata-$tag.json"
@@ -47,7 +50,8 @@ if [ "${REINSTALL:-0}" = "1" ] || [ ! -f "$cfg" ]; then
   if [ -n "$GPU" ]; then set -- "$@" --gpu "$GPU"; fi
   if [ -n "$LAYER_SPLIT" ]; then set -- "$@" --layer-split "$LAYER_SPLIT"; fi
   .venv/bin/python setup.py --setup --yes "$@"
-  [ -e "/opt/strata/strata-$tag.json" ] && { cmp -s "/opt/strata/strata-$tag.json" "$cfg" || cp -f "/opt/strata/strata-$tag.json" "$cfg"; }
+  [ -e "/opt/strata/strata-$tag.json" ] && { cmp -s "/opt/strata/strata-$tag.json" "$cfg" || { cp -f "/opt/strata/strata-$tag.json" "$cfg"; chmod 600 "$cfg"; }; }
+  chmod 600 "$cfg" 2>/dev/null || true
 else
   [ -e "/opt/strata/strata-$tag.json" ] || ln -s "$cfg" "/opt/strata/strata-$tag.json"
 fi
