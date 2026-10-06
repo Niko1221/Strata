@@ -97,6 +97,26 @@ public:
     const uint64_t* slot_offsets() const { return off_.empty() ? nullptr : off_.data(); }
     void close();
 
+    /// ELASTIC ARENA (--elastic).  The same sized slots as `open_sized`, but the arena is a reserved
+    /// virtual range of `va_bytes`, backed by physical chunks of `chunk_bytes` (CUDA virtual memory management),
+    /// so the cache can GROW past its first size and SHRINK below it while the VRAM other programs use comes and
+    /// goes - and **the arena's address never moves**: the verify plan, the prompt path and the device residency
+    /// table keep the pointers they were handed at startup, and `slot_offsets()` has room reserved for every
+    /// (layer, expert) so it is never reallocated either.  False (err set) when the driver has no VMM; the caller
+    /// then opens the plain arena.
+    bool open_sized_elastic(const std::vector<int64_t>& slot_bytes, int64_t n_layers, int64_t n_expert,
+                            uint64_t va_bytes, uint64_t chunk_bytes, std::string& err);
+    bool elastic() const { return elastic_vmm_; }
+    /// Appends slots of the given sizes after the last one, mapping chunks as needed and zeroing them.  All or
+    /// nothing: on failure the cache is exactly as before.  (Named apart from #533's byte-sized `grow`/`shrink`
+    /// of the segmented arena below: the two resizable arenas are separate and never open together.)
+    bool elastic_grow(const std::vector<int64_t>& slot_bytes, std::string& err);
+    /// Drops the slots from `n_slots` on and unmaps every chunk wholly above the new end.  The caller has taken
+    /// every expert out of those slots and synchronized the device: nothing may read them any more.
+    bool elastic_shrink(int64_t n_slots, std::string& err);
+    uint64_t elastic_mapped_bytes() const { return mapped_; }
+    uint64_t chunk_bytes() const { return chunk_; }
+
     bool valid() const { return base_ != nullptr; }
     /// The slots usable now: all of them, unless `shrink` gave the tail's VRAM back (#533) - then the ones wholly
     /// inside the VRAM still backed, always a prefix.  The prompt path's loan (the last slots) and every report
@@ -240,6 +260,16 @@ private:
     std::vector<int32_t> layer_next_;   ///< [n_layers] -> that layer's next free slot
     std::vector<uint64_t> off_;         ///< plan v0.3 P6: slot offsets (slots + 1 entries) when sized
     int64_t admitted_ = 0;
+    // the elastic arena (CUdeviceptr and CUmemGenericAllocationHandle are both unsigned long long)
+    bool map_to(uint64_t end, std::string& err);   ///< maps chunks until `end` bytes are backed
+    void unmap_above(uint64_t keep);               ///< releases every chunk wholly above `keep` bytes
+    bool elastic_vmm_ = false;
+    unsigned long long va_ = 0;
+    uint64_t va_bytes_ = 0;
+    uint64_t chunk_ = 0;
+    uint64_t mapped_ = 0;
+    int device_ = 0;
+    std::vector<unsigned long long> handles_;     ///< one per mapped chunk, in address order
 };
 
 }  // namespace strata::core
