@@ -99,6 +99,14 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-metric__spark .speed-prefill { color: color-mix(in srgb, var(--st-accent) 65%, black); }
 .st-metric__spark[data-tone="warn"] { color: var(--st-warn); }
 .st-metric__spark[data-tone="info"] { color: var(--st-info); }
+/* one card per GPU: the engine's own split on the left of each row, that card's VRAM on the right */
+.gpu-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--st-s-4); }
+.gpu-grid[data-count="1"] { grid-template-columns: minmax(0, 1fr); }
+.gpu-card { display: flex; flex-direction: column; gap: var(--st-s-2); }
+.gpu-card__head { display: flex; align-items: center; gap: var(--st-s-2); flex-wrap: wrap; }
+.gpu-card__name { margin-left: auto; font-variant-numeric: tabular-nums; }
+.gpu-card .bar-row { margin-top: 0; }
+.gpu-card__foot { margin-top: var(--st-s-1); font-variant-numeric: tabular-nums; }
 .monitor-row { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(0, 2.4fr); gap: var(--st-s-4); }
 .ctx-card { display: flex; flex-direction: column; gap: var(--st-s-2); }
 .ctx-gauge { position: relative; width: 150px; height: 150px; margin: var(--st-s-2) auto var(--st-s-3); }
@@ -165,6 +173,7 @@ main { flex: 1; min-height: 0; display: flex; }
 /* ---------------------------------------------------------------- narrow screens */
 @media (max-width: 1000px) {
   .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .gpu-grid { grid-template-columns: minmax(0, 1fr); }
   .monitor-row { grid-template-columns: 1fr; }
   .cc-bars { grid-template-columns: 1fr; }
   .cfg-form { grid-template-columns: 1fr; gap: 4px; }
