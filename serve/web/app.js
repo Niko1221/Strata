@@ -657,7 +657,9 @@ function onTool(m, x) {
                       state: x.skipped ? "skipped" : x.ok ? "done" : "error"});
   }
 }
-function updateAssistant(el, m, streaming) {
+function updateAssistant(el, m, streaming, follow = streaming) {
+  // Capture the user's position before a large delta changes either scroll height.
+  const scroller = $("chat-scroll"), followChat = follow && nearBottom(scroller);
   const det = el.querySelector("details.think");
   if (m.reasoning) {
     det.hidden = false;
@@ -665,11 +667,13 @@ function updateAssistant(el, m, streaming) {
     el.querySelector(".think-title").textContent = thinkingNow ? "Thinking…" :
       m.thinkSecs != null ? `Thought for ${fmt(m.thinkSecs, 1)} s` : "Thoughts";
     const body = el.querySelector(".thinking");
-    if (det.open || thinkingNow) body.textContent = m.reasoning;
+    const followThinking = follow && (det.open ? nearBottom(body) : thinkingNow && settings.show && !det.dataset.touched);
+    if (det.open || thinkingNow) { if (body.textContent !== m.reasoning) body.textContent = m.reasoning; }
     else body.dataset.pending = "1";
     // open while it streams (if wanted), closed once the answer starts - unless the user toggled it themselves
     if (thinkingNow && settings.show && !det.dataset.touched && !det.open) { det._auto = true; det.open = true; }
     if (!thinkingNow && det.open && !det.dataset.touched) { det._auto = true; det.open = false; }
+    if (followThinking && det.open) body.scrollTop = body.scrollHeight;
   }
   const bubble = el.querySelector(".st-bubble");
   if (m.error) {
@@ -683,6 +687,7 @@ function updateAssistant(el, m, streaming) {
   }
   el.querySelector(".meta-text").textContent = m.meta || (streaming ? "" : m.stopped ? "Stopped" : "");
   el.querySelector("[data-msg-copy]").hidden = streaming || !m.text;
+  if (followChat) scroller.scrollTop = scroller.scrollHeight;
 }
 function renderChat() {
   const chat = $("chat");
@@ -691,7 +696,7 @@ function renderChat() {
   messages.forEach((m, i) => chat.appendChild(msgEl(m, i)));
   scrollDown(true);
 }
-function nearBottom() { const s = $("chat-scroll"); return s.scrollHeight - s.scrollTop - s.clientHeight < 120; }
+function nearBottom(s = $("chat-scroll")) { return s.scrollHeight - s.scrollTop - s.clientHeight < 120; }
 function scrollDown(force) { const s = $("chat-scroll"); if (force || nearBottom()) s.scrollTop = s.scrollHeight; }
 
 $("chat").addEventListener("click", (e) => {
@@ -788,7 +793,7 @@ async function send() {
   if (settings.mcp !== false && mcpInfo.tools > 0) body.strata_mcp = true;   // this server may run MCP tools for it
 
   let firstAt = null, thinkStart = null, usage = null, frame = 0;
-  const paint = () => { frame = 0; updateAssistant(el, m, true); scrollDown(); };
+  const paint = () => { frame = 0; updateAssistant(el, m, true); };
   try {
     const r = await fetch("v1/chat/completions", {method: "POST", headers: headers(true), body: JSON.stringify(body),
                                                    signal: controller.signal});
@@ -853,9 +858,8 @@ async function send() {
   busy = null;
   setBusy(false);
   if (frame) cancelAnimationFrame(frame);
-  updateAssistant(el, m, false);
+  updateAssistant(el, m, false, true);
   saveChat();
-  scrollDown();
 }
 
 $("composer").onsubmit = (e) => { e.preventDefault(); send(); };
