@@ -952,6 +952,25 @@ __global__ void wait_flag_ge_kernel(const volatile uint32_t* flag, uint32_t valu
     while (*flag < value) strata_spin_pause();
     __threadfence_system();
 }
+__device__ __forceinline__ unsigned long long now_ns() {   // gpu_stamp's clock
+    unsigned long long t;
+#if defined(STRATA_HIP_GFX906)
+    t = wall_clock64() * 40ull;
+#elif defined(__HIPCC__)
+    t = wall_clock64() * 10ull;
+#else
+    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+#endif
+    return t;
+}
+// wait_flag_ge, with the GPU's clock as it arrives (t_in) and as it leaves (t_out), either may be null
+__global__ void wait_flag_ge_stamped_kernel(const volatile uint32_t* flag, uint32_t value, volatile unsigned long long* t_in,
+                                            volatile unsigned long long* t_out) {
+    if (t_in != nullptr) *t_in = now_ns();
+    while (*flag < value) strata_spin_pause();
+    __threadfence_system();
+    if (t_out != nullptr) *t_out = now_ns();
+}
 }  // namespace
 
 namespace {
@@ -1177,6 +1196,12 @@ void copy_or_zero_from_mapped(float* dst, const float* src, long long n, const u
 void wait_flag_ge(const uint32_t* flag, uint32_t value, void* stream) {
     wait_flag_ge_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(flag, value);
     check("wait_flag_ge");
+}
+
+void wait_flag_ge_stamped(const uint32_t* flag, uint32_t value, unsigned long long* t_in, unsigned long long* t_out,
+                          void* stream) {
+    wait_flag_ge_stamped_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(flag, value, t_in, t_out);
+    check("wait_flag_ge_stamped");
 }
 
 void embedding_gather_dev(const uint8_t* codes, const float* scales, const float* offsets, const int32_t* tokens,
