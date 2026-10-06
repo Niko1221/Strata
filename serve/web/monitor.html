@@ -2,7 +2,7 @@
 <html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Strata API Monitor</title>
+<title data-i18n="Strata API Monitor">Strata API Monitor</title>
 <link rel="stylesheet" href="/web/tokens.css">
 <style>
 *{box-sizing:border-box}body{margin:0;background:var(--st-bg);color:var(--st-ink);font:15px/1.5 var(--st-font)}
@@ -11,27 +11,29 @@ header{height:70px;padding:0 32px;display:flex;align-items:center;justify-conten
 @media(max-width:950px){.cards{grid-template-columns:repeat(2,1fr)}.workspace{grid-template-columns:1fr}.requests{border-right:0;border-bottom:1px solid var(--st-line);max-height:260px}.top{align-items:flex-start}.brand span{display:none}}@media(max-width:600px){main{padding:20px 14px}header{padding:0 16px}.top{flex-direction:column;gap:14px}.cards{gap:8px}.card{padding:12px}.value{font-size:23px}.panel-bar{align-items:flex-start;flex-direction:column}#search{width:160px}.facts{grid-template-columns:repeat(2,1fr)}footer{flex-direction:column;gap:4px}}
 </style>
 <script defer src="/web/monitor.js"></script>
+<link rel="stylesheet" href="/web/i18n.css">
+<script src="/web/i18n.js"></script>
 </head>
 <body>
-<header><div class="brand">Strata <span>Local inference</span></div><div class="controls"><button id="key">API key</button><button id="theme" aria-label="Switch color theme">Light / dark</button></div></header>
+<header><div class="brand">Strata <span><span data-i18n="Local inference">Local inference</span></span></div><div class="controls"><select class="language-select" data-language aria-label="Language" data-i18n-aria-label="Language"><option value="en" lang="en">English</option><option value="ar" lang="ar">العربية</option></select><button id="key"><span data-i18n="API key">API key</span></button><button id="theme" aria-label="Switch color theme" data-i18n-aria-label="Switch color theme"><span data-i18n="Light / dark">Light / dark</span></button></div></header>
 <main>
-<div class="top"><div><h1>API Monitor</h1><p class="sub">Model status and every request, in one place.</p></div><div class="controls"><button id="load" class="primary" disabled>Load model</button><button id="unload" disabled>Unload model</button></div></div>
+<div class="top"><div><h1><span data-i18n="API Monitor">API Monitor</span></h1><p class="sub"><span data-i18n="Model status and every request, in one place.">Model status and every request, in one place.</span></p></div><div class="controls"><button id="load" class="primary" disabled><span data-i18n="Load model">Load model</span></button><button id="unload" disabled><span data-i18n="Unload model">Unload model</span></button></div></div>
 <div id="error" class="notice" role="status" hidden></div>
-<form id="auth" class="panel" hidden><label for="api-key">API key</label><input id="api-key" type="password" autocomplete="off" placeholder="Only needed if the server has a key"><button class="primary">Connect</button></form>
+<form id="auth" class="panel" hidden><label for="api-key"><span data-i18n="API key">API key</span></label><input id="api-key" type="password" autocomplete="off" placeholder="Only needed if the server has a key" data-i18n-placeholder="Only needed if the server has a key"><button class="primary"><span data-i18n="Connect">Connect</span></button></form>
 <div class="cards">
-<div class="card"><div class="label">Model</div><div id="model-state" class="value"><span class="dot"></span><span id="loaded">Connecting…</span></div><div id="model" class="model">127.0.0.1:5001/v1</div></div>
-<div class="card"><div class="label">Requests retained</div><div id="count" class="value">—</div><div id="active" class="small">Waiting for server</div></div>
-<div class="card"><div class="label">Last wall-clock</div><div id="wall" class="value">—</div><div class="small">Includes queue and model loading</div></div>
-<div class="card"><div class="label">Last decode speed</div><div id="speed" class="value">—</div><div class="small">Engine timing · tokens / second</div></div>
+<div class="card"><div class="label"><span data-i18n="Model">Model</span></div><div id="model-state" class="value"><span class="dot"></span><span id="loaded"><span data-i18n="Connecting…">Connecting…</span></span></div><div id="model" class="model">127.0.0.1:5001/v1</div></div>
+<div class="card"><div class="label"><span data-i18n="Requests retained">Requests retained</span></div><div id="count" class="value">—</div><div id="active" class="small"><span data-i18n="Waiting for server">Waiting for server</span></div></div>
+<div class="card"><div class="label"><span data-i18n="Last wall-clock">Last wall-clock</span></div><div id="wall" class="value">—</div><div class="small"><span data-i18n="Includes queue and model loading">Includes queue and model loading</span></div></div>
+<div class="card"><div class="label"><span data-i18n="Last decode speed">Last decode speed</span></div><div id="speed" class="value">—</div><div class="small"><span data-i18n="Engine timing · tokens / second">Engine timing · tokens / second</span></div></div>
 </div>
-<section class="panel"><div class="panel-bar"><h2>Requests</h2><div class="filters"><input id="search" aria-label="Filter requests" placeholder="Search ID or endpoint"><select id="filter" aria-label="Request status"><option value="all">All statuses</option><option value="active">Active</option><option value="completed">Completed</option><option value="error">Errors</option></select></div></div>
-<div class="workspace"><div id="requests" class="requests" aria-label="Request list"></div><div class="detail">
-<div id="no-selection" class="empty"><strong>Inspect a request</strong>Select a request to see its input, output, and timings.</div>
+<section class="panel"><div class="panel-bar"><h2><span data-i18n="Requests">Requests</span></h2><div class="filters"><input id="search" aria-label="Filter requests" placeholder="Search ID or endpoint" data-i18n-aria-label="Filter requests" data-i18n-placeholder="Search ID or endpoint"><select id="filter" aria-label="Request status" data-i18n-aria-label="Request status"><option value="all" data-i18n="All statuses">All statuses</option><option value="active" data-i18n="Active">Active</option><option value="completed" data-i18n="Completed">Completed</option><option value="error" data-i18n="Errors">Errors</option></select></div></div>
+<div class="workspace"><div id="requests" class="requests" aria-label="Request list" data-i18n-aria-label="Request list"></div><div class="detail">
+<div id="no-selection" class="empty"><strong><span data-i18n="Inspect a request">Inspect a request</span></strong><span data-i18n="Select a request to see its input, output, and timings.">Select a request to see its input, output, and timings.</span></div>
 <div id="selection" hidden><div class="row"><div id="detail-title" class="detail-title"></div><span id="detail-status" class="tag"></span></div><div id="detail-time" class="small"></div>
-<div class="facts"><div class="fact"><span>Wall-clock</span><b id="detail-wall">—</b></div><div class="fact"><span>Model load</span><b id="detail-load">—</b></div><div class="fact"><span>Queue wait</span><b id="detail-queue">—</b></div><div class="fact"><span>First token</span><b id="detail-first">—</b></div><div class="fact"><span>Prompt tokens</span><b id="detail-prompt">—</b></div><div class="fact"><span>Output tokens</span><b id="detail-tokens">—</b></div><div class="fact"><span>Decode speed</span><b id="detail-speed">—</b></div><div class="fact"><span>Response format</span><b id="detail-format">—</b></div></div>
-<div id="detail-error" class="detail-error" hidden></div><div class="tabs" role="tablist" aria-label="Request content"><button role="tab" data-pane="input" aria-selected="true">Input</button><button role="tab" data-pane="output" aria-selected="false">Output</button><button role="tab" data-pane="reasoning" aria-selected="false">Reasoning</button><button role="tab" data-pane="response" aria-selected="false">API response</button><button id="copy">Copy</button></div>
-<div id="content-note" class="small" style="margin-top:10px"></div><pre id="content" role="tabpanel" aria-label="Request content"></pre></div>
+<div class="facts"><div class="fact"><span><span data-i18n="Wall-clock">Wall-clock</span></span><b id="detail-wall">—</b></div><div class="fact"><span><span data-i18n="Model load">Model load</span></span><b id="detail-load">—</b></div><div class="fact"><span><span data-i18n="Queue wait">Queue wait</span></span><b id="detail-queue">—</b></div><div class="fact"><span><span data-i18n="First token">First token</span></span><b id="detail-first">—</b></div><div class="fact"><span><span data-i18n="Prompt tokens">Prompt tokens</span></span><b id="detail-prompt">—</b></div><div class="fact"><span><span data-i18n="Output tokens">Output tokens</span></span><b id="detail-tokens">—</b></div><div class="fact"><span><span data-i18n="Decode speed">Decode speed</span></span><b id="detail-speed">—</b></div><div class="fact"><span><span data-i18n="Response format">Response format</span></span><b id="detail-format">—</b></div></div>
+<div id="detail-error" class="detail-error" hidden></div><div class="tabs" role="tablist" aria-label="Request content" data-i18n-aria-label="Request content"><button role="tab" data-pane="input" aria-selected="true"><span data-i18n="Input">Input</span></button><button role="tab" data-pane="output" aria-selected="false"><span data-i18n="Output">Output</span></button><button role="tab" data-pane="reasoning" aria-selected="false"><span data-i18n="Reasoning">Reasoning</span></button><button role="tab" data-pane="response" aria-selected="false"><span data-i18n="API response">API response</span></button><button id="copy"><span data-i18n="Copy">Copy</span></button></div>
+<div id="content-note" class="small" style="margin-top:10px"></div><pre id="content" role="tabpanel" aria-label="Request content" data-i18n-aria-label="Request content"></pre></div>
 </div></div></section>
-<footer><span>Last 100 requests kept in memory until restart. Inputs and outputs stay on this machine.</span><span id="updated">Connecting…</span></footer>
+<footer><span><span data-i18n="Last 100 requests kept in memory until restart. Inputs and outputs stay on this machine.">Last 100 requests kept in memory until restart. Inputs and outputs stay on this machine.</span></span><span id="updated"><span data-i18n="Connecting…">Connecting…</span></span></footer>
 </main>
 </body></html>

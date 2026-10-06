@@ -3,7 +3,8 @@
 A background thread samples once a second and keeps the last 60 readings of each series for the sparklines:
 - GPU: NVIDIA's own NVML library (nvml.dll / libnvidia-ml.so.1, installed with every driver) through ctypes, so no
   pip package is needed: load, VRAM, temperature, power, PCIe link and throughput.  With the AMD backend (#301): the
-  amdgpu driver's Linux sysfs files - load, VRAM, temperature and power.
+  amdgpu driver's Linux sysfs files - load, VRAM, temperature and power; on Windows, the driver's ADL library
+  supplies load, dedicated VRAM, temperature, board power (ASIC power when unavailable) and PCIe link.
 - CPU, RAM, disk: `psutil` when it is installed (setup installs it); without it the CPU and RAM readings fall back to
   the OS (Windows GlobalMemoryStatusEx / GetSystemTimes, Linux /proc) and the disk rate is absent.
 Anything that cannot be read is None; nothing here can stop the server.
@@ -183,7 +184,10 @@ class _Amd:
 
 
 def gpu_reader(index=0, amd=False):
-    """The card's readings: NVML (NVIDIA), or the amdgpu sysfs files with the AMD backend (#301)."""
+    """The card's readings: NVML (NVIDIA), sysfs (Linux AMD), or ADL (Windows AMD)."""
+    if amd and os.name == "nt":
+        from serve.amd_windows import AmdWindows
+        return AmdWindows(index)
     return _Amd(index) if amd else _Nvml(index)
 
 
@@ -192,7 +196,11 @@ def free_vram_mib(index=0, amd=False):
     g = gpu_reader(index, amd)
     if not g.ok():
         return None
-    r = g.read()
+    try:
+        r = g.read()
+    finally:
+        if hasattr(g, "close"):
+            g.close()
     if r.get("mem_total") is None or r.get("mem_used") is None:
         return None
     return int((r["mem_total"] - r["mem_used"]) >> 20)
@@ -269,7 +277,7 @@ class Telemetry:
         engine runs on, numbered as nvidia-smi and NVML number them (by PCI bus); `gpu_indices`: all of them when
         the model is split across several (issue #112) - the gpu_* readings are then their total (memory, power,
         PCIe traffic), mean (load) or hottest (temperature), and "gpus" has each card's own.  `amd`: the AMD backend's
-        cards, numbered as HIP numbers them, read from sysfs (#301)."""
+        cards, numbered as HIP numbers them, read from sysfs on Linux or ADL on Windows."""
         self.extra = extra
         self.lock = threading.Lock()
         self.now: dict = {}
