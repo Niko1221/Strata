@@ -15,6 +15,8 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](../bench/results/2026-09-30-community-rtx-5090/README.md):
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
   each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.
+- [2026-10-01: 2x TITAN RTX 24 GB (sm_75, NVLink present but unused), Xeon E5-2696 v4 without AVX-512, 125 GiB RAM](../bench/results/2026-10-01-community-2x-titan-rtx/README.md):
+  Strata 0.1.31 built from source, original Flash-Next IQ3_S, 262,144-token context (the model native window); three runs each at 4,096, 32,768 and 128,000 prompt tokens. Decode 57.7-68.1 tok/s, prompt 840.9/1611.8/1784.6 tok/s at those three lengths, expert cache 99% hit, six of six needles found at 32k and 128k. Notes that NVLink is not used by the engine, and that --ple-io ram measured equal to the default.
 - [2026-10-03: 2x AMD Instinct MI50 16 GB (gfx906), Xeon E5-2666 v3, 32 GB RAM](../bench/results/2026-10-03-community-2x-mi50/README.md):
   the gfx906 build (#638) with #639 and #640, Coder IQ1_M, 131,072-token context, layer split across both cards;
   three runs each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.
