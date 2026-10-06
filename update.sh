@@ -15,8 +15,18 @@ main() {
     echo "Getting the newest Strata (git pull) ..."
     if ! git pull --ff-only; then
       echo
-      echo "git pull did not succeed (the reason is above): nothing was updated. Files you changed here can stop it:"
-      echo "\"git status\" lists them."
+      echo "git pull did not succeed (the reason is above): nothing was updated."
+      if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+        echo "Files you changed here can stop it: \"git status\" lists them."
+      else
+        echo "You changed no files, so they are not why. A history that was rewritten (a force-push on main) leaves"
+        echo "this copy and the repository with no common history, and a fast-forward cannot bridge that."
+        echo "To move to the new history - the model files, this folder's settings and its draft subset are kept:"
+        echo
+        echo "    git fetch origin main && git reset --hard origin/main"
+        echo
+        echo "then run ./update.sh again."
+      fi
       exit 1
     fi
   else
