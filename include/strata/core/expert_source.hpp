@@ -633,6 +633,11 @@ public:
     /// pool is where they land); STRATA_STAGE_KEEP_MIB sets it without the flag.
     void set_stage_keep(uint64_t bytes);
     uint64_t stage_keep() const { return stage_keep_; }
+    /// STRATA_LRU_OFFER: LRU buffers offered to the OS, and of the offered ones a hit reclaimed, how many still held
+    /// their blob and how many the OS had discarded (read from the drive again).
+    int64_t lru_offered() const { return lru_offered_.load(std::memory_order_relaxed); }
+    int64_t lru_kept() const { return lru_kept_.load(std::memory_order_relaxed); }
+    int64_t lru_lost() const { return lru_lost_.load(std::memory_order_relaxed); }
     /// #286: blobs an unbuffered read could not deliver, read through the mapping instead (0 when all went direct).
     int64_t direct_fallbacks() const { return direct_fallbacks_.load(std::memory_order_relaxed); }
 
@@ -714,7 +719,17 @@ private:
     // through the layer it was asked in and the next ones (the pool computes a layer's misses before the next).
     static constexpr uint64_t kStageAge = 3;
     std::mutex stage_mu_;
-    std::vector<std::unique_ptr<uint8_t[]>> stage_buf_;
+    /// The stage buffers are allocated page-aligned (VirtualAlloc on Windows) so the LRU part can be offered to the OS.
+    struct StageFree { void operator()(uint8_t* p) const; };
+    std::vector<std::unique_ptr<uint8_t[], StageFree>> stage_buf_;
+    /// STRATA_LRU_OFFER=1 (Windows): buffers left unused for a while are offered to the OS (OfferVirtualMemory) - it may
+    /// discard them when other programs need the RAM, never paging them out; a hit reclaims the buffer first and reads
+    /// the drive again when its contents were discarded.
+    std::vector<char> stage_offered_;
+    uint64_t stage_alloc_ = 0;                ///< bytes of each stage buffer, whole pages
+    std::atomic<int64_t> lru_offered_{0}, lru_kept_{0}, lru_lost_{0};
+    bool reclaim_stage(size_t v, bool count = true);   ///< stage_mu_ held: whether buffer v still holds its blob
+    void offer_cold_stages();                 ///< stage_mu_ held: offers the buffers unused for a while
     std::vector<int64_t> stage_key_;
     std::vector<uint64_t> stage_epoch_, stage_used_;
     std::vector<char> stage_busy_;            ///< being filled (outside stage_mu_): never a victim

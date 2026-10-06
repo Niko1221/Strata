@@ -995,6 +995,8 @@ void FileExpertSource::close() {
     {
         std::lock_guard<std::mutex> lk(stage_mu_);
         stage_buf_.clear();
+        stage_offered_.clear();
+        stage_alloc_ = 0;
         stage_key_.clear();
         stage_epoch_.clear();
         stage_used_.clear();
@@ -1202,6 +1204,11 @@ bool FileExpertSource::claim_stage(int64_t key, size_t& v, bool& fill, bool ahea
         stage_epoch_[v] = epoch_;
         stage_used_[v] = seq;
         if (!ahead && stage_pf_[v]) { stage_pf_[v] = 0; io_pf_used_.fetch_add(1, std::memory_order_relaxed); }   // a layer asked for what was read ahead
+        if (stage_offered_[v] && !reclaim_stage(v)) {
+            stage_busy_[v] = 1;   // the OS discarded it: the caller reads the blob into the same buffer again
+            fill = true;
+            return false;
+        }
         return true;
     }
     // the RAM tier's LRU part (set_stage_keep): the pool keeps that many bytes of blobs before it reuses any buffer, so
@@ -1217,8 +1224,15 @@ bool FileExpertSource::claim_stage(int64_t key, size_t& v, bool& fill, bool ahea
             v = i;
         }
     if (v == stage_buf_.size()) {
-        stage_buf_.emplace_back(new (std::nothrow) uint8_t[(size_t) stage_blob_]);
+        if (stage_alloc_ == 0) stage_alloc_ = (stage_blob_ + 4095) / 4096 * 4096;
+#if defined(_WIN32)
+        stage_buf_.emplace_back((uint8_t*) VirtualAlloc(nullptr, (SIZE_T) stage_alloc_, MEM_COMMIT | MEM_RESERVE,
+                                                        PAGE_READWRITE));
+#else
+        stage_buf_.emplace_back(new (std::nothrow) uint8_t[(size_t) stage_alloc_]);
+#endif
         if (!stage_buf_.back()) { stage_buf_.pop_back(); return false; }
+        stage_offered_.push_back(0);
         stage_key_.push_back(-1);
         stage_epoch_.push_back(0);
         stage_used_.push_back(0);
@@ -1232,6 +1246,7 @@ bool FileExpertSource::claim_stage(int64_t key, size_t& v, bool& fill, bool ahea
     } else {
         stage_of_.erase(stage_key_[v]);
         if (stage_pf_[v]) { stage_pf_[v] = 0; io_pf_unused_.fetch_add(1, std::memory_order_relaxed); }   // read ahead, never asked for
+        if (stage_offered_[v]) (void) reclaim_stage(v, false);   // its old blob is dropped anyway; the pages must be back
     }
     stage_key_[v] = key;
     stage_epoch_[v] = epoch_;
@@ -2003,8 +2018,70 @@ void FileExpertSource::begin_layer(int64_t layer, const int32_t* ids, int64_t k)
     std::lock_guard<std::mutex> lk(stage_mu_);
     if (layer != last_layer_) {
         ++epoch_;
+        if (layer == 0) offer_cold_stages();   // once a window
         last_layer_ = layer;
     }
+}
+
+void FileExpertSource::StageFree::operator()(uint8_t* p) const {
+#if defined(_WIN32)
+    if (p != nullptr) VirtualFree(p, 0, MEM_RELEASE);
+#else
+    delete[] p;
+#endif
+}
+
+#if defined(_WIN32)
+namespace {
+// OfferVirtualMemory / ReclaimVirtualMemory (Windows 8.1+), looked up at run time
+using OfferFn = DWORD(WINAPI*)(PVOID, SIZE_T, int);
+using ReclaimFn = DWORD(WINAPI*)(const void*, SIZE_T);
+struct OfferApi {
+    OfferFn offer = nullptr;
+    ReclaimFn reclaim = nullptr;
+    OfferApi() {
+        const HMODULE k = GetModuleHandleW(L"kernel32.dll");
+        offer = (OfferFn) (void*) GetProcAddress(k, "OfferVirtualMemory");
+        reclaim = (ReclaimFn) (void*) GetProcAddress(k, "ReclaimVirtualMemory");
+    }
+};
+const OfferApi& offer_api() { static const OfferApi a; return a; }
+}  // namespace
+#endif
+
+bool FileExpertSource::reclaim_stage(size_t v, bool count) {
+    if (!stage_offered_[v]) return true;
+    stage_offered_[v] = 0;
+#if defined(_WIN32)
+    const DWORD r = offer_api().reclaim((const void*) stage_buf_[v].get(), (SIZE_T) stage_alloc_);
+    const bool kept = r == ERROR_SUCCESS;   // ERROR_BUSY: the pages are back, their contents gone
+    if (count) (kept ? lru_kept_ : lru_lost_).fetch_add(1, std::memory_order_relaxed);
+    return kept;
+#else
+    (void) count;
+    return true;
+#endif
+}
+
+void FileExpertSource::offer_cold_stages() {
+#if defined(_WIN32)
+    // STRATA_LRU_OFFER=1: a buffer unused for STRATA_LRU_OFFER_AGE layer changes (default 96: about two decode windows)
+    // is offered at low priority; the ones used more recently stay plain memory, so a hot blob costs no reclaim
+    static const bool on = [] { const char* v = std::getenv("STRATA_LRU_OFFER"); return v != nullptr && v[0] == '1'; }();
+    static const uint64_t age = [] {
+        const char* v = std::getenv("STRATA_LRU_OFFER_AGE");
+        return v != nullptr && std::atoll(v) > 0 ? (uint64_t) std::atoll(v) : 96ull;
+    }();
+    if (!on || offer_api().offer == nullptr || offer_api().reclaim == nullptr || stage_alloc_ == 0) return;
+    constexpr int kVmOfferPriorityLow = 2;
+    for (size_t i = 0; i < stage_buf_.size(); ++i) {
+        if (stage_offered_[i] || stage_busy_[i] || stage_key_[i] < 0 || stage_epoch_[i] + age > epoch_) continue;
+        if (offer_api().offer(stage_buf_[i].get(), (SIZE_T) stage_alloc_, kVmOfferPriorityLow) == ERROR_SUCCESS) {
+            stage_offered_[i] = 1;
+            lru_offered_.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+#endif
 }
 
 bool FileExpertSource::transient(int64_t layer, int64_t expert) const {
@@ -2035,6 +2112,11 @@ bool FileExpertSource::copy_staged(int64_t layer, int64_t expert, uint8_t* dst) 
         const auto it = stage_of_.find(layer * n_expert_ + expert);
         if (it == stage_of_.end() || stage_busy_[it->second]) return false;
         v = it->second;
+        if (stage_offered_[v] && !reclaim_stage(v)) {   // the OS discarded it: no blob here any more
+            stage_of_.erase(it);
+            stage_key_[v] = -1;
+            return false;
+        }
         stage_busy_[v] = 1;   // never a victim while it is copied
     }
     std::memcpy(dst, stage_buf_[v].get(), (size_t) layer_blob_bytes_[(size_t) layer]);
