@@ -9,8 +9,8 @@
     "native": {
       "generated": 256,
       "prompt_tokens": 2185,
-      "prompt_ms": 6885.1,
-      "decode_ms": 5328.3,
+      "prompt_ms": 7075.6,
+      "decode_ms": 5380.4,
       "finish": "length",
       "drafts_accepted": 168,
       "drafts_offered": 217,
@@ -23,17 +23,17 @@
       "prompt_read": 2185,
       "offloaded": 0
     },
-    "native_done_line": "DONE 256 2185 6885.1 5328.3 length 168 217 0 0 0 0 0 0.0 2185 0\n",
-    "prompt_tps": 317.3519629344526,
-    "decode_tps": 48.04534279226019,
-    "ttft_s": 6.938324049999892,
-    "total_s": 12.213906712999915,
+    "native_done_line": "DONE 256 2185 7075.6 5380.4 length 168 217 0 0 0 0 0 0.0 2185 0\n",
+    "prompt_tps": 308.80773361976367,
+    "decode_tps": 47.58010556835923,
+    "ttft_s": 7.1313728770001035,
+    "total_s": 12.456545683999138,
     "process_io_delta": {
-      "rchar": 130862233,
+      "rchar": 130864521,
       "wchar": 5225,
-      "syscr": 30661,
+      "syscr": 30662,
       "syscw": 368,
-      "read_bytes": 126533632,
+      "read_bytes": 126537728,
       "write_bytes": 0,
       "cancelled_write_bytes": 0
     },
@@ -43,25 +43,25 @@
       "strata trace: prompt chunk 768 of 2184",
       "strata trace: prompt chunk 1280 of 2184",
       "strata trace: prompt chunk 1792 of 2184",
-      "strata trace: read 2184 tokens (batched) in 6884.3 ms",
-      "strata serve: prompt 2185 tokens = 0 reused + 2185 read in 6885 ms (317.4 tok/s), 256 generated in 5328 ms (48.0 tok/s), drafts accepted 168 of 217, 0 checkpoints"
+      "strata trace: read 2184 tokens (batched) in 7074.9 ms",
+      "strata serve: prompt 2185 tokens = 0 reused + 2185 read in 7076 ms (308.8 tok/s), 256 generated in 5380 ms (47.6 tok/s), drafts accepted 168 of 217, 0 checkpoints"
     ],
     "valid": true,
     "prefixes": {
       "64": {
         "ids_sha256": "cf1e1e085484948e599241716706f5507ab5e89d9a8ac0d96920ab439acbe167",
-        "post_first_tps": 52.24075533869304,
-        "after_prompt_elapsed_ms": 1259.1790480000436
+        "post_first_tps": 51.85380471303567,
+        "after_prompt_elapsed_ms": 1270.7271190012161
       },
       "128": {
         "ids_sha256": "e11bf392b65ba47c558a17a9157ad6c8d24c1382eaf8d6cc7787a49c76fddbb6",
-        "post_first_tps": 52.63737254860174,
-        "after_prompt_elapsed_ms": 2465.958459999876
+        "post_first_tps": 52.150583332723684,
+        "after_prompt_elapsed_ms": 2491.0284750004703
       },
       "256": {
         "ids_sha256": "7ba483a4e7b6b2e4812e907bcd3b194f5d0f8c01cbdd67b188021bc1c35da19a",
-        "post_first_tps": 48.33608650058516,
-        "after_prompt_elapsed_ms": 5328.785612000012
+        "post_first_tps": 47.885962165817475,
+        "after_prompt_elapsed_ms": 5380.924309000087
       }
     },
     "target": "public2185-256",
@@ -77,8 +77,8 @@
     "native": {
       "generated": 256,
       "prompt_tokens": 20,
-      "prompt_ms": 368.9,
-      "decode_ms": 5275.4,
+      "prompt_ms": 377.9,
+      "decode_ms": 5366.3,
       "finish": "length",
       "drafts_accepted": 170,
       "drafts_offered": 234,
@@ -91,11 +91,11 @@
       "prompt_read": 20,
       "offloaded": 0
     },
-    "native_done_line": "DONE 256 20 368.9 5275.4 length 170 234 0 0 0 0 0 0.0 20 0\n",
-    "prompt_tps": 54.21523448088913,
-    "decode_tps": 48.527125905144636,
-    "ttft_s": 0.40213101600011214,
-    "total_s": 5.644547747999923,
+    "native_done_line": "DONE 256 20 377.9 5366.3 length 170 234 0 0 0 0 0 0.0 20 0\n",
+    "prompt_tps": 52.924053982535064,
+    "decode_tps": 47.70512271024728,
+    "ttft_s": 0.41132024900070974,
+    "total_s": 5.744386730002589,
     "process_io_delta": {
       "rchar": 17299410,
       "wchar": 4338,
@@ -107,25 +107,25 @@
     },
     "numeric_trace": [
       "strata trace: prompt chunk 0 of 19",
-      "strata trace: read 19 tokens (batched) in 368.2 ms",
-      "strata serve: prompt 20 tokens = 0 reused + 20 read in 369 ms (54.2 tok/s), 256 generated in 5275 ms (48.5 tok/s), drafts accepted 170 of 234, 0 checkpoints"
+      "strata trace: read 19 tokens (batched) in 377.2 ms",
+      "strata serve: prompt 20 tokens = 0 reused + 20 read in 378 ms (52.9 tok/s), 256 generated in 5366 ms (47.7 tok/s), drafts accepted 170 of 234, 0 checkpoints"
     ],
     "valid": true,
     "prefixes": {
       "64": {
         "ids_sha256": "fb5a5439c39b4cd1be6594ded94de1a59c06a34c4d0e19c727fd1f5695d34223",
-        "post_first_tps": 50.98149563253436,
-        "after_prompt_elapsed_ms": 1268.9734990000793
+        "post_first_tps": 50.32465883244484,
+        "after_prompt_elapsed_ms": 1285.2916270016517
       },
       "128": {
         "ids_sha256": "7f68a7a588d312046353a395a24785c3b50522ee5f58f029176d1c3929823571",
-        "post_first_tps": 48.72009405068254,
-        "after_prompt_elapsed_ms": 2639.958332000045
+        "post_first_tps": 48.120782867921,
+        "after_prompt_elapsed_ms": 2672.612557001639
       },
       "256": {
         "ids_sha256": "aae2d8752ae047866038d72ac448c1879edcec98b5198b793d657372c24d8b08",
-        "post_first_tps": 48.641835432387005,
-        "after_prompt_elapsed_ms": 5275.631877999953
+        "post_first_tps": 47.81505212540079,
+        "after_prompt_elapsed_ms": 5366.468916002714
       }
     },
     "target": "public20-256",
@@ -141,8 +141,8 @@
     "native": {
       "generated": 8,
       "prompt_tokens": 23,
-      "prompt_ms": 383.3,
-      "decode_ms": 174.4,
+      "prompt_ms": 392.5,
+      "decode_ms": 177.9,
       "finish": "stop",
       "drafts_accepted": 6,
       "drafts_offered": 6,
@@ -155,11 +155,11 @@
       "prompt_read": 23,
       "offloaded": 0
     },
-    "native_done_line": "DONE 8 23 383.3 174.4 stop 6 6 0 0 0 0 0 0.0 23 0\n",
-    "prompt_tps": 60.00521784503,
-    "decode_tps": 45.87155963302752,
-    "ttft_s": 0.4170421799999531,
-    "total_s": 0.5578549500000918,
+    "native_done_line": "DONE 8 23 392.5 177.9 stop 6 6 0 0 0 0 0 0.0 23 0\n",
+    "prompt_tps": 58.59872611464968,
+    "decode_tps": 44.96908375491849,
+    "ttft_s": 0.4267805749987019,
+    "total_s": 0.5705589879980835,
     "process_io_delta": {
       "rchar": 1142912,
       "wchar": 562,
@@ -171,8 +171,8 @@
     },
     "numeric_trace": [
       "strata trace: prompt chunk 0 of 22",
-      "strata trace: read 22 tokens (batched) in 382.7 ms",
-      "strata serve: prompt 23 tokens = 0 reused + 23 read in 383 ms (60.0 tok/s), 8 generated in 174 ms (45.9 tok/s), drafts accepted 6 of 6, 0 checkpoints"
+      "strata trace: read 22 tokens (batched) in 391.9 ms",
+      "strata serve: prompt 23 tokens = 0 reused + 23 read in 392 ms (58.6 tok/s), 8 generated in 178 ms (45.0 tok/s), drafts accepted 6 of 6, 0 checkpoints"
     ],
     "valid": true,
     "prefixes": {},
@@ -188,8 +188,8 @@
     "native": {
       "generated": 256,
       "prompt_tokens": 2185,
-      "prompt_ms": 6866.7,
-      "decode_ms": 5280.8,
+      "prompt_ms": 6869.9,
+      "decode_ms": 5304.7,
       "finish": "length",
       "drafts_accepted": 168,
       "drafts_offered": 217,
@@ -202,13 +202,13 @@
       "prompt_read": 2185,
       "offloaded": 0
     },
-    "native_done_line": "DONE 256 2185 6866.7 5280.8 length 168 217 0 0 0 0 0 0.0 2185 0\n",
-    "prompt_tps": 318.2023388235979,
-    "decode_tps": 48.47750340857446,
-    "ttft_s": 6.920144385999947,
-    "total_s": 12.148039585999868,
+    "native_done_line": "DONE 256 2185 6869.9 5304.7 length 168 217 0 0 0 0 0 0.0 2185 0\n",
+    "prompt_tps": 318.0541201473093,
+    "decode_tps": 48.25909099477822,
+    "ttft_s": 6.926132624001184,
+    "total_s": 12.175035005999234,
     "process_io_delta": {
-      "rchar": 130858137,
+      "rchar": 130856329,
       "wchar": 5225,
       "syscr": 30660,
       "syscw": 368,
@@ -222,25 +222,25 @@
       "strata trace: prompt chunk 768 of 2184",
       "strata trace: prompt chunk 1280 of 2184",
       "strata trace: prompt chunk 1792 of 2184",
-      "strata trace: read 2184 tokens (batched) in 6865.7 ms",
-      "strata serve: prompt 2185 tokens = 0 reused + 2185 read in 6867 ms (318.2 tok/s), 256 generated in 5281 ms (48.5 tok/s), drafts accepted 168 of 217, 0 checkpoints"
+      "strata trace: read 2184 tokens (batched) in 6869.1 ms",
+      "strata serve: prompt 2185 tokens = 0 reused + 2185 read in 6870 ms (318.1 tok/s), 256 generated in 5305 ms (48.3 tok/s), drafts accepted 168 of 217, 0 checkpoints"
     ],
     "valid": true,
     "prefixes": {
       "64": {
         "ids_sha256": "cf1e1e085484948e599241716706f5507ab5e89d9a8ac0d96920ab439acbe167",
-        "post_first_tps": 52.38367728640507,
-        "after_prompt_elapsed_ms": 1256.109094999866
+        "post_first_tps": 52.25891295534761,
+        "after_prompt_elapsed_ms": 1261.768606998574
       },
       "128": {
         "ids_sha256": "e11bf392b65ba47c558a17a9157ad6c8d24c1382eaf8d6cc7787a49c76fddbb6",
-        "post_first_tps": 53.037578445256976,
-        "after_prompt_elapsed_ms": 2447.973014999926
+        "post_first_tps": 52.874022930052945,
+        "after_prompt_elapsed_ms": 2458.1682619988514
       },
       "256": {
         "ids_sha256": "7ba483a4e7b6b2e4812e907bcd3b194f5d0f8c01cbdd67b188021bc1c35da19a",
-        "post_first_tps": 48.776931357744914,
-        "after_prompt_elapsed_ms": 5281.325535999978
+        "post_first_tps": 48.58172095602545,
+        "after_prompt_elapsed_ms": 5305.120374001179
       }
     },
     "target": "public2185-256",
@@ -257,8 +257,8 @@
     "native": {
       "generated": 256,
       "prompt_tokens": 20,
-      "prompt_ms": 368.8,
-      "decode_ms": 5166.0,
+      "prompt_ms": 368.6,
+      "decode_ms": 5182.9,
       "finish": "length",
       "drafts_accepted": 170,
       "drafts_offered": 234,
@@ -271,11 +271,11 @@
       "prompt_read": 20,
       "offloaded": 0
     },
-    "native_done_line": "DONE 256 20 368.8 5166.0 length 170 234 0 0 0 0 0 0.0 20 0\n",
-    "prompt_tps": 54.22993492407809,
-    "decode_tps": 49.55478126209834,
-    "ttft_s": 0.4017569249999724,
-    "total_s": 5.535023658,
+    "native_done_line": "DONE 256 20 368.6 5182.9 length 170 234 0 0 0 0 0 0.0 20 0\n",
+    "prompt_tps": 54.25935973955507,
+    "decode_tps": 49.39319685890139,
+    "ttft_s": 0.40173007599878474,
+    "total_s": 5.5517357169992465,
     "process_io_delta": {
       "rchar": 17299410,
       "wchar": 4338,
@@ -287,25 +287,25 @@
     },
     "numeric_trace": [
       "strata trace: prompt chunk 0 of 19",
-      "strata trace: read 19 tokens (batched) in 368.1 ms",
-      "strata serve: prompt 20 tokens = 0 reused + 20 read in 369 ms (54.2 tok/s), 256 generated in 5166 ms (49.6 tok/s), drafts accepted 170 of 234, 0 checkpoints"
+      "strata trace: read 19 tokens (batched) in 367.9 ms",
+      "strata serve: prompt 20 tokens = 0 reused + 20 read in 369 ms (54.3 tok/s), 256 generated in 5183 ms (49.4 tok/s), drafts accepted 170 of 234, 0 checkpoints"
     ],
     "valid": true,
     "prefixes": {
       "64": {
         "ids_sha256": "fb5a5439c39b4cd1be6594ded94de1a59c06a34c4d0e19c727fd1f5695d34223",
-        "post_first_tps": 51.737294368181786,
-        "after_prompt_elapsed_ms": 1250.6471960000101
+        "post_first_tps": 51.535446183743005,
+        "after_prompt_elapsed_ms": 1255.5896579995228
       },
       "128": {
         "ids_sha256": "7f68a7a588d312046353a395a24785c3b50522ee5f58f029176d1c3929823571",
-        "post_first_tps": 49.46108257903934,
-        "after_prompt_elapsed_ms": 2600.6322240000018
+        "post_first_tps": 49.27878993166978,
+        "after_prompt_elapsed_ms": 2610.303748000448
       },
       "256": {
         "ids_sha256": "aae2d8752ae047866038d72ac448c1879edcec98b5198b793d657372c24d8b08",
-        "post_first_tps": 49.67609648057581,
-        "after_prompt_elapsed_ms": 5166.210503000194
+        "post_first_tps": 49.5146640782466,
+        "after_prompt_elapsed_ms": 5183.119573999435
       }
     },
     "target": "public20-256",
@@ -323,7 +323,7 @@
       "generated": 8,
       "prompt_tokens": 23,
       "prompt_ms": 382.5,
-      "decode_ms": 164.3,
+      "decode_ms": 165.1,
       "finish": "stop",
       "drafts_accepted": 6,
       "drafts_offered": 6,
@@ -336,11 +336,11 @@
       "prompt_read": 23,
       "offloaded": 0
     },
-    "native_done_line": "DONE 8 23 382.5 164.3 stop 6 6 0 0 0 0 0 0.0 23 0\n",
+    "native_done_line": "DONE 8 23 382.5 165.1 stop 6 6 0 0 0 0 0 0.0 23 0\n",
     "prompt_tps": 60.130718954248366,
-    "decode_tps": 48.69141813755325,
-    "ttft_s": 0.4161403489999884,
-    "total_s": 0.5471247349998976,
+    "decode_tps": 48.45548152634767,
+    "ttft_s": 0.4163050930001191,
+    "total_s": 0.5478887559984287,
     "process_io_delta": {
       "rchar": 1142912,
       "wchar": 562,
@@ -352,8 +352,8 @@
     },
     "numeric_trace": [
       "strata trace: prompt chunk 0 of 22",
-      "strata trace: read 22 tokens (batched) in 381.9 ms",
-      "strata serve: prompt 23 tokens = 0 reused + 23 read in 383 ms (60.1 tok/s), 8 generated in 164 ms (48.7 tok/s), drafts accepted 6 of 6, 0 checkpoints"
+      "strata trace: read 22 tokens (batched) in 381.8 ms",
+      "strata serve: prompt 23 tokens = 0 reused + 23 read in 382 ms (60.1 tok/s), 8 generated in 165 ms (48.4 tok/s), drafts accepted 6 of 6, 0 checkpoints"
     ],
     "valid": true,
     "prefixes": {},
@@ -370,8 +370,8 @@
     "native": {
       "generated": 256,
       "prompt_tokens": 2185,
-      "prompt_ms": 6881.3,
-      "decode_ms": 5327.8,
+      "prompt_ms": 7159.2,
+      "decode_ms": 5421.4,
       "finish": "length",
       "drafts_accepted": 168,
       "drafts_offered": 217,
@@ -384,17 +384,17 @@
       "prompt_read": 2185,
       "offloaded": 0
     },
-    "native_done_line": "DONE 256 2185 6881.3 5327.8 length 168 217 0 0 0 0 0 0.0 2185 0\n",
-    "prompt_tps": 317.5272114280732,
-    "decode_tps": 48.0498517211607,
-    "ttft_s": 6.9349513430001934,
-    "total_s": 12.209581964000108,
+    "native_done_line": "DONE 256 2185 7159.2 5421.4 length 168 217 0 0 0 0 0 0.0 2185 0\n",
+    "prompt_tps": 305.2016985138004,
+    "decode_tps": 47.22027520566644,
+    "ttft_s": 7.215888784001436,
+    "total_s": 12.5810548010013,
     "process_io_delta": {
-      "rchar": 130862233,
+      "rchar": 130872713,
       "wchar": 5225,
-      "syscr": 30661,
+      "syscr": 30664,
       "syscw": 368,
-      "read_bytes": 126533632,
+      "read_bytes": 126545920,
       "write_bytes": 0,
       "cancelled_write_bytes": 0
     },
@@ -404,25 +404,25 @@
       "strata trace: prompt chunk 768 of 2184",
       "strata trace: prompt chunk 1280 of 2184",
       "strata trace: prompt chunk 1792 of 2184",
-      "strata trace: read 2184 tokens (batched) in 6880.7 ms",
-      "strata serve: prompt 2185 tokens = 0 reused + 2185 read in 6881 ms (317.5 tok/s), 256 generated in 5328 ms (48.0 tok/s), drafts accepted 168 of 217, 0 checkpoints"
+      "strata trace: read 2184 tokens (batched) in 7158.5 ms",
+      "strata serve: prompt 2185 tokens = 0 reused + 2185 read in 7159 ms (305.2 tok/s), 256 generated in 5421 ms (47.2 tok/s), drafts accepted 168 of 217, 0 checkpoints"
     ],
     "valid": true,
     "prefixes": {
       "64": {
         "ids_sha256": "cf1e1e085484948e599241716706f5507ab5e89d9a8ac0d96920ab439acbe167",
-        "post_first_tps": 52.2895498131224,
-        "after_prompt_elapsed_ms": 1258.4809930001584
+        "post_first_tps": 51.785009509015,
+        "after_prompt_elapsed_ms": 1273.2570650023818
       },
       "128": {
         "ids_sha256": "e11bf392b65ba47c558a17a9157ad6c8d24c1382eaf8d6cc7787a49c76fddbb6",
-        "post_first_tps": 52.64710004555335,
-        "after_prompt_elapsed_ms": 2465.939957000056
+        "post_first_tps": 51.832250886866134,
+        "after_prompt_elapsed_ms": 2506.900723999989
       },
       "256": {
         "ids_sha256": "7ba483a4e7b6b2e4812e907bcd3b194f5d0f8c01cbdd67b188021bc1c35da19a",
-        "post_first_tps": 48.34474564865598,
-        "after_prompt_elapsed_ms": 5328.267986000138
+        "post_first_tps": 47.528941913683695,
+        "after_prompt_elapsed_ms": 5421.840831002611
       }
     },
     "target": "public2185-256",
@@ -439,8 +439,8 @@
     "native": {
       "generated": 256,
       "prompt_tokens": 20,
-      "prompt_ms": 369.0,
-      "decode_ms": 5282.1,
+      "prompt_ms": 381.8,
+      "decode_ms": 5436.4,
       "finish": "length",
       "drafts_accepted": 170,
       "drafts_offered": 234,
@@ -453,11 +453,11 @@
       "prompt_read": 20,
       "offloaded": 0
     },
-    "native_done_line": "DONE 256 20 369.0 5282.1 length 170 234 0 0 0 0 0 0.0 20 0\n",
-    "prompt_tps": 54.200542005420054,
-    "decode_tps": 48.46557240491471,
-    "ttft_s": 0.40227551300017694,
-    "total_s": 5.651366373999963,
+    "native_done_line": "DONE 256 20 381.8 5436.4 length 170 234 0 0 0 0 0 0.0 20 0\n",
+    "prompt_tps": 52.38344683080147,
+    "decode_tps": 47.0899860201604,
+    "ttft_s": 0.41560294200098724,
+    "total_s": 5.818402204000449,
     "process_io_delta": {
       "rchar": 17299410,
       "wchar": 4338,
@@ -469,25 +469,25 @@
     },
     "numeric_trace": [
       "strata trace: prompt chunk 0 of 19",
-      "strata trace: read 19 tokens (batched) in 368.4 ms",
-      "strata serve: prompt 20 tokens = 0 reused + 20 read in 369 ms (54.2 tok/s), 256 generated in 5282 ms (48.5 tok/s), drafts accepted 170 of 234, 0 checkpoints"
+      "strata trace: read 19 tokens (batched) in 381.2 ms",
+      "strata serve: prompt 20 tokens = 0 reused + 20 read in 382 ms (52.4 tok/s), 256 generated in 5436 ms (47.1 tok/s), drafts accepted 170 of 234, 0 checkpoints"
     ],
     "valid": true,
     "prefixes": {
       "64": {
         "ids_sha256": "fb5a5439c39b4cd1be6594ded94de1a59c06a34c4d0e19c727fd1f5695d34223",
-        "post_first_tps": 50.98881128719871,
-        "after_prompt_elapsed_ms": 1268.8406970000015
+        "post_first_tps": 49.74152723356909,
+        "after_prompt_elapsed_ms": 1300.350302000082
       },
       "128": {
         "ids_sha256": "7f68a7a588d312046353a395a24785c3b50522ee5f58f029176d1c3929823571",
-        "post_first_tps": 48.707623407868674,
-        "after_prompt_elapsed_ms": 2640.670230999973
+        "post_first_tps": 47.55917585939859,
+        "after_prompt_elapsed_ms": 2704.160401000193
       },
       "256": {
         "ids_sha256": "aae2d8752ae047866038d72ac448c1879edcec98b5198b793d657372c24d8b08",
-        "post_first_tps": 48.579965487125506,
-        "after_prompt_elapsed_ms": 5282.352934999977
+        "post_first_tps": 47.1978909664923,
+        "after_prompt_elapsed_ms": 5436.58672700178
       }
     },
     "target": "public20-256",
@@ -504,8 +504,8 @@
     "native": {
       "generated": 8,
       "prompt_tokens": 23,
-      "prompt_ms": 381.8,
-      "decode_ms": 174.7,
+      "prompt_ms": 396.0,
+      "decode_ms": 182.8,
       "finish": "stop",
       "drafts_accepted": 6,
       "drafts_offered": 6,
@@ -518,11 +518,11 @@
       "prompt_read": 23,
       "offloaded": 0
     },
-    "native_done_line": "DONE 8 23 381.8 174.7 stop 6 6 0 0 0 0 0 0.0 23 0\n",
-    "prompt_tps": 60.24096385542168,
-    "decode_tps": 45.79278763594734,
-    "ttft_s": 0.4158759239999199,
-    "total_s": 0.5568556229998194,
+    "native_done_line": "DONE 8 23 396.0 182.8 stop 6 6 0 0 0 0 0 0.0 23 0\n",
+    "prompt_tps": 58.08080808080808,
+    "decode_tps": 43.7636761487965,
+    "ttft_s": 0.4304779820013209,
+    "total_s": 0.579070423002122,
     "process_io_delta": {
       "rchar": 1142912,
       "wchar": 562,
@@ -534,8 +534,8 @@
     },
     "numeric_trace": [
       "strata trace: prompt chunk 0 of 22",
-      "strata trace: read 22 tokens (batched) in 381.2 ms",
-      "strata serve: prompt 23 tokens = 0 reused + 23 read in 382 ms (60.2 tok/s), 8 generated in 175 ms (45.8 tok/s), drafts accepted 6 of 6, 0 checkpoints"
+      "strata trace: read 22 tokens (batched) in 395.5 ms",
+      "strata serve: prompt 23 tokens = 0 reused + 23 read in 396 ms (58.1 tok/s), 8 generated in 183 ms (43.8 tok/s), drafts accepted 6 of 6, 0 checkpoints"
     ],
     "valid": true,
     "prefixes": {},

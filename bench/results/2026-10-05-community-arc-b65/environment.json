@@ -19,5 +19,5 @@
   "public_fixture_additional_variable": {
     "STRATA_TRACE": "1"
   },
-  "note": "Wrapper hash includes deployment paths; environment values above are the portable reproduction configuration."
+  "note": "Existing diagnostic-off launch wrapper reused for the isolated candidate; portable values above specify the environment."
 }

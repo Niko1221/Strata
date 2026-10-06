@@ -1,15 +1,15 @@
 # Community benchmark: Intel Arc Pro B65, PCIe Gen4 x16
 
-Measured 2026-10-05 by timnevits. Original full 512-expert Flash-Next IQ2_XS,
-Strata 0.1.39 SYCL with six local patches, 8K context, INT8 KV and
+Measured 2026-10-06 by timnevits. Original full 512-expert Flash-Next IQ2_XS,
+Strata v0.1.40 release source with six local patches (see BUILD.md), 8K context, INT8 KV and
 confidence-limited MTP window 4. Three fresh native engine launches; five fixed
 synthetic tasks at each of 512 and 7000 exact input tokens, 640 output tokens per
 request. This is a native greedy speed/recovery report, not broad answer-quality
 qualification or a comparison against another card/runtime.
 
 The range of the three independently warmed five-task decode medians is
-40.53–41.46 tok/s at 512 inputs and
-39.96–41.04 tok/s at 7000 inputs.
+40.37–41.28 tok/s at 512 inputs and
+39.81–40.90 tok/s at 7000 inputs.
 Task-level results vary materially; the table below preserves those differences.
 
 ## Hardware and software
@@ -35,9 +35,10 @@ Task-level results vary materially; the table below preserves those differences.
 
 [BUILD.md](BUILD.md) gives pins, six local patches, build/pack steps and run
 commands. The measured binary is SHA256
-`19efe17ce46adcebb99b586e9d12cde4fe9b0ddbdf0f585ebed173ef6c992ba0`.
-This is a source-built SPIR-V/JIT 0.1.39-sycl profile; it is not stock upstream
-without patches or XeStrata.
+`520d1a72a7866956efc0feb4250cafeaf485ef86904e11950a392468e1bb91cb`.
+This is a source-built SPIR-V/JIT build from the v0.1.40 tag. The Intel engine
+still self-reports 0.1.39-sycl; source commit and patches identify what ran.
+The listed patches are required to reproduce this build of the included Intel port.
 
 Original `ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF` at
 `ed59f92082b1e93c0e96d60a8b11aab089b52f09`, full 512 experts per layer,
@@ -55,9 +56,9 @@ execute on the GPU through direct pinned-host reads; no CPU expert computation.
 All missing experts must be mirrored or startup is refused.
 
 `STRATA_DBG_NAN` is explicitly unset. The expensive qualification-only
-intermediate-tensor downloads and CPU scans are disabled; the qualified model,
-binary and other launch settings are retained. All three repetitions of each
-task/length reproduce the same output-ID hash.
+intermediate-tensor downloads and CPU scans are disabled. The retained model and
+launch settings are used with the disclosed patched v0.1.40 source build. All
+three repetitions of each task/length reproduce the same output-ID hash.
 
 Native verify/commit graphs enabled; eager off. `--spec 4 --mtp-max-t 4
 --spec-min-p 0.5` permits up to three drafts per verification window, shortened
@@ -70,9 +71,9 @@ Startup geometry and lifecycle, per process:
 
 |Run|Resident expert slots|Expert cache MiB|Startup free VRAM MiB|Startup→READY s|QUIT→exit s|Native exit|
 |---|---:|---:|---:|---:|---:|---:|
-|1|17885|24594|3211|5.138|0.114|0|
-|2|17885|24594|3197|5.058|0.114|0|
-|3|17885|24594|3211|5.094|0.114|0|
+|1|17885|24594|3211|5.048|0.114|0|
+|2|17885|24594|3197|5.098|0.114|0|
+|3|17885|24594|3211|4.990|0.114|0|
 
 See [runs.json](runs.json) for native INFO and startup mirror/transfer lines.
 Auto residency is sized once at startup and remains fixed within each process;
@@ -126,37 +127,37 @@ are native-client monotonic measurements. Rates tok/s; times seconds.
 
 |Input tokens|Task|Runs|Generated|Reused|Prompt tok/s|Decode tok/s|TTFT s|Total s|Draft acceptance|
 |---:|---|---:|---:|---:|---|---|---|---|---:|
-|512|LRU cache code|3|640|0|352.81 [343.46–352.93]|48.98 [45.86–48.98]|1.48 [1.48–1.52]|14.52 [14.52–15.45]|81.9%|
-|512|CSV import code|3|640|0|353.57 [343.85–353.64]|47.47 [44.85–47.48]|1.48 [1.48–1.52]|14.93 [14.93–15.76]|75.0%|
-|512|Lighthouse story|3|640|0|349.73 [339.86–349.75]|37.60 [33.89–37.63]|1.50 [1.50–1.54]|18.48 [18.47–20.39]|66.9%|
-|512|Inventory explanation|3|640|0|358.62 [348.70–358.84]|41.38 [39.93–41.39]|1.46 [1.46–1.50]|16.90 [16.89–17.50]|64.4%|
-|512|Incident plan|3|640|0|350.90 [340.36–351.02]|41.45 [40.53–41.46]|1.49 [1.49–1.54]|16.90 [16.90–17.29]|66.7%|
-|7000|LRU cache code|3|640|0|307.54 [297.06–307.89]|47.42 [44.71–47.44]|22.80 [22.77–23.60]|36.25 [36.23–37.88]|76.7%|
-|7000|CSV import code|3|640|0|307.65 [297.04–308.05]|47.90 [45.32–47.90]|22.79 [22.76–23.60]|36.11 [36.08–37.69]|79.9%|
-|7000|Lighthouse story|3|640|0|307.27 [296.46–307.64]|35.95 [31.84–35.97]|22.82 [22.79–23.65]|40.58 [40.55–43.72]|65.0%|
-|7000|Inventory explanation|3|640|0|307.23 [296.81–307.69]|41.04 [39.96–41.04]|22.82 [22.78–23.62]|38.38 [38.34–39.60]|66.7%|
-|7000|Incident plan|3|640|0|307.38 [297.08–307.85]|40.33 [39.64–40.36]|22.81 [22.77–23.60]|38.63 [38.61–39.71]|66.0%|
+|512|LRU cache code|3|640|0|352.96 [337.86–352.98]|48.82 [45.76–48.82]|1.48 [1.48–1.55]|14.56 [14.56–15.50]|81.9%|
+|512|CSV import code|3|640|0|353.54 [338.00–353.57]|47.29 [44.72–47.32]|1.48 [1.48–1.55]|14.98 [14.97–15.83]|75.0%|
+|512|Lighthouse story|3|640|0|349.61 [334.16–349.82]|37.46 [33.80–37.48]|1.50 [1.50–1.57]|18.55 [18.54–20.47]|66.9%|
+|512|Inventory explanation|3|640|0|358.77 [342.70–358.82]|41.21 [39.78–41.22]|1.46 [1.46–1.53]|16.96 [16.96–17.58]|64.4%|
+|512|Incident plan|3|640|0|350.93 [335.87–351.05]|41.28 [40.37–41.28]|1.49 [1.49–1.56]|16.96 [16.96–17.38]|66.7%|
+|7000|LRU cache code|3|640|0|307.75 [292.99–307.78]|47.24 [44.62–47.30]|22.78 [22.78–23.93]|36.29 [36.28–38.24]|76.7%|
+|7000|CSV import code|3|640|0|307.71 [293.06–307.75]|47.73 [45.20–47.74]|22.78 [22.78–23.92]|36.16 [36.15–38.05]|79.9%|
+|7000|Lighthouse story|3|640|0|307.35 [292.70–307.43]|35.82 [31.77–35.83]|22.81 [22.80–23.95]|40.64 [40.63–44.06]|65.0%|
+|7000|Inventory explanation|3|640|0|307.16 [292.84–307.41]|40.89 [39.81–40.90]|22.82 [22.81–23.94]|38.44 [38.42–39.98]|66.7%|
+|7000|Incident plan|3|640|0|307.61 [293.07–307.62]|40.16 [39.48–40.20]|22.79 [22.79–23.92]|38.69 [38.68–40.10]|66.0%|
 
 Five-task medians within each fresh process, kept separate from the per-task
 repeat ranges above:
 
 |Run|Input tokens|Prompt tok/s|Decode tok/s|TTFT s|Total s|
 |---:|---:|---:|---:|---:|---:|
-|1|512|352.81|41.45|1.48|16.90|
-|1|7000|307.85|41.04|22.77|38.34|
-|2|512|343.46|40.53|1.52|17.29|
-|2|7000|297.04|39.96|23.60|39.60|
-|3|512|352.93|41.46|1.48|16.89|
-|3|7000|307.38|41.04|22.81|38.38|
+|1|512|352.98|41.28|1.48|16.96|
+|1|7000|307.61|40.90|22.79|38.42|
+|2|512|337.86|40.37|1.55|17.38|
+|2|7000|292.99|39.81|23.93|39.98|
+|3|512|352.96|41.28|1.48|16.96|
+|3|7000|307.62|40.89|22.79|38.44|
 
 ## Memory, hardware health and recovery
 
 Independent approximately 2-second monitoring covered startup, requests and
-shutdown: 520 samples over 1049.1 s.
+shutdown: 521 samples over 1051.3 s.
 Observed maximum across GPU/VRAM sensors 72 °C;
-peak DRM-resident VRAM 28.945 GiB;
-minimum whole-host available memory 109.598 GiB;
-peak cgroup memory 1.156 GiB. Pinned USM is not fully
+peak DRM-resident VRAM 29.071 GiB;
+minimum whole-host available memory 109.486 GiB;
+peak cgroup memory 1.162 GiB. Pinned USM is not fully
 charged to the cgroup, so that figure is not total process/host RAM use. Host
 available memory includes other services and is an estimate; sampled peaks
 can miss brief transients. [telemetry.csv](telemetry.csv) and
@@ -195,3 +196,26 @@ configuration. Their prompt content and output lengths differ from the five-task
 640-output suite, so their results are kept separate. The native serving protocol
 uses those public fixtures; the unmodified community benchy.sh harness was not
 used. See the linked method, raw records and per-shape median/ranges.
+
+## Arc qualification and upstream observations
+
+[qualification.json](qualification.json) records 22 selected kernel tests plus
+separate IQ/native-expert checks, 12 additional GEMM stride checks and 24 candidate
+API checks, including streaming/tools, near-8K context, cancellation during
+long prefill and clean restart/two native exit0 shutdowns. The candidate was
+tested in isolation; normal serving retains the existing qualified 0.1.39 build.
+No boot/service/driver change was made, and no candidate reboot test is claimed.
+Retained serving/private API and model recovery passed after the benchmark.
+
+The included Intel port still needs shared-interface synchronization to build
+against this tag; see [build-findings.json](build-findings.json), [BUILD.md](BUILD.md)
+and the two additional reproduction patches0007/0008. This measures the repaired
+default paths and does not establish support for the new CUDA/HIP speed features.
+The tagged Intel engine still labels itself 0.1.39-sycl, so the source commit and
+patches identify the measured build.
+
+Two further source observations for maintainers: the tagged setup Intel card
+table lacks this B65's verified PCI ID 8086:e222 and 32 GiB VRAM; and
+STRATA_VERIFY_COHERENT is guarded by STRATA_USE_HIP in the tagged SYCL verifier.
+The Intel CMake target does not define that macro. No speed effect from that
+switch is claimed. These are setup/source observations, not GPU faults.

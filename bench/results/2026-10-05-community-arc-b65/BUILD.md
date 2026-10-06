@@ -1,40 +1,44 @@
-# Source build and reproduction
+# Diagnostic-off source build and reproduction
 
-The qualified configuration explicitly unsets STRATA_DBG_NAN to avoid expensive
-qualification-only CPU tensor scans.
+This repeats the original build/profile with only STRATA_DBG_NAN absent.
 
-The measurements use Strata 0.1.39-sycl at
-`6f32ec070f23ced9f50e704d854d775da52591ab`, ggml/llama.cpp
+
+The measurements use Strata v0.1.40 source (Intel engine label 0.1.39-sycl) at
+`1735d6471df29b42c26170efaac1f1446a58640f`, ggml/llama.cpp
 `3cf03257f219afbe7334045ff7c6a06ac68c627d`, and Intel oneAPI DPC++ 2026.1.0.
 This is a SPIR-V/JIT Release build, not AOT. Compiler options include `-O3`,
 `-DNDEBUG`, `-std=c++20`, `-fsycl`, subgroup 32, per-kernel device code split,
 `-fp-model=precise`, sequential MKL, and correctly rounded FP32 divide/sqrt.
 The measured binary SHA256 is
-`19efe17ce46adcebb99b586e9d12cde4fe9b0ddbdf0f585ebed173ef6c992ba0`.
+`520d1a72a7866956efc0feb4250cafeaf485ef86904e11950a392468e1bb91cb`.
 Paths and build environment can affect a rebuilt binary's hash.
 
-Six local patches are attached as reproduction data, with no modifications to
-the repository's engine in this results PR:
+Six local patches are attached as reproduction data, with no changes to the
+repository engine outside this benchmark folder:
 
-1. Synchronize the SYCL host thread-affinity interface.
-2. Synchronize NativeDense's layer-range load interface.
-3. Free test-only SYCL-pinned allocations with the matching allocator.
-4. Avoid the commit graph in the eager path (eager is **off** in this report).
-5. Refuse NO_HOST startup if any missing expert lacks the pinned mirror.
-6. Drain queues and explicitly release the pinned USM expert mirror before
-   native QUIT exits. The final linked binary recompiles this shutdown-owning
-   translation unit against the unchanged original static objects.
+- `0003`: matching free for pinned allocations in a test fixture.
+- `0004`: eager commit semantics (eager is off in this benchmark).
+- `0005`: refuse startup when NO_HOST lacks complete expert mirror coverage.
+- `0006`: drain and explicitly release the USM expert mirror before QUIT exits.
+- `0007`: synchronize three newer shared interfaces: fused GR return semantics,
+GGUF reader ready-pointer argument, and GEMM input strides.
+- `0008`: synchronize remaining linker interfaces, file advice/Linux release
+semantics and unavailable elastic-KV stubs. New optional fusion/stride/error-buffer/
+deferred-reader paths that are not ported are explicitly refused. This benchmark
+uses the existing default kernel paths; it does not claim those new features.
 
-All six patches were applied to a clean copy of the pinned source. The resulting
-SYCL source hashes match the measured sources, including final generate.cpp
-`5d9b07450349a481848533b4fbc2ec9e79f5d4854d6ad379cc3a3de9521cd998`.
-The following full rebuild is a reproduction recipe; this benchmark campaign
-reused the previously qualified binary and did not rebuild or tune the host.
+The source is the v0.1.40 release at 1735d6471df29b42c26170efaac1f1446a58640f,
+not a full re-migration of the Intel kernels. The Intel CMake project still labels
+its engine 0.1.39-sycl. Older thread-affinity and NativeDense build fixes are already
+in this tag and are not reapplied. The tagged source otherwise fails compile/link
+against its newer shared headers; the repairs are disclosed rather than calling
+this an unmodified release. All six patches were applied before a full clean
+SYCL rebuild, not linked into old production objects.
 
 With compatible oneAPI/compiler/MKL already installed, in a separate checkout:
 
 ```sh
-git checkout 6f32ec070f23ced9f50e704d854d775da52591ab
+git checkout 1735d6471df29b42c26170efaac1f1446a58640f
 export REPORT=/absolute/path/to/this/report
 export STRATA_ROOT="$PWD"
 git apply "$REPORT"/patches/*.patch
@@ -102,3 +106,17 @@ To regenerate summary/CSV/allowlisted timing logs:
 ```sh
 python "$REPORT/summarize.py" /absolute/path/to/new-results /absolute/path/to/summary
 ```
+
+## Supplemental matrix-stride check
+
+The interface repair's matrix strides were checked separately with
+[gemm-stride-check.cpp](gemm-stride-check.cpp): contiguous/padded inputs, beta0/1,
+and full/sliced native Q8 matrices. Twelve small synthetic cases passed on the
+B65. To rebuild it after the engine build, with oneAPI and ninja on PATH:
+
+```sh
+python build-stride-check.py --source "$STRATA_ROOT" --build "$STRATA_ROOT/build-sycl" --out /absolute/path/to/test-build
+```
+
+Run the resulting gemm-stride-check binary under the same exclusive-GPU/resource
+guards. This is a small matrix check, not another model benchmark.

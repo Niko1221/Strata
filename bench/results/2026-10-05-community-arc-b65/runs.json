@@ -1,7 +1,7 @@
 [
   {
     "run": 1,
-    "binary_sha256": "19efe17ce46adcebb99b586e9d12cde4fe9b0ddbdf0f585ebed173ef6c992ba0",
+    "binary_sha256": "520d1a72a7866956efc0feb4250cafeaf485ef86904e11950a392468e1bb91cb",
     "sampling": {
       "temperature": 0.0,
       "seed": 17
@@ -53,7 +53,7 @@
       "--spec-min-p",
       "0.5"
     ],
-    "startup_ready_s": 5.13762890000001,
+    "startup_ready_s": 5.048457513999892,
     "info": {
       "version": "0.1.39-sycl",
       "context": 8192,
@@ -80,18 +80,18 @@
       "engine": "0.1.39-sycl"
     },
     "native_exit": 0,
-    "quit_exit_s": 0.11376677700002347,
+    "quit_exit_s": 0.11393532099828008,
     "startup_lines": [
       "strata generate: GPU 0: Intel(R) Arc(TM) Pro B65 Graphics, compute capability 20.2",
       "strata generate: expert cache 17885 slots, 24.02 GiB of VRAM; policy is",
       "strata generate: 6691 of 6691 experts missing from VRAM mirrored in pinned host memory (9.00 GiB, 1.3 s); the GPU reads them over PCIe",
       "strata serve: 3211 MiB of VRAM free with everything loaded"
     ],
-    "native_log_sha256": "8c541102fba782e1211c9b2dbf06eb82f3d201ed149034f72dc3320d7feaa63f"
+    "native_log_sha256": "15a2b0cd5133f912d792340a33f127521270fa98303f42d774faddcf1db822b8"
   },
   {
     "run": 2,
-    "binary_sha256": "19efe17ce46adcebb99b586e9d12cde4fe9b0ddbdf0f585ebed173ef6c992ba0",
+    "binary_sha256": "520d1a72a7866956efc0feb4250cafeaf485ef86904e11950a392468e1bb91cb",
     "sampling": {
       "temperature": 0.0,
       "seed": 17
@@ -143,7 +143,7 @@
       "--spec-min-p",
       "0.5"
     ],
-    "startup_ready_s": 5.058318122999935,
+    "startup_ready_s": 5.098328297997796,
     "info": {
       "version": "0.1.39-sycl",
       "context": 8192,
@@ -170,18 +170,18 @@
       "engine": "0.1.39-sycl"
     },
     "native_exit": 0,
-    "quit_exit_s": 0.113643025999977,
+    "quit_exit_s": 0.11353598500136286,
     "startup_lines": [
       "strata generate: GPU 0: Intel(R) Arc(TM) Pro B65 Graphics, compute capability 20.2",
       "strata generate: expert cache 17885 slots, 24.02 GiB of VRAM; policy is",
       "strata generate: 6691 of 6691 experts missing from VRAM mirrored in pinned host memory (9.00 GiB, 1.3 s); the GPU reads them over PCIe",
       "strata serve: 3197 MiB of VRAM free with everything loaded"
     ],
-    "native_log_sha256": "feb61845074dfb9a67c842ef772fe9d58827af3bf7d72a4a1e2c7fbc0fc92946"
+    "native_log_sha256": "38336676686da7b5d1edb053f93e2a4e2cb152d59c09828161f91fe5050db2d8"
   },
   {
     "run": 3,
-    "binary_sha256": "19efe17ce46adcebb99b586e9d12cde4fe9b0ddbdf0f585ebed173ef6c992ba0",
+    "binary_sha256": "520d1a72a7866956efc0feb4250cafeaf485ef86904e11950a392468e1bb91cb",
     "sampling": {
       "temperature": 0.0,
       "seed": 17
@@ -233,7 +233,7 @@
       "--spec-min-p",
       "0.5"
     ],
-    "startup_ready_s": 5.094381161999991,
+    "startup_ready_s": 4.9898118499986595,
     "info": {
       "version": "0.1.39-sycl",
       "context": 8192,
@@ -260,13 +260,13 @@
       "engine": "0.1.39-sycl"
     },
     "native_exit": 0,
-    "quit_exit_s": 0.11381398599996828,
+    "quit_exit_s": 0.1138059400000202,
     "startup_lines": [
       "strata generate: GPU 0: Intel(R) Arc(TM) Pro B65 Graphics, compute capability 20.2",
       "strata generate: expert cache 17885 slots, 24.02 GiB of VRAM; policy is",
       "strata generate: 6691 of 6691 experts missing from VRAM mirrored in pinned host memory (9.00 GiB, 1.3 s); the GPU reads them over PCIe",
       "strata serve: 3211 MiB of VRAM free with everything loaded"
     ],
-    "native_log_sha256": "87dc5d7ee5fc69b788c99068aa45184893d37b4b0dc89e5d147be0a7cea6cdba"
+    "native_log_sha256": "7c1b7c6e3ef69bcf0dedf09aaa065c842864f7dd717964fa706a0d58c3323e17"
   }
 ]
