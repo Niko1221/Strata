@@ -575,6 +575,7 @@ class StrataEngine:
         self.info = {}                   # INFO key=value facts (engine 0.1.8+): kv, expert slots, ... (Monitor tab)
         self.prefill_tok_s_mean = None
         self.progress = None             # (read, total) prompt tokens while a prompt is read, from PP lines
+        self.prefill_active = None        # None: older engine without explicit prompt-phase events
         self.progress_ms = 0             # PP's own milliseconds since the prompt started (its third field)
         self.reused = 0                  # RESUME: prompt tokens not read again (a client takes them out of the work)
         self.silent_note = None
@@ -638,6 +639,8 @@ class StrataEngine:
         self.ended = False                              # READY: alive from here (restart() set it True, #344)
         # the engine's stdout on a thread, so a request can wait with a timeout (heartbeats, cancel checks)
         self.lines: queue.Queue = queue.Queue()
+        self.prefill_active = None        # a restarted/older engine must not inherit stale phase state
+        self.prefill_epoch = 0
         # --batch: concurrent requests in the engine's batch slots (see generate_batched).  The engine says how many
         # it runs (INFO batch_slots=N: it may have fewer than asked, or none, when they do not fit)
         asked = next((int(args[args.index(k) + 1]) for k in ("--batch", "--slots") if k in args), 0)
@@ -678,6 +681,12 @@ class StrataEngine:
         slot_q = self.slot_q
         line = None
         for line in proc.stdout:
+            if line.strip() in ("PFSTATE 0", "PFSTATE 1"):
+                if self.proc is proc:
+                    self.prefill_active = line.strip() == "PFSTATE 1"
+                    if self.prefill_active:
+                        self.prefill_epoch = getattr(self, "prefill_epoch", 0) + 1
+                continue
             # checked before batch routing: a fatal line is never a slot's own
             if line.startswith(FATAL_PREFIXES):
                 # release_gpu_waits invalidates the verifier, even if the native
@@ -698,6 +707,7 @@ class StrataEngine:
                     pass
             lines.put(line)
         if self.proc is proc:                           # a killed engine's pump must not mark its successor dead
+            self.prefill_active = False
             self.ended = True                           # its output closed: it is gone, even before the OS says so
             if line and line.startswith("ERR"):         # #997 #890: why it exited, though no request may read it
                 self.last_err = line[4:].strip()        # (a failed batch window: every request reads its slot)
@@ -2621,6 +2631,17 @@ class Service:
             in_slots = sum(1 for x in slots if x["state"] != "idle")
             live.update(parallel=par, running=running, slots=slots, outside_slots=max(0, running - in_slots),
                         waiting=int(getattr(self.engine, "waiting", 0) or 0))
+            prefill_active = getattr(self.engine, "prefill_active", None)
+            live["engine_prefill_active"] = prefill_active
+            live["engine_prefill_epoch"] = getattr(self.engine, "prefill_epoch", 0)
+            if prefill_active is not None and state != "unloaded":
+                live["prefill_tok_s_mean"] = getattr(self.engine, "prefill_tok_s_mean", None) if prefill_active else None
+                if prefill_active:
+                    live["state"] = "reading"
+                elif any(x["state"] == "decoding" for x in slots):
+                    live["state"] = "generating"
+                elif state == "reading":
+                    live["state"] = "waiting"
             if running and state == "idle":
                 live["state"] = "generating"
         engine = {"model": self.model, "max_context": self.engine.max_context, "images": self.vision is not None,

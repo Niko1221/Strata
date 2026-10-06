@@ -8929,6 +8929,10 @@ int main(int argc, char** argv) {
             };
             // tokens [a, b) through the windows: commit all of them, then give the draft layer their residuals
             auto read_windows = [&](int64_t a, int64_t b, std::string& e) -> bool {
+                struct PromptPhase {
+                    PromptPhase() { std::printf("PFSTATE 1\n"); std::fflush(stdout); }
+                    ~PromptPhase() { std::printf("PFSTATE 0\n"); std::fflush(stdout); }
+                } prompt_phase;
                 // (STRATA_LOGPOS reads every window's logits: the serial loop)
                 if (pipe && pl_pw >= 1 && std::getenv("STRATA_LOGPOS") == nullptr) return read_windows_pl(a, b, e);
                 strata::core::progress_at("reading the prompt (verify windows), from token", a);   // #217: not "batched"
@@ -9116,7 +9120,9 @@ int main(int argc, char** argv) {
             // continues from the slot with the same chunks.  #656's cooperative preemption, with a slot as the park.
             auto read_part = [&](int64_t a0, int64_t b0, std::string& e) -> bool {
                 auto read_chunk = [&](int64_t from, int64_t to) {
+                    std::printf("PFSTATE 1\n"); std::fflush(stdout);
                     const bool ok = sp.run(ids.data() + from, to - from, from, e);
+                    std::printf("PFSTATE 0\n"); std::fflush(stdout);
                     return ok;
                 };
                 struct RestorePhase { bool& value; bool saved; ~RestorePhase() { value = saved; } } phase_restore{batch_prefilling, batch_prefilling};
