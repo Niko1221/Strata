@@ -43,6 +43,33 @@ The engine never refuses a count it cannot run: it says so in its log and runs w
 default (a window holds 8 rows), as many as fit in VRAM, or none (one request at a time) when not two fit. The server reads
 the count the engine reports (`INFO batch_slots=N`), and `GET /v1/status` says it (`concurrency.serving`).
 
+### Experimental concurrent MTP
+
+This branch offers `--batch-spec 2` or `--batch-spec 4` in the engine's `args`.
+The default is `--batch-spec 1`, which retains upstream batching. The experiment
+requires 2..4 slots, one NVIDIA GPU, MTP, text-only requests and resident int8 KV.
+AMD/HIP, multi-GPU, helper expert caches, vision and streamed KV retain the
+upstream batching path; startup logs which path is effective.
+
+The target defaults to eight packed rows across all active slots. Four active
+slots therefore get at most two rows each, even with `--batch-spec 4`.
+`--batch-rows 16` permits four rows per slot, using two execution groups of at
+most eight rows without splitting a slot's causal segment. This wider mode is
+also experimental. Accepted
+drafts can emit extra tokens; rejected drafts never advance committed state.
+Each slot adds private draft state/workspace (about 128 MiB in the tested setup),
+while draft weights are shared. Auto expert-cache sizing accounts for these
+allocations. The ordinary solo request path and API protocol remain unchanged.
+
+Two independent experiments are available: `--batch-spec-fixed` pads physical
+verification widths to reduce graph-layout churn, and `--batch-draft-overlap`
+overlaps independent slot draft streams. Padding cannot emit output or commit
+state, but it still costs computation and can change expert-cache usage.
+
+These switches are not enabled by setup and are not yet a qualified default.
+See [the implementation audit](CONCURRENT_THROUGHPUT.md) for measurements,
+exactness controls, limitations and outstanding qualification gates.
+
 ### What a slot costs, and what setup recommends
 
 Every slot's session takes VRAM that the expert cache would otherwise hold: 0.56 GiB at a 32K context with 8-bit

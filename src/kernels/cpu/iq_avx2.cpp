@@ -377,6 +377,11 @@ void iq256_rows(int type, const uint8_t* w, size_t row_bytes, int n, const void*
 
 void iq4nl256_down_rows_v(int variant, const uint8_t* w, size_t row_bytes, int n, const void* const* hq, int nt,
                           float* const* out, int r0, int r1) {
+    if (nt > 8) {
+        for (int first = 0; first < nt; first += 8)
+            iq4nl256_down_rows_v(variant, w, row_bytes, n, hq + first, std::min(8, nt - first), out + first, r0, r1);
+        return;
+    }
     const block_q8_0* y[8];
     for (int t = 0; t < nt; ++t) y[t] = (const block_q8_0*) hq[t];
 #if STRATA_AVXVNNI
