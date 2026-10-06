@@ -1743,6 +1743,21 @@ __global__ void moe_combine_peer16_kernel(const float* __restrict__ Dm, const in
     }
     bo[i] = (s + __half2float(__ushort_as_half(peer16[i]))) + shared[i] * sigm(sg[t]);
 }
+__global__ void peer_gather_add_kernel(float* __restrict__ sum, const float* __restrict__ rows, int64_t r0,
+                                       const float* __restrict__ wk, const int32_t* __restrict__ pair,
+                                       const int32_t* __restrict__ tok, const int32_t* __restrict__ start,
+                                       const int32_t* __restrict__ list) {
+    const int64_t d = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (d >= N) return;
+    const int b = blockIdx.y;
+    float* o = sum + (int64_t) tok[b] * N + d;
+    float s = *o;
+    for (int i = start[b]; i < start[b + 1]; ++i) {
+        const int r = list[i];
+        s = fmaf(wk[pair[r]], rows[(r - r0) * N + d], s);
+    }
+    *o = s;
+}
 __global__ void sums_to_f16_kernel(const float* __restrict__ x, uint16_t* __restrict__ y, int64_t n) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) y[i] = hf_sat(x[i]);
@@ -1762,6 +1777,13 @@ void moe_combine_peer16(const float* Dm, const int32_t* slot, const float* w, co
     moe_combine_peer16_kernel<<<blocks_for(T * N), 256, 0, (cudaStream_t) stream>>>(Dm, slot, w, shared, sg, peer16,
                                                                                       rows_local, bo, T);
     check("moe_combine_peer16");
+}
+void peer_gather_add(float* sum, const float* rows, int64_t r0, const float* wk, const int32_t* pair, const int32_t* tok,
+                     const int32_t* start, const int32_t* list, int64_t n_tok, void* stream) {
+    if (n_tok <= 0) return;
+    peer_gather_add_kernel<<<dim3((unsigned) ((N + 255) / 256), (unsigned) n_tok), 256, 0, (cudaStream_t) stream>>>(
+        sum, rows, r0, wk, pair, tok, start, list);
+    check("peer_gather_add");
 }
 void sums_to_f16(const float* x, uint16_t* y, int64_t n, void* stream) {
     if (n <= 0) return;

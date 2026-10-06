@@ -97,6 +97,11 @@ void moe_combine_peer(const float* D, const int32_t* slot, const float* w, const
 /// (no token twice: launches in a fixed expert order make the sums repeatable).  After eddoursul/Strata's
 /// moe_scatter_add (f8de703).
 void peer_scatter_add(float* sum, const float* rows, const float* wk, const int32_t* pair, int64_t n, void* stream);
+/// The same for a group of experts in one launch (a token may recur): token tok[b] adds its rows list[start[b] ..
+/// start[b + 1]) in that order (the experts' order), row r at rows[r - r0]: bitwise the per-expert launches'.
+/// eddoursul/Strata's moe_gather_add, with the weight looked up through the row's pair.
+void peer_gather_add(float* sum, const float* rows, int64_t r0, const float* wk, const int32_t* pair, const int32_t* tok,
+                     const int32_t* start, const int32_t* list, int64_t n_tok, void* stream);
 /// moe_combine_peer with the peer's sums in FP16 (`peer16`, may be mapped host memory)
 void moe_combine_peer16(const float* D, const int32_t* slot, const float* w, const float* shared, const float* sg,
                         const uint16_t* peer16, int64_t rows_local, float* bo, int64_t T, void* stream);

@@ -512,6 +512,13 @@ struct PeerPrefill {
     // adds it to its own experts' rows (eddoursul/Strata's second-GPU prompt path, f8de703).
     bool sums = false;
     bool f16 = false;                     // the sums mode's transfers in FP16 (STRATA_PF_PEER_F16=0: FP32)
+    // the sums in one launch per group (STRATA_PF_PEER_GATHER=0: per expert): per group [tokens | starts | rows] at
+    // adds_at[g], built on the host from the rows' pairs, uploaded once per layer
+    bool gather = false;
+    int32_t *adds = nullptr, *host_adds = nullptr;
+    size_t adds_cap = 0;
+    std::vector<size_t> adds_at;
+    std::vector<int32_t> ntok, tcur, touched;
     uint16_t *sum16 = nullptr, *host_x16 = nullptr, *host_sum16 = nullptr;
     float *sum = nullptr, *wk = nullptr;
     int32_t* pair = nullptr;
@@ -549,6 +556,7 @@ struct PeerPrefill {
         if (host_pair) cudaFreeHost(host_pair);
         if (host_x16) cudaFreeHost(host_x16);
         if (host_sum16) cudaFreeHost(host_sum16);
+        if (host_adds) cudaFreeHost(host_adds);
     }
 };
 
@@ -1468,6 +1476,13 @@ bool Prefill::set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& e
         const char* v = std::getenv("STRATA_PF_PEER_F16");
         pp->f16 = (v == nullptr || std::atoi(v) != 0) && N % 8 == 0;
         if (pp->f16) pp->sum16 = (uint16_t*) take((size_t) m.T_max * N * 2);
+        const char* gv = std::getenv("STRATA_PF_PEER_GATHER");
+        pp->gather = gv == nullptr || std::atoi(gv) != 0;
+        if (pp->gather) {   // tokens and starts (<= 2 rows + 1 per group) and rows: <= 3 x the rows + 2 per expert
+            pp->adds_cap = 3 * (size_t) Rt + 2 * NE + 64;
+            pp->adds = (int32_t*) take(pp->adds_cap * 4);
+            pp->tcur.assign((size_t) m.T_max, 0);
+        }
         pp->sum = (float*) take((size_t) m.T_max * N * 4);
         pp->wk = (float*) take((size_t) m.T_max * K * 4);
         pp->pair = (int32_t*) take((size_t) Rt * 4);
@@ -1502,6 +1517,8 @@ bool Prefill::set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& e
             if (ok && pp->f16) host(pp->host_sum16, sum16_cap, (size_t) m.T_max * N);
             else if (ok) host(pp->host_sum, sum_cap, (size_t) m.T_max * N);
             if (ok) host(pp->host_pair, pair_cap, (size_t) pp->cap_rows);
+            size_t adds_cap = 0;
+            if (ok && pp->gather) host(pp->host_adds, adds_cap, pp->adds_cap);
         } else if (ok) {
             host(pp->host_rows, pp->host_rows_cap, (size_t) pp->cap_rows * N);
         }
@@ -2824,6 +2841,41 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                     std::memcpy(P.host_bounds, P.bounds_host.data(), P.bounds_host.size() * 4);
                                     copy_i32(P.bounds, P.host_bounds, (int64_t) P.bounds_host.size(), ps);
                                 }
+                                if (P.sums && P.gather) {   // each group's tokens, their row lists in the experts' order
+                                    P.adds_at.resize(ng);
+                                    P.ntok.resize(ng);
+                                    size_t at = 0;
+                                    for (size_t g2 = 0; g2 < ng; ++g2) {
+                                        const int32_t r0 = P.bounds_host[P.groups[g2].first], r1 = P.bounds_host[P.groups[g2].second];
+                                        P.touched.clear();
+                                        for (int32_t r = r0; r < r1; ++r) {
+                                            const int32_t t = P.host_pair[r] / (int32_t) K;
+                                            if (P.tcur[(size_t) t]++ == 0) P.touched.push_back(t);
+                                        }
+                                        const size_t nt = P.touched.size();
+                                        int32_t* a = P.host_adds + at;   // [tokens nt | starts nt + 1 | rows]
+                                        a[nt] = 0;
+                                        for (size_t i = 0; i < nt; ++i) {
+                                            const int32_t t = P.touched[i];
+                                            a[i] = t;
+                                            a[nt + 1 + i] = a[nt + i] + P.tcur[(size_t) t];
+                                            P.tcur[(size_t) t] = a[nt + i];   // the fill cursor
+                                        }
+                                        int32_t* list = a + 2 * nt + 1;
+                                        for (int32_t r = r0; r < r1; ++r)
+                                            list[P.tcur[(size_t) (P.host_pair[r] / (int32_t) K)]++] = r;
+                                        for (int32_t t : P.touched) P.tcur[(size_t) t] = 0;
+                                        P.adds_at[g2] = at;
+                                        P.ntok[g2] = (int32_t) nt;
+                                        at += 2 * nt + 1 + (size_t) (r1 - r0);
+                                    }
+                                    if (at > P.adds_cap) {
+                                        err = "prefill: the peer's group tables overflow";
+                                        cudaSetDevice(prevd);
+                                        return false;
+                                    }
+                                    copy_i32(P.adds, P.host_adds, (int64_t) at, ps);
+                                }
                                 pe.mark(kPeMoeGemm, ps);
                                 const auto& f = lay.fmt[(size_t) l];
                                 for (size_t g2 = 0; g2 < ng; ++g2) {
@@ -2882,6 +2934,12 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                     dn.ids = P.ident; dn.total_rows = nr; dn.max_rows = maxr; dn.dst = P.Dm_b[b];
                                     dn.ld_dst = N;
                                     P.run_ctx->run(dn, ps);
+                                    if (P.sums && P.gather) {   // into the per-token sums, one launch for the group
+                                        const int32_t* a = P.adds + P.adds_at[g2];
+                                        const int64_t nt = P.ntok[g2];
+                                        peer_gather_add(P.sum, P.Dm_b[b], r0, P.wk, P.pair, a, a + nt, a + 2 * nt + 1, nt, ps);
+                                        continue;
+                                    }
                                     if (P.sums) {   // into the per-token sums on this stream: Dm_b[b] is free after it
                                         for (size_t j = j0; j < j1; ++j)
                                             peer_scatter_add(P.sum, P.Dm_b[b] + (size_t) (P.bounds_host[j] - r0) * N, P.wk,
