@@ -242,7 +242,8 @@ repetition_penalty=1.0`. Every client that asks for none gets them; a client tha
 then differ from run to run, which greedy does not. To decode greedy - always the most likely next word, the same
 answer every time - set `sampling.temperature` to 0 on the About tab or in the file; a config with no `sampling` block
 at all (one written before #1129) is greedy too. Setup keeps numbers you wrote by hand when it runs again without a
-flag. Sampling only: whether the model thinks stays per request. A start says which numbers are in use - setup prints
+flag, and a start that picks one of the two sets keeps the file it replaced as `strata-<model>.json.bak` the same way.
+Sampling only: whether the model thinks stays per request. A start says which numbers are in use - setup prints
 `Settings (...): ... sampling thinking: temperature=1.0, ...`, and the server window prints
 `sampling defaults from the config: ... (Qwen's thinking preset)`, or that requests decode greedy when the model's
 config has no block. The About tab's Model settings shows and edits the block's temperature, top_p, top_k and min_p.

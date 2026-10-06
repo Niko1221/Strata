@@ -130,6 +130,48 @@ class SetupRunAgain(unittest.TestCase):
                     self.assertEqual(setup.choices_from_config(p)["sampling"], want)
 
 
+    def test_a_block_that_is_not_a_set_of_numbers_is_replaced_and_said(self):
+        """A "sampling" that is a name, a list or an empty block is not numbers: a run that names no flag says which
+        value it replaces instead of writing thinking quietly (the server would only refuse to start on such one)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "strata-iq3_s.json"
+            for bad in ("warm", 5, ["temperature"], {}):
+                with self.subTest(bad=bad):
+                    p.write_text(json.dumps({"sampling": bad}), encoding="utf-8")
+                    preset, block, dropped = setup.sampling_for_setup(None, p)
+                    self.assertEqual(preset, "thinking")
+                    self.assertEqual(block, THINKING)                        # and what it writes in its place
+                    self.assertEqual(dropped, bad)
+
+    def test_nothing_is_reported_when_no_block_of_ours_is_replaced(self):
+        """No key, a key set to null, no config file at all: thinking with no word about it, because nothing the user
+        wrote is going away; and a block that is numbers stays the user's own."""
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "strata-iq3_s.json"
+            p.write_text(json.dumps({"sampling": None}), encoding="utf-8")
+            self.assertEqual(setup.sampling_for_setup(None, p)[:2],
+                             ("thinking", setup.sampling_choice("thinking")))
+            self.assertIsNone(setup.sampling_for_setup(None, p)[2])
+            self.assertIsNone(setup.sampling_for_setup(None, Path(tmp) / "strata-nothing.json")[2])
+            p.write_text(json.dumps({"sampling": {"temperature": 0.5}}), encoding="utf-8")
+            self.assertIsNone(setup.sampling_for_setup(None, p)[2])
+
+    def test_an_earlier_config_counts_for_its_own_model_only(self):
+        """#1129 with #629: another folder's config lends its sampling only when it names this model - the same
+        condition its other keys are carried over on, so a block cannot survive by itself and mislead."""
+        with tempfile.TemporaryDirectory() as tmp:
+            here = Path(tmp) / "strata-iq3_s.json"
+            there = Path(tmp) / "earlier" / "strata-coder-q2_0.json"
+            there.parent.mkdir()
+            self.assertIsNone(setup.sampling_older(here, None))               # nothing installed yet
+            there.write_text("{}", encoding="utf-8")
+            self.assertIsNone(setup.sampling_older(here, there))              # another model's config
+            same = there.parent / here.name
+            same.write_text("{}", encoding="utf-8")
+            self.assertEqual(setup.sampling_older(here, same), same)          # this model's earlier install
+            here.write_text(json.dumps({"sampling": {"temperature": 0.5}}), encoding="utf-8")
+            self.assertEqual(setup.sampling_older(here, None), here)          # the config being rewritten wins
+
 class StartSavesTheChoice(unittest.TestCase):
     """A model already installed: ./setup.sh --instruct saves the preset for it, like --vram-reserve-mib does."""
     CFG = {"exe": "engine/strata", "args": ["--max-context", "65536"], "model_name": "qwen3.8-flash-next-iq3_s"}
@@ -147,6 +189,11 @@ class StartSavesTheChoice(unittest.TestCase):
             self.assertIn("saved for this model: sampling thinking", out)
             self.assertIn("from its next start", out)           # the server reads the config when it starts
 
+            # what it replaced was the user's own numbers, so the file is kept first, as a setup run keeps it (#629)
+            self.assertIn("kept as strata-qwen-iq3_s.json.bak", out)
+            self.assertEqual(json.loads((p.parent / (p.name + ".bak")).read_text(encoding="utf-8"))["sampling"],
+                             {"temperature": 0.5})
+
     def test_a_start_without_a_flag_or_with_the_preset_it_already_has_writes_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
             for mode, block in ((None, THINKING), ("thinking", THINKING), (None, None), ("nope", None)):
@@ -158,12 +205,18 @@ class StartSavesTheChoice(unittest.TestCase):
                     self.assertEqual(p.read_text(encoding="utf-8"), before)
                     self.assertEqual(out, "")
 
+            self.assertFalse((p.parent / (p.name + ".bak")).exists())   # a start that changes nothing leaves no file
+
     def test_the_settings_line_of_a_start_shows_the_numbers(self):
         self.assertIn("sampling thinking: temperature=1.0, top_p=0.95",
                       setup.settings_summary({"args": ["--max-context", "65536"], "sampling": THINKING}, 8080))
         self.assertIn("sampling own: temperature=0.5",
                       setup.settings_summary({"args": [], "sampling": {"temperature": 0.5}}, 8080))
         self.assertNotIn("sampling", setup.settings_summary({"args": ["--max-context", "65536"]}, 8080))
+        # the card's numbers with a key set to null are still the user's own: the server's start line names that block
+        # the same way (pinned in serve/test_runconfig.py), so neither line calls it a preset the other does not
+        self.assertIn("sampling own: temperature=1.0",
+                      setup.settings_summary({"args": [], "sampling": {**THINKING, "seed": None}}, 8080))
 
 
 if __name__ == "__main__":

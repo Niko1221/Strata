@@ -3125,36 +3125,51 @@ def sampling_choice(mode) -> dict | None:
     return dict(SAMPLING_PRESETS[mode]) if mode in SAMPLING_PRESETS else None
 
 
-def sampling_for_setup(mode, older: Path | None) -> tuple[str | None, dict | None]:
-    """#1129: what sampling a setup run writes into the new config, as (preset name, block).  Thinking is the default:
-    a config without a "sampling" block gets Qwen's thinking numbers, so a client that sends none of its own samples
-    like the card says.  Numbers the user wrote by hand stay theirs: (None, their block) comes back and setup writes
-    nothing (carry_over leaves the key alone).  A flag named on this run - --thinking or --instruct - always wins.
-    `older`: the config this run rewrites, or the earlier install's config when this folder has none yet (#629)."""
+def sampling_older(cfg_path: Path, adopted: Path | None) -> Path | None:
+    """#1129: the config a setup run reads its earlier sampling from: the one it rewrites when this folder has it,
+    otherwise the earlier install's config - but only when that names this same model, the condition #629 uses to
+    carry a config's other keys over (its `sampling` block is one of them, so it cannot survive on its own)."""
+    if cfg_path.is_file():
+        return cfg_path
+    return adopted if adopted is not None and adopted.name == cfg_path.name else None
+
+
+def sampling_for_setup(mode, older: Path | None) -> tuple[str | None, dict | None, object]:
+    """#1129: what sampling a setup run writes into the new config, as (preset name, block, dropped).  Thinking is the
+    default: a config without a "sampling" block gets Qwen's thinking numbers, so a client that sends none of its own
+    samples like the card says.  Numbers the user wrote by hand stay theirs: (None, their block, None) comes back and
+    setup writes nothing (carry_over leaves the key alone).  A flag named on this run - --thinking or --instruct -
+    always wins.  `dropped`: a block this run replaces without a flag and cannot read as numbers (a name, a list, an
+    empty block) - setup says so rather than replacing it quietly.  A block that holds numbers but bad ones is left to
+    the server, which names the key that is wrong.  `older`: the config this run rewrites, or the earlier install's
+    config when this folder has none yet (#629)."""
     if mode:
         block = sampling_choice(mode)
-        return (mode, block) if block else (None, None)
+        return (mode, block, None) if block else (None, None, None)
     try:
         old = json.loads(older.read_text(encoding="utf-8-sig")) if older is not None else None
     except (OSError, ValueError):
         old = None
     own = old.get("sampling") if isinstance(old, dict) else None
     if isinstance(own, dict) and own:
-        return None, own
-    return DEFAULT_SAMPLING_PRESET, sampling_choice(DEFAULT_SAMPLING_PRESET)
+        return None, own, None
+    return DEFAULT_SAMPLING_PRESET, sampling_choice(DEFAULT_SAMPLING_PRESET), own
 
 
 def save_sampling_choice(cfg_path: Path, cfg: dict, mode) -> bool:
     """#1129: --thinking / --instruct on a model that is already installed: its run config's "sampling" block becomes
     that preset, so every later start uses it (the server reads the config when it starts).  False when nothing
-    changed: no flag on this start, or the block already holds exactly those numbers."""
+    changed: no flag on this start, or the block already holds exactly those numbers.  The block it replaces can be
+    numbers the user wrote by hand, so the file is kept as strata-<model>.json.bak first, the way a setup run keeps
+    it (#629)."""
     want = sampling_choice(mode)
     if want is None or cfg.get("sampling") == want:
         return False
     cfg["sampling"] = want
+    bak = keep_config_backup(cfg_path)
     write_config(cfg_path, cfg)
     ok(f"saved for this model: sampling {mode} ({sampling_summary(want)}) for requests that send none; the server "
-       "uses it from its next start")
+       "uses it from its next start" + (f"; the numbers it replaced are kept as {bak.name}" if bak else ""))
     return True
 
 
@@ -3226,6 +3241,22 @@ def args_dropped(old: dict, cfg: dict) -> list[str]:
     return list(dict.fromkeys(f for f in flags(old) if f not in new))
 
 
+def keep_config_backup(cfg_path: Path) -> Path | None:
+    """The run config kept as strata-<model>.json.bak before a write replaces the whole file (#629): that file holds
+    the keys setup does not write - numbers the user wrote by hand, an API key, the host - so the two writes that can
+    replace them (a setup run, and a start that picks a sampling preset) leave a copy first.  None when there was
+    nothing to copy, or the copy failed (which is said)."""
+    if not cfg_path.is_file():
+        return None
+    try:
+        bak = cfg_path.with_name(cfg_path.name + ".bak")
+        shutil.copyfile(cfg_path, bak)
+        return bak
+    except OSError as e:
+        warn(f"could not keep a copy of the earlier {cfg_path.name} ({e.strerror or e})")
+        return None
+
+
 def write_setup_config(cfg_path: Path, cfg: dict, source: Path | None = None) -> None:
     """#629: setup's run config, written over an earlier one for the same model without losing what the user added
     to it: the keys setup does not write are carried over (carry_over), and the earlier file is kept as
@@ -3241,14 +3272,7 @@ def write_setup_config(cfg_path: Path, cfg: dict, source: Path | None = None) ->
         if not isinstance(old, dict):
             old = None
     kept = carry_over(old, cfg) if old is not None else []
-    bak = None
-    if cfg_path.is_file() and old != cfg:
-        bak = cfg_path.with_name(cfg_path.name + ".bak")
-        try:
-            shutil.copyfile(cfg_path, bak)
-        except OSError as e:
-            warn(f"could not keep a copy of the earlier {cfg_path.name} ({e.strerror or e})")
-            bak = None
+    bak = keep_config_backup(cfg_path) if cfg_path.is_file() and old != cfg else None
     write_config(cfg_path, cfg)
     if kept:
         ok(f"kept from your earlier {old_path.name}: " + ", ".join(kept))
@@ -4966,8 +4990,12 @@ def main() -> int:
     if a.browser is not None:                          # #609: only when given (else an earlier choice is carried over)
         cfg["open_browser"] = a.browser
     cfg_path = ROOT / f"strata-{tag.lower()}.json"   # #1129: read here too, to keep numbers the user wrote by hand
-    # thinking is the default when no flag is named; hand-written numbers are read from the config being rewritten
-    preset, block = sampling_for_setup(a.sampling_mode, cfg_path if cfg_path.is_file() else adopted)
+    # thinking is the default when no flag is named; hand-written numbers come from the config being rewritten, or
+    # from an earlier install's config when that names this same model (sampling_older, the #629 condition)
+    earlier = sampling_older(cfg_path, adopted)
+    preset, block, dropped = sampling_for_setup(a.sampling_mode, earlier)
+    if dropped is not None:                 # a block that is not numbers: say what this run replaces instead of it
+        warn(f'the earlier {earlier.name} held "sampling": {dropped!r}, which holds no numbers of yours to keep')
     if block:
         cfg["sampling"] = block
         named = preset or sampling_preset(block) or "your own numbers"
