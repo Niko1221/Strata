@@ -550,6 +550,58 @@ def forced_call(tool_choice, tools: list[dict] | None) -> str | None:
     return None
 
 
+PARAM_START = "<parameter="
+
+
+def function_end(text: str) -> int:
+    """Where a `<function=NAME>...</function>` at the start of `text` ends (just past `</function>`), walking its
+    parameters with param_end like call_end does; -1: not complete (or not in the call format)."""
+    s = text.lstrip()
+    pos = len(text) - len(s)
+    if not s.startswith(FUNC_START):
+        return -1
+    gt = text.find(">", pos)
+    if gt < 0:
+        return -1
+    pos = gt + 1
+    while True:
+        rest = text[pos:]
+        s = rest.lstrip()
+        pos += len(rest) - len(s)
+        if s.startswith(PARAM_START):
+            gt = text.find(">", pos)
+            if gt < 0:
+                return -1
+            end = param_end(text[gt + 1:])
+            if end < 0:
+                return -1
+            pos = gt + 1 + end + len(PARAM_END)
+        elif s.startswith(FUNC_END):
+            return pos + len(FUNC_END)
+        else:
+            return -1
+
+
+def json_tool_call(body: str, schemas: dict) -> ToolCall | None:
+    """`{"name": N, "arguments": {...}}` (or "parameters", or the arguments as a JSON string) of a declared tool -> its
+    call; anything else -> None."""
+    try:
+        obj = json.loads(body)
+    except ValueError:
+        return None
+    if not isinstance(obj, dict) or not isinstance(obj.get("name"), str) or obj["name"] not in schemas:
+        return None
+    args = obj.get("arguments", obj.get("parameters", {}))
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except ValueError:
+            return None
+    if args is None:
+        args = {}
+    return ToolCall(name=obj["name"], arguments=args) if isinstance(args, dict) else None
+
+
 def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
     """`<function=NAME>\\n<parameter=P>\\nVALUE\\n</parameter>...</function>` -> ToolCall. Values are JSON-decoded
     when the tool's schema says the parameter is not a string (or, without a schema, when they parse as JSON
@@ -590,7 +642,8 @@ class OutputParser:
     """Incremental parser of the model's text. Feed deltas; get events. A tag split across deltas is held back
     until it is complete, so clients never see `<tool_` or `</thi`."""
 
-    def __init__(self, thinking: bool = True, tools: list[dict] | None = None, stream_tools: bool = False):
+    def __init__(self, thinking: bool = True, tools: list[dict] | None = None, stream_tools: bool = False,
+                 recover: bool = False):
         self.state = "reasoning" if thinking else "content"
         self.buf = ""
         self.lead = False
@@ -607,7 +660,52 @@ class OutputParser:
         self.rescued = 0             # calls delivered from the reasoning
         self.refused = 0             # declared calls kept as reasoning text (quoted, or the turn was cut)
         self.fence, self.line, self.ticks = "", "", 0
+        # recover (opt-in, the config's "tool_call_recovery"): a declared tool's call written next to the template's
+        # form is the call - `<parameter=NAME>` as the opener, JSON inside <tool_call>, a bare <function=NAME> at the
+        # start of a line outside code, or a second call in the same <tool_call> (which otherwise merges into one).
+        self.recover = recover
+        self.bare = False            # the call being read opened with <function= alone (no <tool_call> around it)
+        self.batch = False           # the call being finished is followed by another in the same wrapper
         self._reset_scan()
+
+    def _ok_at(self, p: int) -> bool:
+        """self.buf[p] would open a call: at the start of a line, outside a code fence and inline code."""
+        snap = (self.fence, self.line, self.ticks)
+        self._track(self.buf[:p])
+        ok = self._opener_ok()
+        self.fence, self.line, self.ticks = snap
+        return ok
+
+    def _follower(self, after: str) -> str:
+        """recover: what a `<tool_call>` followed (after whitespace) by `after` opens: "call" (`<function=`), "param"
+        (a declared tool's name written as `<parameter=NAME>`), "json" (`{`), "wait" (not decided yet) or "text"."""
+        if after.startswith(FUNC_START):
+            return "call"
+        if after.startswith(PARAM_START):
+            gt = after.find(">")
+            if gt < 0:
+                return "wait" if "\n" not in after else "text"
+            return "param" if after[len(PARAM_START):gt] in self.schemas else "text"
+        if after.startswith("{"):
+            return "json" if self.schemas else "text"
+        if not after or FUNC_START.startswith(after) or PARAM_START.startswith(after):
+            return "wait"
+        return "text"
+
+    def _bare_opener(self) -> tuple[int, bool]:
+        """recover: the first `<function=` in self.buf that opens a call without the wrapper (start of a line, outside
+        code, a declared tool) -> (position, decided); (-1, False) for none.  A name still arriving is undecided."""
+        p = self.buf.find(FUNC_START)
+        while p >= 0:
+            if self._ok_at(p):
+                gt = self.buf.find(">", p)
+                name = self.buf[p + len(FUNC_START):gt if gt >= 0 else len(self.buf)]
+                if gt < 0 and not any(c.isspace() for c in name):
+                    return p, False
+                if gt >= 0 and name in self.schemas:
+                    return p, True
+            p = self.buf.find(FUNC_START, p + 1)
+        return -1, False
 
     def _track(self, text: str) -> str:
         """Follow the reasoning text that has gone out: the open code fence, the current line, and the backticks of
@@ -860,10 +958,30 @@ class OutputParser:
                         return out
                     self.buf, self.lead = stripped, False
                 i = self.buf.find(CALL_START)
+                b, decided = self._bare_opener() if self.recover and self.schemas else (-1, False)
+                if b >= 0 and (i < 0 or b < i):
+                    # recover: <function=NAME> alone at the start of a line - the call without its <tool_call>.
+                    # Until the name has arrived it is held.
+                    j = b
+                    while j > 0 and self.buf[j - 1] == "\n":
+                        j -= 1
+                    if j > 0 and self.buf[:j].strip():
+                        out.append(Event("content", self._track(self.buf[:j])))
+                    if not decided:
+                        self.buf = self.buf[j:]
+                        return out
+                    self.buf = self.buf[b:]
+                    self.state, self.bare = "call", True
+                    continue
                 if i < 0:
                     # Hold a partial tag AND the newlines before it: if a tool call follows, they are dropped,
                     # so emitting them early would make streamed and whole outputs differ.
                     j = len(self.buf) - self._hold(self.buf, (CALL_START,))
+                    if self.recover and self.schemas:            # a line that may be becoming a bare <function=
+                        k = self.buf.rfind("\n") + 1
+                        tail = self.buf[k:]
+                        if tail and FUNC_START.startswith(tail) and self._ok_at(k):
+                            j = min(j, k)
                     while j > 0 and self.buf[j - 1] == "\n":
                         j -= 1
                     if j > 0:
@@ -884,6 +1002,19 @@ class OutputParser:
                 # it is prose that names the format ("I'll use a <tool_call> block") - content, not a malformed call
                 # that ends the request.  Until its follower has arrived it is held, like a partial tag.
                 after = self.buf[i + len(CALL_START):].lstrip()
+                kind = self._follower(after) if self.recover else None
+                if kind in ("param", "json"):
+                    if i and self.buf[:i].strip():
+                        out.append(Event("content", self._track(self.buf[:i].rstrip("\n"))))
+                    rest = self.buf[i + len(CALL_START):]
+                    if kind == "param":                  # <parameter=NAME> as the opener: the call's <function=NAME>
+                        at = len(rest) - len(after)
+                        rest = rest[:at] + FUNC_START + after[len(PARAM_START):]
+                    self.buf = rest
+                    self.state = "call" if kind == "param" else "json"
+                    continue
+                if kind == "wait":
+                    after = ""
                 if after and not after.startswith(FUNC_START) and not FUNC_START.startswith(after):
                     out.append(Event("content", self._track(self.buf[:i + len(CALL_START)])))
                     self.buf = self.buf[i + len(CALL_START):]
@@ -900,8 +1031,42 @@ class OutputParser:
                     out.append(Event("content", self._track(self.buf[:i].rstrip("\n"))))
                 self.buf = self.buf[i + len(CALL_START):]
                 self.state = "call"
+            elif self.state == "json":
+                # recover: `{"name": ..., "arguments": {...}}` inside the wrapper is the call once its </tool_call> has
+                # arrived and it names a declared tool; anything else is the text it is
+                i = self.buf.find(CALL_END)
+                if i < 0:
+                    return out
+                call = json_tool_call(self.buf[:i].strip(), self.schemas)
+                if call is None:
+                    out.append(Event("content", self._track(CALL_START + self.buf[:i + len(CALL_END)])))
+                else:
+                    out.append(Event("tool_call", call=call))
+                self.buf = self.buf[i + len(CALL_END):]
+                self.state, self.lead = "content", call is not None
             else:
-                i = call_end(self.buf)
+                drop = None
+                if self.bare:                       # no wrapper: the call ends at its </function>; a stray
+                    i = function_end(self.buf)      # </tool_call> after it is the wrapper's closer, dropped
+                    if i >= 0:
+                        after = self.buf[i:].lstrip()
+                        if after.startswith(CALL_END):
+                            drop = len(self.buf[i:]) - len(after) + len(CALL_END)
+                        elif after and not CALL_END.startswith(after):
+                            drop = 0
+                else:
+                    i = call_end(self.buf)
+                    if i >= 0:
+                        drop = len(CALL_END)
+                    if self.recover:                # a batch in one wrapper: the next call follows this one's
+                        f = function_end(self.buf)  # </function> (or opens as <parameter=NAME>)
+                        nxt = self.buf[f:].lstrip() if f >= 0 else ""
+                        if nxt.startswith(PARAM_START) and self._follower(nxt) == "param":
+                            at = len(self.buf) - len(nxt)
+                            self.buf = self.buf[:at] + FUNC_START + nxt[len(PARAM_START):]
+                            nxt = self.buf[at:]
+                        if nxt.startswith(FUNC_START):
+                            i, drop, self.batch = f, 0, True
                 if self.stream_tools:
                     if i >= 0:
                         whole, self.buf = self.buf, self.buf[:i]     # scan only the body
@@ -910,17 +1075,14 @@ class OutputParser:
                         self.buf = whole
                     else:
                         out += self._scan()
-                if i < 0:
+                if i < 0 or drop is None:
                     return out
                 body = self.buf[:i]
-                self.buf = self.buf[i + len(CALL_END):]
-                name = body.strip()[len("<function="):].split(">", 1)[0]
-                call = parse_tool_call(body, self.schemas.get(name))
-                if self.scall is not None:
-                    call.id = self.scall.id
-                out.append(Event("tool_call", call=call))
-                self._reset_scan()
-                self.state, self.lead = "content", True
+                self.buf = self.buf[i + drop:]
+                batch, self.batch = self.batch, False
+                out += self._finish_call(body)
+                if batch and out[-1].kind == "tool_call":
+                    self.state, self.lead = "call", False
 
     def finish(self, reason: str | None = None) -> list[Event]:
         """End of generation: flush whatever is held (an unterminated tool call is returned as content; one that was
@@ -930,6 +1092,14 @@ class OutputParser:
         out = []
         if self.pending:
             out += self._release(reason in (None, "stop") and self.state == "reasoning" and not self.buf)
+        if self.state == "call" and self.bare and function_end(self.buf) >= 0:
+            i = function_end(self.buf)          # recover: a bare call is whole at its </function>
+            body, rest = self.buf[:i], self.buf[i:].strip()
+            self.buf = ""
+            out += self._finish_call(body)
+            if rest and not CALL_END.startswith(rest):
+                out.append(Event("content", self._track(rest)))
+            return out
         if self.state == "call" and self.stream_tools and self.scall is not None:
             out += self._scan()                 # the output ended inside a call that was already announced
             if self.ss == "done":               # only its </tool_call> is missing: the call itself is whole
@@ -940,7 +1110,26 @@ class OutputParser:
         if self.buf:
             # an unfinished call inside the reasoning (#804) is reasoning text, never a call
             kind = {"reasoning": "reasoning", "rcall": "reasoning", "content": "content"}.get(self.state, "content")
-            text = self.buf if self.state != "call" else CALL_START + self.buf
+            text = CALL_START + self.buf if self.state in ("call", "json") and not self.bare else self.buf
             out.append(Event(kind, text))
             self.buf = ""
         return out
+
+    def _finish_call(self, body: str) -> list[Event]:
+        """A whole call body in the template's form -> its tool_call event.  With recover, one that still does not
+        parse is the text it is instead of an error that ends the request."""
+        name = body.strip()[len(FUNC_START):].split(">", 1)[0]
+        bare, self.bare = self.bare, False
+        try:
+            call = parse_tool_call(body, self.schemas.get(name))
+        except ValueError:
+            if not self.recover:
+                raise
+            self._reset_scan()
+            self.state = "content"
+            return [Event("content", self._track(body if bare else CALL_START + body + CALL_END))]
+        if self.scall is not None:
+            call.id = self.scall.id
+        self._reset_scan()
+        self.state, self.lead = "content", True
+        return [Event("tool_call", call=call)]
