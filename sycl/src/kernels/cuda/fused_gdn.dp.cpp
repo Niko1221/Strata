@@ -32,7 +32,10 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
     sycl::ext::oneapi::this_work_item::get_work_group<3>());
     auto &sq = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
         sycl::ext::oneapi::this_work_item::get_work_group<3>());
-    auto &red =
+    auto &red_kv =
+        *sycl::ext::oneapi::group_local_memory_for_overwrite<float[RG][S]>(
+            sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    auto &red_o =
         *sycl::ext::oneapi::group_local_memory_for_overwrite<float[RG][S]>(
             sycl::ext::oneapi::this_work_item::get_work_group<3>());
     auto &wsum = *sycl::ext::oneapi::group_local_memory_for_overwrite<
@@ -59,14 +62,14 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
     float kv = 0.0f;
 #pragma unroll
     for (int r = 0; r < RPG; ++r) kv = sycl::fma(s[r], sk[rg * RPG + r], kv);
-    red[rg][col] = kv;
+    red_kv[rg][col] = kv;
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
     item_ct1.barrier();
-    const float kv_col = red[0][col] + red[1][col] + red[2][col] + red[3][col];
+    const float kv_col = red_kv[0][col] + red_kv[1][col] + red_kv[2][col] + red_kv[3][col];
     const float delta = (v[head * S + col] - g * kv_col) * beta[head];
     float o = 0.0f;
 #pragma unroll
@@ -75,13 +78,7 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
         o = sycl::fma(s[r], sq[rg * RPG + r], o);
         base[r * row_stride] = s[r];
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier(); // every thread has read red[] for kv_col
-    red[rg][col] = o;
+    red_o[rg][col] = o;
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
@@ -90,7 +87,7 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
     item_ct1.barrier();
     float oc = 0.0f, sq_part = 0.0f;
     if (rg == 0) {
-        oc = (red[0][col] + red[1][col] + red[2][col] + red[3][col]) *
+        oc = (red_o[0][col] + red_o[1][col] + red_o[2][col] + red_o[3][col]) *
              sycl::rsqrt((float)S);
         sq_part = oc * oc;
     }

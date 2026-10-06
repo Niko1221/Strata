@@ -1,6 +1,7 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/core/remote_experts.hpp"
+#include "strata/core/remote_expert_opt.hpp"
 
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/iq_kernels.hpp"
@@ -160,7 +161,7 @@ void RemoteExperts::close() {
 bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
                          const std::vector<std::pair<int32_t, int32_t>> &ranked,
                          const ExpertCache &primary, ExpertSource &source,
-                         std::vector<uint8_t> &claimed, std::string &err) try {
+                         std::vector<uint8_t> &claimed, std::string &err, bool auto_size) try {
     close();
     int count = 0;
     if (!check(DPCT_CHECK_ERROR(count = dpct::device_count()),
@@ -175,24 +176,6 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
     device_ = device;
     n_expert_ = experts;
     const auto& lay = strata::kernels::cpu::expert_layout();
-    std::vector<std::pair<int32_t, int32_t>> selected;
-    selected.reserve((size_t) slots);
-    std::vector<uint8_t> picked(claimed.size(), 0);
-    for (const auto& pair : ranked) {
-        if (pair.first < 0 || pair.first >= layers || pair.second < 0 || pair.second >= experts) continue;
-        const size_t index = (size_t) pair.first * (size_t) experts + (size_t) pair.second;
-        if (primary.slot_of(pair.first, pair.second) < 0 && !claimed[index] && !picked[index]) {
-            selected.push_back(pair);
-            picked[index] = 1;
-            if ((int) selected.size() >= slots) break;
-        }
-    }
-    if (selected.empty()) { err = "CUDA" + std::to_string(device) + " experts: no unclaimed experts remain"; close(); return false; }
-    std::vector<int64_t> sizes;
-    if (lay.native) {
-        sizes.reserve(selected.size());
-        for (const auto& pair : selected) sizes.push_back((int64_t) lay.blob_bytes(pair.first));
-    }
     size_t free_bytes = 0, total_bytes = 0;
     /*
     DPCT1106: 'cudaMemGetInfo' was migrated with the Intel extensions for
@@ -205,8 +188,31 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
         close(); return false;
     }
     uint64_t needed = 0;
-    for (const auto& pair : selected)
-        needed += lay.native ? (lay.blob_bytes(pair.first) + 255) / 256 * 256 : lay.max_blob;
+    std::vector<std::pair<int32_t, int32_t>> selected;
+    selected.reserve((size_t) std::min<int64_t>(slots, layers * experts));
+    std::vector<uint8_t> picked(claimed.size(), 0);
+    for (const auto& pair : ranked) {
+        if (pair.first < 0 || pair.first >= layers || pair.second < 0 || pair.second >= experts) continue;
+        const size_t index = (size_t) pair.first * (size_t) experts + (size_t) pair.second;
+        if (primary.slot_of(pair.first, pair.second) < 0 && !claimed[index] && !picked[index]) {
+            const uint64_t bytes = lay.native ? (lay.blob_bytes(pair.first) + 255) / 256 * 256 : lay.max_blob;
+            if (auto_size && needed + bytes + (512ull << 20) > free_bytes) break;
+            selected.push_back(pair);
+            needed += bytes;
+            picked[index] = 1;
+            if ((int) selected.size() >= slots) break;
+        }
+    }
+    if (selected.empty()) {
+        err = "CUDA" + std::to_string(device) + (auto_size ? " experts: no unclaimed expert fits with 512 MiB free"
+                                                          : " experts: no unclaimed experts remain");
+        close(); return false;
+    }
+    std::vector<int64_t> sizes;
+    if (lay.native) {
+        sizes.reserve(selected.size());
+        for (const auto& pair : selected) sizes.push_back((int64_t) lay.blob_bytes(pair.first));
+    }
     // Leave room for the CUDA context, staging and later driver allocations, especially under WDDM.
     if (needed + (512ull << 20) > free_bytes) {
         err = "CUDA" + std::to_string(device) + " experts: slots leave less than 512 MiB free; reduce --expert-cache-device" + std::to_string(device);
@@ -235,6 +241,7 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
     const size_t scratch = std::max<size_t>(
         (size_t) strata::kernels::moe_hit_grouped_scratch_bytes(CAP, H, FF),
         strata::kernels::native_expert_scratch_bytes(CAP, FF));
+    const size_t meta_bytes = sizeof(RemoteMeta) + (remote_opt_ ? remote_opt_->metadata_bytes() : 0);
     const bool allocated =
         /*
         DPCT1025: The SYCL queue is created ignoring the flag and priority
@@ -278,7 +285,7 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
         */
         check(DPCT_CHECK_ERROR(
                   h_meta_ = (void *)sycl::malloc_host(
-                      sizeof(RemoteMeta), dpct::get_in_order_queue())),
+                      meta_bytes, dpct::get_in_order_queue())),
               "metadata staging", err, device) &&
         check(
             DPCT_CHECK_ERROR(d_x_ = sycl::malloc_device<float>(
@@ -301,7 +308,7 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
               "scratch", err, device) &&
         check(DPCT_CHECK_ERROR(
                   d_meta_ = (void *)sycl::malloc_device(
-                      sizeof(RemoteMeta), dpct::get_in_order_queue())),
+                      meta_bytes, dpct::get_in_order_queue())),
               "group metadata", err, device);
     if (!allocated) { close(); return false; }
     // Zero-copy: the helper reads its input from, and writes its compact rows into, the pinned host buffers
@@ -399,6 +406,8 @@ bool RemoteExperts::begin(int64_t layer, const float *x, const int32_t *ids,
     std::memcpy(meta->dst, dst_.data(), dst_.size() * sizeof(dst_[0]));
     std::memcpy(meta->tok, tok_.data(), tok_.size() * sizeof(tok_[0]));
     meta->count = (int32_t) group_id_.size();
+    const bool reduce = remote_opt_ && remote_opt_->active();
+    if (reduce) remote_opt_->prepare(*this, meta + 1);
     DeviceScope scope(device_);
     if (!scope.ok) { err = scope.error(device_); return false; }
     groups_ = (int32_t) group_id_.size();
@@ -420,7 +429,8 @@ bool RemoteExperts::begin(int64_t layer, const float *x, const int32_t *ids,
         operand memory, so you may need to call wait() on event return by memcpy
         API to ensure synchronization behavior.
         */
-        check(DPCT_CHECK_ERROR(s->memcpy(d_meta_, h_meta_, sizeof(RemoteMeta))),
+        check(DPCT_CHECK_ERROR(s->memcpy(d_meta_, h_meta_, sizeof(RemoteMeta) +
+                                         (reduce ? remote_opt_->metadata_bytes() : 0))),
               "copy group metadata", err, device_);
     if (!staged) return false;
     const auto& lay = strata::kernels::cpu::expert_layout();
@@ -429,20 +439,22 @@ bool RemoteExperts::begin(int64_t layer, const float *x, const int32_t *ids,
         const auto& fmt = lay.fmt[(size_t) layer];
         auto L = strata::kernels::native_expert_layout(fmt.gu_type, fmt.d_type, fmt.n_embd, fmt.n_ff);
         strata::kernels::native_expert_grouped(L, d_ptr_, d_start_, d_count_, d_dst_, d_tok_,
-                                               groups_, (int64_t) dst_.size(), d_q8_, d_scratch_, zero_copy_ ? z_out_ : d_out_, s);
+                                               groups_, (int64_t) dst_.size(), d_q8_, d_scratch_, zero_copy_ && !reduce ? z_out_ : d_out_, s);
     } else {
         strata::kernels::quantize_q8_0_scaled(zero_copy_ ? z_x_ : d_x_, d_q8_, d_scales_, n_tok * H, s);
         strata::kernels::moe_grouped_s2(d_ptr_, d_start_, d_count_, d_dst_, d_tok_,
-                                        groups_, (int64_t) dst_.size(), d_q8_, d_scales_, d_scratch_, zero_copy_ ? z_out_ : d_out_, s);
+                                        groups_, (int64_t) dst_.size(), d_q8_, d_scales_, d_scratch_, zero_copy_ && !reduce ? z_out_ : d_out_, s);
     }
-    const uint64_t compact_bytes = (uint64_t) dst_.size() * H * sizeof(float);
+    const uint64_t compact_bytes = (uint64_t) (reduce ? n_tok : dst_.size()) * H * sizeof(float);
     /*
     DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API. While
     the origin API might be synchronous, it depends on the type of operand
     memory, so you may need to call wait() on event return by memcpy API to
     ensure synchronization behavior.
     */
-    if (!zero_copy_ && !check(DPCT_CHECK_ERROR(s->memcpy(
+    if (reduce) {
+        if (!remote_opt_->reduce(*this, (RemoteMeta*) d_meta_ + 1, err)) return false;
+    } else if (!zero_copy_ && !check(DPCT_CHECK_ERROR(s->memcpy(
                                   h_out_, d_out_, (size_t)compact_bytes)),
                               "copy results", err, device_)) return false;
     ++launched_layers_;
@@ -464,6 +476,7 @@ bool RemoteExperts::finish(float *out, std::string &err) try {
     if (!check(DPCT_CHECK_ERROR(stream_->wait()), "finish", err,
                device_)) return false;
     ms_wait_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - w0).count();
+    if (remote_opt_ && remote_opt_->active()) { remote_opt_->accumulate(*this); return true; }
     for (size_t i = 0; i < original_row_.size(); ++i)
         std::memcpy(out + (size_t) original_row_[i] * H, h_out_ + i * H, (size_t) H * sizeof(float));
     return true;

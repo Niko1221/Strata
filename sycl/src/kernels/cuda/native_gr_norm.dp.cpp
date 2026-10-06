@@ -59,9 +59,12 @@ __dpct_inline__ void weighted_rms_norm(const float *__restrict__ input,
                                        float epsilon) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const int tid = item_ct1.get_local_id(2);
-    const std::size_t row_offset = std::size_t(item_ct1.get_group(2)) * n_cols;
+    const std::size_t row =
+        std::size_t(item_ct1.get_group(1)) * item_ct1.get_group_range(2) +
+        item_ct1.get_group(2);
+    const std::size_t row_offset = row * n_cols;
     input += row_offset;
-    gamma += row_offset;
+    gamma += std::size_t(item_ct1.get_group(2)) * n_cols;
     output += row_offset;
     float partial = 0.0f;
     for (int col = tid; col < n_cols; col += BlockSize) {
@@ -99,12 +102,18 @@ void check_pointer(const void* p) {
 
 void native_gr_rms_norm_weighted(const float* input, const float* gamma, float* output,
                                  int n_cols, int n_rows, float epsilon, void* stream) {
-    if (n_cols <= 0 || n_rows <= 0 || !std::isfinite(epsilon) || epsilon < 0.0f)
+    native_gr_rms_norm_weighted_multi(input, gamma, output, n_cols, n_rows, 1, epsilon, stream);
+}
+
+void native_gr_rms_norm_weighted_multi(const float* input, const float* gamma, float* output,
+                                       int n_cols, int n_rows, int n_tok, float epsilon, void* stream) {
+    if (n_cols <= 0 || n_rows <= 0 || n_tok <= 0 || !std::isfinite(epsilon) || epsilon < 0.0f)
         throw std::invalid_argument("native GR RMSNorm requires positive dimensions and finite nonnegative epsilon");
     check_pointer(input);
     check_pointer(gamma);
     check_pointer(output);
     const auto cuda_stream = strata::q_of(stream);
+    const dpct::dim3 grid{unsigned(n_rows), unsigned(n_tok), 1u};
     if (n_cols < 1024)
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
@@ -112,8 +121,7 @@ void native_gr_rms_norm_weighted(const float* input, const float* gamma, float* 
 
         cuda_stream->parallel_for<dpct_kernel_name<
             class weighted_rms_norm_46d94c, dpct_kernel_scalar<256>>>(
-            sycl::nd_range<3>(sycl::range(1, 1, unsigned(n_rows)) *
-                                  sycl::range(1, 1, 256),
+            sycl::nd_range<3>(grid * sycl::range(1, 1, 256),
                               sycl::range(1, 1, 256)),
             exp_props,
             [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
@@ -131,8 +139,7 @@ void native_gr_rms_norm_weighted(const float* input, const float* gamma, float* 
 
         cuda_stream->parallel_for<dpct_kernel_name<
             class weighted_rms_norm_11a6fe, dpct_kernel_scalar<1024>>>(
-            sycl::nd_range<3>(sycl::range(1, 1, unsigned(n_rows)) *
-                                  sycl::range(1, 1, 1024),
+            sycl::nd_range<3>(grid * sycl::range(1, 1, 1024),
                               sycl::range(1, 1, 1024)),
             exp_props,
             [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {

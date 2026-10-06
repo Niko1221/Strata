@@ -104,21 +104,16 @@ __dpct_inline__ void quantize_q8_0_kernel(const float *__restrict__ x,
 /// `moe_hit_parity`.  This function's job is different: it must match **this engine's own CPU reference**,
 /// because a hit and a miss for the same expert on the same layer have to produce the same number.  The CPU
 /// path is the reference - C1 passes on it - so the hit path is brought to it, not the reverse.
-__dpct_inline__ void quantize_q8_0_scaled_kernel(const float *__restrict__ x,
-                                                 uint8_t *__restrict__ blocks,
-                                                 float *__restrict__ scales,
-                                                 long long n_blocks) {
-    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const long long b =
-        (long long)item_ct1.get_group(2) * item_ct1.get_local_range(2) +
-        item_ct1.get_local_id(2);
+#if defined(__HIPCC__)   // AMD keeps the thread-a-block kernel
+__global__ void quantize_q8_0_scaled_kernel(const float* __restrict__ x, uint8_t* __restrict__ blocks,
+                                            float* __restrict__ scales, long long n_blocks) {
+    const long long b = (long long) blockIdx.x * blockDim.x + threadIdx.x;
     if (b >= n_blocks) return;
     const float* xb = x + b * QK8_0;
     uint8_t* out = blocks + b * 34;
 
     float amax = 0.0f;
-#pragma unroll
-    for (int i = 0; i < QK8_0; ++i) amax = sycl::fmax(amax, sycl::fabs(xb[i]));
+    for (int i = 0; i < QK8_0; ++i) amax = fmaxf(amax, fabsf(xb[i]));
     // VERBATIM from `cpu/expert.cpp:144-145`, including the `amax > 0` guard, so the fp32 value written here
     // is bit-identical to the `s` the CPU path used.
     const float s = amax > 0.f ? amax / 127.f : 0.f;
@@ -138,6 +133,55 @@ __dpct_inline__ void quantize_q8_0_scaled_kernel(const float *__restrict__ x,
         out[2 + i] = (uint8_t) (int8_t) v;
     }
 }
+
+#else
+// A warp a block, lane i on value i: the block's |max| is a max over the same values (0 for none above it, as the
+// serial scan from 0 through fmaxf), so every byte is the per-thread loop's.
+__dpct_inline__ void quantize_q8_0_scaled_kernel(const float *__restrict__ x,
+                                                 uint8_t *__restrict__ blocks,
+                                                 float *__restrict__ scales,
+                                                 long long n_blocks) {
+    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+    const long long b =
+        ((long long)item_ct1.get_group(2) * item_ct1.get_local_range(2) +
+         item_ct1.get_local_id(2)) >>
+        5;
+    const int i = (int)(item_ct1.get_local_id(2) & 31);
+    if (b >= n_blocks) return;
+    const float xi = x[b * QK8_0 + i];
+    uint8_t* out = blocks + b * 34;
+
+    float amax = sycl::fmax(0.0f, sycl::fabs(xi));
+    /*
+DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
+masked sub_group function which may not be supported by all compilers or
+runtimes. You may need to adjust the code.
+*/
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) amax = sycl::fmax(
+        amax, dpct::experimental::permute_sub_group_by_xor(
+                  0xffffffffu,
+                  sycl::ext::oneapi::this_work_item::get_sub_group(), amax, o));
+    // VERBATIM from `cpu/expert.cpp:144-145`, including the `amax > 0` guard, so the fp32 value written here
+    // is bit-identical to the `s` the CPU path used.
+    const float s = amax > 0.f ? amax / 127.f : 0.f;
+    const float inv = s > 0.f ? 1.f / s : 0.f;
+    if (i == 0) {
+        scales[b] = s;
+        const uint16_t d16bits = f16_from_f32(s);
+        out[0] = (uint8_t) (d16bits & 0xFF);
+        out[1] = (uint8_t) (d16bits >> 8);
+    }
+    // VERBATIM from `cpu/expert.cpp:159-162`: reciprocal multiply, then `t + copysign(0.5, t)` truncated
+    // toward zero, which is `lround`'s rule - round half away from zero.
+    const float t = xi * inv;
+    const float r = t + (t >= 0.f ? 0.5f : -0.5f);
+    int v = (int) r;
+    v = v < -127 ? -127 : (v > 127 ? 127 : v);
+    out[2 + i] = (uint8_t) (int8_t) v;
+}
+
+#endif
 
 __dpct_inline__ void dequant_q8_0_kernel(const uint8_t *__restrict__ blocks,
                                          float *__restrict__ x,
@@ -221,10 +265,10 @@ __dpct_inline__ void quantize_q8_K_kernel(const float *__restrict__ x,
         // from the reference in 1 element of 524,288 for exactly this reason, and `__fmul_rn` pins the
         // rounding step the source actually performs.
         /*
-        DPCT1013: The rounding mode could not be specified and the generated
-        code may have different accuracy than the original code. Verify the
-        correctness. SYCL math built-in function rounding mode is aligned with
-        OpenCL C 1.2 standard.
+        DPCT1013: The rounding mode could not be specified and the
+        generated code may have different accuracy than the original code.
+        Verify the correctness. SYCL math built-in function rounding mode is
+        aligned with OpenCL C 1.2 standard.
         */
         const int v = nearest_int_dev(iscale * xb[j]);
         qs[j] = (int8_t)sycl::min(
@@ -308,7 +352,11 @@ void quantize_q8_0_scaled(const float* x, uint8_t* blocks, float* scales, int64_
     }
     const long long nb = n / QK8_0;
     const int threads = 128;
+#if defined(__HIPCC__)
     const unsigned grid = (unsigned) ((nb + threads - 1) / threads);
+#else
+    const unsigned grid = (unsigned) ((nb + threads / 32 - 1) / (threads / 32));   // a warp a block
+#endif
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
@@ -319,9 +367,11 @@ void quantize_q8_0_scaled(const float* x, uint8_t* blocks, float* scales, int64_
                 sycl::nd_range<3>(sycl::range(1, 1, grid) *
                                       sycl::range(1, 1, threads),
                                   sycl::range(1, 1, threads)),
-                exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    quantize_q8_0_scaled_kernel(x, blocks, scales, nb);
-                });
+                exp_props,
+                [=](sycl::nd_item<3> item_ct1)
+                    [[sycl::reqd_sub_group_size(32)]] {
+                        quantize_q8_0_scaled_kernel(x, blocks, scales, nb);
+                    });
     }
     /*
     DPCT1010: SYCL uses exceptions to report errors and does not use the

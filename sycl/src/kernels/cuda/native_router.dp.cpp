@@ -140,6 +140,80 @@ __dpct_inline__ void route(const float *__restrict__ logits,
     const float inverse_selected_sum = 1.0f / selected_sum;
     if (lane < 10) weights[lane] = selected * inverse_selected_sum;
 }
+/*
+DPCT1110: The total declared local variable size in device function
+route_multi exceeds 128 bytes and may cause high register pressure. Consult with
+your hardware vendor to find the total register size available and adjust the
+code, or use smaller sub-group size to avoid high register pressure.
+*/
+__dpct_inline__ void route_multi(const float *__restrict__ logits,
+                                 int32_t *__restrict__ ids,
+                                 float *__restrict__ weights, int n_tok) {
+    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+    const int tk =
+        (int)item_ct1.get_group(2) * 8 + (int)item_ct1.get_local_id(1);
+    if (tk >= n_tok) return;
+    logits += (size_t) tk * 512; ids += (size_t) tk * 10; weights += (size_t) tk * 10;
+    const int lane = item_ct1.get_local_id(2);
+    float values[16];
+#pragma unroll
+    for (int i = 0; i < 16; ++i) values[i] = logits[lane + i * 32];
+    sycl::group_barrier(sycl::ext::oneapi::this_work_item::get_sub_group());
+    float maximum = -INFINITY;
+#pragma unroll
+    for (int i = 0; i < 16; ++i) maximum = sycl::max(maximum, values[i]);
+    maximum = warp_max(maximum);
+    float sum = 0.0f;
+#pragma unroll
+    for (int i = 0; i < 16; ++i) {
+        values[i] = sycl::native::exp(values[i] - maximum);
+        sum += values[i];
+    }
+    const float reciprocal = 1.0f / warp_sum(sum);
+#pragma unroll
+    for (int i = 0; i < 16; ++i) {
+        values[i] *= reciprocal;
+        if (sycl::isnan(values[i])) values[i] = -FLT_MAX;
+    }
+    float selected = 0.0f, selected_sum = 0.0f;
+    for (int rank = 0; rank < 10; ++rank) {
+        float best = values[0];
+        int expert = lane;
+#pragma unroll
+        for (int i = 1; i < 16; ++i) {
+            if (values[i] > best) { best = values[i]; expert = lane + i * 32; }
+        }
+#pragma unroll
+        for (int mask = 16; mask; mask >>= 1) {
+            /*
+            DPCT1108: '__shfl_xor_sync' was migrated with the experimental
+            feature masked sub_group function which may not be supported by all
+            compilers or runtimes. You may need to adjust the code.
+            */
+            const float other = dpct::experimental::permute_sub_group_by_xor(
+                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+                best, mask);
+            /*
+            DPCT1108: '__shfl_xor_sync' was migrated with the experimental
+            feature masked sub_group function which may not be supported by all
+            compilers or runtimes. You may need to adjust the code.
+            */
+            const int other_id = dpct::experimental::permute_sub_group_by_xor(
+                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+                expert, mask);
+            if (other > best || (other == best && other_id < expert)) { best = other; expert = other_id; }
+        }
+        if ((expert & 31) == lane) {
+            values[expert / 32] = -INFINITY;
+            ids[rank] = expert;
+            selected_sum += best;
+        }
+        if (rank == lane) selected = best;
+    }
+    selected_sum = sycl::max(warp_sum(selected_sum), 6.103515625e-5f);
+    const float inverse_selected_sum = 1.0f / selected_sum;
+    if (lane < 10) weights[lane] = selected * inverse_selected_sum;
+}
 bool valid(const void* p, size_t bytes) {
     const auto address = reinterpret_cast<uintptr_t>(p);
     return p && address % 4 == 0 && bytes <= UINTPTR_MAX - address;
@@ -199,14 +273,15 @@ void native_router_top10_multi(const float* logits, int32_t* ids, float* weights
             sycl::ext::oneapi::experimental::use_root_sync};
 
         ((sycl::queue *)(strata::q_of(stream)))
-            ->parallel_for<dpct_kernel_name<class route_64c24f>>(
-                sycl::nd_range<3>(sycl::range(1, 1, (unsigned)n_tok) *
-                                      sycl::range(1, 8, 32),
-                                  sycl::range(1, 8, 32)),
+            ->parallel_for<dpct_kernel_name<class route_multi_bb6de6>>(
+                sycl::nd_range<3>(
+                    sycl::range(1, 1, (unsigned)((n_tok + 7) / 8)) *
+                        sycl::range(1, 8, 32),
+                    sycl::range(1, 8, 32)),
                 exp_props,
                 [=](sycl::nd_item<3> item_ct1)
                     [[sycl::reqd_sub_group_size(32)]] {
-                        route<512>(logits, ids, weights);
+                        route_multi(logits, ids, weights, n_tok);
                     });
     }
     /*
