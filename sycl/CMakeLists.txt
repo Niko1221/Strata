@@ -225,7 +225,9 @@ if(WIN32 AND EXISTS "${STRATA_ONEMKL_LIB}")
       COMMENT "copying ${_dll} beside strata.exe")
   endforeach()
   # The SYCL runtime beside the compiler (conda dpcpp: sycl9.dll): the server's env may not have it on PATH.
-  foreach(_dll sycl9.dll)
+  # Plus the UR adapter DLLs: without ur_adapter_opencl beside the exe the loader reports 0 adapters and
+  # any gpu_selector terminates the process (0xC0000409 before main prints anything).
+  foreach(_dll sycl9.dll ur_adapter_opencl.dll ur_adapter_level_zero.dll ur_adapter_level_zero_v2.dll OpenCL.dll)
     add_custom_command(TARGET strata POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_icx_bin}/${_dll}" "$<TARGET_FILE_DIR:strata>"
       COMMENT "copying ${_dll} beside strata.exe")
