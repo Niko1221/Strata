@@ -39,14 +39,14 @@ def joined(evs, kind):
 
 class Parser(unittest.TestCase):
     def test_a_declared_call_in_the_reasoning_is_a_call(self):
-        text = "before " + CALL + " after</think>\n\nanswer"
+        text = "before\n" + CALL + "\n</think>\n\nanswer"      # at a line start, nothing but whitespace after it (#1058)
         for width in (1, 2, 7, 100_000):
             with self.subTest(width=width):
                 evs = run(text, width)
                 calls = [e.call for e in evs if e.kind == "tool_call"]
                 self.assertEqual([(c.name, c.arguments) for c in calls],
                                  [("read_file", {"limit": 120, "path": "file.txt"})])
-                self.assertEqual(joined(evs, "reasoning"), "before  after")
+                self.assertEqual(joined(evs, "reasoning"), "before\n")
                 self.assertEqual(joined(evs, "content"), "answer")
                 self.assertFalse([e for e in evs if e.kind in ("tool_start", "tool_args")])   # never streamed
 
@@ -60,13 +60,13 @@ class Parser(unittest.TestCase):
                 self.assertEqual(joined(evs, "content"), "answer")
 
     def test_no_tools_declared_is_unchanged(self):
-        text = "before " + CALL + " after</think>\n\nanswer"
+        text = "before\n" + CALL + "\n</think>\n\nanswer"
         for tools in (None, []):
             for width in (1, 7, 100_000):
                 with self.subTest(tools=tools, width=width):
                     evs = run(text, width, tools=tools)
                     self.assertFalse([e for e in evs if e.kind == "tool_call"])
-                    self.assertEqual(joined(evs, "reasoning"), "before " + CALL + " after")
+                    self.assertEqual(joined(evs, "reasoning"), "before\n" + CALL + "\n")
                     self.assertEqual(joined(evs, "content"), "answer")
 
     def test_an_unfinished_call_is_never_a_call(self):
@@ -96,7 +96,7 @@ class Parser(unittest.TestCase):
 
     def test_a_tag_that_never_closes_does_not_hold_the_thinking_back(self):
         from serve import frontend
-        text = "a <tool_call> " + "thinking on and on " * 3000 + "</think>\n\nanswer"
+        text = "a\n<tool_call> " + "thinking on and on " * 3000 + "</think>\n\nanswer"
         with unittest.mock.patch.object(frontend, "RCALL_MAX", 1000):
             evs = run(text, 50)
         first_reasoning_at = next(i for i, e in enumerate(evs) if e.kind == "reasoning" and len(e.text) > 100)
@@ -115,13 +115,13 @@ class OverHttp(unittest.TestCase):
     def test_finish_reasons_and_block_order(self):
         helper = UnfinishedToolCall("test_parser")
         helper.PROPS = {"path": {"type": "string"}}
-        script = "Let me look. <tool_call>\n<function=write>\n<parameter=path>\nfile.txt\n</parameter>\n</function>\n" \
-                 "</tool_call> More thought.</think>\n\ndone"
+        script = "Let me look.\n<tool_call>\n<function=write>\n<parameter=path>\nfile.txt\n</parameter>\n</function>\n" \
+                 "</tool_call>\n</think>\n\ndone"
         a = helper.answers(script)
         self.assertEqual((a["openai", False][0], [json.loads(x) for x in a["openai", False][1]]),
                          ("tool_calls", [{"path": "file.txt"}]))
         self.assertEqual(a["anthropic", False], ("tool_use", [{"path": "file.txt"}]))
-        # the order of the Anthropic stream's blocks: thinking, the call, more thinking, the answer
+        # the order of the Anthropic stream's blocks: thinking, the call, the answer
         tok = ByteTokenizer()
         svc = Service(MockEngine(tok, script, max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
         httpd = serve(svc, port=0)
@@ -135,7 +135,7 @@ class OverHttp(unittest.TestCase):
                 raw = r.read().decode()
             evs = [json.loads(line[6:]) for line in raw.splitlines() if line.startswith("data: {")]
             order = [e["content_block"]["type"] for e in evs if e["type"] == "content_block_start"]
-            self.assertEqual(order, ["thinking", "tool_use", "thinking", "text"])
+            self.assertEqual(order, ["thinking", "tool_use", "text"])
             tool = [e["delta"]["partial_json"] for e in evs if e["type"] == "content_block_delta"
                     and e["delta"]["type"] == "input_json_delta"]
             self.assertEqual(json.loads("".join(tool)), {"path": "file.txt"})

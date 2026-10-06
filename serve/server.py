@@ -540,6 +540,7 @@ class StrataEngine:
     """
     silence_s = ENGINE_SILENCE_S         # #481: main() sets the config's engine_silence_s (survives restart())
     silent_note = None                   # #481: why the server ended a silent engine (death_note says it)
+    last_err = None                      # #997: an ERR that was its last stdout line (death_note says it)
     batch = 0                            # --batch: the engine's batch slots (0: one request at a time)
 
     # `last`: the figures of the engine's last DONE line.  With batch slots several requests run at once, each on its
@@ -577,6 +578,7 @@ class StrataEngine:
         self.progress_ms = 0             # PP's own milliseconds since the prompt started (its third field)
         self.reused = 0                  # RESUME: prompt tokens not read again (a client takes them out of the work)
         self.silent_note = None
+        self.last_err = None
         try:                            # a ready-made engine's BUILD.json says its version
             self.info["version"] = json.loads((Path(exe).parent / "BUILD.json").read_text()).get("version")
         except (OSError, ValueError):
@@ -655,12 +657,18 @@ class StrataEngine:
         self.slot_held: list[list[int]] = [[] for _ in range(self.batch)]
         self.slot_used = [0.0] * self.batch
         self.slot_live: list[dict | None] = [None] * self.batch   # /metrics: the request in each slot
-        self.slot_cv = threading.Condition()
-        self.waiting = 0                                # requests waiting for the control lines (ctl)
-        self.wait_lens: list[list[int]] = []            # ... their prompt lengths (a long read gives way to short ones)
-        self.ctl_epoch = 0                              # how often the control lines were taken
+        # #1012: the admission state belongs to the server, not to one engine process.  restart() runs this again
+        # while requests still wait on it (they hold these very objects), so it is made once and kept: new ones
+        # would leave the waiters on a lock and a condition nobody notifies, with their counts missing from the
+        # new lists.
+        if "slot_cv" not in self.__dict__:
+            self.slot_cv = threading.Condition()
+            self.waiting = 0                            # requests waiting for the control lines (ctl)
+            self.wait_lens: list[list[int]] = []        # ... their prompt lengths (a long read gives way to short ones)
+            self.ctl_epoch = 0                          # how often the control lines were taken
+            self.ctl = threading.Lock()                 # one admission or solo request on the control lines at a time
+        self.gen = self.__dict__.get("gen", 0) + 1      # which engine process this is (a request notes its own)
         self._yielded = None                            # (slot, tokens read): the last request on them gave way
-        self.ctl = threading.Lock()                     # one admission or solo request on the control lines at a time
         self.wlock = threading.Lock()                   # stdin writes from several request threads
         self.pump = threading.Thread(target=self._pump, daemon=True)
         self.pump.start()
@@ -668,6 +676,7 @@ class StrataEngine:
     def _pump(self):
         proc, lines = self.proc, self.lines             # this process's: a restart replaces both (#344)
         slot_q = self.slot_q
+        line = None
         for line in proc.stdout:
             # checked before batch routing: a fatal line is never a slot's own
             if line.startswith(FATAL_PREFIXES):
@@ -690,6 +699,8 @@ class StrataEngine:
             lines.put(line)
         if self.proc is proc:                           # a killed engine's pump must not mark its successor dead
             self.ended = True                           # its output closed: it is gone, even before the OS says so
+            if line and line.startswith("ERR"):         # #997 #890: why it exited, though no request may read it
+                self.last_err = line[4:].strip()        # (a failed batch window: every request reads its slot)
         lines.put(None)
         for q in slot_q:
             q.put(None)
@@ -710,7 +721,11 @@ class StrataEngine:
             if "issue #29" in line:
                 return ("The engine stopped itself because it had stopped making progress - a hang it caught. Its log "
                         "line: " + line.strip() + " - please report it at github.com/Niko1221/Strata/issues.")
-        rc = self.proc.poll()
+        proc = self.proc                                 # None while a restart has not started the next one yet
+        rc = proc.poll() if proc is not None else None
+        if rc is not None and rc >= 0 and self.last_err:  # its own last words on stdout: they say why
+            return (f"The engine exited (code {rc}) after it reported: {self.last_err} - please report it at "
+                    "github.com/Niko1221/Strata/issues with the log.")
         last = next((x.strip() for x in reversed(tail.splitlines()) if x.strip().startswith(("strata", "ERR"))), "")
         if rc is not None and rc >= 0 and last:          # it ended by itself: its own last words say why (#215)
             return (f"The engine exited (code {rc}). Its last log line: {last} - if that does not explain it, please "
@@ -720,7 +735,8 @@ class StrataEngine:
                 "smaller model (Q2_0 / IQ2_XS).")
 
     def alive(self) -> bool:
-        return self.proc is not None and not getattr(self, "ended", False) and self.proc.poll() is None
+        proc = self.proc                                 # read once: restart() / close() may set it to None meanwhile
+        return proc is not None and not getattr(self, "ended", False) and proc.poll() is None
 
     def exit_code(self):
         if self.proc is None:
@@ -742,10 +758,10 @@ class StrataEngine:
         close() ends and waits for the old process first (EngineStuck when it cannot be ended).  A start that still
         exits before READY - a dead engine's VRAM can take a while to come back, notably on ROCm - is retried
         (PR #637)."""
-        self.close()
         info = dict(self.info)
         self.starting = True                     # prepare() answers 503 "starting" meanwhile (#344)
         try:
+            self.close()
             for i in range(tries):
                 # #344: not alive until READY - __init__ sets max_context to 0 and blocks until the engine says
                 # READY, and a request that saw alive() in that window skipped load() and failed with "context
@@ -766,6 +782,8 @@ class StrataEngine:
                     time.sleep(self.RESTART_RETRY_S)
         finally:
             self.starting = False
+            with self.slot_cv:                   # #1012: wake the requests that waited through it: they go on with the
+                self.slot_cv.notify_all()        # new engine, or (it did not start) end with a clean EngineDied
         self.info = {**info, **self.info}
 
     def _parse_done(self, line):
@@ -878,7 +896,7 @@ class StrataEngine:
             with self.wlock:
                 self.proc.stdin.write(text + "\n")
                 self.proc.stdin.flush()
-        except OSError:                                  # the pipe is gone: the engine died (not the client)
+        except (OSError, AttributeError):                # the pipe is gone (or a restart's close() took the process):
             raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
 
     def _control(self, cancel, on_token, stop_when=None):
@@ -934,15 +952,20 @@ class StrataEngine:
                 self._ctl_result = ("done", None)
                 return
 
-    def _drain_control(self, until: str, timeout: float = 300.0):
+    def _drain_control(self, until: str, timeout: float = 300.0, born: int | None = None):
         """After a consumer left early: read the control lines up to the next `until` line (DONE or BADM) so the next
-        request does not read this one's leftovers.  Returns that line (None: the engine ended or never answered)."""
+        request does not read this one's leftovers.  Returns that line (None: the engine ended or never answered).
+        `born`: the engine process (self.gen) the request started on; once that one is gone there is nothing to
+        drain - its end line was read already (by the request's own EngineDied), and waiting for another one held
+        a request that had failed for the whole 300 s (#1012), or read the lines of the engine that replaced it."""
         end = time.monotonic() + timeout
         while time.monotonic() < end:
+            if born is not None and (self.gen != born or not self.alive()):
+                return None
             try:
-                line = self.lines.get(timeout=max(0.1, end - time.monotonic()))
+                line = self.lines.get(timeout=max(0.1, min(1.0, end - time.monotonic())))
             except queue.Empty:
-                break
+                continue
             if line is None:
                 return None
             if line.startswith("DONE"):
@@ -955,16 +978,20 @@ class StrataEngine:
         """A slot whose consumer left (a stop token, a stop string, a disconnect): BSTOP it and free it once the engine
         says BDONE (in the background).  `stream`: the prompt and every token of it so far - with the tokens still to
         come before BDONE, all but the last are what the slot holds then (the next turn of its conversation)."""
+        if slot >= len(self.slot_q):                    # the engine restarted with fewer slots: this one is gone
+            return
         try:
             self._send(f"BSTOP {slot}")
         except EngineDied:
             pass
+        q, busy, held = self.slot_q[slot], self.slot_busy, self.slot_held   # this process's: restart() replaces them
+
         def wait():
             end = time.monotonic() + 600.0
             tail = list(stream or [])
             while time.monotonic() < end:
                 try:
-                    line = self.slot_q[slot].get(timeout=5.0)
+                    line = q.get(timeout=5.0)
                 except queue.Empty:
                     continue
                 if line is None:
@@ -977,9 +1004,9 @@ class StrataEngine:
                         tail = []
                 if line.startswith("BDONE "):
                     break
-            self.slot_held[slot] = tail[:-1] if stream and tail else []
+            held[slot] = tail[:-1] if stream and tail else []
             with self.slot_cv:
-                self.slot_busy[slot] = False
+                busy[slot] = False
                 self.slot_cv.notify_all()
         threading.Thread(target=wait, daemon=True).start()
 
@@ -995,10 +1022,18 @@ class StrataEngine:
         beat = time.monotonic()
         try:
             while True:
+                if not self.alive() and not getattr(self, "starting", False):
+                    # #1012: the engine is gone and nobody is starting it again: this request was not sent, so it
+                    # ends now (a clean 503) instead of waiting for control lines nothing will answer on.  While a
+                    # restart is under way it keeps waiting and goes on with the new engine.
+                    raise EngineDied("the engine stopped while this request waited; it was not sent")
                 with self.slot_cv:
                     turn = after_epoch is None or self.ctl_epoch > after_epoch or self.waiting <= 1
                 if turn and self.ctl.acquire(timeout=0.5):
-                    break
+                    if self.alive():
+                        break
+                    self.ctl.release()                  # it died (or is being restarted) while this one was getting
+                    turn = False                        # the lines: not the engine this request was meant for
                 if not turn:
                     with self.slot_cv:
                         self.slot_cv.wait(timeout=0.5)
@@ -1009,8 +1044,9 @@ class StrataEngine:
                     yield None
         finally:
             with self.slot_cv:
-                self.waiting -= 1
-                self.wait_lens.remove(entry)
+                self.waiting = max(0, self.waiting - 1)
+                if entry in self.wait_lens:
+                    self.wait_lens.remove(entry)
         with self.slot_cv:
             self.ctl_epoch += 1
             self.slot_cv.notify_all()
@@ -1046,6 +1082,7 @@ class StrataEngine:
         if not self.alive():
             raise EngineDied("the engine is unavailable; this request was not sent")
         self.progress, self.progress_ms, self.reused = None, 0, 0
+        born = self.gen                                 # the engine process this request is sent to
         keys = self.sampling_keys(sampling or {})
         out: list[int] = []
         pending: list[int] = []
@@ -1053,7 +1090,7 @@ class StrataEngine:
         ok = yield from self._take_control(cancel, len(prompt))
         if not ok:
             return
-        holding = True
+        holding, born = True, self.gen                  # (the engine it now has the control lines of)
         btrace("ctl acquired")
         slot, gen0, reserved = None, None, None
         phase = "none"            # solo -> (admit -> slot) ; "done" once the engine has finished with this request
@@ -1065,7 +1102,7 @@ class StrataEngine:
                     ok = yield from self._take_control(cancel, len(prompt))
                     if not ok:
                         return
-                    holding = True
+                    holding, born = True, self.gen                  # (the engine it now has the control lines of)
                 with self.slot_cv:
                     alone = not any(self.slot_busy) and self.waiting == 0
                 if alone and left > 1:
@@ -1133,7 +1170,7 @@ class StrataEngine:
                         ok = yield from self._take_control(cancel, len(prompt), after_epoch=epoch)
                         if not ok:
                             return
-                        holding = True
+                        holding, born = True, self.gen                  # (the engine it now has the control lines of)
                     while not self.slot_q[slot].empty():
                         self.slot_q[slot].get_nowait()
                     head = f"BGENI {slot} {left}{keys} {embeddings}" if embeddings else f"BGEN {slot} {left}{keys}"
@@ -1225,11 +1262,13 @@ class StrataEngine:
             # a consumer that left early (or an error): keep the engine and this server in step
             btrace("finally phase", phase, "slot", slot, "holding", holding)
             try:
+                if phase in ("solo", "admit") and (self.gen != born or not self.alive()):
+                    phase = "none"                      # #1012: its engine is gone: nothing to stop or drain
                 if phase == "solo":
                     self._send("STOP")
-                    self._drain_control("DONE")
+                    self._drain_control("DONE", born=born)
                 elif phase == "admit":
-                    line = self._drain_control("BADM")
+                    line = self._drain_control("BADM", born=born)
                     if line and line.startswith("BADM ") and line.split()[2:3] == ["1"]:
                         phase = "slot"
             except EngineDied:
@@ -2937,7 +2976,8 @@ class Service:
                                     finish = "stop"         # gen.close() below STOPs the engine, as for a stop token
                                     break
                                 if (self.reasoning_loop_recovery and not recovery_count and parser.state == "reasoning"
-                                        and n >= next_loop_check and not parser.buf and not detok.pending()):
+                                        and n >= next_loop_check and not parser.buf and not parser.pending
+                                        and not detok.pending()):
                                     next_loop_check = n + LOOP_CHECK_EVERY
                                     repeat_coverage = reasoning_repeat_coverage(reasoning_text)
                                     if repeat_coverage >= LOOP_COVERAGE:
@@ -3126,8 +3166,12 @@ class Service:
         finally:
             if emb:
                 Path(emb).unlink(missing_ok=True)
-        for ev in cut(parser.finish()):
+        for ev in cut(parser.finish(finish)):
             yield "event", ev
+        if parser.rescued or parser.refused:
+            self.totals["tool_calls_from_reasoning"] = self.totals.get("tool_calls_from_reasoning", 0) + parser.rescued
+            print(f"[strata] tool calls inside the thinking: {parser.rescued} read as calls, {parser.refused} kept as "
+                  f"reasoning (quoted, or the turn did not end on a stop)", flush=True)
         if stops is not None and stops.hit is None and stops.held:
             yield "event", Event("content", stops.flush())     # the held tail was not a stop string after all
         done = {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),

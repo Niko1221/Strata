@@ -3390,7 +3390,7 @@ def engine_version(exe: Path) -> tuple:
     v = str(meta.get("version") or "")
     if not v:                                          # the version compiled into the binary: 0.1.13 and newer
         try:                                           # carry it, so a binary without it is older
-            m = re.search(rb"engine=(\d+\.\d+\.\d+)\n", Path(exe).read_bytes())
+            m = re.search(rb"engine=(\d+\.\d+\.\d+)(?:\.\d+)?\n", Path(exe).read_bytes())
             v = m.group(1).decode() if m else "0.1.12"
         except OSError:
             v = "0"

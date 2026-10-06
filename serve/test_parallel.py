@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
 import urllib.request
 from pathlib import Path
 from unittest import mock
@@ -24,6 +25,7 @@ FAKE_BATCH = r'''import queue, sys, threading, time
 args = sys.argv[1:]
 slots = int(args[args.index("--batch") + 1]) if "--batch" in args else 0
 fit = int(args[args.index("--fit") + 1]) if "--fit" in args else slots
+fail = "--fail-window" in args        # #997: the first window over two slots fails
 STEP = 0.02
 CH = 32
 lines, stop = queue.Queue(), threading.Event()
@@ -49,6 +51,9 @@ def reply(ids):            # the rest of the reply after what the prompt already
 active = {}          # slot -> [tokens left, max_new, produced]
 stopped = set()      # BSTOPped slots: they end "cancel"
 def window():        # one batch window: every active slot one token
+    if fail and len(active) >= 2:     # as the engine: the reason on stdout, then exit code 1
+        print("ERR verify batch: layer 34 never rang (graph finished)", flush=True)
+        sys.exit(1)
     for b in sorted(active):
         left, max_new, produced = active[b]
         t = left.pop(0) if left else 257
@@ -216,7 +221,7 @@ class PickSlot(unittest.TestCase):
 class ParallelService(unittest.TestCase):
     """The real StrataEngine and Service over HTTP, the fake engine behind them."""
 
-    def start(self, slots, fit=None, slot_cache=False):
+    def start(self, slots, fit=None, slot_cache=False, fail=False):
         import serve.server as server
         self.tmp = tempfile.TemporaryDirectory()
         script = Path(self.tmp.name) / "fake_strata.py"
@@ -225,6 +230,7 @@ class ParallelService(unittest.TestCase):
         real = server.subprocess.Popen
         extra = ["--batch", str(slots)] + (["--fit", str(fit)] if fit is not None else []) + ["--log", str(self.log)]
         extra += ["--slotcache"] if slot_cache else []
+        extra += ["--fail-window"] if fail else []
         with mock.patch.object(server.subprocess, "Popen",
                                lambda cmd, **kw: real([sys.executable, str(script), *cmd[1:]], **kw)):
             self.engine = StrataEngine("strata", extra)
@@ -412,6 +418,29 @@ class ParallelService(unittest.TestCase):
         slot = self.engine.slot_held.index(mine[0])
         self.assertEqual(self.engine.pick_slot(mine[0] + [10, 11]), slot)
         self.assertEqual(first["choices"][0]["message"]["content"], "ok, done.")
+
+    def test_a_failed_window_names_its_error(self):
+        # #997 #890: a batch window fails while every request reads its own slot's lines, so no request reads the
+        # engine's ERR line before it exits; the server's note on the death gives it instead of a guess
+        self.start(2, fail=True)
+        errors = []
+
+        def go(t):
+            try:
+                self.chat(t)
+            except urllib.error.HTTPError as e:
+                errors.append(e.code)
+
+        threads = [threading.Thread(target=go, args=(t,)) for t in ("first question LONGREPLY", "second question")]
+        for th in threads:
+            th.start()
+            time.sleep(0.05)
+        for th in threads:
+            th.join(30)
+        self.assertEqual(len(errors), 2, errors)
+        note = self.engine.death_note()
+        self.assertIn("exited (code 1)", note)
+        self.assertIn("verify batch: layer 34 never rang (graph finished)", note)
 
 
 if __name__ == "__main__":

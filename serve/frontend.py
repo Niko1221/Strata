@@ -600,7 +600,59 @@ class OutputParser:
         # character; other types whole, once complete) - before the final "tool_call".  Without it, a client sees
         # nothing until the call is complete, which for a large file write can be many minutes.
         self.stream_tools = stream_tools
+        # #804/#1058: calls found inside the reasoning wait here as [raw text, ToolCall | None] until the turn shows
+        # they were acts: only whitespace (or more calls) after them, then the end of the turn or `</think>`.  The
+        # reasoning text before them is tracked (code fence, inline code, current line) to tell an act from a quote.
+        self.pending: list[list] = []
+        self.rescued = 0             # calls delivered from the reasoning
+        self.refused = 0             # declared calls kept as reasoning text (quoted, or the turn was cut)
+        self.fence, self.line, self.ticks = "", "", 0
         self._reset_scan()
+
+    def _track(self, text: str) -> str:
+        """Follow the reasoning text that has gone out: the open code fence, the current line, and the backticks of
+        the current paragraph.  Returns the text."""
+        parts = text.split("\n")
+        for k, part in enumerate(parts):
+            if k < len(parts) - 1:
+                line, self.line = self.line + part, ""
+                s = line.lstrip()
+                if self.fence:
+                    if s.startswith(self.fence * 3):
+                        self.fence = ""
+                elif s[:3] in ("```", "~~~") and (s[0] * 3) not in s[3:]:
+                    self.fence = s[0]
+                elif not s:
+                    self.ticks = 0
+                else:
+                    self.ticks += line.count("`")
+            else:
+                self.line += part
+        return text
+
+    def _opener_ok(self) -> bool:
+        """The reasoning text so far puts a `<tool_call>` at the start of a line, outside a code fence and outside
+        inline code."""
+        return not self.fence and not self.line.strip() and self.ticks % 2 == 0
+
+    def _in_code(self) -> bool:
+        """The text so far leaves the next character inside a code fence or inline code."""
+        return bool(self.fence) or (self.ticks + self.line.count("`")) % 2 == 1
+
+    def _release(self, deliver: bool) -> list[Event]:
+        """Settle the calls waiting in self.pending: events for real calls, or all of it back as reasoning text."""
+        out = []
+        for raw, call in self.pending:
+            if call is not None and deliver:
+                out.append(Event("tool_call", call=call))
+                self.rescued += 1
+            elif call is None or not deliver:
+                if call is not None:
+                    self.refused += 1
+                if raw:
+                    out.append(Event("reasoning", self._track(raw)))
+        self.pending = []
+        return out
 
     def _reset_scan(self):
         self.sp = 0                  # how much of self.buf (the call body) the scanner has consumed
@@ -739,41 +791,67 @@ class OutputParser:
                             call = parse_tool_call(body[:end], self.schemas.get(name))
                     except ValueError:
                         pass
-                    if call is not None:
-                        out.append(Event("tool_call", call=call))
+                    raw = self.buf[:len(CALL_START) + end + len(CALL_END)]
+                    if call is not None or self.pending:
+                        self.pending.append([raw, call])    # settled by what follows it (see __init__)
                     else:
-                        out.append(Event("reasoning", self.buf[:len(CALL_START) + end + len(CALL_END)]))
+                        out.append(Event("reasoning", self._track(raw)))
                     self.buf = body[end + len(CALL_END):]
                     self.state = "reasoning"
                 elif think >= 0:                     # the thinking ended inside it: it never was a call
-                    out.append(Event("reasoning", self.buf[:len(CALL_START) + think]))
+                    out += self._release(False)
+                    out.append(Event("reasoning", self._track(self.buf[:len(CALL_START) + think])))
                     self.buf = body[think:]
                     self.state = "reasoning"
                 elif len(body) > RCALL_MAX:          # a tag in the prose that never closes: stop holding the thinking back
-                    out.append(Event("reasoning", self.buf))
+                    out += self._release(False)
+                    out.append(Event("reasoning", self._track(self.buf)))
                     self.buf = ""
                     self.state = "reasoning"
                 else:
                     return out
             elif self.state == "reasoning":
+                if self.pending:
+                    # calls wait for what follows: more calls or whitespace keep them, `</think>` makes them acts,
+                    # any other text means they were quoted
+                    stripped = self.buf.lstrip()
+                    if len(stripped) < len(self.buf):
+                        self.pending[-1][0] += self.buf[:len(self.buf) - len(stripped)]
+                        self.buf = stripped
+                    if not self.buf:
+                        return out
+                    if self.buf.startswith(CALL_START):
+                        self.state = "rcall"
+                    elif self.buf.startswith(THINK_END):
+                        out += self._release(True)
+                    elif CALL_START.startswith(self.buf) or THINK_END.startswith(self.buf):
+                        return out
+                    else:
+                        out += self._release(False)
+                    continue
                 i = self.buf.find(THINK_END)
                 tool = self.buf.find(CALL_START) if self.schemas else -1
                 if tool >= 0 and (i < 0 or tool < i):
                     if tool:
-                        out.append(Event("reasoning", self.buf[:tool]))
-                    self.buf = self.buf[tool:]
-                    self.state = "rcall"
+                        out.append(Event("reasoning", self._track(self.buf[:tool])))
+                    if self._opener_ok():
+                        self.buf = self.buf[tool:]
+                        self.state = "rcall"
+                    else:                            # mid-sentence, in a fence or in inline code: a quote
+                        out.append(Event("reasoning", self._track(CALL_START)))
+                        self.buf = self.buf[tool + len(CALL_START):]
                     continue
                 if i < 0:
                     keep = self._hold(self.buf, (THINK_END, CALL_START) if self.schemas else (THINK_END,))
                     if len(self.buf) > keep:
-                        out.append(Event("reasoning", self.buf[:len(self.buf) - keep]))
+                        out.append(Event("reasoning", self._track(self.buf[:len(self.buf) - keep])))
                         self.buf = self.buf[len(self.buf) - keep:]
                     return out
                 if i:
-                    out.append(Event("reasoning", self.buf[:i]))
+                    out.append(Event("reasoning", self._track(self.buf[:i])))
                 self.buf = self.buf[i + len(THINK_END):]
                 self.state, self.lead = "content", True
+                self.fence, self.line, self.ticks = "", "", 0     # the answer's own text starts here
             elif self.state == "content":
                 if self.lead:                                   # newlines right after </think> or a call
                     stripped = self.buf.lstrip("\n")
@@ -789,15 +867,25 @@ class OutputParser:
                     while j > 0 and self.buf[j - 1] == "\n":
                         j -= 1
                     if j > 0:
-                        out.append(Event("content", self.buf[:j]))
+                        out.append(Event("content", self._track(self.buf[:j])))
                         self.buf = self.buf[j:]
                     return out
+                # #1058: an opener inside a code fence or inline code is text (a quoted example), never a call.  The
+                # text before it decides, so streamed and whole outputs agree.  Mid-sentence openers still count.
+                snap = (self.fence, self.line, self.ticks)
+                self._track(self.buf[:i])
+                in_code = self._in_code()
+                self.fence, self.line, self.ticks = snap
+                if in_code:
+                    out.append(Event("content", self._track(self.buf[:i + len(CALL_START)])))
+                    self.buf = self.buf[i + len(CALL_START):]
+                    continue
                 # A call is `<tool_call>` and then (after whitespace) `<function=`; the tag with anything else after
                 # it is prose that names the format ("I'll use a <tool_call> block") - content, not a malformed call
                 # that ends the request.  Until its follower has arrived it is held, like a partial tag.
                 after = self.buf[i + len(CALL_START):].lstrip()
                 if after and not after.startswith(FUNC_START) and not FUNC_START.startswith(after):
-                    out.append(Event("content", self.buf[:i + len(CALL_START)]))
+                    out.append(Event("content", self._track(self.buf[:i + len(CALL_START)])))
                     self.buf = self.buf[i + len(CALL_START):]
                     continue
                 if not after.startswith(FUNC_START):
@@ -805,11 +893,11 @@ class OutputParser:
                     while j > 0 and self.buf[j - 1] == "\n":
                         j -= 1
                     if j > 0:
-                        out.append(Event("content", self.buf[:j]))
+                        out.append(Event("content", self._track(self.buf[:j])))
                         self.buf = self.buf[j:]
                     return out
                 if i and self.buf[:i].strip():
-                    out.append(Event("content", self.buf[:i].rstrip("\n")))
+                    out.append(Event("content", self._track(self.buf[:i].rstrip("\n"))))
                 self.buf = self.buf[i + len(CALL_START):]
                 self.state = "call"
             else:
@@ -834,10 +922,14 @@ class OutputParser:
                 self._reset_scan()
                 self.state, self.lead = "content", True
 
-    def finish(self) -> list[Event]:
+    def finish(self, reason: str | None = None) -> list[Event]:
         """End of generation: flush whatever is held (an unterminated tool call is returned as content; one that was
-        already announced stays unfinished: its JSON is not closed and no "tool_call" follows it, #211)."""
+        already announced stays unfinished: its JSON is not closed and no "tool_call" follows it, #211).  `reason` is
+        how the turn ended: calls waiting from the reasoning become real calls only on a natural stop (None = stop);
+        a turn cut by max tokens (or cancelled, or failed) keeps them as reasoning text (#1058)."""
         out = []
+        if self.pending:
+            out += self._release(reason in (None, "stop") and self.state == "reasoning" and not self.buf)
         if self.state == "call" and self.stream_tools and self.scall is not None:
             out += self._scan()                 # the output ended inside a call that was already announced
             if self.ss == "done":               # only its </tool_call> is missing: the call itself is whole
