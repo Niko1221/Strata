@@ -1,0 +1,9 @@
+Traceback (most recent call last):
+  File "/home/gpf/code/Strata/bench/results/2026-10-05-community-rx-6700-xt/benchmark.py", line 135, in <module>
+    main()
+  File "/home/gpf/code/Strata/bench/results/2026-10-05-community-rx-6700-xt/benchmark.py", line 29, in main
+    from strata_tokenizer import Tokenizer
+  File "/home/gpf/code/Strata/tools/strata_tokenizer.py", line 22, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+benchmark exit 1
