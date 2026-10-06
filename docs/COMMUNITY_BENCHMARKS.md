@@ -21,6 +21,11 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-04: 2x Intel Arc Pro B60 24 GB, Ryzen 5 5600, 64 GB RAM](../bench/results/2026-10-04-community-2x-arc-pro-b60/README.md):
   the SYCL port at `6f32ec0` with two fixes, Coder IQ1_M and Flash-Next IQ2_XS, 8,192-token context, layer split across both cards;
   short prompts and 2K-token prompts, plus one run on a single B60. Intel's SYCL engine, no 4,096/32,768/128,000-token sweep.
+- [2026-10-06: 2x AMD Radeon RX 6900 XT 16 GB (gfx1030), Ryzen 5 5600X, 128 GB RAM](../bench/results/2026-10-06-community-2x-rx-6900xt-0.1.40.1/README.md):
+  Strata 0.1.40.1 stock, with its two gfx103x switches (`STRATA_HIP_PROMPT_F16=1 STRATA_SH_STREAM=1`) and with #1150,
+  #1151 and #1167 on top, original Flash-Next IQ3_S, 131,072-token context, adaptive swaps on; one card, a layer split
+  and the expert-helper mode (nine configurations); three runs each at 4,096, 32,768 and 128,000 prompt tokens, six
+  recall checks per configuration, and the two-card stall at GFXOFF's default (#884).
 
 ## What to record
 

@@ -1,0 +1,25 @@
+start warmup tokens None
+done warmup {"ttft_s": 0.3984062929812353, "elapsed_s": 0.4868990939867217, "engine": {"projection": null, "time": 1791315027.149181, "duration_s": 0.5, "finish": "stop", "prompt_tokens": 19, "reused": 0, "output_tokens": 2, "prompt_total": 19, "prompt_read": 19, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 2, "prompt_ms": 358.7, "decode_ms": 125.5, "decode_tok_s": 15.9, "hit_rate": 0.593, "pcie_share": 0.14, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0.0, "drafts_offered": 3, "drafts_accepted": 3}}
+start tokens-4096-run-1 tokens 4096
+done tokens-4096-run-1 {"ttft_s": 9.331624354002997, "elapsed_s": 13.444819514988922, "engine": {"projection": null, "time": 1791315028.230989, "duration_s": 13.4, "finish": "length", "prompt_tokens": 4096, "reused": 0, "output_tokens": 256, "prompt_total": 4096, "prompt_read": 4096, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 256, "prompt_ms": 9296.4, "decode_ms": 4139.7, "decode_tok_s": 61.8, "hit_rate": 0.91, "pcie_share": 0.023, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0.0, "drafts_offered": 223, "drafts_accepted": 159}}
+start tokens-4096-run-2 tokens 4096
+done tokens-4096-run-2 {"ttft_s": 9.18336162599735, "elapsed_s": 13.280891471978975, "engine": {"projection": null, "time": 1791315042.2576492, "duration_s": 13.3, "finish": "length", "prompt_tokens": 4096, "reused": 0, "output_tokens": 256, "prompt_total": 4096, "prompt_read": 4096, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 256, "prompt_ms": 9149.3, "decode_ms": 4122.8, "decode_tok_s": 62.1, "hit_rate": 0.967, "pcie_share": 0.005, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0.0, "drafts_offered": 237, "drafts_accepted": 145}}
+start tokens-4096-run-3 tokens 4096
+done tokens-4096-run-3 {"ttft_s": 9.1922303000174, "elapsed_s": 12.81536040600622, "engine": {"projection": null, "time": 1791315056.125882, "duration_s": 12.8, "finish": "length", "prompt_tokens": 4096, "reused": 0, "output_tokens": 256, "prompt_total": 4096, "prompt_read": 4096, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 256, "prompt_ms": 9158.6, "decode_ms": 3648.3, "decode_tok_s": 70.2, "hit_rate": 0.973, "pcie_share": 0.004, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0.0, "drafts_offered": 224, "drafts_accepted": 159}}
+start tokens-32768-run-1 tokens 32768
+done tokens-32768-run-1 {"ttft_s": 45.2461086550029, "elapsed_s": 48.90889175099437, "engine": {"projection": null, "time": 1791315070.0770745, "duration_s": 48.9, "finish": "length", "prompt_tokens": 32768, "reused": 0, "output_tokens": 256, "prompt_total": 32768, "prompt_read": 32768, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 256, "prompt_ms": 45174.8, "decode_ms": 3688.3, "decode_tok_s": 69.4, "hit_rate": 0.971, "pcie_share": 0.005, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0.0, "drafts_offered": 218, "drafts_accepted": 163}}
+start tokens-32768-run-2 tokens 32768
+done tokens-32768-run-2 {"ttft_s": 45.37497313300264, "elapsed_s": 49.54193782902439, "engine": {"projection": null, "time": 1791315120.0855982, "duration_s": 49.5, "finish": "length", "prompt_tokens": 32768, "reused": 0, "output_tokens": 256, "prompt_total": 32768, "prompt_read": 32768, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 256, "prompt_ms": 45303.9, "decode_ms": 4192.5, "decode_tok_s": 61.1, "hit_rate": 0.974, "pcie_share": 0.003, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0.0, "drafts_offered": 224, "drafts_accepted": 145}}
+start tokens-32768-run-3 tokens 32768
+done tokens-32768-run-3 {"ttft_s": 45.42450287099928, "elapsed_s": 49.22164114401676, "engine": {"projection": null, "time": 1791315170.7289646, "duration_s": 49.2, "finish": "length", "prompt_tokens": 32768, "reused": 0, "output_tokens": 256, "prompt_total": 32768, "prompt_read": 32768, "reasoning_recoveries": 0, "reasoning_repeat_coverage": 0.0, "engine_generated": 256, "prompt_ms": 45353.6, "decode_ms": 3822.5, "decode_tok_s": 67.0, "hit_rate": 0.977, "pcie_share": 0.003, "ram_blobs": 0, "file_blobs": 0, "file_mb": 0.0, "drafts_offered": 207, "drafts_accepted": 154}}
+start tokens-128000-run-1 tokens 128000
+Traceback (most recent call last):
+  File "/results/benchmark.py", line 135, in <module>
+    main()
+    ~~~~^^
+  File "/results/benchmark.py", line 114, in main
+    perform(f"tokens-{target}-run-{run}", req, actual)
+    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/results/benchmark.py", line 87, in perform
+    raise RuntimeError(f"no text received for {label}")
+RuntimeError: no text received for tokens-128000-run-1
