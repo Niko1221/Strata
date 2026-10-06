@@ -79,6 +79,33 @@ class Refresh(unittest.TestCase):
         self.assertEqual(len(set(fr)), len(fr))
         self.assertEqual(fr[len(en):], sorted(fr[len(en):]))
 
+    def test_es_replaces_a_shipped_subset_and_back(self):
+        data = ROOT / "data"
+        if not (data / setup.DRAFT_VOCABS["es"]).exists():
+            self.skipTest("data/draft_vocab_es.bin is not in this checkout")
+        sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()   # noqa: E731
+        with tempfile.TemporaryDirectory() as d:
+            rt = Path(d)
+            (rt / "draft_vocab.bin").write_bytes((data / setup.DRAFT_VOCABS["en"]).read_bytes())
+            setup.refresh_draft_vocab(rt, "es")
+            self.assertEqual(sha(rt / "draft_vocab.bin"), sha(data / setup.DRAFT_VOCABS["es"]))
+            setup.refresh_draft_vocab(rt, "cjk")
+            self.assertEqual(sha(rt / "draft_vocab.bin"), sha(data / setup.DRAFT_VOCABS["cjk"]))
+            (rt / "draft_vocab.bin").write_bytes(bytes([1, 0, 0, 0]))   # made by hand: kept
+            setup.refresh_draft_vocab(rt, "es")
+            self.assertEqual((rt / "draft_vocab.bin").read_bytes(), bytes([1, 0, 0, 0]))
+
+    def test_es_holds_the_en_subset_in_its_order(self):
+        from array import array
+        data = ROOT / "data"
+        if not (data / setup.DRAFT_VOCABS["es"]).exists():
+            self.skipTest("data/draft_vocab_es.bin is not in this checkout")
+        en = list(array("i", (data / setup.DRAFT_VOCABS["en"]).read_bytes()))
+        es = list(array("i", (data / setup.DRAFT_VOCABS["es"]).read_bytes()))
+        self.assertEqual(es[:len(en)], en)
+        self.assertEqual(len(set(es)), len(es))
+        self.assertEqual(es[len(en):], sorted(es[len(en):]))
+
 
 class SmallCardNote(unittest.TestCase):
     """#474: a card under 14 GB is told about a smaller draft subset - a note only, and not when one was chosen."""
@@ -100,7 +127,7 @@ class SmallCardNote(unittest.TestCase):
             if not p.exists():
                 self.skipTest(f"data/{name} is not in this checkout")
             sizes[choice] = p.stat().st_size // 4
-        for choice in ("en", "cyrillic", "fr"):
+        for choice in ("en", "cyrillic", "fr", "es"):
             want = setup.DRAFT_VOCAB_MIB["cjk"] * sizes[choice] / sizes["cjk"]
             self.assertAlmostEqual(setup.DRAFT_VOCAB_MIB[choice], want, delta=3)
 
