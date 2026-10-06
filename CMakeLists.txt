@@ -594,6 +594,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_include_directories(hip_prefill_wmma_gemm_parity PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/prefill")
     target_link_libraries(hip_prefill_wmma_gemm_parity PRIVATE strata_prefill strata_hip_runtime)
     add_test(NAME hip_prefill_wmma_gemm_parity COMMAND hip_prefill_wmma_gemm_parity)
+    set_tests_properties(hip_prefill_wmma_gemm_parity PROPERTIES SKIP_RETURN_CODE 77)   # no matrix cores: skipped
     list(APPEND _strata_hip_tests hip_prefill_wmma_gemm_parity)
     # S (STRATA_HCD_EXACT): the exact HC down kernel against hipBLASLt solution 1176 / 1177 (needs STRATA_HIPBLASLT_TUNING; exit 77 else)
     add_executable(hip_prefill_hcd_exact_parity tests/hip/prefill_hcd_exact_parity.cpp)
