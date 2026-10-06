@@ -334,6 +334,11 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
                           src/ngram/ple_reader.cpp
                           src/platform/direct_file.cpp)
   target_link_libraries(strata_kernels PUBLIC strata_core strata_artifact)
+  if(STRATA_ENABLE_HIP AND STRATA_ROCBLAS_AVAILABLE)
+    # the QSA block scores as rocBLAS SGEMMs on HIP cards without matrix cores (opt-in STRATA_SELECT_SGEMM=1)
+    target_compile_definitions(strata_kernels PRIVATE STRATA_ROCBLAS_AVAILABLE=1)
+    target_link_libraries(strata_kernels PRIVATE roc::rocblas)
+  endif()
   # perf-review D-1: the tensor-core prompt attention vs the FP32 kernel and FP64 (GPU, synthetic, no model); with
   # the tests, or alone with -DSTRATA_PARITY_PROMPT_ATTN=ON.  CUDA only: HIP compiles the tensor-core kernel out.
   if((STRATA_BUILD_TESTS OR STRATA_PARITY_PROMPT_ATTN) AND STRATA_ENABLE_CUDA)

@@ -10,6 +10,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#if defined(__HIPCC__) && defined(STRATA_ROCBLAS_AVAILABLE)
+#define ROCBLAS_BETA_FEATURES_API   // rocblas_gemm_ex_get_solutions: the per-device measurement of the scorer's GEMM
+#include <rocblas/rocblas.h>        // the block scores as rocBLAS SGEMMs on cards without matrix cores
+#include <vector>
+#include <algorithm>
+#endif
 
 namespace strata::kernels {
 namespace {
@@ -1012,11 +1018,205 @@ void qsa_block_scores(const float* pooled, const float* dead, const float* q_idx
     if (e != cudaSuccess) { std::fprintf(stderr, "qsa_block_scores: %s\n", cudaGetErrorString(e)); std::exit(1); }
 }
 
+#if defined(__HIPCC__) && defined(STRATA_ROCBLAS_AVAILABLE)
+// HIP, opt-in STRATA_SELECT_SGEMM=1: the block scores of a batch of queries as four rocBLAS SGEMMs, one per
+// indexer head - C[reach x nq] = pooled[reach x 128] . q_h^T - each followed by a relu-and-add into `scores`; the tail
+// block n_bid is scored by block_scores_tail_kernel as the tensor-core paths do.  The same GEMM the CUDA 3xTF32 scorer
+// runs, in FP32 with rocBLAS's summation order: FP32-level, not bitwise the warp kernel (its class of accuracy).  On
+// gfx1030 the warp kernel runs one warp per (query, block) at under 1% of the card's FP32 rate: 750 ms per 8K chunk
+// at a 128K context; rocBLAS's SGEMM is one of the four GEMM kinds the library tunes for that card.
+namespace {
+__global__ void sel_relu_add_kernel(const float* __restrict__ tmp, int64_t reach, int64_t nq, int64_t max_blocks,
+                                    bool first, float* __restrict__ out) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= nq * reach) return;
+    const int64_t q = i / reach, b = i - q * reach;
+    const float v = tmp[q * reach + b];
+    const float r = v > 0.0f ? v : 0.0f;
+    float* o = out + q * max_blocks + b;
+    *o = first ? r : *o + r;
+}
+struct SelSgemm {
+    rocblas_handle handle = nullptr;
+    float* tmp = nullptr;
+    size_t tmp_elems = 0;
+    bool failed = false;
+    int32_t sol[32] = {};       // per reach bucket (2^i): the solution measured fastest, 0 = rocBLAS's choice
+    int sol_nq[32] = {};        // the batch size it was measured at. A smaller batch (a chunk's last, partial one) reuses
+                                // it: measured within 1.3x of that batch's own best and a quarter of rocBLAS's choice
+                                // (measured on gfx1030); a larger batch measures again
+    int pre_nq = 0;             // the largest batch size every reach bucket up to the capacity was measured at
+};
+SelSgemm& sel_sgemm(int dev) { static SelSgemm st[64]; return st[dev]; }
+
+// rocBLAS's own choice for this skinny shape (reach x 256, K = 128) runs at ~1.4 TFLOPS on gfx1030 while the best of
+// its own solutions runs at ~20; the ids are a property of the library build, so they are measured here, once
+// per device and reach bucket, on the first call: every listed solution timed once, the eight fastest three times,
+// the fastest kept (always a listed one, see below) (~0.1-0.3 s per bucket at reach 16K-64K, a few ms below).  STRATA_SELECT_SGEMM_TUNE=0 keeps
+// rocBLAS's choice.
+static int32_t sel_sgemm_solution(SelSgemm& st, int bucket, const float* pooled, const float* q_idx, int reach, int nq,
+                                  cudaStream_t stream) {
+    if (bucket < 0 || bucket >= 32) return 0;
+    if (st.sol_nq[bucket] >= nq) return st.sol[bucket];
+    st.sol_nq[bucket] = nq;
+    static const bool tune = [] { const char* v = std::getenv("STRATA_SELECT_SGEMM_TUNE"); return !(v && v[0] == '0'); }();
+    if (!tune) return 0;
+    const float one = 1.0f, zero = 0.0f;
+    auto run = [&](rocblas_gemm_algo algo, int32_t sol) {
+        return rocblas_gemm_ex(st.handle, rocblas_operation_transpose, rocblas_operation_none, reach, nq, IDX_DIM, &one,
+                               pooled, rocblas_datatype_f32_r, IDX_DIM, q_idx, rocblas_datatype_f32_r, IDX_HEADS * IDX_DIM,
+                               &zero, st.tmp, rocblas_datatype_f32_r, reach, st.tmp, rocblas_datatype_f32_r, reach,
+                               rocblas_datatype_f32_r, algo, sol, 0);
+    };
+    rocblas_int count = 0;
+    if (rocblas_gemm_ex_get_solutions(st.handle, rocblas_operation_transpose, rocblas_operation_none, reach, nq, IDX_DIM,
+                                      &one, pooled, rocblas_datatype_f32_r, IDX_DIM, q_idx, rocblas_datatype_f32_r,
+                                      IDX_HEADS * IDX_DIM, &zero, st.tmp, rocblas_datatype_f32_r, reach, st.tmp,
+                                      rocblas_datatype_f32_r, reach, rocblas_datatype_f32_r,
+                                      rocblas_gemm_algo_solution_index, 0, nullptr, &count) != rocblas_status_success ||
+        count <= 0)
+        return 0;
+    std::vector<rocblas_int> ids((size_t) count);
+    if (rocblas_gemm_ex_get_solutions(st.handle, rocblas_operation_transpose, rocblas_operation_none, reach, nq, IDX_DIM,
+                                      &one, pooled, rocblas_datatype_f32_r, IDX_DIM, q_idx, rocblas_datatype_f32_r,
+                                      IDX_HEADS * IDX_DIM, &zero, st.tmp, rocblas_datatype_f32_r, reach, st.tmp,
+                                      rocblas_datatype_f32_r, reach, rocblas_datatype_f32_r,
+                                      rocblas_gemm_algo_solution_index, 0, ids.data(), &count) != rocblas_status_success)
+        return 0;
+    cudaEvent_t e0, e1;
+    cudaEventCreate(&e0); cudaEventCreate(&e1);
+    auto time_ms = [&](rocblas_gemm_algo algo, int32_t sol, int reps, float& ms) {
+        if (run(algo, sol) != rocblas_status_success) return false;   // warm, and the library loads its kernels
+        cudaEventRecord(e0, stream);
+        for (int i = 0; i < reps; ++i) if (run(algo, sol) != rocblas_status_success) return false;
+        cudaEventRecord(e1, stream);
+        if (cudaEventSynchronize(e1) != cudaSuccess) return false;
+        cudaEventElapsedTime(&ms, e0, e1);
+        ms /= (float) reps;
+        return true;
+    };
+    float default_ms = 0;
+    if (!time_ms(rocblas_gemm_algo_standard, 0, 3, default_ms)) { cudaEventDestroy(e0); cudaEventDestroy(e1); return 0; }
+    // two passes: every solution once, then the eight fastest of that order three times each (one timing is noisy
+    // between neighbours, not between a 0.1 ms and a 1.5 ms kernel)
+    std::vector<std::pair<float, int32_t>> once;
+    once.reserve(ids.size());
+    for (rocblas_int id : ids) {
+        float ms = 0;
+        if (time_ms(rocblas_gemm_algo_solution_index, id, 1, ms)) once.emplace_back(ms, id);
+    }
+    std::sort(once.begin(), once.end());
+    // always a listed solution, not rocBLAS's own choice when that happens to be close: a solution's time is a
+    // property of one kernel and falls with the reach, while the heuristic's choice changes with the exact shape
+    // (reach 65,536: 0.22 ms; reach 32,769, the same bucket: 1.6 ms on gfx1030), so a measurement at the bucket's top
+    // says nothing about it elsewhere in the bucket. It is the fallback for a shape the solution refuses.
+    float best_ms = 0; int32_t best = 0;
+    for (size_t i = 0; i < once.size() && i < 8; ++i) {
+        float ms = 0;
+        if (time_ms(rocblas_gemm_algo_solution_index, once[i].second, 3, ms) && (best == 0 || ms < best_ms)) {
+            best_ms = ms; best = once[i].second;
+        }
+    }
+    if (best == 0) best_ms = default_ms;
+    cudaEventDestroy(e0); cudaEventDestroy(e1);
+    cudaGetLastError();   // a refused solution leaves no error worth keeping
+    if (std::getenv("STRATA_SELECT_SGEMM_VERBOSE"))
+        std::fprintf(stderr, "qsa select: SGEMM reach<=%d x %d: rocBLAS default %.3f ms, solution %d %.3f ms (%d solutions)\n",
+                     1 << bucket, nq, default_ms, best, best_ms, (int) count);
+    st.sol[bucket] = best;
+    return best;
+}
+}  // namespace
+
+static bool qsa_block_scores_sgemm(const float* pooled, const float* dead, const float* q_idx, const int32_t* steps,
+                                   int64_t nq, int64_t max_blocks, int64_t reach, float* scores, void* stream) {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_SELECT_SGEMM");
+        return v != nullptr && v[0] != '\0' && v[0] != '0';
+    }();
+    if (!on || reach <= 0 || reach > INT32_MAX || nq > INT32_MAX) return false;
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return false; }
+    SelSgemm& st = sel_sgemm(dev);
+    if (st.failed) return false;
+    if (!st.handle && rocblas_create_handle(&st.handle) != rocblas_status_success) {
+        std::fprintf(stderr, "qsa select: rocBLAS handle creation failed; the warp kernel scores\n");
+        st.failed = true;
+        return false;
+    }
+    const size_t need = (size_t) nq * (size_t) (max_blocks > reach ? max_blocks : reach);   // room for the pre-measurement too
+    if (st.tmp_elems < need) {
+        if (st.tmp) cudaFree(st.tmp);
+        st.tmp = nullptr; st.tmp_elems = 0;
+        if (cudaMalloc(&st.tmp, need * sizeof(float)) != cudaSuccess) {
+            cudaGetLastError();
+            std::fprintf(stderr, "qsa select: no VRAM for the SGEMM scores (%zu MiB); the warp kernel scores\n",
+                         need * sizeof(float) >> 20);
+            st.failed = true;
+            return false;
+        }
+        st.tmp_elems = need;
+    }
+    rocblas_set_stream(st.handle, (hipStream_t) stream);
+    const float one = 1.0f, zero = 0.0f;
+    int bucket = 0;
+    while ((1LL << bucket) < reach && bucket < 31) ++bucket;
+    {   // the first call (and a later one with a larger batch) measures every reach bucket up to the capacity at once,
+        // once per engine start and card, so no later prompt pays the measurement inside its own chunk
+        if (st.pre_nq < nq) {
+            st.pre_nq = (int) nq;
+            int cap_bucket = 0;
+            while ((1LL << cap_bucket) < max_blocks && cap_bucket < 31) ++cap_bucket;
+            for (int b = 7; b <= cap_bucket; ++b) {
+                const int r = (int) std::min<int64_t>(1LL << b, max_blocks);
+                (void) sel_sgemm_solution(st, b, pooled, q_idx, r, (int) nq, (cudaStream_t) stream);
+            }
+        }
+    }
+    const int32_t sol = sel_sgemm_solution(st, bucket, pooled, q_idx, (int) reach, (int) nq, (cudaStream_t) stream);
+    for (int h = 0; h < IDX_HEADS; ++h) {
+        // column-major: A = pooled seen as [128 x reach] (lda 128), transposed; B = q_idx's head h seen as
+        // [128 x nq] (ldb 512); C[reach x nq] (ldc reach): C(b, q) = sum_k pooled[b][k] * q_idx[q][h][k]
+        rocblas_status rs = rocblas_gemm_ex(st.handle, rocblas_operation_transpose, rocblas_operation_none, (int) reach,
+                                            (int) nq, IDX_DIM, &one, pooled, rocblas_datatype_f32_r, IDX_DIM,
+                                            q_idx + h * IDX_DIM, rocblas_datatype_f32_r, IDX_HEADS * IDX_DIM, &zero,
+                                            st.tmp, rocblas_datatype_f32_r, (int) reach, st.tmp, rocblas_datatype_f32_r,
+                                            (int) reach, rocblas_datatype_f32_r,
+                                            sol ? rocblas_gemm_algo_solution_index : rocblas_gemm_algo_standard, sol, 0);
+        if (rs != rocblas_status_success && sol) {   // the measured solution refuses this exact shape: rocBLAS's choice
+            rs = rocblas_gemm_ex(st.handle, rocblas_operation_transpose, rocblas_operation_none, (int) reach, (int) nq,
+                                 IDX_DIM, &one, pooled, rocblas_datatype_f32_r, IDX_DIM, q_idx + h * IDX_DIM,
+                                 rocblas_datatype_f32_r, IDX_HEADS * IDX_DIM, &zero, st.tmp, rocblas_datatype_f32_r,
+                                 (int) reach, st.tmp, rocblas_datatype_f32_r, (int) reach, rocblas_datatype_f32_r,
+                                 rocblas_gemm_algo_standard, 0, 0);
+        }
+        if (rs != rocblas_status_success) {
+            std::fprintf(stderr, "qsa select: rocblas_sgemm failed (status %d); the warp kernel scores\n", (int) rs);
+            st.failed = true;
+            return false;
+        }
+        const int64_t n = nq * reach;
+        sel_relu_add_kernel<<<(unsigned) ((n + 255) / 256), 256, 0, (cudaStream_t) stream>>>(st.tmp, reach, nq, max_blocks,
+                                                                                               h == 0, scores);
+    }
+    block_scores_tail_kernel<<<(unsigned) nq, 32, 0, (cudaStream_t) stream>>>(dead, q_idx, steps, max_blocks, scores);
+    const cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) { std::fprintf(stderr, "qsa_block_scores_sgemm: %s\n", cudaGetErrorString(e)); std::exit(1); }
+    return true;
+}
+#endif
+
 bool qsa_block_scores_tc(const float* pooled, const float* dead, const float* q_idx, const int32_t* steps, int64_t nq,
                          int64_t max_blocks, const QsaShapes& s, float* scores, void* stream, int64_t active_blocks) {
     if (nq <= 0) return true;
     if (s.idx_dim != IDX_DIM || s.idx_n_head != IDX_HEADS || s.idx_block != R || nq > 65535 * TC_QT) return false;
 #if defined(__HIPCC__)
+#if defined(STRATA_ROCBLAS_AVAILABLE)
+    {   // rocBLAS SGEMM scores (opt-in) on any HIP card; the gfx12 WMMA scorer below stays as it was
+        const int64_t reach_sg = active_blocks > 0 && active_blocks < max_blocks ? active_blocks : max_blocks;
+        if (qsa_block_scores_sgemm(pooled, dead, q_idx, steps, nq, max_blocks, reach_sg, scores, stream)) return true;
+    }
+#endif
     // AMD: the gfx12 (RDNA4) WMMA scorer, opt-in (STRATA_SELECT_WMMA=1): it selects slightly differently from the warp
     // kernel (254/256 queries the same), so the default keeps the warp kernel; every other target keeps it too (false)
     static const bool wmma_on = [] {

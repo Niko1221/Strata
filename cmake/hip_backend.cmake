@@ -50,6 +50,9 @@ set(STRATA_HIP_BLAS_TARGETS roc::hipblas)
 if(hipblas_VERSION VERSION_LESS "1.0")
   find_package(rocblas CONFIG REQUIRED)
   list(APPEND STRATA_HIP_BLAS_TARGETS roc::rocblas)
+else()
+  # the QSA block scores on rocBLAS SGEMM (cards without matrix cores) call rocBLAS by name
+  find_package(rocblas CONFIG QUIET)
 endif()
 find_package(hipblaslt CONFIG QUIET)
 
@@ -64,6 +67,12 @@ if(TARGET roc::hipblaslt)
 else()
   set(STRATA_HIPBLASLT_AVAILABLE OFF)
   message(STATUS "Strata: hipBLASLt not found; solution-table dispatch is unavailable")
+endif()
+if(TARGET roc::rocblas)
+  set(STRATA_ROCBLAS_AVAILABLE ON)
+else()
+  set(STRATA_ROCBLAS_AVAILABLE OFF)
+  message(STATUS "Strata: rocBLAS CMake package not found; the SGEMM block scorer is unavailable")
 endif()
 
 # HIP's link step produces a PIE; make Strata and ggml objects PIC for the ROCm linker.
