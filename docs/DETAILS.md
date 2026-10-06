@@ -101,6 +101,20 @@ answer after a start differ from the next ones. Measured here (IQ3_XXS, a 3.6K-t
 three switches 1 answer of 4, without `--pcie-frac 0` 2 of 4 (the first one differs), with the defaults 2 of 4.
 `--pcie-frac 0` costs decode speed (the missed experts all run on the CPU), so keep it for A/B runs.
 
+**Coupled drafts with Gumbel-max picks (opt-in, `STRATA_SPEC_COUPLED=1` and `STRATA_SPEC_GUMBEL=1`):** for a request
+that samples (temperature above 0), `STRATA_SPEC_COUPLED=1` lets the draft layer sample its guesses with the target's own
+chain and random draw instead of taking its most likely token. `STRATA_SPEC_GUMBEL=1` changes how both of them pick from
+that chain: the token with the largest p / E, where E is exponential noise keyed by the seed, the position and the token
+id (the Gumbel-max trick; it is still an exact sample of the same distribution). With the default pick, one random number
+walked over the candidates sorted by probability, a draft and a target whose candidate lists differ in one token tend to
+land on different tokens; with noise keyed by the token, a token gets the same noise on both sides, so they agree on the
+tokens they share. Greedy requests are unchanged, and without the variables nothing changes. Measured on a Ryzen AI
+Max+ 395 (Radeon 8060S, Linux, ROCm 7.14.1, the iGPU alone), UD-Q4_K_XL, `--spec 4 --mtp` (the base model's draft
+layer), temperature 1.0 / top_p 0.95 / top_k 20, a 1.3K-token prompt and 512 output tokens, 12-13 requests per arm:
+drafts accepted 52.8% -> 59.9%, tokens per verify window 2.65 -> 2.88, output 41.1 -> 44.9 tokens/s (+9%); a window
+costs the same (draft 8.8 -> 9.1 ms of 64). `sampler_parity` checks the pick against a host reference on every sampled
+path, and that its frequencies match the softmax.
+
 **The draft layer's tokens (0.1.27, `--draft-vocab`):** the MTP draft layer can only propose tokens from a subset
 of the vocabulary (`mtp/rt/draft_vocab.bin`). Since 0.1.27 the subset includes every Chinese, Japanese and Korean
 token (106,299 ids), so answers in those languages are 15-38% faster (Q2_0, RTX 5070). Its head takes ~180 MiB of

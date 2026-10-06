@@ -11,6 +11,11 @@
 // the two inverse-CDF picks from one uniform agree far more often than an argmax agrees with a sample; the target's
 // pick - and so the text - does not change, because verification is still exact-match against the target's sample.
 //
+// STRATA_SPEC_GUMBEL=1 (opt-in) replaces the inverse-CDF pick on BOTH sides with a Gumbel-max pick: argmax p_i / E_i,
+// E_i ~ Exp(1) keyed by (seed, counter, token id) (sampler.cu `gumbel_exp`).  A token then gets the same noise in the
+// draft's and the target's draw whichever other tokens survived either cut, so they agree on the tokens they share;
+// with one uniform over two probability-sorted lists, a one-token difference in the lists shifts every later pick.
+//
 // THE COUNTER ARITHMETIC (all positions are sequence indices; a window's row t holds the token at pos0 + t and its
 // pick is the token at pos0 + t + 1, drawn with counter pos0 + t):
 //   * MTP cell c pairs the main model's residual at position c with the token at c + 1 and predicts the token at
