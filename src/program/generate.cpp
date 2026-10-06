@@ -742,8 +742,9 @@ void usage() {
                  "  --batch N / --slots N  --serve (opt-in): up to N requests decode together in batch slots (2..8\n"
                  "                       normally; --batch-mtp waves more through eight-row windows),\n"
                  "                       each slot with its own session (VRAM like the main one); docs/BATCHING.md\n"
-                 "  --batch-mtp          --batch (opt-in, one GPU, needs --mtp and --spec): each slot also verifies one MTP\n"
-                 "                       proposal per window (STRATA_BATCH_MTP=1 does the same); needs VRAM per slot\n"
+                 "  --batch-mtp          --batch (opt-in, needs --mtp and --spec): each slot also verifies one MTP proposal per\n"
+                 "                       window (STRATA_BATCH_MTP=1 does the same); works on one GPU and on a layer split (the\n"
+                 "                       slot drafters sit on the last stage's GPU; not with --batch-groups); needs VRAM per slot\n"
                  "  --batch-groups G     --batch with a layer split: the slots in G groups pipelined through the GPUs\n"
                  "  --pipeline-windows N --serve with a layer split on two GPUs (opt-in): one conversation's verify windows\n"
                  "                       with the GPUs overlapped - 1 = the prompt's short reads, 2 = decode as well\n"
@@ -3866,12 +3867,17 @@ int main(int argc, char** argv) {
     // engine still starts and serves one request at a time.
     // --batch-mtp / STRATA_BATCH_MTP=1 (opt-in): a slot also verifies one MTP proposal per window.  Recommend, never
     // force: when it cannot run it is said and left off (plain batching still starts); default off = exactly 0.1.39.
+    // With a layer split the slots' drafters live on the LAST stage's GPU (where the solo drafter, the head and the final
+    // residual rows are); the windows are the ones --batch runs, two rows per slot, through every stage.
     const char* batch_mtp_env = std::getenv("STRATA_BATCH_MTP");
     bool batch_mtp = o.batch_mtp || (batch_mtp_env != nullptr && batch_mtp_env[0] != '\0' && batch_mtp_env[0] != '0');
     if (batch_mtp) {
+        // (--pipeline-windows is already off with --batch slots)
         const char* why = o.batch < 2 ? "it needs --batch 2 or more" : o.mtp.empty() ? "it needs --mtp"
-                        : o.spec < 2 ? "it needs --spec T (T >= 2)" : (multi_gpu || split_same || !stages.empty())
-                        ? "it is for one GPU (no layer split or helper) for now" : !o.serve ? "it needs --serve" : nullptr;
+                        : o.spec < 2 ? "it needs --spec T (T >= 2)" : split_same
+                        ? "it needs each stage of a layer split on its own GPU" : (o.batch_groups > 1 && !stages.empty())
+                        ? "it does not combine with --batch-groups (pipelined slot groups) yet"
+                        : !o.serve ? "it needs --serve" : nullptr;
         if (why != nullptr) {
             std::fprintf(stderr, "strata generate: WARNING: --batch-mtp is off: %s\n", why);
             batch_mtp = false;
@@ -3989,9 +3995,13 @@ int main(int argc, char** argv) {
         if (!o.mtp.empty() && !mtp.load(o.mtp, draft_geometry, last_st ? last_st->ss : ss, mtp_t, err, o.mtp_window)) { std::fprintf(stderr, "strata generate: %s%s\n", err.c_str(), vram_free_note().c_str()); return 1; }
         mtp.set_ple_session(&ss);
         if (batch_mtp) {
+            // Slot b's drafter lives where the solo drafter does (the guard above: the last stage's GPU), carved from the
+            // LAST stage's slot-b session (bslot_ss.back(): stage 0's on one GPU): it borrows that session's context
+            // length and RoPE table, which are on that device.  Its PLE history is the first stage's slot session: PLE
+            // runs on the first stage, as for the solo drafter (`mtp.set_ple_session(&ss)` above).
             for (int b = 0; b < o.batch; ++b) {
                 auto d = std::make_unique<strata::core::MtpDrafter>();
-                if (!d->load(o.mtp, draft_geometry, *bslot_ss[0][(size_t) b], o.spec, err, o.mtp_window, &mtp)) {
+                if (!d->load(o.mtp, draft_geometry, *bslot_ss.back()[(size_t) b], o.spec, err, o.mtp_window, &mtp)) {
                     std::fprintf(stderr, "strata generate: batch MTP slot %d: %s%s\n", b, err.c_str(),
                                  vram_free_note().c_str());
                     return 1;
@@ -3999,6 +4009,14 @@ int main(int argc, char** argv) {
                 d->set_max_drafts(1);   // the first candidate verifies one proposal per slot
                 d->set_ple_session(bslot_ss[0][(size_t) b].get());
                 slot_mtp.push_back(std::move(d));
+            }
+            if (!slot_mtp.empty()) {
+                size_t fb = 0, tb = 0;
+                cudaMemGetInfo(&fb, &tb);
+                std::fprintf(stderr, "strata generate: --batch-mtp: %d slot drafters on CUDA%d (%.0f MiB of private K/V "
+                                     "state and buffers each, sharing the solo drafter's weights); %.2f GiB free there\n",
+                             (int) slot_mtp.size(), mtp.device(), (double) slot_mtp.front()->vram_bytes() / 1048576.0,
+                             (double) fb / 1073741824.0);
             }
         }
     }
@@ -4335,8 +4353,10 @@ int main(int argc, char** argv) {
         // ~110-180 MiB larger, and out of the reserve they left 16 GB cards below the stall line (#199)
         int64_t mtp_bind = (!o.mtp.empty() && native_head.loaded())
                                ? (int64_t) mtp.bind_bytes(native_head.row_bytes(), n_vocab) : 0;
-        for (const auto& d : slot_mtp)
-            mtp_bind += (int64_t) d->bind_bytes(native_head.row_bytes(), n_vocab);
+        // (with a layer split the slot drafters bind on the last stage, whose cache is sized from what is free there)
+        if (stages.empty())
+            for (const auto& d : slot_mtp)
+                mtp_bind += (int64_t) d->bind_bytes(native_head.row_bytes(), n_vocab);
         const int64_t reserve = (((int64_t) o.vram_reserve_mib + prefill_mib) << 20) + mtp_bind + pipe_first;
         const int64_t blob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
         int64_t slots = ((int64_t) free_b - reserve) / blob;
@@ -6737,7 +6757,11 @@ int main(int argc, char** argv) {
                     vs.slot_off = gs.cache.slot_offsets();
                     vs.n_slots = gs.cache.slots();
                     gs.ver.set_remote_expert_opt(remote_opt.get());
-                    ok_s = gs.ver.init(gs.wt, g, gs.ss, vs, gs.head.loaded() ? &gs.head : nullptr, std::max(o.spec, o.batch), err);
+                    // --batch-mtp: every stage runs the same 2-rows-per-slot windows as the first (up to kVerifyMaxT
+                    // rows, the hand-off's size) and bounds its captured batch layouts like the first (below)
+                    if (batch_mtp) gs.ver.set_batch_graph_limit(64);
+                    ok_s = gs.ver.init(gs.wt, g, gs.ss, vs, gs.head.loaded() ? &gs.head : nullptr,
+                                       batch_mtp ? strata::kernels::kVerifyMaxT : std::max(o.spec, o.batch), err);
                     split_drive.cache_base[st] = gs.cache.device_slot(0);
                     split_drive.cache_slot_off[st] = gs.cache.slot_offsets();
                     split_drive.pcie_num[st] = pcie_num_of(gs.pcie_frac);
@@ -6811,6 +6835,9 @@ int main(int argc, char** argv) {
         auto free_slot_mtp_rows = [](float* p) { if (p != nullptr) (void) cudaFree(p); };
         std::vector<std::unique_ptr<float, decltype(free_slot_mtp_rows)>> slot_mtp_rows;
         if (batch_mtp) {
+            // like the solo drafter's `bind` above: the last stage's weights (embedding) and head, and the residual
+            // buffers on the drafter's device (the last stage's GPU with a layer split)
+            const strata::core::OnDevice on_slot_mtp(mtp.device());
             for (int b = 0; b < o.batch; ++b) {
                 float* r = nullptr;
                 const size_t bytes = (size_t) o.spec * (size_t) g.hc * (size_t) g.n_embd * sizeof(float);
@@ -6820,7 +6847,8 @@ int main(int argc, char** argv) {
                     return 1;
                 }
                 slot_mtp_rows.emplace_back(r, free_slot_mtp_rows);
-                if (!slot_mtp[(size_t) b]->bind(wt, &native_head, r, err, &mtp)) {
+                if (!slot_mtp[(size_t) b]->bind(last_st ? last_st->wt : wt, last_st ? &last_st->head : &native_head, r, err,
+                                                &mtp)) {
                     std::fprintf(stderr, "strata serve: batch MTP slot %d: %s%s\n", b, err.c_str(),
                                  vram_free_note().c_str());
                     return 1;
@@ -8315,7 +8343,10 @@ int main(int argc, char** argv) {
                 if (cudaDeviceSynchronize() != cudaSuccess) { e = "batch admission: device sync failed"; return false; }
             }
             if (batch_mtp) {
-                // Admission first builds the solo draft KV; copy it into the slot before drafting.
+                // Admission first builds the solo draft KV; copy it into the slot before drafting.  Both drafters' K/V
+                // are on the drafter's device (the last stage's GPU with a layer split): the copy's ring refill is a
+                // kernel launch there.
+                const strata::core::OnDevice on_mtp(mtp.device());
                 strata::core::ConversationKv image;
                 if (!mtp.idle(e) || !slot_mtp[(size_t) b]->idle(e) ||
                     !strata::core::conversation_kv_save(image, mtp.kv_state(), draft_geometry, upto, false, e) ||
@@ -8359,7 +8390,8 @@ int main(int argc, char** argv) {
                 if (cudaDeviceSynchronize() != cudaSuccess) { e = "batch slot restore: device sync failed"; return false; }
             }
             if (batch_mtp) {
-                // A returning solo request resumes from its slot's draft KV.
+                // A returning solo request resumes from its slot's draft KV (on the drafter's device, as above).
+                const strata::core::OnDevice on_mtp(mtp.device());
                 strata::core::ConversationKv image;
                 if (!slot_mtp[(size_t) b]->idle(e) || !mtp.idle(e) ||
                     !strata::core::conversation_kv_save(image, slot_mtp[(size_t) b]->kv_state(),
@@ -8463,10 +8495,15 @@ int main(int argc, char** argv) {
                     sl.p += 1;
                 }
                 if (batch_mtp && sl.active) {
+                    // The slot's two residual rows (the final residuals of the last stage: ver.final_R_all() follows the
+                    // chain, so with a layer split they are on the last stage's GPU, where the drafters are).  The copy is
+                    // queued on the drafter's own stream after the window's host sync, so the draft graph reads it.
+                    const strata::core::OnDevice on_slot_mtp(slot_mtp[(size_t) b]->device());
                     const size_t stride = (size_t) g.hc * (size_t) g.n_embd;
-                    if (cudaMemcpy(slot_mtp_rows[(size_t) b].get(),
-                                   ver.final_R_all() + (size_t) first[t] * stride,
-                                   2 * stride * sizeof(float), cudaMemcpyDeviceToDevice) != cudaSuccess ||
+                    if (cudaMemcpyAsync(slot_mtp_rows[(size_t) b].get(),
+                                        ver.final_R_all() + (size_t) first[t] * stride,
+                                        2 * stride * sizeof(float), cudaMemcpyDeviceToDevice,
+                                        slot_mtp[(size_t) b]->stream()) != cudaSuccess ||
                         !slot_mtp[(size_t) b]->draft(2, outb + first[t], pos[first[t]], keep[b] - 1,
                                                     sl.draft.data(), err)) {
                         std::printf("ERR batch MTP slot %d: %s\n", b, err.c_str());

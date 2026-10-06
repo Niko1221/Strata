@@ -1076,6 +1076,10 @@ if(STRATA_BUILD_TESTS OR STRATA_BUILD_CONVERSATION_TESTS)
   add_executable(bf16_bits_test src/kernels/bf16_bits_test.cpp)
   target_include_directories(bf16_bits_test PRIVATE include)
   add_test(NAME bf16_bits_test COMMAND bf16_bits_test)
+  # the batch window's row layout (a slot's group of proposed rows, the layer split's hand-off capacity; header-only, CPU)
+  add_executable(batch_rows_test tests/core/batch_rows_test.cpp)
+  target_include_directories(batch_rows_test PRIVATE include)
+  add_test(NAME batch_rows_test COMMAND batch_rows_test)
 endif()
 
 add_library(strata_kernels_cpu STATIC src/kernels/cpu/expert.cpp src/kernels/cpu/pool.cpp
