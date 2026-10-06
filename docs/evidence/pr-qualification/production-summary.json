@@ -1,0 +1,67 @@
+{
+  "wide": {
+    "exact": true,
+    "tokens": 4096,
+    "first_differences": {
+      "0": null,
+      "1": null,
+      "2": null,
+      "3": null
+    },
+    "unchanged_vs_original_v040": true
+  },
+  "upstream": {
+    "exact": true,
+    "tokens": 1771,
+    "first_differences": {
+      "0": null,
+      "1": null,
+      "2": null,
+      "3": null
+    }
+  },
+  "solo": {
+    "exact": true,
+    "tokens": 1771,
+    "first_differences": {
+      "0": null,
+      "1": null,
+      "2": null,
+      "3": null
+    }
+  },
+  "lifecycle-wide": {
+    "exit_code": 0
+  },
+  "lifecycle-upstream": {
+    "exit_code": 0
+  },
+  "performance-before": {
+    "output_tokens": 4096,
+    "workflow_s": 15.703000000001339,
+    "common_decode_s": 13.5,
+    "common_decode_tps": 295.77777777777777,
+    "gap_over_250ms_request_seconds": 2.8759999999965657,
+    "gap_p95_ms": 47.00000000593718,
+    "ttft_s": {
+      "0": 0.43699999999807915,
+      "1": 0.375,
+      "2": 0.39100000000325963,
+      "3": 0.4219999999986612
+    }
+  },
+  "performance-after": {
+    "output_tokens": 4096,
+    "workflow_s": 15.68800000000192,
+    "common_decode_s": 13.296999999998661,
+    "common_decode_tps": 297.13469203582747,
+    "gap_over_250ms_request_seconds": 2.8589999999894644,
+    "gap_p95_ms": 47.00000000593718,
+    "ttft_s": {
+      "0": 0.43800000000192085,
+      "1": 0.375,
+      "2": 0.39100000000325963,
+      "3": 0.4219999999986612
+    }
+  }
+}

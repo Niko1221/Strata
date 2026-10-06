@@ -1,0 +1,119 @@
+{
+  "source_runtime_commit": "3cfff22",
+  "audit_checkpoint": "600c8340314447685fc6d98ee6f257bcda296baf",
+  "reference": "canonical-v039-fast-20261006 (dc24aa8; runtime e3c67f9)",
+  "upstream": "v0.1.40 1735d6471df29b42c26170efaac1f1446a58640f",
+  "hardware": "NVIDIA RTX 5090, CUDA sm120, MSVC 14.32, CUDA 13",
+  "production_exe_sha256": "f7005e6763b372dd0d7bbb007bfd0e9207fd8b917ee5dc24401dfa3e7f11f4c7",
+  "pre_fix_exe_sha256": "4add8f3fcf62850806960951d9c85826ca4428d23428f4f6fc3817b7a969f276",
+  "pre_fix_probe_sha256": "ff4ea8c7d6a6db41b14fc30184ce61b728e54461412ea38ff885d6387a40d8a5",
+  "final_probe_sha256": "e9ed399cc13c3f51f9f34a8ae59412a0b34fa63fc93014fb466d5845b118956c",
+  "raw_logits_local": [
+    {
+      "name": "fixed-coding.logits",
+      "sha256": "e0ffe1435ca3b20b14941c179d382137816ea201ed12c228bcda0d7fcfeb5372",
+      "bytes": 150983424
+    },
+    {
+      "name": "fixed-questions.logits",
+      "sha256": "435e6a643b849fe85f6664fc0bb57fb8a017fcf29fb8393474146d7c2b751828",
+      "bytes": 148996800
+    },
+    {
+      "name": "normal-coding-a.logits",
+      "sha256": "77690bb4cfbf8a476a0de500836972b6b41c5511d1404a0f371a867191e1fb8b",
+      "bytes": 150983424
+    },
+    {
+      "name": "normal-coding-b.logits",
+      "sha256": "a3944f25b59ad991d0f0e5589990129ffa4683733b562c1ab6911aacbae1723e",
+      "bytes": 150983424
+    },
+    {
+      "name": "normal-questions-a.logits",
+      "sha256": "127eef6a3b2a512f721f89a8a154a40407c89f09aaa9ba4fe5ffcc025611ffcf",
+      "bytes": 148996800
+    },
+    {
+      "name": "normal-questions-b.logits",
+      "sha256": "cc35f4d655269d7e443df358936ed2de03f55a199a22f302167515e2aac94170",
+      "bytes": 148996800
+    },
+    {
+      "name": "qfuse-capture.logits",
+      "sha256": "e271308ad295e3e4f18c4ab6b559b3c288f2dee726823e295bf15fe80652e56c",
+      "bytes": 148996800
+    },
+    {
+      "name": "qfuse-contract.logits",
+      "sha256": "954d291d4d29f0ac5dc3c759e5a4e0873ee87639a4a655ba365641c174e9b2c6",
+      "bytes": 148996800
+    },
+    {
+      "name": "qfuse-fixed.logits",
+      "sha256": "e271308ad295e3e4f18c4ab6b559b3c288f2dee726823e295bf15fe80652e56c",
+      "bytes": 148996800
+    },
+    {
+      "name": "qfuse-gdn-only.logits",
+      "sha256": "fdacedf39e6a5065bb9404a319041fae9c4bafab3a9255f1116517200b5ec842",
+      "bytes": 148996800
+    },
+    {
+      "name": "qfuse-gr-only.logits",
+      "sha256": "1ea84aca6582e3453c55c9655919eded1f0031601149bce56d87af7865986433",
+      "bytes": 148996800
+    },
+    {
+      "name": "qfuse-neither.logits",
+      "sha256": "954d291d4d29f0ac5dc3c759e5a4e0873ee87639a4a655ba365641c174e9b2c6",
+      "bytes": 148996800
+    },
+    {
+      "name": "qfuse-off-no-selfcommit.logits",
+      "sha256": "954d291d4d29f0ac5dc3c759e5a4e0873ee87639a4a655ba365641c174e9b2c6",
+      "bytes": 148996800
+    },
+    {
+      "name": "qfuse-off.logits",
+      "sha256": "954d291d4d29f0ac5dc3c759e5a4e0873ee87639a4a655ba365641c174e9b2c6",
+      "bytes": 148996800
+    },
+    {
+      "name": "qfuse-on-repeat.logits",
+      "sha256": "e271308ad295e3e4f18c4ab6b559b3c288f2dee726823e295bf15fe80652e56c",
+      "bytes": 148996800
+    },
+    {
+      "name": "qfuse-on.logits",
+      "sha256": "e271308ad295e3e4f18c4ab6b559b3c288f2dee726823e295bf15fe80652e56c",
+      "bytes": 148996800
+    },
+    {
+      "name": "reference-coding-a.logits",
+      "sha256": "24869166ed0d01ab2a9f1403a093624944f48402921307ee28e0c8abca92fdde",
+      "bytes": 150983424
+    },
+    {
+      "name": "reference-coding-b.logits",
+      "sha256": "4819450fe7c4880006cd51540f1f06fcb24c05f143d98535fce2d454de9c514d",
+      "bytes": 150983424
+    },
+    {
+      "name": "reference-questions-a.logits",
+      "sha256": "1c7bd11e2511c62969d92250bde4c70c9870e273a5107f9a866b5bb95d43fa6e",
+      "bytes": 148996800
+    },
+    {
+      "name": "reference-questions-b.logits",
+      "sha256": "6d40de053f0961de0723b90971f9c3ef5a5135f23e9f462c9f61a4aae1d61bdf",
+      "bytes": 148996800
+    }
+  ],
+  "notes": [
+    "All GPU inference arms serialized. No compile or other test engine during final timing pair.",
+    "Capture probes compare live quantized activations; never performance evidence. Initial capture kind2 used native rather than IQ reference; excluded from diagnosis. Final capture uses actual IQ reference.",
+    "Normal runs and initial QFUSE arms use original v040 source; qfuse-fixed uses finite-guard correction only; qfuse-contract and production followup use the arithmetic correction. Each report records its actual binary hash.",
+    "AMD and multi-GPU not tested."
+  ]
+}

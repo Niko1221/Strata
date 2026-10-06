@@ -1,0 +1,15 @@
+{
+  ".gitattributes": "b4716e311bd3e9aad16a67efb033caf751e92c2acafbd09ec9e1a5ea2223c466",
+  "answer-comparison.json": "4dea1c7645b71ae7b66e8224ac7aca94be2f197d5bd94a3a9a120ee1d3feccc4",
+  "batch_segment_gdn_test.log": "1e941dc3dad21abc9b5daa15bfd666a8d625bf2e03e5194466db82b2c4ac25f0",
+  "batch_segments_test.log": "9c1e0de7bca235626fdcd7ef82000e8a8c39d08a9fb02d4e3de716e23816cec0",
+  "expert_multi_test.log": "a41c1913a3620bd21889bc91c1019cb9171d1df906bdfac56c4f6529664d1e68",
+  "gr_parity.log": "b18140f559a2c2f8df5c42ae1c950de45aad01fa2f6e9cc9e551c9a92225c9ab",
+  "numerical-comparison-summary.json": "c217639da25d268c3158102316d2cd442cca788f9abd31a6e55a1dd4b25bdb1f",
+  "production-summary.json": "860ef50940b7c7c72139747bbb29e97c8b32fdf4db799fb2a1990e838be6a1a6",
+  "provenance.json": "ae2494191c305f407c94fd779c2957120340a11cbd9858568705b3a7c3bdc400",
+  "publication-checks.json": "8f81374c596e930e1d0742d74ce6cb0cd200b57fb7cb79201ec67acb3b9c1d17",
+  "qfuse_gdn_test.log": "f4e3cc7fda42cbdc698f0b36e91dcdf930f074d9d824cf23d75bf25ef50b5d2b",
+  "qfuse_quant_test.log": "565e468b8df31bf7c0ccd6091c6f95a6931d4ce6db2cc4d50b904a452c1c3afb",
+  "server-tests.log": "e56fad04d4aae4d15a94d853b003d5ad31733acc8b56f109c0cc17b20e394233"
+}

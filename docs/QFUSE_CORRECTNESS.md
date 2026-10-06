@@ -49,7 +49,8 @@ Those runs fixed expert placement and CPU arithmetic. They are historical
 integrated-candidate evidence, not a fresh model qualification of this isolated
 PR or a claim of normal adaptive determinism. Full evidence is preserved locally
 at candidate tag candidate-v040-numerics-20261006; the review bundle identifies
-the source files and original reports.
+the source files and original reports. Public evidence summaries and fresh
+test logs are linked in [PR_QUALIFICATION.md](PR_QUALIFICATION.md).
 
 No AMD or multi-GPU hardware test was available. The arithmetic fix deliberately
 does not change global compiler math flags or enable QFUSE on new configurations.

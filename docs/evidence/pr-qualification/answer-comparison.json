@@ -1,0 +1,14 @@
+{
+  "solo": {
+    "tokens_exact": true,
+    "score_v039": 15,
+    "score_v040": 15,
+    "same_scored_answers": true
+  },
+  "c4": {
+    "tokens_exact": true,
+    "score_v039": 15,
+    "score_v040": 15,
+    "same_scored_answers": true
+  }
+}

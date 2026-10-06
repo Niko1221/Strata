@@ -94,7 +94,7 @@ candidate-v040-numerics-20261006, under docs/evidence/v040-numerical-followup an
 docs/evidence/v040-integration. The local review bundle maps those reports to
 these extracted sources and records fresh preparation checks. Machine-specific
 launchers, configs and large diagnostics are deliberately outside this patch.
-Before publication, the review bundle/evidence location must be made available
-to reviewers. AMD/multi-GPU testing remains unavailable; no new c=1 throughput gain is
+Public summaries, provenance and fresh test logs are linked in
+[PR_QUALIFICATION.md](PR_QUALIFICATION.md). AMD/multi-GPU testing remains unavailable; no new c=1 throughput gain is
 asserted. The fresh baseline comparison and its minimal correctness fix are
 documented separately in PR_WORKLOAD_BENCHMARKS.md.

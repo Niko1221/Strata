@@ -1,0 +1,46 @@
+{
+  "date": "2026-10-06",
+  "reviewed_combined_commit": "051e68764f98ebdf1ee177a4832bf82fa366d39c",
+  "upstream": "82f46a8c8f475f001ad76d92f58f4a4f8ffb0253",
+  "runtime_source_identical_to": "ff0e027309efd228a97740947bb1022d7bf6f1e0",
+  "runtime_paths": [
+    "src",
+    "include",
+    "tests",
+    "CMakeLists.txt",
+    "serve",
+    "setup.py"
+  ],
+  "server_tests": {
+    "passed": 64,
+    "seconds": 32.492
+  },
+  "native_tests": {
+    "batch_segments_test": {
+      "passed": true,
+      "binary_sha256": "a056d51774541166bd80d3027ddf878ef2cb3f79c0ef40e42032d24d4ec9a23e"
+    },
+    "batch_segment_gdn_test": {
+      "passed": true,
+      "binary_sha256": "43684be9849ebc7cedd4b609f5213ed51c67fa389c325e0e7059f1fa93a85590"
+    },
+    "expert_multi_test": {
+      "passed": true,
+      "binary_sha256": "2b1bc8c40b30bcb86593728a66108d1374a5e6ff3882a54a7534c10a262978ac"
+    },
+    "gr_parity": {
+      "passed": true,
+      "binary_sha256": "5ed9431972cba9b86e3103165f0c4d74c5b91624dac7db1c62e8ad64dcfea8d0"
+    },
+    "qfuse_quant_test": {
+      "passed": true,
+      "binary_sha256": "9e54120da02337517dad2f56a4097a584fc30e2be8e7fd6c67633a5bff75120b"
+    },
+    "qfuse_gdn_test": {
+      "passed": true,
+      "binary_sha256": "355e6d39668edbaaa4531438fb266519fe01b02947f84c48c8eb308be83bf040"
+    }
+  },
+  "native_test_note": "Fresh executions of the previously built integrated binaries; runtime source is identical. No redundant full rebuild or model campaign.",
+  "production_binary_sha256": "f7005e6763b372dd0d7bbb007bfd0e9207fd8b917ee5dc24401dfa3e7f11f4c7"
+}

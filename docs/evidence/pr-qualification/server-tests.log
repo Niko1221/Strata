@@ -1,0 +1,199 @@
+[strata] done: 116 tokens in 0 s (116000000.0 tok/s) (stop, cancel=False)
+[strata] tool calls inside the thinking: 1 read as calls, 0 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 116 tokens in 0 s (116146.9 tok/s) (stop, cancel=False)
+[strata] tool calls inside the thinking: 1 read as calls, 0 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 116 tokens in 0 s (116000000.0 tok/s) (stop, cancel=False)
+[strata] tool calls inside the thinking: 1 read as calls, 0 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 116 tokens in 0 s (116091.4 tok/s) (stop, cancel=False)
+[strata] tool calls inside the thinking: 1 read as calls, 0 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 116 tokens in 0 s (115787.5 tok/s) (stop, cancel=False)
+[strata] tool calls inside the thinking: 1 read as calls, 0 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 116 tokens in 0 s (116119.2 tok/s) (stop, cancel=False)
+[strata] tool calls inside the thinking: 1 read as calls, 0 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 133 tokens in 0 s (133136.6 tok/s) (stop, cancel=False)
+[strata] done: 133 tokens in 0 s (66512.7 tok/s) (stop, cancel=False)
+[strata] done: 133 tokens in 0 s (133000000.0 tok/s) (stop, cancel=False)
+[strata] done: 133 tokens in 0 s (66489.0 tok/s) (stop, cancel=False)
+[strata] done: 133 tokens in 0 s (133487.1 tok/s) (stop, cancel=False)
+[strata] done: 133 tokens in 0 s (88336.1 tok/s) (stop, cancel=False)
+[strata] done: 117 tokens in 0 s (117036.4 tok/s) (stop, cancel=False)
+[strata] done: 117 tokens in 0 s (58455.5 tok/s) (stop, cancel=False)
+[strata] done: 117 tokens in 0 s (77869.5 tok/s) (stop, cancel=False)
+[strata] done: 117 tokens in 0 s (58532.2 tok/s) (stop, cancel=False)
+[strata] done: 117 tokens in 0 s (117008.5 tok/s) (stop, cancel=False)
+[strata] done: 117 tokens in 0 s (77721.5 tok/s) (stop, cancel=False)
+[strata] done: 150 tokens in 0 s (150046.6 tok/s) (stop, cancel=False)
+[strata] tool calls inside the thinking: 0 read as calls, 1 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 150 tokens in 0 s (59867.3 tok/s) (stop, cancel=False)
+[strata] tool calls inside the thinking: 0 read as calls, 1 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 150 tokens in 0 s (150082.4 tok/s) (stop, cancel=False)
+[strata] tool calls inside the thinking: 0 read as calls, 1 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 150 tokens in 0 s (74978.6 tok/s) (stop, cancel=False)
+[strata] tool calls inside the thinking: 0 read as calls, 1 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 150 tokens in 0 s (123677.1 tok/s) (stop, cancel=False)
+[strata] tool calls inside the thinking: 0 read as calls, 1 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 150 tokens in 0 s (74667.2 tok/s) (stop, cancel=False)
+[strata] tool calls inside the thinking: 0 read as calls, 1 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 108 tokens in 0 s (107648.5 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] tool calls inside the thinking: 0 read as calls, 1 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 108 tokens in 0 s (108059.4 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] tool calls inside the thinking: 0 read as calls, 1 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 108 tokens in 0 s (71833.9 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] tool calls inside the thinking: 0 read as calls, 1 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 108 tokens in 0 s (108000000.0 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] tool calls inside the thinking: 0 read as calls, 1 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 108 tokens in 0 s (108007.8 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] tool calls inside the thinking: 0 read as calls, 1 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 108 tokens in 0 s (108214.2 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] tool calls inside the thinking: 0 read as calls, 1 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 97 tokens in 0 s (97000000.0 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] tool calls inside the thinking: 0 read as calls, 1 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 97 tokens in 0 s (97000000.0 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] tool calls inside the thinking: 0 read as calls, 1 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 97 tokens in 0 s (97000000.0 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] tool calls inside the thinking: 0 read as calls, 1 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 97 tokens in 0 s (96684.3 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] tool calls inside the thinking: 0 read as calls, 1 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 97 tokens in 0 s (64435.8 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] tool calls inside the thinking: 0 read as calls, 1 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 97 tokens in 0 s (96845.4 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] tool calls inside the thinking: 0 read as calls, 1 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 134 tokens in 0 s (133977.8 tok/s) (stop, cancel=False)
+[strata] done: 134 tokens in 0 s (67028.8 tok/s) (stop, cancel=False)
+[strata] done: 134 tokens in 0 s (133818.3 tok/s) (stop, cancel=False)
+[strata] done: 134 tokens in 0 s (67012.8 tok/s) (stop, cancel=False)
+[strata] done: 134 tokens in 0 s (134105.6 tok/s) (stop, cancel=False)
+[strata] done: 134 tokens in 0 s (66957.0 tok/s) (stop, cancel=False)
+[strata] done: 121 tokens in 0 s (121000000.0 tok/s) (stop, cancel=False)
+[strata] done: 121 tokens in 0 s (48260.8 tok/s) (stop, cancel=False)
+[strata] done: 121 tokens in 0 s (121000000.0 tok/s) (stop, cancel=False)
+[strata] done: 121 tokens in 0 s (120951.1 tok/s) (stop, cancel=False)
+[strata] done: 121 tokens in 0 s (80570.1 tok/s) (stop, cancel=False)
+[strata] done: 121 tokens in 0 s (60497.2 tok/s) (stop, cancel=False)
+[strata] done: 116 tokens in 0 s (77106.1 tok/s) (stop, cancel=False)
+[strata] done: 116 tokens in 0 s (116036.1 tok/s) (stop, cancel=False)
+[strata] done: 116 tokens in 0 s (116000000.0 tok/s) (stop, cancel=False)
+[strata] done: 116 tokens in 0 s (116008.4 tok/s) (stop, cancel=False)
+[strata] done: 116 tokens in 0 s (115595.0 tok/s) (stop, cancel=False)
+[strata] done: 116 tokens in 0 s (115897.9 tok/s) (stop, cancel=False)
+[strata] done: 121 tokens in 0 s (121000000.0 tok/s) (stop, cancel=False)
+[strata] tool calls inside the thinking: 1 read as calls, 0 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 121 tokens in 0 s (121008.8 tok/s) (stop, cancel=False)
+[strata] tool calls inside the thinking: 1 read as calls, 0 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 121 tokens in 0 s (120979.9 tok/s) (stop, cancel=False)
+[strata] tool calls inside the thinking: 1 read as calls, 0 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 121 tokens in 0 s (121008.8 tok/s) (stop, cancel=False)
+[strata] tool calls inside the thinking: 1 read as calls, 0 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 121 tokens in 0 s (121000000.0 tok/s) (stop, cancel=False)
+[strata] tool calls inside the thinking: 1 read as calls, 0 kept as reasoning (quoted, or the turn did not end on a stop)
+[strata] done: 119 tokens in 0 s (119000000.0 tok/s) (length, cancel=False)
+[strata] done: 119 tokens in 0 s (119065.4 tok/s) (length, cancel=False)
+[strata] done: 119 tokens in 0 s (118980.3 tok/s) (length, cancel=False)
+[strata] done: 119 tokens in 0 s (79213.2 tok/s) (length, cancel=False)
+[strata] done: 120 tokens in 0 s (120266.8 tok/s) (stop, cancel=False)
+[strata] done: 120 tokens in 0 s (120037.3 tok/s) (stop, cancel=False)
+[strata] done: 120 tokens in 0 s (119951.5 tok/s) (stop, cancel=False)
+[strata] done: 120 tokens in 0 s (119894.3 tok/s) (stop, cancel=False)
+[strata] done: 147 tokens in 0 s (146626.1 tok/s) (stop, cancel=False)
+[strata] done: 147 tokens in 0 s (146451.9 tok/s) (stop, cancel=False)
+[strata] done: 147 tokens in 0 s (147432.5 tok/s) (stop, cancel=False)
+[strata] done: 147 tokens in 0 s (146451.9 tok/s) (stop, cancel=False)
+[strata] the engine stopped while this request waited; it was not sent. The usual cause is running out of RAM: Linux then ends the biggest program (check: sudo dmesg | grep -i -E 'killed process|out of memory'); Windows slows down instead. Close other programs or use a smaller model (Q2_0 / IQ2_XS). The next request starts the engine again.
+[strata] done: 0 tokens in 1 s (0.0 tok/s) (error, cancel=False)
+[strata] the engine stopped while this request waited; it was not sent. The usual cause is running out of RAM: Linux then ends the biggest program (check: sudo dmesg | grep -i -E 'killed process|out of memory'); Windows slows down instead. Close other programs or use a smaller model (Q2_0 / IQ2_XS). The next request starts the engine again.
+[strata] done: 0 tokens in 1 s (0.0 tok/s) (error, cancel=False)
+[strata] the engine stopped unexpectedly (exit code 1). The usual cause is running out of RAM: Linux then ends the biggest program (check: sudo dmesg | grep -i -E 'killed process|out of memory'); Windows slows down instead. Close other programs or use a smaller model (Q2_0 / IQ2_XS). The next request starts the engine again.
+[strata] done: 0 tokens in 0 s (0.0 tok/s) (error, cancel=False)
+[strata] the engine had stopped (exit code 1); starting it again (a minute or two) ...
+[strata] the engine is running again
+[strata] done: 10 tokens in 0 s (49.0 tok/s) (stop, cancel=False)
+[strata] the engine stopped unexpectedly (exit code 1). The usual cause is running out of RAM: Linux then ends the biggest program (check: sudo dmesg | grep -i -E 'killed process|out of memory'); Windows slows down instead. Close other programs or use a smaller model (Q2_0 / IQ2_XS). The next request starts the engine again.
+[strata] done: 4 tokens in 0 s (22.6 tok/s) (error, cancel=False)
+[strata] the engine stopped unexpectedly (exit code 1). The usual cause is running out of RAM: Linux then ends the biggest program (check: sudo dmesg | grep -i -E 'killed process|out of memory'); Windows slows down instead. Close other programs or use a smaller model (Q2_0 / IQ2_XS). The next request starts the engine again.
+[strata] done: 0 tokens in 0 s (0.0 tok/s) (error, cancel=False)
+[strata] the engine stopped while this request waited; it was not sent. The usual cause is running out of RAM: Linux then ends the biggest program (check: sudo dmesg | grep -i -E 'killed process|out of memory'); Windows slows down instead. Close other programs or use a smaller model (Q2_0 / IQ2_XS). The next request starts the engine again.
+[strata] done: 0 tokens in 1 s (0.0 tok/s) (error, cancel=False)
+[strata] the engine had stopped (exit code 1); starting it again (a minute or two) ...
+[strata] the engine is running again
+[strata] done: 10 tokens in 0 s (49.2 tok/s) (stop, cancel=False)
+[strata] parallel requests: 4 asked, the engine runs one at a time (its log says why)
+[strata] the engine had stopped (exit code 1); starting it again (a minute or two) ...
+[strata] parallel requests: 4 asked, the engine runs one at a time (its log says why)
+[strata] the engine is running again
+[strata] done: 10 tokens in 0 s (49.3 tok/s) (stop, cancel=False)
+[strata] the engine stopped while this request waited; it was not sent. The usual cause is running out of RAM: Linux then ends the biggest program (check: sudo dmesg | grep -i -E 'killed process|out of memory'); Windows slows down instead. Close other programs or use a smaller model (Q2_0 / IQ2_XS). The next request starts the engine again.
+[strata] the engine stopped while this request waited; it was not sent. The usual cause is running out of RAM: Linux then ends the biggest program (check: sudo dmesg | grep -i -E 'killed process|out of memory'); Windows slows down instead. Close other programs or use a smaller model (Q2_0 / IQ2_XS). The next request starts the engine again.
+[strata] the engine stopped while this request waited; it was not sent. The usual cause is running out of RAM: Linux then ends the biggest program (check: sudo dmesg | grep -i -E 'killed process|out of memory'); Windows slows down instead. Close other programs or use a smaller model (Q2_0 / IQ2_XS). The next request starts the engine again.
+[strata] done: 0 tokens in 1 s (0.0 tok/s) (error, cancel=False)
+[strata] done: 0 tokens in 1 s (0.0 tok/s) (error, cancel=False)
+[strata] done: 0 tokens in 1 s (0.0 tok/s) (error, cancel=False)
+[strata] the engine had stopped (exit code 1); starting it again (a minute or two) ...
+[strata] the engine is running again
+[strata] done: 10 tokens in 0 s (49.4 tok/s) (stop, cancel=False)
+[strata] the engine stopped while this request waited; it was not sent. The usual cause is running out of RAM: Linux then ends the biggest program (check: sudo dmesg | grep -i -E 'killed process|out of memory'); Windows slows down instead. Close other programs or use a smaller model (Q2_0 / IQ2_XS). The next request starts the engine again.
+[strata] the engine stopped while this request waited; it was not sent. The usual cause is running out of RAM: Linux then ends the biggest program (check: sudo dmesg | grep -i -E 'killed process|out of memory'); Windows slows down instead. Close other programs or use a smaller model (Q2_0 / IQ2_XS). The next request starts the engine again.
+[strata] done: 0 tokens in 1 s (0.0 tok/s) (error, cancel=False)
+[strata] the engine stopped while this request waited; it was not sent. The usual cause is running out of RAM: Linux then ends the biggest program (check: sudo dmesg | grep -i -E 'killed process|out of memory'); Windows slows down instead. Close other programs or use a smaller model (Q2_0 / IQ2_XS). The next request starts the engine again.
+[strata] done: 0 tokens in 1 s (0.0 tok/s) (error, cancel=False)
+[strata] done: 0 tokens in 1 s (0.0 tok/s) (error, cancel=False)
+[strata] the engine had stopped (exit code 1); starting it again (a minute or two) ...
+[strata] the engine is running again
+[strata] done: 10 tokens in 0 s (49.6 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 1 s (29.2 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 1 s (32.0 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 1 s (33.5 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 1 s (33.4 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 1 s (30.3 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 1 s (27.7 tok/s) (stop, cancel=False)
+[strata] "parallel" must be a whole number of requests (2..8), not '4': ignored
+[strata] "parallel" must be a whole number of requests (2..8), not True: ignored
+[strata] "parallel": 12 - the engine runs at most 8 requests together; it will use 8
+[strata] the engine stopped unexpectedly (exit code 1). The engine exited (code 1) after it reported: verify batch: layer 34 never rang (graph finished) - please report it at github.com/Niko1221/Strata/issues with the log. The next request starts the engine again.
+[strata] done: 4 tokens in 0 s (26.4 tok/s) (error, cancel=False)
+[strata] the engine stopped unexpectedly (exit code 1). The engine exited (code 1) after it reported: verify batch: layer 34 never rang (graph finished) - please report it at github.com/Niko1221/Strata/issues with the log. The next request starts the engine again.
+[strata] done: 1 tokens in 0 s (20.2 tok/s) (error, cancel=False)
+[strata] done: 10 tokens in 0 s (25.6 tok/s) (stop, cancel=False)
+[strata] reading the prompt: 2,464 of 3,037 tokens, 1 s so far
+[strata] done: 10 tokens in 1 s (33.3 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (27.8 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (25.6 tok/s) (stop, cancel=False)
+[strata] reading the prompt: 2,528 of 3,037 tokens, 1 s so far
+[strata] done: 10 tokens in 1 s (33.3 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (34.4 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 1 s (34.3 tok/s) (stop, cancel=False)
+[strata] answering: 32 of max 64 tokens, 31.4 tok/s, 1 s
+[strata] done: 55 tokens in 2 s (31.5 tok/s) (stop, cancel=False)
+[strata] parallel requests: 4 asked, the engine runs 2 (its log says why)
+[strata] parallel requests: 4 asked, the engine runs one at a time (its log says why)
+[strata] done: 10 tokens in 0 s (49.5 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (31.5 tok/s) (stop, cancel=False)
+[strata] answering: 41 of max 200 tokens, 40.8 tok/s, 1 s
+[strata] done: 55 tokens in 1 s (42.0 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (34.5 tok/s) (stop, cancel=False)
+[strata] answering: 32 of max 200 tokens, 32.1 tok/s, 1 s
+[strata] done: 55 tokens in 2 s (32.0 tok/s) (stop, cancel=False)
+[strata] answering: 1 of max 64 tokens, 24.0 tok/s, 1 s
+[strata] reading the prompt: 32 of 3,037 tokens, 2 s so far
+[strata] answering: 3 of max 64 tokens, 2.9 tok/s, 2 s
+[strata] done: 10 tokens in 2 s (7.5 tok/s) (stop, cancel=False)
+[strata] answering: 2 of max 64 tokens, 40.0 tok/s, 3 s
+[strata] done: 10 tokens in 3 s (33.2 tok/s) (stop, cancel=False)
+[strata] done: 9 tokens in 0 s (49.5 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (49.3 tok/s) (stop, cancel=False)
+................................................................
+----------------------------------------------------------------------
+Ran 64 tests in 32.492s
+
+OK
