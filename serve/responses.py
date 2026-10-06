@@ -285,6 +285,75 @@ def request_tools(req: dict):
     return tools or None, names, skipped
 
 
+def _codex_turn_metadata(req: dict):
+    """-> Codex's client_metadata["x-codex-turn-metadata"] (a JSON string, Codex 0.140 and later) as a dict; None
+    without it or when it is not a JSON object."""
+    if not isinstance(req, dict):
+        return None
+    meta = req.get("client_metadata")
+    raw = meta.get("x-codex-turn-metadata") if isinstance(meta, dict) else None
+    try:
+        turn = json.loads(raw) if isinstance(raw, str) else None
+    except ValueError:
+        return None
+    return turn if isinstance(turn, dict) else None
+
+
+def _title_text(req: dict) -> str:
+    """The user line Codex asked to name, cut to the schema's 36 characters."""
+    parts = []
+    items = req.get("input")
+    if isinstance(items, str):
+        items = [{"role": "user", "content": items}]
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict) or item.get("role") != "user":
+                continue
+            content = item.get("content")
+            if isinstance(content, str):
+                parts.append(content)
+            elif isinstance(content, list):
+                for piece in content:
+                    if isinstance(piece, dict) and isinstance(piece.get("text"), str):
+                        parts.append(piece["text"])
+    text = "\n".join(parts)
+    if "User prompt:" in text:
+        text = text.split("User prompt:", 1)[1]
+    line = next((x.strip() for x in text.splitlines() if x.strip()), "Untitled")
+    line = line.strip(" \"'`")
+    while line and line[-1] in ".。!！?？,，;；:：":
+        line = line[:-1].rstrip()
+    return line[:36].rstrip() or "Untitled"
+
+
+def thread_title_events(req: dict, model: str):
+    """Codex's thread-title turn, answered here. None when this request is not one.
+
+    Codex 0.160 sends this beside the user turn: another session, no tools, the full instructions. Running it on the
+    one prefix cache replaces the conversation.
+    """
+    if (_codex_turn_metadata(req) or {}).get("thread_source") != "thread_title":
+        return None
+    check_request(req)
+    text = json.dumps({"title": _title_text(req)}, ensure_ascii=False)
+    asm = Assembler(req, model, 0, {}, False, json_mode=False)
+    events = asm.start()
+    events += asm._open({"id": new_id("msg"), "type": "message", "status": "in_progress", "role": "assistant",
+                         "content": []})
+    asm.item["content"][0]["text"] = text
+    events.append(asm.event("response.output_text.delta", item_id=asm.item["id"], output_index=asm.index,
+                            content_index=0, delta=text, logprobs=[]))
+    events += asm.close()
+    asm.response["usage"] = {
+        "input_tokens": 0, "input_tokens_details": {"cached_tokens": 0},
+        "output_tokens": 0, "output_tokens_details": {"reasoning_tokens": 0},
+        "total_tokens": 0}
+    asm.response["status"] = "completed"
+    asm.response["completed_at"] = int(time.time())
+    events.append(asm.event("response.completed", response=asm.snapshot()))
+    return events
+
+
 def text_format(req: dict):
     """`text.format` -> the chat path's response_format (None: plain text)."""
     text = req.get("text")
