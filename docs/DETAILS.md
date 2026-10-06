@@ -474,7 +474,7 @@ The server listens on `http://127.0.0.1:8080` (change with `--port` in setup, or
 | --- | --- |
 | OpenAI Chat Completions (stream and non-stream, tools) | `POST /v1/chat/completions` |
 | Anthropic Messages (stream and non-stream, tools) | `POST /v1/messages` |
-| OpenAI Responses (stream and non-stream, tools; stateless, [below](#the-responses-api-and-codex-cli)) | `POST /v1/responses` |
+| OpenAI Responses (stream and non-stream, tools; optional stored history, [below](#the-responses-api-and-codex-cli)) | `POST /v1/responses` |
 | Model list / health | `GET /v1/models`, `GET /models`, `GET /health` |
 | Model properties | `GET /props` (also accepts `?model=<loaded-model-id>`) |
 | What the model is doing right now | `GET /status`, `GET /slots` (single slot, busy or idle) |
@@ -583,7 +583,8 @@ print(r.choices[0].message.content)
 - **Model settings in the web page (0.1.39, #564).** The About tab's Model settings card shows and changes a few of
   the keys above in `strata-<model>.json`: the `sampling` defaults (temperature, top_p, top_k, min_p),
   `reasoning_budget_tokens`, `fit_max_tokens`, `anthropic_thinking`, `effort_position`, `aliases`, `idle_unload_s`,
-  `lazy_load`, `engine_silence_s`, `api_monitor`, `open_browser` and `--vram-reserve-mib`. An empty field removes the
+  `lazy_load`, `engine_silence_s`, `api_monitor`, `responses_store_mib` ([below](#the-responses-api-and-codex-cli)),
+  `open_browser` and `--vram-reserve-mib`. An empty field removes the
   key (its default). Every other key of the file stays as it is, the earlier file is kept as
   `strata-<model>.json.bak`, and the model uses the change from its next start. Only Strata's own page can save
   (JSON, the API key when one is set, as for the Chat settings); the network, key, MCP and program keys are not
@@ -706,9 +707,42 @@ without penalties, so more of its guesses are now rejected. Requests without pen
 speaks Chat Completions). It runs on the same path as `/v1/chat/completions`, so the thinking levels, the thinking
 budget, the conversation cache and the same API key, Host and Origin checks apply.
 
-It is **stateless**: nothing is stored, so the client sends the whole conversation in `input` every time (Codex does,
-with `store: false`). `previous_response_id`, `conversation`, `background` and the retrieve/delete/cancel endpoints
-are refused with an error that says so.
+It is **stateless by default**: the client sends the whole conversation in `input` every time (Codex does, with
+`store: false`). `previous_response_id` needs the optional storage below; without it, `store` is not looked at and the
+answer says `store: false`, as before. `conversation`, `background`, cancellation, input-item pagination and response
+retrieval as a stream remain unsupported.
+
+**Optional stored Responses:** start the server with `--responses-store-mib 64`, or set top-level
+`"responses_store_mib": 64` in its JSON config (also in the web page's Model settings). `0` (the default) disables
+storage. When enabled, requests store by
+default; `store: false` still avoids saving the new response and may continue an already stored response. Send only
+the new input and `previous_response_id` to continue. The previous top-level `instructions`, tools and generation
+settings are not inherited: send them again if needed.
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="none")
+first = client.responses.create(model="strata", input="Remember this name: Ada.", store=True)
+second = client.responses.create(model="strata", previous_response_id=first.id, input="What name did I give you?")
+saved = client.responses.retrieve(second.id)
+client.responses.delete(first.id)
+```
+
+`GET /v1/responses/{id}` returns the saved final response; `DELETE /v1/responses/{id}` returns a
+`response.deleted` object. Completed and incomplete responses are saved before their final event is sent, including
+streamed responses. Failed, cancelled and in-progress responses are not retained. Both routes use the existing API
+key and Host checks; DELETE also uses the browser-Origin check (without the JSON content type a POST needs: it has
+no body) and is included in enabled CORS preflights.
+
+Storage is **process memory only**, lost on restart; it is separate from the engine's KV cache. Records expire after
+3,600 seconds (`"responses_store_ttl_s"` in the config), with a maximum of 256 records. The MiB budget counts serialized
+UTF-8 JSON including full replay history; Python bookkeeping and temporary copies need extra memory. Oldest records
+are evicted to fit new ones. A response too large to fit fails with `response_store_limit_exceeded` (HTTP 413, or
+`response.failed` after streaming starts); a replay that alone exceeds the budget gets the same 413 before the model
+runs. Deleted, expired, evicted and unsaved IDs return 404. Each child stores its
+own history: deleting a parent does **not** erase that history from surviving children. Everyone holding the server's
+API key shares this store; it is not a separate account system. Keep the normal localhost/key protection.
 
 | Request | What Strata does |
 | --- | --- |
