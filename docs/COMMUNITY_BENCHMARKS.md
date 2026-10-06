@@ -15,7 +15,8 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-06: RTX 5060 Ti 16 GB, Ryzen 9 7945HX](../bench/results/2026-10-06-community-rtx-5060ti/README.md):
   Strata 0.1.35, IQ3_S, 131,072-token context, 60.53 GiB `MemTotal`; three runs
   each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks. The
-  server also served other clients during the run, and the report says so.
+  benchmarking agent runs on the same server; the report states that the measured
+  requests did not overlap other traffic but started straight after it.
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](../bench/results/2026-09-30-community-rtx-5090/README.md):
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
   each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.

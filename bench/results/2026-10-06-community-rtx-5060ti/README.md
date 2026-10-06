@@ -83,8 +83,10 @@ The server was the one already running on this machine, started as:
   --port 8080 --open --host 0.0.0.0
 ```
 
-It is reachable beyond loopback and has no API key, and other clients use it; see
-[Limitations](#limitations). The benchmark itself talked to `127.0.0.1:8080`.
+It is reachable beyond loopback and has no API key. It is also the inference
+endpoint this benchmark was run from: the agent driving the benchmark answers on
+the same server. See [Limitations](#limitations). The benchmark itself talked to
+`127.0.0.1:8080`.
 
 `benchmark.py` in this directory is the community script with one change, the
 engine-record matching fix described under [Script change](#script-change). The
@@ -183,16 +185,28 @@ request start and the stream completion, and it records
 `concurrent_requests`, the number of other requests that finished in that
 window. On this machine the server also serves other clients, so the original
 `requests[0]` could have picked up another client's timings and raised a false
-token-count mismatch. One other request finished inside the window of the first
-4K run; the matching rule still selected the correct record.
+token-count mismatch. The one flagged case in this run was the script's own
+warm-up request, which started 0.9 s before the first 4K run and fell inside the
+`[start - 1 s, end + 2 s]` window: `concurrent_requests` counts the script's own
+requests too, so treat it as an upper bound rather than proof of another client.
 
 ## Limitations
 
-- **The server was shared.** Other clients sent requests during the run; the
-  engine log shows 39K–46K-token prompts from other sessions interleaved with the
-  recall checks. The first 4K run (47.5 tok/s decode, 8.97 s total) is the
-  contended outlier; runs 2 and 3 were 58.5 and 56.6 tok/s. These are not
-  isolated-machine numbers.
+- **The benchmarking agent shares this server.** The engine answers one request
+  at a time, and scanning every `prompt … tokens` line between the first 4,096
+  run and the last 128,000 run finds only the nine benchmark lines; the same
+  holds across the six recall runs. The only other traffic near the run was the
+  agent's own inference: three turns of 27,735 / 27,890 / 28,074 tokens (116 /
+  127 / 301 generated, about 99% of the prompt reused) ended about one second
+  before the warm-up, because the suite ran as one blocking command while the
+  agent was not generating. So the measured requests did not overlap other work,
+  but they did start straight after it. The first 4K run (47.5 tok/s decode,
+  8.97 s total) is the low outlier and followed that 301-token turn directly; no
+  cause is proven for it, and runs 2 and 3 were 58.5 and 56.6 tok/s.
+- **Not an isolated machine.** Other CPU services were running, GPU clocks were
+  not fixed, the expert cache had been filled at startup and used by earlier
+  traffic, and the engine had served 548 requests before this run. The page
+  cache was warm.
 - This is one machine, one quantization, one configuration, and a small synthetic
   workload. Long output, sampled decoding, thinking, coding-task correctness,
   vision, tool use, multi-request concurrency, and a sustained thermal run were
