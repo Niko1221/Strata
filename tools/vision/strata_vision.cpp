@@ -16,6 +16,7 @@
 #include "llama.h"
 #include "mtmd.h"
 #include "mtmd-helper.h"
+#include "ggml-backend.h"
 
 #include <algorithm>
 #if !defined(_WIN32)
@@ -86,8 +87,10 @@ int main(int argc, char** argv) {
     if (!gpu) {
 #ifdef _WIN32
         _putenv_s("CUDA_VISIBLE_DEVICES", "-1");
+        _putenv_s("HIP_VISIBLE_DEVICES", "-1");
 #else
         setenv("CUDA_VISIBLE_DEVICES", "-1", 1);
+        setenv("HIP_VISIBLE_DEVICES", "-1", 1);
 #endif
     }
     llama_log_set(quiet_log, nullptr);
@@ -115,6 +118,17 @@ int main(int argc, char** argv) {
 
     mtmd_context_params cp = mtmd_context_params_default();
     cp.use_gpu = gpu;
+    if (gpu) {
+        // Pick a concrete GPU backend now. Passing it to mtmd prevents clip.cpp from silently
+        // falling back to CPU when no GPU backend can be initialized.
+        cp.device = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
+        cp.device = cp.device ? cp.device : ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_IGPU);
+        if (!cp.device) {
+            std::printf("ERR --gpu requested but no GPU backend/device is available\n");
+            std::fflush(stdout);
+            return 1;
+        }
+    }
     cp.print_timings = false;
     cp.warmup = false;
     cp.flash_attn_type = fa;
@@ -125,9 +139,17 @@ int main(int argc, char** argv) {
     if (min_tokens > 0) cp.image_min_tokens = min_tokens;
     mtmd_context* ctx = mtmd_init_from_file(mmproj.c_str(), text, cp);
     if (!ctx || !mtmd_support_vision(ctx)) {
-        std::printf("ERR cannot load the vision encoder %s\n", mmproj.c_str());
+        std::printf("ERR cannot load the vision encoder %s%s\n", mmproj.c_str(),
+                    gpu ? " on the requested GPU backend/device" : "");
         std::fflush(stdout);
         return 1;
+    }
+    if (gpu) {
+        const ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(cp.device);
+        const char* description = ggml_backend_dev_description(cp.device);
+        std::fprintf(stderr, "strata-vision: GPU backend %s, device %s (%s)\n",
+                     reg ? ggml_backend_reg_name(reg) : "(unknown)", ggml_backend_dev_name(cp.device),
+                     description && *description ? description : "no device description");
     }
     std::fprintf(stderr, "strata-vision: model files loaded in %.1f s\n",
                  std::chrono::duration<double>(std::chrono::steady_clock::now() - load_t0).count());
@@ -158,17 +180,30 @@ int main(int argc, char** argv) {
         mtmd_input_text txt{marker.c_str(), marker.size(), false, true};
         const mtmd_bitmap* bms[1] = {bm};
         int warm_tokens = 0;
-        if (bm && mtmd_tokenize(ctx, chunks, &txt, bms, 1) == 0) {
+        bool warmup_ok = false;
+        if (bm && chunks && mtmd_tokenize(ctx, chunks, &txt, bms, 1) == 0) {
             for (size_t c = 0; c < mtmd_input_chunks_size(chunks); ++c) {
                 const mtmd_input_chunk* ch = mtmd_input_chunks_get(chunks, c);
-                if (mtmd_input_chunk_get_type(ch) == MTMD_INPUT_CHUNK_TYPE_IMAGE && mtmd_encode_chunk(ctx, ch) == 0)
+                if (mtmd_input_chunk_get_type(ch) == MTMD_INPUT_CHUNK_TYPE_IMAGE &&
+                    mtmd_encode_chunk(ctx, ch) == 0) {
                     warm_tokens = (int) mtmd_input_chunk_get_n_tokens(ch);
+                    warmup_ok = warm_tokens > 0;
+                    break;
+                }
             }
         }
-        std::fprintf(stderr, "strata-vision: warmed up at %d image tokens in %.1f s\n", warm_tokens,
-                     std::chrono::duration<double>(std::chrono::steady_clock::now() - warm_t0).count());
+        const double warm_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - warm_t0).count();
         mtmd_input_chunks_free(chunks);
         if (bm) mtmd_bitmap_free(bm);
+        if (!warmup_ok) {
+            std::fprintf(stderr, "strata-vision: GPU warm-up failed after %.1f s\n", warm_seconds);
+            std::printf("ERR GPU vision warm-up failed; refusing to report READY\n");
+            std::fflush(stdout);
+            mtmd_free(ctx);
+            llama_model_free(text);
+            return 1;
+        }
+        std::fprintf(stderr, "strata-vision: warmed up at %d image tokens in %.1f s\n", warm_tokens, warm_seconds);
     }
     std::printf("READY %d\n", n_embd);
     std::fflush(stdout);

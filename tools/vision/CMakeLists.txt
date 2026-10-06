@@ -3,12 +3,17 @@
 #
 #   cmake -S tools/vision -B build-vision -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLAMA_DIR=third_party/llama.cpp
 #         [-DSTRATA_VISION_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native]
+#         [-DSTRATA_VISION_HIP=ON -DGPU_TARGETS=gfx1030]
 #   cmake --build build-vision --target strata-vision
 cmake_minimum_required(VERSION 3.21)
 project(strata_vision C CXX)
 
 set(LLAMA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/llama.cpp" CACHE PATH "llama.cpp checkout")
 option(STRATA_VISION_CUDA "run the vision encoder on the GPU (builds ggml-cuda)" OFF)
+option(STRATA_VISION_HIP "run the vision encoder on an AMD GPU (builds ggml-hip)" OFF)
+if(STRATA_VISION_CUDA AND STRATA_VISION_HIP)
+  message(FATAL_ERROR "Choose only one vision GPU backend: STRATA_VISION_CUDA or STRATA_VISION_HIP")
+endif()
 option(STRATA_PORTABLE "build for other PCs: AVX2 baseline, static MSVC runtime" OFF)
 if(STRATA_PORTABLE AND MSVC)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
@@ -35,6 +40,7 @@ else()
 endif()
 set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
 set(GGML_CUDA ${STRATA_VISION_CUDA} CACHE BOOL "" FORCE)
+set(GGML_HIP ${STRATA_VISION_HIP} CACHE BOOL "" FORCE)
 
 add_subdirectory(${LLAMA_DIR} llama EXCLUDE_FROM_ALL)
 

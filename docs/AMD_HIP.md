@@ -80,8 +80,9 @@ On a PC with no NVIDIA card Strata can use, the AMD card is chosen by itself; wi
   the PATH): if the HIP runtime does not see the card, setup stops there and points to the driver. It also gives the
   card's HIP number: with an integrated Radeon that is device 1, not 0 (#325). From then on setup lists the AMD cards
   as HIP numbers them, so `--gpu N` and the config's `"gpu"` are HIP numbers.
-- **Differences from Windows-on-NVIDIA and Linux-on-AMD:** no images yet (the CPU image encoder is Linux-only for
-  now), one card per model (`--gpus` is Linux-only for now), no calibration.
+- **Differences from Windows-on-NVIDIA and Linux-on-AMD:** the stock installer does not install an image encoder;
+  a HIP encoder can be built separately ([Windows image encoder](#windows-image-encoder)). One card per model
+  (`--gpus` is Linux-only for now), no calibration.
 - Two Windows-only engine details (#247, #325): hipBLAS can return success and still leave `hipErrorInvalidValue`
   set after some BF16/FP16 GEMMs (seen on gfx1201); the engine clears that one stale error after a GEMM that
   succeeded, on Windows only. `hipHostGetDevicePointer` returns the host pointer itself on Windows: kernels read
@@ -118,6 +119,48 @@ git; no admin, no AMD GPU) installs ROCm from AMD's TheRock wheels into `.rocm-w
 `dist\strata-windows-x64-hip.zip`; `START-HERE.bat --backend hip --prebuilt dist\` installs that one.
 `tools\hip\build_windows.bat tests` also builds the HIP tests (`ctest` in `build-hip-win`, with
 `.rocm-win\Lib\site-packages\_rocm_sdk_devel\bin` on the PATH). `STRATA_HIP_ARCHS` picks other architectures.
+
+### Windows image encoder
+
+`tools/vision` can build llama.cpp's HIP image encoder with `STRATA_VISION_HIP=ON`. CUDA and HIP are mutually
+exclusive build options; both off gives a CPU encoder. The main Strata engine need not be rebuilt.
+
+From a command prompt, with Visual Studio C++ Build Tools, Python, CMake and Ninja installed:
+
+```bat
+set STRATA_HIP_ARCHS=gfx1030
+set LLAMA_DIR=C:\path\to\llama.cpp
+tools\vision\build_windows_hip.bat
+```
+
+Use the card's real architecture and the `LLAMA_CPP_COMMIT` from `setup.py` for the llama.cpp checkout
+(`3cf03257f219afbe7334045ff7c6a06ac68c627d` in 0.1.40). The script installs ROCm into `.rocm-win`, uses ROCm's
+Clang with the MSVC headers/linker, and builds `build-vision-hip\bin\strata-vision.exe`. It leaves the running
+installation alone. `BUILD_JOBS` defaults to 8; `BUILD_DIR`, `ROCM_VENV`, `STRATA_ROCM_VERSION` and
+`STRATA_ROCM_INDEX` may be overridden. Use the ROCm version in the installed `engine\BUILD.json`; the default
+is 0.1.40's `10.2.0a20260930`. The pinned ggml Windows backend uses `GPU_TARGETS`, not CMake's HIP-language
+architecture flag. HIP virtual-memory allocation is disabled in this build.
+
+Stop the server, back up its config and encoder, and copy the new executable to `engine\strata-vision.exe`.
+Keep the matching `amdhip64_7.dll` and `amd_comgr.dll` beside it and `engine\rocm\bin` in the config's `lib_dirs`.
+Use the text model's matching mmproj, retain `--vision` in the engine arguments, and set `vision.gpu` to `true`
+in the model config. An existing CPU setup can retain its `max_tokens` cap initially; a larger cap reserves more
+GPU memory. Record the local encoder separately from the official engine in `engine\BUILD.json`.
+
+Restart using the model's launcher. The encoder starts and warms its largest image before the engine chooses
+its expert cache size. Its log must identify `GPU backend ROCm`, the device and card, followed by a successful
+warm-up; `--gpu` now fails if a GPU cannot initialize instead of silently using the CPU. Then send a real image
+request through the API: `/health` reporting `images: true` alone does not prove GPU execution. Without `--gpu`,
+the same executable uses the CPU and masks CUDA/HIP devices before backend initialization.
+
+This is a separate source-build path. The 0.1.40 release archive and setup's vision choices have not been
+changed; an engine update can require rebuilding/reinstalling this encoder. Other cards and ROCm versions
+need their own runtime check.
+
+[Local RX 6900 XT validation](../bench/results/2026-10-07-windows-hip-vision-rx6900xt/README.md): Windows 11,
+ROCm `10.2.0a20260930`, Strata 0.1.40 and Huihui Swift IQ3_XXS. HIP initialization, CPU mode, failure with no
+visible GPU, and two distinct image requests through Chat Completions and Responses passed. This used a
+300-image-token cap and checked basic shapes and large text, not fine-detail OCR or grounding accuracy.
 
 ## Build
 
