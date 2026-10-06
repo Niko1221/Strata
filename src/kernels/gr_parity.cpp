@@ -272,9 +272,9 @@ int scalar_activation_contract() {
 }
 
 int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const uint16_t* d_up,
-                           const uint16_t* d_inject, float eps) {
+                           const uint16_t* d_inject, float eps, int T) {
     using namespace strata::kernels;
-    constexpr int N = 2560, HC = 4, LR = 320, D = N * HC, T = kFusedGrMaxT;
+    constexpr int N = 2560, HC = 4, LR = 320, D = N * HC;
     std::mt19937 rng(0x6f8a);
     std::normal_distribution<float> normal(0.0f, 0.3f);
     std::vector<float> r((size_t) T * D), bo((size_t) T * N), inj((size_t) T * HC);
@@ -358,16 +358,17 @@ int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const ui
 
     cudaStream_t stream = nullptr;
     check(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), "multi stream");
-    // Max T forces the HIP kernel's full dynamic-LDS request: 8 * 1280 * sizeof(float) = 40 KiB.
+    // T tokens request T * 1280 * sizeof(float) of dynamic LDS: T=8 is the full 40 KiB, T=4 is 20 KiB, T=2 is 10 KiB.
+    // The short windows are what the engine's exact-T dispatch actually launches.
     fused_gr_read_multi(args.data(), T, d_xn, stream);
-    check(cudaStreamSynchronize(stream), "multi max-T sync");
+    check(cudaStreamSynchronize(stream), "multi T sync");
     const Snapshot multi = snapshot();
     for (int t = 0; t < T; ++t) fused_gr_read(args[t], stream);
     check(cudaStreamSynchronize(stream), "single reference sync");
     const Snapshot single = snapshot();
     int bad = 0;
     if (!same(multi, single)) {
-        std::printf("  fused GR multi max-T differs from single-token calls\n");
+        std::printf("  fused GR multi T=%d differs from single-token calls\n", T);
         ++bad;
     }
 
@@ -381,7 +382,7 @@ int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const ui
     check(cudaStreamSynchronize(stream), "multi graph initial sync");
     const Snapshot captured = snapshot();
     if (!same(multi, captured)) {
-        std::printf("  fused GR multi captured graph differs from direct max-T call\n");
+        std::printf("  fused GR multi captured graph differs from the direct T=%d call\n", T);
         ++bad;
     }
 
@@ -409,7 +410,7 @@ int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const ui
 
     // S26 STRATA_QFUSE: the read's own q8_1 image of `mixed` must be the bytes native_quantize_q8_1 writes from it -
     // for every T (1..8), directly and through a captured graph replayed twice (the group counters must reset)
-    {
+    if (T == kFusedGrMaxT) {
         uint8_t *d_q = nullptr, *d_ref = nullptr;
         unsigned* d_cnt = nullptr;
         const size_t qbytes = (size_t) T * (N / 32) * 36;
@@ -454,7 +455,7 @@ int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const ui
         bad += qbad;
         cudaFree(d_q); cudaFree(d_ref); cudaFree(d_cnt);
     }
-    std::printf("  fused GR multi max-T=8 LDS launch and changing graph replay %s\n",
+    std::printf("  fused GR multi T=%d LDS launch and changing graph replay %s\n", T,
                 bad == 0 ? "pass" : "FAIL");
     check(cudaGraphExecDestroy(graph_exec), "multi graph exec destroy");
     check(cudaGraphDestroy(graph), "multi graph destroy");
@@ -805,7 +806,9 @@ int main(int argc, char** argv) {
                         activation_mode_name(mode), ok ? "pass" : "*** FAIL ***", rm, ri);
             if (!ok) ++bad;
         }
-        bad += fused_multi_lds_parity(dN, dD, dU, dJ, eps);
+        bad += fused_multi_lds_parity(dN, dD, dU, dJ, eps, strata::kernels::kFusedGrMaxT);   // the full window: the 40 KiB LDS request
+        bad += fused_multi_lds_parity(dN, dD, dU, dJ, eps, 4);              // the exact-T dispatch at T=4
+        bad += fused_multi_lds_parity(dN, dD, dU, dJ, eps, 2);              // the exact-T dispatch at T=2
         select_activation_mode(0);
         cudaFree(rws_raw);
         cudaFree(dR); cudaFree(dN); cudaFree(dD); cudaFree(dU); cudaFree(dJ); cudaFree(dM); cudaFree(dI);
