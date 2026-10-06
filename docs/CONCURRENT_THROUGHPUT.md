@@ -58,7 +58,17 @@ borrowing when reproducing the historical common-arithmetic controls. Preserve
 normal kernels/adaptation for performance runs, and record those as a separate
 comparison. Keep expert capacity, context, sampling and prompts matched.
 
-## Evidence, interpretation and limits
+## Fresh workload measurements
+
+See [essay and tool-driven coding results](PR_WORKLOAD_BENCHMARKS.md). On the
+undervolted RTX 5090 / 9950X3D / 48 GB DDR5-6000 setup, median four-stream
+decode was 146.2 to 200.1 TPS for essays and 167.1 to 325.7 TPS for the coding
+fixture. The baseline includes only the two-line shared-MTP-head metadata fix
+already present here; untouched upstream MTP fails on this model. The report
+includes whole-run rates, individual runs, failed checks and turn-limit counts.
+These are throughput observations, not proof of equivalent task quality.
+
+## Earlier evidence, interpretation and limits
 
 Historical integrated-candidate tests used RTX 5090, Ryzen 9950X3D, Swift IQ2_XS,
 98304 context/request and 2560 MiB reserve. This source split does not establish
@@ -85,5 +95,6 @@ docs/evidence/v040-integration. The local review bundle maps those reports to
 these extracted sources and records fresh preparation checks. Machine-specific
 launchers, configs and large diagnostics are deliberately outside this patch.
 Before publication, the review bundle/evidence location must be made available
-to reviewers. AMD/multi-GPU testing and a fresh pristine-upstream performance
-comparison remain limitations; no new c=1 throughput gain is asserted.
+to reviewers. AMD/multi-GPU testing remains unavailable; no new c=1 throughput gain is
+asserted. The fresh baseline comparison and its minimal correctness fix are
+documented separately in PR_WORKLOAD_BENCHMARKS.md.
