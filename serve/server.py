@@ -1319,22 +1319,31 @@ class Vision:
         raise ValueError("an image must be a data: URL, an http(s) URL or a local file path")
 
     @staticmethod
-    def normalize(data: bytes) -> bytes:
-        """The formats strata-vision's decoder (stb_image) reads pass through; anything else is converted to PNG."""
-        if data[:3] == b"\xff\xd8\xff" or data[:8] == b"\x89PNG\r\n\x1a\n" or data[:2] == b"BM" or \
-                data[:6] in (b"GIF87a", b"GIF89a"):
-            return data
+    def normalize(data: bytes, max_side: int = 1024) -> bytes:
+        """The formats strata-vision's decoder (stb_image) reads pass through; anything else is converted to PNG.
+
+        Pictures larger than max_side px on the long side are downscaled first: the vision encoder works on a
+        fixed token budget and discards the extra detail anyway, while a 12MP photo takes minutes (not seconds)
+        to encode on the CPU. 1024 px keeps full quality for the encoder's ~1024-token cap."""
+        stb_readable = (data[:3] == b"\xff\xd8\xff" or data[:8] == b"\x89PNG\r\n\x1a\n" or data[:2] == b"BM" or
+                        data[:6] in (b"GIF87a", b"GIF89a"))
         try:
             import io
             from PIL import Image
         except ImportError:
+            if stb_readable:
+                return data
             raise ValueError("this image format needs Pillow (python -m pip install pillow); JPEG, PNG, BMP and "
                              "GIF work without it") from None
         try:
             im = Image.open(io.BytesIO(data))
+            if stb_readable and max(im.size) <= max_side:
+                return data  # small enough: the old passthrough, byte-identical
             im.load()
         except Exception as e:
             raise ValueError(f"the image could not be read ({e})") from None
+        if max(im.size) > max_side:
+            im.thumbnail((max_side, max_side), Image.LANCZOS)
         if im.mode in ("RGBA", "LA", "P") and "transparency" in im.info or im.mode in ("RGBA", "LA"):
             im = im.convert("RGBA")
             bg = Image.new("RGB", im.size, (255, 255, 255))   # transparent areas become white, not black
