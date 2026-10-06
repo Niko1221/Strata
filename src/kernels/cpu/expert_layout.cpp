@@ -5,10 +5,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include "strata/platform/cpu_relax.hpp"
 #if defined(_MSC_VER)
 #include <intrin.h>
 #include <immintrin.h>
-#else
+#elif defined(STRATA_X86)
 #include <cpuid.h>
 #endif
 #include <fstream>
@@ -37,6 +38,34 @@ int cpu_isa_cap() {
     return cap;
 }
 
+#if !defined(STRATA_X86)
+// aarch64 / other: no AVX kernels exist in this build (CMake leaves their files out); the experts run on ggml-cpu.
+bool cpu_avx512_ok() { return false; }
+bool cpu_avx512bw_ok() { return false; }
+bool cpu_avx2_ok() { return false; }
+bool cpu_avx1_ok() { return false; }
+bool cpu_sse42_ok() { return false; }
+bool cpu_gather_fast() { return false; }
+bool cpu_gather_fast_here() { return false; }
+bool cpu_avxvnni_ok() { return false; }
+std::string cpu_name() {
+    std::ifstream f("/proc/cpuinfo");
+    std::string line;
+    while (std::getline(f, line))
+        if (line.rfind("model name", 0) == 0 || line.rfind("Model", 0) == 0) {
+            const size_t c = line.find(':');
+            if (c != std::string::npos) {
+                const size_t b = line.find_first_not_of(" \t", c + 1);
+                if (b != std::string::npos) return line.substr(b);
+            }
+        }
+#if defined(__aarch64__)
+    return "aarch64";
+#else
+    return "unknown";
+#endif
+}
+#else
 bool cpu_avx512_ok() {
     static const bool ok = [] {
         if (const char* f = std::getenv("STRATA_FORCE_AVX2"); f != nullptr && f[0] == '1') return false;
@@ -175,6 +204,7 @@ bool cpu_sse42_ok() {
     }();
     return ok;
 }
+#endif  // STRATA_X86
 
 const char* isa_floor_build() {
 #if defined(STRATA_ISA_FLOOR_AVX)
@@ -186,6 +216,7 @@ const char* isa_floor_build() {
 #endif
 }
 
+#if defined(STRATA_X86)
 namespace {
 void cpuid_regs(unsigned leaf, unsigned sub, unsigned r[4]) {
 #if defined(_MSC_VER)
@@ -197,6 +228,7 @@ void cpuid_regs(unsigned leaf, unsigned sub, unsigned r[4]) {
 #endif
 }
 }  // namespace
+#endif  // STRATA_X86
 
 int iq256_gather_setting() {
     static const int s = [] {
@@ -207,6 +239,7 @@ int iq256_gather_setting() {
     return s;
 }
 
+#if defined(STRATA_X86)
 bool cpu_gather_fast() {
     static const bool ok = [] {
         if (cpu_isa_cap() < 3) return false;   // STRATA_FORCE_ISA: as on a CPU that stops at AVX2
@@ -285,6 +318,7 @@ std::string cpu_name() {
     const size_t b0 = name.find_first_not_of(' '), b1 = name.find_last_not_of(' ');
     return b0 == std::string::npos ? std::string("unknown") : name.substr(b0, b1 - b0 + 1);
 }
+#endif  // STRATA_X86
 
 void q2_rows_any(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt, float* const* out,
                  int r0, int r1) {

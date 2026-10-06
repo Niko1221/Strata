@@ -59,6 +59,23 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 WIN = os.name == "nt"
+# aarch64 (NVIDIA DGX Spark / GB10, Grace): no ready-made engine; compiled here with ggml's CPU flags spelled out
+ARM = platform.machine().lower() in ("aarch64", "arm64")
+
+
+def arm_cpu_arch() -> str:
+    """-march for ggml-cpu on aarch64 from /proc/cpuinfo: gcc's -mcpu=native finds no features on big.LITTLE parts
+    (GB10's Cortex-X925 + A725), which leaves ggml without the dot-product instructions its i-quant paths use."""
+    feats = set()
+    try:
+        for line in open("/proc/cpuinfo"):
+            if line.startswith("Features"):
+                feats |= set(line.split(":", 1)[1].split())
+    except OSError:
+        pass
+    base = "armv8.6-a" if {"i8mm", "bf16"} <= feats else "armv8.2-a"
+    ext = [e for f, e in (("asimddp", "dotprod"), ("i8mm", "i8mm"), ("asimdhp", "fp16")) if f in feats]
+    return "+".join([base, *ext])
 # #214: every Hugging Face file comes from a fixed commit of its repository (the `sha` of
 # https://huggingface.co/api/models/<repo> when this was pinned), so a checkout installs the same files on any
 # day.  A revision the repository no longer has falls back to its current files, with a message (download()).
@@ -527,7 +544,8 @@ def cpu_info():
     else:
         try:
             txt = open("/proc/cpuinfo").read()
-            flags = set(re.search(r"^flags\s*:\s*(.*)$", txt, re.M).group(1).split())
+            fl = re.search(r"^flags\s*:\s*(.*)$", txt, re.M)          # aarch64 has "Features", no "flags"
+            flags = set(fl.group(1).split()) if fl else set()
             avx2 = "avx2" in flags
             avx512 = {"avx512f", "avx512bw", "avx512vl", "avx512_vnni", "avx512vbmi"} <= flags
             m = re.search(r"^model name\s*:\s*(.*)$", txt, re.M)
@@ -641,16 +659,52 @@ def _cpuid_avx2() -> bool:
         return False
 
 
+def unified_memory_pci_ids() -> set | None:
+    """The PCI addresses (domain, bus, device) of the GPUs that have no memory of their own - a unified memory system,
+    such as the DGX Spark (GB10), where the CPU and the GPU share one memory.  Asked of the driver itself
+    (CU_DEVICE_ATTRIBUTE_INTEGRATED from libcuda, which comes with the NVIDIA driver; the engine reads the same flag as
+    cudaDevAttrIntegrated), and matched by PCI address because CUDA may number the GPUs differently from nvidia-smi.
+    None when the driver library cannot be asked."""
+    try:
+        cu = ctypes.CDLL("nvcuda.dll" if WIN else "libcuda.so.1")
+        if cu.cuInit(0) != 0:
+            return None
+        n = ctypes.c_int()
+        if cu.cuDeviceGetCount(ctypes.byref(n)) != 0:
+            return None
+        ids = set()
+        for i in range(n.value):
+            dev, shared, dom, bus, slot = (ctypes.c_int() for _ in range(5))
+            if cu.cuDeviceGet(ctypes.byref(dev), i) != 0:
+                return None
+            for v, attr in ((shared, 18), (dom, 50), (bus, 33), (slot, 34)):   # shares host memory; PCI domain/bus/device
+                if cu.cuDeviceGetAttribute(ctypes.byref(v), attr, dev) != 0:
+                    return None
+            if shared.value:
+                ids.add((dom.value, bus.value, slot.value))
+        return ids
+    except (OSError, AttributeError):
+        return None
+
+
 def gpus():
     """Every NVIDIA GPU, numbered as nvidia-smi numbers them (by PCI bus, the order the engine is told to use)."""
-    s = out(["nvidia-smi", "--query-gpu=index,name,memory.total,compute_cap,driver_version",
+    s = out(["nvidia-smi", "--query-gpu=index,name,memory.total,compute_cap,driver_version,pci.bus_id",
              "--format=csv,noheader,nounits"])
+    unified = unified_memory_pci_ids()
     found = []
     for line in s.strip().splitlines():
         try:
-            idx, name, mem, cc, drv = [x.strip() for x in line.split(",")]
-            found.append({"index": int(idx), "name": name, "vram_gb": float(mem) / 1024.0, "arch": cc.replace(".", ""),
-                          "driver": drv})
+            idx, name, mem, cc, drv, pci = [x.strip() for x in line.split(",")]
+            # A unified memory system (DGX Spark's GB10): the GPU has no memory of its own and uses the system's RAM,
+            # so it gets that RAM as its memory (and setup's unified-memory settings, below).  The driver says so
+            # (unified_memory_pci_ids); without it, nvidia-smi's memory.total of "[N/A]" for such a GPU is the hint.
+            dom, bus, rest = pci.split(":")
+            addr = (int(dom, 16), int(bus, 16), int(rest.split(".")[0], 16))
+            unified_memory = addr in unified if unified is not None else not mem.replace(".", "", 1).isdigit()
+            found.append({"index": int(idx), "name": name, "arch": cc.replace(".", ""), "driver": drv,
+                          "vram_gb": ram_gb() if unified_memory else float(mem) / 1024.0,
+                          "unified_memory": unified_memory})
         except ValueError:
             continue
     return found
@@ -2162,7 +2216,7 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
     src, vsrc = source_hash(ENGINE_SOURCES), source_hash(VISION_SOURCES)
     archs = sorted(set(gpu.get("archs") or [gpu["arch"]]))
     has_archs = set(archs) <= set(meta.get("archs", []))
-    floor = cpu_floor(cpu_info()[1])                     # "" on an AVX2 CPU: the normal engine
+    floor = "" if ARM else cpu_floor(cpu_info()[1])      # "" on an AVX2 CPU, and on aarch64: the normal engine
     engine_ok = meta.get("backend") == "hip" and (eng / EXE).exists() and meta.get("src") == src and has_archs and \
         (meta.get("isa_floor") or "") == floor
     vision_ok = vision == "none" or ((eng / VEXE).exists() and meta.get("vision_src") == vsrc)
@@ -2558,7 +2612,8 @@ def install_build_tools(gpu, yes):
                 fail("the CUDA Toolkit can be installed automatically on Ubuntu 22.04 / 24.04 only",
                      "install it from https://developer.nvidia.com/cuda-downloads and run it again")
             deb = Path("/tmp/cuda-keyring.deb")
-            download(f"https://developer.download.nvidia.com/compute/cuda/repos/ubuntu{ver}/x86_64/cuda-keyring_1.1-1_all.deb",
+            download(f"https://developer.download.nvidia.com/compute/cuda/repos/ubuntu{ver}/{'sbsa' if ARM else 'x86_64'}/"
+                     "cuda-keyring_1.1-1_all.deb",
                      deb, "CUDA repository key")
             run(["sudo", "dpkg", "-i", str(deb)])
             run(["sudo", "apt-get", "update"])
@@ -2661,7 +2716,7 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
     # a card the engine has no code for (a GPU added with --gpus, #128) needs a compile even when the source is the
     # same; the compile keeps the generations it was built for
     new_arch = local and not set(archs) <= built
-    floor = cpu_floor(cpu_info()[1])                     # "" on an AVX2 CPU: the normal engine
+    floor = "" if ARM else cpu_floor(cpu_info()[1])      # "" on an AVX2 CPU, and on aarch64: the normal engine
     engine_ok = local and (eng / EXE).exists() and meta.get("src") == src and not new_arch and \
         (meta.get("isa_floor") or "") == floor
     vision_ok = not want_vision or ((eng / VEXE).exists() and (not local or meta.get("vision_src") == vsrc))
@@ -2681,12 +2736,15 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
         cmake_build(ROOT, bdir, "strata",
                     ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_BUILD_TESTS=OFF", f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}",
                      f"-DCMAKE_CUDA_COMPILER={nvcc}", f"-DSTRATA_GGML_DIR={llama}", *engine_defs(archs, toolkit),
+                     *([f"-DGGML_CPU_ARM_ARCH={arm_cpu_arch()}"] if ARM else []),
                      *isa_floor_defs(floor, bdir, meta)],
                     vcvars, "build-strata-cuda12.bat" if t12 else "build-strata.bat")
         shutil.copy2(bdir / EXE, eng / EXE)
     if not vision_ok:
         say("  Compiling the image encoder" + (" with CUDA (10-20 minutes, once) ..." if vision == "gpu" else " ..."))
         defs = [f"-DLLAMA_DIR={llama}", f"-DSTRATA_VISION_CUDA={'ON' if vision == 'gpu' else 'OFF'}"]
+        if ARM:
+            defs.append(f"-DGGML_CPU_ARM_ARCH={arm_cpu_arch()}")
         if vision == "gpu":
             defs += [f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}", f"-DCMAKE_CUDA_COMPILER={nvcc}"]
         cmake_build(ROOT / "tools" / "vision", vdir, "strata-vision", defs, vcvars,
@@ -4302,7 +4360,9 @@ def main() -> int:
         gpu["archs"] = sorted({x["arch"] for x in chosen})  # the engine needs code for every one of them
         if multi:
             ok("GPUs: " + " + ".join(gpu_name(x) for x in chosen) + " together (the model's layers are split across them)")
-        ok(f"GPU: {gpu['name']}, {gpu['vram_gb']:.1f} GB VRAM, compute capability {cc(gpu)}, driver {gpu['driver']}")
+        mem = (f"{gpu['vram_gb']:.0f} GB unified memory" if gpu.get("unified_memory")
+               else f"{gpu['vram_gb']:.1f} GB VRAM")
+        ok(f"GPU: {gpu['name']}, {mem}, compute capability {cc(gpu)}, driver {gpu['driver']}")
         cuda_tk, why = cuda_choice(gpu["archs"], a.cuda)   # one engine per model: its oldest card decides
         if why:
             (warn if cuda_tk == 13 or str(a.cuda) == "12" else ok)(f"CUDA {cuda_tk}: {why}")
@@ -4339,11 +4399,14 @@ def main() -> int:
         warn(f"Windows' page file is {pf:.1f} GB: the graphics card's memory needs room there too (issue #60), so "
              "the model may not start or may use less VRAM. Set it to \"System managed\": System > About > "
              "Advanced system settings > Performance > Advanced > Virtual memory")
-    ok(f"CPU: {cpu} ({'AVX-512' if avx512 else 'AVX2' if avx2 else 'no AVX2'})")
-    floor = cpu_floor(avx2)
+    if ARM:
+        ok(f"CPU: {cpu} (aarch64; the engine is compiled on this machine, docs/DGX_SPARK.md)")
+    else:
+        ok(f"CPU: {cpu} ({'AVX-512' if avx512 else 'AVX2' if avx2 else 'no AVX2'})")
+    floor = "" if ARM else cpu_floor(avx2)
     if floor == "unsupported":
         fail("this CPU has neither AVX2 nor SSE4.2; Strata needs at least SSE4.2 (Intel Nehalem, 2008, or newer)")
-    if not avx2:
+    if not avx2 and not ARM:   # aarch64: ggml-cpu's NEON kernels, compiled here (arm_cpu_arch)
         # #394 #595 #623: the ready-made engine is AVX2; an older CPU gets one compiled here, whose CPU experts run on
         # ggml-cpu's kernels for this CPU.  Experimental: measured only on newer CPUs with the older path forced, and by
         # users on a few Xeons.  A warning, not a stop.
@@ -4426,9 +4489,15 @@ def main() -> int:
         # Unsloth's UD-Q4_K_XL: a RAM budget of experts, the rest from the GGUF on the SSD - not the low-RAM mode (no
         # experts.bin: it would be another 77 GB on the disk), and one GPU (the budget mode has no layer split) unless
         # the RAM holds the GGUFs and 24 GB more: then several, without the budget, if asked for (#498)
+        # a unified memory system (DGX Spark): no RAM budget unless asked - it would be a second copy of the experts in
+        # the memory the GPU's expert cache uses; the cache holds what fits (--mmap-experts, below), as for every model
+        unified = bool(gpu.get("unified_memory")) and a.resident_budget_gib is None
         if MODELS[model].get("experimental"):
-            warn(f"{model} is EXPERIMENTAL (docs/UNSLOTH_Q4.md): most of its experts are read from the SSD while it "
-                 "answers, so it is several times slower than the 2-3-bit models; quality checked against llama.cpp")
+            if unified:
+                warn(f"{model} is EXPERIMENTAL (docs/UNSLOTH_Q4.md); quality checked against llama.cpp")
+            else:
+                warn(f"{model} is EXPERIMENTAL (docs/UNSLOTH_Q4.md): most of its experts are read from the SSD while it "
+                     "answers, so it is several times slower than the 2-3-bit models; quality checked against llama.cpp")
         if hip and MODELS[model].get("nvidia_only"):
             # #429 (jkuepker): checked before the 111 GB download.  The HIP engine has no prompt kernels for its
             # Q4_K / Q5_K experts (STRATA_MMQ_KQUANTS is CUDA-only) and it has not been run on AMD: asked, not refused
@@ -4445,11 +4514,14 @@ def main() -> int:
                          f"has {ram:.0f} GB", f"choose one of the 2-3-bit models, or --model {model} --yes to "
                          "install it anyway", "  Install it anyway?")
             warn(f"installing {model} with {ram:.0f} GB of RAM, as you chose")
-        budget = budget_choice(model, ram, a.resident_budget_gib)
+        if unified:
+            ok(f"unified memory: no RAM budget, {model}'s experts go to the GPU's expert cache")
+        else:
+            budget = budget_choice(model, ram, a.resident_budget_gib)
         if multi and not unsloth_together(a, model, ram, gpu, chosen):
             multi, sel, chosen = [], [gpu["index"]], [gpu]
         q4_split = bool(multi)                         # #498: on several GPUs without the RAM budget
-        if not q4_split:
+        if not q4_split and budget is not None:
             ok(f"RAM budget: {budget:g} GiB of {model}'s experts in RAM, the rest read from the model files on the SSD")
         if a.low_ram not in ("auto", "off"):
             warn(f"--low-ram {a.low_ram} does not apply to {model}: it always reads part of its experts from the files")
@@ -4651,8 +4723,8 @@ def main() -> int:
         gpu = hip_card(eng, gpu, amd)
         a.gpu = gpu["index"] if gpu["count"] > 1 else a.gpu
     else:
-        eng = None if a.build or hip else get_prebuilt(a.prebuilt, gpu, vision, **({"toolkit": 12} if cuda_tk == 12
-                                                                                    else {}))
+        eng = None if a.build or hip or ARM else get_prebuilt(a.prebuilt, gpu, vision, **({"toolkit": 12} if cuda_tk == 12
+                                                                                           else {}))   # the release is x86-64
     if eng is not None and not hip and json.loads((eng / "BUILD.json").read_text(encoding="utf-8")).get("source") != "local":
         pip_cuda_libs(cuda_tk)
         if vision != "none" and not (eng / VEXE).exists():
@@ -4784,6 +4856,10 @@ def main() -> int:
            "the OS file cache (run setup again after the next engine update)")
     if low_ram:   # the experts from the pack's experts.bin: the ones the GPU does not hold copied into RAM, or mapped
         args += ["--resident-experts" if resident else "--mmap-experts"]
+    elif gpu.get("unified_memory"):
+        # a unified memory system (DGX Spark): a RAM arena of the experts would be a second copy of the expert cache;
+        # mapped, the GGUF's pages are the OS file cache, which gives way to the cache's allocation
+        args += ["--mmap-experts"]
     disk = None if is_wsl() else rotational_disk(ple)  # #605 (WSL's virtual disk says rotational)
     if disk:
         tensor = next((t for t in GGUFFile(ple).tensors if t.name == "per_layer_token_embd.weight"), None)
@@ -4811,6 +4887,11 @@ def main() -> int:
                  "only about 1 GB there): off")
     elif ctx >= 65536 and a.kv_streaming == "off":
         ok("KV streaming off, as you chose (--kv-streaming off): the KV cache stays in VRAM")
+    elif gpu.get("unified_memory") and ctx >= 65536:
+        # streaming moves the KV cache to RAM to free VRAM for experts; with one memory for both it frees nothing
+        ok("KV streaming off: unified memory (the GPU's memory is the system's RAM), there is no VRAM to free")
+        if a.kv_streaming == "on":
+            warn("--kv-streaming on: with unified memory there is no VRAM for it to free: off")
     elif ctx >= 65536 and (stream_fits or a.kv_streaming == "on"):
         args += ["--kv-resident", "32768"]
         ok(f"KV streaming on: the context's KV cache lives in RAM ({kv_ram_gb:.1f} GB), more experts fit in VRAM")

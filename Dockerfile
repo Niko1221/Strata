@@ -14,6 +14,14 @@
 #   docker build -t strata .
 #   docker build -t strata --build-arg CUDA_ARCHITECTURES=89 .        # RTX 40 only
 #
+# DGX Spark (GB10, aarch64): build on the Spark, not an x86 PC. When the build
+# machine is ARM and CUDA_ARCHITECTURES is left at the desktop default, the
+# image is compiled for sm_121 only, and ggml-cpu gets GGML_CPU_ARM_ARCH from
+# /proc/cpuinfo (gcc -mcpu=native finds no features on the GB10).
+#   docker build -t strata .
+#   docker run --rm --gpus all -p 8080:8080 --ulimit memlock=-1 \
+#     -v strata-data:/data -e MODEL=IQ2_XS -e CONTEXT=131072 strata
+#
 # Run (host needs an NVIDIA driver >= 580 and nvidia-container-toolkit):
 #   docker run --rm --gpus all \
 #     -p 8080:8080 \
@@ -73,17 +81,23 @@ import setup
 
 llama = setup.get_llama_cpp()
 nvcc, _ = setup.find_nvcc()
-arch = os.environ.get("CUDA_ARCHITECTURES", "75;80;86;89;120").strip().strip('"').replace(",", ";")
+desktop = "75;80;86;89;120"
+arch = os.environ.get("CUDA_ARCHITECTURES", desktop).strip().strip('"').replace(",", ";")
+# GB10 is sm_121. The desktop list has no cubin for it, and compiling those
+# arches on the Spark does not produce an engine the GPU can run.
+if setup.ARM and arch == desktop:
+    arch = "121"
+arm = [f"-DGGML_CPU_ARM_ARCH={setup.arm_cpu_arch()}"] if setup.ARM else []
 vision = "gpu" if os.environ.get("BUILD_VISION", "1") == "1" else "none"
 
 setup.cmake_build(setup.ROOT, setup.ROOT / "build", "strata",
     ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_BUILD_TESTS=OFF",
      f"-DCMAKE_CUDA_ARCHITECTURES={arch}", f"-DCMAKE_CUDA_COMPILER={nvcc}",
-     f"-DSTRATA_GGML_DIR={llama}"], None, "build-strata.bat")
+     f"-DSTRATA_GGML_DIR={llama}", *arm], None, "build-strata.bat")
 if vision != "none":
     setup.cmake_build(setup.ROOT / "tools" / "vision", setup.ROOT / "build-vision", "strata-vision",
         [f"-DLLAMA_DIR={llama}", "-DSTRATA_VISION_CUDA=ON",
-         f"-DCMAKE_CUDA_ARCHITECTURES={arch}", f"-DCMAKE_CUDA_COMPILER={nvcc}"], None, "build-vision.bat")
+         f"-DCMAKE_CUDA_ARCHITECTURES={arch}", f"-DCMAKE_CUDA_COMPILER={nvcc}", *arm], None, "build-vision.bat")
 
 eng = setup.ROOT / "engine"
 eng.mkdir(exist_ok=True)

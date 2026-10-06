@@ -2270,9 +2270,11 @@ int main(int argc, char** argv) {
     // compiled `/arch:AVX512`, so on a CPU without those features it does not fail - it executes an illegal
     // instruction at some unpredictable token.  Refusing at second zero is the whole point of P2.S3's check.
     strata::kernels::cpu::expert_set_oracle_q8_0(o.cpu_oracle_q8_0);
-    // ... and nothing runs on a CPU without AVX2: every CPU expert kernel is AVX2 at least (the AVX-512 ones are
-    // chosen above it), and so is ggml-cpu in the release build, which the native pack's layout load initializes
-    // next.  Refused here, by name, rather than an illegal instruction in the first expert.
+    // ... and on x86 nothing runs on a CPU without AVX2 unless this is the experimental older-CPU build: every CPU
+    // expert kernel is AVX2 at least (the AVX-512 ones are chosen above it), and so is ggml-cpu in the release
+    // build.  Refused here, by name, rather than an illegal instruction in the first expert.  aarch64 (DGX Spark)
+    // has no AVX; its experts run on ggml-cpu's NEON kernels (src/kernels/cpu/portable.cpp).
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
     // The experimental older-CPU build (STRATA_ISA_FLOOR=avx|none, compiled on that PC; #394 #595 #623) has ggml-cpu
     // for that floor, so a native pack's experts run there on ggml-cpu (every AVX2 kernel is behind cpu_avx2_ok).
     const char* isa_floor = strata::kernels::cpu::isa_floor_build();
@@ -2300,6 +2302,13 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: this is the older-CPU build (ggml-cpu for %s); this CPU has AVX2, "
                                  "and the normal build is faster on it\n", isa_floor);
     }
+#else
+    if (o.cpu_oracle_q8_0) {
+        std::fprintf(stderr, "strata generate: --cpu-oracle-q8-0 is the x86 Q8_0 activation contract; this CPU uses the "
+                             "scalar quantizer\n");
+        return 2;
+    }
+#endif
 
     std::string err;
     if (!o.native_head_gguf.empty() && !o.stream_token) {
