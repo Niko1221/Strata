@@ -668,6 +668,7 @@ int64_t qsa_kv_resident() { return g_kv_resident; }
 int64_t qsa_kv_resident_min() { return 20480; }
 uint64_t qsa_kv_host_bytes() { return g_kv_host_bytes; }
 void qsa_set_kv_shared_host(bool enabled) { g_kv_shared_host = enabled; }
+bool qsa_kv_shared_host() { return g_kv_shared_host; }
 
 bool qsa_host_alloc(const ModelGeometry& g, const QsaState& st, int64_t pages, strata::kernels::KvHostPools& out) {
     const QsaShapes s = qsa_shapes(g);
