@@ -2077,6 +2077,17 @@ class SharedSettings(unittest.TestCase):
         self.chat()
         self.assertNotIn("temperature", self.engine.last_sampling)
 
+    def test_a_body_without_the_defaults_wrapper_is_rejected(self):
+        """A body with no "defaults" key is a mistake, not the documented "clear them" ({"defaults": null})."""
+        self.req("/settings", {"defaults": {"temperature": 0.3}})
+        code, b = self.req("/settings", {"temperature": 0.9})        # a client that forgot the wrapper
+        self.assertEqual(code, 400, b)
+        self.assertIn("defaults", b["error"]["message"])
+        self.assertTrue(self.svc.shared)                             # kept: the settings are still there
+        self.assertTrue(os.path.exists(self.svc.shared_path))        # and so is the file
+        self.chat()
+        self.assertEqual(self.engine.last_sampling["temperature"], 0.3)
+
     def test_only_strata_s_own_page_may_set_them(self):
         code, _ = self.req("/settings", None, {"Content-Type": "text/plain"}, raw=b'{"defaults": {"temperature": 1}}')
         self.assertEqual(code, 415)

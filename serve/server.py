@@ -4132,7 +4132,12 @@ def make_handler(svc: Service):
                 return
             try:
                 req = json.loads(body or b"{}")
-                shared = svc.set_shared(req.get("defaults") if isinstance(req, dict) else None)
+                if not isinstance(req, dict) or "defaults" not in req:
+                    self._json(400, {"error": {"type": "invalid_request_error",
+                                              "message": 'the body must be {"defaults": {...}} to set them, '
+                                                         'or {"defaults": null} to clear them'}})
+                    return
+                shared = svc.set_shared(req["defaults"])
             except ValueError as e:
                 self._json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
                 return
