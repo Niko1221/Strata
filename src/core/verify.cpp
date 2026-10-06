@@ -1527,12 +1527,9 @@ bool Verifier::capture(int T, std::string& err) {
         std::fprintf(stderr, "\n");
     }
 #endif
-    const cudaError_t ie = cudaGraphInstantiate(&exec_t, graph, 0);
+    const bool made = instantiate_evicting(exec_t, graph, {}, "verify: instantiate: ", err);
     cudaGraphDestroy(graph);
-    if (ie != cudaSuccess) {
-        err = std::string("verify: instantiate: ") + cudaGetErrorString(ie);
-        return false;
-    }
+    if (!made) return false;
     const cudaError_t ue = cudaGraphUpload(exec_t, cs_);
     const cudaError_t us = cudaStreamSynchronize(cs_);
     std::fprintf(stderr, "strata verify: captured the %d-token window (upload %s, sync %s)\n", T,
@@ -2113,9 +2110,9 @@ bool Verifier::capture_batch(const int* rows, int S, int hbase, std::string& err
         err = !ok ? rerr : std::string("verify: end batch capture: ") + cudaGetErrorString(ce);
         return false;
     }
-    const cudaError_t ie = cudaGraphInstantiate(&ex, graph, 0);
+    const bool made = instantiate_evicting(ex, graph, bkey(rows, S, hbase), "verify: batch instantiate: ", err);
     cudaGraphDestroy(graph);
-    if (ie != cudaSuccess) { err = std::string("verify: batch instantiate: ") + cudaGetErrorString(ie); return false; }
+    if (!made) return false;
     cudaGraphUpload(ex, cs_);
     cudaStreamSynchronize(cs_);
     std::string list;
@@ -2206,12 +2203,66 @@ bool Verifier::capture_commit_batch(const int* rows, int S, int hbase, std::stri
         if (graph) cudaGraphDestroy(graph);
         return false;
     }
-    if (ce != cudaSuccess || cudaGraphInstantiate(&cex, graph, 0) != cudaSuccess) {
+    if (ce != cudaSuccess) {
         if (graph) cudaGraphDestroy(graph);
         err = std::string("verify: batch commit capture: ") + cudaGetErrorString(ce);
         return false;
     }
+    const bool made = instantiate_evicting(cex, graph, bkey(rows, S, hbase), "verify: batch commit instantiate: ", err);
     cudaGraphDestroy(graph);
+    return made;
+}
+
+bool Verifier::evict_batch_graph(const std::vector<int>& keep, bool& evicted, std::string& err) {
+    evicted = false;
+    auto old = exec_bm_.end();
+    uint64_t oldest = UINT64_MAX;
+    for (auto it = exec_bm_.begin(); it != exec_bm_.end(); ++it) {
+        if (it->first == keep) continue;
+        const auto u = bm_used_.find(it->first);
+        const uint64_t t = u == bm_used_.end() ? 0 : u->second;
+        if (t < oldest) { oldest = t; old = it; }
+    }
+    if (old == exec_bm_.end()) return true;
+    if (cudaStreamSynchronize(cs_) != cudaSuccess) {
+        err = "verify: synchronizing before batch graph eviction failed";
+        return false;
+    }
+    const auto old_key = old->first;
+    if (old->second) cudaGraphExecDestroy(old->second);
+    exec_bm_.erase(old);
+    bm_used_.erase(old_key);
+    auto commit_old = commit_bm_.find(old_key);
+    if (commit_old != commit_bm_.end()) {
+        if (commit_old->second) cudaGraphExecDestroy(commit_old->second);
+        commit_bm_.erase(commit_old);
+    }
+    evicted = true;
+    return true;
+}
+
+bool Verifier::instantiate_evicting(cudaGraphExec_t& ex, cudaGraph_t graph, const std::vector<int>& key,
+                                   const char* what, std::string& err) {
+    // #997: every layout of active slots keeps its own graph pair (20-30 MiB each on an L40S), and with an expert cache
+    // sized to the reserve the next window graph - a batch layout or a one-request window captured on first use - can
+    // find no VRAM left: free the least recently used layouts until it fits (they are captured again when needed)
+    cudaError_t ie = cudaGraphInstantiate(&ex, graph, 0);
+    int freed = 0;
+    for (bool evicted = true; ie == cudaErrorMemoryAllocation && evicted;) {
+        (void) cudaGetLastError();
+        if (!evict_batch_graph(key, evicted, err)) return false;
+        if (evicted) {
+            ++freed;
+            ie = cudaGraphInstantiate(&ex, graph, 0);
+        }
+    }
+    if (freed > 0)
+        std::fprintf(stderr, "strata verify: no VRAM for a new window graph: freed the graphs of %d older batch slot "
+                             "layouts, %zu kept (a larger --vram-reserve-mib keeps more)\n", freed, exec_bm_.size());
+    if (ie != cudaSuccess) {
+        err = std::string(what) + cudaGetErrorString(ie);
+        return false;
+    }
     return true;
 }
 
@@ -2251,33 +2302,13 @@ bool Verifier::stage_batch(const int* rows, int S, int hbase, const int32_t* tok
         }
     refresh_ar();
     // --batch-mtp only (limit 0 = 0.1.39: no eviction): slot rotation creates new layouts; bound the captured graph
-    // pairs, evicting the least recently used layout.
-    if (batch_graph_limit_ > 0) {
-        const auto key = bkey(rows, S, hbase);
-        if (exec_bm_.find(key) == exec_bm_.end() && exec_bm_.size() >= batch_graph_limit_) {
-            if (cudaStreamSynchronize(cs_) != cudaSuccess) {
-                err = "verify: synchronizing before batch graph eviction failed";
-                return false;
-            }
-            auto old = exec_bm_.begin();
-            uint64_t oldest = UINT64_MAX;
-            for (auto it = exec_bm_.begin(); it != exec_bm_.end(); ++it) {
-                const auto u = bm_used_.find(it->first);
-                const uint64_t t = u == bm_used_.end() ? 0 : u->second;
-                if (t < oldest) { oldest = t; old = it; }
-            }
-            const auto old_key = old->first;
-            if (old->second) cudaGraphExecDestroy(old->second);
-            exec_bm_.erase(old);
-            bm_used_.erase(old_key);
-            auto commit_old = commit_bm_.find(old_key);
-            if (commit_old != commit_bm_.end()) {
-                if (commit_old->second) cudaGraphExecDestroy(commit_old->second);
-                commit_bm_.erase(commit_old);
-            }
-        }
-        bm_used_[key] = ++bm_tick_;
-    }
+    // pairs, evicting the least recently used layout.  Without a limit the same eviction frees VRAM for a capture.
+    const auto key = bkey(rows, S, hbase);
+    bool evicted = false;
+    if (batch_graph_limit_ > 0 && exec_bm_.find(key) == exec_bm_.end() && exec_bm_.size() >= batch_graph_limit_ &&
+        !evict_batch_graph(key, evicted, err))
+        return false;
+    bm_used_[key] = ++bm_tick_;
     if (!capture_batch(rows, S, hbase, err) || !capture_commit_batch(rows, S, hbase, err)) return false;
     const Clock::time_point t0 = Clock::now();
     const QsaShapes s = shapes_of(g);
