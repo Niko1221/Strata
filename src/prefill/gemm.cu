@@ -692,7 +692,8 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
     }
 #endif
 #if defined(__HIPCC__)
-    if (rdna2_sgemm(X, W, Y, T, N, K, ldy, beta, true)) return;
+    // a padded X (STRATA_PF_PAD, ldx > K) keeps the native call: the widening copies contiguous rows
+    if (ldx == 0 && rdna2_sgemm(X, W, Y, T, N, K, ldy, beta, true)) return;
 #endif
 #if !defined(__HIPCC__)
     if (const int path = K > 0 ? bf16_path() : 0; path == 1 && N > 1 && beta == 0.0f) {
