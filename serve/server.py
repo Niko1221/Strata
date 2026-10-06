@@ -2432,6 +2432,102 @@ class Service:
                         trace["load_s"] += round(time.perf_counter() - loading, 3)
                         trace["state"] = "queued"
 
+    # ---- updating the engine from the web app ----------------------------------------------------
+    # The engine is a ready-made build that setup.py downloads and setup.py --update / UPDATE.bat already
+    # refresh; this is the same one thing reachable from the page the user is on, with the steps visible
+    # and a backup to go back to.  What it deliberately does NOT do: the Python checkout, the pinned
+    # packages, the model or the packs.  Those are `git pull` and `pip install`, and rewriting the code
+    # this server is running from, in-process, is a different and much larger thing than replacing a
+    # binary next to it.
+    #
+    # The order of the updater's steps is the safety property, not an implementation detail: nothing on
+    # disk changes until the download's SHA-256, the archive, its version and the STAGED binary have all
+    # been checked, and from the apply step onward there is a backup to restore from.
+
+    def _updater(self):
+        """The Updater for this install, built on first use; None when there is nothing to update.
+
+        Built from `engine.spawn[0]`, the same string the engine process was started with, so the updater
+        replaces the files the engine actually runs from rather than a guess.
+        """
+        if getattr(self, "_updater_tried", False):
+            return self._updater_obj
+        self._updater_tried, self._updater_obj = True, None
+        import serve.update as updater_mod
+        exe = Path(self.engine.spawn[0]) if getattr(self.engine, "spawn", None) else None
+        if exe:
+            self._updater_obj = updater_mod.Updater(
+                engine_exe=exe,
+                backend="hip" if getattr(self, "backend", None) == "hip" else "cuda",
+                # the card's compute capability, for the check in step 4. None when it cannot be read,
+                # which the updater treats as "cannot tell" and carries on with.
+                gpu_cc=getattr(self, "gpu_cc", None) or updater_mod.gpu_compute_capability(),
+                # The environment the ENGINE runs with - spawn[4] is the env child_env() built, whose
+                # PATH carries the CUDA libraries from the config's lib_dirs. The staged engine has to be
+                # probed with it: those directories are not on this process's PATH, so probing with the
+                # server's own environment fails with "DLL not found" and refuses a good update.
+                env=(getattr(self.engine, "spawn", None) or (None,) * 5)[4],
+                # The FIFO that serialises loading, held only across the swap (the updater's last three
+                # steps) so a request cannot start the engine against a half-replaced directory.
+                exclusive=self.fifo,
+            )
+        return self._updater_obj
+
+    def update_state(self) -> dict:
+        """What an update is doing, for the web app to poll. Never raises: the panel must still work when
+        this server was not started from an engine file."""
+        up = self._updater()
+        if up:
+            return up.state_dict()
+        return {"state": "unavailable", "detail": {}, "steps": [], "done": 0, "total": 0,
+                "percent": None, "active": None, "active_key": None, "backup": None}
+
+    def update_check(self) -> tuple[int, dict]:
+        """Ask the project's latest release whether there is a newer engine. Changes nothing."""
+        up = self._updater()
+        if up is None:
+            return 409, {"error": {"message": "this server was not started from an engine file, so there "
+                                              "is nothing to update"}}
+        try:
+            return 200, up.check()
+        except Exception as e:
+            return 502, {"error": {"message": str(e)}}
+
+    def update_apply(self, allow_downgrade: bool = False) -> tuple[int, dict]:
+        """Start the update on a background thread and return immediately; the panel polls the state.
+
+        Refused while the model is loaded or busy. Replacing the engine's files under a running process is
+        the one thing this must never do, and `unload()` is the project's own way to stop it - it also
+        refuses with "busy" when a request is running or queued, which is exactly when not to update.
+        """
+        up = self._updater()
+        if up is None:
+            return 409, {"error": {"message": "this server was not started from an engine file, so there "
+                                              "is nothing to update"}}
+        if up.state == "running":
+            return 409, {"error": {"message": "an update is already running"}}
+        if not up.detail.get("latest"):
+            return 409, {"error": {"message": "check for updates first"}}
+        drained = self.unload()
+        if drained in ("busy", "unsupported"):
+            return 409, {"error": {"message": (
+                "a request is running or queued; try again when it finishes" if drained == "busy"
+                else "the engine cannot be stopped safely from here, so it is not updated while it runs")}}
+
+        def go():
+            try:
+                up.run(allow_downgrade=allow_downgrade)
+            finally:
+                # A failed update leaves the OLD engine in place, so loading here loads the known-good
+                # one; the failure is reported in the update state, not swallowed here.
+                try:
+                    self.load()
+                except Exception:
+                    pass
+
+        threading.Thread(target=go, name="strata-update", daemon=True).start()
+        return 202, up.state_dict()
+
     def unload(self, idle_for: float | None = None) -> str:
         """Stop the engine between requests: "unloaded", "not loaded", "busy" (a request is running or waiting, or
         with idle_for: one ran more recently than that) or "unsupported"."""
@@ -3798,6 +3894,11 @@ def make_handler(svc: Service):
                     # the last 12 requests; `?requests=all` every one kept (the Monitor's "Show all", issue #35)
                     self._json(200, svc.metrics(all_requests="requests=all" in self.path))
                 return
+            if path == "/api/update/state":
+                # what an update is doing, polled by the About card while it runs. It only reads, so it
+                # carries no _own_page guard: the panel needs it on load, and there is nothing to guard.
+                self._json(200, svc.update_state())
+                return
             if path == "/api/requests" and svc.api_monitor:
                 if self._authorized():
                     request_id = parse_qs(urlsplit(self.path).query).get("id", [None])[0]
@@ -3894,6 +3995,21 @@ def make_handler(svc: Service):
                 return
             # the same for the slot files: else any site could overwrite a saved conversation or replace the live one
             if path.startswith("/slots/") and not self._own_page("conversations can be saved or restored"):
+                return
+            # and for updating the engine: a cross-site form post must not be able to replace a binary
+            if path in ("/api/update/check", "/api/update/apply") \
+                    and not self._own_page("the engine can be updated"):
+                return
+            if path == "/api/update/check":
+                self._json(*svc.update_check())
+                return
+            if path == "/api/update/apply":
+                try:
+                    body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+                except ValueError:
+                    self._json(400, {"error": {"message": "send a JSON object"}})
+                    return
+                self._json(*svc.update_apply(bool(body.get("allow_downgrade"))))
                 return
             if path == "/unload":                            # give the GPU back now (between requests)
                 try:

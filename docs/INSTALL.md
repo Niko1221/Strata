@@ -152,6 +152,23 @@ any PC (to try it). Problems and results on real hardware are welcome as GitHub 
 
 ## Updating
 
+**From the web app.** The About tab has an **Update the engine** card: it shows the installed version and the
+project's latest release, and installs the new engine with each step visible. It does the engine only - use
+`UPDATE.bat` for the code and the Python packages. Nothing on this PC changes until all of this has passed:
+
+- The download's **SHA-256**, checked against the hash GitHub publishes for the release asset. The bytes come
+  from the release download and the hash from `api.github.com`, so a substituted download does not come with a
+  matching hash. A file that does not match is deleted, not installed. If the release publishes no hash, the
+  update stops rather than install something unverified.
+- The archive: every member's checksum and path, and the engine version inside.
+- The **staged** engine, run before the installed one is touched.
+- That this graphics card is one the release has code for.
+
+Then the installed engine is copied to `engine/.previous` (the same place `setup.py` keeps it, so
+`setup.py --rollback-engine` puts it back), the new files are put in place — all or nothing, so a failure
+half way leaves the engine you had — and the new `BUILD.json` is read back. If any of that fails, the card
+says so.
+
 **`UPDATE.bat`** (Linux: `./update.sh`) updates Strata without starting the model - for when the GPU is busy with
 something else, or you just want the new version ready. In a `git clone` it runs `git pull`, then does what
 `START-HERE.bat` does before a start: the engine (a new ready-made one when the new version needs it; on Linux a
@@ -166,6 +183,9 @@ Or by hand: download the new version and unzip it anywhere (or `git pull`), then
 finds them and sets itself up the same way - nothing big is downloaded again. On Linux after a `git pull`, setup
 compiles the engine again when its source changed (a minute or two for the changed files); if that compile fails, it
 says so and starts the engine you had.
+
+**If an update went wrong.** The engine it replaced is kept in `engine/.previous`; `setup.py --rollback-engine`
+puts it back (run it again to go forward).
 
 ## Where things are stored
 
