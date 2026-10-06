@@ -1,5 +1,5 @@
 """Tests for setup.py's draft-vocabulary choice (#287): a setup run again without --draft-vocab keeps the subset the
-model's config chose before (cyrillic, fr, en), and refresh_draft_vocab copies the chosen shipped subset.  Pure file work
+model's config chose before (cyrillic, fr, it, en), and refresh_draft_vocab copies the chosen shipped subset.  Pure file work
 in a temporary folder - no GPU, no downloads, no prompts.
 
     python -m unittest tools.test_setup_draft_vocab
@@ -49,35 +49,39 @@ class Refresh(unittest.TestCase):
             self.assertEqual(hashlib.sha256((rt / "draft_vocab.bin").read_bytes()).hexdigest(), want)
 
 
-    def test_fr_replaces_a_shipped_subset_and_back(self):
-        # #597: the French subset is a shipped one too - a later --draft-vocab cjk (or en) replaces it again, while a
-        # subset made by hand stays
+    def test_language_subsets_replace_a_shipped_subset_and_back(self):
+        # #597: the French and Italian subsets are shipped ones too - a later --draft-vocab cjk (or en) replaces them
+        # again, while a subset made by hand stays
         data = ROOT / "data"
-        if not (data / setup.DRAFT_VOCABS["fr"]).exists():
-            self.skipTest("data/draft_vocab_fr.bin is not in this checkout")
         sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()   # noqa: E731
-        with tempfile.TemporaryDirectory() as d:
-            rt = Path(d)
-            (rt / "draft_vocab.bin").write_bytes((data / setup.DRAFT_VOCABS["en"]).read_bytes())
-            setup.refresh_draft_vocab(rt, "fr")
-            self.assertEqual(sha(rt / "draft_vocab.bin"), sha(data / setup.DRAFT_VOCABS["fr"]))
-            setup.refresh_draft_vocab(rt, "cjk")
-            self.assertEqual(sha(rt / "draft_vocab.bin"), sha(data / setup.DRAFT_VOCABS["cjk"]))
-            (rt / "draft_vocab.bin").write_bytes(bytes([1, 0, 0, 0]))   # made by hand: kept
-            setup.refresh_draft_vocab(rt, "fr")
-            self.assertEqual((rt / "draft_vocab.bin").read_bytes(), bytes([1, 0, 0, 0]))
+        for lang in ("fr", "it"):
+            with self.subTest(lang=lang):
+                if not (data / setup.DRAFT_VOCABS[lang]).exists():
+                    self.skipTest(f"data/{setup.DRAFT_VOCABS[lang]} is not in this checkout")
+                with tempfile.TemporaryDirectory() as d:
+                    rt = Path(d)
+                    (rt / "draft_vocab.bin").write_bytes((data / setup.DRAFT_VOCABS["en"]).read_bytes())
+                    setup.refresh_draft_vocab(rt, lang)
+                    self.assertEqual(sha(rt / "draft_vocab.bin"), sha(data / setup.DRAFT_VOCABS[lang]))
+                    setup.refresh_draft_vocab(rt, "cjk")
+                    self.assertEqual(sha(rt / "draft_vocab.bin"), sha(data / setup.DRAFT_VOCABS["cjk"]))
+                    (rt / "draft_vocab.bin").write_bytes(bytes([1, 0, 0, 0]))   # made by hand: kept
+                    setup.refresh_draft_vocab(rt, lang)
+                    self.assertEqual((rt / "draft_vocab.bin").read_bytes(), bytes([1, 0, 0, 0]))
 
-    def test_fr_holds_the_en_subset_in_its_order(self):
+    def test_language_subsets_hold_the_en_subset_in_its_order(self):
         # built with tools/draft_vocab.py --base data/draft_vocab_en.bin --corpus ...: the base first, unchanged
         from array import array
         data = ROOT / "data"
-        if not (data / setup.DRAFT_VOCABS["fr"]).exists():
-            self.skipTest("data/draft_vocab_fr.bin is not in this checkout")
         en = list(array("i", (data / setup.DRAFT_VOCABS["en"]).read_bytes()))
-        fr = list(array("i", (data / setup.DRAFT_VOCABS["fr"]).read_bytes()))
-        self.assertEqual(fr[:len(en)], en)
-        self.assertEqual(len(set(fr)), len(fr))
-        self.assertEqual(fr[len(en):], sorted(fr[len(en):]))
+        for lang in ("fr", "it"):
+            with self.subTest(lang=lang):
+                if not (data / setup.DRAFT_VOCABS[lang]).exists():
+                    self.skipTest(f"data/{setup.DRAFT_VOCABS[lang]} is not in this checkout")
+                ids = list(array("i", (data / setup.DRAFT_VOCABS[lang]).read_bytes()))
+                self.assertEqual(ids[:len(en)], en)
+                self.assertEqual(len(set(ids)), len(ids))
+                self.assertEqual(ids[len(en):], sorted(ids[len(en):]))
 
 
 class SmallCardNote(unittest.TestCase):
@@ -88,7 +92,7 @@ class SmallCardNote(unittest.TestCase):
         self.assertTrue(note)
         self.assertIn("--draft-vocab en", " ".join(note))
         self.assertIn("the draft head does not fit", " ".join(note))
-        for vram, chosen in ((16.0, None), (24.0, None), (12.0, "en"), (12.0, "cyrillic"), (12.0, "fr"), (12.0, "cjk"),
+        for vram, chosen in ((16.0, None), (24.0, None), (12.0, "en"), (12.0, "cyrillic"), (12.0, "fr"), (12.0, "it"), (12.0, "cjk"),
                              (0.0, None)):
             self.assertEqual(setup.draft_vocab_note(vram, chosen), [], (vram, chosen))
 
