@@ -6052,10 +6052,15 @@ int main(int argc, char** argv) {
             // STRATA_SPLIT_OVERLAP=1 (opt-in; measured on 2x RX 7900 XTX only): a ready word per hand-off, raised by the
             // writing stage's GPU, so the next stage's window is launched early and the host never syncs between
             // stages (Verifier::set_handoff_flags).  Not for --split-device 0 (both stages on one GPU).
-            const bool overlap = !split_same && [] {
+            const bool overlap_asked = [] {
                 const char* v = std::getenv("STRATA_SPLIT_OVERLAP");
                 return v != nullptr && std::atoi(v) != 0;
             }();
+            // --pipeline-windows (#859) runs its own overlapped loop with its own hand-offs: the two do not mix
+            const bool overlap = overlap_asked && !split_same && o.pipeline_windows == 0;
+            if (overlap_asked && o.pipeline_windows > 0)
+                std::fprintf(stderr, "strata serve: STRATA_SPLIT_OVERLAP is off beside --pipeline-windows %d "
+                                     "(that loop overlaps the stages itself)\n", o.pipeline_windows);
             std::vector<uint32_t*> hflag_h((size_t) n_stages - 1, nullptr), hflag_d((size_t) n_stages - 1, nullptr);
             if (overlap)
                 for (size_t i = 0; i < hflag_h.size(); ++i) {

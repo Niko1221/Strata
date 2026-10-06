@@ -153,7 +153,7 @@ flag: the earlier stage's GPU writes the hand-off with volatile stores and raise
 next stage's graph is staged and launched on a helper thread while the earlier stage is still running and waits for
 the flag on its GPU (`wait_flag_ge`), and the host goes straight from serving one stage's layers to the next, syncing
 the earlier stage only once the chain is done. It takes one stream sync and one graph launch per window off the
-critical path. Batch windows (several conversations) keep the serial order.
+critical path. Batch windows (several conversations) keep the serial order. It is off beside `--pipeline-windows`, whose loop overlaps the stages its own way.
 
 Measured on 2x RX 7900 XTX (gfx1100, ROCm, Linux), Ryzen 9 9900X, 52 GB RAM, Swift 1.5 IQ3_XXS, 128K context, 8-bit
 KV, layers 0-25 / 26-47; 512-token greedy answers, median of 8 runs:
