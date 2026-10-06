@@ -11,7 +11,7 @@ and their output stay exactly as they were. Numbers are the reporters' own, on o
 
 | Cards | Compute capability | How it runs | What is different on it | Reported |
 | --- | --- | --- | --- | --- |
-| Tesla P100 | 6.0 | the CUDA 12 engine | `__dp4a` emulated (bit-exact); BF16 projections through fp32 | not measured |
+| Tesla P100 | 6.0 | the CUDA 12 engine | `__dp4a` emulated with VMAD; BF16 projections through fp32 | native VMAD v0.1.39 comparison: decode 37.85 to 41.70 tok/s on 2x P100, configured 128K and actual 19.8K prompt; [tests and limits](P100_VMAD.md) |
 | Tesla P40 / P4, GTX 10 series | 6.1 | the CUDA 12 engine | BF16 projections through fp32 (cuBLAS has no BF16 GEMM there, #395) | P40, IQ3_S, engine 0.1.30: prompt 217-374 tok/s, decode 30-33 tok/s (#395) |
 | Tesla V100, Titan V | 7.0 | the CUDA 12 engine | BF16 projections on the FP16 tensor cores (#655, #540); the prompt attention on `mma.m8n8k4` (#600); a leaner attention kernel (#540) | V100-PCIE-32GB, UD-IQ4_XS: prompt 1,123-1,251 tok/s (#600); V100 32GB, IQ2_XS: prompt +22% from #540 |
 | RTX 20 (Turing) | 7.5 | **supported**, the ready-made engine | opt-in: `STRATA_BF16_TC=1` runs the BF16 projections on the FP16 tensor cores | RTX 2080 Ti, Q2_0: prompt +15-18% (#655) |

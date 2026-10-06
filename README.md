@@ -210,3 +210,5 @@ parts and every model have their own licenses ([which ones](docs/HOW_IT_WORKS.md
 Strata is free and open source. If it is useful to you, you can support its development:
 
 <p align="center"><a href="https://buymeacoffee.com/strataengine"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="50"></a></p>
+
+Experimental Tesla P100 native VMAD emulation and its focused correctness tests are documented in [P100 VMAD](docs/P100_VMAD.md), with credit to shinbunbun.

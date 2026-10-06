@@ -21,3 +21,5 @@ offers the same steps as tools.
   `tools/test_setup_amd.py`, `tools/test_setup_choices.py`).
 - Keep the docs' style: plain words, measured numbers with what they were measured on, no claims without a
   measurement.
+
+- GP100 native DP4A uses exact VMAD under sm_60 only. Scalar reference tests must exclude intermediate signed overflow; wrapping cases use the widened/modulo oracle. Focused tests, shinbunbun attribution and measured P100 limits are in docs/P100_VMAD.md.

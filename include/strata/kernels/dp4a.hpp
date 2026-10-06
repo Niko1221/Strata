@@ -7,8 +7,8 @@
 //   * `__dp4a`, a byte-wise dot product, available from 6.1 (Pascal GP10x/GV11x).  Its fallback below is
 //     llama.cpp's own (`ggml/src/ggml-cuda/common.cuh`), which is the reference for the kernels in this
 //     directory: they are transcribed from llama.cpp's vecdotq.cuh, and that wrapper's operands are the same
-//     sites.  It reinterprets the operands as SIGNED bytes and accumulates in int32, which is what `__dp4a`
-//     does for these calls, so the fallback is bit-exact rather than merely close.
+//     sites. GP100 uses signed-byte VMAD with wrapping int32 accumulation. The retained scalar fallback
+//     agrees for bounded quant sums; its signed additions must not overflow, including intermediate sums.
 //   * `__nanosleep`, available from 7.0 (Volta).  It only paces single-thread doorbell waits, so a loop that
 //     spins without it is correct, merely busier.
 //
@@ -25,9 +25,27 @@
 
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 610
 __device__ __forceinline__ int strata_dp4a(const int a, const int b, const int c) {
+#if __CUDA_ARCH__ == 600
+    // GP100 has byte-select VMAD, but no DP4A. Keep this integer operation exact.
+    // Original GP100 VMAD idea: shinbunbun, llama-cpp-p100-patches/01 (MIT, 2026).
+    // Attribution and license: docs/P100_VMAD.md. A scoped accumulator keeps
+    // inputs intact even when a caller passes the same value as an input and c.
+    int result;
+    asm("{\n\t"
+        ".reg .s32 acc;\n\t"
+        "vmad.s32.s32.s32 acc, %1.b0, %2.b0, %3;\n\t"
+        "vmad.s32.s32.s32 acc, %1.b1, %2.b1, acc;\n\t"
+        "vmad.s32.s32.s32 acc, %1.b2, %2.b2, acc;\n\t"
+        "vmad.s32.s32.s32 acc, %1.b3, %2.b3, acc;\n\t"
+        "mov.b32 %0, acc;\n\t"
+        "}"
+        : "=r"(result) : "r"(a), "r"(b), "r"(c));
+    return result;
+#else
     const int8_t* a8 = (const int8_t*) &a;
     const int8_t* b8 = (const int8_t*) &b;
     return c + a8[0] * b8[0] + a8[1] * b8[1] + a8[2] * b8[2] + a8[3] * b8[3];
+#endif
 }
 #define STRATA_DP4A(a, b, c) strata_dp4a((a), (b), (c))
 #else
