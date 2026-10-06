@@ -62,6 +62,22 @@ __device__ __forceinline__ float philox_uniform(uint64_t seed, uint64_t counter)
     return (float) (c0 >> 8) * (1.0f / 16777216.0f);
 }
 
+// GUMBEL-MAX COUPLING (STRATA_SPEC_GUMBEL=1, ported from llama.cpp-lab's --spec-coupled, lab PRs #26/#30).  The pick
+// is argmax_i p_i / E_i with E_i = -log(u_i) ~ Exp(1) and u_i a hash of (seed, counter, TOKEN ID) - exactly
+// equivalent to argmax(log p_i + Gumbel_i), so it is an exact sample of p.  Unlike the inverse-CDF pick over a
+// probability-sorted list, the noise a token gets does not depend on which other tokens survived the cut, so a
+// drafter whose candidate set differs from the target's still agrees with it on the tokens they share ("support
+// invariant").  The MTP drafter keys on the draft's token id (via sub_to_id), the target on its row's token id.
+__device__ __forceinline__ double gumbel_exp(uint64_t seed, uint64_t counter, uint32_t token) {
+    uint64_t z = seed ^ (counter * 0x9E3779B97F4A7C15ull) ^ ((uint64_t) token * 0xD1B54A32D192ED03ull);
+    z += 0x9E3779B97F4A7C15ull;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    z ^= z >> 31;
+    const double u = ((double) (z >> 11) + 0.5) * (1.0 / 9007199254740992.0);   // (0, 1), never 0 or 1
+    return -log(u);
+}
+
 // `count_in_history` and the penalty application, transcribed from `llama_sampler_penalties_apply`.
 // The repeat penalty MULTIPLIES for non-positive logits and DIVIDES for positive ones - dividing
 // unconditionally is the natural reading of the source paper and it INVERTS the penalty on half the
@@ -398,12 +414,21 @@ __global__ void sampler_kernel(const float* __restrict__ logits, int n_vocab, in
     for (int i = 1; i < n_keep; ++i) smx = fmaxf(smx, scaled(i));
     double sum = 0.0;
     for (int i = 0; i < n_keep; ++i) sum += exp((double) scaled(i) - (double) smx);
-    const float u = philox_uniform(p.seed, p.counter + (uint64_t) t);
-    double cum = 0.0;
     int pick = sel_ids[n_keep - 1];
-    for (int i = 0; i < n_keep; ++i) {
-        cum += exp((double) scaled(i) - (double) smx) / sum;
-        if ((double) u < cum) { pick = sel_ids[i]; break; }
+    if (p.gumbel) {
+        double best = -1.0;
+        for (int i = 0; i < n_keep; ++i) {
+            const double r = exp((double) scaled(i) - (double) smx) / sum /
+                             gumbel_exp(p.seed, p.counter + (uint64_t) t, (uint32_t) sel_ids[i]);
+            if (r > best) { best = r; pick = sel_ids[i]; }
+        }
+    } else {
+        const float u = philox_uniform(p.seed, p.counter + (uint64_t) t);
+        double cum = 0.0;
+        for (int i = 0; i < n_keep; ++i) {
+            cum += exp((double) scaled(i) - (double) smx) / sum;
+            if ((double) u < cum) { pick = sel_ids[i]; break; }
+        }
     }
     if (threadIdx.x == 0) out[t] = pick;
 }
@@ -454,7 +479,8 @@ __device__ __forceinline__ void warp_first(float& bv, int& bi) {
 /// `*prob_out`.  The sampler's own calls take kProb = false, whose code is the tail above, unchanged.
 template <bool kProb = false>
 __device__ void sampled_tail_warp(const int* sel_ids, const float* sel_logit, int k, const SamplerParams& p, int t,
-                                  int* __restrict__ out, double* ex, float* prob_out = nullptr) {
+                                  int* __restrict__ out, double* ex, float* prob_out = nullptr,
+                                  const int32_t* __restrict__ sub_to_id = nullptr) {
     const int lane = (int) (threadIdx.x & 31);
     const float inv_t = p.temperature > 0.0f ? 1.0f / p.temperature : 0.0f;
     int n_keep = k;
@@ -502,13 +528,22 @@ __device__ void sampled_tail_warp(const int* sel_ids, const float* sel_logit, in
     for (int i = lane; i < n_keep; i += 32) ex[i] = ex[i] / sum;
     __syncwarp();
     if (lane == 0) {
-        const float u = philox_uniform(p.seed, p.counter + (uint64_t) t);
-        double cum = 0.0;
         int pi = n_keep > 0 ? n_keep - 1 : 0;
         int pick = sel_ids[pi];
-        for (int i = 0; i < n_keep; ++i) {
-            cum += ex[i];
-            if ((double) u < cum) { pick = sel_ids[i]; pi = i; break; }
+        if (p.gumbel) {
+            double best = -1.0;
+            for (int i = 0; i < n_keep; ++i) {
+                const int id = sub_to_id != nullptr ? sub_to_id[sel_ids[i]] : sel_ids[i];
+                const double r = ex[i] / gumbel_exp(p.seed, p.counter + (uint64_t) t, (uint32_t) id);
+                if (r > best) { best = r; pick = sel_ids[i]; pi = i; }
+            }
+        } else {
+            const float u = philox_uniform(p.seed, p.counter + (uint64_t) t);
+            double cum = 0.0;
+            for (int i = 0; i < n_keep; ++i) {
+                cum += ex[i];
+                if ((double) u < cum) { pick = sel_ids[i]; pi = i; break; }
+            }
         }
         out[t] = pick;
         if constexpr (kProb) *prob_out = n_keep > 0 ? (float) ex[pi] : 1.0f;
@@ -768,10 +803,12 @@ sampler_split_merge_kernel(const int2* __restrict__ cand, int n_blocks, int n_vo
 /// The round's inputs: the request's SamplerParams and the history base (the last h slots before `cap`), from
 /// mapped host memory into the device copies the chain's kernels read.
 __global__ void coupled_stage_kernel(const SamplerParams* __restrict__ mp, const int* __restrict__ mh,
-                                     SamplerParams* __restrict__ dp, int* __restrict__ ring, int cap) {
+                                     SamplerParams* __restrict__ dp, int* __restrict__ ring, int cap, int gumbel) {
     const volatile int* s = (const volatile int*) mp;
     int* d = (int*) dp;
     for (int i = threadIdx.x; i < (int) (sizeof(SamplerParams) / sizeof(int)); i += blockDim.x) d[i] = s[i];
+    __syncthreads();                                   // the word holding `gumbel` was just copied
+    if (threadIdx.x == 0) dp->gumbel = gumbel != 0;
     const int h = strata::core::coupled_hist_len(((const volatile SamplerParams*) mp)->penalty_last_n, cap);
     const volatile int* vh = (const volatile int*) mh;
     for (int i = cap - h + (int) threadIdx.x; i < cap; i += blockDim.x) ring[i] = vh[i];
@@ -830,7 +867,7 @@ coupled_merge_kernel(const int2* __restrict__ cand, int n_blocks, int nv, int kp
     if (p.greedy || p.temperature <= 0.0f) {   // never launched for greedy requests; the argmax, defensively
         if (lane == 0) { pick[0] = sel_ids[0]; prob[0] = 1.0f; }
     } else {
-        sampled_tail_warp<true>(sel_ids, sel_logit, k, p, 0, pick, ex, prob);
+        sampled_tail_warp<true>(sel_ids, sel_logit, k, p, 0, pick, ex, prob, sub_to_id);
     }
     __syncwarp();
     if (lane == 0) {
@@ -849,6 +886,11 @@ enum class SampledPath { Split, OneBlock, Old };
 bool env_flag(const char* name) {
     const char* e = std::getenv(name);
     return e != nullptr && *e != '\0' && std::strcmp(e, "0") != 0;
+}
+
+bool gumbel_env() {
+    static const bool on = env_flag("STRATA_SPEC_GUMBEL");
+    return on;
 }
 
 SampledPath sampled_path() {
@@ -975,7 +1017,9 @@ bool sample_greedy_cluster(const float* logits, int n_tokens, int n_vocab, int* 
 }
 
 void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* history, int history_len,
-                   const SamplerParams& p, int* out, void* stream) {
+                   const SamplerParams& p_in, int* out, void* stream) {
+    SamplerParams p = p_in;
+    p.gumbel = p_in.gumbel || gumbel_env();            // the target's pick; greedy rows never read it
     if (n_tokens <= 0 || n_vocab <= 0) return;
     if (p.penalty_last_n > 0 && (history == nullptr || history_len <= 0)) {
         std::fprintf(stderr, "sample_tokens: penalty_last_n %d needs a history (got %p, len %d)\n",
@@ -1052,7 +1096,8 @@ size_t coupled_draft_scratch_bytes(int nv) {
 
 void coupled_draft_stage(const SamplerParams* mapped_params, const int32_t* mapped_hist, SamplerParams* params,
                          int32_t* ring, int cap, void* stream) {
-    coupled_stage_kernel<<<1, 256, 0, (cudaStream_t) stream>>>(mapped_params, mapped_hist, params, ring, cap);
+    coupled_stage_kernel<<<1, 256, 0, (cudaStream_t) stream>>>(mapped_params, mapped_hist, params, ring, cap,
+                                                               gumbel_env() ? 1 : 0);
     coupled_check("coupled_draft_stage");
 }
 
