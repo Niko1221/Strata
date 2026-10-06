@@ -1545,12 +1545,14 @@ bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
     constexpr uint64_t kSector = 4096, kGap = 1ull << 20, kMerge = 32ull << 20;
     struct Window { int file; uint64_t a0, size, skip, n, at; uint8_t* dst; size_t req; uint64_t in_req; };
     struct Req { HANDLE h; uint64_t a0, size, pos; };
+    struct Part { size_t req; uint64_t off, size; };   // a slice of a request read on its own (STRATA_DIRECT_SPLIT_KIB)
     // this thread's aligned buffer and events, kept for its next batch
     struct Scratch {
         uint8_t* buf = nullptr;
         size_t cap = 0;
         std::vector<HANDLE> ev;
         std::vector<OVERLAPPED> ov;
+        std::vector<Part> part;
         std::vector<Window> win;
         std::vector<size_t> order;
         std::vector<Req> req;
@@ -1618,22 +1620,37 @@ bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
         sc.buf = (uint8_t*) VirtualAlloc(nullptr, sc.cap, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         if (sc.buf == nullptr) { sc.cap = 0; return false; }
     }
-    while (sc.ev.size() < sc.req.size()) {
+    // STRATA_DIRECT_SPLIT_KIB: a request larger than that is read as several slices issued together, so a lone expert
+    // (a decode layer's one or two misses) keeps more of the drive's channels busy than one request at queue depth 1
+    static const uint64_t split = [] {
+        const char* v = std::getenv("STRATA_DIRECT_SPLIT_KIB");
+        const long long k = v != nullptr ? std::atoll(v) : 0;
+        return k > 0 ? std::max<uint64_t>(4096, ((uint64_t) k << 10) / 4096 * 4096) : 0ull;   // whole sectors
+    }();
+    sc.part.clear();
+    for (size_t q = 0; q < sc.req.size(); ++q) {
+        const uint64_t size = sc.req[q].size;
+        if (split == 0 || size <= split) { sc.part.push_back({q, 0, size}); continue; }
+        for (uint64_t off = 0; off < size; off += split) sc.part.push_back({q, off, std::min(split, size - off)});
+    }
+    while (sc.ev.size() < sc.part.size()) {
         HANDLE e = CreateEventW(nullptr, TRUE, FALSE, nullptr);
         if (e == nullptr) return false;
         sc.ev.push_back(e);
     }
-    sc.ov.assign(sc.req.size(), OVERLAPPED{});
-    // every request in flight before the first wait: the drive sees the whole batch as one queue
+    sc.ov.assign(sc.part.size(), OVERLAPPED{});
+    // every slice in flight before the first wait: the drive sees the whole batch as one queue
     size_t issued = 0;
     bool ok = true;
-    for (size_t q = 0; q < sc.req.size(); ++q) {
-        const Req& r = sc.req[q];
-        OVERLAPPED& o = sc.ov[q];
-        o.Offset = (DWORD) r.a0;
-        o.OffsetHigh = (DWORD) (r.a0 >> 32);
-        o.hEvent = sc.ev[q];
-        if (!ReadFile(r.h, sc.buf + r.pos, (DWORD) r.size, nullptr, &o) && GetLastError() != ERROR_IO_PENDING) {
+    for (size_t k = 0; k < sc.part.size(); ++k) {
+        const Part& pt = sc.part[k];
+        const Req& r = sc.req[pt.req];
+        OVERLAPPED& o = sc.ov[k];
+        const uint64_t at = r.a0 + pt.off;
+        o.Offset = (DWORD) at;
+        o.OffsetHigh = (DWORD) (at >> 32);
+        o.hEvent = sc.ev[k];
+        if (!ReadFile(r.h, sc.buf + r.pos + pt.off, (DWORD) pt.size, nullptr, &o) && GetLastError() != ERROR_IO_PENDING) {
             ok = false;
             break;
         }
@@ -1641,9 +1658,12 @@ bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
     }
     std::vector<DWORD>& got = sc.got;
     got.assign(sc.req.size(), 0);
-    for (size_t q = 0; q < issued; ++q)
-        if (!GetOverlappedResult(sc.req[q].h, &sc.ov[q], &got[q], TRUE)) ok = false;
-    if (!ok || issued < sc.req.size()) return false;
+    for (size_t k = 0; k < issued; ++k) {
+        DWORD n = 0;
+        if (!GetOverlappedResult(sc.req[sc.part[k].req].h, &sc.ov[k], &n, TRUE)) ok = false;
+        got[sc.part[k].req] += n;
+    }
+    if (!ok || issued < sc.part.size()) return false;
     for (const Window& x : sc.win) {
         // a request may run past the end of the file: only the role's own bytes have to arrive
         if ((uint64_t) got[x.req] < x.in_req + x.skip + x.n) return false;
