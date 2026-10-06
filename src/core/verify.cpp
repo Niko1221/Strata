@@ -815,6 +815,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 a.inject_out = inj_out + t * HC; a.mixed = mixed_ + t * N;
                 if (qcnt_ != nullptr) {   // S26 STRATA_QFUSE: the consumer's q8_1 image written by the read itself
                     a.q8_cnt = qcnt_;
+                    a.q8_native = half == 0;
                     if (half == 0) a.q8_mixed = xq_ + (size_t) (t - tb) * (N / 32) * 36;
                     else if (strata::kernels::cpu::expert_layout().native) a.q8_mixed = nat_xq_ + (size_t) t * (N / 32) * 36;
                 }
@@ -884,7 +885,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 gdn_step_norm_multi(state, hb, (int) C, gate, beta, z_, (const float*) wnm->data, EPS, y_, (int) HK,
                                     (int) HV, te, self_commit ? one_ : nullptr, cs, tb, g_qfuse() ? (void*) xq_ : nullptr);
                 stamp(l, 6, grp);
-                if (!g_qfuse()) native_quantize_q8_1(y_ + (size_t) tb * ZV, xq_, (int) ZV, n, cs);   // STRATA_QFUSE: done above
+                // Slot-group recurrence does not emit q8 output; batching still needs this conversion.
+                if (batch_rec_ || !g_qfuse()) native_quantize_q8_1(y_ + (size_t) tb * ZV, xq_, (int) ZV, n, cs);
                 native_mmvq(wout->native_type, wout->native_data, xq_, bo_ + tb * N, (int) ZV, (int) N, n, cs);
             } else {
                 // ======================= QSA =======================
@@ -1179,8 +1181,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             nsw.down_type = wsd->native_type; nsw.down_data = wsd->native_data;
             nsw.q8_1 = sh_fork ? sh_xq_ : xq_;
             // STRATA_VERIFY_QDEDUP=1 (not with the forked shared-expert stream, which quantizes into its own buffer): the
-            // experts' q8_1 image of xm is made first and the shared expert's gate/up read it (quantize_q8_1_rows and
-            // native_quantize_q8_1 write the same bytes)
+            // experts' q8_1 image of xm is made first and the shared expert's gate/up read it. Keep the expert
+            // quantizer's division convention; CUDA native fast division can differ at integer half-steps.
             qdedup = g_qdedup() && !sh_fork && strata::kernels::cpu::expert_layout().native;
             if (qdedup && !q8_ffn) quantize_q8_1_rows(xm, n, N, nat_xq_ + (size_t) tb * (N / 32) * 36, cs);
             if (!shared_expert_native_bf16_enabled()) {
@@ -2014,7 +2016,7 @@ bool Verifier::commit(int n_keep, std::string& err) {
     h_commit_[0] = n_keep;
     h_commit_[1] = n_keep - 1;
     for (int t = 0; t < max_t_; ++t) h_commit_[2 + t] = t < n_keep ? (int32_t) (last_pos0_ + t) : -1;
-    if (last_t_ == 1 && one_token_self_commit()) {
+    if (last_t_ == 1 && !g_qfuse() && one_token_self_commit()) {
         // a one-token window has advanced the state itself (record_window): no commit graph
     } else {
         std::atomic_thread_fence(std::memory_order_seq_cst);

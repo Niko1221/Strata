@@ -22,6 +22,7 @@
 #include "strata/kernels/gr.hpp"
 #include "strata/kernels/fused_gr.hpp"
 #include "strata/kernels/native_mmvq.hpp"
+#include "strata/kernels/iq_kernels.hpp"
 
 #include <cuda_runtime.h>
 
@@ -419,34 +420,42 @@ int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const ui
         check(cudaMemset(d_cnt, 0, (N / 32) * sizeof(unsigned)), "qfuse counters zero");
         int qbad = 0;
         std::vector<uint8_t> hq(qbytes), hr(qbytes);
-        for (int tt = 1; tt <= T && !qbad; ++tt) {
-            std::vector<FusedGrArgs> qa(args.begin(), args.begin() + tt);
-            for (int t = 0; t < tt; ++t) { qa[t].q8_mixed = d_q + (size_t) t * (N / 32) * 36; qa[t].q8_cnt = d_cnt; }
-            for (int rep = 0; rep < 3 && !qbad; ++rep) {
-                check(cudaMemsetAsync(d_q, 0x5a, qbytes, stream), "qfuse poison");
-                bool wrote = false;
-                cudaGraph_t qg = nullptr;
-                cudaGraphExec_t qx = nullptr;
-                if (rep == 0) {
-                    wrote = fused_gr_read_multi(qa.data(), tt, d_xn, stream);
-                } else {   // a captured read, replayed (twice: rep 1 and 2 use fresh captures, each replayed twice)
-                    check(cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal), "qfuse begin");
-                    wrote = fused_gr_read_multi(qa.data(), tt, d_xn, stream);
-                    check(cudaStreamEndCapture(stream, &qg), "qfuse end");
-                    check(cudaGraphInstantiate(&qx, qg, nullptr, nullptr, 0), "qfuse instantiate");
-                    check(cudaGraphLaunch(qx, stream), "qfuse replay 1");
-                    check(cudaMemsetAsync(d_q, 0x5a, qbytes, stream), "qfuse poison 2");
-                    check(cudaGraphLaunch(qx, stream), "qfuse replay 2");
-                }
-                strata::kernels::native_quantize_q8_1(d_mixed, d_ref, N, tt, stream);
-                check(cudaStreamSynchronize(stream), "qfuse sync");
-                if (qx) { cudaGraphExecDestroy(qx); cudaGraphDestroy(qg); }
-                if (v3) { std::printf("  QFUSE: the v3 read writes no q8_1 (%s)\n", wrote ? "WRONG: it says it did" : "ok"); qbad += wrote; break; }
-                check(cudaMemcpy(hq.data(), d_q, (size_t) tt * (N / 32) * 36, cudaMemcpyDeviceToHost), "qfuse read");
-                check(cudaMemcpy(hr.data(), d_ref, (size_t) tt * (N / 32) * 36, cudaMemcpyDeviceToHost), "qfuse ref read");
-                if (!wrote || std::memcmp(hq.data(), hr.data(), (size_t) tt * (N / 32) * 36) != 0) {
-                    std::printf("  QFUSE: T=%d rep %d: %s\n", tt, rep, wrote ? "q8_1 bytes differ" : "not written");
-                    ++qbad;
+        for (float input_scale : {1.0f, 1000000.0f}) {
+            for (bool native_quantizer : {true, false}) {
+                std::vector<float> qr(r);
+                for (auto& value : qr) value *= input_scale;
+                check(cudaMemcpy(d_r, qr.data(), qr.size() * sizeof(float), cudaMemcpyHostToDevice), "qfuse scaled inputs");
+                for (int tt = 1; tt <= T && !qbad; ++tt) {
+                    std::vector<FusedGrArgs> qa(args.begin(), args.begin() + tt);
+                    for (int t = 0; t < tt; ++t) { qa[t].q8_mixed = d_q + (size_t) t * (N / 32) * 36; qa[t].q8_cnt = d_cnt; qa[t].q8_native = native_quantizer; }
+                    for (int rep = 0; rep < 3 && !qbad; ++rep) {
+                        check(cudaMemsetAsync(d_q, 0x5a, qbytes, stream), "qfuse poison");
+                        bool wrote = false;
+                        cudaGraph_t qg = nullptr;
+                        cudaGraphExec_t qx = nullptr;
+                        if (rep == 0) {
+                            wrote = fused_gr_read_multi(qa.data(), tt, d_xn, stream);
+                        } else {   // a captured read, replayed (twice: rep 1 and 2 use fresh captures, each replayed twice)
+                            check(cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal), "qfuse begin");
+                            wrote = fused_gr_read_multi(qa.data(), tt, d_xn, stream);
+                            check(cudaStreamEndCapture(stream, &qg), "qfuse end");
+                            check(cudaGraphInstantiate(&qx, qg, nullptr, nullptr, 0), "qfuse instantiate");
+                            check(cudaGraphLaunch(qx, stream), "qfuse replay 1");
+                            check(cudaMemsetAsync(d_q, 0x5a, qbytes, stream), "qfuse poison 2");
+                            check(cudaGraphLaunch(qx, stream), "qfuse replay 2");
+                        }
+                        if (native_quantizer) strata::kernels::native_quantize_q8_1(d_mixed, d_ref, N, tt, stream);
+                        else strata::kernels::quantize_q8_1_rows(d_mixed, tt, N, d_ref, stream);
+                        check(cudaStreamSynchronize(stream), "qfuse sync");
+                        if (qx) { cudaGraphExecDestroy(qx); cudaGraphDestroy(qg); }
+                        if (v3) { std::printf("  QFUSE: the v3 read writes no q8_1 (%s)\n", wrote ? "WRONG: it says it did" : "ok"); qbad += wrote; break; }
+                        check(cudaMemcpy(hq.data(), d_q, (size_t) tt * (N / 32) * 36, cudaMemcpyDeviceToHost), "qfuse read");
+                        check(cudaMemcpy(hr.data(), d_ref, (size_t) tt * (N / 32) * 36, cudaMemcpyDeviceToHost), "qfuse ref read");
+                        if (!wrote || std::memcmp(hq.data(), hr.data(), (size_t) tt * (N / 32) * 36) != 0) {
+                            std::printf("  QFUSE: T=%d rep %d: %s\n", tt, rep, wrote ? "q8_1 bytes differ" : "not written");
+                            ++qbad;
+                        }
+                    }
                 }
             }
         }

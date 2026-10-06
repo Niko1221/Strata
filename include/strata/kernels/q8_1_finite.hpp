@@ -30,4 +30,24 @@ __device__ __forceinline__ half2 q8_1_ds(const float d, const float sum) {
     return make_half2(__float2half(q8_1_finite(d)), __float2half(q8_1_finite(sum)));
 }
 
+// native_mmvq.cu is compiled with CUDA --use_fast_math. Producers compiled
+// without it must reproduce its division at quantization boundaries. HIP's
+// native quantizer does not use that CUDA compilation option.
+__device__ __forceinline__ float q8_1_native_scale(const float amax) {
+#if defined(__HIPCC__)
+    return q8_1_finite(amax / 127.0f);
+#else
+    return q8_1_finite(__fdividef(amax, 127.0f));
+#endif
+}
+__device__ __forceinline__ int8_t q8_1_native_quant(const float xi, const float d, const float amax) {
+#if defined(__HIPCC__)
+    return q8_1_quant(xi, d, amax);
+#else
+    if (amax == 0.0f) return 0;
+    const float q = roundf(__fdividef(xi, d));
+    return (int8_t)(q > 127.0f ? 127.0f : q < -127.0f ? -127.0f : q);
+#endif
+}
+
 }  // namespace strata::kernels

@@ -45,6 +45,7 @@ struct FusedGrArgs {
     /// bytes native_quantize_q8_1 would write); q8_cnt = n_embd / 32 zeroed counters owned by the caller (token 0's)
     uint8_t* q8_mixed = nullptr;
     unsigned* q8_cnt = nullptr;
+    bool q8_native = true;  ///< false for the IQ expert quantizer, which uses precise division on CUDA
 };
 
 bool fused_gr_supported(int64_t n_embd, int64_t hc, int64_t hc_lr);
