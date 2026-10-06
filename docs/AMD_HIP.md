@@ -368,11 +368,41 @@ run it; the report below is from a community machine: an RX 6900 XT 16 GB (gfx10
   matrix cores; `hip_prefill_hipblaslt_gemm`, no hipBLASLt table) and 3 that fail for reasons outside the engine
   (`ple_parity` needs a Q2_0 PLE file that is not on that machine, `expert_multi_test` refuses the CPU without AVX-512,
   `platform_memory_test` cannot `mlock` at the shell's default `ulimit -l`).
+- **Prompt GEMMs as SGEMMs (engine 0.1.39 + `Gemm::rdna2_sgemm`):** the rocBLAS in setup's ROCm (10.2.0a20260930)
+  has tuned gfx1030 kernels for FP16 -> FP16, int8 and FP32 -> FP32 only. The prompt path's dense GEMMs take FP16 or
+  BF16 inputs and write FP32 (rocBLAS's HS / BS types), which run its fallback kernels at about 5 TFLOPS. On gfx103x
+  the engine widens both inputs to FP32 (exact) and runs SGEMM, which accumulates in FP32 like the native call
+  (`src/prefill/gemm.cu`; N < 64 keeps the native call; `STRATA_RDNA2_SGEMM=0` / `=1` turns it off / on for any AMD
+  card). Measured on an RX 6800 16 GB over OCuLink (PCIe 4.0 x4, 7.1 GB/s), Ryzen 7 8845HS, 28.8 GB RAM, Windows 11,
+  Coder IQ1_M with setup's arguments (64K context, MTP), fresh 12K-token prompts, 4 per arm, A/B in one binary:
+
+  | | native GEMMs | SGEMM route |
+  |---|---|---|
+  | prompt | 312 tok/s | 452 tok/s |
+  | prompt GPU timeline (`STRATA_PREFILL_TIMING`) | 37.2 s | 25.5 s |
+  | of which gdn / qsa proj / hc read | 9.4 / 3.6 / 3.85 s | 2.8 / 1.4 / 2.84 s |
+  | decode | 29-34 tok/s | 29-35 tok/s |
+
+  The exact calls on the card (opA = T, opB = N, FP32 out): N 10240 x T 8192 x K 2560 86.7 -> 27.7 ms including
+  the widening; N 320 x T 8192 x K 10240 (BF16) 10.9 -> 7.5 ms. Against a float64 reference on random inputs in
+  [-1, 1], the SGEMM route is as close as or closer than the native call on all 10 FP16 / BF16 shapes checked; the
+  two differ by at most 4.3e-6 of the largest output. A 9-task code-repair benchmark (the model patches seeded bugs
+  in a browser game until 38 browser checks pass) solved 9/9 on the first try with both, model time 458 -> 374 s.
+  The SGEMM route is the default on gfx103x when `STRATA_HIP_PROMPT_F16` is unset; with `STRATA_HIP_PROMPT_F16=1`
+  the FP16 route above runs first and the SGEMM route takes the products it leaves (`beta != 0`). Same RX 6800, one
+  session, fresh 12K-token prompts: native 310, SGEMM 439, FP16 (#835) 494 tok/s; `STRATA_F16_RANGE=1` on the Coder
+  IQ1_M peaked at 105.3 (activations) and 424.8 (FP16 outputs) with nothing beyond 65504, and the repair benchmark
+  solved 9/9 on the first try with both (model time 374 s SGEMM, 307 s FP16). The SGEMM route is the slower of the
+  two; no value passes through FP16, so it has no 65504 limit to stay under. It is not bit-identical to the native
+  call (at most 4.3e-6 of the largest output apart), which can flip a near-tied greedy token like any such change.
+- **Windows** (the report above): setup's ready-made Windows engine 0.1.39 runs the RX 6800 beside a 780M iGPU
+  (HIP numbers the RX 6800 1; setup points the engine at it), and `tools/hip/build_windows.bat` with
+  `STRATA_HIP_ARCHS=gfx1030` builds a working engine from the `gfx103X-all` 10.2.0a20260930 wheels.
 - **gfx1031** (RX 6700 XT, #524): setup knows it (the `gfx103X-all` wheels, unvalidated); its reporter runs it daily
   on one card.
-- **Not validated:** gfx1032 (the same `dp4a` path, no hardware report), setup's own build path and the
-  `gfx103X-all` wheels on gfx1030, images, answer-quality benchmarks. RDNA1 (gfx1012, RX 5500 XT) builds by hand:
-  [OLDER_GPUS.md](OLDER_GPUS.md#amd-building-gfx906-and-gfx1012).
+- **Not validated:** gfx1032 (the same `dp4a` path, no hardware report), setup's Linux build path and the
+  `gfx103X-all` wheels on Linux for gfx1030, images, answer-quality benchmarks. RDNA1 (gfx1012, RX 5500 XT) builds
+  by hand: [OLDER_GPUS.md](OLDER_GPUS.md#amd-building-gfx906-and-gfx1012).
 
 ## gfx906 (Instinct MI50 / MI60, Radeon VII): wave64, built from source
 
