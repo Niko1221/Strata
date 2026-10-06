@@ -85,6 +85,31 @@ main { flex: 1; min-height: 0; display: flex; }
 .badges { display: flex; gap: var(--st-s-2); flex-wrap: wrap; }
 .badges .st-badge { opacity: .38; transition: opacity var(--st-dur); }
 .badges .st-badge.on { opacity: 1; }
+.state-card__head .spacer { flex: 1; }
+.state-actions { display: flex; align-items: center; position: relative; }
+.state-actions .st-btn { height: 34px; padding: 0 14px; font-size: var(--st-fs-sm); }
+.st-split { display: flex; }
+.st-split .st-btn { border-radius: 0; }
+.st-split .st-btn:first-child { border-radius: var(--st-r-md) 0 0 var(--st-r-md); }
+.st-split .st-btn:last-child { border-radius: 0 var(--st-r-md) var(--st-r-md) 0; border-left: 0; }
+.st-split .st-btn--caret { width: auto; padding: 0 6px; gap: 4px; }
+.st-split .st-btn--caret .st-icon { width: 14px; height: 14px; }
+.st-pop { position: absolute; top: calc(100% + 8px); right: 0; z-index: 20; width: 260px; max-width: 86vw;
+          padding: var(--st-s-4); border: 1px solid var(--st-line); border-radius: var(--st-r-lg);
+          background: var(--st-surface); box-shadow: var(--st-sh-pop); display: flex; flex-direction: column;
+          gap: var(--st-s-3); }
+.st-pop[hidden] { display: none; }
+.st-pop__head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--st-s-2); }
+.st-pop__head output { font-size: var(--st-fs-sm); font-weight: var(--st-fw-bold); color: var(--st-accent-text); }
+/* One label per --pos (a slider step), centred under the thumb. The thumb's centre sits --st-inset/2 in from the end
+   of the range element, and the element itself is inset by the 2px margin the UA gives it, which this block does not
+   have: hence the extra 2px. The end labels land in the popup's padding, which is what they are for. */
+.st-pop__ticks { position: relative; height: 1.2em; margin-top: var(--st-s-1); font-size: var(--st-fs-xs);
+                 color: var(--st-ink-muted); }
+.st-pop__ticks span { position: absolute; top: 0; white-space: nowrap;
+                      left: calc(var(--st-inset, 16px) / 2 + 2px + var(--pos) / 1000 * (100% - var(--st-inset, 16px)));
+                      transform: translateX(-50%); }
+.st-pop p { margin: 0; }
 .state-card__row { display: flex; justify-content: space-between; gap: var(--st-s-4); font-size: var(--st-fs-sm);
                    font-weight: var(--st-fw-medium); font-variant-numeric: tabular-nums; }
 .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--st-s-4); }

@@ -153,12 +153,61 @@ class Http(unittest.TestCase):
         self.assertEqual(self.call("GET")[0], 404)
         self.assertEqual(self.call("POST", {"set": {"fit_max_tokens": True}})[0], 404)
 
+    def test_the_idle_timeout_is_saved_and_applied(self):
+        self.assertEqual(self.svc.idle_unload_s, 0)
+        with contextlib.redirect_stdout(io.StringIO()):
+            status, v = self.call("POST", {"set": {"idle_unload_s": 300}}, {"Origin": f"http://{self.host}"})
+        self.assertEqual(status, 200, v)
+        self.assertEqual(self.saved()["idle_unload_s"], 300.0)
+        self.assertEqual(self.svc.idle_unload_s, 300.0)          # the running server uses it, no restart
+        with contextlib.redirect_stdout(io.StringIO()):
+            status, v = self.call("POST", {"set": {"idle_unload_s": None}})
+        self.assertEqual(status, 200, v)
+        self.assertEqual(self.svc.idle_unload_s, 0)             # 0 / empty: never unload
+        self.assertNotIn("idle_unload_s", self.saved())
+
+    def test_the_idle_timeout_stops_at_two_hours(self):
+        # the slider goes to 2 h; About must not be a way round it
+        self.assertEqual(runconfig.check("idle_unload_s", 7200, {}), 7200)
+        with self.assertRaises(ValueError) as e:
+            runconfig.check("idle_unload_s", 7201, {})
+        self.assertIn("7200", str(e.exception))
+        status, v = self.call("POST", {"set": {"idle_unload_s": 7201}}, {"Origin": f"http://{self.host}"})
+        self.assertEqual(status, 400, v)
+        self.assertNotIn("idle_unload_s", self.saved())         # rejected: nothing written
+        got = {k["key"]: k for k in self.call("GET")[1]["keys"]}
+        self.assertEqual(got["idle_unload_s"]["kind"], "number")
+        self.assertEqual(got["idle_unload_s"]["max"], 7200)    # the About field caps itself too
+
+    def test_the_write_follows_the_symlink(self):
+        # the container's config is a symlink into the /data volume (entrypoint.sh); the page's settings must
+        # land on the volume, not as a new regular file over the link, which the next start would ignore
+        volume = Path(self.dir.name) / "config"
+        volume.mkdir()
+        real = volume / "strata-q2_0.json"
+        real.write_text(json.dumps(CFG, indent=1), encoding="utf-8")
+        self.path.unlink()
+        self.path.symlink_to(real)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.call("POST", {"set": {"idle_unload_s": 300}})[0], 200)
+        self.assertTrue(self.path.is_symlink())
+        self.assertEqual(json.loads(real.read_text())["idle_unload_s"], 300.0)
+        self.assertEqual(json.loads((volume / "strata-q2_0.json.bak").read_text()), CFG)
+
     def test_the_page_has_the_view(self):
         web = ROOT / "serve" / "web"
         html, js = (web / "index.html").read_text(encoding="utf-8"), (web / "app.js").read_text(encoding="utf-8")
-        for el in ("cfg-card", "cfg-form", "cfg-save", "cfg-msg"):
+        for el in ("cfg-card", "cfg-form", "cfg-save", "cfg-msg", "model-toggle", "idle-btn", "idle-pop",
+                   "idle-slider", "idle-out"):
             self.assertIn(f'id="{el}"', html)
         self.assertIn('fetch("config", {method: "POST", headers: headers(true)', js)
+        self.assertIn('fetch(load ? "load" : "unload"', js)
+        self.assertIn("set: {idle_unload_s: v}", js)
+        self.assertIn('class="st-split"', html)          # one split button: the action and the caret
+        self.assertIn('id="idle-slider" min="0" max="1000" step="1"', html)   # a position on the curve, not minutes
+        self.assertIn("const idlePos = (min) =>", js)
+        self.assertIn("const idleMin = (pos) =>", js)
+        self.assertIn('$("idle-slider").value = idlePos(v / 60)', js)         # the thumb follows the server's value
 
 
 if __name__ == "__main__":

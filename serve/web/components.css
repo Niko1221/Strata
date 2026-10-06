@@ -112,7 +112,11 @@ a{color:var(--st-accent-text);text-decoration:none} a:hover{text-decoration:unde
 .st-label output{font-variant-numeric:tabular-nums;color:var(--st-ink-muted)}
 .st-input{height:44px;padding:0 14px;border-radius:var(--st-r-md);border:1.5px solid var(--st-line);background:var(--st-surface);color:var(--st-ink);font:400 var(--st-fs-md) var(--st-font)}
 .st-input:focus{outline:0;border-color:var(--st-focus);box-shadow:0 0 0 3px color-mix(in srgb,var(--st-focus) 20%,transparent)}
-.st-slider{width:100%;accent-color:var(--st-accent)}
+/* The thumb is left to the UA. --st-inset is how far the thumb's centre sits in from each end of the element, which
+   is what the idle popup's tick labels need to line up with: the UA gives the range a 2px margin and Chromium draws a
+   12px thumb, so 2 + 12/2 = 8 each side, 16 total. Measured in Chromium 153 at a 226px element (210px of travel).
+   Re-measure both together if you change the UA default or the thumb size. */
+.st-slider{--st-inset:16px;width:100%;accent-color:var(--st-accent)}
 .st-toggle{position:relative;width:40px;height:24px;border-radius:var(--st-r-pill);border:0;background:var(--st-line);cursor:pointer;transition:background var(--st-dur)}
 .st-toggle::after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.2);transition:transform var(--st-dur) var(--st-ease)}
 .st-toggle[aria-checked="true"]{background:var(--st-accent)}

@@ -187,7 +187,7 @@ function render(m) {
   } else if (live.state === "generating") {
     setPill("generating", `Generating · ${fmt(live.tok_s, 1)} tok/s`);
   } else {
-    setPill("idle", "Idle");
+    setPill("idle", live.state === "unloaded" ? "Unloaded" : "Idle");
   }
   if (live.queued > 0) setPill("queued", `${live.queued} queued`);
   if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
@@ -237,6 +237,83 @@ function renderTotals(t) {
   return `Since ${since}: ${fmt(t.requests)} requests · ${fmt(read)} prompt tokens read${pSpeed} (${fmt(t.reused)} reused) · ` +
          `${fmt(t.output_tokens)} written${oSpeed}`;
 }
+
+// One button for the model: Load when it is unloaded, Unload when it is loaded (POST /load, /unload, as the
+// standalone API Monitor page does), with a dropdown holding the idle timer as a slider (POST /config).
+// The server refuses a load/unload while a request runs, so the button follows the state.
+let idleSet = null, modelOp = false, modelDoing = null, dragging = false;   // the server's idle_unload_s, an operation in flight, the slider mid-drag
+// The slider spans 0..1000 steps but never..2 h in minutes, so the minutes are a piecewise curve over the track:
+// fine near 0 (25 steps a minute to 20 min), coarser to 45 min (10 a minute), coarse above (3⅓ a minute).  A plain
+// 0..120 minute scale puts "never" one pixel from "1 min" and gives the common 5..20 minute range a sixth of the track.
+const idlePos = (min) => {
+  const m = Math.min(120, Math.max(0, min));
+  return Math.round(m <= 20 ? m * 25 : m <= 45 ? 500 + (m - 20) * 10 : 750 + (m - 45) * 10 / 3);
+};
+const idleMin = (pos) => Math.round(pos <= 500 ? pos / 25 : pos <= 750 ? 20 + (pos - 500) / 10 : 45 + (pos - 750) * 3 / 10);
+const idleText = (s) => {
+  if (!s) return "never";
+  if (s % 60) return `${fmt(s, 0)} s`;                    // a value typed in About, off the slider's steps
+  const m = s / 60;
+  return m % 60 === 0 ? `${fmt(m / 60)} h` : `${fmt(m)} min`;
+};
+function renderIdle(live) {
+  const v = live.idle_unload_s;
+  if (v == null) return;                                  // an older server: nothing to show
+  if (dragging) return;                                  // the user is dragging: a poll must not clobber the live display
+  if (v !== idleSet) {
+    idleSet = v;
+    $("idle-slider").value = idlePos(v / 60);              // the slider is a position on the curve above
+  }
+  const t = idleText(idleSet);
+  $("idle-out").textContent = t;
+  $("idle-btn").title = `Unload when idle: ${t}`;
+}
+function setIdlePop(open) {
+  $("idle-pop").hidden = !open;
+  $("idle-btn").setAttribute("aria-expanded", String(open));
+}
+$("idle-btn").onclick = () => setIdlePop($("idle-pop").hidden);
+$("idle-slider").oninput = () => { dragging = true; $("idle-out").textContent = idleText(idleMin(+$("idle-slider").value) * 60); };
+$("idle-slider").onchange = async () => {
+  dragging = false;
+  const v = idleMin(+$("idle-slider").value) * 60;
+  try {
+    const r = await fetch("config", {method: "POST", headers: headers(true),
+                                     body: JSON.stringify({set: {idle_unload_s: v}})});
+    const b = await r.json();
+    if (!r.ok) throw new Error((b.error || {}).message || `HTTP ${r.status}`);
+    if (b.changed.length) toast("success", "Idle unload applied", `Now: ${idleText(v)}; kept in ${b.file} for the next start.`);
+    await poll();
+  } catch (e) {
+    toast("error", "Not saved", String(e.message || e), 6000);
+    if (lastMetrics) renderIdle(lastMetrics.live);        // back to the server's value
+  }
+};
+$("idle-slider").addEventListener("pointerup", () => { dragging = false; });   // release clears the drag even when the value ends unchanged (no change event)
+document.addEventListener("click", (e) => {
+  if (!$("idle-pop").hidden && !e.target.closest("#idle-pop") && !e.target.closest("#idle-btn")) setIdlePop(false);
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") setIdlePop(false); });
+async function modelToggle() {
+  const load = (lastMetrics ? lastMetrics.live : {}).state === "unloaded";
+  modelOp = true; modelDoing = load ? "load" : "unload";
+  try {
+    const r = await fetch(load ? "load" : "unload", {method: "POST", headers: headers(true), body: "{}"});
+    const b = await r.json();
+    // 409: a request is running or waiting - the server keeps the model where it is, and says so (#606's lesson)
+    if (!r.ok) throw new Error((b.error || {}).message || (b.status === "busy" ? "a request is running or waiting"
+                                                                             : `HTTP ${r.status}`));
+    toast("success", load ? "Loading the model" : "Model unloaded",
+          load ? "The first start takes a minute or two."
+                : "The GPU and the RAM are free; the next request loads the model again.");
+  } catch (e) {
+    toast("error", load ? "Not loaded" : "Not unloaded", String(e.message || e), 6000);
+  } finally {
+    modelOp = false; modelDoing = null;
+    poll();
+  }
+}
+$("model-toggle").onclick = modelToggle;
 function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   // model state
   const on = live.queued > 0 ? "queued" : live.state;
@@ -257,6 +334,10 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
     delete prog.dataset.tone;
     pct = live.max_tokens ? Math.min(100, (100 * live.generated) / live.max_tokens) : 0;
     detail = `${fmt(live.generated)} tokens · ${fmt(live.tok_s, 1)} tok/s`;
+  } else if (live.state === "unloaded") {
+    delete prog.dataset.tone;
+    label = "Model unloaded";
+    detail = "the GPU and the RAM are free; the next request loads it again";
   } else if (last) {
     delete prog.dataset.tone;
     detail = `last: ${fmt(last.output_tokens)} tokens${last.decode_tok_s ? ` at ${fmt(last.decode_tok_s, 1)} tok/s` : ""}`;
@@ -264,6 +345,12 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   $("state-label").textContent = label;
   $("state-detail").textContent = detail;
   $("state-bar").style.width = `${pct}%`;
+  const running = live.state === "reading" || live.state === "generating" || live.queued > 0;
+  const b = $("model-toggle");
+  b.textContent = modelOp ? (modelDoing === "load" ? "Loading…" : "Unloading…")
+                          : (live.state === "unloaded" ? "Load" : "Unload");
+  b.disabled = modelOp || running;
+  renderIdle(live);
 
   // the eight cards
   const speed = live.state === "generating" ? live.tok_s : last ? last.decode_tok_s : null;
@@ -317,8 +404,18 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   $("ctx-pct").textContent = `${Math.round(frac * 100)}%`;
   $("ctx-sub").textContent = ctx ? `${kfmt(used)} / ${ctxfmt(ctx)}` : "–";
   const cacheBytes = (eng.expert_cache_mib || 0) * 1048576;
-  $("slots-text").textContent = eng.expert_slots ? `${fmt(eng.expert_slots)} · ${gb(cacheBytes)} GB` : "–";
-  $("slots-bar").style.width = hw.gpu_mem_total ? `${Math.min(100, (100 * cacheBytes) / hw.gpu_mem_total)}%` : "0%";
+  // Unloaded: the server clears the engine's expert figures, so a bare "-" hides that the VRAM really did go back.
+  // Show what the card is doing instead - that is the answer to "did unloading free it?".
+  if (eng.expert_slots) {
+    $("slots-text").textContent = `${fmt(eng.expert_slots)} · ${gb(cacheBytes)} GB`;
+  } else if (live.state === "unloaded") {
+    $("slots-text").textContent = hw.gpu_mem_used != null
+      ? `model unloaded · ${fmt(hw.gpu_mem_used / 1048576, 0)} MiB in use`
+      : "model unloaded";
+  } else {
+    $("slots-text").textContent = "–";
+  }
+  $("slots-bar").style.width = eng.expert_slots && hw.gpu_mem_total ? `${Math.min(100, (100 * cacheBytes) / hw.gpu_mem_total)}%` : "0%";
   $("ram-text").textContent = hw.ram_total ? `${gb(hw.ram_used)} / ${gb(hw.ram_total, 0)} GB` : "–";
   const ramPct = hw.ram_total ? (100 * hw.ram_used) / hw.ram_total : 0;
   $("ram-bar").style.width = `${ramPct}%`;
@@ -373,7 +470,10 @@ function renderAbout(eng, hw, st) {
     ["Engine", eng.version ? `v${eng.version}` : "built from source"],
     ["Context", eng.max_context ? `${fmt(eng.max_context)} tokens` : null],
     ["KV cache", kv ? `${kv}${eng.kv_resident ? `, streamed: ${fmt(eng.kv_resident)} positions per layer in VRAM, the rest in RAM` : ", all in VRAM"}` : null],
-    ["Experts in VRAM", eng.expert_slots ? `${fmt(eng.expert_slots)} (${gb((eng.expert_cache_mib || 0) * 1048576)} GB)` : null],
+    ["Experts in VRAM", eng.expert_slots ? `${fmt(eng.expert_slots)} (${gb((eng.expert_cache_mib || 0) * 1048576)} GB)`
+      : eng.arena_mib == null && eng.vram_free_mib == null && hw.gpu_mem_used != null
+        ? `none - model unloaded, ${fmt(hw.gpu_mem_used / 1048576, 0)} MiB in use`
+        : null],
     ["Speculation", eng.spec ? `MTP drafts up to ${Math.max(0, (eng.mtp_max || eng.spec) - 1)} tokens${eng.lookup ? ", prompt lookup on" : ""}` : null],
     ["Images", eng.images ? "on" : "off"],
     ["Experimental speed projection", projectionText(eng.cvec)],
@@ -452,7 +552,9 @@ async function loadConfig() {
         opts.map(([val, text]) => `<option value="${esc(val)}"${cur === val ? " selected" : ""}>${esc(text)}</option>`).join("") + `</select>`;
     } else {
       const text = v == null ? "" : Array.isArray(v) ? v.join(", ") : String(v);
-      input = `<input class="st-input" id="${id}" ${k.kind === "number" ? 'type="number" step="any" min="0"' : 'type="text"'} ` +
+      const num = k.kind === "number" ? `type="number" step="any" min="0"` +
+        (k.max == null ? "" : ` max="${esc(k.max)}"`) : 'type="text"';
+      input = `<input class="st-input" id="${id}" ${num} ` +
         `value="${esc(text)}" placeholder="default" autocomplete="off">`;
     }
     return `<label for="${id}" title="${esc(k.help)}">${esc(k.help)}<code>${esc(k.key)}</code></label>${input}`;
@@ -479,7 +581,9 @@ $("cfg-save").addEventListener("click", async () => {
     const b = await r.json();
     if (!r.ok) throw new Error((b.error || {}).message || `HTTP ${r.status}`);
     $("cfg-msg").textContent = b.changed.length
-      ? `Saved (${b.changed.join(", ")}); the earlier file is ${b.file}.bak. Start the model again to use it.` : "Nothing changed.";
+      ? `Saved (${b.changed.join(", ")}); the earlier file is ${b.file}.bak. ` +
+        (b.changed.includes("idle_unload_s") ? "idle_unload_s applies now, the rest at the next start."
+                                             : "Start the model again to use it.") : "Nothing changed.";
     loadConfig();
   } catch (e) {
     $("cfg-msg").textContent = "";

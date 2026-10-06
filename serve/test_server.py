@@ -21,8 +21,9 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate, literal_tags, mark_think_literals, unmark_think_literals  # noqa: E402
-from serve.server import (CTX_SLACK, ByteTokenizer, EngineDied, GpuBusy, MockEngine, PP_DONE_TAIL, Service,  # noqa: E402
-                          StrataEngine, engine_args, layer_split_value, prompt_progress, prompt_tokens_seen,
+from serve.server import (CTX_SLACK, ByteTokenizer, DegenerateReply, EngineDied, EngineStuck, GpuBusy,  # noqa: E402
+                          MockEngine, PP_DONE_TAIL, Service, StrataEngine, engine_args, layer_split_value,
+                          prompt_progress, prompt_tokens_seen,
                           request_timings, serve, start_failure_hint)
 from types import SimpleNamespace  # noqa: E402
 
@@ -1556,23 +1557,48 @@ class LearnedProfile(unittest.TestCase):
 
 
 class RepeatStop(unittest.TestCase):
-    """#606: one token repeated repeat_stop_tokens times in a row ends the reply as "length"; 0 turns it off."""
+    """#606: one token repeated repeat_stop_tokens times in a row is not an answer, and the engine goes on answering
+    that way - so the engine is restarted and the request ends in an error the client can retry (0 turns it off)."""
 
-    def run_reply(self, script, limit=None):
+    def run_reply(self, script, limit=None, engine=None):
         tok = ByteTokenizer()
-        svc = Service(MockEngine(tok, script, max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        eng = engine if engine is not None else MockEngine(tok, script, max_context=CTX)
+        svc = Service(eng, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
         if limit is not None:
             svc.repeat_stop_tokens = limit
         ids = tok.encode("hi")
         with contextlib.redirect_stdout(io.StringIO()) as out:
-            done = [x for kind, x in svc.run(ids, False, None, 3000, {}, threading.Event()) if kind == "done"][0]
+            try:
+                done = [x for kind, x in svc.run(ids, False, None, 3000, {}, threading.Event()) if kind == "done"][0]
+            except DegenerateReply as e:                   # the request ends in the error, not in a done event
+                done = e
         return done, out.getvalue()
 
     def test_a_long_run_is_ended(self):
         done, log = self.run_reply("ok " + "!" * 1000 + " never")
-        self.assertEqual(done["finish"], "length")
-        self.assertEqual(done["completion_tokens"], 3 + 256)
+        self.assertIsInstance(done, DegenerateReply)
+        self.assertIn("repeated one token '!' 256 times", str(done))
         self.assertIn("repeated one token ('!') 256 times", log)
+
+    def test_the_engine_is_restarted_so_the_clients_retry_finds_a_clean_one(self):
+        tok = ByteTokenizer()
+        engine = UnloadableEngine(tok, "!" * 1000, max_context=CTX)
+        done, log = self.run_reply("!" * 1000, engine=engine)
+        self.assertIsInstance(done, DegenerateReply)
+        self.assertEqual(engine.starts, 1)                 # once per request: the client decides about retrying
+        self.assertTrue(engine.alive())
+        self.assertIn("the engine is running again", log)
+
+    def test_an_engine_that_cannot_be_restarted_still_reports_the_reply(self):
+        class Stuck(UnloadableEngine):
+            def restart(self):
+                raise EngineStuck("Strata is still releasing GPU/RAM; retry unloading after it exits")
+
+        tok = ByteTokenizer()
+        done, log = self.run_reply("!" * 1000, engine=Stuck(tok, "!" * 1000, max_context=CTX))
+        self.assertIsInstance(done, DegenerateReply)       # the client learns why, not just that it went wrong
+        self.assertIn("could not be restarted", log)
+        self.assertIn("still releasing GPU/RAM", log)
 
     def test_short_runs_and_off(self):
         done, _ = self.run_reply("=" * 255 + " fine")
@@ -1582,6 +1608,54 @@ class RepeatStop(unittest.TestCase):
         self.assertNotIn("repeated one token", log)
         done, _ = self.run_reply("ab" * 400, limit=8)       # alternating tokens are not one run
         self.assertEqual(done["finish"], "stop")
+
+
+class DegenerateOverHttp(unittest.TestCase):
+    """#606 end to end: a client gets an error it can act on (not an empty message that reads as "length, no output")
+    and the engine it can retry against is a fresh one."""
+
+    def setUp(self):
+        tok = ByteTokenizer()
+        self.engine = UnloadableEngine(tok, "!" * 1000, max_context=CTX)
+        self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        self.httpd = serve(self.svc, port=0)
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+    def post(self, path, body):
+        req = urllib.request.Request(self.base + path, data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json", "anthropic-version": "2023-06-01"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.status, r.read().decode()
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, e.read().decode()
+
+    def test_a_chat_request_is_503_and_the_engine_is_restarted(self):
+        code, raw = self.post("/v1/chat/completions", {"model": "m", "messages": [{"role": "user", "content": "hi"}]})
+        self.assertEqual(code, 503)
+        self.assertIn("repeated one token '!' 256 times", json.loads(raw)["error"]["message"])
+        self.assertEqual(self.engine.starts, 1)
+        self.assertTrue(self.engine.alive())
+
+    def test_a_streamed_chat_request_ends_in_an_error_event(self):
+        code, raw = self.post("/v1/chat/completions", {"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                                                      "stream": True})
+        self.assertEqual(code, 200)                          # the headers went out with the first chunk
+        self.assertIn("repeated one token '!' 256 times", raw)
+        self.assertTrue(raw.rstrip().endswith("data: [DONE]"))
+        self.assertEqual(self.engine.starts, 1)
+
+    def test_a_messages_request_is_503_too(self):
+        code, raw = self.post("/v1/messages", {"model": "m", "max_tokens": 500,
+                                              "messages": [{"role": "user", "content": "hi"}]})
+        self.assertEqual(code, 503)
+        self.assertIn("repeated one token '!' 256 times", json.loads(raw)["error"]["message"])
+        self.assertEqual(self.engine.starts, 1)
 
 
 class LayerSplit(unittest.TestCase):
@@ -2498,6 +2572,53 @@ class SharingTheGpu(unittest.TestCase):
         self.assertEqual(self.req("/load", {}), (200, {"status": "loaded"}))
         self.assertEqual(self.engine.starts, 1)
 
+    def test_load_refused_while_a_request_runs_or_waits(self):
+        # the same guard /unload has: the model controls must not move the engine under an active client (#606's
+        # lesson - a reload in the middle of a session is what wedged the engine), and they say so instead of
+        # queueing behind the request
+        self.svc.unload()
+        with self.svc.fifo:
+            self.assertEqual(self.svc.load(refuse_busy=True), "busy")
+            with self.svc.status_lock:                     # a request waiting for the fifo, not holding it yet
+                self.svc.status.update(queued=1)
+                self.assertEqual(self.svc.load(refuse_busy=True), "busy")
+                self.svc.status.update(queued=0)
+        self.assertEqual(self.req("/load", {}), (200, {"status": "loaded"}))
+        self.assertEqual(self.engine.starts, 1)
+
+    def test_unload_clears_the_engines_live_figures_but_keeps_its_config(self):
+        # /metrics used to keep reporting the last session's expert_slots / arena_mib / vram_free_mib after an
+        # unload, so the Monitor's "Experts in VRAM" kept claiming gigabytes the driver had already given back.
+        # lazy=True: no process is started, and close() returns at once when self.proc is None.
+        engine = StrataEngine("strata", ["--max-context", "4096"], lazy=True)
+        engine.info.update({"expert_slots": 13440, "expert_cache_mib": 18442, "arena_mib": 33812,
+                            "vram_free_mib": 608, "pool_workers": 7, "vram": {"vram_free_mib": 608},
+                            "max_context": 4096, "kv": "int8", "spec": 6, "conversation_cache_mib": 0})
+        engine.unload()
+        for gone in StrataEngine.LIVE_INFO:
+            self.assertNotIn(gone, engine.info)
+        for kept in ("max_context", "kv", "spec", "conversation_cache_mib"):
+            self.assertIn(kept, engine.info)
+
+    def test_load_refused_while_busy_even_when_the_engine_is_already_up(self):
+        # the guard has to come before the "already loaded" answer: with the engine up and a request on it, Load
+        # answered "loaded" (200), so the button looked like it had done something while a request was running.
+        # The test above misses this because it starts from an unloaded engine.
+        self.chat()
+        self.assertTrue(self.engine.alive())
+        starts = self.engine.starts
+        with self.svc.fifo:
+            self.assertEqual(self.svc.load(refuse_busy=True), "busy")
+            self.assertEqual(self.req("/load", {}), (409, {"status": "busy"}))
+        self.assertEqual(self.req("/load", {}), (200, {"status": "loaded"}))     # idle and loaded is not busy
+        self.assertEqual(self.engine.starts, starts)
+
+    def test_load_refused_over_http_while_a_request_runs(self):
+        self.svc.unload()
+        with self.svc.fifo:
+            self.assertEqual(self.req("/load", {}), (409, {"status": "busy"}))
+        self.assertFalse(self.engine.alive())               # refused, so still unloaded
+
     def test_unload_refused_while_a_request_runs(self):
         with self.svc.fifo:
             self.assertEqual(self.svc.unload(), "busy")
@@ -2513,6 +2634,24 @@ class SharingTheGpu(unittest.TestCase):
             time.sleep(0.1)
         self.assertFalse(self.engine.alive())
         self.assertEqual(self.chat()[0], 200)
+
+    def test_the_page_sets_the_idle_timeout_and_it_applies_now(self):
+        # the Settings view writes idle_unload_s to the run config; the idle loop reads the value on every turn,
+        # so a change from the page needs no restart
+        self.svc.config_path = str(Path(tempfile.mkdtemp()) / "strata-q2_0.json")
+        Path(self.svc.config_path).write_text("{}", encoding="utf-8")
+        self.assertEqual(self.chat()[0], 200)                             # loaded, a request just ran
+        self.assertEqual(self.req("/metrics")[1]["live"]["idle_unload_s"], 0)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.req("/config", {"set": {"idle_unload_s": 1}})[0], 200)
+        self.assertEqual(self.svc.idle_unload_s, 1.0)
+        self.assertEqual(json.loads(Path(self.svc.config_path).read_text())["idle_unload_s"], 1.0)
+        self.assertEqual(self.req("/metrics")[1]["live"]["idle_unload_s"], 1.0)
+        deadline = time.time() + 10
+        while self.engine.alive() and time.time() < deadline:
+            time.sleep(0.1)
+        self.assertFalse(self.engine.alive())                             # unloaded, no restart
+        self.assertEqual(self.chat()[0], 200)                             # the next request loads it again
 
     def test_min_free_vram_refuses_to_load(self):
         self.svc.min_free_vram_mib = 8000

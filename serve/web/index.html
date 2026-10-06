@@ -82,7 +82,29 @@
             <span class="st-badge st-badge--generating" data-s="generating">Generating</span>
             <span class="st-badge st-badge--queued" data-s="queued">Queued</span>
             <span class="st-badge st-badge--error" data-s="error">Error</span>
+            <span class="st-badge" data-s="unloaded">Unloaded</span>
           </span>
+          <span class="spacer"></span>
+          <div class="state-actions">
+            <div class="st-split">
+              <button class="st-btn st-btn--secondary" id="model-toggle" disabled>Unload</button>
+              <button class="st-btn st-btn--secondary st-btn--caret" id="idle-btn" aria-expanded="false"
+                      aria-label="Unload when idle" title="Unload when idle">
+                <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-chevron"/></svg>
+                </button>
+            </div>
+            <div class="st-pop" id="idle-pop" hidden>
+              <div class="st-pop__head"><span class="card-title">Unload when idle</span>
+                <output id="idle-out">never</output></div>
+              <input class="st-slider" type="range" id="idle-slider" min="0" max="1000" step="1" value="0"
+                     aria-label="Minutes without a request before the model unloads">
+              <div class="st-pop__ticks"><span style="--pos:0">never</span><span style="--pos:375">15 min</span
+                ><span style="--pos:750">45 min</span><span style="--pos:1000">2 h</span></div>
+              <p class="muted small">The model gives the GPU and the RAM back after this long without a request;
+                the next request loads it again. Steps get finer near zero, coarser past 45 minutes. Applies right
+                away, and is kept for the next start.</p>
+            </div>
+          </div>
         </div>
         <div class="state-card__row"><span id="state-label">Waiting for a request</span><span class="muted" id="state-detail"></span></div>
         <div class="st-progress" id="state-progress"><div class="st-progress__bar" id="state-bar" style="width:0%"></div></div>
@@ -175,8 +197,9 @@
       </div>
       <div class="st-card cfg-card" id="cfg-card" hidden>
         <div class="req-head"><span class="card-title">Model settings</span><span class="muted small" id="cfg-file"></span></div>
-        <p class="muted small">Kept in the model's run config for every client. An empty field is the default. They
-          take effect the next time the model starts (close Strata's window and start it again).</p>
+        <p class="muted small">Kept in the model's run config for every client. An empty field is the default.
+          <code>idle_unload_s</code> applies right away; the rest the next time the model starts (close Strata's
+          window and start it again).</p>
         <form class="cfg-form" id="cfg-form"></form>
         <div class="cfg-actions"><button class="st-btn st-btn--primary" id="cfg-save" type="button">Save</button>
           <span class="muted small" id="cfg-msg" role="status"></span></div>

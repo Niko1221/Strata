@@ -29,7 +29,8 @@ EDITABLE = [
     ("effort_position", ("enum", ["start", "end"]),
      "Where a non-default reasoning effort goes: start (the default) or end (keeps the cache when it changes)"),
     ("aliases", "names", "Other model names the server lists and answers to (comma-separated)"),
-    ("idle_unload_s", "num>=0", "Unload the model after this many seconds without requests (0 or empty: never)"),
+    ("idle_unload_s", ("num", 7200), "Unload the model after this many seconds without requests, up to 2 hours "
+     "(0 or empty: never). Applies right away, and is kept for the next start"),
     ("lazy_load", "bool", "Start without loading the model; the first request loads it (text only)"),
     ("engine_silence_s", "num>=0", "End a request when the engine says nothing for this long (default 300 s, 0 = wait)"),
     ("api_monitor", "bool", "Keep the last 100 requests' prompts and answers in memory for /api-monitor"),
@@ -64,10 +65,12 @@ def view(cfg: dict, path: str | Path) -> dict:
     for key, kind, help_ in EDITABLE:
         k = kind[0] if isinstance(kind, tuple) else kind
         out.append({"key": key, "value": value_of(cfg, key), "help": help_,
-                    "kind": "number" if k in ("sampling", "arg", "int>=0", "num>=0") else k,
-                    **({"choices": kind[1]} if k == "enum" else {})})
+                    "kind": "number" if k in ("sampling", "arg", "int>=0", "num>=0", "num") else k,
+                    **({"choices": kind[1]} if k == "enum" else {}),
+                    **({"max": kind[1]} if k == "num" else {})})
     return {"file": Path(path).name, "keys": out,
-            "note": "Saved to the run config; used from the next start of the model."}
+            "note": "Saved to the run config. idle_unload_s applies right away; the rest from the next start of "
+                    "the model."}
 
 
 def _number(key, v, whole=False, lo=0.0, hi=None, lo_open=False):
@@ -106,6 +109,8 @@ def check(key: str, v, cfg: dict):
         return _number(key, v, whole=True)
     if k == "num>=0":
         return _number(key, v)
+    if k == "num":
+        return _number(key, v, hi=kind[1])
     if k == "arg":
         return _number(key, v, whole=True)
     rule = kind[1]                                     # a sampling key: the server's own rules
@@ -162,8 +167,10 @@ def apply(cfg: dict, changes: dict) -> tuple[dict, list[str]]:
 
 
 def save(path: str | Path, cfg: dict) -> Path:
-    """The config written whole (a temporary file moved over the old one), the earlier one kept as <name>.bak."""
-    path = Path(path)
+    """The config written whole (a temporary file moved over the old one), the earlier one kept as <name>.bak.
+    The container's config is a symlink into the /data volume (entrypoint.sh), so the write follows it:
+    os.replace over a symlink leaves a regular file in the image and the volume's copy stale."""
+    path = Path(os.path.realpath(path))
     bak = path.with_name(path.name + ".bak")
     shutil.copyfile(path, bak)
     tmp = path.with_name(path.name + ".tmp")
