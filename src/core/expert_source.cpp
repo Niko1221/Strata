@@ -2408,6 +2408,152 @@ constexpr int64_t kMaxWindowEntries = 128;
 static_assert(strata::kernels::cpu::MAXT * 10 <= kMaxWindowEntries, "a verify window's entries overflow the tables");
 }  // namespace
 
+namespace detail {
+namespace {
+// window_gpu_plan's predicates, bound to the dispatch (a test binds its own stubs).
+bool window_plan_peer_has(void* ctx, int32_t e) {
+    const ExpertDispatch& d = *(const ExpertDispatch*) ctx;
+    return d.peer != nullptr && d.peer->has(d.layers, e);
+}
+// a helper GPU (RemoteExperts) holding the expert computes it in its own VRAM once begin() claims the row: like
+// the peer tier's, such an expert is no miss of this plan and never part of the PCIe share, which would read it
+// over the primary's link instead (2x RX 6900 XT, IQ3_S, --remote-expert-opt with the probed share 0.39: ~4
+// helper experts per layer-window moved to PCIe, 59 ms per window against 34 ms)
+bool window_plan_helper_holds(void* ctx, int32_t e) {
+    const ExpertDispatch& d = *(const ExpertDispatch*) ctx;
+    for (int r = 0; r < d.remote_count; ++r)
+        if (d.remote[r]->holds(d.layers, e)) return true;
+    return false;
+}
+const uint8_t* window_plan_pinned_blob(void* ctx, int32_t e) {
+    const ExpertDispatch& d = *(const ExpertDispatch*) ctx;
+    return d.src->pinned(d.layers, e) ? d.src->blob(d.layers, e) : nullptr;
+}
+const uint8_t* window_plan_device_alias(void* ctx, int32_t e) {
+    const ExpertDispatch& d = *(const ExpertDispatch*) ctx;
+    return d.src->device_alias(d.layers, e);
+}
+}  // namespace
+
+void window_gpu_plan(const WindowGpuPlanInput& in, GpuPlanSink& P, int32_t* kind, int64_t blob_bytes,
+                     const uint8_t** dma_src) {
+    // O(n) in the window's entries: one pass groups each entry with its expert's first occurrence (open
+    // addressing over the routing ids, load factor <= 1/2), one pass over the distinct experts decides the
+    // tiers, one pass emits the groups with per-group cursors.  The peer/helper questions are answered once
+    // per distinct expert here, not once per entry and again per group.
+    constexpr int HT = 256;   // >= 2 * kMaxWindowEntries, a power of two
+    int64_t distinct[kMaxWindowEntries];   // the distinct expert's first entry
+    int32_t cnt[kMaxWindowEntries];        // its entries
+    int32_t slot_of[kMaxWindowEntries];    // its residency slot (-1 missed, -2 out of range)
+    uint8_t peer_f[kMaxWindowEntries], help_f[kMaxWindowEntries];
+    int32_t kd_of[kMaxWindowEntries];
+    int32_t base[kMaxWindowEntries], cur[kMaxWindowEntries];
+    int16_t ord_of[kMaxWindowEntries];     // per entry: its distinct expert
+    int16_t htab[HT];
+    std::memset(htab, 0xFF, sizeof(htab));
+    const int64_t n = in.n, k = in.k;
+    const int32_t* ids = in.ids;
+    int nd = 0, nmiss = 0;
+    for (int64_t i = 0; i < n; ++i) {
+        uint32_t h = ((uint32_t) ids[i] * 2654435761u) >> 24;   // the top 8 bits: HT == 256
+        int16_t o;
+        for (;;) {
+            o = htab[h];
+            if (o < 0) {
+                o = (int16_t) nd++;
+                htab[h] = o;
+                distinct[o] = i;
+                cnt[o] = 1;
+                const int32_t e = ids[i];
+                int32_t slot = -2;
+                uint8_t pf = 0, hf = 0;
+                if (e >= 0 && e < in.n_expert) {
+                    slot = in.host_res[(size_t) e];
+                    if (slot < 0) {
+                        pf = in.peer_has != nullptr && in.peer_has(in.ctx, e) ? 1 : 0;
+                        hf = pf != 0 ? 0 : (in.helper_holds != nullptr && in.helper_holds(in.ctx, e) ? 1 : 0);
+                        if (pf == 0 && hf == 0) ++nmiss;
+                    }
+                }
+                slot_of[o] = slot;
+                peer_f[o] = pf;
+                help_f[o] = hf;
+                break;
+            }
+            if (ids[distinct[o]] == ids[i]) { ++cnt[o]; break; }
+            h = (h + 1) & (HT - 1);
+        }
+        ord_of[i] = o;
+    }
+    const bool pcie_ok = in.pcie_num > 0 && in.pcie_layer;
+    const int m = pcie_ok ? (nmiss * in.pcie_num) >> 8 : 0;
+    int miss_rank = 0, groups = 0, fetches = 0;
+    int16_t pcie_ord[64];
+    for (int q = 0; q < nd; ++q) {
+        const int64_t i0 = distinct[q];
+        const int32_t e = ids[i0];
+        int kd = -1;
+        if (e >= 0 && e < in.n_expert) {
+            if (slot_of[q] >= 0) {
+                kd = 0;
+            } else if (peer_f[q] != 0) {
+                kd = 2;
+            } else if (help_f[q] != 0) {
+                // left to the helper: kind -1 until RemoteExperts::begin() claims the row (see above)
+            } else {
+                if (miss_rank >= nmiss - m && fetches < P.staging_cap && fetches < 64) {
+                    const uint8_t* src = in.pinned_blob(in.ctx, e);
+                    if (src != nullptr) {
+                        kd = 1;
+                        dma_src[fetches] = src;
+                        pcie_ord[fetches] = (int16_t) q;
+                        ++fetches;
+                    }
+                }
+                ++miss_rank;
+            }
+        }
+        kd_of[q] = kd;
+    }
+    int32_t entries = 0;
+    for (int q = 0; q < nd; ++q) {         // the VRAM groups first; the PCIe groups below
+        if (kd_of[q] != 0) continue;
+        const int32_t slot = slot_of[q];
+        P.ptr[groups] = (unsigned long long) (in.cache_base + (in.cache_slot_off ? (size_t) in.cache_slot_off[slot]
+                                                                                 : (size_t) slot * (size_t) in.cache_blob));
+        P.start[groups] = entries;
+        base[q] = entries;
+        entries += cnt[q];
+        ++groups;
+    }
+    P.start[groups] = entries;
+    for (int q = 0; q < fetches; ++q) {   // the PCIe groups: staging slot q, entries after the VRAM ones
+        const int16_t o = pcie_ord[q];
+        P.ptr2[q] = P.pcie_mode != 0 ? (unsigned long long) in.device_alias(in.ctx, ids[distinct[o]])
+                                     : P.staging + (unsigned long long) q * (unsigned long long) blob_bytes;
+        P.start2[q] = entries;
+        base[o] = entries;
+        entries += cnt[o];
+    }
+    P.start2[fetches] = entries;
+    for (int q = 0; q < nd; ++q) cur[q] = (kd_of[q] == 0 || kd_of[q] == 1) ? base[q] : 0;
+    for (int64_t i = 0; i < n; ++i) {
+        const int16_t o = ord_of[i];
+        const int32_t kd = kd_of[o];
+        kind[i] = kd;
+        if (kd == 0 || kd == 1) {
+            const int32_t pos = cur[o]++;
+            P.dst[pos] = (int32_t) i;
+            P.tok[pos] = (int32_t) (i / k);
+        }
+    }
+    P.counts[0] = groups;
+    P.counts[1] = entries;
+    P.counts[2] = fetches;
+    if (in.pcie_experts != nullptr) *in.pcie_experts += fetches;
+}
+}  // namespace detail
+
 void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k,
                                 float* out) {
     using namespace strata::kernels::cpu;
@@ -2447,94 +2593,28 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     const int64_t n = n_tok * k;
     int32_t kind[kMaxWindowEntries];       // per entry: -1 CPU, 0 VRAM, 1 PCIe
     if (d.plan != nullptr && n <= kMaxWindowEntries && n <= d.plan->cap) {
-        int64_t distinct[kMaxWindowEntries], first_of[kMaxWindowEntries];
-        int nd = 0, nmiss = 0;
-        // a helper GPU (RemoteExperts) holding the expert computes it in its own VRAM once begin() claims the row: like
-        // the peer tier's, such an expert is no miss of this plan and never part of the PCIe share, which would read it
-        // over the primary's link instead (2x RX 6900 XT, IQ3_S, --remote-expert-opt with the probed share 0.39: ~4
-        // helper experts per layer-window moved to PCIe, 59 ms per window against 34 ms)
-        auto helper_holds = [&](int32_t e) {
-            for (int r = 0; r < d.remote_count; ++r)
-                if (d.remote[r]->holds(d.layers, e)) return true;
-            return false;
-        };
-        for (int64_t i = 0; i < n; ++i) {
-            first_of[i] = i;
-            for (int64_t j = 0; j < i; ++j)
-                if (ids[j] == ids[i]) { first_of[i] = first_of[j]; break; }
-            if (first_of[i] == i) {
-                distinct[nd++] = i;
-                const int32_t e = ids[i];
-                if (e >= 0 && e < d.n_expert && d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) e] < 0 &&
-                    !(d.peer != nullptr && d.peer->has(d.layers, e)) && !helper_holds(e)) ++nmiss;
-            }
-        }
-        const bool pcie_ok = d.pcie_num > 0 && d.src->pcie_layer(d.layers);
-        const int m = pcie_ok ? (nmiss * d.pcie_num) >> 8 : 0;
-        int miss_rank = 0, groups = 0, entries = 0, fetches = 0;
         GpuPlanSink& P = *d.plan;
         const uint8_t* dma_src[64];
-        int64_t pcie_i0[64];
-        for (int q = 0; q < nd; ++q) {
-            const int64_t i0 = distinct[q];
-            const int32_t e = ids[i0];
-            int kd = -1;
-            unsigned long long ptr = 0;
-            if (e >= 0 && e < d.n_expert) {
-                const int32_t slot = d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) e];
-                if (slot >= 0) {
-                    kd = 0;
-                    ptr = (unsigned long long) (d.cache_base + (d.cache_slot_off ? (size_t) d.cache_slot_off[slot]
-                                                                                 : (size_t) slot * (size_t) d.cache_blob));
-                } else if (d.peer != nullptr && d.peer->has(d.layers, e)) {
-                    kd = 2;                        // multi-GPU: the second GPU computes it
-                } else if (helper_holds(e)) {
-                    // left to the helper: kind -1 until RemoteExperts::begin() claims the row (see above)
-                } else {
-                    if (miss_rank >= nmiss - m && fetches < P.staging_cap && fetches < 64) {
-                        const uint8_t* src = d.src->pinned(d.layers, e) ? d.src->blob(d.layers, e) : nullptr;
-                        if (src != nullptr) {
-                            kd = 1;
-                            dma_src[fetches] = src;
-                            pcie_i0[fetches] = i0;
-                            ++fetches;
-                        }
-                    }
-                    ++miss_rank;
-                }
-            }
-            for (int64_t i = i0; i < n; ++i)
-                if (first_of[i] == i0) kind[i] = kd;
-            if (kd != 0) continue;                 // the VRAM groups first; the PCIe groups below
-            P.ptr[groups] = ptr;
-            P.start[groups] = entries;
-            for (int64_t i = i0; i < n; ++i)
-                if (first_of[i] == i0) {
-                    P.dst[entries] = (int32_t) i;
-                    P.tok[entries] = (int32_t) (i / k);
-                    ++entries;
-                }
-            ++groups;
-        }
-        P.start[groups] = entries;
+        detail::WindowGpuPlanInput in;
+        in.ids = ids;
+        in.n = n;
+        in.k = k;
+        in.n_expert = d.n_expert;
+        in.host_res = d.host_res + (size_t) d.layers * (size_t) d.n_expert;
+        in.peer_has = detail::window_plan_peer_has;
+        in.helper_holds = detail::window_plan_helper_holds;
+        in.pinned_blob = detail::window_plan_pinned_blob;
+        in.device_alias = detail::window_plan_device_alias;
+        in.ctx = &d;
+        in.pcie_num = d.pcie_num;
+        in.pcie_layer = d.src->pcie_layer(d.layers);
+        in.cache_base = d.cache_base;
+        in.cache_blob = d.cache_blob;
+        in.cache_slot_off = d.cache_slot_off;
+        in.pcie_experts = &d.pcie_experts;
         const uint64_t bb = lay.blob_bytes(d.layers);
-        for (int q = 0; q < fetches; ++q) {       // the PCIe groups: staging slot q, entries after the VRAM ones
-            const int64_t i0 = pcie_i0[q];
-            P.ptr2[q] = P.pcie_mode != 0 ? (unsigned long long) d.src->device_alias(d.layers, ids[i0])
-                                 : P.staging + (unsigned long long) q * (unsigned long long) bb;
-            P.start2[q] = entries;
-            for (int64_t i = i0; i < n; ++i)
-                if (first_of[i] == i0) {
-                    P.dst[entries] = (int32_t) i;
-                    P.tok[entries] = (int32_t) (i / k);
-                    ++entries;
-                }
-            ++d.pcie_experts;
-        }
-        P.start2[fetches] = entries;
-        P.counts[0] = groups;
-        P.counts[1] = entries;
-        P.counts[2] = fetches;
+        detail::window_gpu_plan(in, P, kind, (int64_t) bb, dma_src);
+        const int fetches = P.counts[2];
         std::atomic_thread_fence(std::memory_order_seq_cst);
         pt("publish", fetches);
         if (P.publish) P.publish(P.ctx);
@@ -2593,10 +2673,17 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     if (any_cpu) {   // CS-T: the experts the CPU computes, fetched together (the GGUF in place reads them on several threads)
         static thread_local std::vector<int64_t> miss;
         miss.clear();
-        for (int64_t i = 0; i < n_tok * k; ++i)
-            if (kind[i] < 0 && ids[i] >= 0 && ids[i] < d.n_expert &&
-                std::find(miss.begin(), miss.end(), (int64_t) ids[i]) == miss.end())
+        int32_t seen[256];   // the window's CPU-miss experts, first occurrence only (open addressing, like the plan's)
+        std::memset(seen, 0xFF, sizeof(seen));
+        for (int64_t i = 0; i < n_tok * k; ++i) {
+            if (kind[i] >= 0 || ids[i] < 0 || ids[i] >= d.n_expert) continue;
+            uint32_t h = ((uint32_t) ids[i] * 2654435761u) >> 24;
+            while (seen[h] >= 0 && seen[h] != ids[i]) h = (h + 1) & 255;
+            if (seen[h] < 0) {
+                seen[h] = ids[i];
                 miss.push_back(ids[i]);
+            }
+        }
         d.src->prefetch(d.layers, miss.data(), (int64_t) miss.size());
     }
     int njobs = 0;
