@@ -36,6 +36,7 @@ import re
 import select
 import signal
 import socket
+import sqlite3
 import struct
 import shutil
 import subprocess
@@ -57,7 +58,9 @@ sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a
 from serve.frontend import (ChatTemplate, Event, OutputParser, anthropic_to_messages,  # noqa: E402
                             forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages,
                             tool_choice_of, unmark_think_literals)
-from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
+from serve.chat_archive import ChatArchive  # noqa: E402
+from serve.chat_memory import MemoryProvider  # noqa: E402
+from serve.mcp import McpCancelled, McpHub, hub_from_config, settings_from  # noqa: E402
 from serve import runconfig  # noqa: E402
 from serve.winjob import contain  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
@@ -2192,6 +2195,7 @@ class Service:
         self.started_at = time.time()
         self.status_lock = threading.Lock()
         self.mcp = None                                  # serve/mcp.py's McpHub when MCP servers are configured
+        self.chat_archive = None                         # explicitly configured local durable browser history
         # sharing the GPU with other programs (all off by default): unload the engine after this many idle seconds,
         # only start it again when this much VRAM is free, and run this command first (e.g. to unload another
         # server's model); the next request after an unload starts the engine again
@@ -3706,6 +3710,8 @@ def make_handler(svc: Service):
         def _cors(self):
             """#321: CORS headers for an API path (/v1/*) and an origin the config lists in cors_origins - nothing
             otherwise, so a browser keeps every other page away from the API, /settings, /unload and the MCP tools."""
+            if self.path.split("?")[0].startswith("/v1/chats"):
+                return                                  # private archives never inherit API wildcard CORS
             if not svc.cors_origins or not self.path.split("?")[0].startswith("/v1/"):
                 return
             origin = (self.headers.get("Origin") or "").rstrip("/")
@@ -3743,6 +3749,8 @@ def make_handler(svc: Service):
             body = json.dumps(obj, ensure_ascii=False).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json")
+            if self.path.split("?")[0].startswith("/v1/chats"):
+                self.send_header("Cache-Control", "no-store")
             self._cors()
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -3758,8 +3766,45 @@ def make_handler(svc: Service):
             self._json(401, {"error": {"type": "authentication_error", "message": "missing or wrong API key"}})
             return False
 
+        def _archive_page(self) -> bool:
+            origin = self.headers.get("Origin", "")
+            host = self.headers.get("Host", "")
+            # TLS can terminate at a proxy; private history still requires that same host and port.
+            expected = ("http://" + host, "https://" + host)
+            if self.headers.get("Sec-Fetch-Site") == "cross-site" or (origin and origin not in expected):
+                self._json(403, {"error": {"message": "chat archives are available only to Strata's own page"}})
+                return False
+            if not self._authorized():
+                return False
+            if svc.chat_archive is None:
+                self._json(503, {"error": {"message": "configure chat_archive_path to enable durable chat history"}})
+                return False
+            return True
+
+        def _archive_storage_error(self, error):
+            full = getattr(error, "sqlite_errorcode", None) == sqlite3.SQLITE_FULL
+            message = ("Chat archive capacity or disk space limit reached; previous records retained." if full else
+                       "Chat archive storage is unavailable; previous records retained.")
+            self._json(507 if full else 503, {"error": {"type": "chat_archive_error", "message": message}})
+
         def do_GET(self):
             path = self.path.split("?")[0].rstrip("/")
+            if path == "/v1/chats":
+                if self._archive_page():
+                    try:
+                        self._json(200, svc.chat_archive.list())
+                    except sqlite3.Error as error:
+                        self._archive_storage_error(error)
+                return
+            if path == "/sw.js":
+                body = (ROOT / "serve" / "web" / "retire-sw.js").read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/javascript; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if path.startswith("/fonts/"):
                 # the web app's font (Outfit, OFL: serve/web/fonts); the page falls back to the system font
                 name = path[len("/fonts/"):]
@@ -3820,10 +3865,11 @@ def make_handler(svc: Service):
                 if self._authorized():
                     self._json(200, svc.mcp.status() if svc.mcp else {"servers": [], "tools": 0})
                 return
-            if path == "" or (path == "/api-monitor" and svc.api_monitor):
-                body = (ROOT / "serve" / "web" / ("monitor.html" if path else "index.html")).read_bytes()
+            if path in ("", "/strata") or (path == "/api-monitor" and svc.api_monitor):
+                body = (ROOT / "serve" / "web" / ("monitor.html" if path == "/api-monitor" else "index.html")).read_bytes()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -3911,9 +3957,24 @@ def make_handler(svc: Service):
                     self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                 return
             try:
+                if path.startswith("/v1/chats/"):
+                    if not self._archive_page() or not self._own_page("chat archives can be changed"):
+                        return
+                    length = int(self.headers.get("Content-Length", 0))
+                    if length < 0 or length > 100 * 1024 * 1024:
+                        raise ValueError("chat archive request exceeds the 100 MB limit")
                 req = json.loads(self._body() or b"{}")
                 if not isinstance(req, dict):
                     raise ValueError("send a JSON object")
+                if path == "/v1/chats/save":
+                    self._json(200, svc.chat_archive.save(req.get("session"), activate=req.get("activate", False)))
+                    return
+                if path == "/v1/chats/import":
+                    self._json(200, svc.chat_archive.import_sessions(req.get("sessions")))
+                    return
+                if path == "/v1/chats/seed":
+                    self._json(200, svc.chat_archive.seed_legacy(req.get("messages"), req.get("context")))
+                    return
                 if path.startswith("/v1/responses/"):        # retrieve/delete/cancel/compact: nothing is stored
                     self._json(404, responses_error_body("this server keeps no responses (stateless); send the "
                                                          "whole conversation to POST /v1/responses", code="not_found"))
@@ -3972,8 +4033,14 @@ def make_handler(svc: Service):
                     self._anthropic(req)
                 elif path == "/v1/messages/count_tokens":
                     self._count_tokens(req)
+                elif path == "/v1/chat/count_tokens":
+                    self._count_chat_tokens(req)
                 else:
                     self._json(404, {"error": {"message": "not found"}})
+            except sqlite3.Error as error:
+                if not path.startswith("/v1/chats/"):
+                    raise
+                self._archive_storage_error(error)
             except ValueError as e:
                 print(f"[strata] 400 invalid request: {e}", flush=True)
                 if path == "/v1/responses":
@@ -4388,6 +4455,39 @@ def make_handler(svc: Service):
             stop_strings(req)                                 # the same 400 as the request itself would get
             self._json(200, {"input_tokens": len(svc.encode_prompt(messages, tools, kw))})
 
+        def _count_chat_tokens(self, req):
+            """Template-aware Chat budgeting without loading the model or running MCP/vision tools."""
+            req = svc.with_shared(req, "openai")
+            messages, tools, kw = openai_to_messages(req)
+            messages, validator = prepare_format(req.get("response_format"), messages)
+            if validator is not None and (tools or req.get("strata_mcp")):
+                raise ValueError("structured response_format with tools/MCP is not supported")
+            if req.get("strata_mcp") is True and svc.mcp is not None:
+                if not self._own_page("MCP tools can be used"):
+                    return
+                svc.mcp.wait(10)
+                own = {t.get("name") for t in tools or []}
+                tools = (tools or []) + svc.mcp.template_tools(exclude=own) or None
+            ids = svc.encode_prompt(messages, tools, kw)
+            pictures = images_of(messages)
+            if pictures and svc.vision is None:
+                raise ValueError("this server was started without the vision encoder")
+            # The encoder's configured maximum is a conservative reserve; count never starts an encoder.
+            image_budget = 0
+            if pictures:
+                args = (getattr(svc.vision, "spawn", None) or ([],))[0]
+                per_image = int(args[args.index("--max-tokens") + 1]) if "--max-tokens" in args else 1024
+                image_budget = len(pictures) * max(1, per_image)
+            maximum = int(req.get("max_completion_tokens") or req.get("max_tokens") or 0)
+            context = svc.engine.max_context
+            if context <= 0:
+                spawn = getattr(svc.engine, "spawn", None)
+                args = spawn[1] if spawn else []
+                context = int(args[args.index("--max-context") + 1]) if "--max-context" in args else 0
+            self._json(200, {"input_tokens": len(ids) + image_budget, "max_context": context,
+                             "effective_max_tokens": maximum, "count_exact": not bool(pictures),
+                             "context_slack": CTX_SLACK})
+
         def _anthropic(self, req):
             svc.load()
             req = svc.with_shared(req, "anthropic")
@@ -4766,6 +4866,7 @@ def main() -> int:
     ap.add_argument("--fit-max-tokens", action="store_true",
                     help="clamp max_tokens to the remaining context instead of rejecting the request "
                          "(default: reject with 400, like llama.cpp; also \"fit_max_tokens\": true in the config)")
+    ap.add_argument("--chat-archive", help="local SQLite chat archive path (also chat_archive_path in the config)")
     ap.add_argument("--api-key", default=os.environ.get("STRATA_API_KEY", ""),
                     help="require this key on /v1/* (Authorization: Bearer ... or x-api-key); also $STRATA_API_KEY")
     ap.add_argument("--mcp-config", help="a JSON file with MCP servers in Claude Desktop's format ({\"mcpServers\": "
@@ -4812,6 +4913,11 @@ def main() -> int:
         types = json.loads((tpath / "token_type.json").read_text())
         tok = ST.Tokenizer(tokens, merges, types)
     hub = hub_from_config(cfg, a.mcp_config)            # before the minutes of loading: a bad entry stops here
+    archive_path = a.chat_archive or cfg.get("chat_archive_path")
+    archive = ChatArchive(archive_path) if archive_path else None
+    if archive is not None:
+        hub = hub or McpHub({}, settings_from(cfg))
+        hub.register_builtin(MemoryProvider(archive))
     if a.engine == "strata":
         if not cfg:
             ap.error("--engine strata needs --config")
@@ -4869,6 +4975,7 @@ def main() -> int:
                   model_name=cfg.get("model_name", "qwen3.8-flash-next"), vision=vision,
                   sampling_defaults=sampling_defaults,
                   fit_max_tokens=a.fit_max_tokens or cfg.get("fit_max_tokens") is True)
+    svc.chat_archive = archive
     try:
         svc.set_aliases(cfg.get("aliases"))             # #297: other names the model answers to
     except ValueError as e:

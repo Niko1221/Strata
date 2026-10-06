@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Strata</title>
+<base href="/">
 <link rel="stylesheet" href="web/tokens.css">
 <link rel="stylesheet" href="web/components.css">
 <link rel="stylesheet" href="web/app.css">
@@ -37,6 +38,16 @@
 <main>
   <!-- ============================ Chat ============================ -->
   <section class="view view--chat" id="view-chat" role="tabpanel" aria-labelledby="tab-btn-chat">
+    <div class="chat-history" aria-label="Chat history">
+      <label>Chats <select id="chat-select" aria-label="Chats" disabled></select></label>
+      <label id="branch-label" hidden>Branch <select id="branch-select" aria-label="Branch"></select></label>
+      <button type="button" class="st-btn st-btn--secondary" id="rename-btn" disabled>Rename chat</button>
+      <button type="button" class="st-btn st-btn--secondary" id="import-local-btn">Import old llama chats</button>
+      <button type="button" class="st-btn st-btn--secondary" id="import-btn">Import file</button>
+      <button type="button" class="st-btn st-btn--secondary" id="backup-btn">Backup all</button>
+      <input type="file" id="import-file" accept=".json,.jsonl,application/json" multiple hidden>
+      <span id="history-status" role="status" aria-live="polite">Loading chat history…</span>
+    </div>
     <div class="chat-scroll" id="chat-scroll">
       <div class="chat" id="chat">
         <div class="chat-empty" id="chat-empty">
@@ -46,6 +57,12 @@
       </div>
     </div>
     <div class="composer-wrap">
+      <div class="chat-context" id="chat-context">
+        <label><input type="checkbox" id="auto-compact" checked> Auto compact</label>
+        <span id="compact-status" role="status" aria-live="polite">Original chat kept</span>
+        <button type="button" class="st-btn st-btn--secondary" id="compact-btn">Compact now</button>
+        <button type="button" class="st-btn st-btn--secondary" id="restore-btn" hidden>Restore full context</button>
+      </div>
       <form class="st-composer" id="composer">
         <div class="attachments" id="attachments" hidden></div>
         <textarea id="input" rows="2" placeholder="Ask anything&hellip;" aria-label="Message"></textarea>
@@ -185,6 +202,20 @@
   </section>
 </main>
 
+<dialog class="chat-rename st-card" id="rename-dialog" aria-labelledby="rename-heading">
+  <form id="rename-form">
+    <strong id="rename-heading">Rename chat</strong>
+    <div class="st-field">
+      <label class="st-label" for="rename-title">Chat title</label>
+      <input class="st-input" id="rename-title" type="text" maxlength="256" required autocomplete="off">
+    </div>
+    <div class="chat-rename__actions">
+      <button type="button" class="st-btn st-btn--secondary" id="rename-cancel">Cancel</button>
+      <button type="submit" class="st-btn st-btn--primary" id="rename-save">Save title</button>
+    </div>
+  </form>
+</dialog>
+
 <!-- ============================ Sampling drawer ============================ -->
 <aside class="st-drawer" id="drawer" data-open="false" aria-label="Sampling and thinking" aria-hidden="true">
   <div class="st-drawer__head"><span class="card-title">Sampling</span>
@@ -238,6 +269,9 @@
 </aside>
 <div class="scrim" id="scrim" hidden></div>
 <div class="st-toasts" id="toasts" aria-live="polite"></div>
+<script src="web/chat-context.js"></script>
+<script src="web/chat-import.js"></script>
+<script src="web/chat-library.js"></script>
 <script src="web/app.js"></script>
 </body>
 </html>

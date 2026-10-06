@@ -707,6 +707,15 @@ print(r.choices[0].message.content)
   own page (or no `Origin`), like `/settings`. `POST /slots/0?action=save|restore` keeps the Host and API-key checks
   and also takes only JSON from no `Origin`, Strata's own page or a trusted origin - also when an API key is set.
 
+**Browser Chat context.** **Auto compact** is on by default. Before sending an answer request, Chat counts the
+input and summarizes older rounds when it reaches 80% of the context, or sooner if the input plus the reply
+reserve would not fit. It keeps the latest completed round and current user turn in full. For unlimited replies,
+Chat reserves up to 8,192 input headroom tokens (at most a quarter of the context) without capping the answer or
+thinking. An explicit output limit is honored in full; a limit that leaves no prompt room is rejected clearly.
+**Compact now** runs the same process manually. The full original messages stay in the browser's chat archive and
+Markdown export. **Restore full context** restores them as the model's input; Auto compact may run again before
+the next answer. Compaction is only for Browser Chat: API callers' code, diff and review packets are unchanged.
+
 **Conversation cache.** A request that continues a chat reads only the part after what the engine already holds: the
 live session, or one of the checkpoints it keeps in RAM (up to 6, ~118 MB each, taken at the start of each new
 assistant turn and every 16K prompt tokens). A checkpoint is used only when the prompt starts with exactly its tokens

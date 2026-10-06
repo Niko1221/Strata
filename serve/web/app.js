@@ -14,7 +14,7 @@ const gb = (b, d = 1) => (b == null ? "–" : fmt(b / 1073741824, d));   // memo
 
 const store = {
   get(k, d) { try { const v = localStorage.getItem("strata." + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
-  set(k, v) { try { localStorage.setItem("strata." + k, JSON.stringify(v)); } catch (e) { /* private mode: in memory only */ } },
+  set(k, v) { try { localStorage.setItem("strata." + k, JSON.stringify(v)); return true; } catch (e) { return false; } },
 };
 
 // ------------------------------------------------------------------ toasts
@@ -556,14 +556,226 @@ function markdown(text) {
 // ------------------------------------------------------------------ Chat
 const DEFAULTS = {thinking: "high", temperature: 0.6, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true};
 let settings = {...DEFAULTS, ...store.get("sampling", {})};
-let messages = store.get("chat", []);
-let attachments = [];                 // {name, url}
-let busy = null;                      // {controller, msg}
-
-function saveChat() {
-  store.set("chat", messages.map((m) => ({...m, images: (m.images || []).map((i) => ({name: i.name})),
-                                           files: (m.files || []).map((f) => ({name: f.name}))})));
+function browserTextSnapshot(items) {
+  return items.map(m => ({...m, images: (m.images || []).map(i => ({name: i.name})),
+    files: (m.files || []).map(f => ({name: f.name}))}));
 }
+function restoreBrowserChat() {
+  const full = store.get("chat-archive", null), text = store.get("chat", null);
+  const usable = full && Array.isArray(full.messages);
+  const matchingText = usable && (!Array.isArray(text) || JSON.stringify(text) ===
+    JSON.stringify(full.textSnapshot ?? browserTextSnapshot(full.messages)));
+  return matchingText ? {messages: full.messages, context: full.context || null} :
+    {messages: Array.isArray(text) ? text : [], context: null};
+}
+const restoredBrowserChat = restoreBrowserChat();
+let messages = restoredBrowserChat.messages;
+let chatContext = restoredBrowserChat.context;
+if (chatContext && (!chatContext.summary || !Number.isInteger(chatContext.through) || chatContext.through < 0 || chatContext.through > messages.length)) chatContext = null;
+let autoCompact = store.get("auto-compact", true);
+let attachments = [];                 // {name, url}
+let chatEpoch = 0, fallbackStorageWarned = false, fallbackTextSaved = false;
+let busy = null;                      // {controller, msg}
+let library = null, currentChat = null, chatList = [], historyBusy = true;
+const requestedLegacyId = /^#\/chat\/([^/?#]+)/.exec(location.hash)?.[1] || null;
+let legacyRouteResolved = !requestedLegacyId;
+
+function currentBranch() { return currentChat?.branches.find(b => b.id === currentChat.activeBranchId); }
+async function saveChat(context = chatContext) {
+  if (!library || !currentChat) {
+    let fullSaved = false;
+    fallbackTextSaved = false;
+    const text = browserTextSnapshot(messages);
+    try {
+      localStorage.setItem("strata.chat", JSON.stringify(text));
+      fallbackTextSaved = true;
+    } catch (_) { /* full persistence is attempted independently */ }
+    try {
+      // Match the actual text snapshot so a later text-only save can supersede an older full copy on reload.
+      localStorage.setItem("strata.chat-archive", JSON.stringify({messages, context,
+        textSnapshot: fallbackTextSaved ? text : store.get("chat", null)}));
+      fullSaved = true;
+    } catch (_) { /* the previous full original stays untouched */ }
+    if (fullSaved) fallbackStorageWarned = false;
+    else {
+      if (!fallbackStorageWarned) toast("warn", fallbackTextSaved ? "Text saved; full chat stays in this page" : "Chat is kept in this page only",
+        fallbackTextSaved ? "Latest text and attachment names were saved. Attachment contents may be missing after reload; the older full copy was retained. Export this chat; compaction cannot start until its full original is saved." :
+        "Browser storage is full or unavailable. Export the original chat before reloading; compaction cannot start until it is saved.", 7000);
+      fallbackStorageWarned = true;
+    }
+    return fullSaved;
+  }
+  const copy = JSON.parse(JSON.stringify(currentChat));
+  const branch = copy.branches.find(b => b.id === copy.activeBranchId);
+  branch.messages = messages; branch.context = context;
+  branch.draft = {text: $("input").value, attachments: JSON.parse(JSON.stringify(attachments))};
+  copy.updated = Date.now();
+  if (!copy.source && !copy.titleManuallySet && copy.title === "New chat") copy.title = messages.find(m => m.role === "user" && m.text)?.text.slice(0, 64) || copy.title;
+  const epoch = chatEpoch;
+  try {
+    const saved = await library.save(copy, true);
+    if (epoch === chatEpoch && currentChat?.id === copy.id && currentChat.activeBranchId === copy.activeBranchId) currentChat = saved;
+    return true;
+  }
+  catch (error) { toast("error", "Chat could not be saved", error.message + " Original archive retained; use Backup all.", 6000); return false; }
+}
+function renderHistory() {
+  const select = $("chat-select"); select.replaceChildren();
+  for (const chat of chatList.slice().sort((a, b) => (b.updated || 0) - (a.updated || 0))) {
+    const option = document.createElement("option"); option.value = chat.id; option.textContent = chat.title || "Untitled chat";
+    select.appendChild(option);
+  }
+  select.value = currentChat?.id || "";
+  const branches = $("branch-select"); branches.replaceChildren();
+  for (const branch of currentChat?.branches || []) {
+    const option = document.createElement("option"); option.value = branch.id; option.textContent = branch.title || branch.id;
+    branches.appendChild(option);
+  }
+  branches.value = currentChat?.activeBranchId || "";
+  $("branch-label").hidden = !currentChat || currentChat.branches.length < 2;
+  $("history-status").textContent = legacyRouteResolved ? `${chatList.length} saved chat${chatList.length === 1 ? "" : "s"}` : "Import old llama chats to open this legacy link";
+}
+async function refreshHistory() {
+  const saved = await library.readAll(); chatList = saved.sessions; return saved;
+}
+function useChat(chat) {
+  chatEpoch++;
+  currentChat = chat;
+  const branch = currentBranch();
+  messages = branch.messages; chatContext = branch.context || null;
+  attachments = branch.draft?.attachments || [];
+  $("input").value = branch.draft?.text || "";
+  autosize(); renderAttachments(); renderChat(); compactStatus(); renderHistory();
+}
+async function initializeHistory() {
+  try {
+    library = await StrataChatLibrary.open(async (path, body) => {
+      const r = await fetch(path, {method: body == null ? "GET" : "POST", headers: headers(body != null),
+        ...(body == null ? {} : {body: JSON.stringify(body)})});
+      let data; try { data = await r.json(); } catch (_) { throw new Error(`HTTP ${r.status}: archive service returned no JSON`); }
+      if (!r.ok || data.error) {
+        const error = new Error(data.error?.message || `HTTP ${r.status}`);
+        error.archiveDisabled = r.status === 503 && /configure chat_archive_path/.test(error.message);
+        throw error;
+      }
+      return data;
+    });
+    await library.seedLegacy(messages, chatContext);
+    let saved = await refreshHistory();
+    let chat = chatList.find(c => c.id === saved.activeId) || chatList[0];
+    if (!chat) {
+      chat = StrataChatLibrary.fresh("strata:" + crypto.randomUUID());
+      chat = await library.save(chat, true); await refreshHistory();
+    }
+    const linked = requestedLegacyId && chatList.find(c => c.source?.format === "llama" && String(c.source.conversation.id) === requestedLegacyId);
+    if (linked) { chat = await library.save(linked, true); legacyRouteResolved = true; }
+    useChat(chat);
+  } catch (error) {
+    library = null;
+    legacyRouteResolved = true;  // browser-only chat does not need an unresolved legacy import link
+    if (!error.archiveDisabled) toast("error", "Chat history unavailable", error.message + " Existing browser chat retained.", 7000);
+    $("history-status").textContent = error.archiveDisabled ? "History is kept in this browser · configure chat_archive_path for saved chats" : "History unavailable · current chat retained";
+  } finally { historyBusy = false; setBusy(false); }
+}
+async function historyAction(action) {
+  if (busy || historyBusy) return;
+  historyBusy = true; setBusy(true);
+  try { await action(); }
+  catch (error) { toast("error", "Chat history unchanged", error.message, 7000); }
+  finally { historyBusy = false; setBusy(false); renderHistory(); }
+}
+$("chat-select").onchange = () => historyAction(async () => {
+  const id = $("chat-select").value;
+  if (!await saveChat()) return;
+  await refreshHistory();
+  const chat = chatList.find(c => c.id === id);
+  if (!chat) throw new Error("This chat is no longer available.");
+  const stored = await library.save(chat, true); legacyRouteResolved = true; useChat(stored);
+});
+$("branch-select").onchange = () => historyAction(async () => {
+  const id = $("branch-select").value;
+  if (!await saveChat()) return;
+  const copy = JSON.parse(JSON.stringify(currentChat)); copy.activeBranchId = id;
+  useChat(await library.save(copy, true));
+});
+$("rename-btn").onclick = () => {
+  if (busy || historyBusy || !library || !currentChat) return;
+  $("rename-title").value = currentChat.title || "";
+  $("rename-title").setCustomValidity("");
+  $("rename-dialog").showModal();
+  $("rename-title").select();
+};
+$("rename-title").oninput = () => $("rename-title").setCustomValidity("");
+$("rename-cancel").onclick = () => $("rename-dialog").close();
+$("rename-dialog").oncancel = event => { if (historyBusy) event.preventDefault(); };
+$("rename-form").onsubmit = event => {
+  event.preventDefault();
+  const title = $("rename-title").value.trim();
+  if (!title) {
+    $("rename-title").setCustomValidity("Enter a chat title.");
+    $("rename-title").reportValidity();
+    return;
+  }
+  historyAction(async () => {
+    if (!await saveChat()) return;
+    const copy = JSON.parse(JSON.stringify(currentChat));
+    copy.title = title; copy.titleManuallySet = true;
+    const stored = await library.save(copy, true);
+    await refreshHistory(); useChat(stored);
+    $("rename-dialog").close();
+    toast("success", "Chat renamed");
+  });
+};
+async function importChats(sessions) {
+  if (!library) throw new Error("Chat storage is unavailable. No source records were changed.");
+  if (!await saveChat()) return;
+  const result = await library.add(sessions);
+  await refreshHistory();
+  const linked = requestedLegacyId && chatList.find(c => c.source?.format === "llama" && String(c.source.conversation.id) === requestedLegacyId);
+  const chat = linked || (!messages.length && result.firstId ? chatList.find(c => c.id === result.firstId) : null);
+  if (chat) { useChat(await library.save(chat, true)); legacyRouteResolved = true; }
+  toast("success", "Chat import complete", `${result.added} added, ${result.skipped} already present. Original llama records kept.`, 6000);
+}
+$("import-local-btn").onclick = () => historyAction(async () => {
+  const records = await StrataChatLibrary.legacy();
+  if (!records.length) throw new Error("No old llama chats found in this browser at this address. Import an exported JSON or JSONL file from the old browser instead.");
+  await importChats(records.flatMap(record => StrataChatImport.normalize(record.data, {source: record.source})));
+});
+$("import-btn").onclick = () => { if (!busy && !historyBusy) $("import-file").click(); };
+$("import-file").onchange = () => {
+  const files = [...$("import-file").files]; $("import-file").value = "";
+  if (!files.length) return;
+  historyAction(async () => {
+    const sessions = [];
+    for (const file of files) {
+      if (file.size > 100 * 1024 * 1024) throw new Error(`${file.name}: archive exceeds the 100 MB import limit.`);
+      const text = await file.text(); let data;
+      try { data = JSON.parse(text); } catch (_) { data = null; }
+      sessions.push(...(data?.format === "strata-chat-archive" ? StrataChatLibrary.fromBackup(data) : StrataChatImport.normalize(text)));
+    }
+    await importChats(sessions);
+  });
+};
+function downloadChat(value, type, name) {
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([value], {type})); a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+$("backup-btn").onclick = () => historyAction(async () => {
+  if (!library || !await saveChat()) throw new Error("Chat storage is unavailable; export the current chat as Markdown.");
+  const saved = await refreshHistory();
+  downloadChat(JSON.stringify(StrataChatLibrary.backup(saved.sessions), null, 2), "application/json", "strata-chats.json");
+});
+function safeImage(url) {
+  // Imported remote URLs remain in the archive; displaying them must not contact another host.
+  return typeof url === "string" && (/^data:image\//i.test(url) || url.startsWith("blob:"));
+}
+function compactStatus(text) {
+  $("compact-status").textContent = text || (chatContext ? "Compacted context · original chat kept" : "Original chat kept");
+  $("restore-btn").hidden = !chatContext;
+}
+$("auto-compact").checked = autoCompact;
+$("auto-compact").onchange = () => { autoCompact = $("auto-compact").checked; store.set("auto-compact", autoCompact); };
+compactStatus();
 function timeStr(t) { return new Date(t).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}); }
 
 function msgEl(m, i) {
@@ -578,7 +790,7 @@ function msgEl(m, i) {
         const c = document.createElement("span");
         c.className = "chip";
         c.innerHTML = icon("attach", "st-icon st-icon--sm");
-        c.append(f.name);
+        c.append(f.name + (f.legacyContentUnavailable ? " (content unavailable)" : ""));
         wrap.appendChild(c);
       }
       el.appendChild(wrap);
@@ -587,8 +799,8 @@ function msgEl(m, i) {
       const wrap = document.createElement("div");
       wrap.className = "msg-images";
       for (const im of m.images) {
-        if (im.url) { const img = document.createElement("img"); img.src = im.url; img.alt = im.name || "image"; wrap.appendChild(img); }
-        else { const c = document.createElement("span"); c.className = "chip"; c.innerHTML = icon("image", "st-icon st-icon--sm"); c.append(im.name || "image"); wrap.appendChild(c); }
+        if (safeImage(im.url)) { const img = document.createElement("img"); img.src = im.url; img.alt = im.name || "image"; wrap.appendChild(img); }
+        else { const c = document.createElement("span"); c.className = "chip"; c.innerHTML = icon("image", "st-icon st-icon--sm"); c.append((im.name || "image") + (im.legacyContentUnavailable ? " (content unavailable)" : "")); wrap.appendChild(c); }
       }
       el.appendChild(wrap);
     }
@@ -600,12 +812,21 @@ function msgEl(m, i) {
     meta.className = "st-msg__meta";
     meta.textContent = `You · ${timeStr(m.time)}`;
     el.appendChild(meta);
-  } else {
+  } else if (m.role === "assistant") {
     el.innerHTML = `<details class="st-collapse think" hidden><summary>${icon("thinking", "st-icon st-icon--sm")}<span class="think-title"></span>` +
       `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body thinking"></div></details>` +
       `<div class="st-bubble"></div><div class="st-msg__meta"><span class="meta-text"></span>` +
       `<button class="st-btn st-btn--icon" data-msg-copy aria-label="Copy the answer" title="Copy">${icon("copy")}</button></div>`;
     updateAssistant(el, m, false);
+    if (m.wire?.some(w => w.tool_calls?.length)) {
+      const details = document.createElement("details"), summary = document.createElement("summary"), pre = document.createElement("pre");
+      summary.textContent = "Imported tool calls"; pre.textContent = JSON.stringify(m.wire.flatMap(w => w.tool_calls || []), null, 2);
+      details.append(summary, pre); el.appendChild(details);
+    }
+  } else {
+    const label = document.createElement("div"), body = document.createElement("div");
+    label.className = "st-msg__meta"; label.textContent = m.role === "tool" ? "Imported tool result" : "Conversation instruction";
+    body.className = "st-bubble"; body.textContent = m.text; el.append(label, body);
   }
   return el;
 }
@@ -718,9 +939,9 @@ $("chat").addEventListener("toggle", (e) => {
   if (d.open && body.dataset.pending) { body.textContent = messages[+d.closest(".st-msg").dataset.i].reasoning; delete body.dataset.pending; }
 }, true);
 
-function apiMessages() {
+function wireMessage(m) {
+  if (Array.isArray(m.wire)) return JSON.parse(JSON.stringify(m.wire));
   const out = [];
-  for (const m of messages) {
     if (m.role === "user") {
       const imgs = (m.images || []).filter((i) => i.url);
       const text = userText(m);
@@ -729,8 +950,43 @@ function apiMessages() {
     } else if (!m.error) {
       out.push(...assistantMessages(m));
     }
-  }
   return out;
+}
+function apiMessages() { return StrataChatContext.active(messages, chatContext, wireMessage); }
+async function contextRequest(path, body, signal) {
+  const r = await fetch(path, {method: "POST", headers: headers(true), body: JSON.stringify(body), signal});
+  let data;
+  try { data = await r.json(); } catch (_) { throw new Error(`HTTP ${r.status}: context service returned no JSON`); }
+  if (!r.ok || data.error) throw new Error(data.error?.message || `HTTP ${r.status}`);
+  return data;
+}
+async function prepareChatContext(signal, force = false) {
+  const saved = await saveChat();
+  const result = await StrataChatContext.prepare({archive: messages, state: chatContext, wire: wireMessage, force, auto: autoCompact,
+    // Admit storage before any summary request; ordinary short chats can still run in private mode.
+    beforeCompact: () => { if (!saved) throw new Error("Browser storage is full or unavailable. Export the original chat; compaction was not started."); },
+    count: (items, mcp, cap) => {
+      const body = {model: health.model, messages: items, reasoning_effort: mcp ? settings.thinking : "none",
+        strata_mcp: mcp && settings.mcp !== false && mcpInfo.tools > 0};
+      if (cap || +settings.max > 0) body.max_tokens = cap || +settings.max;
+      return contextRequest("v1/chat/count_tokens", body, signal);
+    },
+    summarize: async (items, cap) => {
+      const data = await contextRequest("v1/chat/completions", {model: health.model, messages: items, stream: false,
+        reasoning_effort: "none", temperature: 0, max_tokens: cap, strata_mcp: false}, signal);
+      if (data.choices?.[0]?.finish_reason === "length") throw new Error("Summary reached its output limit. Original chat retained.");
+      return data.choices?.[0]?.message?.content;
+    }, progress: n => compactStatus(`Compacting segment ${n}… original chat kept`)});
+  if (signal.aborted) throw new DOMException("Stopped", "AbortError");
+  if (result.changed) {
+    if (!await saveChat(result.state)) throw new Error("The compacted context could not be saved. Original context retained.");
+    chatContext = result.state;
+    toast("success", "Chat compacted", "Original messages are kept here and in Markdown export.");
+  }
+  const replyBudget = result.replyLimit == null ? `reply reserve ${fmt(result.reserve)} tokens · no fixed reply limit` :
+    `reply limit ${fmt(result.replyLimit)} tokens (includes thinking)`;
+  compactStatus(`${chatContext ? "Compacted · " : ""}${fmt(result.count.input_tokens)} / ${ctxfmt(result.count.max_context)} input tokens${result.count.count_exact === false ? " (conservative estimate)" : ""} · ${replyBudget} · original kept`);
+  return result;
 }
 // An answer that used MCP tools goes back as the model wrote it: per round the text before the calls, the calls and
 // their results (as the model read them), then the rest - so the next question can build on what the tools found.
@@ -753,14 +1009,20 @@ function assistantMessages(m) {
 }
 
 function setBusy(on) {
+  on = on || historyBusy;
   $("stop-btn").hidden = !on;
-  $("send-btn").disabled = on;
+  $("send-btn").disabled = on || !legacyRouteResolved;
+  $("compact-btn").disabled = on || !legacyRouteResolved;
+  $("restore-btn").disabled = on || !legacyRouteResolved;
+  for (const id of ["chat-select", "branch-select", "rename-btn", "rename-title", "rename-save", "rename-cancel", "import-local-btn", "import-btn", "backup-btn", "new-btn"]) $(id).disabled = on || (id !== "new-btn" && !library);
+  $("input").disabled = historyBusy || !legacyRouteResolved;
   $("composer-hint").textContent = on ? "" : "Shift+Enter: new line";
 }
 
 async function send() {
   const text = $("input").value.trim();
-  if ((!text && !attachments.length) || busy) return;
+  if ((!text && !attachments.length) || busy || historyBusy) return;
+  if (!legacyRouteResolved) { toast("warn", "Import this old chat first", "Use Import old llama chats, or select another saved chat.", 6000); return; }
   messages.push({role: "user", text, images: attachments.filter((a) => a.kind !== "file"),
                  files: attachments.filter((a) => a.kind === "file"), time: Date.now()});
   attachments = [];
@@ -775,7 +1037,7 @@ async function send() {
   busy = {controller, msg: m};
   setBusy(true);
 
-  const body = {model: health.model, messages: apiMessages(), stream: true,
+  const body = {model: health.model, stream: true,
                 reasoning_effort: settings.thinking};
   if (settings.temperature > 0) {
     Object.assign(body, {temperature: +settings.temperature, top_p: +settings.top_p, top_k: +settings.top_k});
@@ -790,6 +1052,8 @@ async function send() {
   let firstAt = null, thinkStart = null, usage = null, frame = 0;
   const paint = () => { frame = 0; updateAssistant(el, m, true); scrollDown(); };
   try {
+    await prepareChatContext(controller.signal);
+    body.messages = apiMessages();
     const r = await fetch("v1/chat/completions", {method: "POST", headers: headers(true), body: JSON.stringify(body),
                                                    signal: controller.signal});
     if (!r.ok) {
@@ -834,8 +1098,8 @@ async function send() {
       }
     }
   } catch (e) {
-    if (e.name === "AbortError") m.stopped = true;
-    else { m.error = e.message || String(e); toast("error", "The request failed", m.error, 6000); }
+    if (e.name === "AbortError") { m.stopped = true; compactStatus(); }
+    else { m.error = e.message || String(e); toast("error", "The request failed", m.error, 6000); compactStatus(); }
   }
   if (thinkStart && m.thinkSecs == null) m.thinkSecs = (performance.now() - thinkStart) / 1000;
   const n = usage ? usage.completion_tokens : null;
@@ -850,37 +1114,71 @@ async function send() {
   const ran = (m.tools || []).filter((t) => t.state === "done" || t.state === "error").length;
   if (ran) m.meta = `${m.meta ? `${m.meta} · ` : ""}${ran} tool call${ran > 1 ? "s" : ""}`;
   if (m.limit) m.meta = `${m.meta || ""} · stopped at the limit of ${m.limit} tool rounds (mcp.max_rounds)`;
-  busy = null;
-  setBusy(false);
   if (frame) cancelAnimationFrame(frame);
   updateAssistant(el, m, false);
-  saveChat();
+  await saveChat();
+  busy = null;
+  setBusy(false);
   scrollDown();
 }
 
 $("composer").onsubmit = (e) => { e.preventDefault(); send(); };
 $("stop-btn").onclick = () => { if (busy) busy.controller.abort(); };
+$("compact-btn").onclick = async () => {
+  if (busy || !messages.length) return;
+  const controller = new AbortController();
+  busy = {controller}; setBusy(true);
+  try {
+    const result = await prepareChatContext(controller.signal, true);
+    if (!result.changed) toast("info", "Nothing to compact yet", "The latest rounds are kept in full.");
+  } catch (e) {
+    toast(e.name === "AbortError" ? "info" : "error", e.name === "AbortError" ? "Compaction stopped" : "Compaction failed", e.name === "AbortError" ? "Original chat retained." : e.message, 6000);
+    compactStatus();
+  } finally { busy = null; setBusy(false); }
+};
+$("restore-btn").onclick = async () => {
+  if (busy || !chatContext) return;
+  historyBusy = true; setBusy(true);
+  const saved = await saveChat(null);
+  if (saved) { chatContext = null; compactStatus(); }
+  historyBusy = false; setBusy(false);
+  if (!saved) return;
+  toast("info", "Full context restored", "Auto compact may run again before the next answer.", 6000);
+};
 $("input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
 });
 function autosize() { const t = $("input"); t.style.height = "auto"; t.style.height = `${Math.min(t.scrollHeight, innerHeight * 0.4)}px`; }
 $("input").addEventListener("input", autosize);
 
-$("new-btn").onclick = () => {
-  if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
-  if (!messages.length) return;
-  const backup = messages;
-  messages = [];
-  saveChat();
-  renderChat();
-  toast("info", "New chat", "The last one was cleared.", 6000, {label: "Undo", run: () => { messages = backup; saveChat(); renderChat(); }});
-};
+$("new-btn").onclick = () => historyAction(async () => {
+  if (!library) {
+    legacyRouteResolved = true;
+    const backup = messages, backupContext = chatContext, backupAttachments = attachments, backupInput = $("input").value;
+    chatEpoch++; messages = []; chatContext = null; attachments = []; $("input").value = "";
+    if (!await saveChat() && !fallbackTextSaved) {
+      messages = backup; chatContext = backupContext; attachments = backupAttachments; $("input").value = backupInput;
+      autosize(); renderAttachments(); renderChat(); compactStatus();
+      return;
+    }
+    autosize(); renderAttachments(); renderChat(); compactStatus();
+    toast("info", "New chat", "The last one was cleared.", 6000, {label: "Undo", run: () => {
+      if (busy || historyBusy || library) return;
+      chatEpoch++; messages = backup; chatContext = backupContext; saveChat(); renderChat(); compactStatus();
+    }});
+    return;
+  }
+  if (!await saveChat()) return;
+  const chat = await library.save(StrataChatLibrary.fresh("strata:" + crypto.randomUUID()), true);
+  await refreshHistory(); legacyRouteResolved = true; useChat(chat);
+  toast("info", "New chat", "Previous chats remain in Chats.");
+});
 $("export-btn").onclick = () => {
   if (!messages.length) { toast("info", "Nothing to save yet"); return; }
   const tools = (m) => (m.tools || []).filter((t) => t.result != null).map((t) =>
     `<details><summary>Tool ${t.server ? `${t.server} / ` : ""}${t.tool || t.name}${t.ok ? "" : " (error)"}</summary>\n\n` +
     `\`\`\`json\n${JSON.stringify(t.arguments || {}, null, 2)}\n\`\`\`\n\n\`\`\`\n${t.result}\n\`\`\`\n\n</details>\n\n`).join("");
-  const md = messages.map((m) => m.role === "user" ? `## You\n\n${m.text}\n` :
+  const md = messages.map((m) => m.role === "user" ? `## You\n\n${userText(m)}\n${(m.images || []).filter(i => i.url).map(i => `![${i.name || "image"}](${i.url})`).join("\n")}\n` :
     `## ${health.model}\n\n${m.reasoning ? `<details><summary>Thinking</summary>\n\n${m.reasoning}\n\n</details>\n\n` : ""}${tools(m)}${m.text || m.error || ""}\n`).join("\n");
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([md], {type: "text/markdown"}));
@@ -897,12 +1195,13 @@ function isTextFile(f) {
          TEXT_EXT.test(f.name) || /(^|[\\/])(makefile|dockerfile|readme|license)$/i.test(f.name);
 }
 function addFiles(files) {
+  const epoch = chatEpoch;
   for (const f of files) {
     if (f.type.startsWith("image/")) {
       if (!health.images) { toast("warn", "Pictures are off", "This model was set up for text only."); continue; }
       if (f.size > 20e6) { toast("warn", "Picture too large", `${f.name} is over 20 MB.`); continue; }
       const r = new FileReader();
-      r.onload = () => { attachments.push({kind: "image", name: f.name || "pasted image", url: r.result}); renderAttachments(); };
+      r.onload = () => { if (epoch !== chatEpoch) return; attachments.push({kind: "image", name: f.name || "pasted image", url: r.result}); renderAttachments(); };
       r.readAsDataURL(f);
       continue;
     }
@@ -910,6 +1209,7 @@ function addFiles(files) {
     if (f.size > MAX_TEXT_FILE) { toast("warn", "File too large", `${f.name} is over 512 KB.`); continue; }
     const r = new FileReader();
     r.onload = () => {
+      if (epoch !== chatEpoch) return;
       const text = String(r.result);
       if (text.includes("\u0000")) { toast("warn", "Not a text file", `${f.name} looks like a binary file.`); return; }
       attachments.push({kind: "file", name: f.name, text});
@@ -920,6 +1220,7 @@ function addFiles(files) {
 }
 // a file's text in the message, fenced with more backticks than it contains itself
 function fileBlock(f) {
+  if (f.legacyContentUnavailable) return `File: ${f.name}\n[Content unavailable: the original browser stored only the filename.]`;
   const longest = Math.max(2, ...(f.text.match(/`+/g) || []).map((s) => s.length));
   const fence = "`".repeat(longest + 1);
   return `File: ${f.name}\n${fence}\n${f.text}\n${fence}`;
@@ -1066,8 +1367,16 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("drawe
 // ------------------------------------------------------------------ start
 setBusy(false);
 renderChat();
+// Retire only the old llama UI worker. Chat databases and browser records remain untouched.
+if (navigator.serviceWorker) navigator.serviceWorker.getRegistrations().then(registrations => {
+  for (const registration of registrations) {
+    const url = new URL(registration.active?.scriptURL || registration.waiting?.scriptURL || registration.installing?.scriptURL || location.href);
+    if (url.origin === location.origin && url.pathname === "/sw.js" && registration.scope === location.origin + "/") registration.unregister();
+  }
+}).catch(() => {});
+const historyReady = initializeHistory();
 const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)
 if (startQuestion) history.replaceState(null, "", location.pathname + location.hash);
-loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
+loadHealth().then(loadMcp).then(async () => { await historyReady; if (startQuestion) { $("input").value = startQuestion; send(); } });
 showTab(location.hash.slice(1) || "chat");
 poll();
