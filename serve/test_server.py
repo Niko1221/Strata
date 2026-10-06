@@ -297,6 +297,8 @@ class ImageMarkers(unittest.TestCase):
     """#150: the text "<|image_pad|>" inside a message is text, not an image's place."""
 
     class FakeVision:
+        batch = staticmethod(contextlib.nullcontext)
+
         def __init__(self, d):
             self.dir = Path(d)
             self.rows = self.dir / "img.sve"
@@ -485,6 +487,7 @@ class VisionTempFiles(unittest.TestCase):
         pipe = Pipe()
         v = Vision.__new__(Vision)
         v.dir, v.lock, v.cache = Path(tempfile.mkdtemp(prefix="strata-vision-test-")), threading.Lock(), {}
+        v.cache_batches = 0
         v.proc = mock.Mock(stdin=pipe, stdout=mock.Mock(readline=lambda: "OK 7 1 1 1\n"))
         try:
             with mock.patch.object(Vision, "load", return_value=b""), \
@@ -1156,6 +1159,7 @@ class ClientShapes(unittest.TestCase):
 
         v = Vision.__new__(Vision)
         v.dir, v.lock, v.cache = Path(tempfile.mkdtemp(prefix="strata-vision-test-")), threading.Lock(), {}
+        v.cache_batches = 0
         v.proc = mock.Mock(stdin=Gone())
         with mock.patch.object(Vision, "load", return_value=b""), mock.patch.object(Vision, "normalize",
                                                                                    return_value=b"png"):

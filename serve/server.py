@@ -1630,7 +1630,8 @@ class Vision:
         self.spawn = (args, log, env)                   # to start it again after an unload
         self.stopped = False
         self._start()
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
+        self.cache_batches = 0
         self.cache: dict[str, tuple[Path, int]] = {}
 
     def _start(self):
@@ -1729,6 +1730,24 @@ class Vision:
         im.save(out, format="PNG")
         return out.getvalue()
 
+    def _trim_cache(self):
+        """The caller holds self.lock; keep at most 64 images once no batch still needs their paths."""
+        while len(self.cache) > 64:
+            old = next(iter(self.cache))
+            self.cache.pop(old)[0].unlink(missing_ok=True)
+
+    @contextlib.contextmanager
+    def batch(self):
+        """Keep encoded files until a request has copied them.  Acquire the service FIFO before this lock."""
+        with self.lock:
+            self.cache_batches += 1
+            try:
+                yield
+            finally:
+                self.cache_batches -= 1
+                if not self.cache_batches:
+                    self._trim_cache()
+
     def encode(self, source: str | bytes) -> tuple[Path, int]:
         """-> (embeddings file, number of image tokens).  `source`: what load() reads, or the image's bytes."""
         data = self.normalize(source if isinstance(source, bytes) else self.load(source))
@@ -1748,9 +1767,8 @@ class Vision:
                 raise ValueError("the image could not be read: " + (line[4:] if line.startswith("ERR") else
                                                                      "the vision encoder stopped"))
             self.cache[key] = (out, int(line.split()[1]))
-            if len(self.cache) > 64:                                   # oldest first
-                old = next(iter(self.cache))
-                self.cache.pop(old)[0].unlink(missing_ok=True)
+            if not self.cache_batches:
+                self._trim_cache()
             return self.cache[key]
 
     def close(self):
@@ -2758,57 +2776,62 @@ class Service:
             # run on the GPU at the same time - an encode during a running request left that request stuck at
             # "reading the prompt" with CPU and GPU busy, for good (reproduced).  So encoding takes its turn in the
             # same FIFO as the requests.
-            with self.fifo:
+        # #1072: the cache can hold more than 64 images while preparing this request.  Keep the FIFO then
+        # the vision lock through the combined copy: another request must not evict a path we still need.
+        # The batch trims its cache in finally, including a refused prompt or a failed encode/copy.
+        with (self.fifo if images else contextlib.nullcontext()), \
+                (self.vision.batch() if images else contextlib.nullcontext()):
+            if images:
                 encoded = [self.vision.encode(src) for src in images]
-            # one <|image_pad|> per image -> one per image token.  Only the markers the template writes for an image
-            # (right after <|vision_start|>) are images: the same text inside a message (an agent reading these docs,
-            # #150) is kept as plain text, or it took an image's place and the counts no longer matched.
-            literal = self.tok.encode(IMAGE_PAD, parse_special=False)
-            out, k = [], 0
-            for j, t in enumerate(ids):
-                if t == pad and j > 0 and ids[j - 1] == start:
-                    # more pairs than images: text parts that cut both markers apart (the literal marks keep whole ones text)
-                    if k == len(encoded):
-                        raise ValueError("the prompt and its images do not match")
-                    out += [pad] * encoded[k][1]
-                    k += 1
-                elif t == pad:
-                    out += literal
-                else:
-                    out.append(t)
-            if k != len(encoded):
-                raise ValueError("the prompt and its images do not match")
-            ids = out
-        ctx = self.engine.max_context
-        if ctx <= 0:
-            if getattr(self.engine, "starting", False):   # #344: (re)starting, not a prompt that is too long
-                raise EngineStarting("the engine is starting (a minute or two); try again shortly")
-            # a failed restart leaves max_context 0: check against the last known context, so the request reaches
-            # run() - which starts the engine again - instead of failing with "exceeds the context (0)" forever
-            ctx = getattr(self.engine, "known_ctx", 0)
+                # one <|image_pad|> per image -> one per image token.  Only the markers the template writes for an image
+                # (right after <|vision_start|>) are images: the same text inside a message (an agent reading these docs,
+                # #150) is kept as plain text, or it took an image's place and the counts no longer matched.
+                literal = self.tok.encode(IMAGE_PAD, parse_special=False)
+                out, k = [], 0
+                for j, t in enumerate(ids):
+                    if t == pad and j > 0 and ids[j - 1] == start:
+                        # more pairs than images: text parts that cut both markers apart (the literal marks keep whole ones text)
+                        if k == len(encoded):
+                            raise ValueError("the prompt and its images do not match")
+                        out += [pad] * encoded[k][1]
+                        k += 1
+                    elif t == pad:
+                        out += literal
+                    else:
+                        out.append(t)
+                if k != len(encoded):
+                    raise ValueError("the prompt and its images do not match")
+                ids = out
+            ctx = self.engine.max_context
             if ctx <= 0:
-                raise EngineStarting("the engine is starting (a minute or two); try again shortly")
-        room = ctx - CTX_SLACK - len(ids)
-        if max_new is None or max_new <= 0 or (self.fit_max_tokens and room < 1):
-            if room < 1:
-                raise ValueError(f"prompt ({len(ids)} tokens) leaves no room to answer in the context "
-                                 f"({ctx}); requests are never truncated")
-            max_new = room
-        elif max_new > room:
-            if not self.fit_max_tokens:
-                raise ValueError(f"prompt ({len(ids)} tokens) + max tokens ({max_new}) exceeds the context "
-                                 f"({ctx}); requests are never truncated. Send a smaller "
-                                 f"max_tokens (at most {max(0, room)} here), or add \"fit_max_tokens\": true to the "
-                                 "model's strata-<model>.json to shorten it to the room left (#545)")
-            max_new = max(1, room)          # --fit-max-tokens: a shorter completion beats a 400
-        if images:
-            # The request's images in one file for GENI (~10 MB a picture), written once nothing above refuses the
-            # request: one refused after it (the engine starting, no room) left it in the vision directory for good,
-            # one more for every retry of a 503.  run() deletes it; drop_embeddings() if run() never starts.
-            combined = combined_embeddings_path(self.vision.dir, sum(Path(p).stat().st_size for p, _ in encoded))
-            self.embeddings.path = combined             # first, so a half-written one is found as well
-            write_temporary(combined, [p for p, _ in encoded])
-        return ids, kwargs.get("enable_thinking", True) is not False, max_new
+                if getattr(self.engine, "starting", False):   # #344: (re)starting, not a prompt that is too long
+                    raise EngineStarting("the engine is starting (a minute or two); try again shortly")
+                # a failed restart leaves max_context 0: check against the last known context, so the request reaches
+                # run() - which starts the engine again - instead of failing with "exceeds the context (0)" forever
+                ctx = getattr(self.engine, "known_ctx", 0)
+                if ctx <= 0:
+                    raise EngineStarting("the engine is starting (a minute or two); try again shortly")
+            room = ctx - CTX_SLACK - len(ids)
+            if max_new is None or max_new <= 0 or (self.fit_max_tokens and room < 1):
+                if room < 1:
+                    raise ValueError(f"prompt ({len(ids)} tokens) leaves no room to answer in the context "
+                                     f"({ctx}); requests are never truncated")
+                max_new = room
+            elif max_new > room:
+                if not self.fit_max_tokens:
+                    raise ValueError(f"prompt ({len(ids)} tokens) + max tokens ({max_new}) exceeds the context "
+                                     f"({ctx}); requests are never truncated. Send a smaller "
+                                     f"max_tokens (at most {max(0, room)} here), or add \"fit_max_tokens\": true to the "
+                                     "model's strata-<model>.json to shorten it to the room left (#545)")
+                max_new = max(1, room)          # --fit-max-tokens: a shorter completion beats a 400
+            if images:
+                # The request's images in one file for GENI (~10 MB a picture), written once nothing above refuses the
+                # request: one refused after it (the engine starting, no room) left it in the vision directory for good,
+                # one more for every retry of a 503.  run() deletes it; drop_embeddings() if run() never starts.
+                combined = combined_embeddings_path(self.vision.dir, sum(Path(p).stat().st_size for p, _ in encoded))
+                self.embeddings.path = combined             # first, so a half-written one is found as well
+                write_temporary(combined, [p for p, _ in encoded])
+            return ids, kwargs.get("enable_thinking", True) is not False, max_new
 
     def drop_embeddings(self) -> None:
         """Delete the combined image file prepare() wrote when no run() took it over (a run deletes its own as it
