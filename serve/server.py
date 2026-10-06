@@ -2857,11 +2857,12 @@ class Service:
     def run(self, ids, thinking, tools, max_new, sampling, cancel, force=None) -> Iterator[tuple[str, object]]:
         """Yields ("event", Event) as text arrives, then ("done", {"finish": .., "completion_tokens": ..}).
         `force` (forced_call): the opening of the call the reply must make - see prepare()."""
-        budget = self.reasoning_budget(sampling) if thinking else None   # #123: opt-in, off by default
         defaults = {**self.sampling_defaults, **self.shared}   # the config's, then the Chat settings shared with apps
         if defaults:                   # the request's own fields win (explicit 0 stays greedy)
             req_values = {k: v for k, v in (sampling or {}).items() if v is not None}
             sampling = {**defaults, **req_values}
+        # #123: read after the merge, so a budget shared through POST /settings is seen like the other keys
+        budget = self.reasoning_budget(sampling) if thinking else None
         parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True)
         detok, n, finish = Detokenizer(self.tok), 0, "length"
         run_tok, run_len, repeated = None, 0, False     # #606: the current run of one repeated token
@@ -4648,7 +4649,8 @@ def origins_of(value, key: str, wildcard: bool) -> list[str]:
     return out
 
 
-SHARED_KEYS = ("reasoning_effort", "temperature", "top_p", "top_k", "seed", "max_tokens", "experimental_speed_projection")
+SHARED_KEYS = ("reasoning_effort", "reasoning_budget_tokens", "temperature", "top_p", "top_k", "seed", "max_tokens",
+               "experimental_speed_projection")
 
 
 def clean_shared_defaults(d) -> dict:
@@ -4678,6 +4680,10 @@ def clean_shared_defaults(d) -> dict:
         elif key in ("seed", "max_tokens"):
             if not number or value != int(value) or value <= 0:
                 raise ValueError(f"{key}: a positive integer")
+            value = int(value)
+        elif key == "reasoning_budget_tokens":                 # #123: 0 means no budget, so 0 is allowed here
+            if not number or value != int(value) or value < 0:
+                raise ValueError("reasoning_budget_tokens: a whole number of tokens (0: no budget)")
             value = int(value)
         elif key == "experimental_speed_projection":
             if not isinstance(value, bool):
