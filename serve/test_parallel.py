@@ -40,11 +40,13 @@ print("INFO engine=0.1.39" + (f" batch_slots={fit}" if fit >= 2 else "") +
       (" slot_cache=1" if "--slotcache" in args else ""), flush=True)
 print("READY 4096 stop", flush=True)
 LONG = list(b"LONGREPLY")
-def reply(ids):            # the rest of the reply after what the prompt already ends with (a request continued)
+def continued(ids):        # (the whole reply, how much of it the prompt already ends with: a request continued)
     ids = [int(x) for x in ids]
     long_one = any(ids[i:i + len(LONG)] == LONG for i in range(len(ids)))
     R = list(b"ok, " + b"la " * 15 + b"done." if long_one else b"ok, done.") + [257]
-    k = max(k for k in range(len(R)) if k == 0 or ids[-k:] == R[:k])
+    return R, max(k for k in range(len(R)) if k == 0 or ids[-k:] == R[:k])
+def reply(ids):            # the rest of the reply after what the prompt already ends with
+    R, k = continued(ids)
     return R[k:]
 active = {}          # slot -> [tokens left, max_new, produced]
 stopped = set()      # BSTOPped slots: they end "cancel"
@@ -62,6 +64,9 @@ def window():        # one batch window: every active slot one token
         else:
             active[b] = [left, max_new, produced]
 log = open(args[args.index("--log") + 1], "a") if "--log" in args else None
+REUSE = "--reuse" in args     # DONE's reused field as the engine gives it: a continued prompt is all held but its last
+def reused(ids):              # token (the request's own output included), a fresh one the first 3 tokens
+    return 0 if not REUSE else len(ids) - 1 if continued(ids)[1] else 3
 while True:
     try:
         line = lines.get(timeout=STEP if active else None)
@@ -113,7 +118,7 @@ while True:
             if log:
                 log.write(f"YIELD {given[0]} {given[1]}\n"); log.flush()
             print(f"YIELDED {given[0]} {given[1]}", flush=True)
-            print(f"DONE 0 {len(ids)} 5.0 0.0 cancel 0 0 0", flush=True)
+            print(f"DONE 0 {len(ids)} 5.0 0.0 cancel 0 0 {reused(ids)}", flush=True)
             if slot is not None:
                 print(f"BADM {slot} 0", flush=True)
             continue
@@ -126,7 +131,7 @@ while True:
             out += 1
             time.sleep(STEP)
         fin = "stop" if out and toks[out - 1] == 257 else ("cancel" if stop.is_set() else "length")
-        print(f"DONE {out} {len(ids)} 5.0 {out * STEP * 1000:.1f} {fin} 0 0 0", flush=True)
+        print(f"DONE {out} {len(ids)} 5.0 {out * STEP * 1000:.1f} {fin} 0 0 {reused(ids)}", flush=True)
         if slot is not None:
             cont = fin == "length" and max_new > 1
             if cont:
@@ -192,7 +197,7 @@ class PickSlot(unittest.TestCase):
 class ParallelService(unittest.TestCase):
     """The real StrataEngine and Service over HTTP, the fake engine behind them."""
 
-    def start(self, slots, fit=None, slot_cache=False):
+    def start(self, slots, fit=None, slot_cache=False, reuse=False):
         import serve.server as server
         self.tmp = tempfile.TemporaryDirectory()
         script = Path(self.tmp.name) / "fake_strata.py"
@@ -201,6 +206,7 @@ class ParallelService(unittest.TestCase):
         real = server.subprocess.Popen
         extra = ["--batch", str(slots)] + (["--fit", str(fit)] if fit is not None else []) + ["--log", str(self.log)]
         extra += ["--slotcache"] if slot_cache else []
+        extra += ["--reuse"] if reuse else []
         with mock.patch.object(server.subprocess, "Popen",
                                lambda cmd, **kw: real([sys.executable, str(script), *cmd[1:]], **kw)):
             self.engine = StrataEngine("strata", extra)
@@ -222,6 +228,13 @@ class ParallelService(unittest.TestCase):
         body = {"messages": [{"role": "user", "content": text}], "max_tokens": max_tokens, "reasoning_effort": "none"}
         req = urllib.request.Request(self.base + "/v1/chat/completions", data=json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return json.loads(r.read().decode())
+
+    def message(self, text, max_tokens=64):
+        body = {"model": "m", "messages": [{"role": "user", "content": text}], "max_tokens": max_tokens}
+        req = urllib.request.Request(self.base + "/v1/messages", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json", "anthropic-version": "2023-06-01"})
         with urllib.request.urlopen(req, timeout=60) as r:
             return json.loads(r.read().decode())
 
@@ -376,6 +389,28 @@ class ParallelService(unittest.TestCase):
         slot = self.engine.slot_held.index(mine[0])
         self.assertEqual(self.engine.pick_slot(mine[0] + [10, 11]), slot)
         self.assertEqual(first["choices"][0]["message"]["content"], "ok, done.")
+
+    def test_a_continued_request_reports_its_own_prompt_reuse(self):
+        """A request STOPped on the solo path and continued in a slot (or back on the solo path) is sent again as its
+        prompt + what it generated, and the engine holds all of that: the usage must still split the request's OWN
+        prompt (input_tokens + cache_read_input_tokens = the prompt, input_tokens >= 1).  input_tokens 0 makes Claude
+        Code count the prompt twice (message_start's input_tokens + cache_read_input_tokens): "Prompt is too long"
+        at half the context."""
+        self.start(2, slot_cache=True, reuse=True)
+        res = {}
+        long = threading.Thread(target=lambda: res.setdefault("long", self.message("LONGREPLY please", 200)))
+        long.start()
+        time.sleep(0.05)
+        self.message("short", 200)
+        long.join(30)
+        kinds = [x.split()[0] for x in self.log.read_text().splitlines()]
+        self.assertIn("BGEN", kinds)                    # it was continued: the case under test
+        u = res["long"]["usage"]
+        prompt = self.svc.history[[h["output_tokens"] for h in self.svc.history].index(
+            max(h["output_tokens"] for h in self.svc.history))]["prompt_total"]
+        self.assertGreaterEqual(u["input_tokens"], 1, u)
+        self.assertEqual(u["input_tokens"] + u["cache_read_input_tokens"], prompt, u)
+        self.assertEqual(u["cache_read_input_tokens"], 3, u)    # the first read's reuse, not the continuation's
 
 
 if __name__ == "__main__":
