@@ -76,14 +76,18 @@ enum KvFormat : int { kKvF16 = 0, kKvInt8 = 1, kKvQ4 = 2, kKvHybrid = 3 };
 /// staging pool) is written by the same calls that write its VRAM pools: K is "int8 whose V is K", V is "q4_0 whose
 /// K is V" - the folded duplicate the hybrid appends already make (layer.cpp).  Both fields of a half point at the
 /// same array on purpose: the kernels test the K-side pointer for presence and pick K or V per lane.
+/// The halves carry the session's chunk table too (a shared KV pool, core/kv_pool.hpp): without it a pooled K8V4
+/// layer's cells would land in the pool at their session block numbers, in other sessions' chunks.
 inline KvHostPools kv_hybrid_k_half(const KvHostPools& h) {
     KvHostPools r;
     r.k_q = h.k_q; r.v_q = h.k_q; r.k_scale = h.k_scale; r.v_scale = h.k_scale;
+    r.chunk = h.chunk; r.chunk_host = h.chunk_host; r.chunk_shift = h.chunk_shift;
     return r;
 }
 inline KvHostPools kv_hybrid_v_half(const KvHostPools& h) {
     KvHostPools r;
     r.k_q4 = h.v_q4; r.v_q4 = h.v_q4;
+    r.chunk = h.chunk; r.chunk_host = h.chunk_host; r.chunk_shift = h.chunk_shift;
     return r;
 }
 

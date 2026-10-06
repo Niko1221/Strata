@@ -9039,6 +9039,13 @@ int main(int argc, char** argv) {
                         refuse("the K/V cannot grow to the saved conversation: no VRAM is left", strata::core::SessionError::memory);
                         continue;
                     }
+                    // --kv-pool-tokens: the file's cells need chunks in the main session's table (cells past its
+                    // reservation would be restored into the pool's trash chunk and lost)
+                    if (!pool_reserve(ss, (int64_t) image.live.ids.size() + 8, -1)) {
+                        refuse("the KV pool cannot hold the saved conversation: the decoding lanes hold the rest",
+                               strata::core::SessionError::memory);
+                        continue;
+                    }
                     conversations.take_reuse();   // retained K/V described the outgoing session
                     live_ok = false;
                     // host -> device in synchronous copies of the whole state: one bounded allowance

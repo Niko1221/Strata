@@ -125,15 +125,15 @@ bool transfer(void* dst, const void* src, size_t n, std::string& error) {
 // piece. A shared KV pool keeps a session's host blocks in chunks (kv_stream.hpp), so a piece ends where a chunk
 // ends; without one the bytes are one piece at `at`. `total` and `cells` size the array: bytes per block from them.
 template <class F>
-bool each_piece(const QsaState& st, size_t i, size_t total, int64_t cells, int64_t page_size, size_t at, size_t n,
-                F&& f) {
-    if (i >= 4 || st.kv_mode == 0 || st.host.chunk_host == nullptr || cells <= 0) return f(at, size_t(0), n);
+bool each_piece(int kv_mode, const strata::kernels::KvHostPools& host, size_t i, size_t total, int64_t cells,
+                int64_t page_size, size_t at, size_t n, F&& f) {
+    if (i >= 4 || kv_mode == 0 || host.chunk_host == nullptr || cells <= 0) return f(at, size_t(0), n);
     const size_t block = total / size_t(cells / page_size);
     for (size_t done = 0; done < n;) {
         const size_t pos = at + done, in = pos % block;
         const long long b = (long long) (pos / block);
-        const size_t len = std::min((size_t) st.host.contiguous(b, LLONG_MAX) * block - in, n - done);
-        if (!f((size_t) st.host.block_host(b) * block + in, done, len)) return false;
+        const size_t len = std::min((size_t) host.contiguous(b, LLONG_MAX) * block - in, n - done);
+        if (!f((size_t) host.block_host(b) * block + in, done, len)) return false;
         done += len;
     }
     return true;
@@ -192,7 +192,7 @@ bool conversation_kv_save(ConversationKv& image, const QsaState& st, const Model
         if (keep > dst[i]->size()) { error = "conversation snapshot: missing reusable prefix"; return false; }
         dst[i]->resize(sizes[i]);
         if (!dst[i]->visit(keep, sizes[i] - keep, [&](uint8_t* p, size_t n, size_t at) {
-                return each_piece(st, i, sizes[i], l.cells, l.page_size, at, n, [&](size_t off, size_t done, size_t len) {
+                return each_piece(st.kv_mode, st.host, i, sizes[i], l.cells, l.page_size, at, n, [&](size_t off, size_t done, size_t len) {
                     return transfer(p + done, src[i] ? static_cast<const uint8_t*>(src[i]) + off : nullptr, len, error);
                 });
             })) return false;
@@ -229,7 +229,7 @@ bool conversation_kv_restore(const ConversationKv& image, const QsaState& st, co
     const auto dst = pools(st);
     for (size_t i = 0; i < src.size(); ++i)
         if (!src[i]->visit(0, src[i]->size(), [&](const uint8_t* p, size_t n, size_t at) {
-                return each_piece(st, i, src[i]->size(), image.cells, image.page_size, at, n,
+                return each_piece(st.kv_mode, st.host, i, src[i]->size(), image.cells, image.page_size, at, n,
                                   [&](size_t off, size_t done, size_t len) {
                     return transfer(static_cast<uint8_t*>(dst[i]) + off, p + done, len, error);
                 });
@@ -269,9 +269,17 @@ bool conversation_kv_source(SessionKvSource& out, const QsaState& st, const Mode
     const auto src = pools(st);
     const auto sizes = s.sizes;
     auto why = std::make_shared<std::string>();
-    s.read = [src, sizes, why](size_t part, size_t offset, void* dst, size_t n) {
+    // a shared KV pool keeps a streamed state's blocks in chunks: the file's bytes are read piece by piece
+    const int kv_mode = st.kv_mode;
+    const strata::kernels::KvHostPools host = st.host;
+    const int64_t cells = l.cells, page_size = l.page_size;
+    s.read = [src, sizes, why, kv_mode, host, cells, page_size](size_t part, size_t offset, void* dst, size_t n) {
         if (part >= 5 || offset > sizes[part] || n > sizes[part] - offset) { *why = "K/V read out of range"; return false; }
-        return transfer(dst, src[part] ? static_cast<const uint8_t*>(src[part]) + offset : nullptr, n, *why);
+        return each_piece(kv_mode, host, part, sizes[part], cells, page_size, offset, n,
+                          [&](size_t off, size_t done, size_t len) {
+            return transfer(static_cast<uint8_t*>(dst) + done, src[part] ? static_cast<const uint8_t*>(src[part]) + off : nullptr,
+                            len, *why);
+        });
     };
     s.error = [why] { return *why; };
     out = std::move(s);
@@ -300,7 +308,7 @@ bool conversation_kv_verify(const ConversationKv& image, const QsaState& st, con
     const auto authoritative = pools(st);
     for (size_t i = 0; i < saved.size(); ++i)
         if (!saved[i]->visit(0, saved[i]->size(), [&](const uint8_t* p, size_t n, size_t at) {
-                return each_piece(st, i, saved[i]->size(), image.cells, image.page_size, at, n,
+                return each_piece(st.kv_mode, st.host, i, saved[i]->size(), image.cells, image.page_size, at, n,
                                   [&](size_t off, size_t done, size_t len) {
                     return compare(static_cast<const uint8_t*>(authoritative[i]) + off, p + done, len, true);
                 });
