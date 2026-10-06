@@ -185,12 +185,19 @@ bool Verifier::release_gpu_waits(int timeout_ms) {
     const Clock::time_point t0 = Clock::now();
     for (cudaStream_t s : {cs_, copy_}) {
         if (s == nullptr) continue;
-        while (cudaStreamQuery(s) == cudaErrorNotReady) {
+        cudaError_t q;
+        while ((q = cudaStreamQuery(s)) == cudaErrorNotReady) {
             if (ms_since(t0) > timeout_ms) {
                 trace_ev("RELEASE-NOT-DRAINED", -1, -1, (int64_t) ms_since(t0));
                 return false;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        if (q != cudaSuccess) {
+            trace_ev("RELEASE-ERROR", -1, -1, (int64_t) q);
+            std::fprintf(stderr, "strata: could not confirm the verify window's GPU completion (#267): %s\n",
+                         cudaGetErrorString(q));
+            return false;
         }
     }
     trace_ev("RELEASE-DRAINED", -1, -1, (int64_t) ms_since(t0));   // aux: ms the GPU took to finish once released
@@ -1939,6 +1946,10 @@ bool Verifier::stage_batch(const int* rows, int S, int hbase, const int32_t* tok
     *(volatile uint32_t*) h_flagA_ = 0;
     *(volatile uint32_t*) h_flagB_ = 0;
     std::atomic_thread_fence(std::memory_order_seq_cst);
+    if (all_resident_) {
+        _mm_sfence();
+        *(volatile uint32_t*) h_flag_ = 1;
+    }
     last_t_ = S;
     for (int t = 0; t < S; ++t) last_rows_[t] = rows[t];
     row_base_ = hbase;   // the graphs' key (and nothing else) reads it until the next stage_batch
@@ -1966,7 +1977,7 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
     (void) cudaStreamQuery(cs_);
     volatile uint32_t* const seq = h_seq_;
     volatile uint32_t* const flag = h_flag_;
-    const int64_t steps = le_ - lb_;
+    const int64_t steps = all_resident_ ? 0 : le_ - lb_;
     for (int64_t k = 0; k < steps; ++k) {
         const int64_t l = lb_ + k;
         const uint32_t want = (uint32_t) (k + 1);
@@ -2080,7 +2091,7 @@ bool Verifier::batch_launch(int base, int S, const int32_t* tokens, const int64_
         }
     b_running_ = true;
     b_k_ = 0;
-    b_steps_ = le_ - lb_;
+    b_steps_ = all_resident_ ? 0 : le_ - lb_;
     b_last_ = Clock::now();
     return true;
 }
