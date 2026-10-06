@@ -139,6 +139,19 @@ about 10-25% speed per request on this card". `--parallel N` is honoured as aske
 - Slots are assigned so that consecutive requests land in different pipeline groups (`--batch-groups`).
 - A client that disconnects stops its slot (`BSTOP`); the others go on.
 
+## The VRAM expert tier keeps adapting in batch windows
+
+Batch windows count which experts they route to, and every `--adapt-every` windows (default 4) the engine swaps the
+most-routed experts that are not in VRAM into the cache in place of the least-routed resident ones, the same rule the
+solo path uses (`--adapt-swaps` and `--adapt-decay` apply too; on a layer split every GPU's cache adapts). It runs when the
+tier is not the whole model and both `--adapt-every` and `--adapt-swaps` are above 0. The copies run beside the
+window's commit and drafts and have landed before the next window starts. It pauses while a prompt holds a loan of cache
+slots (a long prompt read beside decoding slots). The `strata batch:` log line shows the rounds and swaps, each stage's
+GPU-reach wait and pool time, and how many routed entries the VRAM tier, the PCIe share and the CPU served per window.
+Swaps move experts between the GPU and the CPU, which round differently, so greedy outputs can differ from run to run;
+`--adapt-every 1000000` keeps the tier fixed (as in the exactness settings below). The pipelined `--batch-groups` path
+does not adapt.
+
 ## Exactness
 
 A batch row's arithmetic is the single-token window's, so with greedy decoding **every conversation of a batch

@@ -8333,6 +8333,14 @@ int main(int argc, char** argv) {
         double bt_wait0 = 0, bt_pool0 = 0;
         int64_t bt_miss0 = 0, bt_hits0 = 0, bt_pcie0 = 0;
         int64_t bt_windows = 0, bt_rows = 0, bt_tokens = 0, bt_accepted = 0;   // bt_accepted: --batch-mtp proposals taken
+        // per stage (0 = CUDA0's verifier): the GPU-reach wait and pool time when the timed windows began; and the routed
+        // (token, expert) entries the CPU and the PCIe share had served by then (bt_hits0 holds the VRAM entries)
+        std::vector<double> bt_stage_wait0, bt_stage_pool0;
+        int64_t bt_cpu_ent0 = 0, bt_off_ent0 = 0;
+        // the adaptive VRAM tier in batch windows: windows seen since the engine started (--adapt-every counts them), and,
+        // since the last timing line, its rounds, the experts it swapped in and the ms a window waited for it
+        int64_t ba_window = 0, bt_adapt_rounds = 0, bt_adapt_swaps = 0;
+        double bt_adapt_wait = 0;
         Clock::time_point bt_start = Clock::now();
         int admit_slot = -1;               ///< the slot the request being read will continue in (BGEN)
         long long admit_max_new = 0;
@@ -8428,6 +8436,7 @@ int main(int argc, char** argv) {
             }
             return true;
         };
+        auto stage_verifier = [&](int k) -> strata::core::Verifier& { return k == 0 ? ver : stages[(size_t) k - 1]->ver; };
         // one batch window over the active slots only (row t is the t-th active slot): an idle slot is not touched,
         // so it keeps the conversation it holds
         auto batch_step = [&]() -> bool {
@@ -8472,6 +8481,13 @@ int main(int argc, char** argv) {
                 bt_start = Clock::now();
                 bt_wait0 = ver.ms_wait; bt_pool0 = ver.ms_pool;
                 bt_miss0 = drive.d.multi_misses; bt_hits0 = drive.d.cache_hits; bt_pcie0 = drive.d.pcie_experts;
+                bt_stage_wait0.assign(stages.size() + 1, 0.0);
+                bt_stage_pool0.assign(stages.size() + 1, 0.0);
+                for (size_t k = 0; k <= stages.size(); ++k) {
+                    bt_stage_wait0[k] = stage_verifier((int) k).ms_wait;
+                    bt_stage_pool0[k] = stage_verifier((int) k).ms_pool;
+                }
+                bt_cpu_ent0 = drive.d.multi_entries; bt_off_ent0 = drive.d.offload_entries;
             }
             const Clock::time_point w0 = Clock::now();
             if (!ver.run_slot_rows(rows, S, tok, pos, win_pool_fn, win_pool_user, outb, err) || drive.d.failed) {
@@ -8479,6 +8495,20 @@ int main(int argc, char** argv) {
                 return false;
             }
             const Clock::time_point w1 = Clock::now();
+            // The adaptive VRAM tier, as the solo loop runs it: every --adapt-every windows, on a thread beside the commit and
+            // the drafts.  Every stage's window has finished here (run_slot_rows synchronised each stage's stream), and
+            // nothing in flight reads the cache slots a swap overwrites; the swapped-in experts are landed (apply_pending)
+            // before this window ends, so no other path (a prompt chunk read between windows, a loan of cache slots, a KV
+            // growth) ever meets swaps in flight.  Not while a prompt holds a loan of cache slots: its lent experts are
+            // marked missing and are put back when the loan ends.
+            struct AdaptRun {
+                std::thread th;
+                bool ok = true;
+                ~AdaptRun() { if (th.joinable()) th.join(); }   // an error return below still joins it
+            } adapt_run;
+            if (!drive.d.usage.empty() && !ajob && (++ba_window % o.adapt_every) == 0 && pending.empty() &&
+                std::none_of(pf_parts.begin(), pf_parts.end(), [](const PfPart& p) { return !p.lent.empty(); }))
+                adapt_run.th = std::thread([&] { adapt_run.ok = adapt(); });
             // Accept the proposal only when the target picked it and there is room to emit both tokens.
             std::vector<int> keep(bs.size(), 0);
             for (int a = 0; a < A; ++a) {
@@ -8542,18 +8572,49 @@ int main(int argc, char** argv) {
             }
             std::fflush(stdout);
             bt_emit += msd(w2, Clock::now());
+            if (adapt_run.th.joinable()) {
+                const Clock::time_point wa = Clock::now();
+                adapt_run.th.join();
+                if (!adapt_run.ok) {
+                    std::printf("ERR an adaptive refill failed\n");
+                    return false;
+                }
+                ++bt_adapt_rounds;
+                bt_adapt_swaps += (int64_t) pending.size();
+                apply_pending(true);   // the copies land and the tables follow (the next window plans from them)
+                bt_adapt_wait += msd(wa, Clock::now());
+            }
             strata::core::progress().busy.store(was_busy);
             if (!batch_on() && bt_windows > 0) {
                 const double w = (double) bt_windows, wall = msd(bt_start, Clock::now());
                 const double L = (double) g.n_layers;
+                const double e_vram = (double) (drive.d.cache_hits - bt_hits0), e_pcie = (double) (drive.d.offload_entries - bt_off_ent0),
+                             e_cpu = (double) (drive.d.multi_entries - bt_cpu_ent0);
+                const double e_all = std::max(e_vram + e_pcie + e_cpu, 1.0);
+                std::string per_stage;   // every stage's own host wait for its GPU and its pool time (run_slot_rows recurses)
+                for (size_t k = 0; k <= stages.size(); ++k) {
+                    char sb[96];
+                    std::snprintf(sb, sizeof sb, "%sCUDA%d wait %.2f + pool %.2f", k == 0 ? "" : ", ", k == 0 ? 0 : stages[k - 1]->dev,
+                                  (stage_verifier((int) k).ms_wait - bt_stage_wait0[k]) / w,
+                                  (stage_verifier((int) k).ms_pool - bt_stage_pool0[k]) / w);
+                    per_stage += sb;
+                }
+                char adapt_txt[160] = "";
+                if (!drive.d.usage.empty())
+                    std::snprintf(adapt_txt, sizeof adapt_txt, "; adaptive tier: %lld rounds, %lld experts swapped in",
+                                  (long long) bt_adapt_rounds, (long long) bt_adapt_swaps);
                 std::fprintf(stderr, "strata batch: %lld windows, avg %.2f rows, %.2f ms/window = run %.2f (CUDA0 GPU-reach "
-                                     "wait %.2f + CPU experts %.2f) + commit %.2f + emit %.2f; per layer-window: CPU experts "
-                                     "%.2f, VRAM hits %.2f, PCIe %.2f; %.1f rows/s over %.0f ms of wall time (admissions "
-                                     "included)\n",
-                             (long long) bt_windows, bt_rows / w, (bt_run + bt_commit + bt_emit) / w, bt_run / w,
+                                     "wait %.2f + CPU experts %.2f) + commit %.2f + emit %.2f + adapt wait %.2f; per stage "
+                                     "(ms/window): %s; per layer-window: CPU experts %.2f, VRAM hits %.2f, PCIe %.2f; routed "
+                                     "entries per window: VRAM %.1f (%.1f%%), PCIe %.1f (%.1f%%), CPU %.1f (%.1f%%)%s; %.1f rows/s "
+                                     "over %.0f ms of wall time (admissions included)\n",
+                             (long long) bt_windows, bt_rows / w, (bt_run + bt_commit + bt_emit + bt_adapt_wait) / w, bt_run / w,
                              (ver.ms_wait - bt_wait0) / w, (ver.ms_pool - bt_pool0) / w, bt_commit / w, bt_emit / w,
+                             bt_adapt_wait / w, per_stage.c_str(),
                              (drive.d.multi_misses - bt_miss0) / (w * L), (drive.d.cache_hits - bt_hits0) / (w * L),
-                             (drive.d.pcie_experts - bt_pcie0) / (w * L), 1000.0 * bt_rows / std::max(wall, 1e-9), wall);
+                             (drive.d.pcie_experts - bt_pcie0) / (w * L), e_vram / w, 100.0 * e_vram / e_all, e_pcie / w,
+                             100.0 * e_pcie / e_all, e_cpu / w, 100.0 * e_cpu / e_all, adapt_txt,
+                             1000.0 * bt_rows / std::max(wall, 1e-9), wall);
                 for (size_t k = 0; k <= stages.size(); ++k) {
                     const std::string pr = (k == 0 ? ver : stages[k - 1]->ver).profile_report();
                     if (!pr.empty()) std::fprintf(stderr, "strata batch GPU stages, stage %zu (ms/window):%s\n", k + 1, pr.c_str());
@@ -8562,8 +8623,8 @@ int main(int argc, char** argv) {
                     std::fprintf(stderr, "strata batch: MTP proposals accepted %lld of %lld (%.1f%%)\n",
                                  (long long) bt_accepted, (long long) (bt_rows - bt_accepted),
                                  100.0 * (double) bt_accepted / (double) std::max<int64_t>(bt_rows - bt_accepted, 1));
-                bt_run = bt_commit = bt_emit = 0;
-                bt_windows = bt_rows = bt_tokens = bt_accepted = 0;
+                bt_run = bt_commit = bt_emit = bt_adapt_wait = 0;
+                bt_windows = bt_rows = bt_tokens = bt_accepted = bt_adapt_rounds = bt_adapt_swaps = 0;
             }
             return true;
         };
@@ -8587,7 +8648,6 @@ int main(int argc, char** argv) {
         std::vector<PGroup> pg((size_t) (piped ? o.batch_groups : 0));
         std::vector<int> stage_group((size_t) n_pipe, -1);
         int64_t pipe_tick = 0, rr = 0;
-        auto stage_verifier = [&](int k) -> strata::core::Verifier& { return k == 0 ? ver : stages[(size_t) k - 1]->ver; };
         auto pipe_inflight = [&] { for (const PGroup& x : pg) if (x.inflight) return true; return false; };
         auto group_active = [&](int gi) {
             for (int t = 0; t < GS; ++t) if (bs[(size_t) (gi * GS + t)].active) return true;
