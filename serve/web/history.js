@@ -25,6 +25,7 @@
 
   // pictures and files are kept as their names only: a data URL would fill the browser's storage
   const cleanMessages = (list) => list.map((m) => ({...m, images: (m.images || []).map((i) => ({name: i.name})),
+                                                    videos: (m.videos || []).map((v) => ({name: v.name})),
                                                     files: (m.files || []).map((f) => ({name: f.name}))}));
   const cleanChat = (c) => ({...c, messages: cleanMessages(c.messages)});
 
@@ -46,11 +47,12 @@
   }
 
   // Can a user turn be sent again as it was? A picture or file that came back from the browser's store has only its name.
-  const lostAttachments = (m) => ((m.images || []).filter((x) => !x.url).length + (m.files || []).filter((x) => typeof x.text !== "string").length);
+  const lostAttachments = (m) => ((m.images || []).filter((x) => !x.url).length + (m.videos || []).filter((x) => !x.url).length + (m.files || []).filter((x) => typeof x.text !== "string").length);
   // what goes back into the message box when a user turn is edited: its text and the attachments that still have contents
   function draftOf(m) {
     return {text: m.text || "",
             images: (m.images || []).filter((x) => x.url).map((x) => ({kind: "image", name: x.name, url: x.url})),
+            videos: (m.videos || []).filter((x) => x.url).map((x) => ({kind: "video", name: x.name, url: x.url})),
             files: (m.files || []).filter((x) => typeof x.text === "string").map((x) => ({kind: "file", name: x.name, text: x.text})),
             lost: lostAttachments(m)};
   }

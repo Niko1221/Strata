@@ -396,7 +396,7 @@ function openRewind(i) {
 }
 function fillBox(draft) {
   $("input").value = draft.text;
-  attachments = [...draft.images, ...draft.files];
+  attachments = [...draft.images, ...draft.videos, ...draft.files];
   renderAttachments();
   autosize();
   if (draft.lost) toast("warn", tr("hist.lostTitle", "Attachments need to be added again"), tr("hist.lostText2", "This browser kept their names, not their contents. Attach them again."), 7000);
