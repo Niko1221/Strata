@@ -97,6 +97,13 @@ void moe_combine_peer(const float* D, const int32_t* slot, const float* w, const
 /// (no token twice: launches in a fixed expert order make the sums repeatable).  After eddoursul/Strata's
 /// moe_scatter_add (f8de703).
 void peer_scatter_add(float* sum, const float* rows, const float* wk, const int32_t* pair, int64_t n, void* stream);
+/// moe_combine_peer with the peer's sums in FP16 (`peer16`, may be mapped host memory)
+void moe_combine_peer16(const float* D, const int32_t* slot, const float* w, const float* shared, const float* sg,
+                        const uint16_t* peer16, int64_t rows_local, float* bo, int64_t T, void* stream);
+/// y = FP16 bits of x, saturated at +-65504 (the peer's sums on their way back; eddoursul/Strata 2acfac4)
+void sums_to_f16(const float* x, uint16_t* y, int64_t n, void* stream);
+/// dst[0, n) = FP32 of the FP16 src[0, n) (n a multiple of 8, 16-byte aligned; src may be mapped host memory)
+void f16_to_f32_wide(float* dst, const uint16_t* src, int64_t n, void* stream);
 
 // ---- QSA helpers
 /// In place: x[r, :] = x[r, :] * rsqrt(mean x^2 + eps) * w  over rows of `cols` (row stride `ld`).
