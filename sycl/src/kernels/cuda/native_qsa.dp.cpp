@@ -80,6 +80,36 @@ __dpct_inline__ void norm(const float *input, const float *__restrict__ gamma,
     for (std::size_t col = tid; col < std::size_t(n_cols); col += BlockSize)
         output[col] = scale * input[col] * gamma[col];
 }
+// As norm, with gamma[groups * n_cols]: row r is group r % groups and reads its own slice of gamma.
+template <int BlockSize>
+__dpct_inline__ void
+norm_grouped(const float *input, const float *__restrict__ gamma, float *output,
+             int n_cols, int groups, float epsilon) {
+    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+    const int tid = item_ct1.get_local_id(2);
+    const std::size_t row_offset = std::size_t(item_ct1.get_group(2)) * n_cols;
+    input += row_offset; output += row_offset;
+    gamma += std::size_t(item_ct1.get_group(2) % unsigned(groups)) * n_cols;
+    float partial = 0.0f;
+    for (std::size_t col = tid; col < std::size_t(n_cols); col += BlockSize) {
+        const float x = input[col];
+        partial += x * x;
+    }
+    auto &sums =
+        *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
+            sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    partial = warp_sum(partial);
+    const int lane = tid % 32;
+    if (lane == 0) sums[tid / 32] = partial;
+    item_ct1.barrier(sycl::access::fence_space::local_space);
+    partial = lane < BlockSize / 32 ? sums[lane] : 0.0f;
+    partial = warp_sum(partial);
+    const float mean = partial / n_cols;
+    const float scale = sycl::rsqrt(mean + epsilon);
+#pragma unroll
+    for (std::size_t col = tid; col < std::size_t(n_cols); col += BlockSize)
+        output[col] = scale * input[col] * gamma[col];
+}
 __dpct_inline__ void gate(const float *attn, const float *__restrict__ q_full,
                           float *output, int n_head, int head_dim) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
@@ -182,6 +212,55 @@ void native_qsa_rms_norm_weighted(const float* input, const float* gamma, float*
                 [=](sycl::nd_item<3> item_ct1)
                     [[sycl::reqd_sub_group_size(32)]] {
                         norm<1024>(input, gamma, output, n_cols, epsilon);
+                    });
+    }
+    check_launch();
+}
+void native_qsa_rms_norm_grouped(const float* input, const float* gamma, float* output,
+                                 int n_cols, int groups, int n_rows, float epsilon, void* stream) {
+    if (groups < 1) throw std::invalid_argument("native QSA requires positive bounded dimensions");
+    const auto count = elements(n_cols, n_rows);
+    if (!std::isfinite(epsilon) || epsilon < 0.0f)
+        throw std::invalid_argument("native QSA requires finite nonnegative epsilon");
+    buffers(input, count * 4, gamma, std::size_t(n_cols) * groups * 4, output, stream);
+    if (n_cols < 1024)
+    {
+        auto exp_props = sycl::ext::oneapi::experimental::properties{
+            sycl::ext::oneapi::experimental::use_root_sync};
+
+        ((sycl::queue *)(strata::q_of(stream)))
+            ->parallel_for<dpct_kernel_name<class norm_grouped_95c2b9,
+                                            dpct_kernel_scalar<256>>>(
+                sycl::nd_range<3>(sycl::range(1, 1, unsigned(n_rows)) *
+                                      sycl::range(1, 1, 256),
+                                  sycl::range(1, 1, 256)),
+                exp_props,
+                [=](sycl::nd_item<3> item_ct1)
+                    [[sycl::reqd_sub_group_size(32)]] {
+                        norm_grouped<256>(input, gamma, output, n_cols, groups,
+                                          epsilon);
+                    });
+    } else
+    /*
+    DPCT1049: The work-group size passed to the SYCL kernel may exceed
+    the limit. To get the device limit, query
+    info::device::max_work_group_size. Adjust the work-group size if needed.
+    */
+    {
+        auto exp_props = sycl::ext::oneapi::experimental::properties{
+            sycl::ext::oneapi::experimental::use_root_sync};
+
+        ((sycl::queue *)(strata::q_of(stream)))
+            ->parallel_for<dpct_kernel_name<class norm_grouped_ad048b,
+                                            dpct_kernel_scalar<1024>>>(
+                sycl::nd_range<3>(sycl::range(1, 1, unsigned(n_rows)) *
+                                      sycl::range(1, 1, 1024),
+                                  sycl::range(1, 1, 1024)),
+                exp_props,
+                [=](sycl::nd_item<3> item_ct1)
+                    [[sycl::reqd_sub_group_size(32)]] {
+                        norm_grouped<1024>(input, gamma, output, n_cols, groups,
+                                           epsilon);
                     });
     }
     check_launch();

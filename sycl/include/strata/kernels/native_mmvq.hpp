@@ -42,6 +42,9 @@ bool native_mmvq_multi_exact();
 void native_quantize_q8_1(const float* x, void* x_q8_1, int n_in, int ncols,
                           void* stream);
 
+void native_swiglu_quantize_q8_1(const float* gate, const float* up, void* x_q8_1,
+                                 int n_in, int ncols, void* stream);
+
 void native_q5_k_mmvq(const void* weights, const void* x_q8_1, float* y,
                       int n_in, int n_out, int ncols, void* stream);
 
@@ -94,6 +97,24 @@ void native_q5_0_f32(const void* weights, const float* x, void* scratch_q8_1,
 void native_q8_0_mmvq(const void* weights, const void* x_q8_1, float* y,
                        int n_in, int n_out, int ncols, void* stream);
 
+/// STRATA_Q8_PACKED=1 (opt-in): a lossless load-time repack of a Q8_0 matrix into a qs plane (n_out x n_in int8)
+/// followed by a d plane (n_out x n_in / 32 fp16), the same bytes (34 per 32 values). A registered matrix's
+/// native_q8_0_mmvq calls (keyed by its GGUF-layout device pointer, which stays valid for the prompt path) read the
+/// packed copy instead; every output is bitwise equal to the GGUF-layout kernels.
+bool native_q8_0_packed_enabled();
+bool native_q8_0_packed_eligible(int n_in, int n_out);
+void native_q8_0_pack_host(const void* gguf_blocks, void* out, int n_in, int n_out);
+void native_q8_0_packed_register(const void* gguf_weights, const void* packed, int n_in, int n_out);
+void native_q8_0_packed_unregister(const void* gguf_weights);
+
+/// STRATA_Q6_PACKED=1 (opt-in): a packed copy of a Q6_K matrix (the output heads) - the same bytes as ql / qh /
+/// scales / d planes - that native_q6_k_mmvq calls on `weights` read instead (bitwise equal outputs). The copy is
+/// owned here: native_q6_k_pack builds it from the device matrix (false: not eligible or failed; nothing changes),
+/// native_q6_k_unpack frees it. STRATA_Q6P_SELFTEST=1 checks it bitwise and times it at load.
+bool native_q6_k_packed_enabled();
+bool native_q6_k_pack(const void* weights, int n_in, int n_out, const char* what);
+void native_q6_k_unpack(const void* weights);
+
 void native_q8_0_f32(const void* weights, const float* x, void* scratch_q8_1,
                       float* y, int n_in, int n_out, int ncols, void* stream);
 
@@ -112,6 +133,10 @@ bool native_mmvq_supported(int ggml_type) noexcept;
 std::size_t native_mmvq_weight_bytes(int ggml_type, int n_in, int n_out);
 void native_mmvq(int ggml_type, const void* weights, const void* x_q8_1, float* y,
                  int n_in, int n_out, int ncols, void* stream);
+/// S26 STRATA_LFUSE: native_mmvq(w1 -> y1) and native_mmvq(w2 -> y2), same type / shape / input, in ONE launch,
+/// bitwise the two calls. Returns false (nothing launched) where that is not the case (Q8_0, 2-8 columns only).
+bool native_mmvq_pair(int ggml_type, const void* w1, const void* w2, const void* x_q8_1, float* y1, float* y2,
+                      int n_in, int n_out, int ncols, void* stream);
 
 // exp 27/28 - P0 #2 avenue 1: pre-unpack Q6_K once so the decode skips the per-token
 // 6-bit unpack/gather (the measured pipe cost).  A pre-unpacked block is 32 consecutive

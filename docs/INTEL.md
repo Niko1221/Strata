@@ -564,6 +564,40 @@ What each merge needed:
     - The fused int8 prompt kernels (#136), part of the MMQ library the port does not build.
   - **Off on SYCL:** the sm_90 thread-block-cluster greedy sampler and QSA top-k. They have no SYCL counterpart,
     and the callers take the plain kernels.
+- **0.1.40 + main to 1735d64 (2026-10-06, 395 upstream commits):** main's own SYCL build had stopped compiling.
+  Since 0.1.39 upstream's CUDA moved on while `sycl/` kept its 0.1.39 copies, so `fused_gr`, `expert_source` and
+  `prefill/gemm` no longer matched the shared headers.
+  - **The merge base is the commit the port was migrated from, not the branch point.** The port's copies mirror
+    upstream 5047172 ("sycl: port 0.1.39"); 88 later commits (0.1.39b) never reached `sycl/`. A first merge with
+    the branch point 6f32ec0 as base counted those 8,000 lines as already merged and dropped them silently. With
+    base 5047172 and `--diff-algorithm=histogram`: 26 files, 175 conflicts, plus 3 hand files.
+  - **dpct mistranslations in the new code**, all fixed by hand:
+    - `__ldg(reinterpret_cast<const float4*>(p))` lost its cast again (`gdn_ab_multi`);
+    - `cudaStreamSynchronize(nullptr)` became `nullptr->wait()`;
+    - a load macro (`STRATA_Q8P_LOAD`) expanded to an unrelated call site's expression;
+    - lambda heads gained an injected declaration (`[&] const int8_t* kvalues_iq4nl {`);
+    - kernel names inside launcher templates leave out template parameters, so two instantiations collide
+      ("redefinition of KernelInfo"): the S26/S27 launchers and `gr_down_staged`;
+    - a `reinterpret_cast<>()` with its argument dropped, and `DPCT1050` placeholders.
+  - **Port-side choices:**
+    - The shared-expert side stream (`STRATA_SH_STREAM`) is off: a recorded SYCL graph only takes its own queue's
+      work.
+    - The MTP drafter keeps launch-then-wait instead of host spins on mapped outputs.
+    - Upstream's warp-shaped expert kernels stay opt-in behind `STRATA_EXPERT_SPLIT=1`; the port's grids stay the
+      default.
+    - `vmm.cpp` is upstream's no-VMM branch (`--kv-grow` / `--vram-elastic` stay off).
+    - `gemm_bf16_parity` (cuBLAS) and `native_expert_bench` (raw CUDA) are not built.
+  - **Fixed with it:**
+    - #866: the per-layer ring waits read `DPCT_CHECK_ERROR(q->ext_oneapi_empty())`, which is always 0, so a
+      layer slower than 2 ms was "never rang" whenever experts were mirrored and `STRATA_VERIFY_NO_HOST` was off.
+    - #1054: with a layer split, the host mirror now holds only the first GPU's layers. Pinned memory belongs to
+      the context of the GPU that allocated it, and each dpct device has its own; before, every later-stage expert
+      was mirrored first and the later GPU's cache fill copied from the first GPU's pinned memory. On two B70s
+      that hung at startup. It also cost 13-18 GiB of RAM for experts the later GPU's cache then held.
+  - **Checked:** ctest 34 of 34 (`mmvq_multi_parity`'s negative control has no power on the port's wide kernels,
+    like gfx906's wave64 layout, and says so). IQ2_XS greedy output is identical to the 0.1.39 port on one B70, and a
+    K=29 split over B70 + B65 matches it token for token. Decode 63.5 -> 68.0 tok/s on one card and 57.9 -> 62.7 on
+    the split (short chat prompt, 64 tokens).
 
 ## Bugs worth remembering
 

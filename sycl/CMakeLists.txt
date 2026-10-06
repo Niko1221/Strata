@@ -10,7 +10,7 @@
 #
 # Device code is JIT-compiled from SPIR-V unless STRATA_SYCL_AOT names a device (bmg-g31 for the Arc Pro B70).
 cmake_minimum_required(VERSION 3.24)
-project(strata_sycl VERSION 0.1.39 LANGUAGES C CXX)   # the upstream engine version this port tracks
+project(strata_sycl VERSION 0.1.40 LANGUAGES C CXX)   # the upstream engine version this port tracks
 set(STRATA_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -81,7 +81,8 @@ target_include_directories(strata_includes INTERFACE
 target_compile_options(strata_includes INTERFACE -Wall -Wextra)
 
 # --- CPU-side pieces, identical to the top-level build ------------------------------------------------------------
-strata_resolve(_spec src/spec/suffix_drafter.cpp src/spec/controller.cpp src/spec/draft_policy.cpp)
+strata_resolve(_spec src/spec/suffix_drafter.cpp src/spec/controller.cpp src/spec/draft_policy.cpp
+                     src/spec/draft_source.cpp)   # 0.1.40
 add_library(strata_spec STATIC ${_spec})
 target_link_libraries(strata_spec PUBLIC strata_includes)
 
@@ -121,13 +122,15 @@ if(STRATA_NATIVE_EXPERTS)
     add_subdirectory(${strata_llamacpp_SOURCE_DIR}/ggml ${CMAKE_BINARY_DIR}/ggml EXCLUDE_FROM_ALL)
   endif()
   strata_resolve(_cpu_native src/kernels/cpu/native_expert.cpp src/kernels/cpu/iq_avx512.cpp src/kernels/cpu/iq_avx2.cpp
-                             src/kernels/cpu/kq_avx2.cpp)   # 0.1.31: the Q4_K/Q5_K/Q5_1/Q8_0 expert rows
+                             src/kernels/cpu/kq_avx2.cpp    # 0.1.31: the Q4_K/Q5_K/Q5_1/Q8_0 expert rows
+                             src/kernels/cpu/kq_avx1.cpp)   # 0.1.40: the router lookahead's AVX1 dot
   target_sources(strata_kernels_cpu PRIVATE ${_cpu_native})
   target_include_directories(strata_kernels_cpu PRIVATE ${STRATA_ROOT}/third_party/ggml)
   set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/iq_avx512.cpp PROPERTIES COMPILE_OPTIONS
     "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx512vbmi;-mf16c;-mfma")
   set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/iq_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
   set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/kq_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
+  set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/kq_avx1.cpp PROPERTIES COMPILE_OPTIONS "-mavx")
   target_link_libraries(strata_kernels_cpu PUBLIC ggml-cpu ggml-base)
   target_compile_definitions(strata_kernels_cpu PUBLIC STRATA_NATIVE_EXPERTS=1)
 endif()
@@ -154,10 +157,16 @@ target_include_directories(strata_kernels PRIVATE ${STRATA_ROOT}/third_party/ggm
 target_link_libraries(strata_kernels PUBLIC strata_core)
 
 strata_resolve(_engine src/core/layer.cpp src/core/session.cpp src/core/expert_source.cpp src/core/remote_experts.cpp
+                       src/core/remote_expert_opt.cu   # 0.1.40: the helper GPU's reduced decode rows
                        src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp
                        src/core/mtp.cpp src/core/conversation_snapshot.cpp src/core/conversation_state.cpp
                        src/core/conversation_memory.cpp   # 0.1.31: the conversation snapshots (#216)
-                       src/core/peer_experts.cpp)         # 0.1.36+: --peer-device (a stub in the port: no second GPU tier yet)
+                       src/core/peer_experts.cpp          # 0.1.36+: --peer-device (a stub in the port: no second GPU tier yet)
+                       src/core/arch_defaults.cpp src/core/conversation_file.cpp)   # 0.1.40: arch defaults, session files
+# 0.1.40's virtual-memory K/V (--kv-grow, --vram-elastic) is CUDA driver API (cuMemMap): upstream's own no-VMM branch,
+# the one HIP builds take, is compiled here - vmm_available() is false and the elastic K/V stays off
+list(APPEND _engine ${STRATA_ROOT}/src/core/vmm.cpp)
+set_source_files_properties(${STRATA_ROOT}/src/core/vmm.cpp PROPERTIES COMPILE_DEFINITIONS STRATA_USE_HIP=1)
 add_library(strata_engine STATIC ${_engine} ${CMAKE_CURRENT_SOURCE_DIR}/src/core/gguf_expert_source.cpp)
 target_include_directories(strata_engine PRIVATE ${STRATA_ROOT}/src/core)   # conversation_checked.hpp (#include "...")
 target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_kernels_cpu)
@@ -169,6 +178,8 @@ add_library(strata_prefill STATIC ${_prefill}
 target_compile_options(strata_prefill PUBLIC -qmkl=sequential)
 target_link_options(strata_prefill PUBLIC -qmkl=sequential)
 target_link_libraries(strata_prefill PUBLIC strata_engine)
+# prefill.cpp includes mmq_resident_sort.hpp and wmma_gemm.h from upstream's src/prefill (headers only)
+target_include_directories(strata_prefill PRIVATE ${STRATA_ROOT}/src/prefill)
 
 strata_resolve(_main src/program/generate.cpp)
 add_executable(strata ${_main})
@@ -245,6 +256,24 @@ if(STRATA_SYCL_PARITY)
   target_link_libraries(conversation_snapshot_test PRIVATE strata_engine)
   add_test(NAME conversation_snapshot_test COMMAND conversation_snapshot_test)
   set_tests_properties(conversation_snapshot_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+  # 0.1.40 (#783's multi-token kernels and the verify window): bitwise / reference checks on synthetic data
+  foreach(p IN ITEMS mmvq_multi native_multi gr_multi kv_steps resident_plan route_window qsa_topk_active)
+    strata_resolve(_src src/kernels/${p}_parity.cpp)
+    add_executable(${p}_parity ${_src})
+    target_link_libraries(${p}_parity PRIVATE strata_kernels)
+    add_test(NAME ${p}_parity COMMAND ${p}_parity)
+  endforeach()
+  set_tests_properties(qsa_topk_active_parity PROPERTIES SKIP_RETURN_CODE 77)
+  foreach(p IN ITEMS qsa_topk verify)   # these two take --selftest
+    strata_resolve(_src src/kernels/${p}_parity.cpp)
+    add_executable(${p}_parity ${_src})
+    target_link_libraries(${p}_parity PRIVATE strata_kernels)
+    add_test(NAME ${p}_parity COMMAND ${p}_parity --selftest)
+  endforeach()
+  # 0.1.40's gemm_bf16_parity compares against cuBLAS (cublasGemmEx): no SYCL build of it
+  strata_resolve(_src src/kernels/fused_gr_bench.cpp)   # fused GR timing (upstream's bench; takes arguments)
+  add_executable(fused_gr_bench ${_src})
+  target_link_libraries(fused_gr_bench PRIVATE strata_kernels)
   # the prompt-attention parity takes a context length, not --selftest, and needs the tensor-core kernel (not
   # ported yet: it reports "refused the pools" here). Built, not registered.
   strata_resolve(_src src/kernels/qsa_prompt_attn_parity.cpp)
@@ -292,5 +321,6 @@ if(STRATA_SYCL_PARITY)
     add_executable(native_expert_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/native_expert_parity.cpp)
     target_include_directories(native_expert_parity PRIVATE ${STRATA_ROOT}/third_party/ggml)
     target_link_libraries(native_expert_parity PRIVATE strata_kernels strata_kernels_cpu)
+    # 0.1.40's native_expert_bench is raw CUDA (cudaMalloc/cudaMemcpy): not built on SYCL
   endif()
 endif()

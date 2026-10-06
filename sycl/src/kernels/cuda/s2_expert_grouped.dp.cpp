@@ -20,6 +20,7 @@
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/s2_expert_grouped.hpp"
 #include "strata/kernels/dp4a.hpp"
+#include "strata/kernels/f16_bits.hpp"
 
 #include "strata/kernels/quantize_act.hpp"
 #include "strata/kernels/verify_kernels.hpp"
@@ -194,6 +195,51 @@ __dpct_inline__ void swiglu_kernel(float *__restrict__ gate_up,
     const float g = gate_up[i];
     const float u = gate_up[n_pairs + i];
     gate_up[i] = (g / (1.0f + sycl::native::exp(-g))) * u;
+}
+
+__dpct_inline__ void swiglu_quantize_q8_0_scaled_kernel(
+    float *__restrict__ gate_up, long long n_pairs,
+    uint8_t *__restrict__ blocks, float *__restrict__ scales) {
+    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+    const long long n_blocks = n_pairs >> 5;
+    const long long b =
+        ((long long)item_ct1.get_group(2) * item_ct1.get_local_range(2) +
+         item_ct1.get_local_id(2)) >>
+        5;
+    if (b >= n_blocks) return;
+    const int lane = item_ct1.get_local_id(2) & 31;
+    const long long idx = b * 32 + lane;
+    const float g = gate_up[idx];
+    const float u = gate_up[n_pairs + idx];
+    const float xv = (g / (1.0f + sycl::native::exp(-g))) * u;
+    gate_up[idx] = xv;
+    uint8_t* out = blocks + b * 34;
+
+    float amax = sycl::fabs(xv);
+#pragma unroll
+    /*
+    DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
+    masked sub_group function which may not be supported by all compilers or
+    runtimes. You may need to adjust the code.
+    */
+    for (int off = 16; off > 0; off >>= 1) amax =
+        sycl::fmax(amax, dpct::experimental::permute_sub_group_by_xor(
+                             0xffffffffu,
+                             sycl::ext::oneapi::this_work_item::get_sub_group(),
+                             amax, off));
+    const float s = amax > 0.f ? amax / 127.f : 0.f;
+    const float inv = s > 0.f ? 1.f / s : 0.f;
+    if (lane == 0) {
+        scales[b] = s;
+        const uint16_t d16bits = f16_from_f32(s);
+        out[0] = (uint8_t) (d16bits & 0xFF);
+        out[1] = (uint8_t) (d16bits >> 8);
+    }
+    const float t = xv * inv;
+    const float r = t + (t >= 0.f ? 0.5f : -0.5f);
+    int v = (int) r;
+    v = v < -127 ? -127 : (v > 127 ? 127 : v);
+    out[2 + lane] = (uint8_t) (int8_t) v;
 }
 
 /// DOWN, ONE WARP PER ROW, reading the quantized intermediate the caller produced.
@@ -479,17 +525,17 @@ __dpct_inline__ float row_dot_cpu_order(const uint8_t *codes,
         const int hi = dot4(codes + b * 16 + 8 + lane,
                            (const int8_t*) (xq + (size_t) (2 * b + 1) * 34 + 2) + lane * 4);
         /*
-        DPCT1013: The rounding mode could not be specified and the
-        generated code may have different accuracy than the original code.
-        Verify the correctness. SYCL math built-in function rounding mode is
-        aligned with OpenCL C 1.2 standard.
+        DPCT1013: The rounding mode could not be specified and the generated
+        code may have different accuracy than the original code. Verify the
+        correctness. SYCL math built-in function rounding mode is aligned with
+        OpenCL C 1.2 standard.
         */
         acc = sycl::fma(d * xs[2 * b], (float)lo, acc);
         /*
-        DPCT1013: The rounding mode could not be specified and the
-        generated code may have different accuracy than the original code.
-        Verify the correctness. SYCL math built-in function rounding mode is
-        aligned with OpenCL C 1.2 standard.
+        DPCT1013: The rounding mode could not be specified and the generated
+        code may have different accuracy than the original code. Verify the
+        correctness. SYCL math built-in function rounding mode is aligned with
+        OpenCL C 1.2 standard.
         */
         acc = sycl::fma(d * xs[2 * b + 1], (float)hi, acc);
         if (lane == 0)
@@ -635,17 +681,17 @@ __dpct_inline__ void cpu_order_quantize_kernel(const float *x, uint8_t *blocks,
     int sum = 0;
     for (int j = 0; j < 32; ++j) {
         /*
-        DPCT1013: The rounding mode could not be specified and the
-        generated code may have different accuracy than the original code.
-        Verify the correctness. SYCL math built-in function rounding mode is
-        aligned with OpenCL C 1.2 standard.
+        DPCT1013: The rounding mode could not be specified and the generated
+        code may have different accuracy than the original code. Verify the
+        correctness. SYCL math built-in function rounding mode is aligned with
+        OpenCL C 1.2 standard.
         */
         const float t = xb[j] * inv;
         /*
-        DPCT1013: The rounding mode could not be specified and the
-        generated code may have different accuracy than the original code.
-        Verify the correctness. SYCL math built-in function rounding mode is
-        aligned with OpenCL C 1.2 standard.
+        DPCT1013: The rounding mode could not be specified and the generated
+        code may have different accuracy than the original code. Verify the
+        correctness. SYCL math built-in function rounding mode is aligned with
+        OpenCL C 1.2 standard.
         */
         int v = (int) (t + (t >= 0.0f ? 0.5f : -0.5f));   // SYCL port: dpct dropped the parentheses (it rounded every value to 0)
         v = v < -127 ? -127 : (v > 127 ? 127 : v);
@@ -1577,7 +1623,37 @@ void moe_grouped_s2(const unsigned long long* grp_ptr, const int32_t* grp_start,
         }
         check("moe_grouped_s2/gu", stream);
     }
-    {
+    // #783 PR-k (stuchapin909): SwiGLU and the scaled Q8_0 quantize of its result in one kernel (gate_up still gets the
+    // activation written back, so the parity checks read the same buffer); STRATA_S2_SWIGLU_Q8=0 keeps the two launches
+    static const bool swiglu_q8 = [] {
+        const char* e = std::getenv("STRATA_S2_SWIGLU_Q8");
+        return e == nullptr || e[0] != '0';
+    }();
+    static_assert(FF % 32 == 0, "the fused SwiGLU + Q8_0 kernel works in whole 32-value blocks");
+    if (fast && x_scales != nullptr && swiglu_q8) {
+        const long long pairs = cap_entries * (long long) FF;
+        const long long n_blocks = pairs >> 5;
+        const int warps = THREADS / 32;
+        {
+            auto exp_props = sycl::ext::oneapi::experimental::properties{
+                sycl::ext::oneapi::experimental::use_root_sync};
+
+            cs->parallel_for<dpct_kernel_name<
+                class swiglu_quantize_q8_0_scaled_kernel_dbf1b9>>(
+                sycl::nd_range<3>(
+                    sycl::range(1, 1,
+                                (unsigned)((n_blocks + warps - 1) / warps)) *
+                        sycl::range(1, 1, THREADS),
+                    sycl::range(1, 1, THREADS)),
+                exp_props,
+                [=](sycl::nd_item<3> item_ct1)
+                    [[sycl::reqd_sub_group_size(32)]] {
+                        swiglu_quantize_q8_0_scaled_kernel(gate_up, pairs,
+                                                           h_q8_0, h_scales);
+                    });
+        }
+        check("moe_grouped_s2/swiglu_q8", stream);
+    } else {
         const long long pairs = cap_entries * (long long) FF;
         {
             auto exp_props = sycl::ext::oneapi::experimental::properties{
@@ -1594,9 +1670,9 @@ void moe_grouped_s2(const unsigned long long* grp_ptr, const int32_t* grp_start,
                 });
         }
         check("moe_grouped_s2/swiglu", stream);
+        if (x_scales != nullptr) quantize_q8_0_scaled(gate_up, h_q8_0, h_scales, cap_entries * (int64_t) FF, stream);
+        else quantize_q8_0(gate_up, h_q8_0, cap_entries * (int64_t) FF, stream);
     }
-    if (x_scales != nullptr) quantize_q8_0_scaled(gate_up, h_q8_0, h_scales, cap_entries * (int64_t) FF, stream);
-    else quantize_q8_0(gate_up, h_q8_0, cap_entries * (int64_t) FF, stream);
     {
         const dpct::dim3 grid((unsigned)(H / D_ROWS), (unsigned)cap_groups);
         const float* hs = x_scales != nullptr ? h_scales : nullptr;

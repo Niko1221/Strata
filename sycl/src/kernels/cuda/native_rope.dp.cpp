@@ -74,6 +74,103 @@ __dpct_inline__ void apply(const float *x, float *out, int rows, int width,
     out[start + pair] = a * c - b * s;
     out[start + pair + n_rot / 2] = a * s + b * c;
 }
+
+template <bool TAB>
+__dpct_inline__ void
+norm_rope_kernel(const float *x, int in_stride, const float *__restrict__ gamma,
+                 float *out, int n_cols, int n_rot, float epsilon,
+                 float theta_scale, float freq_scale, float corr_low,
+                 float corr_high, float ext_factor, float mscale,
+                 const int *positions, const int32_t *mtab, RopeTab rt) {
+    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+    const int tid = item_ct1.get_local_id(2);
+    const int row = item_ct1.get_group(2);
+    const float* in_row = x + size_t(row) * in_stride;
+    float* out_row = out + size_t(row) * n_cols;
+    float partial = 0.0f;
+    for (size_t col = tid; col < size_t(n_cols); col += 256) {
+        const float xv = in_row[col];
+        partial += xv * xv;
+    }
+    const int half_rot = n_rot / 2;
+    const float x_tid = tid < n_cols ? in_row[tid] : 0.0f;
+    const float x_hi  = tid < half_rot ? in_row[tid + half_rot] : 0.0f;
+    auto &sums =
+        *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
+            sycl::ext::oneapi::this_work_item::get_work_group<3>());
+#pragma unroll
+    for (int offset = 16; offset; offset >>= 1)
+        /*
+        DPCT1108: '__shfl_xor_sync' was migrated with the experimental
+        feature masked sub_group function which may not be supported by all
+        compilers or runtimes. You may need to adjust the code.
+        */
+        partial += dpct::experimental::permute_sub_group_by_xor(
+            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+            partial, offset);
+    const int lane = tid % 32;
+    if (lane == 0) sums[tid / 32] = partial;
+    /*
+    DPCT1065: Consider replacing sycl::nd_item::barrier() with
+    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
+    performance if there is no access to global memory.
+    */
+    item_ct1.barrier();
+    partial = lane < 256 / 32 ? sums[lane] : 0.0f;
+#pragma unroll
+    for (int offset = 16; offset; offset >>= 1)
+        /*
+        DPCT1108: '__shfl_xor_sync' was migrated with the experimental
+        feature masked sub_group function which may not be supported by all
+        compilers or runtimes. You may need to adjust the code.
+        */
+        partial += dpct::experimental::permute_sub_group_by_xor(
+            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+            partial, offset);
+    const float mean = partial / n_cols;
+    const float scale = sycl::rsqrt(mean + epsilon);
+    if (tid >= n_rot && tid < n_cols) {
+        out_row[tid] = (scale * x_tid) * gamma[tid];
+    } else if (tid < half_rot) {
+        const int pair = tid;
+        float a = (scale * x_tid) * gamma[pair];
+        float b = (scale * x_hi) * gamma[pair + half_rot];
+#if defined(DPCT_COMPATIBILITY_TEMP) && !defined(__HIP_DEVICE_COMPILE__)
+#if defined(__SYCL_DEVICE_ONLY__) && defined(__NVPTX__)
+        asm volatile("mov.f32 %0, %1;" : "=f"(a) : "f"(a));
+#else
+        a = a;
+#endif
+#if defined(__SYCL_DEVICE_ONLY__) && defined(__NVPTX__)
+        asm volatile("mov.f32 %0, %1;" : "=f"(b) : "f"(b));
+#else
+        b = b;
+#endif
+#endif
+        float c, s;
+        if (!(TAB && rope_tab_cs(rt, mrope_pos(mtab, positions[row], pair), pair, c, s))) {
+            const float theta_extrap = mrope_pos(mtab, positions[row], pair) *
+                                       dpct::pow(theta_scale, float(pair));
+            rope_scaled_angle(theta_extrap, freq_scale, corr_low, corr_high, ext_factor, mscale, pair, c, s);
+        }
+        float bs = b * s;
+        float bc = b * c;
+#if defined(DPCT_COMPATIBILITY_TEMP) && !defined(__HIP_DEVICE_COMPILE__)
+#if defined(__SYCL_DEVICE_ONLY__) && defined(__NVPTX__)
+        asm volatile("mov.f32 %0, %1;" : "=f"(bs) : "f"(bs));
+#else
+        bs = bs;
+#endif
+#if defined(__SYCL_DEVICE_ONLY__) && defined(__NVPTX__)
+        asm volatile("mov.f32 %0, %1;" : "=f"(bc) : "f"(bc));
+#else
+        bc = bc;
+#endif
+#endif
+        out_row[pair] = sycl::fma(a, c, -bs);
+        out_row[pair + half_rot] = sycl::fma(a, s, bc);
+    }
+}
 }
 // one table per device (a layer split runs the rope kernels on several): set and read for the current device
 namespace {
@@ -129,6 +226,20 @@ RopeTab rope_table_for(const RopeScaling& scaling) {
 }
 void native_rope_set_enabled(bool value) { enabled.store(value, std::memory_order_relaxed); }
 bool native_rope_enabled() { return enabled.load(std::memory_order_relaxed); }
+bool native_norm_rope_usable(int head_dim, int n_rot) {
+    static const bool on = [] {
+        const char* off = std::getenv("STRATA_NO_NORM_ROPE");
+        if (off != nullptr && off[0] != '\0' && off[0] != '0') return false;
+#if defined(__HIPCC__)
+        const char* v = std::getenv("STRATA_NORM_ROPE");   // AMD: opt in until rope_parity check 6 passes there
+        return v != nullptr && v[0] != '\0' && v[0] != '0';
+#else
+        return true;
+#endif
+    }();
+    return on && (head_dim == 128 || head_dim == 256) && n_rot == 64;
+}
+
 void native_rope_apply(const float* x, float* out, int rows, int head_dim,
                        int n_rot, const RopeScaling& scaling, const int* positions, void* stream) {
     if (!x || !out || !positions || !stream || rows < 1 || rows > 65535 ||
@@ -148,8 +259,15 @@ void native_rope_apply(const float* x, float* out, int rows, int head_dim,
     const float theta_scale = powf((float) scaling.freq_base, -2.0f / n_rot);
     const RopeKernelArgs k = scaling.kernel_args(n_rot);   // none: the identity constants
     const RopeTab rt = rope_table_for(scaling);
-    const dpct::dim3 grid((head_dim / 2 + 127) / 128, rows);
+    const unsigned threads = (x == out && n_rot == 64 && native_norm_rope_usable(head_dim, n_rot)) ? 32u : 128u;
+    const dpct::dim3 grid(
+        threads == 32u ? 1u : unsigned((head_dim / 2 + 127) / 128), rows);
     if (rt.cos != nullptr)
+        /*
+        DPCT1049: The work-group size passed to the SYCL kernel may exceed
+        the limit. To get the device limit, query
+        info::device::max_work_group_size. Adjust the work-group size if needed.
+        */
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
@@ -160,8 +278,8 @@ void native_rope_apply(const float* x, float* out, int rows, int head_dim,
 
                 cgh.parallel_for<dpct_kernel_name<class apply_b955ef,
                                                   dpct_kernel_scalar<true>>>(
-                    sycl::nd_range<3>(grid * sycl::range(1, 1, 128),
-                                      sycl::range(1, 1, 128)),
+                    sycl::nd_range<3>(grid * sycl::range(1, 1, threads),
+                                      sycl::range(1, 1, threads)),
                     exp_props, [=](sycl::nd_item<3> item_ct1) {
                         apply<true>(x, out, rows, head_dim, n_rot, theta_scale,
                                     k.freq_scale, k.corr_low, k.corr_high,
@@ -169,7 +287,13 @@ void native_rope_apply(const float* x, float* out, int rows, int head_dim,
                                     mrope_table_ct12, rt);
                     });
             });
-    } else {
+    } else
+    /*
+    DPCT1049: The work-group size passed to the SYCL kernel may exceed
+    the limit. To get the device limit, query
+    info::device::max_work_group_size. Adjust the work-group size if needed.
+    */
+    {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
@@ -179,14 +303,98 @@ void native_rope_apply(const float* x, float* out, int rows, int head_dim,
 
                 cgh.parallel_for<dpct_kernel_name<class apply_b955ef,
                                                   dpct_kernel_scalar<false>>>(
-                    sycl::nd_range<3>(grid * sycl::range(1, 1, 128),
-                                      sycl::range(1, 1, 128)),
+                    sycl::nd_range<3>(grid * sycl::range(1, 1, threads),
+                                      sycl::range(1, 1, threads)),
                     exp_props, [=](sycl::nd_item<3> item_ct1) {
                         apply<false>(x, out, rows, head_dim, n_rot, theta_scale,
                                      k.freq_scale, k.corr_low, k.corr_high,
                                      k.ext_factor, k.attn_factor, positions,
                                      mrope_table_ct12, rt);
                     });
+            });
+    }
+    /*
+    DPCT1010: SYCL uses exceptions to report errors and does not use the
+    error codes. The cudaGetLastError function call was replaced with 0. You
+    need to rewrite this code.
+    */
+    const auto error = 0;
+    /*
+    DPCT1009: SYCL reports errors using exceptions and does not use error
+    codes. Please replace the "get_error_string_dummy(...)" with a real
+    error-handling function.
+    */
+    /*
+    DPCT1001: The statement could not be removed.
+    */
+    /*
+    DPCT1000: Error handling if-stmt was detected but could not be
+    rewritten.
+    */
+    if (error !=
+        0) throw std::runtime_error(dpct::get_error_string_dummy(error));
+}
+
+void native_qsa_rms_norm_rope(const float* x, int in_stride, const float* gamma, float* out,
+                              int rows, int head_dim, int n_rot, float epsilon,
+                              const RopeScaling& scaling, const int* positions, void* stream) {
+    if (!x || !gamma || !out || !positions || !stream || rows < 1 || rows > 65535 ||
+        (head_dim != 128 && head_dim != 256) || in_stride < head_dim || n_rot != 64 ||
+        !std::isfinite(epsilon) || epsilon < 0.0f ||
+        rope_scaling_invalid(scaling) != nullptr ||
+        reinterpret_cast<uintptr_t>(x) % 4 || reinterpret_cast<uintptr_t>(gamma) % 4 ||
+        reinterpret_cast<uintptr_t>(out) % 4 || reinterpret_cast<uintptr_t>(positions) % 4) {
+        throw std::invalid_argument("native_qsa_rms_norm_rope: invalid arguments");
+    }
+    const float theta_scale = powf((float) scaling.freq_base, -2.0f / n_rot);
+    const RopeKernelArgs k = scaling.kernel_args(n_rot);
+    const RopeTab rt = rope_table_for(scaling);
+    if (rt.cos != nullptr)
+    {
+        auto exp_props = sycl::ext::oneapi::experimental::properties{
+            sycl::ext::oneapi::experimental::use_root_sync};
+
+        ((sycl::queue *)(strata::q_of(stream)))
+            ->submit([&](sycl::handler &cgh) {
+                auto mrope_table_ct14 = mrope_table();
+
+                cgh.parallel_for<dpct_kernel_name<class norm_rope_kernel_d16e48,
+                                                  dpct_kernel_scalar<true>>>(
+                    sycl::nd_range<3>(sycl::range(1, 1, unsigned(rows)) *
+                                          sycl::range(1, 1, 256),
+                                      sycl::range(1, 1, 256)),
+                    exp_props,
+                    [=](sycl::nd_item<3> item_ct1)
+                        [[sycl::reqd_sub_group_size(32)]] {
+                            norm_rope_kernel<true>(
+                                x, in_stride, gamma, out, head_dim, n_rot,
+                                epsilon, theta_scale, k.freq_scale, k.corr_low,
+                                k.corr_high, k.ext_factor, k.attn_factor,
+                                positions, mrope_table_ct14, rt);
+                        });
+            });
+    } else {
+        auto exp_props = sycl::ext::oneapi::experimental::properties{
+            sycl::ext::oneapi::experimental::use_root_sync};
+
+        ((sycl::queue *)(strata::q_of(stream)))
+            ->submit([&](sycl::handler &cgh) {
+                auto mrope_table_ct14 = mrope_table();
+
+                cgh.parallel_for<dpct_kernel_name<class norm_rope_kernel_899582,
+                                                  dpct_kernel_scalar<false>>>(
+                    sycl::nd_range<3>(sycl::range(1, 1, unsigned(rows)) *
+                                          sycl::range(1, 1, 256),
+                                      sycl::range(1, 1, 256)),
+                    exp_props,
+                    [=](sycl::nd_item<3> item_ct1)
+                        [[sycl::reqd_sub_group_size(32)]] {
+                            norm_rope_kernel<false>(
+                                x, in_stride, gamma, out, head_dim, n_rot,
+                                epsilon, theta_scale, k.freq_scale, k.corr_low,
+                                k.corr_high, k.ext_factor, k.attn_factor,
+                                positions, mrope_table_ct14, rt);
+                        });
             });
     }
     /*

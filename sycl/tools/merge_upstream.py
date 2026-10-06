@@ -1,4 +1,5 @@
-# merge_sel.py BASE_OUT NEW_OUT OLD_REV NEW_REV: 3-way merge into sycl/ of the files upstream changed OLD_REV..NEW_REV
+# merge_upstream.py BASE_OUT NEW_OUT OLD_REV NEW_REV: 3-way merge into sycl/ of the files upstream changed OLD_REV..NEW_REV
+# OLD_REV is the upstream commit the port's copies were migrated from (docs/INTEL.md, 0.1.40), not the branch point
 import re, subprocess, sys, os, shutil
 B, N, old, new = sys.argv[1:5]
 pat = re.compile(r"\b([A-Za-z0-9_]+)_([0-9a-f]{6})\b")
@@ -16,7 +17,7 @@ for f in changed:
         if not os.path.exists(pf): print("HAND-MISSING", f); continue
         open("/tmp/_b", "w").write(subprocess.check_output(["git", "show", f"{old}:{f}"], text=True))
         open("/tmp/_n", "w").write(subprocess.check_output(["git", "show", f"{new}:{f}"], text=True))
-        r = subprocess.run(["git", "merge-file", "-L", "port", "-L", "base", "-L", "new", pf, "/tmp/_b", "/tmp/_n"]).returncode
+        r = subprocess.run(["git", "merge-file", "--diff-algorithm=histogram", "-L", "port", "-L", "base", "-L", "new", pf, "/tmp/_b", "/tmp/_n"]).returncode
         print("HAND", "MERGED" if r == 0 else f"CONFLICT {r}", rel); continue
     bf, nf = f"{B}/{rel}", f"{N}/{rel}"
     if not os.path.exists(nf):
@@ -33,5 +34,5 @@ for f in changed:
     canon = lambda t: pat.sub(lambda m: f"{m.group(1)}_{ph[m.group(1)]}" if m.group(1) in ph else m.group(0), t)
     bt, nt = canon(bt), canon(nt)
     open("/tmp/_b", "w").write(bt); open("/tmp/_n", "w").write(nt)
-    r = subprocess.run(["git", "merge-file", "-L", "port", "-L", "base", "-L", "new", pf, "/tmp/_b", "/tmp/_n"]).returncode
+    r = subprocess.run(["git", "merge-file", "--diff-algorithm=histogram", "-L", "port", "-L", "base", "-L", "new", pf, "/tmp/_b", "/tmp/_n"]).returncode
     print("MERGED" if r == 0 else f"CONFLICT {r}", rel)

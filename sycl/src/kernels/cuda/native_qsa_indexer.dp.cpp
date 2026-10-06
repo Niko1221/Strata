@@ -54,97 +54,129 @@ inline float warp_sum(float x) {
 template <bool TAB>
 __dpct_inline__ void
 append(const float *__restrict__ raw, const int32_t *__restrict__ pos_dev,
-       int pos_base, const float *__restrict__ gamma, float epsilon,
-       float *__restrict__ tail, float *__restrict__ dead,
-       float *__restrict__ pooled, int32_t *__restrict__ block_pos,
-       int max_cells, float theta_scale, float freq_scale, float corr_low,
-       float corr_high, float ext_factor, float mscale,
-       const int32_t *__restrict__ mtab, RopeTab rt) {
+       int pos_stride, int n_steps, int pos_base,
+       const float *__restrict__ gamma, float epsilon, float *__restrict__ tail,
+       float *__restrict__ dead, float *__restrict__ pooled,
+       int32_t *__restrict__ block_pos, int max_cells, float theta_scale,
+       float freq_scale, float corr_low, float corr_high, float ext_factor,
+       float mscale, const int32_t *__restrict__ mtab, RopeTab rt) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const int pos = *pos_dev, d = item_ct1.get_local_id(2);
-    if (pos < 0 || pos >= max_cells) return;
-    const int slot = pos % R;
-    float incoming = 0.0f;
-    if (d < D) {
-        // SET_ROWS stores F16; GET_ROWS expands those exact values to F32.
-        incoming = sycl::vec<sycl::half, 1>(
-                       sycl::vec<float, 1>(raw[d])
-                           .convert<sycl::half, sycl::rounding_mode::rte>()[0])
-                       .convert<float, sycl::rounding_mode::automatic>()[0];
-        if (slot < R - 1) tail[slot * D + d] = incoming;
-    }
-    if (pos != 0 && slot != R - 1) return;
-    auto &values =
-        *sycl::ext::oneapi::group_local_memory_for_overwrite<float[D]>(
-            sycl::ext::oneapi::this_work_item::get_work_group<3>());
+auto &values = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[D]>(
+    sycl::ext::oneapi::this_work_item::get_work_group<3>());
     auto &partials =
         *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
             sycl::ext::oneapi::this_work_item::get_work_group<3>());
-    float mean = 0.0f;
-    if (d < D) {
-        // The spare's four gather indices all name cell zero. Completed blocks
-        // use chronological slices; each graph ADD materializes an F32 sum.
-        float sum = pos == 0 ? incoming : tail[d];
+    const int d = item_ct1.get_local_id(2);
+    for (int step_idx = 0; step_idx < n_steps; ++step_idx) {
+        const int pos = pos_dev[(std::size_t) step_idx * pos_stride];
+        if (pos >= 0 && pos < max_cells) {
+            const float* raw_step = raw + (std::size_t) step_idx * D;
+            const int slot = pos % R;
+            float incoming = 0.0f;
+            if (d < D) {
+                // SET_ROWS stores F16; GET_ROWS expands those exact values to F32.
+                incoming =
+                    sycl::vec<sycl::half, 1>(
+                        sycl::vec<float, 1>(raw_step[d])
+                            .convert<sycl::half, sycl::rounding_mode::rte>()[0])
+                        .convert<float, sycl::rounding_mode::automatic>()[0];
+                if (slot < R - 1) tail[slot * D + d] = incoming;
+            }
+            if (pos == 0 || slot == R - 1) {
+                float mean = 0.0f;
+                if (d < D) {
+                    // The spare's four gather indices all name cell zero. Completed blocks
+                    // use chronological slices; each graph ADD materializes an F32 sum.
+                    float sum = pos == 0 ? incoming : tail[d];
 #pragma unroll
-        for (int j = 1; j < R; ++j)
-            /*
-            DPCT1013: The rounding mode could not be specified and the
-            generated code may have different accuracy than the original code.
-            Verify the correctness. SYCL math built-in function rounding mode is
-            aligned with OpenCL C 1.2 standard.
-            */
-            sum = sum + (pos == 0 || j == R - 1 ? incoming : tail[j * D + d]);
-        /*
-        DPCT1013: The rounding mode could not be specified and the generated
-        code may have different accuracy than the original code. Verify the
-        correctness. SYCL math built-in function rounding mode is aligned with
-        OpenCL C 1.2 standard.
-        */
-        mean = sycl::fma(0.25f, sum, 0.0f); // SCALE includes a zero bias.
-    }
-    float square_sum = 0.0f;
-    if (d < D) square_sum += mean * mean;
-    square_sum = warp_sum(square_sum);
-    const int lane = d % 32;
-    if (lane == 0) partials[d / 32] = square_sum;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
-    square_sum = lane < THREADS / 32 ? partials[lane] : 0.0f;
-    square_sum = warp_sum(square_sum);
-    const float scale = sycl::rsqrt(square_sum / D + epsilon);
-    if (d < D) values[d] = scale * mean * gamma[d];
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
-    if (d >= D) return;
-    const int b = pos / R;
-    const int rope_pos = pos == 0 ? 0 : pos_base + R * b;
-    float y = values[d];
-    if (d < ROT) {
-        const int pair = d % (ROT / 2);
-        // The spare (pos == 0) keeps its zero angle; under YaRN the mscale magnitude still rides in
-        // through cos(0) - which is exactly what the queries are scaled by, so the top-k is unmoved.
-        float c, s;
-        if (!(TAB && rope_tab_cs(rt, pos == 0 ? 0 : mrope_pos(mtab, rope_pos, pair), pair, c, s))) {
-            const float theta_extrap =
-                (pos == 0 ? 0 : mrope_pos(mtab, rope_pos, pair)) *
-                dpct::pow(theta_scale, float(pair));
-            rope_scaled_angle(theta_extrap, freq_scale, corr_low, corr_high, ext_factor, mscale, pair, c, s);
+                    for (int j = 1; j < R; ++j)
+                        /*
+                        DPCT1013: The rounding mode could not be specified
+                        and the generated code may have different accuracy than
+                        the original code. Verify the correctness. SYCL math
+                        built-in function rounding mode is aligned with OpenCL
+                        C 1.2 standard.
+                        */
+                        sum = sum + (pos == 0 || j == R - 1 ? incoming
+                                                            : tail[j * D + d]);
+                    /*
+                    DPCT1013: The rounding mode could not be specified and
+                    the generated code may have different accuracy than the
+                    original code. Verify the correctness. SYCL math built-in
+                    function rounding mode is aligned with OpenCL C 1.2
+                    standard.
+                    */
+                    mean = sycl::fma(0.25f, sum,
+                                     0.0f); // SCALE includes a zero bias.
+                }
+                float square_sum = 0.0f;
+                if (d < D) square_sum += mean * mean;
+                square_sum = warp_sum(square_sum);
+                const int lane = d % 32;
+                if (lane == 0) partials[d / 32] = square_sum;
+                /*
+                DPCT1118: SYCL group functions and algorithms must be
+                encountered in converged control flow. You may need to adjust
+                the code.
+                */
+                /*
+                DPCT1065: Consider replacing sycl::nd_item::barrier() with
+                sycl::nd_item::barrier(sycl::access::fence_space::local_space)
+                for better performance if there is no access to global memory.
+                */
+                item_ct1.barrier();
+                square_sum = lane < THREADS / 32 ? partials[lane] : 0.0f;
+                square_sum = warp_sum(square_sum);
+                const float scale = sycl::rsqrt(square_sum / D + epsilon);
+                if (d < D) values[d] = scale * mean * gamma[d];
+                /*
+                DPCT1118: SYCL group functions and algorithms must be
+                encountered in converged control flow. You may need to adjust
+                the code.
+                */
+                /*
+                DPCT1065: Consider replacing sycl::nd_item::barrier() with
+                sycl::nd_item::barrier(sycl::access::fence_space::local_space)
+                for better performance if there is no access to global memory.
+                */
+                item_ct1.barrier();
+                if (d < D) {
+                    const int b = pos / R;
+                    const int rope_pos = pos == 0 ? 0 : pos_base + R * b;
+                    float y = values[d];
+                    if (d < ROT) {
+                        const int pair = d % (ROT / 2);
+                        // The spare (pos == 0) keeps its zero angle; under YaRN the mscale magnitude still rides in
+                        // through cos(0) - which is exactly what the queries are scaled by, so the top-k is unmoved.
+                        float c, s;
+                        if (!(TAB && rope_tab_cs(rt, pos == 0 ? 0 : mrope_pos(mtab, rope_pos, pair), pair, c, s))) {
+                            const float theta_extrap =
+                                (pos == 0 ? 0
+                                          : mrope_pos(mtab, rope_pos, pair)) *
+                                dpct::pow(theta_scale, float(pair));
+                            rope_scaled_angle(theta_extrap, freq_scale, corr_low, corr_high, ext_factor, mscale, pair, c, s);
+                        }
+                        const float a = values[pair], z = values[pair + ROT / 2];
+                        y = d < ROT / 2 ? a * c - z * s : a * s + z * c;
+                    }
+                    pooled[std::size_t(b) * D + d] = y;
+                    if (pos == 0) dead[d] = y;
+                    else pooled[std::size_t(b + 1) * D + d] = dead[d];
+                    if (d == 0 && pos != 0) *block_pos = rope_pos;
+                }
+            }
         }
-        const float a = values[pair], z = values[pair + ROT / 2];
-        y = d < ROT / 2 ? a * c - z * s : a * s + z * c;
+        /*
+        DPCT1118: SYCL group functions and algorithms must be encountered in
+        converged control flow. You may need to adjust the code.
+        */
+        /*
+        DPCT1065: Consider replacing sycl::nd_item::barrier() with
+        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
+        better performance if there is no access to global memory.
+        */
+        if (n_steps > 1) item_ct1.barrier();
     }
-    pooled[std::size_t(b) * D + d] = y;
-    if (pos == 0) dead[d] = y;
-    else pooled[std::size_t(b + 1) * D + d] = dead[d];
-    if (d == 0 && pos != 0) *block_pos = rope_pos;
 }
 // ---- C-2: the batched append.  The pooled key of a completed block b (its last cell pos = 4b+3), computed with
 // the single append's arithmetic: keys rounded through F16, summed tail[0]+tail[1]+tail[2]+incoming in that order,
@@ -216,17 +248,17 @@ append_first(const float *__restrict__ raw, const float *__restrict__ gamma,
         float sum = incoming;
 #pragma unroll
         /*
-        DPCT1013: The rounding mode could not be specified and the generated
-        code may have different accuracy than the original code. Verify the
-        correctness. SYCL math built-in function rounding mode is aligned with
-        OpenCL C 1.2 standard.
+        DPCT1013: The rounding mode could not be specified and the
+        generated code may have different accuracy than the original code.
+        Verify the correctness. SYCL math built-in function rounding mode is
+        aligned with OpenCL C 1.2 standard.
         */
         for (int j = 1; j < R; ++j) sum = sum + incoming;
         /*
-        DPCT1013: The rounding mode could not be specified and the generated
-        code may have different accuracy than the original code. Verify the
-        correctness. SYCL math built-in function rounding mode is aligned with
-        OpenCL C 1.2 standard.
+        DPCT1013: The rounding mode could not be specified and the
+        generated code may have different accuracy than the original code.
+        Verify the correctness. SYCL math built-in function rounding mode is
+        aligned with OpenCL C 1.2 standard.
         */
         mean = sycl::fma(0.25f, sum, 0.0f);
     }
@@ -280,17 +312,17 @@ append_blocks(const float *__restrict__ raw, int64_t n, int64_t p0,
         float sum = key(0);
 #pragma unroll
         /*
-        DPCT1013: The rounding mode could not be specified and the generated
-        code may have different accuracy than the original code. Verify the
-        correctness. SYCL math built-in function rounding mode is aligned with
-        OpenCL C 1.2 standard.
+        DPCT1013: The rounding mode could not be specified and the
+        generated code may have different accuracy than the original code.
+        Verify the correctness. SYCL math built-in function rounding mode is
+        aligned with OpenCL C 1.2 standard.
         */
         for (int j = 1; j < R; ++j) sum = sum + key(j);
         /*
-        DPCT1013: The rounding mode could not be specified and the generated
-        code may have different accuracy than the original code. Verify the
-        correctness. SYCL math built-in function rounding mode is aligned with
-        OpenCL C 1.2 standard.
+        DPCT1013: The rounding mode could not be specified and the
+        generated code may have different accuracy than the original code.
+        Verify the correctness. SYCL math built-in function rounding mode is
+        aligned with OpenCL C 1.2 standard.
         */
         mean = sycl::fma(0.25f, sum, 0.0f);
     }
@@ -341,15 +373,18 @@ bool overlaps(Span a, Span b) {
 
 void native_qsa_indexer_set_enabled(bool value) { enabled.store(value, std::memory_order_relaxed); }
 bool native_qsa_indexer_enabled() { return enabled.load(std::memory_order_relaxed); }
-void native_qsa_indexer_append(const float* raw, const int32_t* relative_pos_device, int32_t pos_base,
-                               const float* gamma, float epsilon, const QsaIndexerBuffers& b,
-                               const QsaShapes& s, int64_t max_cells, const RopeScaling& scaling, void* stream) {
+void native_qsa_indexer_append_steps(const float* raw, const int32_t* relative_pos_device,
+                                     int pos_stride, int n_steps, int32_t pos_base,
+                                     const float* gamma, float epsilon, const QsaIndexerBuffers& b,
+                                     const QsaShapes& s, int64_t max_cells, const RopeScaling& scaling, void* stream) {
+    if (n_steps <= 0) return;
     if (!stream || s.idx_dim != D || s.idx_block != R || s.n_rot != ROT ||
         max_cells < 1 || max_cells > INT32_MAX || pos_base < 0 || pos_base % R ||
         int64_t(pos_base) + max_cells > INT32_MAX || !std::isfinite(epsilon) || epsilon <= 0.0f ||
         rope_scaling_invalid(scaling) != nullptr)
         throw std::invalid_argument("native QSA indexer requires fixed geometry, aligned position base, positive capacity/epsilon, valid frequency/scaling and explicit stream");
-    const Span spans[] = {{raw,D*4},{relative_pos_device,4},{gamma,D*4},{b.tail,(R-1)*D*4},
+    const std::size_t pos_span = (n_steps == 1 || pos_stride <= 0) ? 4 : (std::size_t(n_steps - 1) * pos_stride + 1) * 4;
+    const Span spans[] = {{raw,std::size_t(n_steps)*D*4},{relative_pos_device,pos_span},{gamma,D*4},{b.tail,(R-1)*D*4},
         {b.dead,D*4},{b.pooled,std::size_t(max_cells/R+1)*D*4},{b.block_pos,4}};
     for (const auto& span : spans) validate(span);
     for (int i = 0; i < 7; ++i) for (int j = i + 1; j < 7; ++j)
@@ -364,7 +399,7 @@ void native_qsa_indexer_append(const float* raw, const int32_t* relative_pos_dev
 
         ((sycl::queue *)(strata::q_of(stream)))
             ->submit([&](sycl::handler &cgh) {
-                auto mrope_table_ct16 = mrope_table();
+                auto mrope_table_ct18 = mrope_table();
 
                 cgh.parallel_for<dpct_kernel_name<class append_182f95,
                                                   dpct_kernel_scalar<true>>>(
@@ -373,12 +408,13 @@ void native_qsa_indexer_append(const float* raw, const int32_t* relative_pos_dev
                     exp_props,
                     [=](sycl::nd_item<3> item_ct1)
                         [[sycl::reqd_sub_group_size(32)]] {
-                            append<true>(raw, relative_pos_device, pos_base,
-                                         gamma, epsilon, b.tail, b.dead,
-                                         b.pooled, b.block_pos, int(max_cells),
-                                         theta_scale, k.freq_scale, k.corr_low,
-                                         k.corr_high, k.ext_factor,
-                                         k.attn_factor, mrope_table_ct16, rt);
+                            append<true>(raw, relative_pos_device, pos_stride,
+                                         n_steps, pos_base, gamma, epsilon,
+                                         b.tail, b.dead, b.pooled, b.block_pos,
+                                         int(max_cells), theta_scale,
+                                         k.freq_scale, k.corr_low, k.corr_high,
+                                         k.ext_factor, k.attn_factor,
+                                         mrope_table_ct18, rt);
                         });
             });
     } else {
@@ -387,7 +423,7 @@ void native_qsa_indexer_append(const float* raw, const int32_t* relative_pos_dev
 
         ((sycl::queue *)(strata::q_of(stream)))
             ->submit([&](sycl::handler &cgh) {
-                auto mrope_table_ct16 = mrope_table();
+                auto mrope_table_ct18 = mrope_table();
 
                 cgh.parallel_for<dpct_kernel_name<class append_182f95,
                                                   dpct_kernel_scalar<false>>>(
@@ -396,12 +432,13 @@ void native_qsa_indexer_append(const float* raw, const int32_t* relative_pos_dev
                     exp_props,
                     [=](sycl::nd_item<3> item_ct1)
                         [[sycl::reqd_sub_group_size(32)]] {
-                            append<false>(raw, relative_pos_device, pos_base,
-                                          gamma, epsilon, b.tail, b.dead,
-                                          b.pooled, b.block_pos, int(max_cells),
-                                          theta_scale, k.freq_scale, k.corr_low,
-                                          k.corr_high, k.ext_factor,
-                                          k.attn_factor, mrope_table_ct16, rt);
+                            append<false>(raw, relative_pos_device, pos_stride,
+                                          n_steps, pos_base, gamma, epsilon,
+                                          b.tail, b.dead, b.pooled, b.block_pos,
+                                          int(max_cells), theta_scale,
+                                          k.freq_scale, k.corr_low, k.corr_high,
+                                          k.ext_factor, k.attn_factor,
+                                          mrope_table_ct18, rt);
                         });
             });
     }
@@ -425,6 +462,12 @@ void native_qsa_indexer_append(const float* raw, const int32_t* relative_pos_dev
     */
     if (error !=
         0) throw std::runtime_error(dpct::get_error_string_dummy(error));
+}
+
+void native_qsa_indexer_append(const float* raw, const int32_t* relative_pos_device, int32_t pos_base,
+                               const float* gamma, float epsilon, const QsaIndexerBuffers& b,
+                               const QsaShapes& s, int64_t max_cells, const RopeScaling& scaling, void* stream) {
+    native_qsa_indexer_append_steps(raw, relative_pos_device, 0, 1, pos_base, gamma, epsilon, b, s, max_cells, scaling, stream);
 }
 void native_qsa_indexer_append_batch(const float* raw, int64_t n, int64_t p0, int32_t pos_base, const float* gamma,
                                      float epsilon, const QsaIndexerBuffers& b, const QsaShapes& s, int64_t max_cells,
