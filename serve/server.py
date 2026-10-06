@@ -5562,7 +5562,7 @@ def make_handler(svc: Service):
                 print(f"[strata] 503: {e}", flush=True)
                 self._json(503, responses_error_body(str(e), "server_error") if path == "/v1/responses"
                            else {"error": {"type": "server_error", "message": str(e)}})
-            except PoolFull as e:                            # retryable: the lanes hold the KV pool for now
+            except PoolFull as e:                            # retryable: the pool frees as the lanes finish
                 retry = {"Retry-After": str(POOL_RETRY_S)}
                 if path == "/v1/responses":
                     self._json(503, responses_error_body(str(e), "server_error", code="kv_pool_full"), retry)
