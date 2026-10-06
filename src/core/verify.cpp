@@ -1359,7 +1359,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         float* hout = hand_out_ + (size_t) hrow0 * HB;
         if (hflag_out_d_ != nullptr && !batch_rec_) {   // the overlapped split: payload + the next stage's flag
             handoff_publish(hout, R_, (int64_t) T * HC * N, bo_, (int64_t) T * N, inj2_, (int64_t) T * HC, hcount_d_,
-                            hflag_out_d_, cs, hdrop_d_);
+                            hflag_out_d_, cs, g_test_drop > 0 ? hdrop_d_ : nullptr);   // the test word only with the hook on
             return true;
         }
         copy_from_mapped(hout, R_, (int64_t) T * HC * N, cs);
