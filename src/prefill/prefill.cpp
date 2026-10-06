@@ -930,7 +930,8 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
         err = "prefill: device buffers for a chunk of " + std::to_string(chunk) + " tokens do not fit (" +
               std::to_string(fb >> 20) + " of " + std::to_string(tb >> 20) + " MiB free at the failure; " +
               std::to_string(o.used >> 20) + " MiB taken, the failing buffer wanted " +
-              std::to_string(o.failed_bytes >> 20) + " MiB)";
+              std::to_string(o.failed_bytes >> 20) + " MiB" +
+              (o.base != nullptr ? "; the loan holds " + std::to_string(o.cap >> 20) + " MiB" : std::string()) + ")";
         return false;
     }
     return true;
