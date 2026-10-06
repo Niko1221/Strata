@@ -55,6 +55,7 @@
 #include "strata/core/verify.hpp"
 #include "strata/core/mtp.hpp"
 #include "strata/prefill/prefill.hpp"
+#include "strata/prefill/vram_plan.hpp"
 #include "strata/core/native_dense.hpp"
 #include "strata/program/logits_selection.hpp"
 #include "strata/program/conv_cache.hpp"
@@ -3819,6 +3820,176 @@ int main(int argc, char** argv) {
                      (long long) o.prefill_chunk, (long long) mib, (long long) (160 + (o.prefill_chunk * 680) / 1024));
         return mib + 64;   // a margin for the allocator
     };
+    // The auto loan's share cap and --prefill auto's ceiling, defined here so the advisory VRAM plan below prices
+    // with the same numbers the loan scans apply (the scans read them too).
+    const int64_t kAutoLendPct = [] {
+        const char* v = std::getenv("STRATA_PREFILL_LEND_PCT");
+        return v ? (int64_t) std::atoi(v)
+                 : (int64_t) (strata::prefill::Prefill::pinned_share() >= 0.9 ? 90 : 85);
+    }();
+    // The largest chunk --prefill auto may pick: the operator's ceiling (--prefill auto:N) and never past the
+    // context, but a bare `auto` always reaches 8192.  32768 and 16384 stay opt-in (#282).
+    const int64_t auto_ceiling = std::max<int64_t>(8192, std::min<int64_t>(o.prefill_auto_max, o.max_context));
+    // the share of expert bytes the arena could pin (sizes the prompt path's streamed ring and its lend cap):
+    // one measurement, two readers - the advisory planner prices its own arithmetic with the figure it returns,
+    // and the runtime calls it at the SAME site upstream always did (below, before the loan scans), so no
+    // Prefill global is set or shifted for the planner's sake
+    auto measured_pinned_share = [&]() -> double {
+        if (srcp == nullptr || o.prefill_chunk <= 0) return 1.0;
+        uint64_t pinned = 0, total = 0;
+        const auto& lay = strata::kernels::cpu::expert_layout();
+        for (int64_t l = 0; l < g.n_layers; ++l)
+            for (int64_t e = 0; e < g.n_expert; ++e) {
+                const uint64_t b = lay.blob_bytes(l);
+                total += b;
+                if (srcp->pinned(l, e)) pinned += b;
+            }
+        return total ? (double) pinned / (double) total : 1.0;
+    };
+    // the advisory planner's policy knobs and costs, built once: v0.1.40's pricing, injected.  The ring term is
+    // exactly additive, so a what-if budget prices as no_ring + budget slots; budget < 0 prices at the ring the
+    // current globals resolve to (the runtime's own rule).  Owned: the exact allocation (+ the allocator's
+    // margin, as the exact sizing arm does), and the reservation the sizing rule makes - the advisory reports
+    // the difference between the two.
+    const strata::prefill::LendOpts advisory_lend_opts = [&] {
+        strata::prefill::LendOpts v;
+        v.min_keep_slots = 128;
+        v.lend_pct = kAutoLendPct;
+        v.auto_ceiling = auto_ceiling;
+        v.prefill_auto_max = o.prefill_auto_max;
+        v.max_context = o.max_context;
+        v.ring_bytes = strata::prefill::Prefill::ring_bytes_enabled();
+        return v;
+    }();
+    // the advisory prices at ITS OWN measured pinned share (the figure the runtime will measure at its upstream
+    // site below): every cost is the share-pure pricing, so no Prefill global is read here that the runtime has
+    // not set yet - the default 1.0 the global still carries would price the pinned ring where the run will
+    // measure the unpinned 96-slot one
+    const double advisory_pinned_share = measured_pinned_share();
+    const strata::prefill::LendCosts advisory_lend_costs = [&] {
+        const int64_t blob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
+        const double share = advisory_pinned_share;
+        auto ring_at = [&](int64_t ch, int64_t budget) -> int64_t {
+            if (ch < strata::prefill::Prefill::stream_all_min_tokens())
+                return strata::prefill::Prefill::ring_stage_slots();
+            if (budget >= 0) return std::max<int64_t>(budget, 16);
+            return strata::prefill::Prefill::ring_slots_at_share(ch, share);
+        };
+        auto no_ring_at = [&](int64_t ch) -> uint64_t {
+            return strata::prefill::Prefill::bytes_needed_at_share(g, ss, ch, share, false) -
+                   (uint64_t) strata::prefill::Prefill::ring_slots_at_share(ch, share) * (uint64_t) blob;
+        };
+        strata::prefill::LendCosts c;
+        c.bytes_with_ring = [&, ring_at, no_ring_at](int64_t ch, int64_t budget) -> uint64_t {
+            if (budget >= 0) return no_ring_at(ch) + (uint64_t) ring_at(ch, budget) * (uint64_t) blob;
+            return strata::prefill::Prefill::bytes_needed_at_share(g, ss, ch, share, false);
+        };
+        c.ring_slots_under = [ring_at](int64_t ch, int64_t budget) -> int64_t {
+            return ring_at(ch, budget);
+        };
+        c.ring_cap_for = [share](int64_t small) {
+            return strata::prefill::Prefill::ring_cap_for_at(small, share);
+        };
+        c.ring_default_slots = [share] { return strata::prefill::Prefill::ring_default_slots_at(share); };
+        c.bytes_owned = [&](int64_t ch) -> uint64_t {
+            return strata::prefill::Prefill::bytes_needed_at_share(g, ss, ch, share, true) + (64ull << 20);
+        };
+        static const bool exact_price = [] {
+            const char* v = std::getenv("STRATA_OWNED_PRICE");
+            return v != nullptr && std::string(v) == "exact";
+        }();
+        c.bytes_owned_reserved = [&, exact_price](int64_t ch) -> uint64_t {
+            // the reservation the sizing arm makes: the 0.1.39 rule, or under STRATA_OWNED_PRICE=exact the
+            // rounded exact price plus the same 64 MiB allocator margin `owned_prefill_mib` adds
+            return (uint64_t) (exact_price ? (((int64_t) strata::prefill::Prefill::bytes_needed_at_share(
+                                                 g, ss, ch, share, true) +
+                                              (1 << 20) - 1) >> 20) + 64
+                                           : 160 + (ch * 680) / 1024) << 20;
+        };
+        return c;
+    }();
+    // ---- #796 part C: THE ADVISORY VRAM PLAN.  Everything the engine is about to commit, priced with the exact
+    // owned-prefill arithmetic and said BEFORE the expert cache takes what is left - WARNINGS ONLY.  The sizing
+    // branches below stay the only authority: the advisory sets no option, sizes no cache and refuses nothing; a
+    // configuration it cannot confirm is one warning line with the knobs that make room, and a runtime that
+    // later does something else than the prediction is reported the same way.  STRATA_ADVISORY_PLAN=0 silences it.
+    strata::prefill::VramAdvisory advisory;   // outlives the block: the post-open and loan-time checks compare with it
+    strata::prefill::EffectivePrefillPlan advisory_effective;   // the prediction re-derived against the opened cache
+    strata::prefill::CacheLendView advisory_opened;             // the opened cache as the re-derivation saw it
+    bool advisory_ready = false;
+    bool advisory_effective_valid = false;
+    // STRATA_ADVISORY_PLAN: unset or any non-zero value enables the advisory, =0 silences it
+    if (!multi_gpu && strata::prefill::env_enabled(std::getenv("STRATA_ADVISORY_PLAN"), /*default_on=*/true)) {
+        advisory_ready = true;
+        strata::prefill::AdvisoryInput in;
+        size_t adv_free = strata::core::device_free_bytes();
+        in.free_bytes = adv_free;
+        in.user_reserve_bytes = (uint64_t) o.vram_reserve_mib << 20;
+        in.reserve_given = o.vram_reserve_given;
+        in.mtp_bytes = (uint64_t) ((!o.mtp.empty() && native_head.loaded())
+                                       ? (int64_t) mtp.bind_bytes(native_head.row_bytes(), n_vocab) : 0);
+        for (const auto& d : slot_mtp) in.mtp_bytes += (uint64_t) d->bind_bytes(native_head.row_bytes(), n_vocab);
+        in.runtime_reserve_bytes = (uint64_t) pipe_first;
+        in.max_blob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
+        in.sized_slots_wanted = native_pack && !profile.empty() && !o.expert_cache_per_layer;
+        std::vector<int64_t> pair_bytes;
+        if (in.sized_slots_wanted) {
+            pair_bytes.reserve(profile.size());
+            for (const auto& pr : profile)
+                pair_bytes.push_back((int64_t) strata::kernels::cpu::expert_layout().blob_bytes(pr.first));
+            in.pair_slot_bytes = &pair_bytes;
+        }
+        in.profile_pairs = profile.empty() ? -1 : (int64_t) profile.size();
+        in.min_loan_slots = (o.prefill_chunk > 0 && pf_borrow)
+            ? ((int64_t) strata::prefill::Prefill::bytes_needed(g, ss, 256) + in.max_blob - 1) / in.max_blob + 128 : 1;
+        in.prefill_borrow = pf_borrow;
+        in.prefill_auto = o.prefill_auto;
+        in.prefill_chunk = o.prefill_chunk;
+        in.fixed_chunk_halves = o.serve;    // the serve loan scan may run a halved fixed chunk; generate rejects a halve
+        in.spec_needs_cache = o.spec > 0;
+        in.kv_stream_possible = g.n_qsa_layers() > 0;
+        in.explicit_cache = !auto_cache && o.expert_cache > 0;
+        in.explicit_cache_slots = in.explicit_cache ? o.expert_cache : -1;
+        in.lend.min_keep_slots = 128;
+        in.lend.lend_pct = kAutoLendPct;
+        in.lend.auto_ceiling = auto_ceiling;
+        in.lend.prefill_auto_max = o.prefill_auto_max;
+        in.lend.max_context = o.max_context;
+        in.lend.ring_bytes = strata::prefill::Prefill::ring_bytes_enabled();
+        in.costs = advisory_lend_costs;
+        advisory = strata::prefill::advise_startup_vram(in);
+        std::string pf_line = "off (the token path)";
+        if (advisory.selected_prefill > 0) {
+            pf_line = advisory.prefill_owned
+                ? std::to_string(advisory.selected_prefill) + " tokens, own buffers (" +
+                  std::to_string((double) advisory.prefill_bytes / 1073741824.0) + " GiB exact; the sizing rule " +
+                  std::to_string((double) advisory.prefill_reserved_bytes / 1073741824.0) + " GiB)"
+                : std::to_string(advisory.selected_prefill) + " tokens, borrowed: " +
+                  std::to_string(advisory.lend_slots) + " cache slots (" +
+                  std::to_string((double) advisory.prefill_bytes / 1073741824.0) + " GiB)";
+        }
+        std::fprintf(stderr,
+                     "strata generate: advisory VRAM plan (warnings only; the engine's own sizing decides):\n"
+                     "  free at planning:       %.2f GiB\n"
+                     "  later runtime:          %lld MiB (the draft head%s)\n"
+                     "  prefill:                %s\n"
+                     "  user reserve:           %d MiB%s\n"
+                     "  expert cache:           ~%.2f GiB / %lld slots (predicted)\n",
+                     (double) advisory.free_at_plan / 1073741824.0, (long long) (advisory.mtp_bytes >> 20),
+                     advisory.runtime_reserve_bytes > 0 ? " + --pipeline-windows" : "", pf_line.c_str(),
+                     o.vram_reserve_mib,
+                     advisory.reserve_adapted_from_mib > 0 ? " (the runtime lowers it to fit a working cache)" : "",
+                     (double) strata::prefill::actual_cache_bytes(advisory) / 1073741824.0,
+                     (long long) advisory.expert_slots);
+        for (const std::string& note : advisory.notes)
+            std::fprintf(stderr, "strata generate: VRAM plan: %s\n", note.c_str());
+        for (const std::string& w : advisory.warnings) {
+            std::fprintf(stderr, "strata generate: warning: %s. The engine starts anyway; if the first prompt "
+                                 "fails, make room:", w.c_str());
+            for (const std::string& s : advisory.suggestions) std::fprintf(stderr, " %s;", s.c_str());
+            std::fprintf(stderr, "\n");
+        }
+    }
     if (o.expert_cache < 0) {
         size_t free_b = 0, total_b = 0;
         free_b = strata::core::device_free_bytes(); (void) total_b;
@@ -4046,6 +4217,47 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: expert cache: %d slots (%.2f GiB) after %d smaller tries - a bigger "
                                  "page file lets it use more of the free VRAM\n",
                          o.expert_cache, (double) xcache.bytes() / 1073741824.0, failed);
+    }
+    // ---- the advisory plan, against the cache that actually opened (part C stays warnings-only here too).  The
+    // auto sizing's own post-touch loop above already wrote the slots and re-read the free figure; this reads it
+    // once more, asks what the prompt path would be against THIS cache, and says it when the picture moved.
+    // STRATA_POSTTOUCH=1 touches an explicit cache too (one full write) before the read - the deep WDDM check,
+    // off by default because it costs the write's time at startup.
+    if (advisory_ready && o.expert_cache > 0) {
+        // STRATA_POSTTOUCH: the deep WDDM check for an explicit cache - unset or =0 keeps it off (it costs the
+        // full cache write's time at startup), any non-zero value runs it
+        if (!auto_cache && strata::prefill::env_enabled(std::getenv("STRATA_POSTTOUCH"), /*default_on=*/false)) {
+            cudaMemset(xcache.device_slot(0), 0, (size_t) xcache.bytes());
+            cudaDeviceSynchronize();
+            std::fprintf(stderr, "strata generate: STRATA_POSTTOUCH: the explicit cache's slots are written\n");
+        }
+        const uint64_t free_after = strata::core::device_free_bytes();
+        const strata::prefill::CacheLendView opened{
+            xcache.slots(), xcache.bytes(), xcache.slot_offsets(),
+            (int64_t) strata::kernels::cpu::expert_layout().max_blob};
+        advisory_opened = opened;
+        advisory_effective = strata::prefill::revalidate_prefill_after_cache(advisory, opened, advisory_lend_opts,
+                                                                             advisory_lend_costs);
+        advisory_effective_valid = true;
+        const uint64_t required = strata::prefill::effective_post_cache_required(advisory, advisory_effective);
+        if (free_after + (64ull << 20) < required)
+            std::fprintf(stderr, "strata generate: warning: the advisory VRAM plan reads %.2f GiB free after the "
+                                 "cache opened, below the %.2f GiB its requirement needs (the reserve, the draft "
+                                 "head%s). The engine continues; if the first prompt stalls, lower --max-context, "
+                                 "--prefill or --vram-reserve-mib\n",
+                         (double) free_after / 1073741824.0, (double) required / 1073741824.0,
+                         advisory_effective.owned ? ", the prompt path's own buffers" : "");
+        if (advisory_effective.owned && !advisory.prefill_owned && advisory.selected_prefill > 0)
+            std::fprintf(stderr, "strata generate: warning: the opened cache (%lld slots) does not lend the prompt "
+                                 "path its %lld-token chunk; the advisory VRAM plan expects it on buffers of its "
+                                 "own (%.2f GiB) - the engine continues\n",
+                         (long long) xcache.slots(), (long long) advisory.selected_prefill,
+                         (double) advisory_effective.owned_bytes / 1073741824.0);
+        else if (advisory.prefill_auto && advisory_effective.borrowed && advisory.selected_prefill > 0 &&
+                 advisory_effective.chunk != advisory.selected_prefill)
+            std::fprintf(stderr, "strata generate: warning: the advisory VRAM plan expected prefill auto to pick "
+                                 "%lld tokens, the opened cache affords %lld; the engine continues\n",
+                         (long long) advisory.selected_prefill, (long long) advisory_effective.chunk);
     }
     if (o.expert_cache > 0) {
         std::fprintf(stderr, "strata generate: expert cache %lld slots, %.2f GiB of VRAM; policy is\n",
@@ -5048,18 +5260,11 @@ int main(int argc, char** argv) {
     // and its last token through the first verify window - the path all three model files share.  Decoding is greedy.
     // The expert-cache slots (from the end of the cache) that hold the prompt path's buffers for a chunk, and the
     // bytes from the first of them to the end.
-    // the share of expert bytes the arena could pin (sizes the prompt path's streamed ring and its lend cap)
-    if (srcp != nullptr && o.prefill_chunk > 0) {
-        uint64_t pinned = 0, total = 0;
-        const auto& lay = strata::kernels::cpu::expert_layout();
-        for (int64_t l = 0; l < g.n_layers; ++l)
-            for (int64_t e = 0; e < g.n_expert; ++e) {
-                const uint64_t b = lay.blob_bytes(l);
-                total += b;
-                if (srcp->pinned(l, e)) pinned += b;
-            }
-        strata::prefill::Prefill::set_pinned_share(total ? (double) pinned / (double) total : 1.0);
-    }
+    // the share of expert bytes the arena could pin (sizes the prompt path's streamed ring and its lend cap) -
+    // the runtime's own measurement, at the site upstream always had it, AFTER the cache sizing above: with the
+    // advisory off this run reaches this point exactly as pristine main does
+    if (srcp != nullptr && o.prefill_chunk > 0)
+        strata::prefill::Prefill::set_pinned_share(measured_pinned_share());
     // bytes -> slots for CUDA0's cache: exact when it knows its per-slot offsets (a native pack's blobs differ
     // per layer), otherwise max_blob each.
     auto slots_from_bytes = [&](uint64_t need) -> int64_t {
@@ -5119,17 +5324,8 @@ int main(int argc, char** argv) {
     // at 8192-token chunks nearly every expert streams anyway, so a lent slot costs little: 90% when the
     // copies are DMA from pinned RAM (Q2_0 8192 + a 384-slot ring: 1283 tok/s), 85% when host copies are the
     // limit (lending more only streams more through them).  STRATA_PREFILL_LEND_PCT overrides (tuning).
-    // Hoisted out of plan_lend: the serve path's per-stage loans obey the same cap, one participant at a time.
-    const int64_t kAutoLendPct = [] {
-        const char* v = std::getenv("STRATA_PREFILL_LEND_PCT");
-        return v ? (int64_t) std::atoi(v)
-                 : (int64_t) (strata::prefill::Prefill::pinned_share() >= 0.9 ? 90 : 85);
-    }();
-    // The largest chunk --prefill auto may pick: the operator's ceiling (--prefill auto:N) and never past the
-    // context, but a bare `auto` always reaches 8192.  32768 and 16384 stay opt-in (#282): a 32K prompt with
-    // IQ2_XS (RTX 5090, 64K context) read at 5,624 tok/s in 8192-token chunks and 6,465 in one 32768 chunk (40K
-    // -> 18K experts streamed; an NVFP4 pack at 262K: 3,535 -> 5,201).
-    const int64_t auto_ceiling = std::max<int64_t>(8192, std::min<int64_t>(o.prefill_auto_max, o.max_context));
+    // (kAutoLendPct and auto_ceiling are defined above the cache sizing: the advisory VRAM plan prices with the
+    // same numbers, and the loan scans below read them too.)
     // The auto scan used to walk a fixed list of sizes - 32768, 16384, 8192, 6144, ... - and take the first that
     // fit.  That list is coarse exactly where a rig needs it: this one affords ~8,700 tokens and was handed 8192,
     // and 8704 is not on it.  `bytes_needed` is a sum of (T x positive constant) terms plus a max of such sums,
@@ -5816,6 +6012,27 @@ int main(int argc, char** argv) {
                              (double) part_bytes(pf_parts[i], pf_parts[i].first) / 1073741824.0);
         } else {
             std::fprintf(stderr, "strata serve: the prompt path allocates its own buffers (too few cache slots to borrow)\n");
+        }
+        // the advisory plan's loan-time check (single GPU, like every advisory comparison): what the serve loan
+        // scan resolved, against what the prediction said.  A mismatch is one warning line - the scan stays.
+        if (advisory_effective_valid) {
+            strata::prefill::EffectivePrefillPlan predicted = advisory_effective;
+            if (!o.prefill_auto) {
+                // a fixed chunk: the scan may have run a HALVE - re-derive with serve semantics at what it chose
+                strata::prefill::VramAdvisory p2 = advisory;
+                p2.fixed_chunk_halves = true;
+                p2.prefill_auto = false;
+                p2.prefill_owned = false;
+                p2.selected_prefill = o.prefill_chunk;
+                predicted = strata::prefill::revalidate_prefill_after_cache(p2, advisory_opened, advisory_lend_opts,
+                                                                            advisory_lend_costs);
+            }
+            const strata::prefill::RuntimePrefillUse use{borrow != nullptr, o.prefill_chunk, borrow_bytes};
+            const strata::prefill::RuntimePlanCheck c =
+                strata::prefill::check_runtime_prefill_use(predicted, use);
+            if (c.mismatch)
+                std::fprintf(stderr, "strata serve: warning: runtime prefill differs from the advisory VRAM plan: "
+                                     "%s (advisory only; serving continues)\n", c.why);
         }
         rss_probe("the prompt path set up");
         // layer split across GPUs: a prompt path per stage, each handing its chunk's rows to the next.
@@ -10145,6 +10362,16 @@ int main(int argc, char** argv) {
         }
         if (borrow == nullptr)
             std::fprintf(stderr, "strata generate: prompt path allocates its own buffers (no cache slots to borrow)\n");
+        // the advisory plan's loan-time check: what the runtime resolved, against what the prediction said.
+        // A mismatch is one warning line - the run keeps the engine's own decision.
+        if (advisory_effective_valid) {
+            const strata::prefill::RuntimePrefillUse use{borrow != nullptr, o.prefill_chunk, borrow_bytes};
+            const strata::prefill::RuntimePlanCheck c =
+                strata::prefill::check_runtime_prefill_use(advisory_effective, use);
+            if (c.mismatch)
+                std::fprintf(stderr, "strata generate: warning: runtime prefill differs from the advisory VRAM "
+                                     "plan: %s (advisory only; the run continues)\n", c.why);
+        }
         if (!prefill.init(wt, g, ss, srcp, o.expert_cache > 0 ? &xcache : nullptr,
                           host_res.empty() ? nullptr : host_res.data(), o.prefill_chunk, main_cs, err, borrow,
                           borrow_bytes)) {

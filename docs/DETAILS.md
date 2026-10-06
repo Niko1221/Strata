@@ -1268,6 +1268,21 @@ the document, +0.4% on the chat. Details: `bench/results/2026-09-27-esp/`.
   93.5% (92.2%); 32K prompt KL 0.020 (0.019), top-1 95.3% (95.0%) - the same band as before. `STRATA_RING_BYTES=0`
   restores 0.1.39's ring, loan and chunk choice.
 
+- **The advisory VRAM plan (#796 part C):** before the expert cache takes what is left of the VRAM, the engine
+  prints what it is about to commit - the free figure, the draft head, the prompt path's predicted mode and cost
+  (owned buffers at the exact `Prefill::bytes_needed_owned` price beside the sizing rule's reservation, or the
+  loan the auto scan is expected to pick), and the predicted cache. It is WARNINGS ONLY: a configuration the
+  arithmetic cannot confirm (a short card, an over-large `--expert-cache`, a chunk no cache can lend) is one
+  `warning:` line with the knobs that make room, and the engine starts anyway - the sizing branches, the loan
+  scan and the existing error paths stay the only authorities. When the runtime later resolves something else
+  than the prediction (a loan that became owned buffers, a bigger chunk), that is reported the same way.
+  `STRATA_ADVISORY_PLAN=0` silences it; `STRATA_POSTTOUCH=1` additionally writes an explicit cache's slots
+  before the free read (the deep WDDM check; it costs the write's time at startup, so it is off by default).
+  Measured on an RTX 4070 Ti SUPER (16 GB), IQ3_XXS, 12K prompt, `--prefill auto`: the plan predicts the
+  8192-token chunk, 2,489-slot loan and the opened 5,539-slot / 8.98 GiB cache exactly, with no warning; with
+  the planner off (`STRATA_ADVISORY_PLAN=0`) the run makes the same decisions at the same speed (2,199 vs 2,194
+  tok/s prefill - run noise).
+
 The full story, with measurements, bottlenecks and what comes next: **[docs/paper/Strata-Paper.pdf](paper/Strata-Paper.pdf)**.
 
 ---

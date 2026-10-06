@@ -111,6 +111,23 @@ public:
     /// Monitor tab shows the pair the run really got, not what it asked for.
     static int64_t ring_slots_for(int64_t chunk);
 
+    /// The small chunks' staging ring (chunks below stream_all_min_tokens() resolve to it, whatever the budget):
+    /// the constant the advisory planner prices those chunks with.
+    static int64_t ring_stage_slots();
+
+    /// The advisory planner's PURE what-if pricing: the same rules priced at an explicit pinned share, in place
+    /// of the measured global (which the planner must neither set nor wait for the runtime to set).  share < 0.9
+    /// prices the unpinned arm (the 96-slot rule), share >= 0.9 the pinned one; nothing else differs.
+    static int64_t ring_slots_at_share(int64_t chunk, double share);
+    static int64_t ring_default_slots_at(double share);
+    static int64_t ring_max_slots_at(double share);
+    static int64_t ring_cap_for_at(int64_t old_chunk, double share);
+    /// The allocation sequence of `init` counted at an explicit pinned share (`owned_pages`: the 2 MiB pages
+    /// and the one-piece ring, as bytes_needed_owned).  The runtime's bytes_needed/bytes_needed_owned price the
+    /// same way at the measured share.
+    static uint64_t bytes_needed_at_share(const core::ModelGeometry& g, const core::SessionState& ss,
+                                          int64_t chunk, double share, bool owned_pages);
+
     /// 0.1.39b (#583, the default): the ring as a byte budget, the loan's corrected count and the auto chunk scan that
     /// keeps the ring full.  STRATA_RING_BYTES=0: 0.1.39's ring, loan and chunk list.
     static bool ring_bytes_enabled();
@@ -163,8 +180,6 @@ public:
     bool set_stage_helper(Prefill* helper, std::string& err);
 
 private:
-    static uint64_t bytes_needed_impl(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk,
-                                      bool owned_pages);
     // Stage-1 pipeline: intermediate stages return after handing their chunk to
     // the direct successor. The public run() drains the chain once at prompt end.
     bool run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err);
