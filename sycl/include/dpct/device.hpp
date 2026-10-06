@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <climits>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <iostream>
@@ -20,6 +21,7 @@
 #include <set>
 #include <sstream>
 #include <stack>
+#include <string>
 #include <sycl/sycl.hpp>
 #include <thread>
 #include <vector>
@@ -531,7 +533,20 @@ public:
   /// \param [out] free_memory The number of bytes of free memory on the SYCL device.
   /// \param [out] total_memory The number of bytes of total memory on the SYCL device.
   void get_memory_info(size_t &free_memory, size_t &total_memory) {
+    // Port addition (Windows/OpenCL bring-up): the free query needs ext_intel_free_memory (Level Zero
+    // sysman), which the OpenCL backend does not have. STRATA_DEVICE_FREE_MIB / STRATA_DEVICE_TOTAL_MIB
+    // override the answer when set (setup_intel.py sets them from the registry's VRAM size on Windows).
+    if (const char* e = std::getenv("STRATA_DEVICE_TOTAL_MIB")) {
+        try { total_memory = (size_t)(std::stoll(e) * 1048576ll); } catch (...) {
+            total_memory = get_device_info().get_global_mem_size();
+        }
+    } else {
+        total_memory = get_device_info().get_global_mem_size();
+    }
 #if (defined(__SYCL_COMPILER_VERSION) && __SYCL_COMPILER_VERSION >= 20221105)
+    if (const char* e = std::getenv("STRATA_DEVICE_FREE_MIB")) {
+        try { free_memory = (size_t)(std::stoll(e) * 1048576ll); return; } catch (...) {}
+    }
     if (!has(sycl::aspect::ext_intel_free_memory)) {
       std::cerr << "get_memory_info: ext_intel_free_memory is not supported." << std::endl;
       free_memory = 0;
@@ -547,7 +562,6 @@ public:
 #warning "Querying the number of bytes of free memory is not supported"
 #endif
 #endif
-    total_memory = get_device_info().get_global_mem_size();
   }
 
   void get_device_info(device_info &out) const {

@@ -126,11 +126,12 @@ def drop(args, name, value=False):
         del args[i:i + 1 + int(value)]
 
 
-def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict) -> dict:
+def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0) -> dict:
     """setup's config (written for its HIP path) -> the SYCL port's: the container's paths, experts streamed from the
     GGUF into VRAM (every expert must fit, so the VRAM reserve is the smallest that leaves the KV and the prompt
     buffers room - docs/INTEL.md), KV streaming from 64K up when the RAM holds the KV (the B70 at 256K decodes at
-    40+ tok/s with it, 4-9 without)."""
+    40+ tok/s with it, 4-9 without). vram_gb: the card's VRAM (Windows: the free-VRAM query needs Level Zero
+    sysman, absent on the OpenCL backend, so setup reports registry VRAM minus 1 GiB for the desktop)."""
     args = list(cfg["args"])
     for f in ("--resident-experts", "--mmap-experts"):  # setup's low-RAM mode is the CUDA engine's
         drop(args, f)
@@ -163,6 +164,10 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict) -> dict:
             env["STRATA_SYCL_BIN"] = str(exe.relative_to(ROOT))
         except ValueError:
             env["STRATA_SYCL_BIN"] = str(exe)
+    if S.WIN and vram_gb > 0:
+        # The OpenCL backend has no free-VRAM query (dpct get_memory_info reads STRATA_DEVICE_FREE_MIB).
+        env["STRATA_DEVICE_FREE_MIB"] = str(int((vram_gb - 1.0) * 1024))
+        env["STRATA_DEVICE_TOTAL_MIB"] = str(int(vram_gb * 1024))
     if not S.WIN and MOUNT.resolve() != ROOT.parent.resolve():
         env["STRATA_SYCL_ROOT"] = str(MOUNT)
     if env:
@@ -187,7 +192,7 @@ def install(argv) -> None:
     if exe is None:
         S.fail(f"Strata's SYCL engine cannot be used: {why}", "docs/INTEL.md: build it, then run this again")
     for name in ("gpus", "amd_gpus", "amd_problem", "hip_vision", "build_engine_hip", "hipblaslt_table", "ram_gb",
-                 "write_run_script", "start", "say", "main", "get_prebuilt_hip", "hip_card"):
+                 "write_run_script", "start", "say", "main", "get_prebuilt_hip", "hip_card", "intel_problem"):
         if not callable(getattr(S, name, None)):
             S.fail(f"setup.py has no {name}() any more: sycl/setup_intel.py needs updating for this setup.py")
     if S.WIN and not callable(getattr(S, "intel_gpus_windows", None)):
@@ -240,7 +245,9 @@ def install(argv) -> None:
 
     def write_run_script(model, cfg_path, port, open_browser=True):   # setup.write_run_script's signature (#870)
         cfg = json.loads(Path(cfg_path).read_text(encoding="utf-8"))
-        cfg = to_sycl(cfg, exe, real_ram, keep.get(Path(cfg_path).name, {}))
+        usable = [g for g in intel if S.intel_problem(g) is None] if S.WIN else intel
+        vram = max([g["vram_gb"] for g in usable] or [0.0])
+        cfg = to_sycl(cfg, exe, real_ram, keep.get(Path(cfg_path).name, {}), vram if S.WIN else 0.0)
         Path(cfg_path).write_text(json.dumps(cfg, indent=1), encoding="utf-8")
         script = write(model, cfg_path, port, open_browser)
         script.write_text(script.read_text().replace(str(ROOT / "serve" / "server.py"), str(SERVER)))
