@@ -780,6 +780,7 @@ class StrataEngine:
                 if len(f) >= 3 and f[1].lstrip("-").isdigit() and f[2].isdigit():
                     self._yielded = (int(f[1]), int(f[2]))
             elif line.startswith("ERR"):
+                self._ctl_result = ("err", None)         # refused: no DONE or BADM follows for this request
                 raise engine_error(line[4:].strip())
             if line.startswith("DONE") and self._ctl_mode == "solo":
                 self._ctl_result = ("done", None)
@@ -1073,6 +1074,8 @@ class StrataEngine:
         finally:
             # a consumer that left early (or an error): keep the engine and this server in step
             btrace("finally phase", phase, "slot", slot, "holding", holding)
+            if phase in ("solo", "admit") and (getattr(self, "_ctl_result", None) or ("",))[0] == "err":
+                phase = "none"                              # the engine refused it: nothing of it left to read
             try:
                 if phase == "solo":
                     self._send("STOP")
