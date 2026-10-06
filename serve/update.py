@@ -568,7 +568,9 @@ class Updater:
         """Remove the staging tree, the assembled `new-` tree, the downloaded archive and any partial
         download.
 
-        Never touches a backup-<...> directory - that is the only way back, on success and on failure
+        Never touches engine/.previous - the backup of the engine that was replaced, and the only way back, on
+        success and on failure alike.  It cannot be reached from here even by accident: the scratch space is
+        the directory BESIDE the engine's and the backup is INSIDE it.
         alike.  The archive is ~130-190 MB and each of the two trees about as much again, and a machine
         where setup.py has also run accumulates them; a release URL is stable for its tag, so re-running
         downloads it again and keeping it only grows the engine directory's parent.
@@ -688,7 +690,12 @@ class Updater:
     def _check_room(self):
         free = shutil.disk_usage(self.root if self.root.exists() else self.engine_dir).free
         self._put(free_gb=round(free / 1e9, 1))
-        need = (self.detail.get("asset_size") or 0) * 3      # zip + staging + backup, roughly
+        # Four copies of the archive exist at once, and all four are new space: the downloaded zip, the
+        # staging tree it is unpacked into, the assembled tree that is moved into place, and the backup of
+        # the engine being replaced - engine/.previous, which is where setup.py keeps it too. This said 3
+        # ("zip + staging + backup"), which under-counted by a third: an update could pass this step and
+        # then run the disk out during the swap, and roll back.
+        need = (self.detail.get("asset_size") or 0) * 4
         if free < need:
             raise UpdateError(
                 f"only {free / 1e9:.1f} GB free where the update needs about {need / 1e9:.1f} GB; "

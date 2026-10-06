@@ -755,6 +755,53 @@ def t_swap_is_all_or_nothing():
         check(U.installed_version(eng) == "0.1.31", "and the installed engine is untouched")
 
 
+def t_free_space_check_counts_every_copy():
+    print("\nthe free-space check asks for every copy the update makes at once")
+    # Four: the downloaded zip, the staging tree it is unpacked into, the assembled tree that is moved
+    # into place, and the backup of the engine being replaced (engine/.previous, inside the engine dir).
+    # This said 3, so an update could pass the check and still run the disk out during the swap.
+    with tempfile.TemporaryDirectory() as d:
+        eng = install_fake(Path(d) / "engine", "0.1.31")
+        net = Fake("0.1.38")
+        up = U.Updater(engine_exe=eng / "strata.exe")
+        up.fetch, up.head = net.fetch, net.head
+        up.check()
+        up.detail["asset_size"] = 100_000_000        # 100 MB, so the arithmetic is readable
+
+        asked = []
+
+        real_disk_usage = U.shutil.disk_usage
+
+        class Usage:
+            free = 10 ** 12
+
+        def spy(path):
+            asked.append(Path(path).name if Path(path).name else str(path))
+            return Usage()
+
+        U.shutil.disk_usage = spy
+        try:
+            up._check_room()
+        finally:
+            U.shutil.disk_usage = real_disk_usage
+        check(True, "with 1 TB free the check passes", f"{asked}")
+
+        # now the boundary: exactly 3x must be refused, because the update needs 4x
+        class Tight(Usage):
+            free = 300_000_000
+
+        U.shutil.disk_usage = lambda p: Tight()
+        try:
+            up._check_room()
+            check(False, "and 300 MB free is refused for a 100 MB engine", "it was allowed")
+        except U.UpdateError as e:
+            # The message reports in GB, so 4x of a 100 MB archive reads "0.4 GB".
+            check("0.3 GB free" in str(e) and "0.4 GB" in str(e),
+                  "and 300 MB free is refused for a 100 MB engine, which needs 400", str(e))
+        finally:
+            U.shutil.disk_usage = real_disk_usage
+
+
 def t_sha256_verified_before_anything_is_applied():
     print("\nthe download's SHA-256 is checked against GitHub's, and a wrong one stops the run")
     # The reason this exists: without it the only check was the byte count, which a substituted file of
@@ -1000,7 +1047,8 @@ def main() -> int:
                t_no_update_needed, t_downgrade_refused, t_version_mismatch_refused,
                t_staged_engine_must_run, t_probe_explains_a_missing_runtime,
                t_gpu_arch_refused_before_download, t_hotfix_release_tag, t_swap_is_all_or_nothing, t_sha256_verified_before_anything_is_applied,
-               t_workspace_is_cleaned, t_cleanup_survives_a_locked_staging_tree, t_adversarial_findings, t_truncated_download_refused, t_rollback_after_apply,
+               t_workspace_is_cleaned, t_cleanup_survives_a_locked_staging_tree, t_free_space_check_counts_every_copy,
+    t_adversarial_findings, t_truncated_download_refused, t_rollback_after_apply,
                t_backup_is_one_generation_in_previous, t_missing_asset_refused):
         fn()
     print(f"\n{U.__name__}: {len(FAILS)} failures out of {CHECKS[0]} checks")
