@@ -164,9 +164,10 @@ project's latest release, and installs the new engine with each step visible. It
 - The **staged** engine, run before the installed one is touched.
 - That this graphics card is one the release has code for.
 
-Then the installed engine is copied to `engine/.previous`, the new files are put in place, and the new
-`BUILD.json` is read back. If any of that fails, the backup is restored and the card says so, naming the
-folder. `setup.py --rollback-engine` puts the kept engine back later.
+Then the installed engine is copied to `engine/.previous` (the same place `setup.py` keeps it, so
+`setup.py --rollback-engine` puts it back), the new files are put in place — all or nothing, so a failure
+half way leaves the engine you had — and the new `BUILD.json` is read back. If any of that fails, the card
+says so.
 
 **`UPDATE.bat`** (Linux: `./update.sh`) updates Strata without starting the model - for when the GPU is busy with
 something else, or you just want the new version ready. In a `git clone` it runs `git pull`, then does what

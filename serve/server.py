@@ -2462,6 +2462,14 @@ class Service:
                 # the card's compute capability, for the check in step 4. None when it cannot be read,
                 # which the updater treats as "cannot tell" and carries on with.
                 gpu_cc=getattr(self, "gpu_cc", None) or updater_mod.gpu_compute_capability(),
+                # The environment the ENGINE runs with - spawn[4] is the env child_env() built, whose
+                # PATH carries the CUDA libraries from the config's lib_dirs. The staged engine has to be
+                # probed with it: those directories are not on this process's PATH, so probing with the
+                # server's own environment fails with "DLL not found" and refuses a good update.
+                env=(getattr(self.engine, "spawn", None) or (None,) * 5)[4],
+                # The FIFO that serialises loading, held only across the swap (the updater's last three
+                # steps) so a request cannot start the engine against a half-replaced directory.
+                exclusive=self.fifo,
             )
         return self._updater_obj
 

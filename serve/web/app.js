@@ -6,11 +6,11 @@ const $ = (id) => document.getElementById(id);
 const SPRITE = "web/sprite.svg";
 const icon = (name, cls = "st-icon") => `<svg class="${cls}" aria-hidden="true"><use href="${SPRITE}#i-${name}"/></svg>`;
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
-const fmt = (n, d = 0) => (n == null || Number.isNaN(n) ? "–" : Number(n).toLocaleString(undefined, {maximumFractionDigits: d, minimumFractionDigits: d}));
-const kfmt = (n) => (n == null ? "–" : n >= 1000 ? `${fmt(n / 1000, n >= 10000 ? 0 : 1)}k` : fmt(n));
+const fmt = (n, d = 0) => (n == null || Number.isNaN(n) ? "â€“" : Number(n).toLocaleString(undefined, {maximumFractionDigits: d, minimumFractionDigits: d}));
+const kfmt = (n) => (n == null ? "â€“" : n >= 1000 ? `${fmt(n / 1000, n >= 10000 ? 0 : 1)}k` : fmt(n));
 // a context size: 32768 -> "32K" (powers of two), else like kfmt
 const ctxfmt = (n) => (n && n % 1024 === 0 ? `${fmt(n / 1024)}K` : kfmt(n));
-const gb = (b, d = 1) => (b == null ? "–" : fmt(b / 1073741824, d));   // memory: binary GB, as Windows shows it
+const gb = (b, d = 1) => (b == null ? "â€“" : fmt(b / 1073741824, d));   // memory: binary GB, as Windows shows it
 
 const store = {
   get(k, d) { try { const v = localStorage.getItem("strata." + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
@@ -113,7 +113,7 @@ const METRICS = [
   {key: "speed", label: "Speed", icon: "gauge", unit: "t/s", series: "tok_s"},
   {key: "gpu", label: "GPU load", icon: "gpu", unit: "%", series: "gpu_util", max: 100},
   {key: "vram", label: "VRAM", icon: "layers", unit: "GB", series: "gpu_mem_used"},
-  {key: "temp", label: "GPU temp", icon: "thermometer", unit: "°C", series: "gpu_temp", tone: "warn"},
+  {key: "temp", label: "GPU temp", icon: "thermometer", unit: "Â°C", series: "gpu_temp", tone: "warn"},
   {key: "power", label: "Power", icon: "bolt", unit: "W", series: "gpu_power"},
   {key: "pcie", label: "PCIe", icon: "link", unit: "", series: "gpu_pcie_rx_mb", tone: "info"},
   {key: "cpu", label: "CPU", icon: "cpu", unit: "%", series: "cpu", max: 100},
@@ -125,7 +125,7 @@ $("metrics").innerHTML = METRICS.map((m) => `
     ${m.key === "speed" ? `<div class="speed-values">
       <div><span class="st-metric__value" id="mv-speed">-</span><span class="st-metric__sub" id="ms-speed">Decode</span></div>
       <div class="speed-prefill"><span class="st-metric__value" id="mv-prefill">-</span><span class="st-metric__sub" id="ms-prefill">Prefill</span></div>
-    </div>` : `<span class="st-metric__value" id="mv-${m.key}">–</span>
+    </div>` : `<span class="st-metric__value" id="mv-${m.key}">â€“</span>
     <span class="st-metric__sub" id="ms-${m.key}"></span>`}
     <svg class="st-metric__spark" id="sp-${m.key}" viewBox="0 0 100 32" preserveAspectRatio="none"${m.tone ? ` data-tone="${m.tone}"` : ""}>
       <path class="area" fill="currentColor" opacity=".12"/><path class="line" fill="none" stroke="currentColor"
@@ -146,7 +146,7 @@ function spark(id, values, max) {
   svg.querySelector(".area").setAttribute("d", `${line}L100,32L0,32Z`);
 }
 function setMetric(key, value, unit, sub) {
-  $(`mv-${key}`).innerHTML = value == null ? "–" : `${esc(value)}${unit ? `<small>${esc(unit)}</small>` : ""}`;
+  $(`mv-${key}`).innerHTML = value == null ? "â€“" : `${esc(value)}${unit ? `<small>${esc(unit)}</small>` : ""}`;
   $(`ms-${key}`).textContent = sub || "";
 }
 
@@ -183,9 +183,9 @@ function render(m) {
   // the header pill
   if (live.state === "reading") {
     const pct = live.prompt_total ? Math.round((100 * live.prompt_read) / live.prompt_total) : null;
-    setPill("reading", pct != null ? `Reading prompt · ${pct}%` : "Reading prompt");
+    setPill("reading", pct != null ? `Reading prompt Â· ${pct}%` : "Reading prompt");
   } else if (live.state === "generating") {
-    setPill("generating", `Generating · ${fmt(live.tok_s, 1)} tok/s`);
+    setPill("generating", `Generating Â· ${fmt(live.tok_s, 1)} tok/s`);
   } else {
     setPill("idle", "Idle");
   }
@@ -220,7 +220,7 @@ function renderConvCache(c) {
   facts($("cc-facts"), [
     ["Last request", c.last_prompt != null ? `${fmt(c.last_reused || 0)} of ${fmt(c.last_prompt)} prompt tokens reused` : null],
     ["Reused since start", c.requests ? `${fmt(c.reused_tokens)} tokens${share}` : null],
-    ["Parked / restored", c.enabled ? `${fmt(c.parks)} / ${fmt(c.restores)}${c.evictions ? ` · ${fmt(c.evictions)} evicted` : ""}` : null],
+    ["Parked / restored", c.enabled ? `${fmt(c.parks)} / ${fmt(c.restores)}${c.evictions ? ` Â· ${fmt(c.evictions)} evicted` : ""}` : null],
     ["Last switch", c.enabled ? event : null],
   ]);
   $("cc-note").textContent = c.enabled
@@ -234,7 +234,7 @@ function renderTotals(t) {
   const read = t.prompt_tokens - t.reused;
   const pSpeed = t.prompt_ms > 0 && read > 0 ? ` at ${fmt(read / (t.prompt_ms / 1000))} tok/s` : "";
   const oSpeed = t.decode_ms > 0 && t.output_tokens > 0 ? ` at ${fmt(t.output_tokens / (t.decode_ms / 1000), 1)} tok/s` : "";
-  return `Since ${since}: ${fmt(t.requests)} requests · ${fmt(read)} prompt tokens read${pSpeed} (${fmt(t.reused)} reused) · ` +
+  return `Since ${since}: ${fmt(t.requests)} requests Â· ${fmt(read)} prompt tokens read${pSpeed} (${fmt(t.reused)} reused) Â· ` +
          `${fmt(t.output_tokens)} written${oSpeed}`;
 }
 function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
@@ -248,7 +248,7 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
     prog.dataset.tone = "info";
     if (live.prompt_total) {
       pct = (100 * live.prompt_read) / live.prompt_total;
-      detail = `${fmt(live.prompt_read)} / ${fmt(live.prompt_total)} tokens · ${fmt(pct)}%`;
+      detail = `${fmt(live.prompt_read)} / ${fmt(live.prompt_total)} tokens Â· ${fmt(pct)}%`;
     } else {
       detail = `${fmt(live.prompt_tokens)} tokens`;
     }
@@ -256,7 +256,7 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
     label = live.phase ? live.phase[0].toUpperCase() + live.phase.slice(1) : "Generating";
     delete prog.dataset.tone;
     pct = live.max_tokens ? Math.min(100, (100 * live.generated) / live.max_tokens) : 0;
-    detail = `${fmt(live.generated)} tokens · ${fmt(live.tok_s, 1)} tok/s`;
+    detail = `${fmt(live.generated)} tokens Â· ${fmt(live.tok_s, 1)} tok/s`;
   } else if (last) {
     delete prog.dataset.tone;
     detail = `last: ${fmt(last.output_tokens)} tokens${last.decode_tok_s ? ` at ${fmt(last.decode_tok_s, 1)} tok/s` : ""}`;
@@ -276,26 +276,26 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   spark("sp-speed", h.tok_s);
   spark("sp-prefill", h.prefill_tok_s_mean);
   // a model split across several cards (issue #112): the cards show their total / mean / hottest, and each card's own
-  const per = (f) => (hw.gpus || []).map((g) => `GPU ${g.index} ${f(g)}`).join(" · ");
+  const per = (f) => (hw.gpus || []).map((g) => `GPU ${g.index} ${f(g)}`).join(" Â· ");
   const multi = (hw.gpus || []).length > 1;
   setMetric("gpu", hw.gpu_util == null ? null : fmt(hw.gpu_util), "%",
-            multi ? per((g) => (g.util == null ? "–" : `${fmt(g.util)}%`)) : st.gpu_name || "");
+            multi ? per((g) => (g.util == null ? "â€“" : `${fmt(g.util)}%`)) : st.gpu_name || "");
   spark("sp-gpu", h.gpu_util, 100);
   setMetric("vram", hw.gpu_mem_used == null ? null : gb(hw.gpu_mem_used), hw.gpu_mem_total ? `/ ${gb(hw.gpu_mem_total, 0)} GB` : "GB",
-            multi ? per((g) => (g.mem_used == null ? "–" : `${gb(g.mem_used)} GB`))
+            multi ? per((g) => (g.mem_used == null ? "â€“" : `${gb(g.mem_used)} GB`))
                   : eng.expert_slots ? `${fmt(eng.expert_slots)} experts cached` : "");
   spark("sp-vram", h.gpu_mem_used, hw.gpu_mem_total);
-  setMetric("temp", hw.gpu_temp == null ? null : fmt(hw.gpu_temp), "°C",
-            multi ? per((g) => (g.temp == null ? "–" : `${fmt(g.temp)}°`)) : "");
+  setMetric("temp", hw.gpu_temp == null ? null : fmt(hw.gpu_temp), "Â°C",
+            multi ? per((g) => (g.temp == null ? "â€“" : `${fmt(g.temp)}Â°`)) : "");
   spark("sp-temp", h.gpu_temp, 90);
   setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W", hw.gpu_power_limit ? `of ${fmt(hw.gpu_power_limit)} W limit` : "");
   spark("sp-power", h.gpu_power, hw.gpu_power_limit);
   const gen = hw.gpu_pcie_gen_max || hw.gpu_pcie_gen;
   setMetric("pcie", gen ? `Gen${gen}` : null, hw.gpu_pcie_width ? `x${hw.gpu_pcie_width}` : "",
             hw.gpu_pcie_rx_mb == null ? "" : `to GPU ${fmt(hw.gpu_pcie_rx_mb, hw.gpu_pcie_rx_mb < 10 ? 1 : 0)} MB/s` +
-            (hw.gpu_pcie_gen && gen && hw.gpu_pcie_gen < gen ? ` · idle Gen${hw.gpu_pcie_gen}` : ""));
+            (hw.gpu_pcie_gen && gen && hw.gpu_pcie_gen < gen ? ` Â· idle Gen${hw.gpu_pcie_gen}` : ""));
   spark("sp-pcie", h.gpu_pcie_rx_mb);
-  setMetric("cpu", hw.cpu == null ? null : fmt(hw.cpu), "%", st.threads ? `${st.cores ? `${st.cores} cores · ` : ""}${st.threads} threads` : "");
+  setMetric("cpu", hw.cpu == null ? null : fmt(hw.cpu), "%", st.threads ? `${st.cores ? `${st.cores} cores Â· ` : ""}${st.threads} threads` : "");
   spark("sp-cpu", h.cpu, 100);
   if (hw.disk_read_mb == null) {
     setMetric("disk", null, "", st.psutil ? "" : "needs psutil (setup installs it)");
@@ -315,15 +315,15 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   $("ctx-fill").setAttribute("stroke-dasharray", `${(235.6 * frac).toFixed(1)} 314.2`);
   $("ctx-fill").style.opacity = 235.6 * frac >= 3 ? "1" : "0";         // a near-zero arc would draw just its round cap
   $("ctx-pct").textContent = `${Math.round(frac * 100)}%`;
-  $("ctx-sub").textContent = ctx ? `${kfmt(used)} / ${ctxfmt(ctx)}` : "–";
+  $("ctx-sub").textContent = ctx ? `${kfmt(used)} / ${ctxfmt(ctx)}` : "â€“";
   const cacheBytes = (eng.expert_cache_mib || 0) * 1048576;
-  $("slots-text").textContent = eng.expert_slots ? `${fmt(eng.expert_slots)} · ${gb(cacheBytes)} GB` : "–";
+  $("slots-text").textContent = eng.expert_slots ? `${fmt(eng.expert_slots)} Â· ${gb(cacheBytes)} GB` : "â€“";
   $("slots-bar").style.width = hw.gpu_mem_total ? `${Math.min(100, (100 * cacheBytes) / hw.gpu_mem_total)}%` : "0%";
-  $("ram-text").textContent = hw.ram_total ? `${gb(hw.ram_used)} / ${gb(hw.ram_total, 0)} GB` : "–";
+  $("ram-text").textContent = hw.ram_total ? `${gb(hw.ram_used)} / ${gb(hw.ram_total, 0)} GB` : "â€“";
   const ramPct = hw.ram_total ? (100 * hw.ram_used) / hw.ram_total : 0;
   $("ram-bar").style.width = `${ramPct}%`;
   if (ramPct > 92) $("ram-progress").dataset.tone = "danger"; else delete $("ram-progress").dataset.tone;
-  $("temp-text").textContent = hw.gpu_temp == null ? "–" : `${fmt(hw.gpu_temp)} °C`;
+  $("temp-text").textContent = hw.gpu_temp == null ? "â€“" : `${fmt(hw.gpu_temp)} Â°C`;
   $("temp-bar").style.width = hw.gpu_temp == null ? "0%" : `${Math.min(100, hw.gpu_temp)}%`;
 
   // recent requests
@@ -334,11 +334,11 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
     const badge = {stop: ["", "Done"], length: ["", "Max tokens"], cancel: ["st-badge--queued", "Stopped"],
                    disconnect: ["st-badge--queued", "Closed"], error: ["st-badge--error", "Error"]};
     body.innerHTML = requests.slice(0, reqShowAll ? requests.length : 12).map((r) => {
-      const [cls, text] = badge[r.finish] || ["", r.finish || "–"];
+      const [cls, text] = badge[r.finish] || ["", r.finish || "â€“"];
       const t = new Date(r.time * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"});
       const proj = r.projection == null ? "" : ` <span class="st-badge${r.projection ? " st-badge--reading" : ""}" title="experimental speed projection ${r.projection ? "on" : "off"}">${r.projection ? "ESP" : "stock"}</span>`;
       // #588: the VRAM share; the PCIe share (--pcie-frac) beside it when there is one
-      const hit = r.hit_rate == null ? "–" : `${(r.hit_rate * 100).toFixed(1)}%` +
+      const hit = r.hit_rate == null ? "â€“" : `${(r.hit_rate * 100).toFixed(1)}%` +
         (r.pcie_share ? ` <span class="muted" title="routed experts the GPU read over PCIe (--pcie-frac) or another GPU computed">+${(r.pcie_share * 100).toFixed(1)}% PCIe</span>` : "");
       return `<tr><td>${esc(t)}</td><td><span class="st-badge ${cls}">${esc(text)}</span>${proj}</td><td class="num">${fmt(r.prompt_tokens)}</td>
         <td class="num">${fmt(r.reused)}</td><td class="num">${fmt(r.output_tokens)}</td><td class="num">${fmt(r.decode_tok_s, 1)}</td>
@@ -362,7 +362,7 @@ function projectionText(c) {
   if (!c || c === "0" || c === 0) return null;
   const [mode, range, single] = String(c).split(":");
   const [a, b] = (range || "").split("-");
-  return `${mode === "project" ? "Projection" : "Additive"} control vector on layers ${a}–${b}` +
+  return `${mode === "project" ? "Projection" : "Additive"} control vector on layers ${a}â€“${b}` +
          `${single ? ` (layer ${single.replace("single", "")}'s direction)` : ""}. Per chat in Sampling. Its package ` +
          "describes the vector as a refusal-direction projection; measure the speed yourself";
 }
@@ -420,14 +420,14 @@ function renderMcp() {
   $("mcp-card").hidden = !servers.length;
   $("mcp-row").hidden = !servers.length;
   const ready = servers.filter((s) => s.status === "ready" || s.status === "stopped");
-  $("mcp-sum").textContent = servers.length ? `${fmt(mcpInfo.tools)} tools · ${ready.length} of ${servers.length} servers connected` : "";
+  $("mcp-sum").textContent = servers.length ? `${fmt(mcpInfo.tools)} tools Â· ${ready.length} of ${servers.length} servers connected` : "";
   $("mcp-row-sub").textContent = mcpInfo.tools ? `${fmt(mcpInfo.tools)} tools from ${ready.map((s) => s.name).join(", ")}; the model calls them when it decides to`
                                                : "no server is connected yet (see the Monitor)";
   $("mcp-list").innerHTML = servers.map((s) => {
     const [cls, text] = MCP_STATE[s.status] || ["", s.status];
-    const info = s.info && s.info.name ? ` · ${s.info.name}${s.info.version ? ` ${s.info.version}` : ""}` : "";
+    const info = s.info && s.info.name ? ` Â· ${s.info.name}${s.info.version ? ` ${s.info.version}` : ""}` : "";
     return `<div class="mcp-server"><div class="mcp-server__head"><span class="st-badge ${cls}">${esc(text)}</span>` +
-      `<strong>${esc(s.name)}</strong><span class="muted small">${esc(s.transport)} · ${fmt(s.tools.length)} tools${esc(info)}</span></div>` +
+      `<strong>${esc(s.name)}</strong><span class="muted small">${esc(s.transport)} Â· ${fmt(s.tools.length)} tools${esc(info)}</span></div>` +
       (s.error ? `<div class="msg-error">${esc(s.error)}</div>` : "") +
       (s.tools.length ? `<div class="mcp-server__tools">${s.tools.map((t) => `<span class="chip" title="${esc(t.description || "")}">${esc(t.tool)}</span>`).join("")}</div>` : "") +
       `</div>`;
@@ -601,7 +601,7 @@ function msgEl(m, i) {
     el.appendChild(b);
     const meta = document.createElement("div");
     meta.className = "st-msg__meta";
-    meta.textContent = `You · ${timeStr(m.time)}`;
+    meta.textContent = `You Â· ${timeStr(m.time)}`;
     el.appendChild(meta);
   } else {
     el.innerHTML = `<details class="st-collapse think" hidden><summary>${icon("thinking", "st-icon st-icon--sm")}<span class="think-title"></span>` +
@@ -624,7 +624,7 @@ function toolHtml(t, k) {
   if (t.open) {
     body = `<div class="tool-call__label">Arguments</div><pre class="tool-call__pre">${esc(args || "(being written)")}</pre>`;
     if (t.result != null) {
-      body += `<div class="tool-call__label">${t.ok ? "Result" : "Error"}${t.chars ? ` · ${fmt(t.chars)} characters` : ""}` +
+      body += `<div class="tool-call__label">${t.ok ? "Result" : "Error"}${t.chars ? ` Â· ${fmt(t.chars)} characters` : ""}` +
               `${t.truncated ? ", cut for the model" : ""}</div><pre class="tool-call__pre">${esc(t.result)}</pre>`;
     }
   }
@@ -665,7 +665,7 @@ function updateAssistant(el, m, streaming) {
   if (m.reasoning) {
     det.hidden = false;
     const thinkingNow = streaming && !m.text;
-    el.querySelector(".think-title").textContent = thinkingNow ? "Thinking…" :
+    el.querySelector(".think-title").textContent = thinkingNow ? "Thinkingâ€¦" :
       m.thinkSecs != null ? `Thought for ${fmt(m.thinkSecs, 1)} s` : "Thoughts";
     const body = el.querySelector(".thinking");
     if (det.open || thinkingNow) body.textContent = m.reasoning;
@@ -844,15 +844,15 @@ async function send() {
   const n = usage ? usage.completion_tokens : null;
   if (n && firstAt) {
     const secs = (performance.now() - firstAt) / 1000;
-    m.meta = `${fmt(n)} tokens${secs > 0.25 ? ` · ${fmt(n / secs, 1)} tok/s` : ""}${m.stopped ? " · stopped" : ""}` +
-             (projectionLoaded() ? (settings.esp ? " · projection on" : " · projection off") : "");
+    m.meta = `${fmt(n)} tokens${secs > 0.25 ? ` Â· ${fmt(n / secs, 1)} tok/s` : ""}${m.stopped ? " Â· stopped" : ""}` +
+             (projectionLoaded() ? (settings.esp ? " Â· projection on" : " Â· projection off") : "");
   } else if (m.stopped) {
     m.meta = "Stopped";
   }
   for (const t of m.tools || []) if (t.state === "writing" || t.state === "running") { t.state = "skipped"; t.ms = null; }
   const ran = (m.tools || []).filter((t) => t.state === "done" || t.state === "error").length;
-  if (ran) m.meta = `${m.meta ? `${m.meta} · ` : ""}${ran} tool call${ran > 1 ? "s" : ""}`;
-  if (m.limit) m.meta = `${m.meta || ""} · stopped at the limit of ${m.limit} tool rounds (mcp.max_rounds)`;
+  if (ran) m.meta = `${m.meta ? `${m.meta} Â· ` : ""}${ran} tool call${ran > 1 ? "s" : ""}`;
+  if (m.limit) m.meta = `${m.meta || ""} Â· stopped at the limit of ${m.limit} tool rounds (mcp.max_rounds)`;
   busy = null;
   setBusy(false);
   if (frame) cancelAnimationFrame(frame);
@@ -1025,7 +1025,7 @@ function projectionLoaded() {
 }
 function outputs() {
   const t = +$("s-temp").value;
-  $("o-temp").textContent = t === 0 ? "0 · greedy" : t.toFixed(2);
+  $("o-temp").textContent = t === 0 ? "0 Â· greedy" : t.toFixed(2);
   $("o-topp").textContent = (+$("s-topp").value).toFixed(2);
   $("o-topk").textContent = $("s-topk").value;
   const sel = [...$("s-thinking").children].find((b) => b.getAttribute("aria-checked") === "true");
@@ -1099,7 +1099,7 @@ const updateUI = {
   // step -> the one character shown at the left. Text, not colour, carries the state: colour alone
   // fails for anyone who cannot distinguish them, and this is the panel where being wrong matters.
   mark(s) {
-    return {done: "✓", active: "▸", failed: "✕", skipped: "–", pending: "·"}[s] || "·";
+    return {done: "âœ“", active: "â–¸", failed: "âœ•", skipped: "â€“", pending: "Â·"}[s] || "Â·";
   },
 };
 
@@ -1128,7 +1128,7 @@ function renderUpdateIdle() {
 async function checkForUpdates(btn) {
   const note = $("update-note");
   btn.disabled = true;
-  btn.textContent = "Checking…";
+  btn.textContent = "Checkingâ€¦";
   note.textContent = "Asking GitHub for the latest release.";
   note.removeAttribute("data-tone");
   $("update-progress").hidden = true;
@@ -1216,13 +1216,13 @@ function renderUpdateState(s) {
     // not always the same - a hotfix release such as v0.1.40.1 ships the v0.1.40 engine. Reporting the tag
     // here claimed v0.1.40.1 on a machine that had 0.1.40 installed.
     note.textContent = `The engine is now v${updateUI.bare(d.verified_version) || updateUI.bare(d.installed) || "?"}. ` +
-      `The previous one is kept in ${s.backup || "the backup folder"}.`;
+      "The engine it replaced is kept in engine/.previous - setup.py --rollback-engine puts it back.";
     note.removeAttribute("data-tone");
   } else if (downloading && d.total_mb != null) {
     note.textContent = `${d.downloaded_mb} of ${d.total_mb} MB`;
     note.removeAttribute("data-tone");
   } else if (s.active) {
-    note.textContent = `${s.active}…`;
+    note.textContent = `${s.active}â€¦`;
     note.removeAttribute("data-tone");
   }
   // Something that would not delete is worth saying: on Windows the staged engine can still be held
@@ -1260,7 +1260,7 @@ async function pollUpdate() {
 async function applyUpdate(btn) {
   const note = $("update-note");
   btn.disabled = true;
-  note.textContent = "Asking the server to stop the model and start the update…";
+  note.textContent = "Asking the server to stop the model and start the updateâ€¦";
   note.removeAttribute("data-tone");
   try {
     const r = await fetch("api/update/apply", {method: "POST", headers: headers(true), body: "{}"});

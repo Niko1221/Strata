@@ -26,6 +26,7 @@ import os
 import sys
 import tempfile
 import time
+import unittest
 import urllib.error
 import urllib.request
 import zipfile
@@ -460,6 +461,29 @@ def t_bad_hash_over_http():
         finally:
             httpd.shutdown()
             httpd.server_close()
+
+
+class UpdateRoutes(unittest.TestCase):
+    """Every `t_*` function above, as a unittest method.
+
+    Without this, pytest collects nothing from this file - verified, it ran zero tests - so the route
+    checks would never run in CI even though they are the ones that cover the handlers.
+    """
+
+
+def _as_test(fn):
+    def test(self):
+        before = len(FAILS)
+        fn()
+        new = FAILS[before:]
+        self.assertFalse(new, "\n".join(f"  FAILED: {f}" for f in new))
+    test.__name__ = "test_" + fn.__name__[2:]
+    test.__doc__ = (fn.__doc__ or fn.__name__).strip().splitlines()[0]
+    return test
+
+
+for _name in sorted(n for n in list(globals()) if n.startswith("t_")):
+    setattr(UpdateRoutes, _as_test(globals()[_name]).__name__, _as_test(globals()[_name]))
 
 
 def main() -> int:

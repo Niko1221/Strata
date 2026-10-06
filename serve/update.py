@@ -9,29 +9,45 @@ wrong - a half-extracted zip leaves an engine that will not start.
 HOW IT IS DELIBERATE.  This module is cautious by construction, and the order of the steps is the
 design:
 
-  1. Nothing on disk changes until every download and every check has passed.  The zip is downloaded
-     to a temp file, opened, inspected, extracted to a staging directory, and the STAGED binary is
-     run - all before the installed engine is touched.
-  2. The installed engine is copied to a backup directory first, and the backup is kept until the new
-     engine has been started and has reported the expected version.  If anything fails from the
-     apply step onward, the backup is restored and the install is left as it was.
-  3. A downgrade is refused.  Getting a new engine is the point; silently going backwards is not, and
-     a stale download URL or a wrong tag could otherwise do it without asking.
-  4. Every step is recorded with its own status so the web UI can show what is happening rather than
-     a spinner.  The failure note is the one line that matters, so it says what was restored.
+  1. **The download is verified against a SHA-256 that came from somewhere else.**  GitHub's releases
+     API publishes ``digest`` for every asset (``sha256:<hex>``); the archive itself comes from the
+     release download.  Two different origins, so a tampered or substituted download does not arrive
+     with a matching hash, and the hash is checked - in the same pass, on the bytes as they arrive -
+     before the archive is opened.  A file that does not match is deleted, and a release that publishes
+     no digest is refused rather than installed unchecked.
+  2. Nothing on disk changes until that and every other check has passed.  The archive is opened, its
+     members' paths and CRCs checked, its version read, extracted to a staging directory, and the
+     STAGED binary run - all before the installed engine is touched.  The staged run happens with the
+     ENGINE's environment, because that is where its CUDA libraries are.
+  3. The installed engine is copied to a backup first - files and subdirectories - and the swap that
+     follows is all or nothing: every new file is assembled before anything installed is touched, each
+     one then lands atomically, and the caller's lock is held so no request can start the engine
+     mid-swap.  Any failure from there restores the backup AND removes anything the new engine added,
+     because restoring alone would leave a mixture of two engines.
+  4. A downgrade is refused, and so is a release whose own engine is older than its tag implies.
+  5. Every step is recorded with its own status so the web UI can show what is happening rather than
+     a spinner.  The failure note says what was restored.
+
+WHAT THE HASH DOES NOT DO, stated plainly.  It proves the bytes are the ones GitHub published *for that
+asset*.  It does not make a malicious release safe: if someone who can publish a release publishes a
+malicious engine, the digest matches it.  A hash PINNED IN THE REPO - which is what ``setup.py`` does
+for the Unsloth shards, and what a reviewer asked for - is stronger, because a compromised release cannot
+change it; it costs a reviewed commit per release.  What this buys is everything the digest is good for:
+a corrupted transfer, a substituted or mirrored download, a TLS-terminating proxy, a hostile network.
+``get_prebuilt()`` has no check at all today, so this is strictly more than the install path does.
 
 WHAT IT DOES NOT DO.  It does not touch the Python checkout, the pinned packages, the model, or the
 packs.  Those are a ``git pull`` and a ``pip install -r``; rewriting the code this server is running
-from, in-process, is a different and much larger thing.  It does not update ``data/*.bin`` either -
-see ``data_files`` below for why that is left out rather than guessed at.
+from, in-process, is a different and much larger thing.  It does not update ``data/*.bin`` either.
 
-MEASURED, not assumed: every step is verified against the artifact rather than trusted.  The zip's
-member list is checked before extraction, ``BUILD.json`` is parsed and its version compared with the
-release tag, and the staged binary is executed before the installed one is replaced.
+MEASURED, not assumed: every step is verified against the artifact rather than trusted, and the whole
+run was exercised against the live v0.1.40.1 release on a machine whose card cannot run the CUDA 13
+build - see docs/DETAILS.md.
 """
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -65,9 +81,9 @@ MAX_ASSET_BYTES = 2 << 30
 # that into an instant, free refusal with an explanation.
 MIN_CC = 7.5
 
-# How many backups to keep.  One is enough to recover from a bad update; a few means a user who
-# updates, regrets it, and updates again can still get back.
-KEEP_BACKUPS = 3
+# Where setup.py keeps the engine it replaced, and what its docs call it.  Reused rather than
+# invented, so `setup.py --rollback-engine` works on an engine this updated.
+PREVIOUS_ENGINE = ".previous"
 
 # The staged binary is run with --help.  It must print something and exit 0 within this long, or the
 # stage is treated as broken.  Measured on a Windows build: under a second.
@@ -251,6 +267,8 @@ class Updater:
     backend: str = "cuda"
     repo: str = "Niko1221/Strata"
     gpu_cc: float | None = None          # the card's compute capability, if the caller knows it
+    env: object = None                  # the engine's own environment (its PATH carries the CUDA libs)
+    exclusive: object = None            # a context manager held across the destructive steps only
     fetch: object = None                           # url -> bytes iterator; injectable for tests
     head: object = None                            # url -> (status, headers); injectable for tests
 
@@ -263,14 +281,30 @@ class Updater:
     backup: Path | None = None            # set by _do_backup; what a rollback restores from
     _changed: bool = False                         # has anything on disk been replaced yet?
     _placed: list = field(default_factory=list)   # files this run has put in place, for the restore
+    _added: list = field(default_factory=list)    # names the new engine ADDS; the restore removes them
 
     def __post_init__(self):
         self.engine_exe = Path(self.engine_exe)
         self.engine_dir = self.engine_exe.parent
         self.root = self.engine_dir.parent / ".strata-update"
+        # The backup lives where setup.py puts it and where its docs say it is: engine/.previous. Using
+        # the same place means `python setup.py --rollback-engine` works on an engine this updated, and a
+        # user has ONE rollback to learn rather than two. Measured cost of one generation: 211 MiB
+        # (docs/TROUBLESHOOTING.md says the same). The scratch space - staging, the assembled new- tree,
+        # the archive - stays outside the engine directory so it is never near the engine's own files.
+        self.backup_root = self.engine_dir / PREVIOUS_ENGINE
+        # the probe runs the downloaded binary, so it gets the environment the ENGINE runs with, not
+        # this process's: the CUDA libraries the engine needs are on the config's lib_dirs, which the
+        # server puts on PATH only when it starts the engine. See _probe.
+        self.env = dict(self.env) if isinstance(self.env, dict) else None
         self._lock = threading.RLock()   # state_dict() is read from HTTP threads while a run writes
 
     # ---- plumbing ---------------------------------------------------------------------------------
+
+    def _exclusive(self):
+        """The caller's lock, or nothing. `exclusive` is the Service's FIFO, which serialises loading;
+        holding it across the swap is what stops a request from starting the engine mid-swap."""
+        return self.exclusive if callable(self.exclusive) else contextlib.nullcontext()
 
     def _put(self, **fields):
         """Set `detail` fields under the lock (see state_dict() for why the lock is needed)."""
@@ -332,6 +366,14 @@ class Updater:
             with self._open(API.format(repo=self.repo)) as r:
                 return json.loads(r.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
+            # 403 or 429 here is almost always the unauthenticated rate limit - 60 requests an hour per
+            # IP, which a shared or NAT'd connection runs out of - and "GitHub answered 403" tells the
+            # reader nothing about that. Measured: the limit is 60/hour without a token.
+            if e.code in (403, 429):
+                raise UpdateError(
+                    f"GitHub's API refused the request ({e.code}), which is usually its rate limit for "
+                    f"unauthenticated requests - 60 an hour, counted per internet address. Nothing was "
+                    f"changed. Try again in a few minutes, or run UPDATE.bat")
             raise UpdateError(f"GitHub answered {e.code} for the latest release; not changing anything")
         except Exception as e:
             raise UpdateError(f"could not reach GitHub ({type(e).__name__}: {e}); not changing anything")
@@ -471,12 +513,18 @@ class Updater:
         self.staging = self.backup = None
         self._placed.clear()
         try:
-            for key, label in STEPS:
-                self._step(key, label, "active")
-                # each step is one method that returns the note to show when it finishes
-                note = getattr(self, f"_do_{key}")()
-                if note:
-                    self._step(key, label, "done", note)
+            # The last three steps touch the installed engine. `exclusive` is the caller's own lock -
+            # the Service passes the FIFO that serialises loading - and it is held for exactly this
+            # window, so a request arriving mid-update cannot start the engine against a directory that
+            # is half swapped. It is NOT held for the download: blocking loads for a minute and a half
+            # to protect a window that has not opened yet would be the wrong trade.
+            with self._exclusive():
+                for key, label in STEPS:
+                    self._step(key, label, "active")
+                    # each step is one method that returns the note to show when it finishes
+                    note = getattr(self, f"_do_{key}")()
+                    if note:
+                        self._step(key, label, "done", note)
             # A successful run keeps the backup (that is the point of it) but not the 124 MB archive it
             # came from, and never the staging copy: those are what fill the disk when setup.py and the
             # updater both run on a machine nobody prunes.
@@ -709,12 +757,22 @@ class Updater:
 
     def _probe(self, staging: Path):
         """Run the STAGED binary.  This is the check that most protects an install: the replacement is
-        proven to start before the working one is touched."""
+        proven to start before the working one is touched.
+
+        Run with the ENGINE's own environment, not this process's.  A ready-made engine finds its CUDA
+        libraries through the `lib_dirs` the config carries, which the server puts on PATH when it
+        starts the engine (child_env) - those directories are NOT on the server's own PATH, and setup.py
+        pip-installs the cuBLAS wheels into site-packages rather than a system toolkit.  Probing with
+        os.environ would therefore fail with "DLL not found" on a perfectly good install and refuse the
+        update.  Measured on this machine only by luck: the system CUDA 12.6 toolkit happens to be on the
+        server's PATH, which is why the live run passed and a setup.py install would not have.
+        """
         exe = self._find_engine(staging)
         if exe is None:
             raise UpdateError("the staged engine has no strata binary; not installing it")
         try:
-            r = subprocess.run([str(exe), "--help"], capture_output=True, timeout=PROBE_TIMEOUT_S)
+            r = subprocess.run([str(exe), "--help"], capture_output=True, timeout=PROBE_TIMEOUT_S,
+                               env=self.env)
         except subprocess.TimeoutExpired:
             raise UpdateError("the staged engine did not answer --help within "
                               f"{PROBE_TIMEOUT_S} s; not installing it")
@@ -754,24 +812,27 @@ class Updater:
                           f"(exit code {code if code < 0x80000000 else hex(code)}); not installing it")
 
     def _backup(self) -> Path:
-        # A second-resolution stamp collides when two backups happen in the same second - the second
-        # call then writes into the first's directory and the pruning below deletes the wrong thing.
-        # A counter suffix keeps every backup distinct.
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        dest = self.root / f"backup-{stamp}"
-        n = 1
-        while dest.exists():
-            dest = self.root / f"backup-{stamp}-{n}"
-            n += 1
-        dest.mkdir(parents=True, exist_ok=True)
+        """Copy the installed engine to `engine/.previous`, replacing whatever was there.
+
+        One generation, as setup.py keeps it and as docs/TROUBLESHOOTING.md describes.  `.previous` from
+        an earlier update is replaced rather than kept, because keeping both would mean two rollbacks
+        to explain and 211 MiB each; setup.py's `--rollback-engine` swaps them, so one is what it uses
+        too.
+
+        Subdirectories are copied, not just files: a packaged HIP engine ships ROCm's per-architecture
+        folders (#1183 fixed exactly that), and a backup that skipped them could not restore them.
+        """
+        dest = self.backup_root
+        shutil.rmtree(dest, ignore_errors=True)
+        dest.mkdir(parents=True)
         for item in self.engine_dir.iterdir():
-            if item.is_file():
+            if item.name == PREVIOUS_ENGINE:      # never copy the previous engine into itself
+                continue
+            if item.is_dir():
+                shutil.copytree(item, dest / item.name)
+            else:
                 shutil.copy2(item, dest / item.name)
         (dest / "_version.txt").write_text(str(self.detail.get("installed")), encoding="utf-8")
-        # Keep the newest few; the rest are dead weight once a newer update has succeeded.
-        old = sorted(self.root.glob("backup-*"), reverse=True)[KEEP_BACKUPS:]
-        for d in old:
-            shutil.rmtree(d, ignore_errors=True)
         self.backup_dir = dest
         return dest
 
@@ -796,7 +857,7 @@ class Updater:
         engine that loses it will not start after the update, which would look like a bad release.
         """
         incoming = Path(tempfile.mkdtemp(prefix="new-", dir=str(self.root)))
-        files: list[Path] = []
+        files: list[Path] = []          # the same layout, one directory level down, ready to move in
         for src in sorted(staging.rglob("*")):
             if not src.is_file():
                 continue
@@ -810,6 +871,13 @@ class Updater:
         # Armed here, on purpose: from this line on the install can be half-written, so a failure must
         # restore it. Anything earlier fails with the install untouched and needs no restore.
         self._changed = True
+        # What was in the directory BEFORE the swap, so the restore can also take away anything the new
+        # engine ADDED. Restoring the backup alone is not enough: it holds only files that existed, so a
+        # file the new archive introduces would survive the rollback and leave the directory holding a
+        # mixture of two engines - the one outcome this whole design is meant to make impossible.
+        before = {p.name for p in self.engine_dir.iterdir()}
+        incoming_names = {(self.engine_dir / src.relative_to(incoming)).name for src in files}
+        self._added = sorted(incoming_names - before)
         for src in files:
             dst = self.engine_dir / src.relative_to(incoming)
             dst.parent.mkdir(parents=True, exist_ok=True)
@@ -848,9 +916,23 @@ class Updater:
         if not backup or not backup.exists():
             raise UpdateError("no backup to restore from")
         for src in backup.iterdir():
-            if src.name == "_version.txt" or not src.is_file():
+            if src.name == "_version.txt":
                 continue
-            shutil.copy2(src, self.engine_dir / src.name)
+            dst = self.engine_dir / src.name
+            if src.is_dir():
+                shutil.rmtree(dst, ignore_errors=True)      # a subdirectory the old engine had
+                shutil.copytree(src, dst)
+            else:
+                shutil.copy2(src, dst)
+        # Take away anything the new engine ADDED. Restoring the backup alone leaves those files in
+        # place, so the directory ends up holding a mixture of two engines - the exact outcome this
+        # exists to prevent. Measured before this was fixed.
+        for name in self._added:
+            added = self.engine_dir / name
+            if added.is_dir():
+                shutil.rmtree(added, ignore_errors=True)
+            else:
+                added.unlink(missing_ok=True)
         for leftover in self.engine_dir.glob("*.new"):
             leftover.unlink(missing_ok=True)
         self._placed.clear()

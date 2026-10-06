@@ -521,10 +521,20 @@ been checked against the hash GitHub publishes for the release asset (`digest` i
 come from the release download, the hash from `api.github.com`, so a substituted file does not come with a
 matching hash; a mismatch is deleted, and a release with no hash is refused rather than installed unchecked).
 After it: every member's CRC and path, the engine version inside, that this GPU is one the release has code for,
-and the **staged** engine run with `--help` before the installed one is touched. Only then is the installed
-engine copied to `engine/.previous`, replaced, and the new `BUILD.json` read back; any failure from that point
-restores the backup. A downgrade is refused, as is a release with no build for this platform or backend, or one
-whose engine is older than its own tag names.
+and the **staged** engine run with `--help` before the installed one is touched — run with the *engine's*
+environment, because that is where its CUDA libraries are, not on the server's own `PATH`. Only then is the
+installed engine copied to `engine/.previous` (the same place, and the same one generation, that `setup.py`
+keeps, so `--rollback-engine` works on an engine this updated), replaced, and the new `BUILD.json` read back.
+The swap is all or nothing: every new file is assembled before anything installed is touched, each lands
+atomically, the caller's lock is held so no request can start the engine mid-swap, and a failure restores
+the backup **and removes anything the new engine added** — restoring alone would leave a mixture of two
+engines. A downgrade is refused, as is a release with no build for this platform or backend, or one whose
+engine is older than its own tag names.
+
+What the hash does *not* do: it proves the bytes are the ones GitHub published for that asset. It does not
+make a malicious release safe — a hash pinned in the repo, as `setup.py` does for the Unsloth shards, is
+stronger, and costs a reviewed commit per release. `get_prebuilt()` has no check at all today, so this is
+strictly more than the install path does.
 
 Measured here on a GTX 1070 (compute capability 6.1, `STRATA_EXPERIMENTAL_SM60` CUDA 12.9 build) against the real
 v0.1.40.1 release: the CUDA 12 asset (190,241,259 bytes) was chosen because the installed engine's `BUILD.json`

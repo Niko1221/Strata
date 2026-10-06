@@ -25,6 +25,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import unittest
 import zipfile
 from pathlib import Path
 
@@ -436,10 +437,12 @@ def t_workspace_is_cleaned():
                 # each round starts from the new version, so pretend a newer one is out
                 (eng3 / "BUILD.json").write_text(json.dumps({"version": "0.1.31"}), encoding="utf-8")
             zips = list(up3.root.glob("*.zip"))
-            check(not zips, f"three updates leave no zips behind", str([p.name for p in zips]))
-            check(len(list(up3.root.glob("backup-*"))) <= U.KEEP_BACKUPS,
-                  f"and at most {U.KEEP_BACKUPS} backups",
-                  str(len(list(up3.root.glob("backup-*")))))
+            check(not zips, "three updates leave no zips behind", str([p.name for p in zips]))
+            check((eng3 / U.PREVIOUS_ENGINE).is_dir(),
+                  "and one backup generation, at engine/.previous - not three timestamped copies",
+                  str(sorted(p.name for p in eng3.iterdir())))
+            check(not list(up3.root.glob("backup-*")),
+                  "and no timestamped backup directories in the scratch space")
 
 
 def t_truncated_download_refused():
@@ -487,16 +490,27 @@ def t_rollback_after_apply():
               state["detail"]["error"][:60])
 
 
-def t_backup_retention():
-    print("\nold backups are pruned, the newest few kept")
+def t_backup_is_one_generation_in_previous():
+    print("\nthe backup is ONE generation at engine/.previous, as setup.py keeps it")
     with tempfile.TemporaryDirectory() as d:
         eng = install_fake(Path(d) / "engine", "0.1.31")
         up = U.Updater(engine_exe=eng / "strata.exe")
         up.detail["installed"] = "0.1.31"
-        for i in range(U.KEEP_BACKUPS + 2):
-            up._backup()
-        left = sorted(up.root.glob("backup-*"))
-        check(len(left) == U.KEEP_BACKUPS, f"at most {U.KEEP_BACKUPS} backups are kept", f"{len(left)} left")
+        up._backup()
+        check((eng / U.PREVIOUS_ENGINE).is_dir(), "engine/.previous exists",
+              str(up.backup_dir.name))
+        check((eng / U.PREVIOUS_ENGINE / "BUILD.json").exists(), "holding the engine's files")
+        # a second backup REPLACES it rather than stacking up: 211 MiB each, and one is what
+        # setup.py --rollback-engine swaps between
+        (eng / "BUILD.json").write_text(json.dumps({"version": "0.1.31", "extra": True}),
+                                        encoding="utf-8")
+        up._backup()
+        check(json.loads((eng / U.PREVIOUS_ENGINE / "BUILD.json").read_text()).get("extra") is True,
+              "a second backup replaces the first, holding the current files")
+        gens = [p for p in eng.iterdir() if p.is_dir() and p.name.startswith("backup-")]
+        check(not gens, "and there are no timestamped generations beside it", str([p.name for p in gens]))
+        check(up.backup_dir.parent == eng, "the backup is inside the engine directory",
+              str(up.backup_dir.parent.name))
 
 
 def t_gpu_arch_refused_before_download():
@@ -673,7 +687,8 @@ def t_swap_is_all_or_nothing():
         eng = install_fake(Path(d) / "engine", "0.1.31")
         (eng / "strata-vision.exe").write_bytes(b"the OLD vision engine")
         (eng / "keepme.dat").write_bytes(b"a file the new archive does not carry")
-        before = {p.name: p.read_bytes() for p in sorted(eng.iterdir())}
+        before = {p.name: p.read_bytes() for p in sorted(eng.iterdir())
+                     if p.is_file() and p.name != U.PREVIOUS_ENGINE}
 
         net = Fake("0.1.38")
         up = U.Updater(engine_exe=eng / "strata.exe")
@@ -707,10 +722,13 @@ def t_swap_is_all_or_nothing():
         check("Restored" in state["detail"].get("error", ""), "the message says so",
               state["detail"].get("error", "")[:46])
 
-        after = {p.name: p.read_bytes() for p in sorted(eng.iterdir())}
+        after = {p.name: p.read_bytes() for p in sorted(eng.iterdir())
+                 if p.is_file() and p.name != U.PREVIOUS_ENGINE}
         check(after == before, "every installed file is byte-for-byte what it was",
               str([k for k in set(before) ^ set(after)])[:48])
         check(U.installed_version(eng) == "0.1.31", "BUILD.json reports the old version again")
+        check((eng / U.PREVIOUS_ENGINE).is_dir(),
+              "and the backup survives a failed run, for a by-hand restore")
         check(not list(eng.glob("*.new")), "and no half-written temporary is left behind",
               str([p.name for p in eng.glob("*.new")]))
         check((eng / "keepme.dat").exists(), "a file the new archive does not carry is still there")
@@ -849,13 +867,141 @@ def t_cleanup_survives_a_locked_staging_tree():
         check(not stuck.exists(), "and the next call removes it")
 
 
+def t_adversarial_findings():
+    print("\nthe three bugs an adversarial review turned up")
+
+    print("\n  1. the probe must run with the ENGINE's environment, not the server's")
+    # A ready-made engine finds its CUDA libraries through the config's lib_dirs, which the server puts
+    # on PATH when it starts the engine - they are NOT on the server's own PATH, and setup.py pip-installs
+    # the cuBLAS wheels into site-packages rather than a system toolkit. Probing with os.environ would
+    # refuse a good update with "DLL not found" on a normal install. Measured: this machine only passed by
+    # luck, because the system CUDA 12.6 toolkit happens to be on the server's PATH.
+    with tempfile.TemporaryDirectory() as d:
+        eng = install_fake(Path(d) / "engine", "0.1.31")
+        seen = {}
+
+        def run_with(env):
+            u = U.Updater(engine_exe=eng / "strata.exe", env=env)
+            u.fetch, u.head = Fake("0.1.38").fetch, Fake("0.1.38").head
+            u.check()
+            real = U.subprocess.run
+
+            def spy(cmd, **kw):
+                seen["env"] = kw.get("env")
+                return real(cmd, **kw)
+
+            U.subprocess.run = spy
+            try:
+                return u.run()
+            finally:
+                U.subprocess.run = real
+
+        # A REAL environment with one marker, not a bare {"PATH": ...}: a child process started with
+        # nothing else in its environment fails intermittently on Windows, which made this check flaky
+        # (1 run in 12) for a reason that had nothing to do with what it is testing.
+        marker = dict(os.environ, STRATA_TEST_LIB_DIR="C:/some/lib/dir")
+        run_with(marker)
+        check(isinstance(seen.get("env"), dict)
+              and seen["env"].get("STRATA_TEST_LIB_DIR") == "C:/some/lib/dir",
+              "the probe is given the environment it was constructed with, lib_dirs and all",
+              str((seen.get("env") or {}).get("STRATA_TEST_LIB_DIR")))
+        # A FRESH engine dir: the first run already installed 0.1.38, so a second one against the same
+        # directory would stop at "already on the latest" and never reach the probe at all.
+        seen.clear()
+        eng2 = install_fake(Path(d) / "engine2", "0.1.31")
+        u = U.Updater(engine_exe=eng2 / "strata.exe", env=None)
+        u.fetch, u.head = Fake("0.1.38").fetch, Fake("0.1.38").head
+        u.check()
+        real = U.subprocess.run
+
+        def spy2(cmd, **kw):
+            seen["env"] = kw.get("env")
+            return real(cmd, **kw)
+
+        U.subprocess.run = spy2
+        try:
+            u.run()
+        finally:
+            U.subprocess.run = real
+        check(seen.get("env", "missing") is None,
+              "with no engine environment given, the probe inherits this process's (env=None)",
+              repr(seen.get("env", "missing")))
+
+    print("\n  2. the restore must remove a file the NEW engine added")
+    # The backup only holds files that existed, so restoring it left an introduced file in place and the
+    # directory ended up holding a mixture of two engines - the one outcome this exists to prevent.
+    with tempfile.TemporaryDirectory() as d:
+        eng = install_fake(Path(d) / "engine", "0.1.31")
+        before = {p.name for p in eng.iterdir() if p.name != U.PREVIOUS_ENGINE}
+        payload = make_zip({**engine_files("0.1.38"), "newfile.dat": b"added by the new engine"}, "0.1.38")
+        net = Fake("0.1.38", zip_bytes=payload)
+        up = U.Updater(engine_exe=eng / "strata.exe")
+        up.fetch, up.head = net.fetch, net.head
+        up.check()
+        real = up._verify
+        up._verify = lambda tag: (_ for _ in ()).throw(RuntimeError("after the swap"))
+        state = up.run()
+        up._verify = real
+        check(state["state"] == "failed", "the run fails after the swap", state["state"])
+        after = {p.name for p in eng.iterdir() if p.name != U.PREVIOUS_ENGINE}
+        check(not (after - before), "and the file the new engine added is GONE again",
+              str(sorted(after - before)))
+        check(after == before, "so the directory is exactly as it was", str(sorted(after ^ before)))
+
+    print("\n  3. a subdirectory in the engine directory is backed up and restored")
+    # A packaged HIP engine ships ROCm's per-architecture folders (upstream fixed exactly that in
+    # #1183), and a backup that skipped directories could not put them back.
+    with tempfile.TemporaryDirectory() as d:
+        eng = install_fake(Path(d) / "engine", "0.1.31")
+        lib = eng / "lib" / "gfx1151"
+        lib.mkdir(parents=True)
+        (lib / "rocblas.dll").write_bytes(b"per-arch ROCm library")
+        real = up_verify = None
+        net = Fake("0.1.38")
+        up = U.Updater(engine_exe=eng / "strata.exe")
+        up.fetch, up.head = net.fetch, net.head
+        up.check()
+        up._verify = lambda tag: (_ for _ in ()).throw(RuntimeError("after the swap"))
+        state = up.run()
+        check(state["state"] == "failed", "the run fails after the swap", state["state"])
+        check((eng / "lib" / "gfx1151" / "rocblas.dll").exists(),
+              "the subdirectory survived the swap and the restore")
+        backed_up = up.backup and (up.backup / "lib" / "gfx1151" / "rocblas.dll")
+        check(backed_up and Path(backed_up).exists(), "and it is in the backup", str(up.backup))
+
+
+class UpdateChecks(unittest.TestCase):
+    """Every `t_*` function above, as a unittest method.
+
+    Without this the file is invisible to CI: pytest collects nothing from a module with no `test_*`
+    functions, and `python -m unittest discover -s serve` finds no TestCase either - verified, both ran
+    zero tests on this file. So the bodies stay plain functions (they print a readable transcript when
+    run directly) and this wraps them, asserting on the failures each one collected.
+    """
+
+
+def _as_test(fn):
+    def test(self):
+        before = len(FAILS)
+        fn()
+        new = FAILS[before:]
+        self.assertFalse(new, "\n".join(f"  FAILED: {f}" for f in new))
+    test.__name__ = "test_" + fn.__name__[2:]
+    test.__doc__ = (fn.__doc__ or fn.__name__).strip().splitlines()[0]
+    return test
+
+
+for _name in sorted(n for n in list(globals()) if n.startswith("t_")):
+    setattr(UpdateChecks, _as_test(globals()[_name]).__name__, _as_test(globals()[_name]))
+
+
 def main() -> int:
     for fn in (t_version_and_assets, t_installed_version, t_zip_safety, t_happy_path,
                t_no_update_needed, t_downgrade_refused, t_version_mismatch_refused,
                t_staged_engine_must_run, t_probe_explains_a_missing_runtime,
                t_gpu_arch_refused_before_download, t_hotfix_release_tag, t_swap_is_all_or_nothing, t_sha256_verified_before_anything_is_applied,
-               t_workspace_is_cleaned, t_cleanup_survives_a_locked_staging_tree, t_truncated_download_refused, t_rollback_after_apply,
-               t_backup_retention, t_missing_asset_refused):
+               t_workspace_is_cleaned, t_cleanup_survives_a_locked_staging_tree, t_adversarial_findings, t_truncated_download_refused, t_rollback_after_apply,
+               t_backup_is_one_generation_in_previous, t_missing_asset_refused):
         fn()
     print(f"\n{U.__name__}: {len(FAILS)} failures out of {CHECKS[0]} checks")
     for f in FAILS:
