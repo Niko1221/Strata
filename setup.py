@@ -1871,6 +1871,115 @@ def amd_gpus_windows(adapters=None, registry=None) -> list[dict]:
     return found
 
 
+# ------------------------------------------------------------------------------------------------ Intel Arc on Windows
+# The SYCL port (sycl/, docs/INTEL_ARC.md) runs on discrete Intel Arc cards, Linux-only for now.  On Windows setup
+# used to stop at "no NVIDIA GPU found" without naming the Intel card in the PC.  These helpers list the Intel
+# display adapters the same way amd_gpus_windows does (Win32_VideoController + the display-class registry's 64-bit
+# VRAM size, which is the true VRAM: WMI's AdapterRAM stops at 4 GB).  The device table mirrors
+# sycl/setup_intel.py INTEL_ARC - keep the two in sync.
+_WIN_INTEL_DID = {0xE223: ("Arc Pro B70", 32.0), 0xE221: ("Arc Pro B60", 24.0), 0xE211: ("Arc Pro B60", 24.0),
+                  0xE20B: ("Arc B580", 12.0), 0xE20C: ("Arc B570", 10.0), 0xE212: ("Arc B50", 16.0),
+                  0x56A0: ("Arc A770", 16.0), 0x56A1: ("Arc A750", 8.0), 0x56A2: ("Arc A580", 8.0),
+                  0x56A5: ("Arc A380", 6.0), 0x56A6: ("Arc A310", 4.0), 0x5690: ("Arc A770M", 16.0)}
+
+
+def _pci_intel_device_id(text: str) -> int | None:
+    m = re.search(r"VEN_8086&DEV_([0-9A-F]{4})", str(text or ""), re.I)
+    return int(m.group(1), 16) if m else None
+
+
+def intel_gpus_windows(adapters=None, registry=None) -> list[dict]:
+    """The Intel display adapters present, in display-adapter order, with the VRAM Strata would plan with.
+    adapters / registry: tools/test_setup_intel_windows.py passes mocked ones."""
+    adapters = _win_display_adapters() if adapters is None else adapters
+    registry = _win_display_registry() if registry is None else registry
+    if not adapters:                                   # no WMI answer: the registry alone (it can list removed cards)
+        adapters = [{"name": r.get("DriverDesc", ""), "pnp": r.get("MatchingDeviceId", ""), "ram": 0} for r in registry]
+    used = set()
+    found = []
+    for ad in adapters:
+        did = _pci_intel_device_id(ad.get("pnp"))
+        if did is None:
+            continue                                   # not an Intel (VEN_8086) PCI device
+        vram, driver = 0.0, ""
+        for k, r in enumerate(registry):               # the same card's driver instance: its 64-bit VRAM size
+            if k in used or _pci_intel_device_id(r.get("MatchingDeviceId")) != did:
+                continue
+            if r.get("DriverDesc") and ad.get("name") and r["DriverDesc"].strip() != ad["name"].strip():
+                continue
+            used.add(k)
+            mem = r.get("HardwareInformation.qwMemorySize")
+            if isinstance(mem, bytes):
+                mem = int.from_bytes(mem[:8], "little")
+            vram = int(mem) / 2 ** 30 if isinstance(mem, int) and mem > 0 else 0.0
+            driver = str(r.get("DriverVersion") or "")
+            break
+        known = _WIN_INTEL_DID.get(did)
+        if known is not None:
+            _, table_gb = known
+            if vram == 0.0:                            # integrated cards have no qwMemorySize; discrete ones do
+                vram = table_gb
+        elif vram == 0.0 and ad.get("ram", 0) > 0:
+            vram = ad["ram"] / 2 ** 30                 # WMI's 32-bit figure (at most 4 GB)
+        name = ad.get("name") or (f"Intel Arc {known[0]}" if known else f"Intel GPU (device {did:04X})")
+        arch = "xe" if known is not None else ""
+        g = {"index": len(found), "name": name, "vram_gb": vram, "arch": arch or f"unknown (PCI {did:04X})",
+             "driver": driver or "intel", "vendor": "intel", "pci_id": did}
+        found.append(g)
+    return found
+
+
+def intel_problem(g) -> str | None:
+    """Why Strata cannot use this Intel card (None: a discrete Arc the SYCL port knows, experimental Linux-only)."""
+    if g.get("pci_id") in _WIN_INTEL_DID:
+        return None
+    return ("not supported - Strata's Intel backend runs on discrete Arc cards only "
+            "(Arc Pro B70 / B60 / B50, Arc B580 / B570, Arc A770 / A750 / A580 / A380 / A310: docs/INTEL_ARC.md)")
+
+
+def intel_gpus() -> list[dict]:
+    """Every Intel GPU Strata knows, for the no-NVIDIA / no-AMD message: Windows display adapters, else the Linux
+    sysfs cards (vendor 8086 under xe or i915, sycl/setup_intel.py's detection without importing it)."""
+    if WIN:
+        try:
+            return intel_gpus_windows()
+        except (OSError, ValueError):
+            return []
+    found = []
+    try:
+        base = Path("/sys/class/drm")
+        if not base.is_dir():
+            return []
+        for card in sorted(base.glob("card[0-9]*")):
+            if not card.name[4:].isdigit():
+                continue
+            try:
+                dev = card / "device"
+                vendor = (dev / "vendor").read_text().strip().lower()
+                devid = (dev / "device").read_text().strip().lower().replace("0x", "")
+                driver = os.path.basename(os.path.realpath(dev / "driver")) if (dev / "driver").exists() else ""
+            except OSError:
+                continue
+            if vendor != "0x8086" or driver not in ("xe", "i915"):
+                continue
+            try:
+                did = int(devid, 16)
+            except ValueError:
+                continue
+            known = _WIN_INTEL_DID.get(did)
+            if known is None:
+                if driver != "xe":
+                    continue
+                name, vram = f"Intel GPU {devid} (xe)", 0.0
+            else:
+                name, vram = f"Intel {known[0]}", known[1]
+            found.append({"index": len(found), "name": name, "vram_gb": vram, "arch": "xe",
+                          "driver": driver, "vendor": "intel", "pci_id": did})
+    except OSError:
+        return []
+    return found
+
+
 def hip_devices(probe: Path | None = None, text: str | None = None) -> list[dict] | None:
     """The GPUs the HIP runtime enumerates, numbered as HIP_VISIBLE_DEVICES numbers them, from the installed engine's
     `strata-device --list-devices`; None when there is no HIP engine here or it does not answer.  text: its output
@@ -4009,8 +4118,15 @@ def sycl_setup(argv) -> int:
     warn("Intel Arc (--backend sycl) is EXPERIMENTAL: a community port of the engine, not tested by the Strata "
          "maintainers (no Intel card here). Expect rough edges; issues with your card and driver versions help.")
     if WIN:
+        try:
+            intel = intel_gpus_windows()
+        except (OSError, ValueError):
+            intel = []
+        usable = [g for g in intel if intel_problem(g) is None]
+        found_txt = ("found: " + ", ".join(f"{g['name']} ({g['vram_gb']:.1f} GB)" for g in usable) + ". "
+                     if usable else "")
         fail("the Intel Arc engine has no Windows setup yet (no ready-made Intel engine either)",
-             "run it on Linux (Ubuntu 24.04 with Intel's GPU driver and oneAPI): docs/INTEL_ARC.md")
+             f"{found_txt}run it on Linux (Ubuntu 24.04 with Intel's GPU driver and oneAPI): docs/INTEL_ARC.md")
     say("  There is no ready-made Intel engine: it is built from source with Intel oneAPI (icpx + oneMKL),")
     say("  docs/INTEL_ARC.md. Setup continues with sycl/setup_intel.py.")
     rest, skip = [], False
@@ -4288,9 +4404,18 @@ def main() -> int:
                 (warn if line.startswith("!") else say)(line.lstrip("!"))
     else:
         if not found:
+            intel = intel_gpus()
+            intel_usable = [g for g in intel if intel_problem(g) is None]
+            if intel_usable:
+                say("  Your Intel GPUs:")
+                for g in intel:
+                    say(f"    GPU {g['index']}: {g['name']}, {g['vram_gb']:.1f} GB VRAM - "
+                        + (intel_problem(g) or "can be used (experimental, Linux-only)"))
             fail("no NVIDIA GPU found (nvidia-smi did not answer)",
                  "install the NVIDIA driver from https://www.nvidia.com/drivers and restart the PC"
-                 + (f"; AMD ({', '.join(AMD_ARCHS)}): --backend hip" if amd else ""))
+                 + (f"; AMD ({', '.join(AMD_ARCHS)}): --backend hip" if amd else "")
+                 + ("; Intel (" + ", ".join(f"{g['name']} {g['vram_gb']:.0f} GB" for g in intel_usable) +
+                    "): experimental Linux-only, docs/INTEL_ARC.md (--backend sycl on Linux)" if intel_usable else ""))
         if len(found) > 1 or gpu_problem(found[0]) is not None:
             gpu_table(found)
         sel = choose_gpus(a, found)                    # asked when two or more cards can share the model
