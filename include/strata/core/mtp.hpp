@@ -149,6 +149,8 @@ public:
     }
 
 private:
+    // Small synthetic bind tests seed only geometry/device/row count, without loading the full draft layer.
+    friend struct MtpBindTestAccess;
     bool record_forward(int T, int step_row0, cudaStream_t cs, std::string& err);
     /// The layer's front for T rows at step rows [row0, +T): the embedding, the fc projections, the attention
     /// hyper-connection read (R_, inj_, mixed_) and the K/V appended.

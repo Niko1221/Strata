@@ -35,6 +35,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <exception>
 #include <fstream>
 #include <sstream>
@@ -53,6 +54,26 @@ namespace strata::core {
 namespace {
 
 constexpr float EPS = 1e-6f;
+
+// Low-volume bind diagnostics; no prompt text or paths. Disabled unless explicitly requested.
+void debug_shared_head_bound(int device, int head_type, int draft_type, bool subset,
+                             int64_t tokens, size_t host_tokens) {
+    const char* debug = std::getenv("STRATA_DEBUG_MTP");
+    if (!debug || !debug[0] || debug[0] == '0') return;
+    const std::time_t secs = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    std::tm utc{};
+#if defined(_WIN32)
+    gmtime_s(&utc, &secs);
+#else
+    gmtime_r(&secs, &utc);
+#endif
+    char ts[32];
+    std::strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%SZ", &utc);
+    std::fprintf(stderr, "{\"ts\":\"%s\",\"area\":\"core.mtp\",\"event\":\"shared_head_bound\","
+                 "\"level\":\"debug\",\"data\":{\"device\":%d,\"head_type\":%d,\"draft_head_type\":%d},"
+                 "\"state\":{\"subset\":%s,\"subset_tokens\":%lld,\"host_tokens\":%zu,\"owns_head\":false}}\n",
+                 ts, device, head_type, draft_type, subset ? "true" : "false", (long long) tokens, host_tokens);
+}
 
 // #783 PR-i: STRATA_MTP_CATCHUP_ALL=1 catches the drafter's K/V up for the whole verified window, rejected rows included
 bool mtp_catchup_all() {
@@ -608,10 +629,16 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
             err = "mtp: incompatible shared draft head";
             return false;
         }
+        // The source owns the device buffers and outlives every slot. Copy the metadata too:
+        // a subset's format may differ from the main head's (--mtp-q4), and top2 needs its token map.
         dhead_ = shared->dhead_;
         dvocab_ = shared->dvocab_;
         n_dvocab_ = shared->n_dvocab_;
+        dhead_type_ = shared->dhead_type_;
+        dvocab_host_ = shared->dvocab_host_;
         owns_draft_head_ = false;
+        debug_shared_head_bound(device_, head->type(), dhead_type_, dhead_ != nullptr,
+                                n_dvocab_, dvocab_host_.size());
     }
     // the draft head's token subset, when tools/draft_vocab.py wrote one
     if (dhead_ == nullptr && shared == nullptr && !full_head_env()) {
