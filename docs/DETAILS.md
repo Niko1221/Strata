@@ -414,30 +414,50 @@ START-HERE.bat --calibrate                      tune the engine for this PC (abo
 
 With more than one model installed, it asks which one to start. `run-<model>.bat` starts a model directly.
   **The engine archive is checked before it is installed.** Setup normally downloads a ready-made engine from
-  the project's GitHub release, and a release asset that is replaced or served by something hostile would
-  otherwise become code that runs on this PC. So setup reads the asset's size and SHA-256 from the releases
-  API - a different origin from the download - and hashes the file it just downloaded. It does this *before*
-  the archive is opened, so a file that does not match never reaches the engine directory. A file that does
-  not match is deleted, so the next run downloads the published one again, and the verified hash is kept in
-  the download's finish mark so the ~190 MB is not hashed twice. The check reuses the same `verify_sha256()`
-  the Unsloth shards already use.
+  the project's GitHub release - the NVIDIA one, or the AMD one, which is a second download - and a release
+  asset that is replaced or served by something hostile would otherwise become code that runs on this PC.
+  So setup reads the asset's size and SHA-256 from the releases API - a different origin from the download -
+  and hashes the file it just downloaded. It does this *before* the archive is opened, so a file that does
+  not match never reaches the engine directory. A file that does not match is deleted, so the next run
+  downloads the published one again, and the verified hash is kept in the download's finish mark, so the
+  ~190 MB is hashed once and not again on the next run.
   
   Measured on v0.1.40's `strata-windows-x64.zip`: the API reported 131,707,082 bytes and
   `cd264b2125fdb85e84a8264da2ab2343463e6c7f9a12f317d4ce7192cd2c6b33`; the download hashed to the same, and a
   file of exactly the same size but different bytes was refused and deleted. The size check on its own could
   not have caught that case.
   
+  It follows `verify_sha256()` - the Unsloth shards' check - for the mark and the idiom, but spells out the
+  size check and the hashing rather than calling it. `verify_sha256()` ends in `fail()`, which is
+  `sys.exit(1)`, and a refusal here has to be an `Exception`: the engine-*update* paths wrap their download
+  in `except Exception` and fall back to the engine already installed, and `SystemExit` is a
+  `BaseException`, so it would fly past that and kill the start. Measured before this was split out: a wrong
+  hash, a wrong size and a missing digest each escaped as `SystemExit(1)`.
+  
+  **What a refusal does depends on whether there is something to fall back to.** A first install stops,
+  with the reason. An update does not: nothing has been unpacked at that point, the engine that is already
+  installed is untouched and works, so setup prints `keeping the engine that is installed`, skips the new
+  engine, and starts what is there - the same thing it does when a download fails.
+  
+  **Where the hash comes from.** The tag is read out of the download URL, so the exact release the bytes
+  claim to come from is the one checked, not "latest" (setup tries the checkout's own release first, #214).
+  The repository comes out of the URL too, so a fork's releases are checked against the fork. And the hash
+  is read from `api.github.com` even when `--prebuilt` points the *download* somewhere else, which is the
+  point: a compromised mirror cannot supply bytes with a matching digest.
+  
   What this does not cover, stated plainly: it proves the bytes are the ones GitHub published for that asset,
   so it catches a corrupted download, a mirror or proxy that substituted the file, and a hostile network. It
   does not make a malicious *release* safe - if whoever can publish a release publishes a hostile engine, the
   published hash matches it. Only a hash pinned in the source closes that, at the cost of a commit per
-  release; `REPO` and `engine_digest()` in `setup.py` are where one would go. A hash from the API is also
-  only as available as the API: if GitHub will not answer, setup stops rather than install unchecked, and
-  `STRATA_ALLOW_UNVERIFIED_ENGINE=1` is the explicit, recorded way to accept that (for an air-gapped or
-  mirrored install).
+  release.
   
-  The hash is read from `api.github.com` even when `--prebuilt` points the *download* somewhere else, which is
-  the point: a compromised mirror cannot supply bytes with a matching digest.
+  A hash from the API is also only as available as the API. If GitHub will not answer - no internet, or the
+  anonymous rate limit, 60 requests an hour counted per internet address, which a shared or office
+  connection can run out of - there is nothing to check against. The same is true when `--prebuilt` points at
+  a local folder or a plain mirror, which is not a release URL and has no published hash at all; setup says
+  which of the two it is rather than claiming to have checked something. `STRATA_ALLOW_UNVERIFIED_ENGINE=1`
+  is the explicit, recorded way to accept an engine that cannot be checked, and setup says so in its output
+  when it installs one that way.
 
 **Tuning for your PC (`--calibrate`, engine 0.1.19).** Three engine settings depend on the PC more than on the model:
 - the share of the experts missing from VRAM that are copied to the GPU instead of computed by the CPU

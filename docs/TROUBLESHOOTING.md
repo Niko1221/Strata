@@ -34,13 +34,26 @@ settings; it cannot be turned back on without a reset of Windows), or, if only t
 An update keeps the engine it replaced in `engine\.previous` (one generation, about 210 MiB).
 `python setup.py --rollback-engine` puts it back (and keeps the newer one there: run it again to go forward) (#670).
 
-**Setup stopped: `cannot verify strata-*.zip: GitHub's API did not give a SHA-256 for it`.**
-  The engine archive is installed only once it matches the size and SHA-256 the releases API publishes for it,
-  and setup will not install it unchecked. The usual cause is that GitHub's API did not answer - no internet,
-  or the anonymous rate limit (60 requests an hour, counted per internet address, so a shared or office
-  connection can run out). Nothing is lost and the downloaded file is left alone; run setup again in a few
-  minutes. If you install from your own mirror with `--prebuilt` and accept that the archive cannot be checked
-  against GitHub, set `STRATA_ALLOW_UNVERIFIED_ENGINE=1` - setup then says so in its output.
+**Setup stopped: `cannot verify the Strata engine: ...`.**
+  The engine archive is installed only once it matches the size and SHA-256 the release publishes for it, and
+  setup will not install it unchecked. What it says after the colon says what to do:
+  - `GitHub's API did not give a SHA-256` - GitHub did not answer. Usually the anonymous rate limit (60
+    requests an hour, counted per internet address, so a shared or office connection can run out), or no
+    internet. The downloaded file is deleted so the next run fetches the published one; run setup again in a
+    few minutes.
+  - `is not a GitHub release URL` - you pointed setup at a local folder or a plain mirror with `--prebuilt`,
+    and there is no published hash for that. Setup will not claim to have checked it. If you trust that
+    source, set `STRATA_ALLOW_UNVERIFIED_ENGINE=1` and setup says so in its output when it installs it.
+  - `has the wrong SHA-256` / `is N bytes, not the published M` - the file does not match the release. That
+    is either a corrupted download or something substituted; the file is deleted either way.
+
+  **While updating an already-installed engine this does not stop setup.** Nothing has been unpacked at that
+  point, so the engine that is already installed is kept, it starts as usual, and setup prints
+  `keeping the engine that is installed`. The new engine is simply not installed. Run setup again when
+  GitHub answers.
+
+  A hash from the API proves the bytes are the ones GitHub published for that asset. It cannot tell you the
+  release was not hostile to begin with; only a hash pinned in the source does that.
 
 **Python or the build tools could not be installed.**
 Install what it names (links are printed), then run it again. Everything already done is kept.

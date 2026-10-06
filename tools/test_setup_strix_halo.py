@@ -14,6 +14,7 @@ The other chips are synthetic (their KFD gfx_target_version and pci.ids ids).  N
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import re
@@ -360,6 +361,7 @@ class WindowsZip(unittest.TestCase):
         for p in (mock.patch.object(setup, "ROOT", self.root), mock.patch.object(setup, "warn", self.warnings.append),
                   mock.patch.object(setup, "say", lambda *a, **k: None), mock.patch.object(setup, "ok", lambda *a, **k: None),
                   mock.patch.object(setup, "download", self.fake_download),
+                  mock.patch.object(setup, "engine_digest", self.fake_digest),
                   mock.patch.object(setup.urllib.request, "urlopen", lambda *a, **k: io.BytesIO(b"")),
                   mock.patch.object(setup, "hip_runtime_beside_exe", lambda eng: None)):
             p.start()
@@ -371,6 +373,18 @@ class WindowsZip(unittest.TestCase):
             z.writestr("BUILD.json", json.dumps({"source": "prebuilt", "backend": "hip", "platform": "windows-x64",
                                                   "version": "0.1.40", "archs": self.archs, "lib_dirs": []}))
             z.writestr(setup.EXE, "x")
+
+
+    def fake_digest(self, asset, base):
+        """The size and SHA-256 of whatever the mocked download just wrote.
+
+        The engine archive is checked against a published digest before it is unpacked, so a test that
+        mocks the download has to say what the hash is or it never reaches the part it is about. This
+        hashes the real bytes the fake download produced, so the check still runs.
+        """
+        p = self.root / "engine" / asset
+        data = p.read_bytes() if p.exists() else b""
+        return len(data), hashlib.sha256(data).hexdigest()
 
     def halo(self):
         return {"index": 0, "name": setup.AMD_NAMES["gfx1151"], "vram_gb": 52.0, "arch": "gfx1151", "uma": True,

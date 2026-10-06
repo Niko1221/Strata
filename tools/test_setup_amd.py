@@ -333,8 +333,21 @@ class WindowsDetection(unittest.TestCase):
             ver = ".".join(map(str, setup.WIN_HIP_MIN_ENGINE))
             good = {"source": "prebuilt", "backend": "hip", "version": ver, "archs": ["gfx1100", "gfx1201"],
                     "lib_dirs": ["rocm/bin"]}
+            def digest(asset, base):
+                """The size and SHA-256 of the archive `download()` just wrote.
+
+                The engine archive is checked against a published digest before it is unpacked, and a local
+                --prebuilt folder has no published one; this test is about which card the zip supports, so
+                it says what the hash of the real bytes is rather than switching the check off.
+                """
+                import hashlib
+                p = root / "engine" / asset
+                data = p.read_bytes() if p.exists() else b""
+                return len(data), hashlib.sha256(data).hexdigest()
+
             with mock.patch.object(setup, "ROOT", root), mock.patch.object(setup, "say", lambda *a, **k: None), \
-                    mock.patch.object(setup, "ok", lambda *a: None), mock.patch.object(setup, "warn", lambda *a: None):
+                    mock.patch.object(setup, "ok", lambda *a: None), mock.patch.object(setup, "warn", lambda *a: None), \
+                    mock.patch.object(setup, "engine_digest", digest):
                 publish({**good, "archs": ["gfx1100"]})
                 self.assertIsNone(setup.get_prebuilt_hip(str(pub) + "/", {"arch": "gfx1201"}))
                 publish({**good, "version": "0.1.30"})
