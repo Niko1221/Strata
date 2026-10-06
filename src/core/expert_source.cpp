@@ -1420,6 +1420,41 @@ uint64_t FileExpertSource::expert_bytes() const {
     return total;
 }
 
+#if defined(_WIN32)
+namespace {
+// Whether two unbuffered, overlapped handles hold the same bytes in 16 blocks of 64 KiB spread over `bytes` (the first
+// and the last included).  A sampled check: it catches a mirror left from an older pack, not a single flipped byte.
+bool same_samples(HANDLE a, HANDLE b, uint64_t bytes) {
+    constexpr uint64_t kBlock = 64 << 10;
+    constexpr int kSamples = 16;
+    if (bytes < kBlock) return false;
+    uint8_t* buf = (uint8_t*) VirtualAlloc(nullptr, 2 * kBlock, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (buf == nullptr) return false;
+    HANDLE ev = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    bool same = ev != nullptr;
+    for (int s = 0; same && s < kSamples; ++s) {
+        const uint64_t last = (bytes - kBlock) / 4096 * 4096;
+        const uint64_t off = last / (kSamples - 1) * (uint64_t) s / 4096 * 4096;
+        for (int f = 0; same && f < 2; ++f) {
+            OVERLAPPED o{};
+            o.Offset = (DWORD) off;
+            o.OffsetHigh = (DWORD) (off >> 32);
+            o.hEvent = ev;
+            DWORD got = 0;
+            const HANDLE h = f == 0 ? a : b;
+            if ((!ReadFile(h, buf + f * kBlock, (DWORD) kBlock, nullptr, &o) && GetLastError() != ERROR_IO_PENDING) ||
+                !GetOverlappedResult(h, &o, &got, TRUE) || got != kBlock)
+                same = false;
+        }
+        if (same) same = std::memcmp(buf, buf + kBlock, (size_t) kBlock) == 0;
+    }
+    if (ev != nullptr) CloseHandle(ev);
+    VirtualFree(buf, 0, MEM_RELEASE);
+    return same;
+}
+}  // namespace
+#endif
+
 void FileExpertSource::close_mirror() {
 #if defined(_WIN32)
     if (mirror_ != nullptr) CloseHandle((HANDLE) mirror_);
@@ -1462,6 +1497,9 @@ bool FileExpertSource::open_direct(std::string& why) {
                    std::to_string((unsigned long long) GetLastError()) + "): one drive";
         } else if (!GetFileSizeEx((HANDLE) direct_[0], &a) || !GetFileSizeEx(m, &b) || a.QuadPart != b.QuadPart) {
             why += "; the mirror " + path + " is not the size of experts.bin: one drive";
+            CloseHandle(m);
+        } else if (!same_samples((HANDLE) direct_[0], m, (uint64_t) a.QuadPart)) {
+            why += "; the mirror " + path + " differs from experts.bin in a sampled block (an older copy?): one drive";
             CloseHandle(m);
         } else {
             mirror_ = m;
