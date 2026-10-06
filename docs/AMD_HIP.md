@@ -370,7 +370,11 @@ run it; the report below is from a community machine: an RX 6900 XT 16 GB (gfx10
   `platform_memory_test` cannot `mlock` at the shell's default `ulimit -l`).
 - **gfx1031** (RX 6700 XT, #524): setup knows it (the `gfx103X-all` wheels, unvalidated); its reporter runs it daily
   on one card.
-- **Not validated:** gfx1032 (the same `dp4a` path, no hardware report), setup's own build path and the
+- **gfx1032** (RX 6600/6600 XT): unvalidated; built with `STRATA_HIP_ARCHS=gfx1030;gfx1032` and ran under Windows as
+  the *helper* expert GPU of an RX 6800 ([SECOND_GPU.md](SECOND_GPU.md)), 3.4-3.8k expert slots in its 8 GB and
+  +8-18% decode over the 6800 alone. Its 14 WGP make a helper row about 2-3x the 6800's cost, so it pays as a
+  cache tier for the CPU pool, not as a compute peer. No report of it as a primary card.
+- **Not validated:** setup's own build path and the
   `gfx103X-all` wheels on gfx1030, images, answer-quality benchmarks. RDNA1 (gfx1012, RX 5500 XT) builds by hand:
   [OLDER_GPUS.md](OLDER_GPUS.md#amd-building-gfx906-and-gfx1012).
 

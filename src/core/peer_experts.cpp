@@ -1,6 +1,7 @@
 // src/core/peer_experts.cpp - see include/strata/core/peer_experts.hpp.
 #include "strata/core/peer_experts.hpp"
 
+#include "strata/core/device.hpp"   // primary_device() (STRATA_PRIMARY_DEVICE)
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/iq_kernels.hpp"
@@ -96,15 +97,15 @@ bool PeerExperts::open(int device, const std::vector<std::pair<int32_t, int32_t>
     res_.assign((size_t) (n_layers * n_expert), kNotResident);
     {   // direct access both ways (NVLink or another P2P path): the prompt path copies activations and results over it
         int a = 0, b = 0;
-        cudaDeviceCanAccessPeer(&a, 0, device);
-        cudaDeviceCanAccessPeer(&b, device, 0);
+        cudaDeviceCanAccessPeer(&a, primary_device(), device);
+        cudaDeviceCanAccessPeer(&b, device, primary_device());
         p2p_ = a && b;
         if (p2p_) {
-            On on0(0);
+            On on0(primary_device());
             cudaError_t e0 = cudaDeviceEnablePeerAccess(device, 0);
             if (e0 == cudaErrorPeerAccessAlreadyEnabled) { cudaGetLastError(); e0 = cudaSuccess; }
             On on1(device);
-            cudaError_t e1 = cudaDeviceEnablePeerAccess(0, 0);
+            cudaError_t e1 = cudaDeviceEnablePeerAccess(primary_device(), 0);
             if (e1 == cudaErrorPeerAccessAlreadyEnabled) { cudaGetLastError(); e1 = cudaSuccess; }
             p2p_ = e0 == cudaSuccess && e1 == cudaSuccess;
         }
