@@ -17,7 +17,7 @@ from pathlib import Path
 
 from serve import runconfig
 from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, MockEngine, Service, serve
+from serve.server import ByteTokenizer, MockEngine, Service, sampling_defaults_from_config, serve
 
 ROOT = Path(__file__).resolve().parents[1]
 CFG = {"exe": "engine/strata.exe", "args": ["--pack", "data/packs/q2_0", "--kv", "int8", "--spec-min-p", "0.5"],
@@ -75,6 +75,32 @@ class Apply(unittest.TestCase):
         self.assertEqual(got["anthropic_thinking"]["choices"], ["model", "on_request"])
         self.assertNotIn("api_key", got)
         self.assertNotIn("mcp_servers", got)
+
+
+class Presets(unittest.TestCase):
+    """#1129: the two sampling sets the model card recommends - setup writes one of them (--thinking / --instruct),
+    and the server's start line names it, so a start says out loud what a request that asks for none gets."""
+
+    def test_the_cards_numbers_reach_the_server_as_they_are(self):
+        for name, block in runconfig.SAMPLING_PRESETS.items():
+            with self.subTest(name):
+                self.assertEqual(sampling_defaults_from_config({"sampling": block}), block)
+
+    def test_the_block_is_named(self):
+        self.assertEqual(runconfig.preset_of(dict(runconfig.SAMPLING_PRESETS["thinking"])), "thinking")
+        self.assertEqual(runconfig.preset_of({**runconfig.SAMPLING_PRESETS["instruct"], "top_p": 0.80, "top_k": 20.0}),
+                         "instruct")                          # 0.80 and 20.0, as a JSON file writes them
+        for own in (None, {},                                      # no block, an empty one
+                    {"temperature": 1.0, "top_p": 0.95, "top_k": 20},      # the shorter block of an earlier setup
+                    {"temperature": 0.0}, {"temperature": "warm"}):        # their own numbers, a value not a number
+            self.assertIsNone(runconfig.preset_of(own), own)
+
+    def test_the_one_line_a_start_prints(self):
+        self.assertEqual(runconfig.sampling_summary(runconfig.SAMPLING_PRESETS["instruct"]),
+                         "temperature=0.7, top_p=0.8, top_k=20, min_p=0.0, presence_penalty=1.5, "
+                         "repetition_penalty=1.0")
+        self.assertEqual(runconfig.sampling_summary({"seed": 7, "top_p": 0.5}), "top_p=0.5, seed=7")   # own keys last
+        self.assertEqual(runconfig.sampling_summary(None), "")
 
 
 class Http(unittest.TestCase):

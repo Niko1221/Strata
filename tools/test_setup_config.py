@@ -54,8 +54,10 @@ class CarryOver(unittest.TestCase):
         a = cfg["args"]
         self.assertEqual(a[a.index("--max-context") + 1], "131072")       # the new choice is used
         self.assertNotIn("--hand-option", a)                               # setup chooses the engine options...
-        self.assertIn("kept from your earlier strata-q2_0.json: sampling, mcp_servers, mcp, cors_origins, "
+        self.assertIn("kept from your earlier strata-q2_0.json: mcp_servers, mcp, cors_origins, "
                       "reasoning_effort", out)
+        self.assertEqual(cfg["sampling"], USER["sampling"])     # #1129: their numbers, on its own line in the output
+        self.assertIn("sampling for requests that send none: your own numbers", out)
         self.assertIn("kept as strata-q2_0.json.bak", out)
         self.assertIn("--hand-option", out)                                # ...and says which ones it did not keep
 
@@ -64,7 +66,9 @@ class CarryOver(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertNotIn("kept from", out)
         self.assertNotIn(".bak", out)
-        self.assertFalse(set(cfg) - setup.SETUP_KEYS)                     # setup writes only its own keys
+        # #1129: a first install also gets the card's thinking numbers - the one key setup writes that the user owns
+        self.assertEqual(set(cfg) - setup.SETUP_KEYS, {"sampling"})
+        self.assertEqual(cfg["sampling"], setup.sampling_choice("thinking"))
 
     def test_setup_keys_are_rewritten(self):
         code, out, first, _ = self.run_setup()

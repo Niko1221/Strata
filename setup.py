@@ -29,7 +29,8 @@ answers, no questions), --setup (install another model / change settings instead
 (EXPERIMENTAL, off by default),
 --models-dir DIR, --gguf-dir DIR (use GGUF files you already have), --build (compile instead of the ready-made
 engine), --check (only check this PC), --resident-budget-gib N (UD-Q4_K_XL's or UD-IQ4_XS's experts in RAM),
---kv-streaming on|off|auto.
+--kv-streaming on|off|auto, --thinking / --instruct (the sampling the model card recommends, used for every client
+that asks for none).
 
 Setup recommends, it never forces: the recommended answers are the defaults (--yes, or Enter), and a bigger choice
 than it recommends - a longer context, more GPUs, a bigger RAM budget, a size it thinks will not fit - is kept, with
@@ -58,6 +59,10 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:                             # setup's own folder, for `import setup` from tools/
+    sys.path.insert(0, str(ROOT))
+from serve.runconfig import (DEFAULT_SAMPLING_PRESET, SAMPLING_PRESETS, preset_of as sampling_preset,   # noqa: E402
+                             sampling_summary)
 WIN = os.name == "nt"
 # #214: every Hugging Face file comes from a fixed commit of its repository (the `sha` of
 # https://huggingface.co/api/models/<repo> when this was pinned), so a checkout installs the same files on any
@@ -3113,6 +3118,46 @@ SETUP_ENV = frozenset({"STRATA_HIPBLASLT_TUNING", "STRATA_RESIDENT_PIN"})   # th
 SETUP_VISION = frozenset({"exe", "mmproj", "model", "gpu", "max_tokens", "threads"})
 
 
+def sampling_choice(mode) -> dict | None:
+    """#1129: the "sampling" block a --thinking / --instruct choice writes to the run config.  The numbers live in
+    serve/runconfig.py, where the server checks the block and the About tab shows it.  None for no choice: a block
+    the user wrote (or an earlier setup wrote) is then carried over untouched by carry_over()."""
+    return dict(SAMPLING_PRESETS[mode]) if mode in SAMPLING_PRESETS else None
+
+
+def sampling_for_setup(mode, older: Path | None) -> tuple[str | None, dict | None]:
+    """#1129: what sampling a setup run writes into the new config, as (preset name, block).  Thinking is the default:
+    a config without a "sampling" block gets Qwen's thinking numbers, so a client that sends none of its own samples
+    like the card says.  Numbers the user wrote by hand stay theirs: (None, their block) comes back and setup writes
+    nothing (carry_over leaves the key alone).  A flag named on this run - --thinking or --instruct - always wins.
+    `older`: the config this run rewrites, or the earlier install's config when this folder has none yet (#629)."""
+    if mode:
+        block = sampling_choice(mode)
+        return (mode, block) if block else (None, None)
+    try:
+        old = json.loads(older.read_text(encoding="utf-8-sig")) if older is not None else None
+    except (OSError, ValueError):
+        old = None
+    own = old.get("sampling") if isinstance(old, dict) else None
+    if isinstance(own, dict) and own:
+        return None, own
+    return DEFAULT_SAMPLING_PRESET, sampling_choice(DEFAULT_SAMPLING_PRESET)
+
+
+def save_sampling_choice(cfg_path: Path, cfg: dict, mode) -> bool:
+    """#1129: --thinking / --instruct on a model that is already installed: its run config's "sampling" block becomes
+    that preset, so every later start uses it (the server reads the config when it starts).  False when nothing
+    changed: no flag on this start, or the block already holds exactly those numbers."""
+    want = sampling_choice(mode)
+    if want is None or cfg.get("sampling") == want:
+        return False
+    cfg["sampling"] = want
+    write_config(cfg_path, cfg)
+    ok(f"saved for this model: sampling {mode} ({sampling_summary(want)}) for requests that send none; the server "
+       "uses it from its next start")
+    return True
+
+
 def carry_over(old: dict, cfg: dict) -> list[str]:
     """#629: setup run again for an installed model keeps what the user added to its run config: every key setup does
     not write (`SETUP_KEYS`), the "env" entries setup does not write, and in "vision" the keys setup does not write
@@ -3269,7 +3314,9 @@ def choices_from_config(cfg_path: Path) -> dict:
             "layer_split": cfg.get("layer_split"), "cuda": 12 if config_toolkit(cfg) == 12 else None,
             # #493: --vram-reserve-mib given at setup (images write the default 700 themselves)
             "vram_reserve_mib": int(val("--vram-reserve-mib")) if (val("--vram-reserve-mib") or "").isdigit() and (
-                vis is None or int(val("--vram-reserve-mib")) != VISION["gpu"]["reserve_mib"]) else None}
+                vis is None or int(val("--vram-reserve-mib")) != VISION["gpu"]["reserve_mib"]) else None,
+            # #1129: which sampling preset the config's "sampling" block holds (None: no block, or its own numbers)
+            "sampling": sampling_preset(cfg.get("sampling"))}
 
 
 def find_in(roots: list, rel: str):
@@ -3511,13 +3558,16 @@ def settings_summary(cfg: dict, port=None) -> str:
         if cfg.get(k) is not None:
             v = cfg[k]
             srv.append(f"{k} {','.join(map(str, v)) if isinstance(v, list) else str(v).lower() if isinstance(v, bool) else v}")
+    s = cfg.get("sampling")                            # #1129: the numbers a request that sends none gets
+    if isinstance(s, dict) and s:
+        srv.append(f"sampling {sampling_preset(s) or 'own'}: {sampling_summary(s)}")
     return " ".join(out) + ("; " if out else "") + "server " + ", ".join(srv)
 
 
 def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_browser=True, yes=False,
           layer_split=None, keep=None) -> int:
     """keep: settings given on this start that the model keeps from now on (--host, --api-key, --draft-vocab,
-    --vram-reserve-mib)."""
+    --vram-reserve-mib, --thinking / --instruct)."""
     cfg = upgrade_config(cfg_path, json.loads(cfg_path.read_text(encoding="utf-8-sig")))
     missing = [p for p in [cfg["exe"], *[a for a in cfg["args"] if a.endswith(".gguf")]] if not Path(p).exists()]
     if missing:
@@ -3532,6 +3582,7 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
             args += ["--vram-reserve-mib", str(reserve)]
         write_config(cfg_path, cfg)
         ok(f"saved for this model: {reserve} MiB of VRAM kept free for other programs (--vram-reserve-mib)")
+    save_sampling_choice(cfg_path, cfg, keep.pop("sampling_mode", None))   # #1129: --thinking / --instruct
     if keep and any(cfg.get(k) != v for k, v in keep.items()):   # #179: a --host/--api-key on a start was ignored
         cfg.update(keep)
         write_config(cfg_path, cfg)
@@ -4098,6 +4149,18 @@ def main() -> int:
                          "and code only (~110 MiB less VRAM, English answers 1-2%% faster), cyrillic = English, code "
                          "and the Cyrillic script (Ukrainian, Russian... answers decode ~30%% faster), fr = English, "
                          "code and French (French answers: 18%% more drafts accepted)")
+    sp = ap.add_mutually_exclusive_group()                # #1129: the sampling a request that sends none gets
+    sp.add_argument("--thinking", dest="sampling_mode", action="store_const", const="thinking",
+                    help="write the sampling the Qwen3.8-Flash-Next card recommends for thinking answers into the "
+                         "model's strata-<model>.json, for every client that sends none of its own: temperature=1.0, "
+                         "top_p=0.95, top_k=20, min_p=0, presence_penalty=0, repetition_penalty=1.  It sets sampling "
+                         "only: thinking on or off stays per request.  This is the default: a new install gets these "
+                         "numbers with no flag at all")
+    sp.add_argument("--instruct", dest="sampling_mode", action="store_const", const="instruct",
+                    help="the same card's numbers for direct (non-thinking) answers instead: temperature=0.7, "
+                         "top_p=0.8, top_k=20, min_p=0, presence_penalty=1.5, repetition_penalty=1.  Numbers you "
+                         "wrote by hand are kept over a setup run that names no flag; to decode greedy, set "
+                         "sampling.temperature to 0 on the web page or in strata-<model>.json")
     ap.add_argument("--low-ram", choices=["auto", "on", "off", "resident", "mmap"], default="auto",
                     help="read the model's experts from one file in its folder instead of copying them all into RAM "
                          "(for a PC with a big GPU and little RAM); auto: when the experts would not fit the RAM. In "
@@ -4167,6 +4230,8 @@ def main() -> int:
                 a.port = a.port or ch["port"]
                 if a.vram_reserve_mib is None:          # #493: an explicit reserve set up before
                     a.vram_reserve_mib = ch.get("vram_reserve_mib")
+                if not a.sampling_mode and ch.get("sampling"):   # #1129: the preset the earlier install chose
+                    a.sampling_mode = ch["sampling"]
                 if a.cuda is None and ch.get("cuda") == 12:   # the experimental CUDA 12 engine, as before
                     a.cuda = "12"
                 if isinstance(ch.get("gpu"), list):     # a layer split: set up across the same cards again
@@ -4196,14 +4261,16 @@ def main() -> int:
                  + ("keeps" if a.no_start else "starts with") + " the default settings")
         return 0 if a.no_start else start(pick_cfg, a.port, run_gpu, yes=a.yes, layer_split=a.layer_split,
                      keep={"host": a.host, "api_key": a.api_key, "draft_vocab": a.draft_vocab,
-                           "vram_reserve_mib": a.vram_reserve_mib, "open_browser": a.browser})
+                           "vram_reserve_mib": a.vram_reserve_mib, "open_browser": a.browser,
+                           "sampling_mode": a.sampling_mode})
     if have and not (a.setup or a.model or a.family or a.check or a.no_start):
         if not a.build:
             update_installed_engine(a.prebuilt)
         if len(have) == 1:
             return start(have[0], a.port, run_gpu, yes=a.yes, layer_split=a.layer_split,
                      keep={"host": a.host, "api_key": a.api_key, "draft_vocab": a.draft_vocab,
-                           "vram_reserve_mib": a.vram_reserve_mib, "open_browser": a.browser})
+                           "vram_reserve_mib": a.vram_reserve_mib, "open_browser": a.browser,
+                           "sampling_mode": a.sampling_mode})
         say()
         for i, c in enumerate(have, 1):
             say(f"  {i}) {json.loads(c.read_text(encoding='utf-8-sig')).get('model_name', c.stem)}")
@@ -4212,7 +4279,8 @@ def main() -> int:
         if pick <= len(have):
             return start(have[pick - 1], a.port, run_gpu, yes=a.yes, layer_split=a.layer_split,
                      keep={"host": a.host, "api_key": a.api_key, "draft_vocab": a.draft_vocab,
-                           "vram_reserve_mib": a.vram_reserve_mib, "open_browser": a.browser})
+                           "vram_reserve_mib": a.vram_reserve_mib, "open_browser": a.browser,
+                           "sampling_mode": a.sampling_mode})
 
     # ---- 1. the PC
     step(1, "checking your PC")
@@ -4897,6 +4965,13 @@ def main() -> int:
         cfg["draft_vocab"] = draft_vocab
     if a.browser is not None:                          # #609: only when given (else an earlier choice is carried over)
         cfg["open_browser"] = a.browser
+    cfg_path = ROOT / f"strata-{tag.lower()}.json"   # #1129: read here too, to keep numbers the user wrote by hand
+    # thinking is the default when no flag is named; hand-written numbers are read from the config being rewritten
+    preset, block = sampling_for_setup(a.sampling_mode, cfg_path if cfg_path.is_file() else adopted)
+    if block:
+        cfg["sampling"] = block
+        named = preset or sampling_preset(block) or "your own numbers"
+        ok(f"sampling for requests that send none: {named} ({sampling_summary(block)})")
     # #465: requests at once - written only when given (else an earlier "parallel" is carried over); a recommendation
     streaming = "--kv-resident" in args
     if a.parallel is not None:
@@ -4917,7 +4992,6 @@ def main() -> int:
             cfg["vision"]["threads"] = max(1, (os.cpu_count() or 8) // 2)
     elif a.vision_tokens is not None:
         warn("--vision-tokens: images are off for this model, so it is not used")
-    cfg_path = ROOT / f"strata-{tag.lower()}.json"
     cal = setup_calibration(cfg, hip)                  # #566: Linux HIP too; the tuning is offered on NVIDIA only
     if cal is not None:
         sys.path.insert(0, str(ROOT / "tools"))

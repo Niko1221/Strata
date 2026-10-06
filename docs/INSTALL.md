@@ -223,6 +223,8 @@ START-HERE.bat --port 8081                      another port
 START-HERE.bat --gpu 1                          another GPU (setup picks the one with the most VRAM)
 START-HERE.bat --gpus 0,2                       several GPUs sharing the model
 START-HERE.bat --vram-reserve-mib 2048          leave 2 GB of VRAM free for other programs (remembered)
+START-HERE.bat --thinking                      sampling the model card recommends, for every client that asks for
+                                                none; it is the default (for direct answers: --instruct; remembered)
 START-HERE.bat --no-browser                     do not open the chat page when the model is ready (remembered;
                                                 --browser undoes it)
 START-HERE.bat --setup --backend hip            the AMD engine on a PC that also has an NVIDIA card
@@ -230,6 +232,20 @@ START-HERE.bat --setup --host 0.0.0.0 --api-key <secret>     reachable from othe
 START-HERE.bat --calibrate                      tune the engine for this PC (about 5-10 minutes), then start
 START-HERE.bat --check                          only check this PC
 ```
+
+**Which sampling a client gets (#1129):** setup writes the sampling the Qwen3.8-Flash-Next card recommends for thinking
+answers into the model's `strata-<model>.json`: `temperature=1.0, top_p=0.95, top_k=20, min_p=0.0,
+presence_penalty=0.0, repetition_penalty=1.0`. That is the default: `START-HERE.bat --thinking` (Linux: `./setup.sh
+--thinking`) names it, and a new install gets those numbers with no flag at all. `--instruct` writes the card's set for
+direct answers instead: `temperature=0.7, top_p=0.80, top_k=20, min_p=0.0, presence_penalty=1.5,
+repetition_penalty=1.0`. Every client that asks for none gets them; a client that sends its own keeps its own. Answers
+then differ from run to run, which greedy does not. To decode greedy - always the most likely next word, the same
+answer every time - set `sampling.temperature` to 0 on the About tab or in the file; a config with no `sampling` block
+at all (one written before #1129) is greedy too. Setup keeps numbers you wrote by hand when it runs again without a
+flag. Sampling only: whether the model thinks stays per request. A start says which numbers are in use - setup prints
+`Settings (...): ... sampling thinking: temperature=1.0, ...`, and the server window prints
+`sampling defaults from the config: ... (Qwen's thinking preset)`, or that requests decode greedy when the model's
+config has no block. The About tab's Model settings shows and edits the block's temperature, top_p, top_k and min_p.
 
 **Leaving VRAM for other programs (#493):** Strata fills the graphics card's free VRAM with experts (the expert cache)
 and leaves `--vram-reserve-mib` MiB free: 700 by default. For a game, a 3D program or another model beside it, leave

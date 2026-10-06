@@ -4775,8 +4775,13 @@ def main() -> int:
         env = child_env(cfg)
         sampling_defaults = sampling_defaults_from_config(cfg)
         if sampling_defaults:
-            pretty = ", ".join(f"{k}={v}" for k, v in sampling_defaults.items())
-            print(f"[strata] sampling defaults from the config: {pretty}", flush=True)
+            name = runconfig.preset_of(sampling_defaults)    # #1129: named when the block is one of Qwen's presets
+            print(f"[strata] sampling defaults from the config: {runconfig.sampling_summary(sampling_defaults)}"
+                  + (f" (Qwen's {name} preset)" if name else ""), flush=True)
+        else:                                                # #1129: say what a request that sends none gets
+            print('[strata] sampling: greedy for every request that sends none (no "sampling" block in the config; '
+                  'setup\'s --thinking / --instruct, or the About tab\'s Model settings, set numbers for all clients)',
+                  flush=True)
         lazy = a.lazy or cfg.get("lazy_load") is True
         if lazy and cfg.get("vision"):
             ap.error("lazy loading is text-only; disable vision in the config")

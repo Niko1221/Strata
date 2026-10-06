@@ -101,6 +101,7 @@ The flags (all of them: `START-HERE.bat --help`):
 | `--data-dir PATH` | where the 70-120 GB of model files go |
 | `--port N` | the server port (default 8080) |
 | `--host H --api-key K` | listen beyond this PC; **only together with a key** |
+| `--thinking` / `--instruct` | the model card's recommended sampling for clients that ask for none; thinking is the default |
 | `--no-start` | install only, do not start the server |
 | `--setup` | install another model or change settings of an installed one |
 | `--check` | only check the PC |
