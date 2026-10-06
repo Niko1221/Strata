@@ -568,7 +568,7 @@ void usage() {
                  "                       a conversation holds what it has reached, in steps of 4096 cells. N must\n"
                  "                       hold one whole context. When it is full an idle slot's cached\n"
                  "                       conversation gives way, then a new request is refused and a decoding\n"
-                 "                       lane ends with finish \"length\"\n"
+                 "                       lane ends with finish \"pool\" (the server: \"length\", truncated)\n"
                  "  --stream-token       enqueue token work on the session stream (experimental)\n"
                  "  --check-logits       copy and check all logits in the stream-token path\n"
                  "  --gr-fp32-activations  experimental CUDA-oracle GR activation precision\n"
@@ -5954,28 +5954,39 @@ int main(int argc, char** argv) {
         long long admit_max_new = 0;
         auto batch_on = [&] { for (const BSlot& b : bs) if (b.active) return true; return false; };
         int64_t slot_clock = 0;
-        // --kv-pool-tokens: back cells [0, cells) of session `s` from the shared pool. When it is full an idle slot
-        // gives its K/V back - one holding nothing worth keeping first, then the cached conversation used longest ago -
-        // except `keep` (the slot this request reads from) and a prompt read that gave way (it goes on from its slot).
-        // False when nothing is left to give way.
+        // --kv-pool-tokens: back cells [0, cells) of session `s` from the shared pool. When it is full idle slots give
+        // their K/V back: one holding nothing worth keeping first, then the cached conversation used longest ago, and
+        // last a prompt read that gave way (BYIELD; its request then reads the prompt from the start) - never `keep`
+        // (the slot this request reads from). False, with nothing given back, when all of them would not cover it.
         auto pool_reserve = [&](const strata::core::SessionState& s, int64_t cells, int keep) -> bool {
-            if (!kv_pool.active()) return true;
+            if (!kv_pool.active() || kv_pool.reserve(s, cells)) return true;
+            auto can_give = [&](int b) {
+                return !bs[(size_t) b].active && b != keep && &s != bslot_ss[0][(size_t) b].get() &&
+                       kv_pool.reserved_cells(*bslot_ss[0][(size_t) b]) > 0;
+            };
+            const int64_t chunk = kv_pool.chunk_cells();
+            const int64_t want = (std::min(cells, s.max_cells) + chunk - 1) / chunk * chunk;
+            int64_t could = kv_pool.free_cells() + kv_pool.reserved_cells(s);
+            for (int b = 0; b < (int) bs.size(); ++b)
+                if (can_give(b)) could += kv_pool.reserved_cells(*bslot_ss[0][(size_t) b]);
+            if (could < want) return false;
+            auto rank = [&](const BSlot& sl) { return sl.partial ? 2 : sl.cached ? 1 : 0; };
             while (!kv_pool.reserve(s, cells)) {
                 int victim = -1;
                 for (int b = 0; b < (int) bs.size(); ++b) {
+                    if (!can_give(b)) continue;
                     const BSlot& sl = bs[(size_t) b];
-                    if (sl.active || sl.partial || b == keep || &s == bslot_ss[0][(size_t) b].get() ||
-                        kv_pool.reserved_cells(*bslot_ss[0][(size_t) b]) == 0)
-                        continue;
-                    if (victim < 0 || (bs[(size_t) victim].cached && (!sl.cached || sl.used < bs[(size_t) victim].used)))
-                        victim = b;
+                    const BSlot& v = bs[(size_t) std::max(victim, 0)];
+                    if (victim < 0 || rank(sl) < rank(v) || (rank(sl) == rank(v) && sl.used < v.used)) victim = b;
                 }
                 if (victim < 0) return false;
                 BSlot& v = bs[(size_t) victim];
                 if (v.cached)
-                    std::fprintf(stderr, "strata batch: KV pool full: slot %d gives back its cached conversation (%lld "
-                                         "tokens)\n", victim, (long long) v.ids.size());
+                    std::fprintf(stderr, "strata batch: KV pool full: slot %d gives back %s (%lld tokens)\n", victim,
+                                 v.partial ? "a prompt read that gave way" : "its cached conversation",
+                                 (long long) v.ids.size());
                 v.cached = false;
+                v.partial = false;
                 v.ids.clear();
                 v.checks.clear();
                 kv_pool.release(*bslot_ss[0][(size_t) victim]);

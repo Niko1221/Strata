@@ -42,7 +42,11 @@ const KvPool::Table* KvPool::find(const SessionState& ss) const {
 }
 
 bool KvPool::upload(const Table& t) {
-    return cudaMemcpy(t.dev, t.host.data(), t.host.size() * sizeof(int32_t), cudaMemcpyHostToDevice) == cudaSuccess;
+    // From pageable memory the copy may still be landing when cudaMemcpy returns, and the kernels run on
+    // non-blocking streams that do not wait for it: the table is complete before the next launch reads it.
+    // An upload is rare: once per chunk (4096 cells) a session grows by, and when it gives chunks back.
+    return cudaMemcpy(t.dev, t.host.data(), t.host.size() * sizeof(int32_t), cudaMemcpyHostToDevice) == cudaSuccess &&
+           cudaDeviceSynchronize() == cudaSuccess;
 }
 
 bool KvPool::attach(SessionState& ss, std::string& error) {
