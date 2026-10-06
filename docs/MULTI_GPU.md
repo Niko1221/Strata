@@ -7,9 +7,16 @@ the experts one card holds - for the Coder model on a 16 GB + 24 GB pair, nearly
 speed comes from (decode then barely touches the CPU pool).
 
 This is pipeline (layer) parallelism, not tensor parallelism: a token crosses from one card to the next once per
-verify window (a few hundred KB through pinned RAM), not twice per layer. No NVLink or peer-to-peer access is
-needed; cards on x4 or x1 slots work, and the PCIe share of each card is probed on its own link. A `--pcie-frac` you give
-is every card's share and skips those probes; there is no per-card setting yet.
+verify window (a few hundred KB) and once per prompt chunk (tens of MB), not twice per layer. The hand-off goes
+through **peer-to-peer when the cards can peer** (NVLink or PCIe P2P) and through pinned host RAM otherwise; cards
+on x4 or x1 slots work either way, and the PCIe share of each card is probed on its own link. `STRATA_SPLIT_P2P=0`
+forces the pinned path, `=1` forces peer access wherever the cards support it - the A/B is bit-identical (the
+hand-off is a copy, not arithmetic). On 2x V100-SXM2 with NVLink (`nvidia-smi topo` NV2) the link measured 48.3 GB/s
+against 3.3 GB/s through pinned RAM: 0.015 ms per 8-token verify window instead of 0.122, and 1.74 ms of copies for
+a 2048-token chunk instead of 25.3 ms (bench/results/2026-10-02-v100-split-p2p). The peer path is the default only
+where it was measured - Volta cards that can peer, i.e. the experimental Pascal/Volta build (`STRATA_EXPERIMENTAL_SM60`,
+since the ready-made engine does not run on sm_70); sm_80 and newer keep the pinned path unless `STRATA_SPLIT_P2P=1`.
+A `--pcie-frac` you give is every card's share and skips those probes; there is no per-card setting yet.
 
 ## Using it
 
@@ -131,7 +138,7 @@ placement that leaves the fullest card the most room. The startup log prints the
 
 ```
 strata generate: layer split auto: K=19 - the caches hold 11767 of 12288 profiled pairs (fullest device 100%)
-strata serve: layer split: layers 0-18 (CUDA0), 19-47 (CUDA1), one hand-off per window
+strata serve: layer split: layers 0-18 (CUDA0), 19-47 (CUDA1), one hand-off per window and per prompt chunk, through pinned RAM (STRATA_SPLIT_P2P=0)
 ```
 
 ## What each card holds

@@ -4,7 +4,10 @@
 #include <cuda_runtime.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+
+#include "strata/core/on_device.hpp"
 
 namespace strata::core {
 
@@ -241,6 +244,55 @@ std::string device_code_error() {
     if (e == cudaSuccess) return {};
     cudaGetLastError();
     return cudaGetErrorString(e);
+#endif
+}
+
+bool split_handoff_p2p(int src_dev, int dst_dev, std::string* note) {
+    const auto host = [&](const char* why) {
+        if (note != nullptr) *note = why;
+        return false;
+    };
+#if defined(STRATA_USE_HIP)
+    (void) src_dev;
+    (void) dst_dev;
+    return host("through pinned RAM");
+#else
+    if (src_dev < 0 || dst_dev < 0 || src_dev == dst_dev) return host("through pinned RAM (one card)");
+    static const int env = [] {
+        const char* v = std::getenv("STRATA_SPLIT_P2P");
+        return v == nullptr ? -1 : (std::atoi(v) != 0 ? 1 : 0);
+    }();
+    if (env == 0) return host("through pinned RAM (STRATA_SPLIT_P2P=0)");
+    int can = 0;
+    if (cudaDeviceCanAccessPeer(&can, src_dev, dst_dev) != cudaSuccess || !can) {
+        cudaGetLastError();
+        return host("through pinned RAM (the cards cannot peer)");
+    }
+#if defined(STRATA_EXPERIMENTAL_SM60)
+    // The default is the measured configuration only: Volta, and both cards of the pair.  The gate keeps the
+    // ready-made (release) engine unchanged - it never runs on sm_70, so it always keeps the pinned path here.
+    if (env < 0) {
+        cudaDeviceProp a{}, b{};
+        if (cudaGetDeviceProperties(&a, src_dev) != cudaSuccess || cudaGetDeviceProperties(&b, dst_dev) != cudaSuccess ||
+            !(a.major == 7 && a.minor == 0) || !(b.major == 7 && b.minor == 0)) {
+            cudaGetLastError();
+            return host("through pinned RAM (STRATA_SPLIT_P2P=1 to take the link)");
+        }
+    }
+#else
+    if (env < 0) return host("through pinned RAM (STRATA_SPLIT_P2P=1 to take the link)");
+#endif
+    {
+        const OnDevice on(src_dev);
+        const cudaError_t e = cudaDeviceEnablePeerAccess(dst_dev, 0);
+        if (e == cudaErrorPeerAccessAlreadyEnabled) cudaGetLastError();
+        else if (e != cudaSuccess) {
+            cudaGetLastError();
+            return host("through pinned RAM (peer access failed)");
+        }
+    }
+    if (note != nullptr) *note = "over peer access (the link)";
+    return true;
 #endif
 }
 

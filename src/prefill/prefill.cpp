@@ -619,6 +619,9 @@ struct Prefill::Impl {
     // layer split: the device, and the hand-off to the next stage (two pinned chunk buffers, used in turn)
     int device = -1;
     float* hand[2] = {};
+    // the P2P hand-off instead (STRATA_SPLIT_P2P): two chunk buffers on THIS card, filled in turn by the previous
+    // stage over the link - this stage's hand_in_ points at one of them when the previous stage takes that path
+    float* hand_in_dev[2] = {};
     // C-4: the chunk's token ids on the device, for one batched embedding gather
     int32_t* tok_dev = nullptr;
     std::vector<int32_t> tok_host;
@@ -688,7 +691,7 @@ void Prefill::release() {
         if (impl_->used[i]) cudaEventDestroy(impl_->used[i]);
     }
     for (int b = 0; b < 2; ++b) {
-        if (impl_->hand[b]) cudaFreeHost(impl_->hand[b]);
+        if (impl_->hand[b]) cudaFreeHost(impl_->hand[b]);   // hand_in_dev comes through carve: owned, or the loan
         if (impl_->ple_copied[b]) cudaEventDestroy(impl_->ple_copied[b]);
         if (impl_->ple_emb_host[b] && impl_->ple_pageable[b].empty()) cudaFreeHost(impl_->ple_emb_host[b]);
     }
@@ -825,7 +828,7 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
         err = "prefill: the stage's layer range is wrong";
         return false;
     }
-    for (int b = 0; next_ != nullptr && b < 2; ++b)
+    for (int b = 0; next_ != nullptr && !handoff_p2p_out_ && b < 2; ++b)
         if (!m.hand[b] && cudaHostAlloc((void**) &m.hand[b], (size_t) chunk * D * 4, cudaHostAllocPortable) != cudaSuccess) {
             err = "prefill: the layer split's hand-off buffers";
             return false;
@@ -1031,6 +1034,12 @@ bool Prefill::carve(size_t T, void* alloc) {
     m.ple_emb = o.take<float>(T * N, ok);
     m.ple_norm = o.take<float>((size_t) strata::kernels::NG_HC_DIM, ok);
     take_stage(o, ss, s, m.stage, ok);
+    // the P2P hand-off's two receive buffers, in turn (the previous stage fills one per chunk): part of the
+    // chunk's buffers, so `bytes_needed` counts them and the loan - or this path's own allocation - holds them
+    if (handoff_p2p_in_ && stage_lb_ > 0) {
+        m.hand_in_dev[0] = o.take<float>(T * D, ok);
+        m.hand_in_dev[1] = o.take<float>(T * D, ok);
+    }
     m.T = (int64_t) T;
     return ok;
 }
@@ -1473,18 +1482,19 @@ void Prefill::set_ring_budget(int slots, int64_t small_max) {
 double Prefill::pinned_share() { return g_pinned_share; }
 int64_t Prefill::stream_all_min_tokens() { return stream_all_min(); }
 
-uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk) {
-    return bytes_needed_impl(g, ss, chunk, false);
+uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk,
+                               bool hand_in) {
+    return bytes_needed_impl(g, ss, chunk, false, hand_in);
 }
 
 // What `init` really allocates when the prompt path owns its buffers (no loan): every cudaMalloc rounds up to a 2 MiB
 // page, and the ring is one allocation (carve).  `bytes_needed` stays the borrowed region's sum.
 uint64_t Prefill::bytes_needed_owned(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk) {
-    return bytes_needed_impl(g, ss, chunk, true);
+    return bytes_needed_impl(g, ss, chunk, true, false);
 }
 
 uint64_t Prefill::bytes_needed_impl(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk,
-                                    bool owned_pages) {
+                                    bool owned_pages, bool hand_in) {
     // the same allocation sequence as `init`, counted
     const size_t T = (size_t) chunk;
     bool ok = true;
@@ -1536,6 +1546,7 @@ uint64_t Prefill::bytes_needed_impl(const core::ModelGeometry& g, const core::Se
     f((size_t) strata::kernels::NG_HC_DIM);
     strata::kernels::KvHostPools stage;
     take_stage(o, ss, s, stage, ok);
+    if (hand_in) { o.take<float>(T * D, ok); o.take<float>(T * D, ok); }   // the P2P hand-off's two buffers
     return o.used + (8u << 20);   // alignment slack
 }
 
@@ -1781,8 +1792,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         // ---- embeddings, broadcast to the four streams - or, in a later stage of a layer split, the rows the
         // previous stage handed on
         if (hand_in_ != nullptr) {
-            if (cudaMemcpyAsync(m.R, hand_in_ + (size_t) c0 * D, (size_t) T * D * 4, cudaMemcpyHostToDevice, m.cs) !=
-                cudaSuccess) {
+            // the P2P hand-off reads this card's own buffer; the host path uploads the pinned rows
+            const bool p2p_in = hand_in_ == m.hand_in_dev[0] || hand_in_ == m.hand_in_dev[1];
+            if (cudaMemcpyAsync(m.R, hand_in_ + (size_t) c0 * D, (size_t) T * D * 4,
+                                p2p_in ? cudaMemcpyDeviceToDevice : cudaMemcpyHostToDevice, m.cs) != cudaSuccess) {
                 err = "prefill: the layer split's hand-off upload failed";
                 return false;
             }
@@ -3220,9 +3233,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         pt.mark(kPfStart, cs);
         if (next_ != nullptr) {
             // The current hand-off slot was used two chunks ago.
-            float* h = m.hand[hand_buf_];
-            if (cudaMemcpyAsync(h, m.R, (size_t) T * D * 4, cudaMemcpyDeviceToHost, m.cs) != cudaSuccess ||
-                cudaStreamSynchronize(m.cs) != cudaSuccess) {
+            // the rows to the buffer the next stage read two chunks ago (it has finished: waited below): pinned
+            // host RAM, or - the P2P hand-off - its own device buffer on the next card, one link crossing
+            float* peer = next_->impl_->hand_in_dev[hand_buf_];
+            float* h = peer != nullptr ? peer : m.hand[hand_buf_];
+            const size_t nb = (size_t) T * D * 4;
+            const cudaError_t he = peer != nullptr ? cudaMemcpyPeerAsync(peer, next_->impl_->device, m.R, m.device, nb, m.cs)
+                                                   : cudaMemcpyAsync(h, m.R, nb, cudaMemcpyDeviceToHost, m.cs);
+            if (he != cudaSuccess || cudaStreamSynchronize(m.cs) != cudaSuccess) {
                 err = std::string("prefill: the layer split's hand-off: ") + cudaGetErrorString(cudaGetLastError());
                 return false;
             }

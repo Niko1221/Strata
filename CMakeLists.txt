@@ -971,6 +971,15 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_test(NAME pinned_capture COMMAND pinned_capture)
   endif()
 
+  # ---- the layer-split hand-off across NVLink vs pinned RAM (2x V100, measured) ---------------
+  # Standalone (no engine libraries): it times every path the hand-off could take on the real shapes
+  # (verify windows 100-400 KB, prompt chunks 20-104 MB) and checks each one byte for byte first.
+  if(STRATA_ENABLE_CUDA AND STRATA_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/bench/split_p2p_bench.cu")
+    add_executable(split_p2p_bench bench/split_p2p_bench.cu)
+    target_include_directories(split_p2p_bench PRIVATE ${_strata_gpu_include_directories})
+    target_link_libraries(split_p2p_bench PRIVATE ${_strata_gpu_runtime_target})
+  endif()
+
   # Tells tests/CMakeLists.txt to add the CUDA-dependent Catch2 target.  It cannot be declared there
   # unconditionally: tests/ is added at the end of this file, but the flag has to be known before it runs.
   if(STRATA_ENABLE_CUDA)

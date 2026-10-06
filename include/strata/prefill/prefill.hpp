@@ -85,8 +85,11 @@ public:
     /// fits it keeps 0.1.39's ring).  0 slots = none.  A layer split's set_ring_override and STRATA_PREFILL_RING win.
     static void set_ring_budget(int slots, int64_t small_max);
 
-    /// Device bytes `init` needs for a chunk of `chunk` tokens (what a borrowed region must hold).
-    static uint64_t bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk);
+    /// Device bytes `init` needs for a chunk of `chunk` tokens (what a borrowed region must hold).  `hand_in`:
+    /// this path also holds the two P2P hand-off receive buffers (`set_handoff_p2p`'s `in`) - a later stage's
+    /// chunk buffers include them, so its loan prices them.
+    static uint64_t bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk,
+                                 bool hand_in = false);
 
     /// The same without the streamed ring: what the chunk's own buffers cost.  The auto chunk scan sizes the chunk
     /// first and hands the ring what the chunk leaves over, so it needs the chunk priced on its own.
@@ -153,6 +156,12 @@ public:
         stage_lb_ = layer_begin; stage_le_ = layer_end; next_ = next;
     }
 
+    /// LAYER SPLIT over peer access (STRATA_SPLIT_P2P, strata::core::split_handoff_p2p): `out` - this stage's
+    /// hand-off to `next` lands with one cudaMemcpyPeerAsync in a device buffer on the next card, where `in` is
+    /// set on that stage (its `init` allocates the two buffers, in turn, instead of this stage's pinned pair).
+    /// One link crossing instead of two PCIe ones; the rows are bit-identical.  Set with `set_stage`.
+    void set_handoff_p2p(bool out, bool in) { handoff_p2p_out_ = out; handoff_p2p_in_ = in; }
+
     /// LAYER SPLIT: `helper` is another stage's prompt path (another GPU).  A prompt of one chunk runs the stages one
     /// after the other, so while this stage reads it the helper's GPU idles: it then streams a share of this stage's
     /// non-resident experts over its own PCIe link into its own (lent) prompt buffers, computes their rows, and sends
@@ -164,7 +173,7 @@ public:
 
 private:
     static uint64_t bytes_needed_impl(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk,
-                                      bool owned_pages);
+                                      bool owned_pages, bool hand_in);
     // Stage-1 pipeline: intermediate stages return after handing their chunk to
     // the direct successor. The public run() drains the chain once at prompt end.
     bool run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err);
@@ -175,7 +184,9 @@ private:
     Prefill* helper_ = nullptr;         ///< set_stage_helper
     bool single_chunk_ = false;         ///< a later stage: the prompt is one chunk (set by the stage before)
     bool bind_stage_helper(int64_t T);  // binds the helper's buffers for a one-chunk prompt of T tokens
-    const float* hand_in_ = nullptr;    ///< the previous stage's rows of the chunk being read (host, pinned)
+    bool handoff_p2p_out_ = false, handoff_p2p_in_ = false;
+    const float* hand_in_ = nullptr;    ///< the previous stage's rows being read (pinned host; with the P2P
+                                        ///< hand-off, one of this stage's own device buffers)
 
     std::string next_err_;
     std::future<bool> next_run_;

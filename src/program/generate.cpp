@@ -5572,6 +5572,8 @@ int main(int argc, char** argv) {
             int32_t first_now = -1;        // where its buffers are laid out now
             int64_t lent_chunk = 0;
             std::vector<std::pair<int32_t, int32_t>> lent;
+            bool p2p_in = false;           // its P2P hand-off receive buffers (2 chunks, in turn) count in the
+                                           // chunk's buffers, so `bytes_needed` and the loan include them
         };
         // bytes -> slots for one cache: exact when it knows its per-slot offsets (a native pack's blobs differ
         // per layer), otherwise max_blob each.
@@ -5586,7 +5588,7 @@ int main(int argc, char** argv) {
             return (int64_t) ((need + (uint64_t) blob - 1) / (uint64_t) blob);
         };
         auto part_slots = [&](const PfPart& p, int64_t c) -> int64_t {
-            return cache_slots_for(*p.cache, strata::prefill::Prefill::bytes_needed(g, *p.ses, c));
+            return cache_slots_for(*p.cache, strata::prefill::Prefill::bytes_needed(g, *p.ses, c, p.p2p_in));
         };
         auto part_bytes = [&](const PfPart& p, int32_t first) -> uint64_t {
             strata::core::ExpertCache& xc = *p.cache;
@@ -5610,6 +5612,8 @@ int main(int argc, char** argv) {
                                      "streamed ring %d slots\n", 100.0 * res_share, ring);
             }
         }
+        int dev_first = 0;
+        cudaGetDevice(&dev_first);   // the first stage's prompt path and verifier take the current device in init
         std::vector<PfPart> pf_parts;
         // a cache too small to lend the prompt path its buffers would make it allocate them on top - on a card
         // whose cache already filled its reserve, that is the over-subscription the auto sizing avoids - so the
@@ -5618,6 +5622,11 @@ int main(int argc, char** argv) {
             pf_parts.push_back({&xcache, &ss, &sp, -1, 0, multi_gpu ? split_at[0] : g.n_layers, -1, -1, 0, {}});
             for (auto& st : stages)
                 pf_parts.push_back({&st->cache, &st->ss, &st->sp, st->dev, st->lb, st->le, -1, -1, 0, {}});
+            // who receives its chunk hand-off over P2P (STRATA_SPLIT_P2P): a later stage's chunk buffers then
+            // include the two receive buffers (the same decide as set_handoff_p2p's `in` below)
+            for (size_t i = 1; i < pf_parts.size(); ++i)
+                pf_parts[i].p2p_in = strata::core::split_handoff_p2p(
+                    i == 1 ? dev_first : pf_parts[i - 1].dev, pf_parts[i].dev == -1 ? 0 : pf_parts[i].dev, nullptr);
             // The two tests plan_lend makes for CUDA0 alone, one participant at a time: a loan must leave the
             // 128-slot floor.  The percentage cap is an AUTO-chunk rule and only the auto scan applies it - an
             // explicit --prefill is the operator's number, and a loan of it only has to fit.  With one participant
@@ -5772,7 +5781,7 @@ int main(int argc, char** argv) {
                         const strata::core::OnDevice on(p.dev);
                         size_t fb = 0, tb = 0;
                         if (cudaMemGetInfo(&fb, &tb) != cudaSuccess) { (void) cudaGetLastError(); continue; }
-                        const uint64_t need = strata::prefill::Prefill::bytes_needed(g, *p.ses, chunk);
+                        const uint64_t need = strata::prefill::Prefill::bytes_needed(g, *p.ses, chunk, p.p2p_in);
                         if ((uint64_t) fb >= need + (3ull << 29)) {
                             std::fprintf(stderr, "strata serve:   CUDA%d keeps its own prompt buffers (%.2f GiB of "
                                                  "%.2f GiB free): no loan\n", p.dev < 0 ? 0 : p.dev,
@@ -5827,6 +5836,17 @@ int main(int argc, char** argv) {
             for (size_t i = 0; i < stages.size(); ++i) {
                 GpuStage& st = *stages[i];
                 st.sp.set_stage(st.lb, i + 1 < stages.size() ? st.le : -1, i + 1 < stages.size() ? &stages[i + 1]->sp : nullptr);
+                // the chunk hand-offs of this stage, each decided for its own device pair (STRATA_SPLIT_P2P): the
+                // one it receives from the previous stage and the one it sends to the next.  Both ends of a pair
+                // call the same decide, so a pair never disagrees with itself.
+                if (multi_gpu) {
+                    std::string n_in, n_out;
+                    const bool p2p_in = strata::core::split_handoff_p2p(i == 0 ? dev_first : stages[i - 1]->dev, st.dev, &n_in);
+                    const bool p2p_out = i + 1 < stages.size()
+                                             ? strata::core::split_handoff_p2p(st.dev, stages[i + 1]->dev, &n_out)
+                                             : false;
+                    st.sp.set_handoff_p2p(p2p_out, p2p_in);
+                }
                 const strata::core::OnDevice on(st.dev);
                 void* sb = nullptr;              // this stage's own loan, out of its own cache
                 uint64_t sbb = 0;
@@ -5841,7 +5861,10 @@ int main(int argc, char** argv) {
                     return err.find("do not fit") != std::string::npos ? 2 : 1;
                 }
             }
-            if (multi_gpu) sp.set_stage(0, split_at[0], &stages[0]->sp);
+            if (multi_gpu) {
+                sp.set_stage(0, split_at[0], &stages[0]->sp);
+                sp.set_handoff_p2p(strata::core::split_handoff_p2p(dev_first, stages[0]->dev, nullptr), false);
+            }
             if (!sp.init(wt, g, ss, srcp, &xcache, host_res.data(), o.prefill_chunk, main_cs, err, borrow, borrow_bytes))
                 return err.find("do not fit") != std::string::npos ? 2 : 1;
             return 0;
@@ -5860,7 +5883,11 @@ int main(int argc, char** argv) {
                     const strata::core::OnDevice on(dev);
                     size_t fb = 0, tb = 0;
                     cudaMemGetInfo(&fb, &tb);
-                    const int64_t need = (int64_t) strata::prefill::Prefill::bytes_needed(g, i == 0 ? ss : stages[i - 1]->ss, c);
+                    const int64_t need = (int64_t) strata::prefill::Prefill::bytes_needed(
+                        g, i == 0 ? ss : stages[i - 1]->ss, c,
+                        // a later stage's buffers include its P2P hand-off pair (the same decide as init's `in`)
+                        i > 0 && strata::core::split_handoff_p2p(i == 1 ? dev_first : stages[i - 2]->dev,
+                                                                 stages[i - 1]->dev, nullptr));
                     if (need + kHeadroom > (int64_t) fb) {
                         dev_out = dev < 0 ? 0 : dev; need_out = need; free_out = (int64_t) fb;
                         return false;
@@ -6036,18 +6063,35 @@ int main(int argc, char** argv) {
                 v->set_always_publish(true);
             }
         }
+        std::string hand_note = "through pinned RAM";   // what the hand-off takes, for the line below
         if (n_stages > 1) {
             const size_t hb = (size_t) strata::kernels::kVerifyMaxT *
                               (size_t) strata::core::Verifier::handoff_floats(g) * sizeof(float);
+            int dev_first = 0;
+            cudaGetDevice(&dev_first);   // stage 1 of the split; its verifier takes the current device in init
             std::vector<float*> hand((size_t) n_stages - 1, nullptr);
-            for (float*& h : hand) {
+            for (size_t i = 0; i < hand.size(); ++i) {
+                // hand[i] carries stage i's residual to stage i + 1: through pinned host RAM (the mapped buffer
+                // both stages reach with kernels), or - STRATA_SPLIT_P2P, the measured path on NVLink - a device
+                // buffer on the receiving card that the sending card's kernels write across the link
+                const int src_dev = i == 0 ? dev_first : stages[(size_t) i - 1]->dev;
+                const int dst_dev = stages[i]->dev;
                 float* hh = nullptr;
-                if (cudaHostAlloc((void**) &hh, hb, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess ||
-                    cudaHostGetDevicePointer((void**) &h, hh, 0) != cudaSuccess) {
-                    std::fprintf(stderr, "strata serve: the layer-split hand-off allocation failed\n");
-                    return 1;
+                if (strata::core::split_handoff_p2p(src_dev, dst_dev, i == 0 ? &hand_note : nullptr)) {
+                    const strata::core::OnDevice on(dst_dev);
+                    if (cudaMalloc((void**) &hh, hb) != cudaSuccess || cudaMemset(hh, 0, hb) != cudaSuccess) {
+                        std::fprintf(stderr, "strata serve: the layer-split hand-off allocation failed\n");
+                        return 1;
+                    }
+                    hand[i] = hh;
+                } else {
+                    if (cudaHostAlloc((void**) &hh, hb, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess ||
+                        cudaHostGetDevicePointer((void**) &hand[i], hh, 0) != cudaSuccess) {
+                        std::fprintf(stderr, "strata serve: the layer-split hand-off allocation failed\n");
+                        return 1;
+                    }
+                    std::memset(hh, 0, hb);
                 }
-                std::memset(hh, 0, hb);
             }
             split_drive.base = &drive;
             split_drive.n = n_stages;
@@ -6089,7 +6133,8 @@ int main(int argc, char** argv) {
             for (int st = 1; st < n_stages; ++st)
                 plan_s += ", " + std::to_string(split_at[(size_t) st - 1]) + "-" + std::to_string(split_drive.end[st] - 1) +
                           " (CUDA" + std::to_string(split_same ? 0 : stages[(size_t) st - 1]->dev) + ")";
-            std::fprintf(stderr, "strata serve: layer split: layers %s, one hand-off per window\n", plan_s.c_str());
+            std::fprintf(stderr, "strata serve: layer split: layers %s, one hand-off per window and per prompt "
+                                 "chunk, %s\n", plan_s.c_str(), hand_note.c_str());
         }
         // --pipeline-windows: the odd windows' verifiers and their hand-off (initialized before `ver`, which stays the
         // watchdog's verifier), and the drafter's own row buffer, which either parity's rows are copied into
