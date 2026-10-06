@@ -282,6 +282,38 @@ static const std::vector<std::vector<int32_t>>& force_id_lists() {
     return lists;
 }
 
+// lab bench, STRATA_FORCE_WINDOWS=<file> (opt-in, with STRATA_FORCE_IDS): a reference run's STRATA_FORCE_TRACE replayed -
+// a verified window that starts at a position the trace has takes the trace's rows (size and draft tokens) instead
+// of the drafter's, so the verified work is the reference's by construction.  The drafter still runs (its cost stays).
+// Per request (the trace's request index), position -> rows.
+static const std::vector<std::map<int64_t, std::vector<int32_t>>>& force_window_lists() {
+    static const std::vector<std::map<int64_t, std::vector<int32_t>>> lists = [] {
+        std::vector<std::map<int64_t, std::vector<int32_t>>> out;
+        const char* v = std::getenv("STRATA_FORCE_WINDOWS");
+        if (v == nullptr || v[0] == 0) return out;
+        std::ifstream f(v);
+        std::string line;
+        int64_t n = 0;
+        while (std::getline(f, line)) {
+            std::istringstream ls(line);
+            std::string tag;
+            long long req = -1, pos = -1;
+            int T = 0, acc = 0;
+            if (!(ls >> tag >> req >> pos >> T >> acc) || tag != "W" || req < 0 || T < 1) continue;
+            std::vector<int32_t> rows((size_t) T);
+            bool ok = true;
+            for (int i = 0; i < T && ok; ++i) ok = (bool) (ls >> rows[(size_t) i]);
+            if (!ok) continue;
+            if ((size_t) req >= out.size()) out.resize((size_t) req + 1);
+            out[(size_t) req][pos] = std::move(rows);
+            ++n;
+        }
+        std::fprintf(stderr, "strata force: windows of %s: %lld windows, %zu requests\n", v, (long long) n, out.size());
+        return out;
+    }();
+    return lists;
+}
+
 // The resident RAM mode and the adaptive tier.  A swap copies `in` (held in RAM) into the slot of `out` (held only
 // by that slot).  Before the slot is overwritten, `out`'s bytes are copied back from it into an exchange buffer, so
 // the CPU computes `out` from RAM while the swap is in flight; when the swap has landed, `commit_exchanges` moves
@@ -9044,6 +9076,25 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata force: request %lld generates the %zu ids of list %lld (max_new %lld)\n",
                              (long long) force_k, forced->size(), (long long) force_k, max_new);
             }
+            const std::map<int64_t, std::vector<int32_t>>* force_win =
+                force_k < (int64_t) force_window_lists().size() && !force_window_lists()[(size_t) force_k].empty()
+                    ? &force_window_lists()[(size_t) force_k] : nullptr;
+            int64_t force_win_hit = 0, force_win_miss = 0;
+            // STRATA_FORCE_WINDOWS: the reference's rows for a window at `pos` whose row 0 is `row0`: false when the
+            // trace has no window there (or another row 0: a speculative guess the reference never made)
+            auto force_window = [&](int64_t pos, int32_t row0, int& T, int32_t* rows, int max_t) -> bool {
+                if (force_win == nullptr) return false;
+                const auto it = force_win->find(pos);
+                if (it == force_win->end() || it->second.empty() || it->second[0] != row0 ||
+                    (int) it->second.size() > max_t) {
+                    ++force_win_miss;
+                    return false;
+                }
+                T = (int) it->second.size();
+                for (int i = 0; i < T; ++i) rows[i] = it->second[(size_t) i];
+                ++force_win_hit;
+                return true;
+            };
             std::vector<int64_t> force_rows(16, 0);   // windows by rows
             int64_t force_windows = 0, force_acc = 0, force_off = 0, force_over = 0;
             // the last forced window's rows: the target's own picks and the forced ids that replaced them
@@ -9524,6 +9575,7 @@ int main(int argc, char** argv) {
                                 // stage B now (its PLE rows from the tokens before it as they will be once A is
                                 // committed whole), so its launch behind A is only the graph launch (never while a
                                 // rollback is pending: B's verifier is the one the undo commit reads)
+                                if (B.ready && force_win != nullptr) force_window(B.p, B.tok[0], B.T, B.tok, S);
                                 if (B.ready && B.p_on >= theta && pl_prestage && !V0(B).in_flight() && !doomed) {
                                     int32_t prev[2] = {ss.ple_prev[0], ss.ple_prev[1]};
                                     for (int i = 0; i < A.T; ++i) { prev[0] = prev[1]; prev[1] = A.tok[i]; }
@@ -9540,6 +9592,7 @@ int main(int argc, char** argv) {
                     }
                     // ---- stage 0: A (never while a wrong window still holds stage 0's state)
                     if (A.ready && !A.launched && !doomed) {
+                        if (force_win != nullptr) force_window(A.p, A.tok[0], A.T, A.tok, S);   // lab bench replay
                         if (A.p + A.T > o.max_context) { ending = true; continue; }
                         if (!snap_take(A.seq)) return die("the GDN snapshot failed");
                         if (!V0(A).pl_launch(A.T, A.tok, A.p, err)) return die(err);
@@ -9548,6 +9601,7 @@ int main(int argc, char** argv) {
                     }
                     // ---- stage 0: B, speculatively, right behind A
                     if (B.ready && !B.launched && A.finished && !A.committed && !doomed) {
+                        if (force_win != nullptr) force_window(B.p, B.tok[0], B.T, B.tok, S);   // lab bench replay
                         if (B.p_on >= theta && B.p + B.T <= o.max_context) {
                             {
                                 const strata::core::OnDevice on(dev0);
@@ -9764,6 +9818,7 @@ int main(int argc, char** argv) {
                 window[0] = x;
                 for (int i = 1; i < T_mtp; ++i) window[(size_t) i] = from_sfx ? sbuf[(size_t) i - 1] : drafts[(size_t) i - 1];
                 for (int i = 0; i < chain_n; ++i) window[(size_t) (T_mtp + i)] = cbuf[(size_t) i];
+                if (force_win != nullptr) force_window(p, window[0], T, window.data(), S);   // lab bench replay
                 drive.d.layers = 0;
                 drive.d.experts = 0;
                 drive.d.failed = false;
@@ -9879,9 +9934,10 @@ int main(int argc, char** argv) {
                         h += hb;
                     }
                 std::fprintf(stderr, "strata work: request %lld%s, %lld windows, rows/window%s, accepted %lld of %lld drafts, "
-                                     "%lld tokens; target picks replaced on verified rows %lld\n", (long long) force_k,
+                                     "%lld tokens; target picks replaced on verified rows %lld; trace windows %lld, misses %lld\n", (long long) force_k,
                              forced != nullptr ? " (forced)" : "", (long long) force_windows, h.c_str(),
-                             (long long) force_acc, (long long) force_off, (long long) produced_n, (long long) force_over);
+                             (long long) force_acc, (long long) force_off, (long long) produced_n, (long long) force_over, (long long) force_win_hit,
+                             (long long) force_win_miss);
                 if (force_trace != nullptr) std::fflush(force_trace);
             }
             // the last commit (set_commit_async): the session is complete before anything reads or copies it
