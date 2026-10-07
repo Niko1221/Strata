@@ -24,9 +24,11 @@
 #include <cstdio>
 
 #include "strata/core/expert_source.hpp"
+#include "strata/core/readonly_cache_snapshot.hpp"
 #include "strata/core/layer.hpp"
 #include "strata/core/session.hpp"
 #include "strata/kernels/sampler.hpp"
+#include "strata/kernels/readonly_miss_cache.hpp"
 
 #include <cuda_runtime.h>
 
@@ -255,6 +257,9 @@ public:
     /// STRATA_VERIFY_PROFILE=1 - GPU stage times of the windows since the last call (ms per
     /// window), as one line; empty when off.
     std::string profile_report();
+    const uint8_t* cached_refill_source(int64_t layer,int64_t expert) const { return miss_cache_snapshot_.find(layer,expert); }
+    bool miss_cache_snapshot_enabled() const { return miss_cache_snapshot_.enabled(); }
+    bool device_plan_enabled() const { return device_plan_; }
 
 private:
     RemoteExpertOpt* remote_opt_ = nullptr;
@@ -428,6 +433,12 @@ private:
     int32_t *ids_ = nullptr, *hit_slot_ = nullptr, *hit_dst_ = nullptr, *hit_count_ = nullptr;
     int32_t* plan_ = nullptr;                                     // device copy of the plan block
     uint8_t* staging_ = nullptr;                                  // VRAM slots for the PCIe share of the misses
+    ReadonlyCacheSnapshot miss_cache_snapshot_;
+    int miss_cache_ways_ = 0;  // opt-in immutable secondary copies, per layer
+    uint8_t* miss_cache_data_ = nullptr;
+    int32_t* miss_cache_tags_ = nullptr;
+    uint64_t *miss_cache_ages_ = nullptr, *miss_cache_clock_ = nullptr, *miss_cache_counts_ = nullptr;
+    strata::kernels::ReadonlyMissCachePlan* miss_cache_plan_ = nullptr;
     static constexpr int64_t kStagingBlobs = 16;
     static constexpr int64_t kPcieGroupRows = 4;                  // the PCIe call's groups side by side (of <= 16)
     uint8_t* hit_xq_ = nullptr;

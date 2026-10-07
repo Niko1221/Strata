@@ -2,6 +2,7 @@
 #include "strata/core/verify.hpp"
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/dma_batch.hpp"
+#include "strata/kernels/readonly_miss_cache.hpp"
 #if defined(_WIN32)
 #include <intrin.h>
 #endif
@@ -334,6 +335,7 @@ Verifier::~Verifier() {
     }
     if (cs_) cudaStreamSynchronize(cs_);
     if (sh_cs_) cudaStreamSynchronize(sh_cs_);
+    miss_cache_snapshot_.close();
     for (auto& e : exec_)
         if (e) cudaGraphExecDestroy(e);
     for (auto& e : exec_nr_)
@@ -443,6 +445,30 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
               mapped(64, (void**) &h_plan_err_, (void**) &m_plan_err_) &&
               mapped(T * K * N * 4, (void**) &h_ymiss_, (void**) &m_ymiss_);
     if (!ok) { err = "verify: mapped staging allocation failed"; return false; }
+    if (const char* value = std::getenv("STRATA_Q8_MISS_CACHE_WAYS")) {
+        char* end = nullptr;
+        const long ways = std::strtol(value, &end, 10);
+        if (!*value || *end || ways < 0 || ways > strata::kernels::kMissCacheMaxWays) {
+            err = "verify: STRATA_Q8_MISS_CACHE_WAYS must be an integer from 0 to 16";
+            return false;
+        }
+        miss_cache_ways_ = (int)ways;
+    }
+    if (miss_cache_ways_) {
+        const auto& lay = strata::kernels::cpu::expert_layout();
+        bool supported = lay.native && lb_ == 0 && le_ == g.n_layers &&
+                         lay.fmt.size() == (size_t)g.n_layers && lay.max_blob % 16 == 0;
+        for (int64_t l = 0; supported && l < g.n_layers; ++l)
+            supported = lay.fmt[(size_t)l].gu_type == 8 && lay.fmt[(size_t)l].d_type == 8 &&
+                        lay.blob_bytes(l) == lay.max_blob; // GGML Q8_0; uniform expert payload
+#if !defined(STRATA_VERIFY_READONLY_MISS_CACHE)
+        supported = false; // this experimental path has CUDA-only gates
+#endif
+        if (!supported) {
+            err = "verify: miss cache requires uniform native Q8_0 and a whole-model CUDA verifier";
+            return false;
+        }
+    }
     // the GPU plan: counts(4) | start(cap+1) | dst(cap) | tok(cap) | pad | ptr(cap u64) | ptr2(cap u64) | start2(cap+1)
     {
         const int64_t cap = (int64_t) (T * K);
@@ -491,6 +517,15 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         hit_slot_ = b.take<int32_t>(T * K); hit_dst_ = b.take<int32_t>(T * K); hit_count_ = b.take<int32_t>(4);
         plan_ = b.take<int32_t>(2 * ((uint64_t) plan_i32_ + 16));
         staging_ = b.take<uint8_t>((uint64_t) kStagingBlobs * strata::kernels::cpu::expert_layout().max_blob);
+        if (miss_cache_ways_) {
+            const uint64_t slots = (uint64_t)g.n_layers * miss_cache_ways_;
+            miss_cache_data_ = b.take<uint8_t>(slots * strata::kernels::cpu::expert_layout().max_blob);
+            miss_cache_tags_ = b.take<int32_t>(slots);
+            miss_cache_ages_ = b.take<uint64_t>(slots);
+            miss_cache_clock_ = b.take<uint64_t>(g.n_layers);
+            miss_cache_counts_ = b.take<uint64_t>(g.n_layers * 4);
+            miss_cache_plan_ = b.take<strata::kernels::ReadonlyMissCachePlan>(1);
+        }
         hit_xq_ = b.take<uint8_t>(T * (N / 32) * 34); hit_xs_ = b.take<float>(T * (N / 32));
         nat_xq_ = b.take<uint8_t>(T * (N / 32) * 36);
         hit_scratch_ = b.take<uint8_t>(std::max<uint64_t>(
@@ -543,6 +578,33 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         if (cudaMemcpy(one_, &one, sizeof one, cudaMemcpyHostToDevice) != cudaSuccess) {
             err = "verify: the arena could not be set";
             return false;
+        }
+    }
+    if (miss_cache_ways_) {
+        if (cudaMemset(miss_cache_tags_, 0xff, (size_t)g.n_layers * miss_cache_ways_ * sizeof(int32_t)) != cudaSuccess ||
+            cudaStreamSynchronize(nullptr) != cudaSuccess) {
+            err = "verify: cannot initialize miss cache tags";
+            return false;
+        }
+        std::fprintf(stderr, "strata readonly miss cache: enabled, ways=%d layers=%lld bytes=%llu; "
+                             "immutable secondary copies, no writebacks\n", miss_cache_ways_, (long long)g.n_layers,
+                     (unsigned long long)((uint64_t)g.n_layers * miss_cache_ways_ * strata::kernels::cpu::expert_layout().max_blob));
+    }
+    if (const char* value = std::getenv("STRATA_Q8_CACHE_TAG_SNAPSHOT")) {
+        if (std::strcmp(value, "0") != 0 && std::strcmp(value, "1") != 0) {
+            err = "verify: STRATA_Q8_CACHE_TAG_SNAPSHOT must be 0 or 1";
+            return false;
+        }
+        if (*value == '1') {
+            if (!miss_cache_ways_ || miss_cache_snapshot_.open(g.n_layers, g.n_expert, miss_cache_ways_,
+                    (size_t)strata::kernels::cpu::expert_layout().max_blob,
+                    miss_cache_tags_, miss_cache_data_) != cudaSuccess) {
+                err = "verify: cannot create snapshot of the active Q8 secondary cache";
+                return false;
+            }
+            std::fprintf(stderr, "strata miss cache tag snapshot: enabled, bytes=%llu; "
+                                 "copy before existing end-of-window synchronization\n",
+                         (unsigned long long)miss_cache_snapshot_.bytes());
         }
     }
     sink_.staging = (unsigned long long) staging_;
@@ -1265,8 +1327,21 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             if (sink_.pcie_mode == 2) {                            // stage it with a copy kernel, then point at staging
                 const int64_t per = G == 2 ? kStagingBlobs / 2 : kStagingBlobs;
                 uint8_t* stage = staging_ + (size_t) (grp * per) * lay.max_blob;
-                fetch_blobs(p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), (int) per, cs);
-                rebase_ptrs((unsigned long long*) p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), cs);
+#if defined(STRATA_VERIFY_READONLY_MISS_CACHE)
+                if (miss_cache_ways_) {
+                    const size_t slot0 = (size_t)l * miss_cache_ways_;
+                    ReadonlyMissCacheBank bank{miss_cache_data_ + slot0 * lay.max_blob,
+                        miss_cache_tags_ + slot0, miss_cache_ages_ + slot0, miss_cache_clock_ + l,
+                        miss_cache_counts_ + l * 4, miss_cache_ways_, (int64_t)lay.max_blob};
+                    fetch_readonly_misses((unsigned long long*)p_ptr2, p_counts + 2, p_start2, p_dst,
+                        ids_ + (size_t)tb*K, stage, (int64_t)lay.blob_bytes(l), (int)per,
+                        bank, miss_cache_plan_, cs);
+                } else
+#endif
+                {
+                    fetch_blobs(p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), (int) per, cs);
+                    rebase_ptrs((unsigned long long*) p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), cs);
+                }
             }
             stamp(l, 21, grp);
             // the PCIe share is pcie_frac of the misses: a few groups when the cache is cold, usually none (always none at
@@ -1681,6 +1756,9 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     using namespace strata::kernels;
     const OnDevice on_device(device_);
     last_batch_ = false;
+    if (miss_cache_ways_ && (split_ || sink_.pcie_mode != 2)) {
+        err = "verify: miss cache requires unsplit mapped RAM copies"; return false;
+    }
     if (T < 1 || T > max_t_) { err = "verify: window size out of range"; return false; }
     if (released_.load()) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
     const ModelGeometry& g = *g_;
@@ -1706,6 +1784,10 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     if (trace_h_ != nullptr) std::memset(trace_h_, 0, trace_n_ * 8);   // #649: this window's breadcrumbs only
     std::atomic_thread_fence(std::memory_order_seq_cst);
     trace_ev("WINDOW", -1, -1, pos0 * 16 + T);
+    if (!miss_cache_snapshot_.invalidate()) {
+        err = "verify: previous cache tag snapshot is still in flight";
+        return false;
+    }
     ms_host += ms_since(t0);
     VDBG("staged; launching\n");
     if (ar_on() && h_plan_err_ != nullptr) *(volatile uint32_t*) h_plan_err_ = 0;
@@ -1819,9 +1901,17 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     // spin kernel outlives the process - the case that left Windows GPUs "lost" until a power cycle.  The wait
     // itself stays a blocking sync: a cudaStreamQuery poll here cost IQ3_S ~3% decode (a core calling the driver
     // beside the expert workers).
+    if (miss_cache_snapshot_.enabled() && miss_cache_snapshot_.enqueue(cs_) != cudaSuccess) {
+        err = "verify: cannot enqueue cache tag snapshot";
+        return false;
+    }
     trace_ev("SYNC", -1, -1, 0);
     const cudaError_t se = cudaStreamSynchronize(cs_);
     trace_ev("SYNCED", -1, -1, (int64_t) se);
+    if (miss_cache_snapshot_.enabled() && !miss_cache_snapshot_.complete_after_stream_sync(se)) {
+        err = "verify: cache tag snapshot completion failed";
+        return false;
+    }
     if (se != cudaSuccess) { err = std::string("verify: ") + cudaGetErrorString(se); return false; }
     if (ar_on() && h_plan_err_ != nullptr && *(volatile uint32_t*) h_plan_err_ != 0) {   // #871: refresh_ar saw the table whole
         *(volatile uint32_t*) h_plan_err_ = 0;
@@ -2056,6 +2146,7 @@ bool Verifier::wait_commit(std::string& err) {
 // ================================ BATCH WINDOWS (see init_slots) ================================
 
 bool Verifier::init_slots(const std::vector<SessionState*>& slots, std::string& err) {
+    if (miss_cache_ways_) { err = "verify: read-only miss cache does not support batched slots"; return false; }
     const OnDevice on_device(device_);
     if (g_ == nullptr || ss_ == nullptr) { err = "verify: init_slots before init"; return false; }
     if (slots.empty()) {
