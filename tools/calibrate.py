@@ -178,7 +178,7 @@ def sweep(s, values: list, base_tune: dict, key: str, label: str, say) -> dict:
         for v in (values if r % 2 == 0 else values[::-1]):
             out[v].append(s.rate({**base_tune, key: v}))
         say(f"    round {r + 1}/{SWEEP_ROUNDS} {label}: " +
-            "  ".join(f"{v:g} {statistics.median(out[v]):.1f}" for v in values))
+            "  ".join(f"{v:g} {out[v][-1]:.1f}" for v in values))
     med = {v: statistics.median(out[v]) for v in values}
     say(f"    {label}, median of {SWEEP_ROUNDS}: " +
         ", ".join(f"{v:g}: {med[v]:.1f} ({min(out[v]):.1f}-{max(out[v]):.1f})" for v in values) +
