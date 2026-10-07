@@ -50,7 +50,9 @@ struct Owned {
         o.force_f16_kv = true;      // FP16 regardless of the process KV format
         o.disable_elastic = true;
         o.disable_streaming = true;
-        bytes = qsa_state_bytes(g, max_cells, /*with_rope=*/false, /*ring_cells=*/0, o);
+        // with_rope=true: this state owns its rope tables (share_rope stays null) - bytes() and
+        // init() must agree on that, or the tables' upload writes past the arena
+        bytes = qsa_state_bytes(g, max_cells, /*with_rope=*/true, /*ring_cells=*/0, o);
         if (cudaMalloc(&arena, bytes) != cudaSuccess) return false;
         if (qsa_state_init(g, max_cells, arena, st, nullptr, /*ring_cells=*/0, o) == 0) return false;
         qsa_state_zero(st, g, nullptr);
