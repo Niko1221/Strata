@@ -418,8 +418,12 @@ run it; the report below is from a community machine: an RX 6900 XT 16 GB (gfx10
 - **gfx1150** (Radeon 890M, Ryzen AI 9 HX PRO 370, Strix Point, #1217): builds and runs from 0.1.40.2 as an unvalidated target (CMake warns; the
   device code already covers it: the WMMA guards and `gfx_arch_is_gfx11_wmma()` include it). One community machine: MINISFORUM N5 PRO, 96 GB DDR5-5600, GTT
   raised to 64 GiB (`ttm.pages_limit=16777216 ttm.page_pool_size=16777216`), TheRock ROCm 7.14.1 for gfx1150, an unprivileged LXC container, IQ3_XXS: chat and
-  tool calls work, decode 17-19 tok/s, prompt about 125-135 tok/s, the HIP ctest passes apart from tests that need files a public checkout lacks.
-  Setup does not install for it yet (an integrated Radeon other than Strix Halo is named and not supported): build by hand with `-DCMAKE_HIP_ARCHITECTURES=gfx1150`.
+  tool calls work, decode 15-19 tok/s, the HIP ctest passes apart from tests that need files a public checkout lacks.
+  Prompts read at about 125-130 tok/s on plain hipBLAS and 1.5-1.7x faster with `tools/hip/gfx1150-hipblaslt-100401.txt` (ROCm 7.14.1's
+  hipBLASLt; 3.6K tokens 124 -> 216 tok/s, 7K 130 -> 226 tok/s, decode unchanged):
+  [bench/results/2026-10-07-community-gfx1150](../bench/results/2026-10-07-community-gfx1150/README.md).
+  Setup does not install for it yet (an integrated Radeon other than Strix Halo is named and not supported): build by hand with `-DCMAKE_HIP_ARCHITECTURES=gfx1150`
+  and point `STRATA_HIPBLASLT_TUNING` at the table yourself.
 - **Not validated:** gfx1032 (the same `dp4a` path, no hardware report), setup's own build path and the
   `gfx103X-all` wheels on gfx1030, images, answer-quality benchmarks. RDNA1 (gfx1012, RX 5500 XT) builds by hand:
   [OLDER_GPUS.md](OLDER_GPUS.md#amd-building-gfx906-and-gfx1012).
@@ -535,6 +539,16 @@ Shipped tables:
   valid: the engine falls back to hipBLASEx for an id the library rejects, and the test still passes. Run it with
   `STRATA_HIPBLASLT_VERBOSE=1` and look for `fallbacks=0` in its summary line, and recalibrate with
   `tune_hipblaslt` before using this table with a different 1.5.0 build.
+
+- `gfx1150-hipblaslt-100401.txt`: Radeon 890M (gfx1150, Strix Point APU, 16 CUs), calibrated with AMD's TheRock ROCm 7.14.1 for
+  gfx1150 (hipBLASLt 1.4.1 `cd957402`, version number 100401) and the engine's 32 MiB workspace. The 16 dense GEMM geometries a
+  Qwen3.8-Flash-Next prompt logs on that card (the same 16 as the gfx1201 100500 table) at T = 64, 128, ..., 16384: 144 rows. Two
+  `tune_hipblaslt` passes back to back; each row keeps the solution with the lowest median of all six repetitions, because one
+  repetition stalled now and then (a 100 ms call read up to 1.6 s) and the tool's mean-of-three picks differed in 26 rows between
+  the passes. Every row beats plain hipBLAS, 1.55-22.6x per GEMM (geometric mean 4.5x), and `STRATA_HIPBLASLT_VERBOSE=1` reported
+  no fallbacks over prompts of 28-7,880 tokens. Setup does not use it (it does not install for gfx1150): point
+  `STRATA_HIPBLASLT_TUNING` at it. Measurements and the per-row timings:
+  [bench/results/2026-10-07-community-gfx1150](../bench/results/2026-10-07-community-gfx1150/README.md).
 
 Calibrated on my PC and kept in this checkout, not shipped: `gfx1201-hipblaslt-100401.txt`, a Radeon AI PRO
 R9700 (gfx1201, 32 GB, 1002:7551) on a Ryzen 9 9950X3D with 62 GiB RAM, CachyOS (kernel 7.3.0-rc6-1-cachyos-rc,
