@@ -24,7 +24,8 @@
 #
 # Setup choices are env vars, read by docker-entrypoint.sh: FAMILY, MODEL, CONTEXT,
 # VISION (no | yes | cpu), KV (int8 | q4_0 | k8v4), GPU (one card) or GPUS ("0,2"
-# or "all", with LAYER_SPLIT), LOW_RAM (auto | on | off), HOST, PORT, API_KEY.
+# or "all", with LAYER_SPLIT), LOW_RAM (auto | on | off), HOST, PORT, API_KEY,
+# GGUF_DIR (GGUF files you already have), RESIDENT_BUDGET_GIB, KV_STREAMING.
 #
 # Only the model files, the prepared pack, the MTP layer and the install config
 # live in the /data volume; the engine is part of the image. Strata loads 32-62 GB
@@ -64,7 +65,8 @@ RUN python3 -m venv .venv \
     && chmod +x setup.sh docker-entrypoint.sh
 
 # llama.cpp at the pinned commit, then the engine and the image encoder, built
-# exactly the way setup.py builds them. BUILD.json is what setup.py reads to
+# exactly the way setup.py builds them: native code for the CPU that builds the
+# image, so build it on the PC it runs on. BUILD.json is what setup.py reads to
 # decide whether an engine is current: source=local with a matching src hash
 # means the first start reuses it instead of recompiling.
 RUN .venv/bin/python - <<'PYEOF'
@@ -82,7 +84,7 @@ setup.cmake_build(setup.ROOT, setup.ROOT / "build", "strata",
      f"-DSTRATA_GGML_DIR={llama}"], None, "build-strata.bat")
 if vision != "none":
     setup.cmake_build(setup.ROOT / "tools" / "vision", setup.ROOT / "build-vision", "strata-vision",
-        [f"-DLLAMA_DIR={llama}", "-DSTRATA_VISION_CUDA=ON",
+        [f"-DLLAMA_DIR={llama}", "-DSTRATA_VISION_CUDA=ON", "-DSTRATA_PORTABLE=OFF",
          f"-DCMAKE_CUDA_ARCHITECTURES={arch}", f"-DCMAKE_CUDA_COMPILER={nvcc}"], None, "build-vision.bat")
 
 eng = setup.ROOT / "engine"

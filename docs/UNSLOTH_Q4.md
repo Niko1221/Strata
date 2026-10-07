@@ -27,7 +27,7 @@ What setup does differently for this model:
   GPU: it has not been run on AMD cards (its prompt kernels for the Q4_K / Q5_K experts are NVIDIA-only), so with
   `--backend hip` setup says so and asks before the download (#429; `--model UD-Q4_K_XL --yes` tries it). One GPU
   by default: the RAM budget below has no layer split (the engine refuses `--resident-budget-gib` with one). No
-  images (the vision encoder is not wired to this file yet) and no experimental speed projection (not tested with it).
+  experimental speed projection (not tested with it). Images (#967) are an option, with a warning that this file is untested with them (reported working, #971).
 - Several GPUs (#498): when the RAM holds the GGUF files and 24 GB more (~135 GB of RAM) and two or more cards can
   share it, setup asks (one GPU stays the default; `--gpus 0,1` takes the split). The split runs **without** the RAM budget: all 77 GB of experts are loaded into RAM from the GGUFs at
   start, the files pass through the OS file cache while they load, and the config gets `"gpu": [0, 1]` and

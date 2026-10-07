@@ -1604,7 +1604,7 @@ static float* down_partials(sycl::queue* q) {
     return p;
 }
 
-void fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, void* stream, unsigned long long* stamp_buf,
+bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, void* stream, unsigned long long* stamp_buf,
                          int stamp_i0) {
     if (n_tok < 1 || n_tok > kFusedGrMaxT || xn_scratch == nullptr) {
         std::fprintf(stderr, "fused_gr_read_multi: invalid arguments\n");
@@ -1752,7 +1752,7 @@ void fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
         */
         const dpct::err0 e3 = 0;
 
-        return;
+        return false;   // SYCL port: never writes the q8_1 images (STRATA_QFUSE is not supported here)
     }
     m.part = down_partials(st);
     {
@@ -1879,7 +1879,11 @@ void fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
     need to rewrite this code.
     */
     const dpct::err0 e = 0;
+    return false;   // SYCL port: the q8_1 images (S26 STRATA_QFUSE) and the Q8_0 reads (S23 STRATA_HC_Q8) are not built; the caller quantizes
 }
+
+// the bench only (AMD latency-hidden kernels): nothing to switch on the SYCL port
+void fused_gr_set_fast(int) {}
 
 bool fused_gr_supported(int64_t n_embd, int64_t hc, int64_t hc_lr) {
     return n_embd == N && hc == HC && hc_lr == LR;

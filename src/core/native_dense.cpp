@@ -20,6 +20,17 @@
 
 namespace strata::core {
 namespace {
+// `load` makes one cudaMalloc per projection matrix, and the driver backs each call with 2 MiB granules
+// (measured on the RTX 5060: 300 buffers of 6.73 MiB asked 2019 MiB and cost 2400).  So a stage's real
+// footprint is the granule-rounded sum, not the payload sum.  This rule - a granule for every matrix of a
+// MiB or more, the payload for the rest - prices the iq3_s pack's 300 matrices at 2255 MiB where they
+// really take 2238 (+0.8%).  It over-prices, which is the safe side.  (Pricing every matrix at a granule is
+// far worse, 2378 MiB: the driver packs the sub-MiB matrices into the slack of the rounded ones.)
+constexpr uint64_t kAllocGranule = 2ull << 20;
+constexpr uint64_t kSmallAlloc = 1ull << 20;
+uint64_t alloc_bytes(uint64_t bytes) {
+    return bytes < kSmallAlloc ? bytes : (bytes + kAllocGranule - 1) / kAllocGranule * kAllocGranule;
+}
 int g_layer_lb = -1, g_layer_le = -1;   // set_layer_range; -1: every layer
 bool in_range(const std::string& name) {
     if (g_layer_lb < 0 || name.rfind("blk.", 0) != 0) return true;
@@ -117,6 +128,49 @@ bool NativeDense::served_names(const std::vector<std::string>& shards, bool incl
 }
 
 void NativeDense::set_layer_range(int lb, int le) { g_layer_lb = lb; g_layer_le = le; }
+// The byte walk `load` does for the layers [lb, le), without the allocations: the same filters in the same order,
+// reading the GGUF headers and the canonical table only, so it needs no device.  A later stage's projections are not
+// on the card when the split search prices that stage, and `load` runs one cudaMalloc per matrix (#1238).  The two
+// have to stay in step.  A repeated name is skipped rather than refused (`load` refuses it).
+bool NativeDense::weight_bytes_for(const std::vector<std::string>& shards, WeightTable& table, bool include_ple_key,
+                                   int64_t lb, int64_t le, uint64_t& out, std::string& err) {
+    out = 0;
+    try {
+        std::set<std::string> seen;
+        uint64_t total = 0;
+        for (const auto& path : shards) {
+            strata::GgufFile gguf(path);
+            for (const auto& tensor : gguf.tensors()) {
+                if (!eligible(tensor, include_ple_key)) continue;
+                if (tensor.name.rfind("blk.", 0) == 0) {
+                    const long l = std::strtol(tensor.name.c_str() + 4, nullptr, 10);
+                    if (l < lb || l >= le) continue;
+                }
+                if (!seen.insert(tensor.name).second) continue;
+                auto found = table.table_.find(tensor.name);
+                if (found == table.table_.end()) {
+                    err = "native dense: tensor absent from canonical table: " + tensor.name;
+                    return false;
+                }
+                const auto& ref = found->second;
+                if (!strata::kernels::native_mmvq_supported(tensor.type)) continue;
+                if (tensor.name == "blk.1.ple_key.weight" && !ref.quantized()) continue;
+                if (!ref.quantized() || tensor.shape.size() != 2 ||
+                    ref.ne0 <= 0 || ref.ne0 > INT_MAX || ref.ne1 <= 0 || ref.ne1 > INT_MAX ||
+                    tensor.shape[0] != (uint64_t) ref.ne0 || tensor.shape[1] != (uint64_t) ref.ne1) {
+                    err = "native dense: incompatible matrix " + tensor.name;
+                    return false;
+                }
+                total += alloc_bytes(strata::kernels::native_mmvq_weight_bytes(tensor.type, (int) ref.ne0, (int) ref.ne1));
+            }
+        }
+        out = total;
+        return true;
+    } catch (const std::exception& error) {
+        err = std::string("native dense: ") + error.what();
+        return false;
+    }
+}
 bool NativeDense::keep_unquantized_ple_key(const std::string& pack_dir, std::set<std::string>& skip,
                                            std::string& err) {
     const std::string key = "blk.1.ple_key.weight";
@@ -146,7 +200,7 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
         std::vector<Pending> pending;
         std::set<std::string> seen;
         int max_in = 0;
-        uint64_t total = 0, hc_q8_bytes = 0;
+        uint64_t total = 0, hc_q8_bytes = 0, allocated = 0;
         uint64_t split_count = 0, split_tensors = 0;
         std::set<uint64_t> split_numbers;
         bool have_architecture = false;
@@ -155,7 +209,8 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
             const auto* count = gguf.get("split.count");
             const auto* number = gguf.get("split.no");
             const auto* tensors = gguf.get("split.tensors.count");
-            if (gguf.get("general.architecture")) {
+            if (gguf.get("general.architecture") && (!number || number->u == 0)) {
+                // splitter may copy general.architecture into every shard (Huihui abliterated re-split)
                 err = strata::check_architecture(gguf);
                 if (!err.empty()) return false;
                 have_architecture = true;
@@ -243,6 +298,7 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                 }
                 max_in = (std::max)(max_in, (int) ref.ne0);
                 total += bytes;
+                allocated += alloc_bytes(bytes);
                 // STRATA_Q8_PACKED=1: a second, packed copy of an eligible Q8_0 matrix for the decode MMVQ (the GGUF
                 // copy stays: the prompt path's GEMMs read it).
                 DevicePtr packed;
@@ -319,6 +375,7 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                          packed_count, packed_bytes / 1048576.0);
         scratch_ = scratch.release();
         bytes_ = total + hc_q8_bytes;
+        allocated_ = allocated;
         if (hc_q8_requested())
             std::fprintf(stderr, "strata: STRATA_HC_Q8=1: %.2f GiB of Q8_0 hyper-connection projections for the verify read\n",
                          (double) hc_q8_bytes / 1073741824.0);

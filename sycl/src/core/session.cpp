@@ -764,8 +764,8 @@ bool SessionLoopScratch::init(size_t parts_bytes_in, std::string &err) try {
     the migrated code and was removed or replaced with 0. You may need to check
     the migrated code.
     */
-    if (DPCT_CHECK_ERROR(y_miss = (float *)sycl::malloc_host(
-                             parts_bytes, dpct::get_in_order_queue())) != 0) {
+    if (DPCT_CHECK_ERROR(y_miss = (float *)strata::host_malloc_polled(
+                             parts_bytes, dpct::get_in_order_queue())) != 0 || y_miss == nullptr) {
         err = "SessionLoopScratch: cudaHostAlloc for the pool's staging failed";
         return false;
     }
@@ -781,10 +781,17 @@ bool SessionLoopScratch::init(size_t parts_bytes_in, std::string &err) try {
     // core or its SMT sibling.  The symptom is not an error: it is a CPU path at 26.9 GB/s where the same pool
     // runs at 36.32.  It was being done and undone on EVERY token, which is a syscall pair on the critical path
     // for a property that wants to hold for the whole session.
-    const std::vector<int> cores = strata::kernels::cpu::physical_cores(false);
-    if (!cores.empty()) {
-        pinned_core = strata::kernels::cpu::pin_current_thread(cores[0]);
+    // The host's core is the pool's reserved one: the first physical core, or the last with --host-core last (F12).
+    const int host_core = strata::kernels::cpu::planned_host_core();
+    if (host_core >= 0) {
+        pinned_core = strata::kernels::cpu::pin_current_thread(host_core);
         pinned = pinned_core.valid;
+    } else {
+        const std::vector<int> cores = strata::kernels::cpu::physical_cores(false);
+        if (!cores.empty()) {
+            pinned_core = strata::kernels::cpu::pin_current_thread(cores[0]);
+            pinned = pinned_core.valid;
+        }
     }
     return true;
 }
@@ -804,7 +811,7 @@ void SessionLoopScratch::free() {
     }
     if (probe != nullptr) { dpct::destroy_event(probe); probe = nullptr; }
     if (y_miss != nullptr) {
-        sycl::free(y_miss, dpct::get_in_order_queue()); y_miss = nullptr;
+        strata::host_free_polled(y_miss, dpct::get_in_order_queue()); y_miss = nullptr;
     }
     parts_bytes = 0;
 }
@@ -1375,8 +1382,8 @@ bool session_run_token(const ModelGeometry &g, int64_t pos, int32_t pos_base,
                     err = "session_run_token: layer " + std::to_string(l) +
                           " never rang (" +
                           /*
-                          DPCT1009: SYCL reports errors using exceptions
-                          and does not use error codes. Please replace the
+                          DPCT1009: SYCL reports errors using exceptions and
+                          does not use error codes. Please replace the
                           "get_error_string_dummy(...)" with a real
                           error-handling function.
                           */

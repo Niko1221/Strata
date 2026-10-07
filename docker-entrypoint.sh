@@ -19,6 +19,10 @@ GPUS="${GPUS:-}"                # "0,2" or "all": one model across several cards
 GPU="${GPU:-}"                  # one card, numbered as nvidia-smi numbers them
 LAYER_SPLIT="${LAYER_SPLIT:-}"  # with GPUS: where each later card's layers start (default: auto)
 LOW_RAM="${LOW_RAM:-auto}"      # on: the experts come from the pack's experts.bin, not from RAM
+GGUF_DIR="${GGUF_DIR:-}"        # a mounted folder with GGUF files you already have: no download
+RESIDENT_BUDGET_GIB="${RESIDENT_BUDGET_GIB:-}"   # UD-Q4_K_XL: GiB of experts kept in RAM (default: setup's pick)
+KV_STREAMING="${KV_STREAMING:-}" # auto | on | off; empty: setup.py's own default (auto)
+CONFIG="${CONFIG:-}"            # a config file to start with (wins over MODEL's /data/config/strata-<model>.json)
 
 # setup.py starts the newest strata-*.json it finds, so link in exactly the one
 # this family and model were set up with. The config is the recorded output of
@@ -37,8 +41,28 @@ mkdir -p "$STRATA_DATA/config"
 # setup.py's own default. LOW_RAM is always passed: setup.py measures the PC's RAM
 # from /proc/meminfo, which in a container is the host's total, not the container's
 # limit, so a memory-capped container has to ask for the low-RAM mode itself.
-if [ "${REINSTALL:-0}" = "1" ] || [ ! -f "$cfg" ]; then
-  echo "Setting up $tag: downloading the model (~70 GB; the engine is already in the image)."
+#
+# Which config the server starts with (#1244): CONFIG when set; else a link in /opt/strata that already points
+# into $STRATA_DATA/config/ (a pod command that picked one by linking); else MODEL's strata-<model>.json.
+link="/opt/strata/strata-$tag.json"
+keep=""
+if [ -n "$CONFIG" ]; then
+  [ -f "$CONFIG" ] || { echo "CONFIG=$CONFIG does not exist." >&2; exit 1; }
+elif [ "${REINSTALL:-0}" != "1" ] && [ -L "$link" ] && [ -f "$link" ]; then
+  case "$(readlink "$link")" in "$STRATA_DATA"/config/*) keep=1 ;; esac
+fi
+
+if [ -n "$CONFIG" ]; then
+  ln -sfn "$CONFIG" "$link"
+  echo "Config: $CONFIG (from CONFIG)"
+elif [ -n "$keep" ]; then
+  echo "Config: $(readlink "$link") (existing link kept)"
+elif [ "${REINSTALL:-0}" = "1" ] || [ ! -f "$cfg" ]; then
+  if [ -n "$GGUF_DIR" ]; then
+    echo "Setting up $tag from the GGUF files in $GGUF_DIR (the engine is already in the image)."
+  else
+    echo "Setting up $tag: downloading the model (~70 GB; the engine is already in the image)."
+  fi
   set -- --family "$FAMILY" --model "$MODEL" --context "$CONTEXT" --vision "$VISION" \
     --data-dir "$STRATA_DATA" --host "$HOST" --api-key "$API_KEY" \
     --port "$PORT" --no-start --low-ram "$LOW_RAM"
@@ -46,10 +70,17 @@ if [ "${REINSTALL:-0}" = "1" ] || [ ! -f "$cfg" ]; then
   if [ -n "$GPUS" ]; then set -- "$@" --gpus "$GPUS"; fi
   if [ -n "$GPU" ]; then set -- "$@" --gpu "$GPU"; fi
   if [ -n "$LAYER_SPLIT" ]; then set -- "$@" --layer-split "$LAYER_SPLIT"; fi
+  if [ -n "$GGUF_DIR" ]; then set -- "$@" --gguf-dir "$GGUF_DIR"; fi
+  if [ -n "$RESIDENT_BUDGET_GIB" ]; then set -- "$@" --resident-budget-gib "$RESIDENT_BUDGET_GIB"; fi
+  if [ -n "$KV_STREAMING" ]; then set -- "$@" --kv-streaming "$KV_STREAMING"; fi
   .venv/bin/python setup.py --setup --yes "$@"
   [ -e "/opt/strata/strata-$tag.json" ] && { cmp -s "/opt/strata/strata-$tag.json" "$cfg" || cp -f "/opt/strata/strata-$tag.json" "$cfg"; }
+  echo "Config: $cfg (from MODEL $MODEL, just set up)"
 else
-  [ -e "/opt/strata/strata-$tag.json" ] || ln -s "$cfg" "/opt/strata/strata-$tag.json"
+  # #1244: the copy on the volume is the one that counts, so a regular file left in /opt/strata by an earlier setup
+  # (or by an image built with one) must not stand in for it: edits to /data/config would be ignored
+  ln -sfn "$cfg" "/opt/strata/strata-$tag.json"
+  echo "Config: $cfg (from MODEL $MODEL)"
 fi
 
 # Later starts skip straight here: setup.py finds the installed config and

@@ -61,7 +61,8 @@ FALLBACK_MODELS = {
               "ram_gb": 32, "arena_gb": 23.4, "families": ("coder",)},
     "UD-Q4_K_XL": {"about": "4-bit (Unsloth Dynamic), EXPERIMENTAL: the best quality, but most experts come from the "
                             "SSD on a 64 GB PC (7-8.5 tokens/s measured)", "download_gb": 111.3, "ram_gb": 48,
-                   "arena_gb": 77.0, "families": ("unsloth",), "budget": True, "experimental": True},
+                   "arena_gb": 77.0, "families": ("unsloth",), "budget": True, "experimental": True,
+                   "vision": True},                       # #967: images allowed (setup warns: untested with this file)
     "UD-IQ4_XS": {"about": "~4-bit i-quant (Unsloth Dynamic), between IQ3_S and UD-Q4_K_XL in quality; on a PC with "
                            "less than ~80 GB of RAM part of its experts are read from the SSD",
                   "download_gb": 93.7, "ram_gb": 48, "arena_gb": 59.5, "families": ("unsloth",), "budget": True,
@@ -1236,7 +1237,15 @@ class Tools:
         if vision in ("yes", "gpu", "cpu") and models[model].get("vision", families[family].get("vision")) is False:
             raise ToolError(f"images are not available with {families[family]['title']} {model} yet: use vision=no")
         if vision is not None and backend == "hip" and vision != "no":
-            raise ToolError("images are not available on the AMD backend yet: use vision=no")
+            # setup.py's hip_vision rules (#990): the AMD backend has no GPU image encoder, but --vision cpu reads
+            # images on the CPU beside it (Linux; the ready-made Windows AMD engine has no encoder)
+            if vision == "cpu" and not WIN:
+                pass
+            elif vision == "cpu":
+                raise ToolError("images on the CPU with an AMD card are Linux-only for now: use vision=no")
+            else:
+                raise ToolError("the AMD backend has no GPU image encoder yet: use vision=cpu (images on the CPU, "
+                                "Linux) or vision=no")
         target = self.check_data_dir(data_dir) if data_dir else s.data_dir()
         tag = (families[family].get("tag", "") + model)
         have_dir = target / "models" / tag

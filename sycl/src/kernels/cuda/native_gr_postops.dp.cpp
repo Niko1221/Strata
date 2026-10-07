@@ -69,6 +69,10 @@ pre_gated(const float *__restrict__ xn, float *__restrict__ gate,
         std::size_t(item_ct1.get_group(2)) * item_ct1.get_local_range(2) +
         item_ct1.get_local_id(2);
     if (d >= std::size_t(n_embd)) return;
+    const std::size_t t = item_ct1.get_group(1);
+    xn += t * std::size_t(n_embd) * hc;
+    gate += t * std::size_t(n_embd) * hc;
+    mixed += t * std::size_t(n_embd);
     float sum = 0.0f;
     for (int c = 0; c < hc; ++c) {
         const std::size_t i = std::size_t(c) * n_embd + d;
@@ -108,6 +112,11 @@ __dpct_inline__ void post(const float *residual,
         std::size_t(item_ct1.get_group(2)) * item_ct1.get_local_range(2) +
         item_ct1.get_local_id(2);
     if (i >= std::size_t(n_embd) * hc) return;
+    const std::size_t t = item_ct1.get_group(1);
+    residual += t * std::size_t(n_embd) * hc;
+    block_out += t * std::size_t(n_embd);
+    inject += t * std::size_t(hc);
+    output += t * std::size_t(n_embd) * hc;
     const int c = int(i / n_embd), d = int(i % n_embd);
     const float weight = scale_zero_bias(sigmoid(scale_zero_bias(inject[c], scale)), 2.0f);
     // Exact residual/output alias is supported; no other thread reads residual[i].
@@ -177,8 +186,15 @@ void native_gr_down_silu(float* lo, int hc_lr, int hc, void* stream) {
 }
 void native_gr_pre_gated(const float* xn, float* gate, float* mixed,
                          int n_embd, int hc, bool fused_layer, void* stream) {
+    native_gr_pre_gated_multi(xn, gate, mixed, n_embd, hc, 1, fused_layer, stream);
+}
+void native_gr_pre_gated_multi(const float* xn, float* gate, float* mixed,
+                               int n_embd, int hc, int n_tok, bool fused_layer, void* stream) {
+    if (n_tok <= 0)
+        throw std::invalid_argument("native GR postops require positive n_tok");
     check_shape(n_embd, hc);
     check_pointer(xn); check_pointer(gate); check_pointer(mixed);
+    const dpct::dim3 grid{blocks(n_embd), unsigned(n_tok), 1u};
     if (fused_layer)
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
@@ -188,10 +204,9 @@ void native_gr_pre_gated(const float* xn, float* gate, float* mixed,
             ->submit([&](sycl::handler &cgh) {
                 auto float_hc_ct5 = 1.0f / float(hc);
 
-                cgh.parallel_for<dpct_kernel_name<class pre_gated_7b64ea,
+                cgh.parallel_for<dpct_kernel_name<class pre_gated_e6e3d1,
                                                   dpct_kernel_scalar<true>>>(
-                    sycl::nd_range<3>(sycl::range(1, 1, blocks(n_embd)) *
-                                          sycl::range(1, 1, THREADS),
+                    sycl::nd_range<3>(grid * sycl::range(1, 1, THREADS),
                                       sycl::range(1, 1, THREADS)),
                     exp_props, [=](sycl::nd_item<3> item_ct1) {
                         pre_gated<true>(xn, gate, mixed, n_embd, hc,
@@ -206,10 +221,9 @@ void native_gr_pre_gated(const float* xn, float* gate, float* mixed,
             ->submit([&](sycl::handler &cgh) {
                 auto float_hc_ct5 = 1.0f / float(hc);
 
-                cgh.parallel_for<dpct_kernel_name<class pre_gated_4a043d,
+                cgh.parallel_for<dpct_kernel_name<class pre_gated_10bc88,
                                                   dpct_kernel_scalar<false>>>(
-                    sycl::nd_range<3>(sycl::range(1, 1, blocks(n_embd)) *
-                                          sycl::range(1, 1, THREADS),
+                    sycl::nd_range<3>(grid * sycl::range(1, 1, THREADS),
                                       sycl::range(1, 1, THREADS)),
                     exp_props, [=](sycl::nd_item<3> item_ct1) {
                         pre_gated<false>(xn, gate, mixed, n_embd, hc,
@@ -221,8 +235,16 @@ void native_gr_pre_gated(const float* xn, float* gate, float* mixed,
 }
 void native_gr_post(const float* residual, const float* block_out, const float* inject,
                     float* output, int n_embd, int hc, void* stream) {
+    native_gr_post_multi(residual, block_out, inject, output, n_embd, hc, 1, stream);
+}
+void native_gr_post_multi(const float* residual, const float* block_out, const float* inject,
+                          float* output, int n_embd, int hc, int n_tok, void* stream) {
+    if (n_tok <= 0)
+        throw std::invalid_argument("native GR postops require positive n_tok");
     check_shape(n_embd, hc);
     check_pointer(residual); check_pointer(block_out); check_pointer(inject); check_pointer(output);
+    const dpct::dim3 grid{blocks(std::size_t(n_embd) * hc), unsigned(n_tok),
+                          1u};
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
@@ -232,10 +254,8 @@ void native_gr_post(const float* residual, const float* block_out, const float* 
                 auto float_hc_ct6 = 1.0f / float(hc);
 
                 cgh.parallel_for<dpct_kernel_name<class post_a7f844>>(
-                    sycl::nd_range<3>(
-                        sycl::range(1, 1, blocks(std::size_t(n_embd) * hc)) *
-                            sycl::range(1, 1, THREADS),
-                        sycl::range(1, 1, THREADS)),
+                    sycl::nd_range<3>(grid * sycl::range(1, 1, THREADS),
+                                      sycl::range(1, 1, THREADS)),
                     exp_props, [=](sycl::nd_item<3> item_ct1) {
                         post(residual, block_out, inject, output, n_embd, hc,
                              float_hc_ct6);

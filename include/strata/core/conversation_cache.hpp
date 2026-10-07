@@ -25,6 +25,10 @@ struct ConversationCheckpoint {
     std::vector<ConversationImageKey> imgs;
     std::vector<uint8_t> gdn, ple, tails, dead, block_pos;
     uint64_t used = 0; // upstream root-pinned/LRU checkpoint retention
+    // A shared-prefix pin (the request key pin=N): this checkpoint is the read-only prefix many suffix queries branch
+    // from, so retention never evicts it (conv_cache.hpp) and a parked conversation holding it stays parked.  A run-time
+    // mark only: it is not in the session file, a request that pins the same prefix again sets it.
+    bool pinned = false;
     // Ordinary layer-split checkpoints retain each device's running state.
     // Whole-session parking is currently single-GPU and rejects these parts.
     std::vector<ConversationCheckpoint> stage_parts;
@@ -95,7 +99,7 @@ inline ConversationCheckpointSplit conversation_checkpoints_split(std::vector<Co
         if (c.stage_parts.size() != stages) continue;
         for (size_t k = 0; k < stages; ++k) {
             ConversationCheckpoint part;
-            part.ids = c.ids; part.imgs = c.imgs; part.used = c.used;
+            part.ids = c.ids; part.imgs = c.imgs; part.used = c.used; part.pinned = c.pinned;
             out.parts[k].push_back(std::move(part));
         }
     }
@@ -153,6 +157,12 @@ struct SavedConversation {
     // with a layer split, the later stages' own images, one per stage, in stage order
     std::vector<SavedConversation> stage_images;
 
+    /// Holds a pinned shared prefix (see ConversationCheckpoint::pinned): the parked-conversation budget keeps it.
+    bool pinned() const {
+        for (const auto& c : checkpoints) if (c.pinned) return true;
+        return false;
+    }
+
     size_t bytes() const {
         size_t n = live.bytes() + checkpoints.capacity() * sizeof(ConversationCheckpoint) +
                    kv.capacity() * sizeof(ConversationKv);
@@ -191,6 +201,12 @@ public:
     size_t bytes() const { return bytes_ + reuse_.bytes(); }
     size_t size() const { return entries_.size(); }
     size_t evictions() const { return evictions_; }
+    // the longest parked conversation, in tokens (--kv-grow keeps the K/V that long while it could be restored)
+    int64_t longest_tokens() const {
+        int64_t n = 0;
+        for (const auto& e : entries_) n = std::max<int64_t>(n, (int64_t) e.live.ids.size());
+        return n;
+    }
 
     // Retain only the restored K/V buffers, not duplicate running checkpoints.
     // This optimization never evicts a parked conversation to make itself fit.
@@ -245,8 +261,12 @@ public:
         if (!enabled() || held > budget_ || incoming > budget_ - held) return false;
         if (bytes() > budget_ - held - incoming) reuse_ = {};
         while (!entries_.empty() && (entries_.size() >= slots_ || bytes_ > budget_ - held - incoming)) {
-            bytes_ -= entries_.front().bytes();
-            entries_.pop_front();
+            // the oldest entry that does not hold a pinned shared prefix leaves; with only pinned ones left the new
+            // image does not fit (the caller skips parking it - the pinned prefix is what the queries come back to)
+            auto victim = std::find_if(entries_.begin(), entries_.end(), [](const SavedConversation& e) { return !e.pinned(); });
+            if (victim == entries_.end()) return false;
+            bytes_ -= victim->bytes();
+            entries_.erase(victim);
             ++evictions_;
         }
         return true;

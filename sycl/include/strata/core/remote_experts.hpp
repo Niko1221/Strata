@@ -27,7 +27,7 @@ public:
     bool open(int device, int slots, int64_t layers, int64_t experts,
               const std::vector<std::pair<int32_t, int32_t>>& ranked,
               const ExpertCache& primary, ExpertSource& source,
-              std::vector<uint8_t>& claimed, std::string& err);
+              std::vector<uint8_t>& claimed, std::string& err, bool auto_size = false);
     void close();
 
     /// `kind` is the primary verifier's classification (-1 = CPU candidate),
@@ -35,6 +35,9 @@ public:
     bool begin(int64_t layer, const float* x, const int32_t* ids, int64_t n_tok,
                int64_t k, const int32_t* kind, const int32_t* primary_res,
                std::string& err);
+    /// This helper's cache holds (layer, expert): begin() will take its rows unless the plan gave them away.
+    bool holds(int64_t layer, int32_t expert) const { return cache_.slot_of(layer, expert) >= 0; }
+    bool optimized_decode() const { return false; }   // SYCL port: no RemoteExpertOpt
     bool owns(int64_t index) const { return owned_[(size_t) index] != 0; }
     bool finish(float* out, std::string& err);
     int64_t resident() const { return cache_.resident(); }
