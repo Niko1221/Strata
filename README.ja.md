@@ -67,6 +67,7 @@ NVIDIA の測定には、Q2_0 のみエンジン 0.1.36、それ以外は 0.1.26
 - **旧世代のグラフィックカード**（Tesla P40 / V100、GTX 10、Radeon VII / MI50、RX 6700 XT、RX 5500 XT）：[旧世代 GPU の対応状況](docs/OLDER_GPUS.md)。
 - **Intel Arc**（Linux でソースからビルド）：[Intel Arc の対応状況](docs/INTEL_ARC.md)。
 - **AMD Ryzen AI Max（Strix Halo）**（Linux でソースからビルド）：[Strix Halo の対応状況](docs/STRIX_HALO.md)。
+- **Apple Silicon 搭載の Mac**（M1 以降、メモリ 64 GB 以上。llama.cpp の Metal バックエンド経由）：[macOS](docs/MACOS.md)（英語）。
 - **AVX2 非対応の旧世代 CPU**：動作しますが、速度は遅くなります。[旧世代 CPU の対応状況](docs/INSTALL.md#older-cpus-experimental)を参照してください。
 
 必要な環境の一覧は、[docs/INSTALL.md](docs/INSTALL.md#what-you-need)をご覧ください。
