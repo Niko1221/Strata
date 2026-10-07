@@ -402,6 +402,7 @@ private:
     int32_t* h_ids_ = nullptr;   int32_t* m_ids_ = nullptr;     // T * k
     float* h_w_ = nullptr;       float* m_w_ = nullptr;         // T * k
     uint32_t* h_seq_ = nullptr;  uint32_t* m_seq_ = nullptr;
+    uint32_t* wait_timeouts_ = nullptr;
     uint32_t* h_flag_ = nullptr; uint32_t* m_flag_ = nullptr;
     uint32_t* h_flagA_ = nullptr; uint32_t* m_flagA_ = nullptr;  // the GPU plan is in place
     uint32_t* h_flagB_ = nullptr; uint32_t* m_flagB_ = nullptr;  // the PCIe share's DMA copies have landed
