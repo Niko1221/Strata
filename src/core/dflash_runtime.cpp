@@ -626,6 +626,10 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
         }
         // per-head q/k norms, then rope (q rows: NH heads at [pos..pos+K); append uses true cells)
         if (parity_want(cycle_) && l == 0) parity_dump(parity_dir_, "q_raw", q_, K * Q, cs_);
+        // the q-rope positions are re-staged HERE for every layer: the previous layer's K restage
+        // overwrites the first K*n_head_kv entries of h_pos_ with the block's positions
+        for (int r = 0; r < K; ++r)
+            for (int64_t hh = 0; hh < dg.n_head; ++hh) h_pos_[(size_t) r * dg.n_head + hh] = (int32_t)(pos + r);
         native_qsa_rms_norm_weighted(q_, wf((pre + ".self_attn.q_norm").c_str()), q_, (int) dg.head_dim,
                                      (int) (K * dg.n_head), kEps, cs_);
         if (parity_want(cycle_) && l == 0) parity_dump(parity_dir_, "q_normed", q_, K * Q, cs_);
