@@ -1,0 +1,74 @@
+{
+  "service": "strata",
+  "model": "qwen3.8-flash-next-iq2_xs",
+  "loaded": true,
+  "auto_load": true,
+  "structured_output": {
+    "formats": [
+      "json_object",
+      "json_schema"
+    ],
+    "method": "prompt_and_validate",
+    "constrained_decoding": false,
+    "stream_buffered": true
+  },
+  "engine": "0.1.40",
+  "started": 1791346608,
+  "uptime_s": 2102,
+  "cache_max_tokens": 131072,
+  "context": {
+    "native": 131072,
+    "max_positions": 131072
+  },
+  "concurrency": {
+    "serving": 1,
+    "requested": 1
+  },
+  "dialects": [
+    "/v1/chat/completions",
+    "/v1/messages",
+    "/v1/responses"
+  ],
+  "vision": {
+    "enabled": false,
+    "available": false,
+    "error": null
+  },
+  "activity": {
+    "requests": 11,
+    "in_flight": 0,
+    "last_request_at": 1791348374
+  },
+  "last_timings": {
+    "cache_n": 0,
+    "prompt_n": 7253,
+    "prompt_ms": 4863.8,
+    "prompt_per_token_ms": 0.671,
+    "prompt_per_second": 1491.2,
+    "predicted_n": 128,
+    "predicted_ms": 1447.4,
+    "predicted_per_token_ms": 11.308,
+    "predicted_per_second": 88.4,
+    "draft_n": 109,
+    "draft_n_accepted": 80,
+    "at": 1791348374
+  },
+  "vram": {
+    "elastic": false
+  },
+  "machine": {
+    "at": 1791348711,
+    "gpu": {
+      "name": "AMD Radeon",
+      "used_mib": 30088.0,
+      "total_mib": 32624.0,
+      "util_pct": 100,
+      "temp_c": 63.0,
+      "power_w": 90.0
+    },
+    "ram": {
+      "used_gib": 38.6,
+      "total_gib": 46.7
+    }
+  }
+}
