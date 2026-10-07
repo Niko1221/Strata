@@ -2382,8 +2382,12 @@ def slot_save_dir(value, base: str | None = None) -> str:
 class Service:
     def __init__(self, engine: Engine, tokenizer, template: ChatTemplate, model_name: str = "qwen3.8-flash-next",
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
-                 fit_max_tokens: bool = False):
+                 fit_max_tokens: bool = False, prompt_reuse: bool = True):
         self.engine, self.tok, self.template, self.model, self.vision = engine, tokenizer, template, model_name, vision
+        self.prompt_encoder = None
+        if prompt_reuse and os.environ.get("STRATA_PROMPT_REUSE", "1") != "0" and callable(getattr(tokenizer, "encode_marked", None)):
+            from strata_tokenizer import PromptEncoder
+            self.prompt_encoder = PromptEncoder(tokenizer)
         self.literals = literal_tags(getattr(tokenizer, "control_tokens", ()))   # texts that stay text inside a message
         self.fit_max_tokens = fit_max_tokens          # --fit-max-tokens: clamp the output cap instead of 400
         self.aliases: list[str] = []                  # #297: other names of the model (the config's `aliases`)
@@ -2961,7 +2965,8 @@ class Service:
         marked, marked_tools, changed = mark_think_literals(messages, tools, self.literals)
         prompt = self.render_prompt(marked, marked_tools, kwargs)
         if not changed:
-            return self.tok.encode(prompt, parse_special=True)
+            return (self.prompt_encoder.encode(prompt) if self.prompt_encoder is not None
+                    else self.tok.encode(prompt, parse_special=True))
         prompt, plain = unmark_think_literals(prompt, self.literals)
         return self.tok.encode(prompt, parse_special=True, plain=plain)
 

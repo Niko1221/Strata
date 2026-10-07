@@ -15,6 +15,8 @@ emoji (4-byte), combining marks, whitespace runs, and C0 control bytes.
 """
 from __future__ import annotations
 
+import bisect
+import threading
 import json
 import pathlib
 import sys
@@ -111,6 +113,7 @@ class Tokenizer:
         # token containing regex metacharacters (several do: `<|`, `[`, `(`) is matched literally.
         self._always_re = self._alt(always)
         self._special_re = self._alt(list(self.special_tokens))
+        self.max_special_len = max(map(len, self.special_tokens), default=1)
 
     @staticmethod
     def _alt(literals: list[str]):
@@ -219,7 +222,7 @@ class Tokenizer:
                 out.append(i)
         return out
 
-    def _encode_matching(self, text: str, pat, plain=()) -> list[int]:
+    def _encode_matching(self, text: str, pat, plain=(), marks=None) -> list[int]:
         """Encode `text`, emitting any literal `pat` matches as single tokens and BPE-ing the rest.
 
         The split happens on the RAW text, before the byte mapping, because a special token's string is a
@@ -238,6 +241,8 @@ class Tokenizer:
                 out.extend(self._encode_plain(text[pos:m.start()]))
             out.append(self.special_tokens[m.group(0)])
             pos = m.end()
+            if marks is not None:
+                marks.append((pos, len(out)))
         if pos < len(text):
             out.extend(self._encode_plain(text[pos:]))
         return out
@@ -251,6 +256,12 @@ class Tokenizer:
         `</think>` quoted in a message (#537) - and are tokenized with the text around them.
         """
         return self._encode_matching(text, self._special_re if parse_special else self._always_re, plain)
+
+    def encode_marked(self, text: str, parse_special: bool = False):
+        """Token IDs and (character end, token count) at each special-token boundary."""
+        marks = []
+        ids = self._encode_matching(text, self._special_re if parse_special else self._always_re, marks=marks)
+        return ids, marks
 
     def token_bytes(self, i: int) -> bytes:
         """The raw bytes of one token (a multi-byte character can be split across tokens)."""
@@ -270,6 +281,78 @@ class Tokenizer:
 
     def decode(self, ids: list[int], errors: str = "replace") -> str:
         return b"".join(self.token_bytes(i) for i in ids).decode("utf-8", errors=errors)
+
+
+def common_prefix_len(a: str, b: str) -> int:
+    """Find a common character prefix using bounded slices rather than a Python loop."""
+    n = min(len(a), len(b))
+    lo, step = 0, 4096
+    while lo < n:
+        hi = min(n, lo + step)
+        if a[lo:hi] != b[lo:hi]:
+            break
+        lo, step = hi, min(step * 2, 1 << 20)
+    else:
+        return n
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if a[lo:mid] == b[lo:mid]:
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
+class PromptEncoder:
+    """Reuse exact prompt IDs only across a shared special-token boundary.
+
+    BPE never crosses a special match. The margin of max_special_len - 1 makes
+    every earlier literal decision identical even when special strings overlap.
+    Ordinary text without a safe boundary takes the full encoder. Entries are
+    immutable snapshots; callers receive a fresh ID list, before image expansion.
+    The cache retains at most four 256K-character / 64K-token prompts by default.
+    It is local to one service and independent of engine KV or cancellation.
+    """
+
+    def __init__(self, tok, keep: int = 4, max_chars: int = 262144, max_tokens: int = 65536):
+        self.tok = tok
+        self.keep, self.max_chars, self.max_tokens = keep, max_chars, max_tokens
+        if min(keep, max_chars, max_tokens) < 0:
+            raise ValueError('prompt cache limits must be nonnegative')
+        self.entries = []
+        self.lock = threading.Lock()
+        self.supported = callable(getattr(tok, 'encode_marked', None)) and hasattr(tok, 'max_special_len')
+
+    def encode(self, text: str) -> list[int]:
+        if not self.keep or not self.supported or len(text) > self.max_chars:
+            return self.tok.encode(text, parse_special=True)
+        with self.lock:
+            entries = self.entries
+        src, cut_k = None, -1
+        margin = self.tok.max_special_len - 1
+        for entry in entries:
+            if text == entry[0]:
+                return list(entry[1])
+            limit = common_prefix_len(entry[0], text) - margin
+            k = bisect.bisect_right(entry[2], limit) - 1
+            if k >= 0 and (src is None or entry[2][k] > src[2][cut_k]):
+                src, cut_k = entry, k
+        if src is None:
+            ids, marks = self.tok.encode_marked(text, parse_special=True)
+            ends, counts = tuple(m[0] for m in marks), tuple(m[1] for m in marks)
+        else:
+            c, n = src[2][cut_k], src[3][cut_k]
+            tail, marks = self.tok.encode_marked(text[c:], parse_special=True)
+            ids = list(src[1][:n]) + tail
+            ends = src[2][:cut_k + 1] + tuple(c + m[0] for m in marks)
+            counts = src[3][:cut_k + 1] + tuple(n + m[1] for m in marks)
+        if len(ids) <= self.max_tokens:
+            entry = (text, tuple(ids), ends, counts)
+            with self.lock:
+                # Concurrent readers may have published meanwhile; discard stale
+                # duplicates, and never mutate the snapshot a reader is using.
+                self.entries = [entry] + [e for e in self.entries if e is not src and e[0] != text][:self.keep - 1]
+        return ids
 
 
 # ------------------------------------------------------------------ the pack's tokenizer/ directory
