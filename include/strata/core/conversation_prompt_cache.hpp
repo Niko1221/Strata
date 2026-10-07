@@ -1,6 +1,12 @@
 // The system-prompt prefill cache (--system-prompt-cache): the checkpoint root that ends the system prompt, which
-// today lives only in RAM (--prompt-cache-root), persisted to disk as an ORDINARY SESSION FILE (conversation_file.cpp
+// today lives only in RAM (--prompt-cache-root), persisted to disk as ORDINARY SESSION FILES (conversation_file.cpp
 // - the same format, model/config identity and slot save/restore rules; NOT a second format) and reloaded at start.
+//
+// A layer-split variant (- --layer-split, multigpu) is ONE SESSION FILE PER STAGE plus one joint sidecar, exactly as
+// the conversation disk tier (conversation_spill.hpp) writes a parked conversation: "<key>.sess" is stage 0 (the one
+// the draft layer's K/V travels with when there is a draft), "<key>.stage<k>.sess" the k-th later stage. Each stage
+// file is a byte-for-byte session file of that stage's own carve, so a variant is interchangeable with a hand-saved
+// session of the same stage. A single-GPU variant is the same thing with one stage.
 //
 // The artifact holds the running state and the K/V of EVERYTHING UP TO AND INCLUDING the end of the system prompt -
 // never a conversation tail. It is a resume point for a NEW chat whose system prompt is byte-for-byte the stored one:
@@ -32,9 +38,10 @@ namespace strata::core {
 
 // A stored variant the caller may load (from the sidecar alone: no K/V read).
 struct ConversationPromptMatch {
-    std::string path;        // the session file to read back
-    uint64_t file_bytes = 0;
+    std::string path;        // stage 0's session file to read back
+    uint64_t file_bytes = 0; // every stage file, summed
     int64_t tokens = 0;      // the system-prompt prefix length the variant ends at
+    size_t stages = 1;       // session files: stage 0 plus (stages - 1) later stage files
     explicit operator bool() const { return !path.empty() && tokens > 0; }
 };
 
@@ -61,12 +68,20 @@ public:
     void note_hit(uint64_t key, int64_t tokens);
     void note_miss(uint64_t key);
 
-    // Writes a variant. The two forms write the same file; `store_streamed` avoids a host K/V copy when the engine
+    // Writes a variant. The two forms write the same files; `store_streamed` avoids a host K/V copy when the engine
     // can stream the K/V (SessionKvSource), `store` takes an already captured image (tests, and the no-draft path).
+    // `store` writes `meta.stage_images` as the later stage files when present (a layer split). The streamed form
+    // takes one meta (K/V empty) + its sources per stage, stage 0 first; every stage writes its own file and the
+    // joint sidecar is committed last, so a failed write leaves no variant behind.
     bool store_streamed(uint64_t key, const SavedConversation& meta,
                         const std::vector<SessionKvSource>& sources, std::string& error);
+    bool store_streamed(uint64_t key, const std::vector<SavedConversation>& stage_metas,
+                        const std::vector<std::vector<SessionKvSource>>& stage_sources, std::string& error);
     bool store(uint64_t key, const SavedConversation& image, std::string& error);
-    // Reads a variant back with the engine's read limits and identity (the session-file reader).
+    // Reads a variant back with the engine's read limits and identity (the session-file reader). Stage 0 is read
+    // with limits[0], stage k with limits[k] (the last limit bounds every stage past the list, and an empty list
+    // reads with open limits). Every stage file is read and validated BEFORE `image` is replaced: a missing,
+    // foreign or corrupt stage refuses the whole variant and leaves `image` untouched (no partial state).
     bool load(const std::string& path, SavedConversation& image,
               const std::vector<SessionReadLimits>& limits, std::string& error) const;
     bool erase(uint64_t key, std::string& error);
@@ -89,21 +104,25 @@ private:
     struct Entry {
         uint64_t key = 0;
         int64_t tokens = 0;
-        uint64_t file_bytes = 0;
-        std::filesystem::path session;
+        uint64_t file_bytes = 0;   // every stage file, summed
+        size_t stages = 1;         // session files: stage 0 plus (stages - 1) later stage files
+        std::filesystem::path session;   // stage 0's file
         std::filesystem::path meta;
         std::filesystem::file_time_type stamp{};
         uint64_t hits = 0;
+        std::filesystem::path stage_path(size_t k) const;   // k == 0 -> session; else "<stem>.stage<k>.sess"
     };
     Entry* find(uint64_t key);
     const Entry* find(uint64_t key) const;
+    const Entry* find_path(const std::string& path) const;
     void enforce();
     bool remove_entry(size_t index);
     std::filesystem::path variant_file(uint64_t key) const;
+    std::filesystem::path stage_file(uint64_t key, size_t k) const;
     std::filesystem::path meta_file(uint64_t key) const;
     bool read_sidecar(const std::filesystem::path& meta, Entry& entry, bool& other_identity, std::string& error) const;
     bool write_sidecar(const Entry& entry, std::string& error) const;
-    bool index_written(uint64_t key, int64_t tokens, uint64_t file_bytes, std::string& error);
+    bool index_written(uint64_t key, int64_t tokens, size_t stages, uint64_t file_bytes, std::string& error);
 
     bool enabled_ = false;
     SessionFileIdentity identity_{};

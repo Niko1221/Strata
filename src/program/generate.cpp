@@ -7185,16 +7185,17 @@ int main(int argc, char** argv) {
             }
         }
         // The system-prompt prefill cache (F5): the checkpoint root that ends the system prompt (--prompt-cache-root)
-        // persisted as an ordinary session file and reloaded at start, so a NEW chat of the same client reads only
+        // persisted as ordinary session files and reloaded at start, so a NEW chat of the same client reads only
         // the tokens after it.  Its own directory, its own budget, its own variant count.  Off unless
-        // --system-prompt-cache; single-session only (no layer split), because the artifact is one session file of
-        // this engine's own carve.
+        // --system-prompt-cache.  With a layer split the variant is one session file per stage plus one joint
+        // sidecar (the same carve the disk tier writes, conversation_spill.hpp), so it works multi-GPU - and under
+        // --batch - exactly as it does single-GPU.
         // A session with the draft layer (--mtp) only: the disk save streams the K/V (conversation_snapshot_sources),
         // which needs the draft's own K/V to be part of the artifact, and the restore path checks for it. Without
         // --mtp the feature stays off (reported) rather than capturing a different artifact.
         strata::core::ConversationPromptCache system_prompt_cache;
         strata::core::SessionFileIdentity system_prompt_identity;
-        if (o.serve && o.system_prompt_cache && !o.system_prompt_cache_dir.empty() && stages.empty() && use_mtp) {
+        if (o.serve && o.system_prompt_cache && !o.system_prompt_cache_dir.empty() && use_mtp) {
             std::string identity_error;
             if (!session_identity(system_prompt_identity, identity_error, nullptr)) {
                 std::fprintf(stderr, "strata serve: system prompt cache: disabled (%s)\n", identity_error.c_str());
@@ -9486,7 +9487,7 @@ int main(int argc, char** argv) {
             // loaded root is checked to be exactly this prompt's first tokens before it is used, so a stored tail K/V
             // can never ride behind a different system prompt. A changed system prompt is a different key: it misses,
             // is reprocessed from the start and is stored as its own variant (the old one is kept for the GC).
-            if (!incoming && system_prompt_cache.enabled() && stages.empty() && req_imgs.empty()) {
+            if (!incoming && system_prompt_cache.enabled() && req_imgs.empty()) {
                 int64_t sys_turn = -1;   // the last turn boundary (the history's end, as the reader sees it)
                 if (o.turn_token >= 0)
                     for (int64_t i = n - 1; i > 0; --i)
@@ -9522,27 +9523,40 @@ int main(int argc, char** argv) {
                                        estimate, floor)) {
                             std::fprintf(stderr, "strata serve: system prompt cache: hit skipped (physical RAM admission)\n");
                         } else {
-                            strata::core::SessionReadLimits limits;
-                            limits.admit = [floor](uint64_t need, std::string& why) {
+                            // One read limit per stage file (conversation_prompt_cache.hpp): the main image's carve,
+                            // then each later stage's.  A layer split's variant is one session file per stage, so
+                            // every file is bounded by the stage it restores into before it is read.
+                            std::vector<strata::core::SessionReadLimits> limits(1 + stages.size());
+                            for (auto& l : limits) l.admit = [floor](uint64_t need, std::string& why) {
                                 const auto avail = strata::core::conversation_available_memory();
                                 if (strata::core::conversation_memory_admit(avail, need, floor)) return true;
                                 why = "not enough RAM to read it";
                                 return false;
                             };
                             std::string limits_error;
-                            if (!strata::core::conversation_session_read_limits(limits, ss, g, mtp.kv_state(),
-                                    (uint64_t) o.max_context, (uint64_t) std::max(o.prompt_cache, 1), limits_error)) {
+                            bool limits_ok = strata::core::conversation_session_read_limits(
+                                    limits[0], ss, g, mtp.kv_state(), (uint64_t) o.max_context,
+                                    (uint64_t) std::max(o.prompt_cache, 1), limits_error);
+                            for (size_t i = 0; limits_ok && i < stages.size(); ++i)
+                                limits_ok = strata::core::conversation_session_read_limits(
+                                        limits[i + 1], stages[i]->ss, g, mtp.kv_state(), (uint64_t) o.max_context,
+                                        (uint64_t) std::max(o.prompt_cache, 1), limits_error);
+                            if (!limits_ok) {
                                 std::fprintf(stderr, "strata serve: system prompt cache: hit skipped (%s)\n", limits_error.c_str());
                             } else {
                                 strata::core::SavedConversation restored;
                                 std::string load_error;
-                                if (!system_prompt_cache.load(hit.path, restored, {limits}, load_error)) {
+                                // load() reads and validates every stage file before it hands `restored` back: a
+                                // missing, foreign or corrupt stage refuses the whole variant with no partial state.
+                                if (!system_prompt_cache.load(hit.path, restored, limits, load_error)) {
                                     std::fprintf(stderr, "strata serve: system prompt cache: unreadable variant (%s); "
                                                  "kept for the GC\n", load_error.c_str());
                                     system_prompt_cache.note_miss(key);
-                                } else if (!starts_with(restored.live.ids, restored.live.imgs)) {
-                                    // not exactly this prompt's first tokens (hash collision or a changed prompt):
-                                    // NEVER attach a root that is not precisely this prompt's prefix.
+                                } else if (!starts_with(restored.live.ids, restored.live.imgs) ||
+                                           restored.stage_images.size() != stages.size()) {
+                                    // not exactly this prompt's first tokens (hash collision or a changed prompt),
+                                    // or a variant of another split: NEVER attach a root that is not precisely this
+                                    // prompt's prefix for this engine's own carve.
                                     system_prompt_cache.note_miss(key);
                                 } else {
                                     parked = {0, (int64_t) restored.live.ids.size(), true};
@@ -10300,12 +10314,38 @@ int main(int argc, char** argv) {
                     std::vector<ImgKey> imgs = imgs_below(req_imgs, L);
                     const std::vector<strata::core::ConversationCheckpoint> no_checks;
                     const strata::core::ConversationView view{prefix, imgs, no_checks, cvec_cached};
+                    // One (K/V-empty meta, sources) pair per stage, stage 0 first: the draft layer's K/V rides with
+                    // the last stage (as the parking capture does, draft_of) and the earlier stages hold none.  The
+                    // sources' read callbacks run while each file is written, so every source carries its own device:
+                    // the K/V of a stage whose host pool is authoritative (--kv-resident) still reads from that
+                    // stage, and a stage that keeps its K/V in VRAM is read on its own GPU.
+                    const size_t n_st = stages.size();
+                    std::vector<strata::core::SavedConversation> stage_metas(1 + n_st);
+                    std::vector<std::vector<strata::core::SessionKvSource>> stage_sources(1 + n_st);
                     std::string e;
-                    strata::core::SavedConversation meta;
-                    std::vector<strata::core::SessionKvSource> sources;
-                    const bool ok = strata::core::conversation_snapshot_sources(meta, sources, view, ss, g,
-                                        mtp.kv_state(), e) &&
-                                    system_prompt_cache.store_streamed(key, meta, sources, e);
+                    bool ok = true;
+                    auto bind_device = [](std::vector<strata::core::SessionKvSource>& srcs, int dev) {
+                        for (auto& s : srcs) {
+                            auto inner = std::move(s.read);
+                            s.read = [inner, dev](size_t part, size_t offset, void* dst, size_t n) -> bool {
+                                const strata::core::OnDevice on(dev);
+                                return inner(part, offset, dst, n);
+                            };
+                        }
+                    };
+                    {
+                        const strata::core::OnDevice on(0);   // stage 0 is always CUDA0
+                        ok = strata::core::conversation_snapshot_sources(stage_metas[0], stage_sources[0], view, ss, g,
+                                n_st == 0 && use_mtp ? &mtp.kv_state() : nullptr, e);
+                        if (ok) bind_device(stage_sources[0], 0);
+                    }
+                    for (size_t k = 0; ok && k < n_st; ++k) {
+                        const strata::core::OnDevice on(stages[k]->dev);
+                        ok = strata::core::conversation_snapshot_sources(stage_metas[k + 1], stage_sources[k + 1], view,
+                                stages[k]->ss, g, use_mtp && k + 1 == n_st ? &mtp.kv_state() : nullptr, e);
+                        if (ok) bind_device(stage_sources[k + 1], stages[k]->dev);
+                    }
+                    ok = ok && system_prompt_cache.store_streamed(key, stage_metas, stage_sources, e);
                     if (!ok)
                         std::fprintf(stderr, "strata serve: system prompt cache: cannot persist the %lld-token root (%s)\n",
                                      (long long) L, e.c_str());

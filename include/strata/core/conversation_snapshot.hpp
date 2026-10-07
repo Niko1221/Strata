@@ -110,6 +110,12 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
 bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
                                    const ConversationView& view, const SessionState& session,
                                    const ModelGeometry& g, const QsaState& draft, std::string& error);
+// The same with `draft == nullptr`: an image WITHOUT the draft layer's K/V (kv holds the session's own QSA layers
+// only).  A layer split's stage 0 and its middle stages park this way; the draft ring is saved once, with the stage
+// that owns it (the last one).  An image is validated and restored with the same kind of call it was saved with.
+bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
+                                   const ConversationView& view, const SessionState& session,
+                                   const ModelGeometry& g, const QsaState* draft, std::string& error);
 bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& session,
                                     const ModelGeometry& g, const QsaState& draft, std::string& error);
 enum class ConversationRestore { restored, invalid, transfer_failed };
