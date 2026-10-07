@@ -497,6 +497,8 @@ struct Stager {
     }
 };
 
+static int g_n_taps = 0;   // set_tap_layers mirrors the Impl count here for the static size counters
+
 // multi-GPU: the peer GPU's share of a prompt chunk's experts.  Per MoE layer the primary copies its normed
 // activations over P2P, the peer quantizes the rows routed to the experts it holds, runs the same MMQ products the
 // primary would (gathered from its own slots), and copies the result rows back into the primary's Dm rows - the rows
@@ -1453,6 +1455,7 @@ void Prefill::set_tap_layers(const int* layers, int n) {
     Impl& m = *impl_;
     m.n_taps_ = n > 8 ? 8 : n;
     for (int i = 0; i < m.n_taps_; ++i) m.tap_layers_[i] = layers[i];
+    g_n_taps = m.n_taps_;   // the static counters (bytes_needed_impl) read this
 }
 
 bool Prefill::set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& err) {
@@ -1597,7 +1600,9 @@ uint64_t Prefill::bytes_needed_impl(const core::ModelGeometry& g, const core::Se
         f(T * N); f(T * D); f(T * D);
     }
     o.take<uint16_t>(T * (D + (hc_pad() ? XN_PAD : 0)), ok); f(T * LR); o.take<uint16_t>(T * LR, ok);
-    f(T * D); f(T * HC); f(T * N); o.take<uint16_t>(T * N, ok); o.take<uint16_t>(T * N, ok); f(T * N);
+    f(T * D); f(T * HC); f(T * N); o.take<uint16_t>(T * N, ok);
+    if (g_n_taps > 0) o.take<uint16_t>((size_t) g_n_taps * T * (size_t) g.n_embd, ok);   // DFlash taps (carve: after mixed_bf)
+    o.take<uint16_t>(T * N, ok); f(T * N);
     const bool f16_io = prompt_f16();   // the current device's mode (the stage's), as Prefill::init will decide it
     if (bf16x2_hc(f16_io)) { o.take<uint16_t>(T * D, ok); o.take<uint16_t>(T * LR, ok); }
     if (bf16x2(f16_io)) o.take<uint16_t>(T * N, ok);
