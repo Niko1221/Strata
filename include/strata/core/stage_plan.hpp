@@ -70,6 +70,20 @@ inline bool batch_rows_fit_handoff(int hbase, int S, int max_rows) {
     return hbase >= 0 && S >= 1 && hbase + S <= max_rows;
 }
 
+// ── The MTP acceptance of a batch period (delta 3's measurement) ───────────────────────────────────────────────
+//
+// --batch-mtp verifies ONE proposal per active slot per window.  The proposal is ACCEPTED when the target itself
+// picked it: the window's two rows of that slot agree (the confirmed token and the draft).  The batch path had no
+// counter for this: the request that admitted the slot prints its own `DONE ... 0 0` (it decoded one token) and the
+// per-window decisions live in `batch_step`.  This is the tiny accumulator both the per-slot `BDONE` and the
+// `strata batch:` summary report from - a plain struct, so the printed rate is a rule the host test asserts.
+struct DraftAccept {
+    long long offered = 0;   ///< proposals verified (one per active slot per window under --batch-mtp)
+    long long accepted = 0;  ///< proposals the target picked
+    void observe(bool hit) { ++offered; if (hit) ++accepted; }
+    double rate() const { return offered > 0 ? (double) accepted / (double) offered : 0.0; }
+};
+
 // ── The draft head's GGML type, and the reason --batch-mtp stays off when the drafters cannot run ──────────────
 //
 // A batch slot's drafter does not build the draft head's token subset: it COPIES the main drafter's (`dhead_`,

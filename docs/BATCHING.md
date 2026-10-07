@@ -239,7 +239,7 @@ On top of `GEN` / `GENI`:
 | `BGENI <slot> <max_new> [keys] <file> <ids>` | in | the same with images |
 | `BADM <slot> <1/0>` | out | after the admission's `DONE`: 1 = it continues in the slot, 0 = it ended |
 | `BT <slot> <id>` | out | a token of that slot |
-| `BDONE <slot> <generated> <stop/length/cancel> <ms>` | out | the slot is free again (it keeps its conversation) |
+| `BDONE <slot> <generated> <stop/length/cancel> <ms> [accepted] [offered]` | out | the slot is free again (it keeps its conversation). With `--batch-mtp` the last two fields are that slot's own MTP acceptance for the request that just ended (proposals the target picked of those verified); without the flag, or in the `--batch-groups` pipeline (which does not draft), they are absent. |
 | `BSTOP <slot>` | in | end that slot at its next window |
 | `BYIELD <slot>` | in | the prompt being read gives way at its next chunk boundary; its part read waits in `<slot>` (the admission's own, or a free slot for a solo request) |
 | `YIELDED <slot> <tokens>` | out | before the `DONE cancel` of a read that gave way: the request is sent again later and goes on from there |
@@ -247,3 +247,10 @@ On top of `GEN` / `GENI`:
 
 `tools/batch_test.py` drives the engine directly: the same prompts alone, then together, compared token by token,
 and the aggregate rate.
+
+When the slots go idle the engine writes its own summary to stderr, **once per busy period** - the one the Monitor
+reads (`strata batch: <windows> windows, avg <rows> rows, ...`). With `--batch-mtp` it ends with the period's MTP
+acceptance: `; MTP drafts accepted A of O (P%)`, the proposals the target picked of those the slots verified (one per
+active slot per window). Without the flag the clause is absent, so the line is the base tag's. The request that
+admitted a slot still prints its own `DONE ... drafts accepted 0 of 0` (it decoded one token): its acceptance is what
+its `BDONE` carries, and what the summary adds up.

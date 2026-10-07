@@ -1466,8 +1466,13 @@ class StrataEngine:
                         phase = "none"
                         f = line.split()
                         if len(f) >= 5 and isinstance(self.last, dict):
-                            self.last = {**self.last, "finish": f[3], "decode_ms": float(f[4]),
-                                         "generated": int(f[2]) if f[2].isdigit() else self.last.get("generated")}
+                            # fields 5 and 6 (delta 3's --batch-mtp): the slot's own MTP acceptance for the
+                            # request that just ended (accepted, offered).  Appended, so an engine without the
+                            # fields (or the pipelined path, which does not draft) leaves the DONE's numbers.
+                            upd = {"finish": f[3], "decode_ms": float(f[4]),
+                                   "generated": int(f[2]) if f[2].isdigit() else self.last.get("generated")}
+                            upd.update(bdone_drafts(f))
+                            self.last = {**self.last, **upd}
                         # what the slot's sessions hold now: the prompt and every token fed (all but the last one)
                         self.slot_held[slot] = list(prompt) + out[gen0:-1] if len(out) > gen0 else []
                         if (going_solo and f[3:4] == ["cancel"] and not cancel.is_set() and len(out) < int(max_new)
@@ -3906,6 +3911,21 @@ class Service:
         if stops is not None and stops.hit is not None:
             done["stop_sequence"] = stops.hit
         yield "done", done
+
+
+def bdone_drafts(f: list[str]) -> dict:
+    """delta 3 (`--batch-mtp`): the MTP acceptance an engine appends to its `BDONE` line, as fields 5 and 6
+    (`BDONE <slot> <generated> <stop/length/cancel> <ms> <accepted> <offered>`).  A request that admitted a slot
+    prints its own `DONE ... 0 of 0` (it decoded one token), so the slot's acceptance is only on the `BDONE`.
+    -> {"drafts_accepted": ..., "drafts_offered": ...}, or {} for an engine without the fields (an older engine,
+    or the `--batch-groups` pipeline, which does not draft).  Appended after <ms>, so the first five fields are
+    read exactly as before."""
+    if len(f) >= 7:
+        try:
+            return {"drafts_accepted": int(f[5]), "drafts_offered": int(f[6])}
+        except ValueError:
+            return {}
+    return {}
 
 
 def prompt_tokens_seen(prompt_tokens: int, last: dict) -> int:

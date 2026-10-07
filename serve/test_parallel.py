@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest import mock
 
 from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, Service, StrataEngine, engine_args, parallel_args, serve
+from serve.server import ByteTokenizer, Service, StrataEngine, bdone_drafts, engine_args, parallel_args, serve
 
 # The fake engine: one token every STEP seconds per active slot (a "window" serves every active slot at once);
 # GEN (solo) streams T lines; BGEN reads the prompt (one T line, DONE), answers BADM and continues in the slot.
@@ -65,7 +65,9 @@ def window():        # one batch window: every active slot one token
         if t == 257 or produced >= max_new:
             fin = 'stop' if t == 257 else 'cancel' if b in stopped else 'length'
             stopped.discard(b)
-            print(f"BDONE {b} {produced} {fin} 1.0", flush=True)
+            # delta 3 (--batch-mtp): the slot's own MTP proposals, appended after <ms> (accepted, offered).  An
+            # engine without the flag, or the pipelined path, omits them; the server reads them when present.
+            print(f"BDONE {b} {produced} {fin} 1.0 1 3", flush=True)
             del active[b]
         else:
             active[b] = [left, max_new, produced]
@@ -152,6 +154,31 @@ while True:
         continue
     window()
 '''
+
+
+class BdoneDrafts(unittest.TestCase):
+    """delta 3 (`--batch-mtp`): the slot's own MTP acceptance, appended to the `BDONE` line after <ms> (accepted,
+    offered).  The engine's per-window decisions are only reported there (the admitted request's own `DONE` says
+    `0 of 0`: it decoded one token), so the parser must read the suffix AND tolerate its absence (an older engine,
+    or the `--batch-groups` pipeline, which does not draft)."""
+
+    def test_the_suffix_is_read(self):
+        f = "BDONE 2 37 length 812.5 11 23".split()
+        self.assertEqual(bdone_drafts(f), {"drafts_accepted": 11, "drafts_offered": 23})
+
+    def test_all_details_are_read(self):
+        for fin in ("stop", "length", "cancel"):
+            self.assertEqual(bdone_drafts(f"BDONE 0 1 {fin} 1.0 0 1".split()),
+                             {"drafts_accepted": 0, "drafts_offered": 1})
+
+    def test_no_fields_is_empty(self):
+        # an engine without the flag (or the pipelined path): the first five fields only -> nothing to add
+        self.assertEqual(bdone_drafts("BDONE 1 12 stop 1.0".split()), {})
+        self.assertEqual(bdone_drafts("BDONE 1 0 error 0".split()), {})
+
+    def test_a_non_numeric_suffix_is_ignored(self):
+        # an engine's own trailing text must never crash the parser or invent numbers
+        self.assertEqual(bdone_drafts("BDONE 0 5 stop 1.0 n/a x".split()), {})
 
 
 class ParallelArgs(unittest.TestCase):

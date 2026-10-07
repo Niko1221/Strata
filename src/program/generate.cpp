@@ -8649,6 +8649,10 @@ int main(int argc, char** argv) {
             int32_t x = 0;                 ///< the token the next window feeds (not yet in the slot's state)
             std::array<int32_t, strata::kernels::kVerifyMaxT> draft{}; ///< the slot's next MTP proposal
             bool draft_ready = false;
+            // DELTA 3 (measure it): the proposals this slot verified for THIS request, and the ones the target
+            // picked (one per window under --batch-mtp).  Reset with the slot's other fields at its admission,
+            // printed on its BDONE so a request's acceptance is readable per slot.
+            strata::core::DraftAccept drafts;
             int64_t p = 0;                 ///< its position
             int64_t produced = 0, max_new = 0;
             Clock::time_point t0;
@@ -8673,6 +8677,11 @@ int main(int argc, char** argv) {
         double bt_wait0 = 0, bt_pool0 = 0;
         int64_t bt_miss0 = 0, bt_hits0 = 0, bt_pcie0 = 0;
         int64_t bt_windows = 0, bt_rows = 0, bt_tokens = 0;
+        // DELTA 3 (measure it): the MTP proposals the batch windows verified since the slots were last all idle,
+        // and the ones the target picked.  Reported once per busy period in the `strata batch:` summary line (the
+        // one the Monitor reads), then reset with bt_windows.  Always 0 without --batch-mtp, so the line is the
+        // base tag's to the byte.
+        strata::core::DraftAccept bt_drafts;
         Clock::time_point bt_start = Clock::now();
         int admit_slot = -1;               ///< the slot the request being read will continue in (BGEN)
         long long admit_max_new = 0;
@@ -8830,10 +8839,20 @@ int main(int argc, char** argv) {
             std::vector<int> keep(bs.size(), 0);
             for (int a = 0; a < A; ++a) {
                 const int b = active[a], i = first[a];
-                const BSlot& sl = bs[(size_t) b];
+                BSlot& sl = bs[(size_t) b];
                 const bool eos = std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) outb[i]) != o.eos_ids.end();
-                keep[b] = batch_mtp && outb[i] == tok[i + 1] && !eos && !sl.stop &&
+                // the proposal was picked when the target's own row agrees with the drafted one (tok[i + 1])
+                const bool draft_hit = batch_mtp && outb[i] == tok[i + 1];
+                keep[b] = draft_hit && !eos && !sl.stop &&
                           sl.produced + 2 <= sl.max_new && sl.p + 3 <= o.max_context ? 2 : 1;
+                // DELTA 3 (measure it): count what this window verified.  The admitted request printed its own
+                // `DONE ... 0 of 0` (it decoded one token); the proposals are verified HERE, one per active slot
+                // per window, and were never reported.  The rate is the target's own pick, independent of the room
+                // and stop checks that only decide whether the second row is EMITTED.
+                if (batch_mtp) {
+                    sl.drafts.observe(draft_hit);
+                    bt_drafts.observe(draft_hit);
+                }
             }
             if (!(batch_mtp ? ver.commit_slot_prefixes(keep.data(), err) : ver.commit_slots(err))) {
                 std::printf("ERR %s\n", err.c_str());
@@ -8858,7 +8877,11 @@ int main(int argc, char** argv) {
                                     : sl.p + 2 > o.max_context ? "length" : nullptr;
                     if (fin != nullptr) {
                         const double ms = std::chrono::duration<double, std::milli>(Clock::now() - sl.t0).count();
-                        std::printf("BDONE %d %lld %s %.1f\n", b, (long long) sl.produced, fin, ms);
+                        // DELTA 3 (measure it): the fields after <ms> are this slot's own MTP acceptance for the
+                        // request that just ended (accepted, offered).  Appended, so an older server reads the
+                        // first five fields as it always did.
+                        std::printf("BDONE %d %lld %s %.1f %lld %lld\n", b, (long long) sl.produced, fin, ms,
+                                    (long long) sl.drafts.accepted, (long long) sl.drafts.offered);
                         sl.active = false;
                         sl.cached = o.prompt_cache > 0 && !sl.img;
                         break;
@@ -8895,20 +8918,29 @@ int main(int argc, char** argv) {
             if (!batch_on() && bt_windows > 0) {
                 const double w = (double) bt_windows, wall = msd(bt_start, Clock::now());
                 const double L = (double) g.n_layers;
+                // DELTA 3 (measure it): the MTP acceptance of this busy period, said beside the window timings.
+                // Empty without --batch-mtp (no proposal was offered), so the line is the base tag's to the byte.
+                char mtp_txt[96] = "";
+                if (bt_drafts.offered > 0)
+                    std::snprintf(mtp_txt, sizeof(mtp_txt), "; MTP drafts accepted %lld of %lld (%.1f%%)",
+                                  (long long) bt_drafts.accepted, (long long) bt_drafts.offered,
+                                  100.0 * bt_drafts.rate());
                 std::fprintf(stderr, "strata batch: %lld windows, avg %.2f rows, %.2f ms/window = run %.2f (CUDA0 GPU-reach "
                                      "wait %.2f + CPU experts %.2f) + commit %.2f + emit %.2f; per layer-window: CPU experts "
                                      "%.2f, VRAM hits %.2f, PCIe %.2f; %.1f rows/s over %.0f ms of wall time (admissions "
-                                     "included)\n",
+                                     "included)%s\n",
                              (long long) bt_windows, bt_rows / w, (bt_run + bt_commit + bt_emit) / w, bt_run / w,
                              (ver.ms_wait - bt_wait0) / w, (ver.ms_pool - bt_pool0) / w, bt_commit / w, bt_emit / w,
                              (drive.d.multi_misses - bt_miss0) / (w * L), (drive.d.cache_hits - bt_hits0) / (w * L),
-                             (drive.d.pcie_experts - bt_pcie0) / (w * L), 1000.0 * bt_rows / std::max(wall, 1e-9), wall);
+                             (drive.d.pcie_experts - bt_pcie0) / (w * L), 1000.0 * bt_rows / std::max(wall, 1e-9), wall,
+                             mtp_txt);
                 for (size_t k = 0; k <= stages.size(); ++k) {
                     const std::string pr = (k == 0 ? ver : stages[k - 1]->ver).profile_report();
                     if (!pr.empty()) std::fprintf(stderr, "strata batch GPU stages, stage %zu (ms/window):%s\n", k + 1, pr.c_str());
                 }
                 bt_run = bt_commit = bt_emit = 0;
                 bt_windows = bt_rows = bt_tokens = 0;
+                bt_drafts = strata::core::DraftAccept{};   // a new busy period starts clean
             }
             return true;
         };

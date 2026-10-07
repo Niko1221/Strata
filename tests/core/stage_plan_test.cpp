@@ -20,6 +20,7 @@
 
 using strata::core::batch_mtp_reason;
 using strata::core::batch_rows_fit_handoff;
+using strata::core::DraftAccept;
 using strata::core::draft_head_type;
 using strata::core::head_stage_of;
 using strata::core::order_with_head_device;
@@ -102,6 +103,35 @@ int main() {
     check(!batch_rows_fit_handoff(5, 4, 8), "a later group past the buffer (base 5, 4 rows): refused");
     check(!batch_rows_fit_handoff(-1, 2, 8), "a negative base: refused");
     check(!batch_rows_fit_handoff(0, 0, 8), "an empty window: refused");
+
+    // ── The MTP acceptance of a batch period (delta 3's measurement) ───────────────────────────────────────────
+    //
+    // --batch-mtp verifies one proposal per active slot per window; it is accepted when the target picked it (the
+    // two rows of that slot agree).  Before this the batch path reported nothing: the admitted request's DONE said
+    // `drafts accepted 0 of 0` and the window decisions were never accumulated.  `DraftAccept` is what the per-slot
+    // `BDONE` and the `strata batch:` summary print from, so these checks pin what those numbers mean.
+    std::printf("stage_plan: the MTP acceptance of a batch period (delta 3's measurement)\n");
+    {
+        DraftAccept d;
+        check(d.offered == 0 && d.accepted == 0 && d.rate() == 0.0,
+              "a period that drafted nothing: 0 of 0, rate 0 (never a NaN)");
+        d.observe(true); d.observe(true); d.observe(true);
+        check(d.offered == 3 && d.accepted == 3 && d.rate() == 1.0,
+              "three proposals, all picked: 3 of 3, rate 1");
+        for (int i = 0; i < 5; ++i) d.observe(false);
+        check(d.offered == 8 && d.accepted == 3 && d.rate() == 3.0 / 8.0,
+              "then five misses: 3 of 8 (the rate is accepted/offered)");
+    }
+    {
+        DraftAccept d;
+        d.observe(false);
+        check(d.offered == 1 && d.accepted == 0 && d.rate() == 0.0,
+              "one proposal, none picked: 0 of 1, rate 0 but offered 1 (not the fresh state)");
+        d.observe(true); d.observe(false); d.observe(true);
+        check(d.accepted == 2 && d.offered == 4 && d.rate() == 0.5, "two of four picked: rate 0.5");
+        d.accepted = 0; d.offered = 0;   // the summary resets the period like bt_windows does
+        check(d.rate() == 0.0, "a reset period: rate 0 again (offered guards the division)");
+    }
 
     std::printf("stage_plan: --head-device\n");
     bool ok = false;
