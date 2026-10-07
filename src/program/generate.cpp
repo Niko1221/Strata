@@ -32,6 +32,7 @@
 #include "strata/core/layout.hpp"
 #include "strata/core/session.hpp"
 #include "strata/core/weights.hpp"
+#include "strata/core/trunk_stream.hpp"
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/cpu/pool.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
@@ -2599,6 +2600,12 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "strata generate: %llu MiB of weights loaded from %s in %.1f s (%zu canonical tensors "
                          "skipped: served natively)\n",
                  (unsigned long long) (pool_bytes >> 20), o.pack.c_str(), load_s(), skip.size());
+
+    strata::core::TrunkStreamer trunk_streamer;
+    // Basic test logic to initialize the streamer, size based on 2GB budget default if not explicitly specified yet
+    if (!trunk_streamer.open(o.pack, wt, 2ull << 30, err)) {
+        std::fprintf(stderr, "strata generate: trunk streamer error: %s\n", err.c_str());
+    }
 
     // --- STRATA PROGRESSIVE LOADING (TRUNK STREAM) ---
     // At this point, the streaming trunk reader can be initialized 

@@ -39,10 +39,10 @@ TrunkStreamer::~TrunkStreamer() {
 
     // Free slots
     for (void* p : pin_slots_) {
-        if (p) strata::platform::memory_free(p);
+        if (p) std::free(p);
     }
     for (void* p : ring_slots_) {
-        if (p) strata::platform::memory_free(p);
+        if (p) std::free(p);
     }
 }
 
