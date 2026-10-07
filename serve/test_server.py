@@ -3787,6 +3787,12 @@ class AmdTelemetry(unittest.TestCase):
     """#301: the AMD backend's readings from a fake amdgpu sysfs tree: KFD node -> render node, as setup numbers the
     cards (the CPU node skipped), and free_vram_mib on HIP."""
 
+    def setUp(self):
+        from serve import telemetry
+        p = mock.patch.object(telemetry, "WINDOWS", False)      # the sysfs reader, also when the tests run on Windows
+        p.start()
+        self.addCleanup(p.stop)
+
     def tree(self, d):
         nodes = Path(d) / "class/kfd/kfd/topology/nodes"
         for n, props in ((0, "cpu_cores_count 16\nsimd_count 0\ngfx_target_version 0\ndrm_render_minor 0\n"),
@@ -3835,6 +3841,8 @@ class AmdTelemetry(unittest.TestCase):
             with mock.patch.object(telemetry, "SYSFS", d):
                 self.assertFalse(telemetry.gpu_reader(0, amd=True).ok())
                 self.assertIsNone(telemetry.free_vram_mib(0, amd=True))
+                note = telemetry.Telemetry(gpu_index=0, amd=True).static["gpu_note"]     # #1380: says why
+                self.assertTrue(note.startswith("no GPU readings: the amdgpu driver's sysfs files"), note)
 
     def test_free_vram_on_hip(self):
         from serve import telemetry
@@ -3845,6 +3853,36 @@ class AmdTelemetry(unittest.TestCase):
             self.tree(d)
             with mock.patch.object(telemetry, "SYSFS", d):
                 self.assertEqual(svc.free_vram_mib(), 26 << 10)
+
+
+class AmdWindowsTelemetry(unittest.TestCase):
+    """The AMD backend's readings on Windows: ADL's PMLog sensors (first supported id wins) and the GPU memory
+    counter's instance name for an adapter LUID."""
+
+    def test_sensor_choice(self):
+        from serve.telemetry import ADL_POWER, ADL_TEMP, ADL_UTIL, adl_pick
+        strix = {1: 600, 19: 12, 23: 84, 28: 49, 29: 51, 30: 2, 33: 4}      # a Radeon 8060S's supported sensors
+        self.assertEqual((adl_pick(strix, ADL_UTIL), adl_pick(strix, ADL_TEMP), adl_pick(strix, ADL_POWER)),
+                         (12, 49, 84))
+        self.assertEqual((adl_pick({8: 55, 29: 60}, ADL_TEMP), adl_pick({30: 40}, ADL_POWER)), (55, 40))
+        self.assertIsNone(adl_pick({}, ADL_UTIL))
+
+    def test_luid_instance(self):
+        from serve.telemetry import luid_instance
+        self.assertEqual(luid_instance(0, 0x179E6), "luid_0x00000000_0x000179e6_phys_0")
+        self.assertEqual(luid_instance(-1, 0xFFFFFFFF), "luid_0xffffffff_0xffffffff_phys_0")
+
+    @unittest.skipUnless(os.name == "nt", "Windows only")
+    def test_no_card_breaks_nothing(self):
+        from serve import telemetry
+        g = telemetry._AmdWindows(99)                                       # no such AMD card (or no ADL at all)
+        self.assertFalse(g.ok())
+        with mock.patch.object(telemetry, "WINDOWS", True):
+            self.assertIsNone(telemetry.free_vram_mib(99, amd=True))
+            t = telemetry.Telemetry(gpu_index=99, amd=True)
+            self.assertIsNone(t.static["gpu_name"])
+            self.assertIn("atiadlxx.dll", t.static["gpu_note"])                 # #1380: says why
+            self.assertFalse(any(k.startswith("gpu_") for k in t.sample()))
 
 
 class SilentEngine(unittest.TestCase):
