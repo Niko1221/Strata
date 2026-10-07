@@ -61,6 +61,49 @@ about 10-25% speed per request on this card". `--parallel N` is honoured as aske
 
 ## How the server uses the slots
 
+### Checking staggered admissions
+
+`tools/batch_test.py` compares each slot's complete token sequence with its solo reference. To admit requests
+while the first slot is already decoding, give one increasing token count per later request:
+
+```sh
+python tools/batch_test.py --exe build/strata --config strata-model.json --batch 8 --n 4 --max-new 128 \
+    --stagger-after 8,16,24 --dump staggered.json \
+    --extra "--batch-groups 4 --trim-stage-weights --pcie-frac 0 --adapt-every 1000000"
+```
+
+The JSON records the active slots and anchor token count at each admission, including tokens emitted while the
+new prompt is read. The anchor must still be active after each scheduled admission; otherwise the test fails
+and asks for a larger `--max-new`. Add `--promote-after 4`
+to exercise the server's `GEN` → `STOP` → `BGEN(prompt + emitted tokens)` transition before the staggered admissions.
+Add `--long-tokens 1200` to make the last request read a longer prompt.
+Use `--slots 0,2,4,6` to spread these requests across all four groups, as the server does, or `--slots 1,3,5,7`
+to exercise each group's padded leading row. Without `--slots`, the requests occupy consecutive slots.
+
+`--http-lifecycle` runs the real server on a temporary loopback port, compares both raw engine token IDs and
+response text with solo requests, and records the actual `GEN`/`STOP`/`BGEN`/`BSTOP` transitions. Use a longer anchor
+and shorter later requests so the return-to-solo decision is exercised:
+
+```sh
+python tools/batch_test.py --exe build/strata --config strata-model.json --batch 8 --n 4 --max-new 256 \
+    --http-lifecycle --later-max-new 64 --stagger-after 8,16,24 --dump http-staggered.json \
+    --extra "--batch-groups 4 --trim-stage-weights --pcie-frac 0 --adapt-every 1000000 --no-prefill-borrow"
+```
+
+The engine advertises `slot_cache=0` for pipelined groups: completion and padding can invalidate their cached
+sessions, so the server keeps a request in its slot when its neighbours finish. A serial batch with prompt caching
+advertises `slot_cache=1` and can return to solo. The HTTP test checks the advertised capability and the actual
+transition as well as exact output; protocol-only simultaneous admissions do not cover this decision.
+
+The test sets `STRATA_IQ_MT_MIN=1` by default to keep the CPU expert arithmetic independent of batch width.
+Use `--mt-min ""` to compare the engine's default arithmetic instead. With one batch group, the long prompt's
+chunks can run between active slots' windows; use `--no-prefill-borrow` as the exactness control because a borrowed
+expert cache changes which experts run on the CPU. With multiple pipeline groups, admission first drains the
+groups in flight and the prompt is read without those interleaved windows. Record the group count and both
+arithmetic settings when investigating a difference; an exactness-control result alone does not identify its cause.
+
+### Request lifecycle
+
 - **One request alone** runs on the usual solo path (verify windows with MTP drafts): the fastest single stream.
 - **When a second request arrives**, the first is stopped (`STOP`) and continues in a batch slot with its prompt
   plus what it generated so far - the engine's prompt cache holds exactly that, so nothing is read again - and the
@@ -68,7 +111,7 @@ about 10-25% speed per request on this card". `--parallel N` is honoured as aske
   With `--batch-mtp`, each slot verifies one MTP proposal alongside its current token.
 - **A request left alone in a slot** (the others finished, nobody waits) goes back to the solo path: the slot is
   stopped, the engine copies its sessions back and decodes with MTP drafts again (at most twice per request; with
-  `--prompt-cache 0` it stays in the slot; `STRATA_PARALLEL_SOLO=0` turns it off). The draft layer's own K/V was
+  `--prompt-cache 0` or pipelined groups it stays in the slot; `STRATA_PARALLEL_SOLO=0` turns it off). The draft layer's own K/V was
   built for another conversation then, but measured it accepted as many drafts (140 of 172) as a draft layer that
   read the conversation (140 of 173).
 - **More requests than slots** wait for a free one (`/metrics` -> `live.slots` shows each slot: idle, reading or
@@ -222,3 +265,7 @@ On top of `GEN` / `GENI`:
 
 `tools/batch_test.py` drives the engine directly: the same prompts alone, then together, compared token by token,
 and the aggregate rate.
+
+With `--vision`, each batch slot keeps its own image-position table on every GPU stage. Later image or text
+admissions cannot change an active reply's positions; slot reuse updates the table without recapturing its graphs.
+The same isolation applies to each slot's drafter with `--batch-mtp`.
