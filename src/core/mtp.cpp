@@ -611,6 +611,7 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
         dhead_ = shared->dhead_;
         dvocab_ = shared->dvocab_;
         n_dvocab_ = shared->n_dvocab_;
+        dhead_type_ = shared->dhead_type_;
         owns_draft_head_ = false;
     }
     // the draft head's token subset, when tools/draft_vocab.py wrote one

@@ -204,6 +204,14 @@ python3 tools/parking_test.py --exe engine/strata --config strata-<model>.json \
 STRATA_KEY=<key> python3 tools/early_close_test.py http://127.0.0.1:8080
 ```
 
+For single-GPU `--batch-mtp`, use a model with `rt/draft_vocab.bin` to exercise admission with a
+shared draft-vocabulary head. This compares both slots' output against solo decoding:
+
+```
+python3 tools/batch_test.py --exe engine/strata --config strata-<model>.json --batch 2 --n 2 --max-new 64 \
+    --extra "--batch-mtp --pcie-frac 0 --adapt-every 1000000"
+```
+
 ## Engine protocol (`--serve`)
 
 On top of `GEN` / `GENI`:
