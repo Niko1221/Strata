@@ -1640,6 +1640,17 @@ took 1,339 MiB and started in 4.7 s (2.7 s the next time); a request with one pi
 5.0 s on a later cold start, and 2 / 5 / 10 pictures with the encoder running took 3.8 / 5.6 / 9.0 s (~0.45 s to encode
 each, the same as on a second card). Without the key nothing changes.
 
+**The encoder on another PC (#1404):** `"remote": true` in the `"vision"` section, with `"exe"` pointing at
+`tools/remote-vision/strata-vision-remote.cmd` and `STRATA_VISION_SSH` naming a host ([REMOTE_VISION.md](REMOTE_VISION.md)):
+the wrapper forwards the encoder's line protocol over one ssh connection, so the encoder's ~1.4 GB comes off this card
+and goes to the expert cache instead (measured: 1383 MiB, +1.00 GiB of cache). The protocol passes paths, not data
+(`ENC <image> <out>`), so the picture and the embeddings cross that connection. Two behaviours change with the key:
+the encode no longer takes the request FIFO (a remote encoder shares no GPU with the engine, and holding the queue
+across the upload to a starved host froze text requests too), and the server starts and serves text when the encoder's
+host is off — the first image answers `400 the image encoder is not available: ...` and asks again on the next one.
+Without `"remote": true` nothing changes, and a local encoder that fails to start is still fatal, with the cause named
+(#1445).
+
 ### Sending a picture
 
 **Terminal chat:** type `/image <path to a picture>`, press Enter, then type your question.
