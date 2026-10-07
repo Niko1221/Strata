@@ -160,8 +160,31 @@ Same PC and the same `strata-iq3_s` arguments (context 131,072, KV q4_0, expert 
 | Short | 96 to 100 | 0 | 256 (cap) | 3 | 70.8 (70.7 to 71.6) | 54.0 (51.8 to 55.1) | not measured |
 | Long, 38K | 38,186 to 38,189 | 0 | 134 to 139 | 3 | 1,357.8 (1,355.5 to 1,361.0) | 54.1 (46.4 to 57.1) | not measured |
 
-Against the 0.1.40.2 IQ3_S runs, the long-prompt median is 1,357.8 tok/s here versus 1,015.8 there, and decode 54.1 tok/s versus 24.3. Those ranges do not overlap. On 0.1.40 the counted long-prompt decode stayed next to its warm-up (46.8 tok/s). On 0.1.40.2 the warm-up was 51.7 tok/s and the three counted runs fell to 21.4–25.4. The expert-cache sizes above were not held equal, so this is not a pure engine comparison.
+Against the 0.1.40.2 IQ3_S runs, the long-prompt median is 1,357.8 tok/s here versus 1,015.8 there, and decode 54.1 tok/s versus 24.3. Those ranges do not overlap. On 0.1.40 the counted long-prompt decode stayed next to its warm-up (46.8 tok/s). On 0.1.40.2 the warm-up was 51.7 tok/s and the three counted runs fell to 21.4–25.4. The expert-cache sizes above were not held equal, so this is not a pure engine comparison. The next section is the follow-up that holds free VRAM near this 0.1.40 start.
 
 All three counted long runs stopped on their own and quoted `amber-keel-2904`. No request failed.
+
+## IQ3_S on engine 0.1.40.2 with `--vram-reserve-mib 2600`
+
+Follow-up on 2026-10-08, same PC, same IQ3_S pack, same prompts, same engine 0.1.40.2 executable (`Strata-main\engine\strata.exe`). The only argument change from the 0.1.40.2 IQ3_S run above is `--vram-reserve-mib 2600` (the engine default used before is 700). Expert cache stayed `auto`. Config: [strata-iq3_s-01402-reserve.json](strata-iq3_s-01402-reserve.json). `/v1/status` reported engine 0.1.40.2 and context 131,072. Rows: [runs-iq3_s-01402-reserve.csv](runs-iq3_s-01402-reserve.csv) and [runs-iq3_s-01402-reserve.json](runs-iq3_s-01402-reserve.json).
+
+The earlier IQ3_S gap was not isolated, so this run tests one hypothesis at a time:
+
+1. The first 0.1.40 versus 0.1.40.2 IQ3_S pair used the same prompts, and `auto` did not pick the same cache: 4,255 slots / 8.12 GiB / 2,170 MiB free on 0.1.40, against 5,512 slots / 10.48 GiB / 323 MiB free on 0.1.40.2. Long-prompt ranges did not overlap, and counted decode on 0.1.40.2 fell from a warm-up of 51.7 tok/s to 21.4–25.4. IQ3_XXS on the same two engines did not show that drop: its long-prompt decode ranges overlap. So the engine was not uniformly slower, and the IQ3_S pair was not a pure engine comparison.
+2. The 323 MiB start matches the shape in `docs/DETAILS.md`: on Windows an oversized expert cache can page instead of failing, the hit rate stays high, and the tell is a small `MiB of VRAM free with everything loaded`. That 0.1.40.2 IQ3_S log also printed the WDDM verify-window warning. Hit rate on the slow runs stayed about 71–89%, so the drop is not cache misses. The same warning and about 328 MiB free on IQ3_XXS 0.1.40.2 did not collapse decode, so low free VRAM alone was not enough to call the cause settled.
+3. The check is to give 0.1.40.2 IQ3_S the same headroom as the 0.1.40 start, without pinning a slot count. A fixed `--expert-cache` does not shrink after the slots are written, so an oversized fixed value would page again. Raising `--vram-reserve-mib` leaves `auto` able to shrink. 2600 was chosen so the free figure could land near 2,170 MiB.
+
+It did. The start log proposed 4,429 slots from 13.74 GiB free with 2,600 MiB reserved, shrank twice, and settled at 4,299 slots (8.20 GiB) with 2,224 MiB free. The little-room warning from the 323 MiB start was absent. Verify-window captures saw about 2,194–2,229 MiB free.
+
+| Configuration | Actual prompt tokens | Reused tokens | Generated tokens | Runs | Prompt tok/s median and range | Decode tok/s median and range | TTFT seconds |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| Short | 98 to 102 | 0 | 256 (cap) | 3 | 71.5 (70.9 to 72.0) | 54.2 (50.9 to 55.4) | not measured |
+| Long, 38K | 38,183 to 38,187 | 0 | 134 to 135 | 3 | 1,355.9 (1,354.1 to 1,358.7) | 55.5 (44.9 to 59.6) | not measured |
+
+Long-prompt medians against the 0.1.40 IQ3_S run: prompt −0.1% (1,357.8 to 1,355.9), decode +2.6% (54.1 to 55.5). Those ranges overlap. Warm-up decode was 46.0 tok/s, and the three counted runs stayed at 44.9–59.6. They did not fall into the 21 tok/s band. The short-prompt rate is overhead, not prefill speed.
+
+Against the same 0.1.40.2 engine with the default reserve (323 MiB free): long prompt +33.5% (1,015.8 to 1,355.9), decode +128% (24.3 to 55.5).
+
+All three counted long runs stopped on their own and quoted `amber-keel-2904`. No request failed. With the cache size and free VRAM held next to the 0.1.40 start, this 0.1.40.2 IQ3_S run matches that 0.1.40 run. The earlier drop tracked the `auto` cache that left 323 MiB free.
 
 A separate report, [2026-10-06 RX 7900 XTX](../2026-10-06-community-rx-7900-xtx/README.md), used IQ3_S and a similar 38k log on a different PC, with context 262,144, KV int8, and `--prefill auto:32768`. This report does not replace that one.
