@@ -144,13 +144,21 @@ about 10-25% speed per request on this card". `--parallel N` is honoured as aske
 Batch windows count which experts they route to, and every `--adapt-every` windows (default 4) the engine swaps the
 most-routed experts that are not in VRAM into the cache in place of the least-routed resident ones, the same rule the
 solo path uses (`--adapt-swaps` and `--adapt-decay` apply too; on a layer split every GPU's cache adapts). It runs when the
-tier is not the whole model and both `--adapt-every` and `--adapt-swaps` are above 0. The copies run beside the
-window's commit and drafts and have landed before the next window starts. It pauses while a prompt holds a loan of cache
-slots (a long prompt read beside decoding slots). The `strata batch:` log line shows the rounds and swaps, each stage's
+tier is not the whole model and both `--adapt-every` and `--adapt-swaps` are above 0. By default the round runs beside the
+window's commit and drafts and has landed before the next window starts. It stands still while a long prompt is read
+between decoding windows (the prompt may hold a loan of cache slots). The `strata batch:` log line shows the rounds and swaps, each stage's
 GPU-reach wait and pool time, and how many routed entries the VRAM tier, the PCIe share and the CPU served per window.
 Swaps move experts between the GPU and the CPU, which round differently, so greedy outputs can differ from run to run;
 `--adapt-every 1000000` keeps the tier fixed (as in the exactness settings below). The pipelined `--batch-groups` path
 does not adapt.
+
+With `--adapt-async 1` (needs the resident RAM mode) the round does not hold a window up: each batch window moves the
+round on one step (table changes and uploads on the main thread, the copies on a helper thread and the cards' refill
+streams), as on the solo path. A request that arrives finishes the round in flight before it starts, and a prompt read
+between decoding windows does not move it. `--adapt-min-gain F` (default 1.5) raises the bar a swap must clear (the
+routing count of the expert coming in against the one going out), so fewer experts move per round; both tiers use it.
+The log line's `adapt wait` is the time the main thread spent on the tier per window (the blocking tier: waiting for
+its round).
 
 ## Exactness
 

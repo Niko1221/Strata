@@ -167,8 +167,9 @@ other ~18 GB), a 32 GB PC with a 12-16 GB GPU the Coder; IQ3_XXS on a 32 GB PC s
 - The cache still follows the conversation (`--adapt-every`): a swap copies the evicted expert back from VRAM into the
   RAM place of the one that replaces it, so the RAM copy keeps holding exactly what the GPU does not.
 - `--adapt-async 1` (opt-in, `--serve`): the swaps of a round advance between decode windows on a helper thread
-  (copy back, copy in, move into RAM) instead of one window waiting for the whole round. Not with `--batch` or
-  `--peer-device` (the blocking tier runs there). With `--pipeline-windows 2` (two windows in flight, see
+  (copy back, copy in, move into RAM) instead of one window waiting for the whole round. With `--batch` slots it
+  advances between their windows too (docs/BATCHING.md); not with `--batch-groups` or `--peer-device` (the blocking
+  tier runs there). With `--pipeline-windows 2` (two windows in flight, see
   [MULTI_GPU.md](MULTI_GPU.md)) the copies into the evicted slots and the moves into RAM also wait until the windows
   that were in flight when they were decided have completed (`STRATA_PIPELINE_ADAPT_ASYNC=0`: the blocking tier
   there). It is not bit-exact from run to run: which window first computes a swapped-in expert on the GPU (which
