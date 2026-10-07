@@ -1383,6 +1383,8 @@ class StrataEngine:
     slot_groups = 1         # --batch-groups (set when the engine starts)
     SLOT_PREFIX_MIN = 512   # a held prefix shorter than this is not worth unbalancing the pipeline's groups
 
+    SLOT_LOW_FIRST = os.environ.get("STRATA_SLOT_LOW_FIRST", "1") not in ("", "0")
+
     def pick_slot(self, prompt: list[int]) -> int | None:
         """A free slot for `prompt` (the caller holds slot_cv): the one whose held tokens are the longest start of the
         prompt (the engine then reads only the rest), else an empty one, else the one used longest ago - so the
@@ -1403,8 +1405,13 @@ class StrataEngine:
         for b in range(self.batch):
             if self.slot_busy[b]:
                 busy_in[self.slot_group[b]] = busy_in.get(self.slot_group[b], 0) + 1
+        # STRATA_SLOT_LOW_FIRST (on by default): within a group, its lowest free slot.  A group's window runs every slot
+        # up to its last active one, so a request in slot 1 of an empty group carries a pad row for slot 0 in every
+        # window of every stage; the least-recently-used choice alone can open that hole (#793, @rhgo1749).
+        low = self.SLOT_LOW_FIRST and self.slot_groups > 1
+        gs = self.batch // self.slot_groups if self.slot_groups > 1 else 0
         return min(free, key=lambda b: (busy_in.get(self.slot_group[b], 0) if self.slot_groups > 1 else 0,
-                                        bool(self.slot_held[b]), self.slot_used[b]))
+                                        (b % gs) if low else 0, bool(self.slot_held[b]), self.slot_used[b]))
 
     def slots_view(self) -> list[dict]:
         """/metrics: each batch slot - idle (with the tokens it holds for a next turn), reading or decoding."""
