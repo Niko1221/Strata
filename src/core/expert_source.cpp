@@ -2061,14 +2061,16 @@ void FileExpertSource::lru_watch_loop(uint64_t keep_free) {
         MEMORYSTATUSEX ms{};
         ms.dwLength = sizeof ms;
         if (!GlobalMemoryStatusEx(&ms)) continue;
-        avail = ms.ullAvailPhys;
+        // the smaller of the available RAM and the available commit: with the commit charge at its limit another
+        // program's allocation fails even with RAM free, and every LRU buffer is committed memory
+        avail = std::min<uint64_t>(ms.ullAvailPhys, ms.ullAvailPageFile);
 #else
         if (!available_memory_bytes(avail)) continue;
 #endif
         std::lock_guard<std::mutex> lk(stage_mu_);
         const uint64_t live = (uint64_t) stage_live_ * stage_blob_;
         if (avail < keep_free) {
-            // another program wants the RAM: give back the deficit and a little more, coldest blobs first
+            // another program wants the RAM (or the commit): give back the deficit and a little more, coldest blobs first
             const uint64_t deficit = keep_free - avail + kSlack;
             lru_cap_ = std::max(kFloor, live > deficit ? live - deficit : 0);
             lru_shrink_to(lru_cap_);

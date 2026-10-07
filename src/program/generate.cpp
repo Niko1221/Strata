@@ -4044,12 +4044,18 @@ int main(int argc, char** argv) {
             }
             o.resident_budget -= o.resident_lru;
             src.set_stage_keep(o.resident_lru);
-            // STRATA_LRU_KEEP_FREE_GIB=G: the LRU part is elastic - it shrinks when the available RAM falls below G (other
-            // programs get it back at once, nothing paged) and grows back towards its size when RAM is free again
+            // STRATA_LRU_KEEP_FREE_GIB=G: the LRU part is elastic - it shrinks when the available RAM (on Windows also the
+            // available commit) falls below G (other programs get it back at once, nothing paged) and grows back
+            // towards its size when there is room again
             if (const char* kf = std::getenv("STRATA_LRU_KEEP_FREE_GIB"); kf != nullptr && std::atof(kf) > 0.0) {
                 src.start_elastic_lru((uint64_t) (std::atof(kf) * 1073741824.0));
+#if defined(_WIN32)
+                std::fprintf(stderr, "strata generate: RAM tier LRU is elastic: it keeps %.1f GiB of RAM and of commit "
+                                     "available to other programs\n", std::atof(kf));
+#else
                 std::fprintf(stderr, "strata generate: RAM tier LRU is elastic: it keeps %.1f GiB of RAM available to "
                                      "other programs\n", std::atof(kf));
+#endif
             }
             std::fprintf(stderr, "strata generate: RAM tier: %.2f GiB by the expert profile, %.2f GiB of the experts the "
                                  "decode reads from the files (LRU)\n", (double) o.resident_budget / 1073741824.0,

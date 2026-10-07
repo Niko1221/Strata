@@ -18,7 +18,9 @@ experts that are cold in the profile but hot for it.
   it frees the coldest LRU buffers (back to the OS at once, never paged) and lowers the pool's cap; with RAM free
   again it raises the cap a GiB at a time up to L. The pool never shrinks below 1 GiB: a decode window claims a few
   dozen buffers at once, and a smaller pool allocated and freed them every window (decode 43 tok/s instead of 50
-  under pressure).
+  under pressure). On Windows it watches the available commit as well as the available RAM: every LRU buffer is
+  committed memory, and with the commit charge at its limit another program's allocation fails even with RAM free
+  (measured on this PC: 112-120 of 121 GiB committed while serving, with 8-9 GB of RAM free).
 - `STRATA_TIER_TRACE=<file>` writes one line per expert blob served outside the GPU caches (time, decode or prompt
   path or fill, RAM copy or files, layer, expert, bytes). It is how the LRU was chosen: replaying a traced session
   of six answers on different topics against policies of the same 14 GiB, an LRU fed by the decode's reads cut the
