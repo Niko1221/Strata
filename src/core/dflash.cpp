@@ -391,6 +391,11 @@ struct Bump {
 
 }  // namespace
 
+void dflash_identity_fill(int32_t* host, int rows, int64_t cap) {
+    for (int r = 0; r < rows; ++r)
+        for (int64_t i = 0; i < cap; ++i) host[(size_t) r * (size_t) cap + (size_t) i] = (int32_t) i;
+}
+
 // ============================================================================================
 // The runtime: weights, the drafter's own K/V pools, the fusion (context cells) and the block
 // forward.  Eager, one stream, greedy.  All semantics: docs/DFLASH.md.
@@ -399,13 +404,6 @@ struct Bump {
 namespace {
 
 uint64_t mapped_bytes(int64_t n) { return ((uint64_t) n + 63) & ~uint64_t(63); }
-
-/// The batch attention's identity selection: ids[row * cap + i] = i for EVERY row (the kernel
-/// offsets by row * cap - a table filled for row 0 alone leaves rows 1..K-1 reading garbage).
-void dflash_identity_fill(int32_t* host, int rows, int64_t cap) {
-    for (int r = 0; r < rows; ++r)
-        for (int64_t i = 0; i < cap; ++i) host[(size_t) r * (size_t) cap + (size_t) i] = (int32_t) i;
-}
 
 strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) {
     strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
@@ -580,7 +578,7 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
     // (no optimization before correctness).
     {
         std::vector<int32_t> id_host((size_t) max_rows_ * (size_t) cap_);
-        dflash_identity_fill(id_host.data(), max_rows_, cap_);
+        dflash_identity_fill(id_host.data(), (int) max_rows_, cap_);
         if (cudaMemcpy(ident_, id_host.data(), id_host.size() * 4, cudaMemcpyHostToDevice) != cudaSuccess) {
             err = "dflash: the identity selection upload failed";
             return false;
