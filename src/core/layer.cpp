@@ -668,12 +668,20 @@ int64_t qsa_kv_resident_min() { return 20480; }
 uint64_t qsa_kv_host_bytes() { return g_kv_host_bytes; }
 
 uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_rope, int64_t ring_cells) {
+    return qsa_state_bytes(g, max_cells, with_rope, ring_cells, QsaStateInitOptions{});
+}
+
+uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_rope, int64_t ring_cells,
+                         const QsaStateInitOptions& opts) {
+    if (opts.disable_streaming) ring_cells = 0;   // bytes and init force this identically
     const QsaShapes s = qsa_shapes(g);
     const KvPlan p = kv_plan(s, max_cells, ring_cells);
+    const bool elastic = g_kv_elastic && !opts.disable_elastic && !opts.force_owned_kv;
+    const bool hybrid = g_kv_hybrid && !opts.force_owned_kv && !opts.force_f16_kv;
+    const bool int8 = (g_kv_int8 || g_kv_hybrid) && !opts.force_owned_kv && !opts.force_f16_kv;
     uint64_t n = 0;
-    if (!(g_kv_elastic && p.mode == 0))   // the elastic K/V's pools are in their own VMM range
-        n += kv_pool_bytes(s, p.slots, g_kv_hybrid && ring_cells <= 0,
-                           g_kv_int8 || g_kv_hybrid) + 4 * 16;   // K/V pools (the VRAM slots)
+    if (!(elastic && p.mode == 0))   // the elastic K/V's pools are in their own VMM range
+        n += kv_pool_bytes(s, p.slots, hybrid && ring_cells <= 0, int8) + 4 * 16;   // K/V pools (the VRAM slots)
     n += (uint64_t) p.pages * 4;                                               // page_table
     if (p.mode == 1) n += strata::kernels::kv_stream_map_bytes(p.slots) + 6 * 16;   // the residency map
     n += (uint64_t) (s.idx_block - 1) * s.idx_dim * 4;                         // tail
@@ -688,15 +696,24 @@ uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_ro
 
 uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaState& st,
                         const QsaState* share_rope, int64_t ring_cells) {
+    return qsa_state_init(g, max_cells, base, st, share_rope, ring_cells, QsaStateInitOptions{});
+}
+
+uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaState& st,
+                        const QsaState* share_rope, int64_t ring_cells, const QsaStateInitOptions& opts) {
+    if (opts.disable_streaming) ring_cells = 0;   // bytes and init force this identically
     const QsaShapes s = qsa_shapes(g);
     const KvPlan p = kv_plan(s, max_cells, ring_cells);
+    const bool elastic = g_kv_elastic && !opts.disable_elastic && !opts.force_owned_kv;
+    const bool hybrid = g_kv_hybrid && !opts.force_owned_kv && !opts.force_f16_kv;
+    const bool int8 = (g_kv_int8 || g_kv_hybrid) && !opts.force_owned_kv && !opts.force_f16_kv;
     const int64_t pages = p.pages;
     Cursor c{(uint8_t*) base};
-    st.kv_int8 = g_kv_int8 && !g_kv_q4;
-    st.kv_q4 = g_kv_q4;
+    st.kv_int8 = int8 && !g_kv_q4;
+    st.kv_q4 = g_kv_q4 && !opts.force_owned_kv && !opts.force_f16_kv;
     // Hybrid K8V4, main layers only (the drafter's state is created with the globals toggled to INT8 -
     // mtp.cpp). A streamed one keeps its host copy in the same three runs (kv_stream.cu, kKvHybrid).
-    if (g_kv_hybrid && ring_cells <= 0) {
+    if (hybrid && ring_cells <= 0) {
         st.kv_hybrid = true;
         st.kv_int8 = false;
         st.kv_q4 = false;
@@ -707,7 +724,7 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
     const uint64_t rows = (uint64_t) p.slots * s.n_head_kv * s.page_size;   // VRAM rows: the slots
     const uint64_t q4_row = strata::kernels::kv_q4_bytes_per_head((int) s.head_dim);
     st.kv_elastic = -1;
-    if (g_kv_elastic && p.mode == 0) {
+    if (elastic && p.mode == 0) {
         // the elastic K/V: each array at a chunk boundary of the state's own range, the first cells mapped
         const uint64_t slot_rows = (uint64_t) s.n_head_kv * s.page_size;
         const uint64_t scale_row = (uint64_t) (s.head_dim / strata::kernels::KV_Q8_GROUP) * 2;

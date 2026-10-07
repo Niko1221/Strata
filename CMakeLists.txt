@@ -801,6 +801,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_test(NAME dflash_rope_parity COMMAND dflash_rope_parity)
   set_tests_properties(dflash_rope_parity PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
 
+  # the DFlash drafter's OWNED K/V state: pools inside the caller's arena, append/readback exact,
+  # elastic non-membership, five independent layers (docs/DFLASH.md)
+  add_executable(dflash_owned_kv_test tests/core/dflash_owned_kv_test.cpp)
+  target_link_libraries(dflash_owned_kv_test PRIVATE strata_engine)
+  add_test(NAME dflash_owned_kv_test COMMAND dflash_owned_kv_test)
+  set_tests_properties(dflash_owned_kv_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
   add_executable(gdn_parity src/kernels/gdn_parity.cpp)
   target_include_directories(gdn_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(gdn_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})

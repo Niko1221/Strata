@@ -228,6 +228,28 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
         }
         strata::core::qsa_state_zero(st_[(size_t) l], pool_g_, nullptr);
         vram_ += sb;
+        // OWNERSHIP INVARIANT (docs/DFLASH.md): the pools must live in THIS state's arena - not in
+        // an elastic VMM range, a streaming host copy or another layer's slab.  Checked as pointers,
+        // not metadata: qsa_state_bytes/init skip the arena's K/V storage when the process elastic
+        // K/V is on, and a metadata reset cannot repair that.
+        {
+            const uintptr_t a0 = reinterpret_cast<uintptr_t>(arenas_[(size_t) l]);
+            const uintptr_t a1 = a0 + sb;
+            const auto inside = [&](const void* p) {
+                const uintptr_t x = reinterpret_cast<uintptr_t>(p);
+                return x >= a0 && x < a1;
+            };
+            const QsaState& s = st_[(size_t) l];
+            if (!inside(s.k_pool) || !inside(s.v_pool) || s.kv_elastic != -1 || s.kv_mode != 0 ||
+                s.kv_int8 || s.kv_q4 || s.kv_hybrid || s.host.k_pool != nullptr || s.map.slot_block != nullptr) {
+                err = "dflash: draft K/V pools are not owned by the DFlash state arena "
+                      "(the elastic K/V (--kv-grow) must be off for the DFlash drafter)";
+                return false;
+            }
+            if (std::getenv("STRATA_DF_DBG"))
+                std::fprintf(stderr, "dflash dbg: layer %d owned: k_pool=%p v_pool=%p arena=[%p,%p) elastic=%d mode=%d\n",
+                             l, (void*) s.k_pool, (void*) s.v_pool, (void*) a0, (void*) a1, s.kv_elastic, s.kv_mode);
+        }
     }
     cudaDeviceSynchronize();
     if (std::getenv("STRATA_DF_DBG")) {
@@ -360,8 +382,18 @@ bool DFlashDrafter::add_context(const uint16_t* taps, int n_taps, int64_t stride
     }
     if (cycle_ == 0 && parity_dir_[0]) {
         // the prompt's context cells, layer 0: the first 32 pages raw ([page][kvh][slot][hd] fp16)
-        parity_dump_u16_as_f32(parity_dir_, "pool_cells0", st_[0].k_pool,
-                               32 * 2 * 4 * 256, cs_);
+        if (cudaStreamSynchronize(cs_) != cudaSuccess) { err = "dflash: sync failed"; return false; }
+        if (std::getenv("STRATA_DF_DBG")) {
+            std::vector<uint16_t> probe(8 * 256);
+            cudaMemcpyAsync(probe.data(), st_[0].k_pool, probe.size() * 2, cudaMemcpyDeviceToHost, cs_);
+            cudaStreamSynchronize(cs_);
+            double a0 = 0;
+            for (uint16_t b : probe) a0 += std::abs((int) b);
+            std::fprintf(stderr, "dflash dbg: pool page0 abs=%.1f k_pool=%p table0=%d\n", a0, (void*) st_[0].k_pool,
+                         [&] { int32_t t = -5; cudaMemcpyAsync(&t, st_[0].page_table, 4, cudaMemcpyDeviceToHost, cs_);
+                               cudaStreamSynchronize(cs_); return t; }());
+        }
+        parity_dump_u16_as_f32(parity_dir_, "pool_cells0", arenas_[0], (int64_t) st_[0].max_cells * 2 * 256, cs_);
     }
     return true;
 }
@@ -479,7 +511,7 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
             err = "dflash: the step staging failed";
             return false;
         }
-        if (std::getenv("STRATA_DF_DBG") && l == 0) {
+        if (std::getenv("STRATA_DF_DBG") && l == 0)
             std::fprintf(stderr, "dflash dbg: fusion append pos0=%lld rows=%d cells [%lld..%lld)\n",
                          (long long) pos0, rows, (long long) pos0, (long long) (pos0 + rows));
         const QsaState& stl = st_[(size_t) l];
@@ -493,7 +525,8 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
         else {
             for (int r = 0; r < rows; ++r)
                 kv_append_step(stl.k_pool, stl.v_pool, stl.page_table, step_ + r * 4, kc_ + (size_t) r * KVW,
-                               vc_ + (size_t) r * KVW, shapes_, cs_, &stl.host);
+                               vc_ + (size_t) r * KVW, shapes_, cs_, nullptr);
+            if (cudaStreamSynchronize(cs_) != cudaSuccess) { err = "dflash: its stream failed"; return false; }
             // the pool rows the appends landed in, for the harness (after a sync so the appends are done)
             if (parity_want(cycle_) && l == 0) {
                 if (cudaStreamSynchronize(cs_) != cudaSuccess) { err = "dflash: its stream failed"; return false; }
@@ -525,7 +558,6 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
                     }
                 }
             }
-        }
         }
     }
     return true;
@@ -665,11 +697,17 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
                          (long long) shapes_.n_rot);
         }
         qsa_decode_attn_batch(q_, pools, ident_, step_, cap_, shapes_, (float*) attn_scratch_, attn_, K, cs_);
-        if (parity_want(cycle_) && l == 0) {
-            parity_dump(parity_dir_, "q0", q_, K * Q, cs_);
-            parity_dump(parity_dir_, "k0", kc_, K * KVW, cs_);
-            parity_dump(parity_dir_, "v0", vc_, K * KVW, cs_);
-            parity_dump(parity_dir_, "attn0", attn_, K * Q, cs_);
+        if (parity_want(cycle_) && l <= 1) {
+            const char* tag = l == 0 ? "0" : "1";
+            char name[32];
+            std::snprintf(name, sizeof name, "q%s", tag);
+            parity_dump(parity_dir_, name, q_, K * Q, cs_);
+            std::snprintf(name, sizeof name, "k%s", tag);
+            parity_dump(parity_dir_, name, kc_, K * KVW, cs_);
+            std::snprintf(name, sizeof name, "v%s", tag);
+            parity_dump(parity_dir_, name, vc_, K * KVW, cs_);
+            std::snprintf(name, sizeof name, "attn%s", tag);
+            parity_dump(parity_dir_, name, attn_, K * Q, cs_);
         }
         f32_to_bf16_bulk(attn_, attn16_, (int64_t) K * Q, cs_);
         for (int r = 0; r < K; ++r)
