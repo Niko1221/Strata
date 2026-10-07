@@ -1,46 +1,69 @@
 # Dual RTX 5090: Strata 0.1.40 performance report
 
-Strata 0.1.40 with Flash-Next IQ3_S on our dual RTX 5090 system delivered **243.3 tok/s median native decode and 243.4 tok/s time-weighted decode across 203 completed production requests**.
+Strata 0.1.40 with Flash-Next IQ3_S on our dual RTX 5090 system delivered **223.2 tok/s median native decode across 330 completed production requests**, with **218.3 tok/s time-weighted decode**. Production observations cover prompt-length buckets through **224K–256K**, where two requests decoded at **180.4 and 215.5 tok/s**.
 
-Separately, controlled synthetic tests found a substantial uncached-prefill performance gap between layer splitting and peer-expert mode. Both datasets are presented below, with their workloads and limitations identified.
+Separately, controlled synthetic tests compared layer splitting with peer-expert mode through 250,053 prompt tokens. Production observations and synthetic benchmarks are reported separately.
 
 ### Production workload observation
 
-Source: native per-request engine statistics reported by the local monitoring script on **October 6, 2026 at 19:23:41 CDT**, requested lookback 30 minutes. These are workload observations, not fixed-output benchmark requests.
+Source: native per-request engine statistics captured on **October 7, 2026 at 04:30:09 CDT**, with a requested lookback of 30 minutes. Deployment: Flash-Next IQ3_S, Strata 0.1.40, 262,144-token context, INT8 KV, and 32,768 resident KV tokens.
+
+These measurements came from production coding-agent activity, not fixed-output benchmark requests. They measure engine performance, not coding correctness or completed-task quality.
 
 | Metric | Observed value |
 |---|---:|
-| Completed requests represented | 203 |
-| Native decode mean / median | 243.6 / 243.3 tok/s |
-| Native decode time-weighted rate | 243.4 tok/s |
-| Native decode p95 / minimum / maximum | 296.0 / 178.0 / 331.8 tok/s |
-| Prompt / reused / generated tokens | 12,776,478 / 12,146,604 / 148,857 |
-| Prefix reuse | 95.1% |
-| Engine request duration median / p95 | 2.40 / 12.47 seconds |
+| Completed requests represented | 330 |
+| Native decode mean / median | 227.1 / 223.2 tok/s |
+| Native decode time-weighted rate | 218.3 tok/s |
+| Native decode p95 / minimum / maximum | 285.3 / 154.6 / 326.7 tok/s |
+| Prompt / reused / generated tokens | 41,502,360 / 40,538,507 / 209,287 |
+| Prefix reuse | 97.7% |
+| Engine request duration median / p95 | 1.35 / 18.07 seconds |
 | Mean per-request expert-cache hit rate | 100.0% |
-| Large-prefill median / p95 | 9,254.2 / 10,924.5 tok/s; 4 requests with at least 16,384 new tokens |
 
-Native decode excludes prefill, queue and proxy time. The time-weighted decode rate is not whole-window throughput: it excludes idle intervals. All 203 represented requests finished with stop/length outcomes; that is not a count of successfully completed coding tasks or a quality score. The engine's 500-record retention was full, so the requested lookback may omit evicted requests. Native history includes direct and proxy requests reaching the engine; no private task data is included here.
+Native decode excludes prefill, queue and proxy time. The time-weighted decode rate excludes idle intervals and is not whole-window throughput. All 330 represented requests finished with stop/length outcomes; these outcomes do not establish answer correctness.
 
-| Prompt length | Requests | Native decode median |
-|---|---:|---:|
-| 0–32K | 32 | 244.9 tok/s |
-| 32–64K | 87 | 235.4 tok/s |
-| 64–96K | 55 | 239.4 tok/s |
-| 96–128K | 28 | 252.5 tok/s |
-| 128–160K | 1 | 254.2 tok/s |
+### Production decode by prompt length
 
-The per-request prefill median was only 1,656.8 tok/s, but **122 of 203 requests processed fewer than 1,024 new tokens**; median new tokens per request was 759. Those cached follow-ups are overhead-dominated and should not be compared with large uncached-prefill benchmarks. Time-weighted prefill was 4,344.1 tok/s across 629,874 new tokens and 145.00 seconds of native prompt time.
+Buckets use each request’s prompt-token count, not batch-wide token counts. K denotes 1,024 tokens.
 
-### Production versus synthetic decode
+| Prompt length | Requests | Mean decode | Median decode | Minimum | Maximum |
+|---|---:|---:|---:|---:|---:|
+| 0–32K | 16 | 231.5 | 231.5 | 175.8 | 265.6 |
+| 32–64K | 49 | 220.9 | 218.2 | 161.6 | 324.7 |
+| 64–96K | 40 | 225.3 | 220.9 | 192.8 | 298.7 |
+| 96–128K | 64 | 235.3 | 234.7 | 154.6 | 311.3 |
+| 128–160K | 63 | 226.9 | 220.9 | 165.6 | 323.7 |
+| 160–192K | 67 | 233.9 | 236.8 | 167.1 | 326.7 |
+| 192–224K | 29 | 205.8 | 198.1 | 162.1 | 273.0 |
+| 224–256K | 2 | 197.9 | 197.9 | 180.4 | 215.5 |
 
-In the production 64–96K prompt bucket, median native decode was **239.4 tok/s**, approximately **32% above** the synthetic 65,588-token layer-split median of **180.9 tok/s** below. This is an overlapping context range, not a matched request comparison.
+All rates are tokens per second.
 
-Both rates exclude prefill. Therefore the gap cannot simply be attributed to one metric including prefill/overhead while the other excludes it. High prefix reuse improves request latency but does not, by itself, establish the cause of higher native decode speed.
+The 192K–224K bucket contains 29 requests with a median of **198.1 tok/s**. The 224K–256K bucket contains only two requests, so its result is preliminary. Bucket boundaries do not establish the exact maximum observed prompt length.
 
-Different generated content, speculative acceptance, output lengths, cache residency, effective launch settings or workload-dependent execution paths are candidates to investigate—not established explanations. The snapshot does not include speculative acceptance or a full effective-request configuration audit. No matched replay or profiler evidence currently isolates the cause.
+### Production prefill
 
-A useful additional investigation is to reproduce the gap with a shareable workload, capture effective request settings, output length, native timings and speculative acceptance, and compare actual execution paths before changing kernels. The synthetic results should **not** be presented as a ceiling or representative production decode rate.
+| Metric | Observed value |
+|---|---:|
+| Per-request prefill median / p95 | 1,515.3 / 3,883.9 tok/s |
+| Time-weighted prefill | 3,778.9 tok/s |
+| Newly processed prompt tokens | 963,853 |
+| Total native prompt-processing time | 255.06 seconds |
+| Median new tokens per request | 944 |
+| Requests processing fewer than 1,024 new tokens | 180 of 330 |
+| Large prefills: at least 16,384 new tokens | 4 requests |
+| Large-prefill median / p95 | 10,193.0 / 10,922.0 tok/s |
+
+Prefill rates divide uncached prompt tokens by native prompt-processing time. Most requests reused substantial prefixes; short follow-ups include fixed processing overhead and are not peak-prefill benchmarks. The four large-prefill observations provide a limited sample of sustained prompt-processing throughput.
+
+### Production measurement limits
+
+The engine retained 500 request records, and retention was full. The requested lookback may therefore omit evicted records. Native history resets on restart and includes direct and proxy requests reaching the engine.
+
+This is an aggregate production snapshot. Private prompts, generated content and task details are excluded. Per-request sampling settings and speculative acceptance were not captured in this report, so differences from the controlled tests below cannot be attributed to a particular cause.
+
+Production and synthetic measurements use native decode timing, but their workloads differ. The synthetic results below should not be interpreted as a production performance ceiling or as a matched comparison with this snapshot.
 
 ### Synthetic test setup
 
