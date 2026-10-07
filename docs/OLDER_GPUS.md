@@ -108,9 +108,10 @@ and i-quant blocks (Q6_K, IQ4_XS, Q4_K, IQ3_S, ...) one int at a time. Two chang
   keep the usual kernel. Not bitwise the exact kernels (the per-32 products are added in another order). The packed
   copies cost their size in VRAM beside the GGUF layout the prompt path reads (Flash-Next: 2.9 GiB of dense
   projections over the stages and 0.6 GiB for the head).
-- The GSQ-RCO packs have no Q8_0 dense matrices, so the kernel needs a shard whose dense projections and head are
-  Q8_0: `python tools/q8_dense_gguf.py <model>-00001-of-00002.gguf <new folder>` writes one (+3.5 GiB; the experts keep
-  their offsets, so the native pack is reused; the other shards are hard-linked beside it). Point `--native` and
+- The GSQ-RCO packs have no Q8_0 dense matrices, so the kernel needs a copy of the model whose dense projections and head are
+  Q8_0: `python tools/q8_dense_gguf.py <model>-00001-of-00002.gguf <new folder>` writes one: every shard that holds
+  such matrices is converted (Swift 1.5 keeps them in both of its shards) and the rest are hard-linked beside them
+  (+3.5 GiB; the experts keep their offsets, so the native pack is reused). Point `--native` and
   `--ple-gguf` at the new folder. Requantizing costs at most 0.4% of a tensor's |w|max (Q8_0 is finer than the
   sources).
 - IQ3_XXS's codebook and sign-mask tables are staged in shared memory by the grouped expert kernels on compute
