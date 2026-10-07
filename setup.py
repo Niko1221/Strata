@@ -2621,6 +2621,15 @@ def isa_floor_defs(floor: str, bdir: Path, meta: dict) -> list:
     return [f"-DSTRATA_ISA_FLOOR={floor}"] if floor else []
 
 
+def toolkit_root_defs(nvcc) -> list:
+    """CUDAToolkit_ROOT for the toolkit whose nvcc builds the engine.  Without it CMake can take cudart and cuBLAS from
+    another toolkit: with STRATA_NVCC=/opt/cuda-13.0/bin/nvcc on Ubuntu 24.04 that also has the distribution's CUDA
+    12.0 (nvidia-cuda-toolkit), the engine was compiled with the 13.0 headers but linked libcudart.so.12 from
+    /usr/lib/x86_64-linux-gnu.  The distribution's own nvcc (/usr/bin) keeps CMake's search as before."""
+    root = Path(nvcc).resolve().parent.parent
+    return [] if root == Path("/usr") else [f"-DCUDAToolkit_ROOT={root}"]
+
+
 def engine_defs(archs, toolkit=13) -> list:
     """Extra CMake definitions for the engine: the experimental Pascal/Volta build (#295) for cards below sm_75, and
     for every CUDA 12 engine (the same build as the ready-made CUDA 12 one: it admits the older cards)."""
@@ -2680,7 +2689,8 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
             if local and (eng / EXE).exists() else "  Compiling the Strata engine for your GPU (10-20 minutes, once) ...")
         cmake_build(ROOT, bdir, "strata",
                     ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_BUILD_TESTS=OFF", f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}",
-                     f"-DCMAKE_CUDA_COMPILER={nvcc}", f"-DSTRATA_GGML_DIR={llama}", *engine_defs(archs, toolkit),
+                     f"-DCMAKE_CUDA_COMPILER={nvcc}", *toolkit_root_defs(nvcc), f"-DSTRATA_GGML_DIR={llama}",
+                     *engine_defs(archs, toolkit),
                      *isa_floor_defs(floor, bdir, meta)],
                     vcvars, "build-strata-cuda12.bat" if t12 else "build-strata.bat")
         shutil.copy2(bdir / EXE, eng / EXE)
@@ -2688,7 +2698,8 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
         say("  Compiling the image encoder" + (" with CUDA (10-20 minutes, once) ..." if vision == "gpu" else " ..."))
         defs = [f"-DLLAMA_DIR={llama}", f"-DSTRATA_VISION_CUDA={'ON' if vision == 'gpu' else 'OFF'}"]
         if vision == "gpu":
-            defs += [f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}", f"-DCMAKE_CUDA_COMPILER={nvcc}"]
+            defs += [f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}", f"-DCMAKE_CUDA_COMPILER={nvcc}",
+                     *toolkit_root_defs(nvcc)]
         cmake_build(ROOT / "tools" / "vision", vdir, "strata-vision", defs, vcvars,
                     "build-vision-cuda12.bat" if t12 else "build-vision.bat")
         shutil.copy2(vdir / "bin" / VEXE, eng / VEXE)
