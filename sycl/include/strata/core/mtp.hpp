@@ -123,6 +123,10 @@ private:
     bool capture_prefill_dev(int T, std::string& err);   ///< E-4: without the mapped staging (inputs copied on device)
     bool capture_round(int T, bool coupled, std::string& err);
     bool capture_step(int j, bool coupled, std::string& err);
+    // SYCL port (STRATA_VERIFY_EAGER): the round/step bodies replayed without a graph (no command-graph
+    // recording on the OpenCL backend). Same work, same order as the captures above.
+    bool record_round(int T, bool coupled, std::string& err);
+    bool record_step(int j, bool coupled, std::string& err);
     dpct::experimental::command_graph_exec_ptr step_exec_[9] = {};
     // coupled draft sampling: its own round/step graphs (the argmax ones stay as they were), the request's
     // parameters and the penalty ring (mapped staging + device copies), the split scratch, token id -> subset index

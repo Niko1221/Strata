@@ -775,6 +775,7 @@ catch (sycl::exception const &exc) {
 
 bool MtpDrafter::capture_prefill(int T, std::string &err) try {
     if (prefill_exec_[T]) return true;
+    if (std::getenv("STRATA_VERIFY_EAGER") != nullptr) return true;   // no graph, prefill() replays the body
     using namespace strata::kernels;
     if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs_)) != 0) {
         err = "mtp: begin capture"; return false;
@@ -793,6 +794,7 @@ catch (sycl::exception const &exc) {
 
 bool MtpDrafter::capture_prefill_dev(int T, std::string &err) try {
     if (prefill_dev_exec_[T]) return true;
+    if (std::getenv("STRATA_VERIFY_EAGER") != nullptr) return true;   // no graph, prefill() replays the body
     if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs_)) != 0) {
         err = "mtp: begin capture"; return false;
     }
@@ -805,9 +807,37 @@ catch (sycl::exception const &exc) {
   std::exit(1);
 }
 
+// SYCL port (STRATA_VERIFY_EAGER): capture_round's body as a replayable function - the capture records
+// it into the round graph, and the draft launch replays it directly where there is no graph backend.
+bool MtpDrafter::record_round(int T, bool coupled, std::string &err) {
+    using namespace strata::kernels;
+    const int64_t HCN = g_->hc * g_->n_embd;
+    bool ok = true;
+    if (coupled) coupled_draft_stage(m_cparams_, m_chist_, cparams_, cring_, kCoupledHistCap, cs_);
+    copy_i32_from_mapped(tok_, m_tok_, T, cs_);
+    copy_i32_from_mapped(step_, m_step_, (int64_t) 2 * T * 4, cs_);
+    copy_i32_from_mapped(pos_, m_pos_, (int64_t) 2 * T * g_->n_head, cs_);
+    copy_i32_from_mapped(row_, m_row_, 2, cs_);
+    copy_from_mapped(Rin_, window_R_, (int64_t) T * HCN, cs_);
+    const int ra = 2 * max_t_ - 1;
+    ok = record_forward(T, -1, cs_, err);
+    if (ok) mtp_select(Rin_, HCN, tok_, row_, Rin_, tok_, nullptr, 0, cs_);
+    if (ok) {
+        copy_i32_from_mapped(step_ + ra * 4, m_step_ + ra * 4, 4, cs_);
+        copy_i32_from_mapped(pos_ + ra * g_->n_head, m_pos_ + ra * g_->n_head, g_->n_head, cs_);
+        coupled_rec_ = coupled;
+        coupled_j_ = 0;
+        ok = record_forward(1, ra, cs_, err);
+        coupled_rec_ = false;
+    }
+    if (ok) mtp_select(R_, HCN, out_ids_, row_ + 1, Rin_, tok_, m_out_, 0, cs_, probs_, m_prob_);
+    return ok;
+}
+
 bool MtpDrafter::capture_round(int T, bool coupled, std::string &err) try {
     dpct::experimental::command_graph_exec_ptr& exec = coupled ? round_exec_c_[T] : round_exec_[T];
     if (exec) return true;
+    if (std::getenv("STRATA_VERIFY_EAGER") != nullptr) return true;   // no graph, draft() replays the body
     using namespace strata::kernels;
     const int64_t HCN = g_->hc * g_->n_embd;
     if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs_)) != 0) {
@@ -846,9 +876,25 @@ catch (sycl::exception const &exc) {
 
 // Chain step j (1..max_t-2): one row at the cell staged in step row `max_t + j - 1`, from the previous step's
 // residual and token (left in Rin_[0] / tok_[0] by mtp_select); draft j and its probability to the mapped outputs.
+// SYCL port (STRATA_VERIFY_EAGER): capture_step's body as a replayable function - see record_round.
+bool MtpDrafter::record_step(int j, bool coupled, std::string &err) {
+    using namespace strata::kernels;
+    const int64_t HCN = g_->hc * g_->n_embd;
+    const int row = max_t_ + j - 1;
+    copy_i32_from_mapped(step_ + row * 4, m_step_ + row * 4, 4, cs_);
+    copy_i32_from_mapped(pos_ + row * g_->n_head, m_pos_ + row * g_->n_head, g_->n_head, cs_);
+    coupled_rec_ = coupled;
+    coupled_j_ = j;
+    bool ok = record_forward(1, row, cs_, err);
+    coupled_rec_ = false;
+    if (ok) mtp_select(R_, HCN, out_ids_, row_ + 1, Rin_, tok_, m_out_, j, cs_, probs_, m_prob_);
+    return ok;
+}
+
 bool MtpDrafter::capture_step(int j, bool coupled, std::string &err) try {
     dpct::experimental::command_graph_exec_ptr& exec = coupled ? step_exec_c_[j] : step_exec_[j];
     if (exec) return true;
+    if (std::getenv("STRATA_VERIFY_EAGER") != nullptr) return true;   // no graph, draft() replays the body
     using namespace strata::kernels;
     const int64_t HCN = g_->hc * g_->n_embd;
     const int row = max_t_ + j - 1;
@@ -983,8 +1029,10 @@ bool MtpDrafter::prefill(const float *R_rows, const int32_t *next_tokens,
                 DPCT_CHECK_ERROR(
                     cs_->memcpy(Rin_, R_rows + (size_t)c * HCN,
                                 (size_t)T * HCN * sizeof(float))) != 0 ||
-                DPCT_CHECK_ERROR(
-                    (cs_)->ext_oneapi_graph(*prefill_dev_exec_[T])) != 0) {
+                (std::getenv("STRATA_VERIFY_EAGER") != nullptr
+                     ? !record_forward(T, -1, cs_, err)   // SYCL port: no graph backend, replay the body
+                     : DPCT_CHECK_ERROR(
+                           (cs_)->ext_oneapi_graph(*prefill_dev_exec_[T])) != 0)) {
                 /*
                 DPCT1009: SYCL reports errors using exceptions and does not
                 use error codes. Please replace the
@@ -1041,7 +1089,9 @@ bool MtpDrafter::prefill(const float *R_rows, const int32_t *next_tokens,
         if (DPCT_CHECK_ERROR(cs_->memcpy(Rin_, R_rows + (size_t)c * HCN,
                                          (size_t)T * HCN * sizeof(float))) !=
                 0 ||
-            DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(*prefill_exec_[T])) != 0 ||
+            (std::getenv("STRATA_VERIFY_EAGER") != nullptr
+                 ? !record_forward(T, -1, cs_, err)   // SYCL port: no graph backend, replay the body
+                 : DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(*prefill_exec_[T])) != 0) ||
             DPCT_CHECK_ERROR(cs_->wait()) != 0) {
             /*
             DPCT1009: SYCL reports errors using exceptions and does not use
@@ -1090,7 +1140,9 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
     h_row_[0] = a;
     h_row_[1] = 0;
     std::atomic_thread_fence(std::memory_order_seq_cst);
-    if (DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(*(cp ? round_exec_c_[T] : round_exec_[T]))) != 0 ||
+    if ((std::getenv("STRATA_VERIFY_EAGER") != nullptr
+             ? !record_round(T, cp, err)   // SYCL port: no graph backend, replay the body
+             : DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(*(cp ? round_exec_c_[T] : round_exec_[T]))) != 0) ||
         DPCT_CHECK_ERROR(cs_->wait()) != 0) {
         /*
         DPCT1009: SYCL reports errors using exceptions and does not use error
@@ -1114,7 +1166,9 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
         if (!capture_step(j, cp, err)) return false;
         put(max_t_ + j - 1, coupled_draft_cell(p, a, j));   // p + a + j; coupled: drawn at counter cell + 1
         std::atomic_thread_fence(std::memory_order_seq_cst);
-        if (DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(*(cp ? step_exec_c_[j] : step_exec_[j]))) != 0 ||
+        if ((std::getenv("STRATA_VERIFY_EAGER") != nullptr
+                 ? !record_step(j, cp, err)   // SYCL port: no graph backend, replay the body
+                 : DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(*(cp ? step_exec_c_[j] : step_exec_[j]))) != 0) ||
             DPCT_CHECK_ERROR(cs_->wait()) != 0) {
             /*
             DPCT1009: SYCL reports errors using exceptions and does not use
