@@ -246,3 +246,61 @@ pipeline).
 
 With a layer split, `--batch N --batch-groups G --trim-stage-weights` decodes several conversations together and
 pipelines them through the cards: see [BATCHING.md](BATCHING.md).
+
+## A second request on a peer pair: the elastic pair with mutual help (opt-in)
+
+With `--peer-device` one engine uses both cards for one conversation, and a second request waits. The **elastic pair**
+lets the second card turn into its own engine when a second request arrives, and back into the first engine's peer
+tier when it has been idle for a while. While both run, each engine computes the other's rows for the experts its card
+holds (**mutual help**, `--peer-link`), so neither falls back to the CPU for the experts the other card has. One
+sequence per engine process, as always: two processes, one card each, one shared expert arena in RAM.
+
+What happens:
+
+| | lead engine (card 1) | helper engine (card 2) |
+|---|---|---|
+| one request | `--peer-device`: card 2 is its tier (exactly as without the pair) | asleep: its expert cache given back (`--vram-elastic`), optionally frozen with NVIDIA's `cuda-checkpoint` |
+| a 2nd request arrives | `PEER_DETACH` between two verify windows; its last N CPU workers sit out (`POOL_HOLD`) | thawed, its cache comes back from the shared arena (`VRAM`), then it takes the request |
+| both run | computes its own experts and the helper's rows for its card's experts | the same, the other way round |
+| idle for `hold_s` | `PEER_ATTACH` once its request has ended: card 2 is its tier again | cache given back, frozen |
+
+Config (the lead's run config; nothing changes without the `"elastic"` block):
+
+```json
+"args": [ ..., "--peer-device", "1", "--peer-link", "/dev/shm/strata-link", "--peer-link-role", "0",
+         "--shared-expert-arena", "/dev/shm/strata.arena" ],
+"elastic": { "helper": "strata-<model>-helper.json", "hold_s": 30, "helper_cores": "8-15,24-31",
+             "hold_workers": 8, "checkpoint": "/usr/bin/cuda-checkpoint" }
+```
+
+The helper config is an ordinary one-card run config (`"gpu": 0` for the second card) whose args carry
+`--peer-link <same file> --peer-link-role 1 --vram-elastic --shared-expert-arena <same file> --pool-workers 7`.
+`helper_cores` pins the helper process (and `hold_workers` frees the same number of the lead's workers while it is
+awake). Without `"checkpoint"` the helper stays resident with its cache given back (its dense weights and K/V stay on
+card 2, so the lead's peer tier is that much smaller). The shared arena must fit the folder it is in (`/dev/shm` is
+half of RAM by default: an arena of 72 GB, unsloth Q4_K_XL, needs a larger tmpfs).
+
+`--peer-link FILE --peer-link-role 0|1` alone (two one-card engines started by hand, each with its own server) is the
+mutual help without the elastic part.
+
+Engine control lines (stdin, any time; answered with `CTL ...`): `PEER_DETACH`, `PEER_ATTACH` (between requests),
+`POOL_HOLD n`, `LINK_SERVE 0|1`. Without `--peer-link` and without the `"elastic"` block the engine's output is
+byte-identical to the release.
+
+Measured (2x RTX 3090 + NVLink, Ryzen 9 3950X, 121 GB DDR4, IQ3_S, 262K, `--kv int8`; one request = a cached 54K
+coding prompt, 400-1,000 tokens, sampled):
+
+| | one request (decode / prefill 50K) | two requests at once |
+|---|---|---|
+| `--peer-device 1` (release) | 103-111 / 2,846 t/s (n=6) | one after the other: 99 t/s together |
+| elastic pair | 103-119 / 2,844 t/s (n=6): unchanged | **151-160 t/s together** (75-80 each) |
+| two one-card engines, no mutual help | | 136-139 t/s |
+
+What the first request pays when the second starts (3 runs): its decode goes from 102-112 t/s to 72-77 t/s for the
+4.7 s the helper needs to wake (the second card's experts come from the CPU meanwhile: detach 0.6 s, thaw 3.1 s,
+cache 1.1 s), then 82-87 t/s while both run, and back to 94-104 t/s once the second one has ended; its stream never
+stops (longest gap 0.07 s). The second request's first token comes after those 4.7 s plus its prompt.
+
+Where it does not help: unsloth Q4_K_XL on the same cards. A `--layer-split` already spends both cards' memory
+bandwidth on one conversation (95 t/s); the pair gives 87-88 t/s for two together (and 75-79 for one on the peer pair).
+Its dense weights and head (~2.9 GB) are read per verify window per engine, so two engines read them twice.
