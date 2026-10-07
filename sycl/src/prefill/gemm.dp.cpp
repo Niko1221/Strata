@@ -674,6 +674,8 @@ inline float half_bits_to_float(uint16_t b, bool as_fp) {
     return sycl::bit_cast<float>(sign | ((uint32_t) (exp + 112) << 23) | (mant << 13));
 }
 
+// The short-row case a decode window asks for: one work-item per (row, four columns), the weights read from
+// cache. Correct and simple; it re-reads W once per row, so it is only sane while T is small (see the tiled one).
 void fallback_gemm(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K,
                    int64_t ldx, int64_t ldy, float alpha, float beta, bool as_fp, void* stream) {
     if (ldx <= 0) ldx = K;
@@ -686,11 +688,15 @@ void fallback_gemm(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, in
         const int64_t n0 = (int64_t) id[1] * TM;
         float acc[TM];
         for (int64_t m = 0; m < TM; ++m) acc[m] = 0.0f;
+        // accumulators are independent, so the compiler contracts there unless this is pinned).
         for (int64_t k = 0; k < K; ++k) {
             const float x = half_bits_to_float(X[t * ldx + k], as_fp);
             for (int64_t m = 0; m < TM; ++m) {
                 const int64_t n = n0 + m;
-                if (n < N) acc[m] += x * half_bits_to_float(W[n * K + k], as_fp);
+                // sycl::fma spelled out: this kernel and fallback_gemm_tiled have to round alike,
+                // and left to the compiler it contracts one of them and not the other (their
+                // accumulators are independent, which is enough to move a token).
+                if (n < N) acc[m] = sycl::fma(x, half_bits_to_float(W[n * K + k], as_fp), acc[m]);
             }
         }
         for (int64_t m = 0; m < TM; ++m) {
@@ -699,6 +705,140 @@ void fallback_gemm(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, in
             if (n < N) Y[t * ldy + n] = beta == 0.0f ? alpha * acc[m] : alpha * acc[m] + beta * Y[t * ldy + n];
         }
     }).wait();
+}
+#pragma clang fp contract(on)
+
+
+// The tiled one, for the prompt path. The kernel above gives every work-item its own four columns, so it reads
+// the whole weight matrix once PER ROW: a 4,096-row chunk of one 2,560 x 4,096 projection moved 86 GB of weights
+// (T x N x K x 2 bytes), which is why a prompt read at 14.5 tok/s here against 790-1,002 on the Linux rows.
+// A work-group here owns a 64 x 64 corner of Y and walks K in 16-wide tiles, staging the activations and the
+// weights in local memory: each weight element is read once per 64 rows, and each thread keeps a 4 x 4 corner in
+// registers, so a load feeds 16 multiply-adds instead of one.
+// The accumulation for each output is still over k in ascending order, one float at a time, so this returns the
+// naive kernel's answer bit for bit - the same promise the oneMKL path keeps (sampler_parity, quantize_act_parity).
+constexpr int kFbBM = 64, kFbBN = 64, kFbBK = 16;      // rows, columns, k per tile
+constexpr int kFbTM = 4, kFbTN = 4;                     // this thread's corner
+constexpr int kFbThreads = (kFbBM / kFbTM) * (kFbBN / kFbTN);
+
+void fallback_gemm_tiled(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K,
+                         int64_t ldx, int64_t ldy, float alpha, float beta, bool as_fp, void* stream) {
+    if (ldx <= 0) ldx = K;
+    if (ldy <= 0) ldy = N;
+    sycl::queue* q = strata::q_of(stream);
+    const size_t gn = (size_t) ((N + kFbBN - 1) / kFbBN);
+    const size_t gt = (size_t) ((T + kFbBM - 1) / kFbBM);
+    q->parallel_for(sycl::nd_range<2>(sycl::range<2>(gn * kFbThreads, gt), sycl::range<2>(kFbThreads, 1)),
+                    [=](sycl::nd_item<2> item) {
+        auto &local = *sycl::ext::oneapi::group_local_memory_for_overwrite<
+            float[kFbBM * kFbBK + kFbBK * kFbBN]>(sycl::ext::oneapi::this_work_item::get_work_group<2>());
+        float* const As = &local[0];
+        float* const Bs = As + kFbBM * kFbBK;             // [k][n]
+        const int tid = (int) item.get_local_linear_id();
+        const int64_t n0 = (int64_t) item.get_group(0) * kFbBN, t0 = (int64_t) item.get_group(1) * kFbBM;
+        const int tm = (tid / (kFbBN / kFbTN)) * kFbTM;  // this thread's rows inside the tile
+        const int tn = (tid % (kFbBN / kFbTN)) * kFbTN;  // and columns
+        float acc[kFbTM][kFbTN];
+#pragma unroll
+        for (int m = 0; m < kFbTM; ++m)
+#pragma unroll
+            for (int n = 0; n < kFbTN; ++n) acc[m][n] = 0.0f;
+        for (int64_t k0 = 0; k0 < K; k0 += kFbBK) {
+            // A[t0 + r][k0 + c]: consecutive threads read consecutive c, so the row's own bytes, coalesced.
+            for (int i = tid; i < kFbBM * kFbBK; i += kFbThreads) {
+                const int r = i / kFbBK, c = i % kFbBK;
+                const int64_t tt = t0 + r, kk = k0 + c;
+                As[i] = (tt < T && kk < K) ? half_bits_to_float(X[tt * ldx + kk], as_fp) : 0.0f;
+            }
+            // B[k0 + r][n0 + c]: W is [n][k], so consecutive threads walk k for one n - also contiguous.
+            for (int i = tid; i < kFbBK * kFbBN; i += kFbThreads) {
+                const int c = i / kFbBK, r = i % kFbBK;
+                const int64_t nn = n0 + c, kk = k0 + r;
+                Bs[r * kFbBN + c] = (nn < N && kk < K) ? half_bits_to_float(W[nn * K + kk], as_fp) : 0.0f;
+            }
+            item.barrier(sycl::access::fence_space::local_space);
+            for (int kk = 0; kk < kFbBK; ++kk) {
+                float a[kFbTM], b[kFbTN];
+#pragma unroll
+                for (int m = 0; m < kFbTM; ++m) a[m] = As[(tm + m) * kFbBK + kk];
+#pragma unroll
+                for (int n = 0; n < kFbTN; ++n) b[n] = Bs[kk * kFbBN + tn + n];
+#pragma unroll
+                for (int m = 0; m < kFbTM; ++m)
+#pragma unroll
+                    // the fma fallback_gemm uses, spelled out: bit for bit the same answer
+                    for (int n = 0; n < kFbTN; ++n) acc[m][n] = sycl::fma(a[m], b[n], acc[m][n]);
+            }
+            item.barrier(sycl::access::fence_space::local_space);
+        }
+#pragma unroll
+        for (int m = 0; m < kFbTM; ++m) {
+            const int64_t tt = t0 + tm + m;
+            if (tt >= T) continue;
+#pragma unroll
+            for (int n = 0; n < kFbTN; ++n) {
+                const int64_t nn = n0 + tn + n;
+                if (nn < N)
+                    // beta = 0 must not read Y (the caller's buffer is uninitialized there: 0 * NaN is NaN).
+                    Y[tt * ldy + nn] = beta == 0.0f ? alpha * acc[m][n] : alpha * acc[m][n] + beta * Y[tt * ldy + nn];
+            }
+        }
+    }).wait();
+}
+
+// STRATA_FALLBACK_SELFTEST=1: run both kernels over one problem whose rows, columns and k count all cross the
+// tiled kernel's tile edges, and report whether they answer bit for bit. They have to - the tiled one changes only
+// how the work is blocked, not the order it is summed in - and the model's own answer is too blunt a check for it
+// (a rounding difference moves a token late in a long answer, where it is easy to miss).
+void fallback_selftest() {
+    constexpr int64_t T = kFbBM + 7, N = kFbBN - 5, K = kFbBK * 3 + 1;   // every edge ragged
+    std::vector<uint16_t> x((size_t) T * K), w((size_t) N * K);
+    uint32_t seed = 12345;
+    for (auto& v : x) { seed = seed * 1664525u + 1013904223u; v = (uint16_t) (seed >> 16); }
+    for (auto& v : w) { seed = seed * 1664525u + 1013904223u; v = (uint16_t) (seed >> 16); }
+    auto q = dpct::get_in_order_queue();
+    const size_t bytes_x = x.size() * 2, bytes_w = w.size() * 2, bytes_y = (size_t) T * N * 4;
+    uint16_t* X = (uint16_t*) sycl::malloc_device(bytes_x, q);
+    uint16_t* W = (uint16_t*) sycl::malloc_device(bytes_w, q);
+    float* Ya = (float*) sycl::malloc_device(bytes_y, q);
+    float* Yb = (float*) sycl::malloc_device(bytes_y, q);
+    if (!X || !W || !Ya || !Yb) {
+        std::fprintf(stderr, "prefill gemm fallback self-test: skipped (allocation failed)\n");
+        return;
+    }
+    q.memcpy(X, x.data(), bytes_x).wait();
+    q.memcpy(W, w.data(), bytes_w).wait();
+    fallback_gemm(X, W, Ya, T, N, K, K, N, 1.0f, 0.0f, false, nullptr);
+    fallback_gemm_tiled(X, W, Yb, T, N, K, K, N, 1.0f, 0.0f, false, nullptr);
+    std::vector<float> a((size_t) T * N), b((size_t) T * N);
+    q.memcpy(a.data(), Ya, bytes_y).wait();
+    q.memcpy(b.data(), Yb, bytes_y).wait();
+    int64_t diff = 0;
+    double worst = 0.0;
+    for (size_t i = 0; i < a.size(); ++i)
+        if (sycl::bit_cast<uint32_t>(a[i]) != sycl::bit_cast<uint32_t>(b[i])) {
+            ++diff;
+            worst = sycl::fmax(worst, (double) sycl::fabs(a[i] - b[i]));
+        }
+    std::fprintf(stderr, "prefill gemm fallback self-test: %lld of %zu values differ (largest %g)\n",
+                 (long long) diff, a.size(), worst);
+    sycl::free(X, q);
+    sycl::free(W, q);
+    sycl::free(Ya, q);
+    sycl::free(Yb, q);
+}
+
+// Where the two meet: a decode window's rows are a handful, where the naive kernel's per-row weight reads are
+// cache hits and a 64-row tile would leave most of the block idle. The prompt path's chunks are the opposite.
+void fallback_gemm_dispatch(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K,
+                            int64_t ldx, int64_t ldy, float alpha, float beta, bool as_fp, void* stream) {
+    static const bool selftest = std::getenv("STRATA_FALLBACK_SELFTEST") != nullptr;
+    static std::atomic<bool> selftest_done{false};
+    if (selftest && !selftest_done.exchange(true)) fallback_selftest();
+    if (T >= kFbBM)
+        fallback_gemm_tiled(X, W, Y, T, N, K, ldx, ldy, alpha, beta, as_fp, stream);
+    else
+        fallback_gemm(X, W, Y, T, N, K, ldx, ldy, alpha, beta, as_fp, stream);
 }
 
 bool fallback_once_logged = false;
@@ -835,7 +975,7 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
            dpct::library_data_t::real_float, (int)ldy,
            dpct::compute_type::f32)) != 0) {
         fallback_note();
-        fallback_gemm(X, W, Y, T, N, K, ldx ? ldx : K, ldy, alpha, beta, false, stream_);
+        fallback_gemm_dispatch(X, W, Y, T, N, K, ldx ? ldx : K, ldy, alpha, beta, false, stream_);
         return;
     }
     STRATA_ABSORB_HIPBLAS_STICKY("cublasGemmEx");
@@ -876,7 +1016,7 @@ void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_
            dpct::library_data_t::real_float, (int)ldy,
            dpct::compute_type::f32)) != 0) {
         fallback_note();
-        fallback_gemm(X, W, Y, T, N, K, K, ldy, alpha, beta, true, stream_);
+        fallback_gemm_dispatch(X, W, Y, T, N, K, K, ldy, alpha, beta, true, stream_);
         return;
     }
     STRATA_ABSORB_HIPBLAS_STICKY("cublasGemmEx f16");
