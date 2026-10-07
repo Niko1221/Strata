@@ -794,6 +794,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_link_libraries(gr_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME gr_parity COMMAND gr_parity --selftest)
 
+  # the DFlash drafter's full-head (256-dim) NeoX RoPE against a host reference (docs/DFLASH.md)
+  add_executable(dflash_rope_parity src/kernels/dflash_rope_parity.cpp)
+  target_include_directories(dflash_rope_parity PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(dflash_rope_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME dflash_rope_parity COMMAND dflash_rope_parity)
+  set_tests_properties(dflash_rope_parity PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
   add_executable(gdn_parity src/kernels/gdn_parity.cpp)
   target_include_directories(gdn_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(gdn_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})

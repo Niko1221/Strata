@@ -707,12 +707,7 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
             err = "dflash: the position staging failed";
             return false;
         }
-        if (native_rope_enabled())
-            native_rope_apply(kc_, kc_, (int) (rows * dg.n_head_kv), (int) dg.head_dim, (int) shapes_.n_rot,
-                              rope_scaling(), pos_, cs_);
-        else
-            rope_neox_apply(kc_, kc_, rows * dg.n_head_kv, dg.head_dim, shapes_.n_rot, st_[0].cos_tab, st_[0].sin_tab,
-                            pos_, cs_);
+        dflash_rope_neox_apply(kc_, kc_, (int) (rows * dg.n_head_kv), (int) dg.head_dim, dg.rope_theta, pos_, cs_);
         // append at the true cells
         for (int r = 0; r < rows; ++r) {
             const int64_t cell = pos0 + r;
@@ -802,24 +797,14 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
             err = "dflash: the position staging failed";
             return false;
         }
-        if (native_rope_enabled()) {
-            native_rope_apply(q_, q_, (int) (K * dg.n_head), (int) dg.head_dim, (int) shapes_.n_rot, rope_scaling(),
-                              pos_, cs_);
-        } else {
-            rope_neox_apply(q_, q_, K * dg.n_head, dg.head_dim, shapes_.n_rot, st_[0].cos_tab, st_[0].sin_tab, pos_, cs_);
-        }
+        dflash_rope_neox_apply(q_, q_, (int) (K * dg.n_head), (int) dg.head_dim, dg.rope_theta, pos_, cs_);
         for (int r = 0; r < K; ++r)
             for (int64_t hh = 0; hh < dg.n_head_kv; ++hh) h_pos_[(size_t) r * dg.n_head_kv + hh] = (int32_t)(pos + r);
         if (cudaMemcpyAsync(pos_, h_pos_, (size_t) K * dg.n_head_kv * 4, cudaMemcpyHostToDevice, cs_) != cudaSuccess) {
             err = "dflash: the position staging failed";
             return false;
         }
-        if (native_rope_enabled()) {
-            native_rope_apply(kc_, kc_, (int) (K * dg.n_head_kv), (int) dg.head_dim, (int) shapes_.n_rot, rope_scaling(),
-                              pos_, cs_);
-        } else {
-            rope_neox_apply(kc_, kc_, K * dg.n_head_kv, dg.head_dim, shapes_.n_rot, st_[0].cos_tab, st_[0].sin_tab, pos_, cs_);
-        }
+        dflash_rope_neox_apply(kc_, kc_, (int) (K * dg.n_head_kv), (int) dg.head_dim, dg.rope_theta, pos_, cs_);
         // append the queries' own cells at their true positions, then every query reads [0, pos+K)
         for (int r = 0; r < K; ++r) {
             const int64_t cell = pos + r;
