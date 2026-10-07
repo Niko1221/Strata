@@ -51,7 +51,7 @@ def main():
                           "<think>\n\n</think>\n\n", parse_special=True) for q in QUESTIONS[:4]]
     context = 512
     extra = shlex.split(a.extra) + ["--batch-mtp", "--max-context", str(context), "--kv-resident", "0",
-                                   "--eos-ids", "-1", "--pcie-frac", "0", "--adapt-every", "1000000",
+                                   "--eos-ids", "2147483647", "--pcie-frac", "0", "--adapt-every", "1000000",
                                    "--no-prefill-borrow"]
     eng = Engine(a.exe, cfg, 4, {"STRATA_IQ_MT_MIN": "1"}, extra)
     eng.pending = []
@@ -68,7 +68,7 @@ def main():
         print("output limits 1, 2, 3, 4: equal solo prefixes", flush=True)
 
         # GEN's admission leaves nine guard tokens; BGEN's continuation reaches the
-        # final context cell. No EOS stops it early (--eos-ids -1 above).
+        # final context cell. An out-of-vocabulary EOS ID prevents an early stop.
         filler = tok.encode("Continue counting: one two three four five six seven eight nine ten. " * 64)
         long = [filler[:context - 10 - s] for s in range(4)]
         got = batch(eng, out, long, [64] * 4)
