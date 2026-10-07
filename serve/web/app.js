@@ -76,7 +76,7 @@ function showTab(name) {
   tab = ["chat", "monitor", "about"].includes(name) ? name : "chat";
   for (const b of document.querySelectorAll(".st-tab")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
   for (const v of ["chat", "monitor", "about"]) $(`view-${v}`).hidden = v !== tab;
-  if (location.hash.slice(1) !== tab) history.replaceState(null, "", tab === "chat" ? location.pathname : `#${tab}`);
+  if (location.hash.slice(1) !== tab) history.replaceState(null, "", `#${tab}`);   // every view has its own address
   if (tab === "chat") $("input").focus();
   if (tab === "monitor") loadMcp();
   if (tab === "about") loadConfig();
@@ -1066,8 +1066,11 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("drawe
 // ------------------------------------------------------------------ start
 setBusy(false);
 renderChat();
-const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)
+const startQuestion = new URLSearchParams(location.search).get("q");   // ?q=... starts a chat (a shortcut)
 if (startQuestion) history.replaceState(null, "", location.pathname + location.hash);
 loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
-showTab(location.hash.slice(1) || "chat");
+// A /ui/ typed by hand arrives with no #, and only the server knows which tab its config asks the page to open on
+// ("landing"): the page carries that as a meta line.  An address with a ?q= asks a question, and that is Chat.
+const landingMeta = document.querySelector('meta[name="strata-landing"]');
+showTab(location.hash.slice(1) || (startQuestion || !landingMeta ? "chat" : landingMeta.content.slice(1)));
 poll();

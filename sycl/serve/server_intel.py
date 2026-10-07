@@ -96,7 +96,10 @@ def install_switcher(argv):
                 self.wfile.write(body)
 
             def do_GET(self):
-                path = self.path.split("?")[0].rstrip("/")
+                path = self._route()                   # upstream's path, "dashboard" prefix taken off
+                if path is None:
+                    super().do_GET()                   # /ui without its slash, or a page that is not ours
+                    return
                 if path == "/switcher":
                     if self._authorized():
                         self._json(200, model_switcher(url, port, svc.model))
@@ -108,16 +111,20 @@ def install_switcher(argv):
                         return
                     self._send(f.read_bytes(), types[f.suffix])
                     return
-                if path == "":
+                if path == "":               # upstream's page: / at the default, /ui/ when "dashboard" is set
                     page = (ROOT / "serve" / "web" / "index.html").read_text(encoding="utf-8")
                     page = page.replace("</head>", '<link rel="stylesheet" href="sycl-web/switcher.css">\n</head>', 1)
-                    page = page.replace("</body>", '<script src="sycl-web/switcher.js"></script>\n</body>', 1)
+                                        page = page.replace("</body>", '<script src="sycl-web/switcher.js"></script>\n</body>', 1)
+                    page = page.replace("</head>", S.landing_meta(svc.landing) + "</head>", 1)   # the "landing" tab
                     self._send(page.encode("utf-8"), "text/html; charset=utf-8")
                     return
                 super().do_GET()
 
             def do_POST(self):
-                path = self.path.split("?")[0].rstrip("/")
+                path = self._route()
+                if path is None:
+                    super().do_POST()
+                    return
                 if path == "/switcher":
                     if not self._authorized():
                         return

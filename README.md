@@ -99,7 +99,7 @@ asks you a few questions:
 
 Press Enter each time for the recommended answer. Then it downloads the model (about 70 GB) and starts it. If the
 download stops, run it again: it continues where it left off. Your browser opens the Strata app at
-`http://127.0.0.1:8080`.
+`http://127.0.0.1:8080/`.
 
 > **While the model starts, your PC can be slow or stop responding for 1-3 minutes** (longest the first time).
 > Strata loads 35-55 GB into your RAM and locks part of it for the graphics card. This is normal. Wait, and don't
@@ -142,7 +142,7 @@ Sizes, downloads and what fits where: [docs/MODELS.md](docs/MODELS.md). To add a
 <p align="center"><img src="docs/media/runpagoda.png" width="900" alt="The Strata app's Monitor tab next to a coding agent"><br>
 <sub>The Strata app's <b>Monitor</b> (left) while a coding agent writes the pagoda garden from the video (right)</sub></p>
 
-- **In the browser:** open `http://127.0.0.1:8080`. It has **Chat**, a live **Monitor** of the model and your
+- **In the browser:** open `http://127.0.0.1:8080/`. It has **Chat**, a live **Monitor** of the model and your
   GPU/CPU/RAM, and **About** with the settings and addresses.
 - **Your apps and coding agents:** add an "OpenAI-compatible" provider with the base URL
   **`http://127.0.0.1:8080/v1`**. Any API key and any model name work.

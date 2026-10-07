@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import contextlib
+import http.client
 import io
 import json
 import os
@@ -2552,6 +2553,28 @@ class WebApp(unittest.TestCase):
         except urllib.error.HTTPError as e:
             return e.code, e.headers.get("Content-Type", ""), e.read()
 
+    def moved(self, path):
+        """(status, Location) of a request that is not followed: urllib follows a 301 by itself, so the answer
+        below is asked for over a plain connection that stops there."""
+        conn = http.client.HTTPConnection("127.0.0.1", self.httpd.server_address[1], timeout=10)
+        try:
+            conn.request("GET", path)
+            r = conn.getresponse()
+            location = r.getheader("Location", "")
+            r.read()
+            return r.status, location
+        finally:
+            conn.close()
+
+    def post(self, path, obj):
+        req = urllib.request.Request(self.base + path, data=json.dumps(obj).encode(),
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.getcode()
+        except urllib.error.HTTPError as e:
+            return e.code
+
     def test_page_and_files(self):
         code, ctype, body = self.get("/")
         self.assertEqual(code, 200)
@@ -2563,6 +2586,52 @@ class WebApp(unittest.TestCase):
                 code, ctype, _ = self.get(path)
                 self.assertEqual(code, 200)
                 self.assertIn(want, ctype)
+
+    def test_the_whole_app_can_move_to_another_path(self):
+        # the run config's "dashboard" (or --dashboard): the page, its files and the API all come under that path.
+        # It moves as one because the page asks for everything by relative URL (#82) - which is also why the page
+        # is only reached with the trailing slash: without it a browser would resolve those against / again.
+        self.svc.dashboard = "/ui"
+        try:
+            code, ctype, body = self.get("/ui/")
+            self.assertEqual(code, 200)
+            self.assertIn("text/html", ctype)
+            self.assertIn(b"\"web/app.js\"", body)
+            self.assertEqual(self.get("/ui")[0], 200)             # /ui is moved to /ui/, then served
+            # the addresses the page left point at it now: / is where the page used to be, and a ?q= moves with it
+            for path, to in (("/", "/ui/"), ("/?q=hi", "/ui/?q=hi"), ("/ui", "/ui/")):
+                with self.subTest(path=path):
+                    self.assertEqual(self.moved(path), (301, to))
+            self.svc.landing = "#monitor"                 # the config's "landing": which tab the page opens on.
+            for path, to in (("/", "/ui/#monitor"),        # the addresses Strata hands out carry it, and so does
+                             ("/?q=hi", "/ui/?q=hi#monitor"),   # the page itself: a /ui/ typed by hand has no # to
+                             ("/ui", "/ui/#monitor")):      # read, so it reads the line instead
+                with self.subTest(path=path):
+                    self.assertEqual(self.moved(path), (301, to))
+            self.assertIn(b'<meta name="strata-landing" content="#monitor">', self.get("/ui/")[2])
+            self.svc.landing = ""
+            self.assertNotIn(b"strata-landing", self.get("/ui/")[2])   # no "landing", the page as it always was
+            for path in ("/ui/web/app.js", "/ui/web/app.css", "/ui/web/tokens.css", "/ui/web/sprite.svg",
+                         "/ui/health", "/ui/metrics", "/ui/status", "/ui/v1/models"):
+                with self.subTest(path=path):
+                    self.assertEqual(self.get(path)[0], 200)
+            for path in ("/web/app.js", "/web/tokens.css"):       # the page's own files are not at / any more
+                with self.subTest(path=path):
+                    self.assertEqual(self.get(path)[0], 404)
+            # the API does not move: /v1 and the rest answer where they always have, and the page's own calls
+            # (relative, #82) arrive under /ui and work there too
+            for path in ("/health", "/v1/models", "/metrics", "/ui/health", "/ui/v1/models"):
+                with self.subTest(path=path):
+                    self.assertEqual(self.get(path)[0], 200)
+            chat = {"model": "m", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 5}
+            for path in ("/v1/chat/completions", "/ui/v1/chat/completions"):
+                with self.subTest(path=path):
+                    self.assertEqual(self.post(path, chat), 200)
+            for path in ("/", "/web/app.js"):                     # a POST there is aimed at the API, so it is not
+                with self.subTest(path=path):                     # turned into a GET of the page
+                    self.assertEqual(self.post(path, chat), 404)
+        finally:
+            self.svc.dashboard = ""
 
     def test_only_the_app_files_are_served(self):
         for path in ("/web/..%2Fserver.py", "/web/index.html", "/web/test.py", "/fonts/..%2F..%2Fsetup.py",
@@ -2782,7 +2851,7 @@ class WebApp(unittest.TestCase):
         try:
             self.assertEqual(self.get("/metrics")[0], 401)
             self.assertEqual(self.get("/metrics", {"Authorization": "Bearer secret"})[0], 200)
-            self.assertEqual(self.get("/")[0], 200)                  # the page itself asks for the key
+            self.assertEqual(self.get("/")[0], 200)                   # the page itself asks for the key
         finally:
             self.svc.api_key = ""
 

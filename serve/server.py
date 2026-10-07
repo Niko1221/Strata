@@ -4,7 +4,9 @@
     python -m serve.server --engine strata --config strata.json --port 8080   (the real engine, resident)
 
 Endpoints: POST /v1/chat/completions (OpenAI, stream and non-stream), POST /v1/messages (Anthropic, stream and
-non-stream), GET /v1/models, GET /models, GET /props, GET /slots, GET /health, GET /mcp. One sequence at a time behind a FIFO (plan: one resident sequence).
+non-stream), GET /v1/models, GET /models, GET /props, GET /slots, GET /health, GET /mcp, GET / for the web app's
+page (a "dashboard" path in the run config moves the page and its own files, never the API).
+One sequence at a time behind a FIFO (plan: one resident sequence).
 Tools from MCP servers (serve/mcp.py, `"mcp_servers"` in the config or --mcp-config) are offered only to requests that
 ask for them with `"strata_mcp": true` - the web app does; other clients see exactly the API they always saw.
 Images (optional, when the config has a "vision" entry): OpenAI image_url parts and Anthropic image blocks (base64
@@ -1695,6 +1697,55 @@ def network_path(path: str) -> bool:
     return p.startswith("\\\\") or p.startswith("\\??\\")
 
 
+# the paths this server answers itself, so a chosen app path must not be one of them
+SERVED_PATHS = ("/web", "/fonts", "/v1", "/api", "/metrics", "/health", "/status", "/slots", "/models", "/props",
+                "/mcp", "/config", "/settings", "/unload", "/load", "/api-monitor")
+# the page and its own files, by first path segment: with an app path set these come only under it, which is what
+# leaves / free.  The API ("/v1" and the rest) is not one of them - a client's base URL never changes.
+APP_PATHS = ("", "web", "fonts", "api-monitor")
+
+
+def dashboard_of(value, what: str) -> str:
+    """The run config's "dashboard" (or --dashboard): the path the web page is served under, "" for the root.
+    It moves the page and the files the page loads for itself (its styles, script, icon file and font), which
+    leaves / for whatever the user runs in front of Strata; the API keeps answering at /v1, so no client of
+    Strata's API has to change anything.  Raises ValueError naming what is expected, like the config's other
+    checks, so a wrong path stops the start instead of leaving a server with no page to open."""
+    if value is None or value in ("", "/"):
+        return ""                                              # the default, as it has always been
+    if not isinstance(value, str) or not value.startswith("/"):
+        raise ValueError(f'{what}: expected a path beginning with "/", like "/ui" or "/strata/ui", not {value!r}')
+    parts = value.strip("/").split("/")
+    if len(value) > 60 or any(not p or not all(c.isalnum() or c in "-_" for c in p) for p in parts):
+        raise ValueError(f'{what}: expected names of letters, digits, "-" or "_" between slashes, not {value!r}')
+    if "/" + parts[0] in SERVED_PATHS:
+        raise ValueError(f'{what}: /{parts[0]} is one of the paths this server answers itself; choose another name')
+    return "/" + "/".join(parts)
+
+
+def landing_of(value, what: str) -> str:
+    """The run config's "landing" (or --landing): which tab the web page opens on - "chat" (the default),
+    "monitor" or "about", with or without the # the page puts in its own address.  Nothing is served
+    differently for it - the page reads the # itself (#viewTab) - only the address Strata prints and opens, and
+    the one it redirects to, carries it.  "" (or "chat") is the page opening where it always opened."""
+    if value is None:
+        return ""
+    name = value.strip().lstrip("#").strip().lower() if isinstance(value, str) else ""
+    if name in ("", "chat"):
+        return ""                                              # the default, as it has always been
+    if name not in ("monitor", "about"):
+        raise ValueError(f'{what}: expected "chat", "monitor" or "about", not {value!r}')
+    return "#" + name
+
+
+def landing_meta(landing: str) -> str:
+    """The one line the app page carries when the config names a landing tab.  A browser never sends a # to a
+    server, so a /ui/ typed by hand arrives without the # a redirect would have added; the page reads this line
+    instead and opens that tab itself (serve/web/app.js).  With no "landing" the line is empty and the page is
+    exactly what it has always been."""
+    return "" if not landing else f'<meta name="strata-landing" content="{landing}">\n'
+
+
 class Vision:
     """The resident image encoder: `strata-vision` (llama.cpp mtmd + the mmproj file) reads `ENC <image> <out>`
     lines and writes each image's embeddings; results are cached by the image's hash, so a conversation that
@@ -2418,6 +2469,10 @@ class Service:
         # "parallel" (the engine's batch slots): every running request's own status and rate window; self.status
         # then says busy while any runs and shows the newest one
         self.live_reqs: dict[int, tuple[dict, collections.deque]] = {}
+        # the path the web app is served under: "" for / as always, "/ui" for the run config's "dashboard"; and
+        # which tab the page opens on: "" for chat as always, "#monitor" for the config's "landing"
+        self.dashboard = ""
+        self.landing = ""
         # #332: the API request monitor (/api-monitor) keeps the last 100 requests' prompts and answers in memory,
         # so it is off unless the config's "api_monitor" (or --api-monitor) turns it on
         self.api_monitor = False
@@ -4158,7 +4213,7 @@ def make_handler(svc: Service):
         def _cors(self):
             """#321: CORS headers for an API path (/v1/*) and an origin the config lists in cors_origins - nothing
             otherwise, so a browser keeps every other page away from the API, /settings, /unload and the MCP tools."""
-            if not svc.cors_origins or not self.path.split("?")[0].startswith("/v1/"):
+            if not svc.cors_origins or not (self._route() or "").startswith("/v1/"):
                 return
             origin = (self.headers.get("Origin") or "").rstrip("/")
             if "*" in svc.cors_origins:
@@ -4210,8 +4265,49 @@ def make_handler(svc: Service):
             self._json(401, {"error": {"type": "authentication_error", "message": "missing or wrong API key"}})
             return False
 
+        def _route(self) -> str | None:
+            """The request's path for the routes below, with the app's own path (the config's "dashboard") taken off
+            the front - or None when that path has moved and this request is not under it.  Only the page and the
+            files it loads for itself (APP_PATHS) move: with `"dashboard": "/ui"` the page is at /ui/ and its styles,
+            script and font at /ui/web/*, which is what leaves / free.  The API does not move - /v1, /health,
+            /metrics and the rest answer where they always have, so no client's base URL changes.  The page is asked
+            for by relative URL (#82), so its own calls arrive under /ui too; they work at both spellings.  At the
+            default there is nothing to take off, and every path means what it always meant."""
+            raw = self.path.split("?")[0]
+            app = svc.dashboard
+            if app and raw == app:                   # /ui without the slash: the page is at /ui/, see below
+                return None
+            if app and raw.startswith(app + "/"):
+                return raw[len(app):].rstrip("/") or ""
+            if not app:
+                return raw.rstrip("/")
+            if raw.strip("/").split("/")[0] in APP_PATHS:
+                return None
+            return raw.rstrip("/")
+
+        def _not_our_app(self):
+            """The answer for a request under / once the app has moved under its own path.  Two of them are only a
+            spelling away from the page: /ui is the page at /ui/ - a browser needs the slash, or it would resolve
+            the page's relative URLs against / again - and / is where the page used to be, so a bookmark or an old
+            link to it is moved with a 301 to the app's path, keeping the ?q= that came with it, and adding the
+            # tab the config asks the page to open on (its "landing").  A POST to / stays as it was: it is aimed
+            at the API, and only /v1 and the rest answer there.  Neither are the page's own files asked for at
+            their old address - those are under the app's path now."""
+            raw, _, query = self.path.partition("?")
+            if self.command == "GET" and (raw == svc.dashboard or not raw.strip("/")):
+                self.send_response(301)
+                self.send_header("Location", svc.dashboard + "/" + ("?" + query if query else "") + svc.landing)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            else:
+                self._json(404, {"error": {"message": f"not found - Strata's web page is at {svc.dashboard}/ "
+                                                      "(its API answers at / as usual)"}})
+
         def do_GET(self):
-            path = self.path.split("?")[0].rstrip("/")
+            path = self._route()
+            if path is None:
+                self._not_our_app()
+                return
             if path.startswith("/fonts/"):
                 # the web app's font (Outfit, OFL: serve/web/fonts); the page falls back to the system font
                 name = path[len("/fonts/"):]
@@ -4283,7 +4379,10 @@ def make_handler(svc: Service):
                     self._json(200, svc.mcp.status() if svc.mcp else {"servers": [], "tools": 0})
                 return
             if path == "" or (path == "/api-monitor" and svc.api_monitor):
+                # "" is the app's own path: / at the default, or /ui/ when the config says "dashboard": "/ui"
                 body = (ROOT / "serve" / "web" / ("monitor.html" if path else "index.html")).read_bytes()
+                if not path:                       # the app page carries the tab its config asks it to open on
+                    body = body.replace(b"</head>", (landing_meta(svc.landing) + "</head>").encode(), 1)
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
@@ -4358,7 +4457,10 @@ def make_handler(svc: Service):
         def _post(self):
             if not self._authorized():
                 return
-            path = self.path.split("?")[0].rstrip("/")   # issue #55: Claude Code posts /v1/messages?beta=true
+            path = self._route()                        # issue #55: Claude Code posts /v1/messages?beta=true
+            if path is None:
+                self._not_our_app()
+                return
             if path.startswith("/v1/") and self._foreign_page():
                 return
             if path == "/settings":
@@ -5354,6 +5456,13 @@ def main() -> int:
     ap.add_argument("--api-monitor", action="store_true",
                     help="the API request monitor at /api-monitor: keeps the last 100 requests' prompts and answers in "
                          "memory (also \"api_monitor\": true in the config; off by default)")
+    ap.add_argument("--dashboard", metavar="PATH", default=None,
+                    help="serve the web page and its own files under this path instead of /, e.g. --dashboard /ui "
+                         "puts them at /ui/ and /ui/web/* and leaves / for your own pages; the API stays at /v1 "
+                                                  "either way (also \"dashboard\" in the config; default: /)")
+    ap.add_argument("--landing", default=None, metavar="TAB",
+                    help="open the web page on this tab: chat (the default), monitor or about - the page's own "
+                         "address at /ui/#monitor rather than /ui/ (also \"landing\" in the config)")
     ap.add_argument("--idle-unload", type=float, default=None, metavar="SECONDS",
                     help="unload the model after this many seconds without requests, so other programs (games, other "
                          "model servers) can use the VRAM; the next request loads it again (also \"idle_unload_s\" "
@@ -5368,6 +5477,12 @@ def main() -> int:
                          "conversation the engine holds, to or from DIR/NAME (also \"slot_save_path\" in the config)")
     a = ap.parse_args()
     cfg = json.loads(Path(a.config).read_text(encoding="utf-8-sig")) if a.config else {}   # Notepad adds a BOM
+    try:
+        dashboard = dashboard_of(a.dashboard or cfg.get("dashboard"), '--dashboard / the config\'s "dashboard"')
+        landing = landing_of(a.landing if a.landing is not None else cfg.get("landing"),
+                             '--landing / the config\'s "landing"')
+    except ValueError as e:
+        ap.error(str(e))
     if a.gpu is not None:
         cfg["gpu"] = int(a.gpu) if a.gpu.strip().isdigit() else a.gpu
     a.host = a.host or cfg.get("host") or "127.0.0.1"   # issue #26: the run scripts pass no --host, the config can
@@ -5556,20 +5671,25 @@ def main() -> int:
               f"chat: {', '.join(hub.servers)}", flush=True)
         hub.start()
         atexit.register(hub.close)                      # the servers Strata started end with it
+    svc.dashboard = dashboard                          # where the web page is: "" = /, "/ui" = the run config's
+    svc.landing = landing                              # which tab it opens on: "" = chat, "#monitor", "#about"
     httpd = serve(svc, host=a.host, port=a.port)
     svc.start_idle_unload()
     here = "127.0.0.1" if a.host in ("0.0.0.0", "", "::") else a.host
+    page = f"http://{here}:{a.port}{dashboard or ''}/{landing}"
     print(f"ready: http://{here}:{a.port}/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, "
           f"context {engine.max_context} tokens{', images on' if vision else ''}"
           f"{', API key required' if svc.api_key else ''})", flush=True)
-    print(f"       open http://{here}:{a.port}/ in a browser to chat; close this window to stop the model", flush=True)
+    print(f"       open {page} in a browser to chat; close this window to stop the model", flush=True)
     if a.host not in ("127.0.0.1", "localhost", "::1"):
         # issue #26: reachable from other devices - say at which address, and what can still block it
         ips = lan_addresses()
         for ip in ips:
-            print(f"       from other devices: http://{ip}:{a.port}/   (API: http://{ip}:{a.port}/v1)", flush=True)
+            print(f"       from other devices: http://{ip}:{a.port}{dashboard or ''}/{landing}   "
+                  f"(API: http://{ip}:{a.port}/v1)", flush=True)
         if not ips:
-            print("       from other devices: http://<this PC's IP address>:" + str(a.port) + "/", flush=True)
+            print("       from other devices: http://<this PC's IP address>:" + str(a.port) +
+                  f"{dashboard or ''}/{landing} (API: /v1)", flush=True)
         if not svc.api_key:
             print("       WARNING: no API key - anyone on your network can use this model. Add \"api_key\": \"...\" "
                   "to the config (clients send it as their API key; the web page asks for it)", flush=True)
@@ -5580,7 +5700,7 @@ def main() -> int:
                   "       (and set this network to Private in Windows' network settings)", flush=True)
     if a.open and cfg.get("open_browser") is not False:   # #609: the config's "open_browser": false wins (an older
         import webbrowser                                  # run-<model>.bat still passes --open)
-        webbrowser.open(f"http://{'127.0.0.1' if a.host in ('0.0.0.0', '') else a.host}:{a.port}/")
+        webbrowser.open(page)
     # #96: docker stop sends SIGTERM, which Python ignores by default, so the container's PID 1 would be killed after
     # the grace period with the engine still running. SIGTERM takes Ctrl+C's path below (QUIT to the engine).
     # SIGINT keeps Python's own handler, so Ctrl+C and a second Ctrl+C work as before.

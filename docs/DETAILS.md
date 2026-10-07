@@ -435,7 +435,7 @@ Windows, `build-essential` + CUDA on Ubuntu) and compiles the engine for your GP
 4. **Images?** yes / no (see [Images](#images-vision)).
 
 Then it downloads and prepares everything (the model is 66-76 GB, so the first start takes a while; an interrupted
-download continues where it stopped) and **starts the model**: your browser opens `http://127.0.0.1:8080`, the Strata
+download continues where it stopped) and **starts the model**: your browser opens `http://127.0.0.1:8080/`, the Strata
 app. It has three tabs:
 - **Chat:** streaming answers, the model's thinking (folded away once it answers), code with a copy button, pictures when
   images are on, and sampling and thinking-level settings. Chats stay in your browser.
@@ -648,6 +648,30 @@ The server listens on `http://127.0.0.1:8080` (change with `--port` in setup, or
 | Everything the Monitor tab shows (engine, live state, last requests, hardware) | `GET /metrics` |
 | The same for Prometheus, with vLLM's metric names (asked with `Accept: text/plain` or `?format=prometheus`) | `GET /metrics` |
 | The MCP servers, their state and tools ([below](#tools-from-mcp-servers)) | `GET /mcp` |
+| The web app's page: Chat, Monitor, About ([above](#using-it)) | `GET /` - and `/?q=<your question>` opens a chat already asking |
+| The API monitor's own page ([below](#api-request-monitor)) | `GET /api-monitor` |
+
+`"dashboard": "/ui"` in the run config (or `serve/server.py --dashboard /ui`) serves the web page at `/ui/` instead
+of `/`, along with the styles, script, icon file and font the page loads for itself (`/ui/web/*`, `/ui/fonts/*`).
+`/` then redirects (301) to `/ui/`, keeping a `?q=` that came with it, so a bookmark or an old link still reaches the
+page; a page or a reverse proxy of your own that holds the root answers it first and never sends that request on.
+**The API is not in scope**:
+`/v1/chat/completions`, `/v1/messages`, `/health`, `/metrics` and the rest answer where they always have, so no
+client of Strata's API changes anything - and neither does the page, which asks for its files and for the API by
+relative URL ([#82](https://github.com/Niko1221/Strata/issues/82)) and reaches both under either spelling. Ask for
+`/ui` without the trailing slash and it redirects to `/ui/` the same way, because a browser would otherwise resolve
+those relative URLs against `/`. Anything else that is not answered here - a POST to `/`, or one of the page's files
+asked for at its old address - stays a 404. A path that is not one of the server's own (not `/web`, `/v1`,
+`/health`, ...) is refused before the model loads.
+
+`"landing": "#monitor"` in the run config (or `serve/server.py --landing monitor`) opens the page on the Monitor tab
+instead of Chat - `about` is the other one. The address Strata prints at startup, the one it opens in a browser and
+the one `/` redirects to all carry it (`/ui/#monitor`), and the served page carries it too as
+`<meta name="strata-landing" content="#monitor">`, because a browser never sends a `#` to a server: type `/ui/` by
+hand and the page opens Monitor and puts `#monitor` in its own address. Every view has its own address - `#chat`,
+`#monitor`, `#about` - so a bookmark says which one it is, and an address with a `?q=` opens Chat, because asking a
+question is what Chat is for. `chat` - or leaving `landing` out - is what the page has always done; an unknown value
+is refused before the model loads.
 
 `GET /metrics` answers a Prometheus scrape (`Accept: text/plain` or `application/openmetrics-text`) in the text
 format with vLLM's names - `vllm:num_requests_running` / `_waiting`, `vllm:kv_cache_usage_perc`, the token and

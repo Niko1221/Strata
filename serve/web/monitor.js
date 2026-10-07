@@ -57,7 +57,7 @@ function content() {
 async function showDetail() {
   if (!selected) return;
   const id = selected;
-  const value = await api(`/api/requests?id=${encodeURIComponent(id)}`);
+    const value = await api(`api/requests?id=${encodeURIComponent(id)}`);
   if (selected !== id) return;
   detail = value; $("selection").hidden = false; $("no-selection").hidden = true;
   text("detail-title", `${value.id} · ${value.path}`);
@@ -72,7 +72,7 @@ async function showDetail() {
 }
 async function refresh() {
   try {
-    const [status, history] = await Promise.all([api("/v1/status"), api("/api/requests")]);
+    const [status, history] = await Promise.all([api("v1/status"), api("api/requests")]);
     state = status; records = history.requests;
     status.loaded = history.loaded; status.auto_load = history.auto_load;
     if (selected && !records.some(r => r.id === selected)) {
@@ -96,7 +96,7 @@ async function control(load) {
   actionError = "";
   operating = true; $("load").disabled = $("unload").disabled = true;
   text("loaded", load ? "Loading…" : "Unloading…");
-  try { await api(load ? "/load" : "/unload", {}); notice(""); }
+  try { await api(load ? "load" : "unload", {}); notice(""); }
   catch (error) { actionError = error.message; notice(actionError); }
   finally { operating = false; await refresh(); }
 }
