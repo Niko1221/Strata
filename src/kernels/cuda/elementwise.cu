@@ -183,6 +183,34 @@ void silu_inplace(float* x, int64_t n, void* stream) {
     sync_if_needed(stream, "silu_inplace");
 }
 
+__global__ void swiglu_kernel(float* gate, const float* up, int64_t n) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) gate[i] = gate[i] / (1.0f + expf(-gate[i])) * up[i];
+}
+
+void swiglu_inplace(float* gate, const float* up, int64_t n, void* stream) {
+    if (n <= 0) return;
+    swiglu_kernel<<<grid_for(n), THREADS, 0, (cudaStream_t) stream>>>(gate, up, n);
+    check_launch("swiglu_inplace");
+    sync_if_needed(stream, "swiglu_inplace");
+}
+
+__global__ void bf16_gather_strided_kernel(const uint16_t* src, int64_t src_stride, uint16_t* dst,
+                                           int64_t dst_stride, int n) {
+    const int r = blockIdx.y;
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) dst[(int64_t) r * dst_stride + i] = src[(int64_t) r * src_stride + i];
+}
+
+void bf16_gather_strided(const uint16_t* src, int64_t src_stride, uint16_t* dst, int64_t dst_stride,
+                         int n, int rows, void* stream) {
+    if (n <= 0 || rows <= 0) return;
+    dim3 grid((unsigned) ((n + THREADS - 1) / THREADS), (unsigned) rows);
+    bf16_gather_strided_kernel<<<grid, THREADS, 0, (cudaStream_t) stream>>>(src, src_stride, dst, dst_stride, n);
+    check_launch("bf16_gather_strided");
+    sync_if_needed(stream, "bf16_gather_strided");
+}
+
 /// THE DOORBELL.  One thread, one INCREMENT - the cost is the launch, and inside a graph that is paid once.
 ///
 /// **IT INCREMENTS THE MEMORY, AND IT DOES NOT TAKE THE VALUE AS AN ARGUMENT.**  The first version did -
