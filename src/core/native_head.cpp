@@ -13,9 +13,49 @@
 namespace strata::core {
 
 NativeHead::~NativeHead() {
+    unload();
+}
+
+void NativeHead::unload() {
     if (weights_) strata::kernels::native_q6_k_unpack(weights_);
     if (scratch_) cudaFree(scratch_);
     if (weights_) cudaFree(weights_);
+    weights_ = nullptr;
+    scratch_ = nullptr;
+    bytes_ = 0;
+    n_in_ = n_out_ = 0;
+    type_ = -1;
+}
+
+uint64_t NativeHead::weight_bytes_for(const std::vector<std::string>& shards, int64_t n_in, int64_t n_out,
+                                      std::string& err) {
+    if (n_in <= 0 || n_out <= 0 || n_in > INT_MAX || n_out > INT_MAX || n_in % 256) {
+        err = "native head requires positive int32 dimensions and whole 256-value rows";
+        return 0;
+    }
+    try {
+        const strata::GgufModel model(shards);
+        err = strata::check_architecture(model.meta());
+        if (!err.empty()) return 0;
+        size_t at = 0;
+        const strata::TensorInfo* tensor = model.find("output.weight", &at);
+        if (!tensor || !strata::kernels::native_mmvq_supported((int) tensor->type) || tensor->shape.size() != 2 ||
+            tensor->shape[0] != (uint64_t) n_in || tensor->shape[1] != (uint64_t) n_out) {
+            err = "native head: expected a natively supported output.weight with the canonical head dimensions";
+            return 0;
+        }
+        const uint64_t bytes = strata::kernels::native_mmvq_weight_bytes((int) tensor->type, (int) n_in, (int) n_out);
+        const strata::GgufFile& gguf = model.shard(at);
+        const uint64_t payload = gguf.file_size() - gguf.data_start();
+        if (tensor->offset > payload || bytes > payload - tensor->offset) {
+            err = "native head: truncated output.weight payload";
+            return 0;
+        }
+        return bytes;
+    } catch (const std::exception& error) {
+        err = std::string("native head: ") + error.what();
+        return 0;
+    }
 }
 
 bool NativeHead::load(const std::vector<std::string>& shards, int64_t n_in, int64_t n_out, std::string& err) {

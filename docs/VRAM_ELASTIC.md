@@ -18,6 +18,24 @@ a `--serve` engine, with a layer split, with helper caches on other GPUs, with a
 (NVIDIA only). If the driver offers no virtual memory management the start fails with an error naming it **(code)**.
 Without the flag nothing changes: the same answers as without it.
 
+The engine also has an experimental, request-scoped use of this cache. `STRATA_PREFILL_ELASTIC_LOAN=1` in the
+config's `env` grows the cache for prompt processing and shrinks it before the first output window.
+`STRATA_PREFILL_MTP_LOAN=1` delays the MTP routed experts and draft head until that boundary, and
+`STRATA_PREFILL_HEAD_LOAN=1` can delay the native output head and verifier too.
+`STRATA_PREFILL_RETAIN_STARTUP_CHUNK=1` applies only to the first prompt while those weights are still deferred;
+later conversation turns grow the cache again before their prompt. `STRATA_PREFILL_REPEAT_LOAN=1` (also requiring
+the MTP and head loans) repeats that release on later prompts whose unread portion is at least 1,024 tokens;
+`STRATA_PREFILL_REPEAT_MIN_TOKENS` changes that threshold (minimum 256). The repeat arm invalidates and recaptures
+decode graphs because they contain the released device addresses, then reloads the head and MTP resources before
+generation. It is intentionally manual and rejects batch/shared drafters. These are manual switches: `--vram-elastic`
+alone never activates them. The engine refuses them with batch slots, pipeline windows, a layer split, helper GPU
+caches, `--peer-device`, HIP, or a segment below 64 MiB. See [DETAILS.md](DETAILS.md#speed-measured) for the measured
+RTX 2080 configuration.
+
+The repeat arm retries a prompt-resource carve in smaller 256-token steps if allocator-page overhead makes the selected
+borrowed region slightly short. On small cards, a smaller manual `--vram-segment-mib` (for example 128 instead of the
+512-MiB default) can also let the cache grow in finer increments between the prompt and decode boundaries.
+
 ## The request
 
 ```
