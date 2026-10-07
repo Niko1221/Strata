@@ -3591,7 +3591,7 @@ def write_config(path: Path, cfg: dict):
 # #629: the run config's keys setup writes itself (and rewrites on every setup run); any other key is the user's - a
 # "sampling" or "mcp_servers" block, "allowed_hosts", "cors_origins", "open_browser" - and is kept when setup runs again
 SETUP_KEYS = frozenset({"exe", "args", "cwd", "tokenizer", "model_name", "log", "lib_dirs", "port", "backend", "env",
-                        "gpu", "gpus_asked", "layer_split", "host", "api_key", "draft_vocab", "vision"})
+                        "gpu", "gpus_asked", "layer_split", "host", "api_key", "draft_vocab", "dflash", "vision"})
 SETUP_ENV = frozenset({"STRATA_HIPBLASLT_TUNING", "STRATA_RESIDENT_PIN", "STRATA_NO_ARENA_THP"})   # the "env" entries setup writes
 SETUP_VISION = frozenset({"exe", "mmproj", "model", "gpu", "max_tokens", "threads"})
 
@@ -4137,6 +4137,31 @@ DRAFT_VOCABS = {"cjk": "draft_vocab.bin", "en": "draft_vocab_en.bin", "cyrillic"
                 "fr": "draft_vocab_fr.bin"}
 
 
+def dflash_artifact_note(path: Path) -> str:
+    """The DFlash artifact's one-line summary for the install log (the engine prints the same at start), or a
+    ValueError saying why the file is not one (docs/DFLASH.md).  Reads only the GGUF metadata - the engine
+    validates every tensor's shape again at start."""
+    sys.path.insert(0, str(ROOT / "tools"))
+    from gguf_reader import GGUFFile
+    try:
+        md = GGUFFile(str(path)).metadata
+    except (OSError, ValueError) as e:
+        raise ValueError(f"{path.name} is not readable as GGUF ({e})") from e
+    if md.get("general.architecture") != "dflash":
+        raise ValueError(f"{path.name} is not a DFlash artifact (general.architecture = "
+                         f"{md.get('general.architecture')!r})")
+    def num(key: str) -> int | None:
+        v = md.get(f"dflash.{key}")
+        return int(v) if isinstance(v, (int, float)) else None
+    line = f"{path.name}: {num('block_count') or '?'} draft layers, trained block {num('block_size') or '?'}"
+    if num("mask_token_id") is not None:
+        line += f", mask {num('mask_token_id')}"
+    taps = md.get("dflash.target_layers")
+    if isinstance(taps, list) and taps:
+        line += f", taps [{', '.join(str(int(t)) for t in taps)}]"
+    return line
+
+
 def saved_draft_vocab(cfg_path: Path) -> str | None:
     """The draft subset a model's config chose earlier (--draft-vocab), or None: a setup run again without the flag
     rewrites the config, and would otherwise put the default subset back."""
@@ -4588,6 +4613,11 @@ def main() -> int:
                          "and code only (~110 MiB less VRAM, English answers 1-2%% faster), cyrillic = English, code "
                          "and the Cyrillic script (Ukrainian, Russian... answers decode ~30%% faster), fr = English, "
                          "code and French (French answers: 18%% more drafts accepted)")
+    ap.add_argument("--dflash", metavar="GGUF",
+                    help="enable the standalone DFlash block drafter (docs/DFLASH.md) instead of the MTP layer: the "
+                         "drafter artifact's GGUF (PixelML's export).  Greedy only; this build's engine refuses "
+                         "--serve with it, so the server starts without it and the plain generate loop runs the "
+                         "drafter")
     ap.add_argument("--low-ram", choices=["auto", "on", "off", "resident", "mmap"], default="auto",
                     help="read the model's experts from one file in its folder instead of copying them all into RAM "
                          "(for a PC with a big GPU and little RAM); auto: when the experts would not fit the RAM. In "
@@ -5138,7 +5168,7 @@ def main() -> int:
     pack_bin = (pack_now / "experts.bin").exists() and (pack_now / "index.txt").exists()
     mtp_have = find_in(roots, "mtp/rt/experts.bin") is not None
     q2_avx = model == "Q2_0" and avx512 and family == "qwen"
-    need = to_fetch + (2 if mtp_have else 8) + \
+    need = to_fetch + (0 if a.dflash else (2 if mtp_have else 8)) + \
         (40 if q2_avx and not pack_bin else 0) + (1 if vision != "none" else 0) + \
         (MODELS[model]["arena_gb"] + 1 if low_ram and not q2_avx and not pack_bin else 0)
     if free_gb(models_dir) < need:
@@ -5259,27 +5289,40 @@ def main() -> int:
         run([sys.executable, str(ROOT / "tools" / "iq_pack.py"), "--gguf", str(shards[0]), "--out", str(pack),
              "--experts-bin"], env=env)
     ok(f"model prepared: {pack}")
-    mtp = (find_in(roots, "mtp/rt/experts.bin") or data / "mtp/rt/experts.bin").parent.parent
-    rt = mtp / "rt"
-    corrupt = (rt / "experts.bin").exists() and mtp_corrupt(mtp, env)
-    if corrupt:
-        warn("some MTP tensors are not the checkpoint's (a download mirror that ignored range requests, #327): "
-             "fetching them again and rebuilding the draft layer")
-    if corrupt or not (rt / "experts.bin").exists():
-        say("  The MTP draft layer (speculative decoding, ~2x faster output) comes from the original Qwen checkpoint:")
-        say("  only its ~5 GB of MTP tensors are downloaded.")
-        run([sys.executable, str(ROOT / "tools" / "mtp_fetch.py"), "fetch", "--out", str(mtp)],
-            env={**env, "STRATA_SOURCE": model_source()})
-        run([sys.executable, str(ROOT / "tools" / "mtp_pack.py"), "--src", str(mtp), "--experts", "q2_0",
-             "--out", str(mtp / "mtp-q2_0.gguf")], env=env)
-        run([sys.executable, str(ROOT / "tools" / "mtp_rt.py"), "--gguf", str(mtp / "mtp-q2_0.gguf"), "--out", str(rt)],
-            env=env)
-    # a setup run again without --draft-vocab keeps the subset this model's config chose before (cyrillic, fr, en)
-    draft_vocab = a.draft_vocab or saved_draft_vocab(ROOT / f"strata-{tag.lower()}.json")
-    refresh_draft_vocab(rt, draft_vocab or "cjk")
-    ok(f"MTP draft layer: {rt}")
-    for line in draft_vocab_note(gpu.get("vram_gb", 0.0), draft_vocab):   # #474: a recommendation, nothing changes
-        say("  " + line)
+    dflash = Path(a.dflash) if a.dflash else None
+    draft_vocab = None
+    if dflash is not None:
+        # the DFlash block drafter replaces the MTP layer (the engine takes one model drafter at a time): the
+        # MTP tensors' ~5 GB download is skipped and the draft vocabulary does not apply
+        try:
+            note = dflash_artifact_note(dflash)
+        except ValueError as e:
+            fail(f"--dflash {dflash}: {e}")
+        ok(f"DFlash block drafter: {note}")
+        if a.draft_vocab:
+            warn("--draft-vocab applies to the MTP draft layer's token subset; ignored with --dflash")
+    else:
+        mtp = (find_in(roots, "mtp/rt/experts.bin") or data / "mtp/rt/experts.bin").parent.parent
+        rt = mtp / "rt"
+        corrupt = (rt / "experts.bin").exists() and mtp_corrupt(mtp, env)
+        if corrupt:
+            warn("some MTP tensors are not the checkpoint's (a download mirror that ignored range requests, #327): "
+                 "fetching them again and rebuilding the draft layer")
+        if corrupt or not (rt / "experts.bin").exists():
+            say("  The MTP draft layer (speculative decoding, ~2x faster output) comes from the original Qwen checkpoint:")
+            say("  only its ~5 GB of MTP tensors are downloaded.")
+            run([sys.executable, str(ROOT / "tools" / "mtp_fetch.py"), "fetch", "--out", str(mtp)],
+                env={**env, "STRATA_SOURCE": model_source()})
+            run([sys.executable, str(ROOT / "tools" / "mtp_pack.py"), "--src", str(mtp), "--experts", "q2_0",
+                 "--out", str(mtp / "mtp-q2_0.gguf")], env=env)
+            run([sys.executable, str(ROOT / "tools" / "mtp_rt.py"), "--gguf", str(mtp / "mtp-q2_0.gguf"), "--out", str(rt)],
+                env=env)
+        # a setup run again without --draft-vocab keeps the subset this model's config chose before (cyrillic, fr, en)
+        draft_vocab = a.draft_vocab or saved_draft_vocab(ROOT / f"strata-{tag.lower()}.json")
+        refresh_draft_vocab(rt, draft_vocab or "cjk")
+        ok(f"MTP draft layer: {rt}")
+        for line in draft_vocab_note(gpu.get("vram_gb", 0.0), draft_vocab):   # #474: a recommendation, nothing changes
+            say("  " + line)
 
     # ---- 7. the start script
     step(7, "writing the start script")
@@ -5289,9 +5332,13 @@ def main() -> int:
     if ple is None:
         fail("the model has no per_layer_token_embd tensor (is this a Qwen3.8-Flash-Next GGUF?)")
     # (a 4-shard file: the engine finds the PLE table's shard itself from shard 1, the measured setup)
+    # the drafter slot: the DFlash block drafter when chosen (--dflash), else the MTP layer.  DFlash's window is
+    # 1 anchor + K candidates with K up to the artifact's trained block, so the spec takes the full 8.
     args = ["--pack", str(pack), "--native", str(shards[0]), *(["--ple-gguf", str(ple)] if len(shards) <= 2 else []),
             "--expert-profile", str(ROOT / "data" / fam.get("profile", "expert-profile.bin")), "--expert-cache", "auto",
-            "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.5", "--mtp", str(rt),
+            "--prefill", "auto",
+            *(["--spec", "8", "--dflash", str(dflash)] if dflash else
+              ["--spec", "4", "--spec-min-p", "0.5", "--mtp", str(rt)]),
             "--max-context", str(ctx)]
     if scaling is not None:     # the resolved config: explicit flags as given, or the automatic yarn+factor
         args += ["--rope-scaling", scaling, "--rope-scale", f"{rope_scale:g}"]
@@ -5417,6 +5464,8 @@ def main() -> int:
         cfg["api_key"] = a.api_key
     if draft_vocab:
         cfg["draft_vocab"] = draft_vocab
+    if dflash:
+        cfg["dflash"] = str(dflash)
     if a.browser is not None:                          # #609: only when given (else an earlier choice is carried over)
         cfg["open_browser"] = a.browser
     # #465: requests at once - written only when given (else an earlier "parallel" is carried over); a recommendation
@@ -5440,6 +5489,13 @@ def main() -> int:
     elif a.vision_tokens is not None:
         warn("--vision-tokens: images are off for this model, so it is not used")
     cfg_path = ROOT / f"strata-{tag.lower()}.json"
+    if dflash:
+        # the engine's --serve refuses the DFlash drafter in this build (docs/DFLASH.md's known limitation): the
+        # start script's server would not come up with the flag in the args, so it stays out and the plain
+        # generate loop runs the drafter.  When the engine wires serve, move the flag into the args above.
+        warn("--dflash: the engine's --serve does not take the DFlash drafter yet - the server starts WITHOUT it.  "
+             f"The drafter runs in the plain generate loop; append these to {cfg_path.name}'s args:")
+        say("  " + " ".join(["--dflash", str(dflash), "--spec", "8"]))
     cal = setup_calibration(cfg, hip)                  # #566: Linux HIP too; the tuning is offered on NVIDIA only
     if cal is not None:
         sys.path.insert(0, str(ROOT / "tools"))
