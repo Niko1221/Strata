@@ -58,6 +58,7 @@
 #include <cstring>
 #include <exception>
 #include <immintrin.h>
+#include <new>
 
 namespace strata::core {
 namespace {
@@ -465,6 +466,32 @@ bool Verifier::set_logit_bias(const std::vector<float>& bias, std::string& err) 
     }
     logit_bias_host_ = bias;
     sampling_.logit_bias = bias.empty() ? nullptr : logit_bias_device_;
+    return true;
+}
+
+bool Verifier::release_decode_resources(std::string& err) {
+    if (next_ != nullptr || ext_stream_ != nullptr || !slots_.empty() || fl_active_ || b_running_ || commit_pending_) {
+        err = "verify: repeat prefill loans do not support split, pipeline or batch verifiers";
+        return false;
+    }
+    if (!wait_commit(err)) return false;
+    if (cs_ != nullptr && cudaStreamSynchronize(cs_) != cudaSuccess) {
+        err = "verify: its stream failed before the repeat prefill loan";
+        return false;
+    }
+    if (sh_cs_ != nullptr && cudaStreamSynchronize(sh_cs_) != cudaSuccess) {
+        err = "verify: its side stream failed before the repeat prefill loan";
+        return false;
+    }
+    if (copy_ != nullptr && cudaStreamSynchronize(copy_) != cudaSuccess) {
+        err = "verify: its copy stream failed before the repeat prefill loan";
+        return false;
+    }
+    // The destructor is the single owner of all captured graphs, arenas, mapped staging, streams and events. Reuse it
+    // here rather than maintaining a second, easy-to-diverge partial teardown; the caller re-applies the small set of
+    // verifier options before init() on the other side of the prefill boundary.
+    this->~Verifier();
+    new (this) Verifier();
     return true;
 }
 

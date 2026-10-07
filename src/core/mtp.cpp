@@ -241,8 +241,93 @@ bool MtpDrafter::make_q4_head(std::string& err) {
 #endif
 }
 
+bool MtpDrafter::load_experts(std::string& err) {
+    const OnDevice on_device(device_);
+    if (!experts_deferred_ && experts_ != nullptr) return true;
+    if (!owns_weights_) { err = "mtp: a shared drafter cannot load experts"; return false; }
+    if (g_ == nullptr || rt_dir_.empty()) { err = "mtp: expert load has no model geometry"; return false; }
+    const bool late = experts_deferred_;
+    const uint64_t bytes = (uint64_t) g_->n_expert * strata::kernels::cpu::BLOB;
+    FILE* f = std::fopen((rt_dir_ + "/experts.bin").c_str(), "rb");
+    if (f == nullptr) { err = "mtp: cannot open experts.bin"; return false; }
+    struct Closer { FILE* f; ~Closer() { if (f != nullptr) std::fclose(f); } } closer{f};
+    if (cudaMalloc((void**) &experts_, bytes) != cudaSuccess) {
+        err = "mtp: the 512 experts do not fit in VRAM";
+        return false;
+    }
+#if !defined(_WIN32)
+    strata::platform::advise_willneed(fileno(f), 0, bytes);
+#endif
+    std::vector<uint8_t> chunk(64u << 20);
+    for (uint64_t off = 0; off < bytes;) {
+        const uint64_t n = std::min<uint64_t>(chunk.size(), bytes - off);
+        if (std::fread(chunk.data(), 1, (size_t) n, f) != (size_t) n) {
+            cudaFree(experts_);
+            experts_ = nullptr;
+            err = "mtp: experts.bin is truncated";
+            return false;
+        }
+        cudaMemcpy(experts_ + off, chunk.data(), n, cudaMemcpyHostToDevice);
+        off += n;
+    }
+    experts_vram_ = bytes;
+    vram_ += experts_vram_;
+    experts_deferred_ = false;
+    std::fprintf(stderr, "strata mtp: routed experts %sloaded, %.0f MiB\n",
+                 late ? "late " : "", (double) bytes / 1048576.0);
+    return true;
+}
+
+bool MtpDrafter::release_decode_resources(std::string& err) {
+    const OnDevice on_device(device_);
+    if (!owns_weights_ || !owns_draft_head_) {
+        err = "mtp: repeat prefill loans do not support shared/batch drafters";
+        return false;
+    }
+    if (chain_live_) {
+        if (ev_chain_ != nullptr && cudaEventSynchronize(ev_chain_) != cudaSuccess) {
+            err = "mtp: the draft chain did not finish before the prefill loan";
+            return false;
+        }
+        chain_live_ = false;
+    }
+    if (cs_ != nullptr && cudaStreamSynchronize(cs_) != cudaSuccess) {
+        err = "mtp: its stream failed before the prefill loan";
+        return false;
+    }
+    if (side_ != nullptr && cudaStreamSynchronize(side_) != cudaSuccess) {
+        err = "mtp: its shared-expert stream failed before the prefill loan";
+        return false;
+    }
+    for (auto& e : round_exec_) if (e) { cudaGraphExecDestroy(e); e = nullptr; }
+    for (auto& e : step_exec_) if (e) { cudaGraphExecDestroy(e); e = nullptr; }
+    for (auto& e : round_exec_c_) if (e) { cudaGraphExecDestroy(e); e = nullptr; }
+    for (auto& e : step_exec_c_) if (e) { cudaGraphExecDestroy(e); e = nullptr; }
+    if (dhead_ != nullptr) {
+        if (dhead_type_ == 14 && strata::kernels::native_q6_k_packed_enabled())
+            strata::kernels::native_q6_k_unpack(dhead_);
+        cudaFree(dhead_);
+    }
+    if (dvocab_ != nullptr) cudaFree(dvocab_);
+    dhead_ = nullptr;
+    dvocab_ = nullptr;
+    dhead_type_ = -1;
+    n_dvocab_ = 0;
+    dvocab_host_.clear();
+    if (draft_head_vram_ <= vram_) vram_ -= draft_head_vram_;
+    draft_head_vram_ = 0;
+    if (experts_ != nullptr && owns_weights_) cudaFree(experts_);
+    if (experts_vram_ <= vram_) vram_ -= experts_vram_;
+    experts_vram_ = 0;
+    experts_ = nullptr;
+    experts_deferred_ = true;
+    // The dense projections, prompt K/V state, staging and logits buffer remain valid. They do not reference the
+    // native output head or routed expert blob and are needed by the next prompt.
+    return true;
+}
+
 bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, SessionState& ss, int max_t, std::string& err,
-                      int64_t window, const MtpDrafter* shared) {
+                      int64_t window, const MtpDrafter* shared, bool defer_experts) {
     cudaGetDevice(&device_);   // a layer split's last stage on another GPU: the drafter lives there
     g_ = &g;
     ss_ = &ss;
@@ -293,30 +378,9 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         vram_ += blob.size();
         if (q4_ && !make_q4_dense(blob, err)) return false;
     }
-    // ---- the 512 routed experts, one blob each
-    if (shared == nullptr) {
-        const uint64_t bytes = (uint64_t) g.n_expert * strata::kernels::cpu::BLOB;
-        // Loader fix (0.1.15+loaderfix.2): each 64 MiB read below reached the disk as ~16k 4095-byte reads under
-        // MSVC's `basic_filebuf::xsgetn`, which is what made 675 MiB of drafter experts take minutes.
-        FILE* f = std::fopen((rt_dir + "/experts.bin").c_str(), "rb");
-        if (f == nullptr) { err = "mtp: cannot open experts.bin"; return false; }
-        struct Closer {
-            FILE* f;
-            ~Closer() { if (f != nullptr) std::fclose(f); }
-        } closer{f};
-        if (cudaMalloc((void**) &experts_, bytes) != cudaSuccess) { err = "mtp: the 512 experts do not fit in VRAM"; return false; }
-#if !defined(_WIN32)
-        strata::platform::advise_willneed(fileno(f), 0, bytes);
-#endif
-        std::vector<uint8_t> chunk(64u << 20);
-        for (uint64_t off = 0; off < bytes;) {
-            const uint64_t n = std::min<uint64_t>(chunk.size(), bytes - off);
-            if (std::fread(chunk.data(), 1, (size_t) n, f) != (size_t) n) { err = "mtp: experts.bin is truncated"; return false; }
-            cudaMemcpy(experts_ + off, chunk.data(), n, cudaMemcpyHostToDevice);
-            off += n;
-        }
-        vram_ += bytes;
-    }
+    // ---- the 512 routed experts, one blob each. A manual prompt loan may defer the owning drafter's copy.
+    experts_deferred_ = shared == nullptr && defer_experts;
+    if (shared == nullptr && !experts_deferred_ && !load_experts(err)) return false;
     const char* required[] = {"fc_embedding.weight", "fc_hidden.weight", "self_attn.q_proj.weight", "self_attn.k_proj.weight",
                               "self_attn.v_proj.weight", "self_attn.o_proj.weight", "mlp.shared_expert.gate_proj.weight",
                               "mlp.shared_expert.up_proj.weight", "mlp.shared_expert.down_proj.weight"};
@@ -504,6 +568,13 @@ uint64_t MtpDrafter::bind_bytes(uint64_t head_row_bytes, int64_t n_vocab) const 
     return bytes;
 }
 
+uint64_t MtpDrafter::deferred_bytes(uint64_t head_row_bytes, int64_t n_vocab) const {
+    const uint64_t experts = experts_deferred_ && g_ != nullptr
+                                 ? (uint64_t) g_->n_expert * strata::kernels::cpu::BLOB
+                                 : 0;
+    return experts + bind_bytes(head_row_bytes, n_vocab);
+}
+
 bool MtpDrafter::setup_coupled(std::string& err) {
     const int64_t nv = dhead_ != nullptr ? n_dvocab_ : n_vocab_;
     const size_t scratch = strata::kernels::coupled_draft_scratch_bytes((int) nv);
@@ -651,7 +722,8 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
             std::memcpy(dvocab_host_.data(), raw.data(), raw.size());
             strata::kernels::gather_rows((const uint8_t*) head->weights(), row_bytes, dvocab_, n_dvocab_, dhead_, nullptr);
             cudaDeviceSynchronize();
-            vram_ += (uint64_t) (n_dvocab_ * row_bytes) + raw.size();
+            draft_head_vram_ = (uint64_t) (n_dvocab_ * row_bytes) + raw.size();
+            vram_ += draft_head_vram_;
             std::fprintf(stderr, "strata mtp: draft head over %lld tokens (%.1f MiB)\n", (long long) n_dvocab_,
                          (double) (n_dvocab_ * row_bytes) / 1048576.0);
             dhead_type_ = head->type();

@@ -19,7 +19,13 @@ public:
     NativeHead(const NativeHead&) = delete;
     NativeHead& operator=(const NativeHead&) = delete;
 
+    /// Validates the head and returns its eventual device weight allocation without uploading it.
+    static uint64_t weight_bytes_for(const std::vector<std::string>& shards, int64_t n_in, int64_t n_out,
+                                     std::string& err);
     bool load(const std::vector<std::string>& shards, int64_t n_in, int64_t n_out, std::string& err);
+    /// Releases the device weight and scratch while retaining the descriptor object for a later load.
+    /// The caller must invalidate any captured graph which refers to this head first.
+    void unload();
     bool run(const float* mixed, float* logits, void* stream, std::string& err) const;
     uint64_t weight_bytes() const { return bytes_; }
     bool loaded() const { return weights_ != nullptr; }
