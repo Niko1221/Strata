@@ -111,7 +111,16 @@ export STRATA_HIP_WMMA=1        # the prompt attention on matrix cores
 export STRATA_SELECT_WMMA=1     # the block scorer on matrix cores
 export STRATA_HC_Q8=1           # the hyper-connection read from the GGUF's own Q8_0 projections
 export STRATA_PF_SWITCH_MIN_T=4096
+export STRATA_PREFILL_STREAM_MIN=128   # prompt reads of 128-1,023 tokens on the fused experts too (below)
 ```
+
+`STRATA_PF_FUSED=1` reaches only chunks of `STRATA_PREFILL_STREAM_MIN` tokens or more (1,024 by default, the floor measured on
+a discrete card, where a smaller chunk does not pay for streaming every expert); a smaller read runs its experts through MMQ.
+With every expert in the unified memory nothing streams, and MMQ is the slow part: an agent's turn - a tool result of ~1,000
+tokens on a cached conversation - read in 3.1-6.0 s at 1,024 and 0.9-2.5 s at 128 (C2T8, `--no-prefill-borrow`; 12-turn
+replay 3.4 -> 2.1 s per turn). Its output is the fused path's, which reads of 1,024 tokens or more already take; it is not
+under `STRATA_PF_SWITCH_MIN_T`, which gates only the hyper-connection and padding switches. A UD-Q4_K_XL or other K-quant
+pack takes the fused experts only with `STRATA_PF_FUSED_KQ=1` as well.
 
 Two engine flags help on long contexts and are not Strix-specific: `--mtp-window 8192` (the draft layer attends to the last 8,192
 cells: 64K output +3.5%, 32K -0.4%) and `--spec`, `--lookup-chain`, `--mtp-q4` (see [DETAILS.md](DETAILS.md)).
