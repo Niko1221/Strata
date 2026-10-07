@@ -6889,15 +6889,18 @@ int main(int argc, char** argv) {
         if (!o.prefix_cache_dir.empty() && o.prompt_cache > 0 && stages.empty() && o.batch <= 0) {
             strata::core::PrefixStore::Options po;
             po.dir = o.prefix_cache_dir;
+            // the session files' identity too: the model files by content (one replaced in place) and the config
+            strata::core::SessionFileIdentity bound;
+            const bool bound_ok = session_identity(bound, err, nullptr);
             po.identity = std::string(STRATA_VERSION " " __DATE__ " " __TIME__) + "|" + o.pack + "|" +
                           o.native_preset + "|" + o.mtp + "|" + o.kv + "|" +
                           (std::getenv("STRATA_BF16_TC") ? std::getenv("STRATA_BF16_TC") : "") + "|" +
-                          std::to_string(config_fingerprint());
+                          std::to_string(bound.model) + "|" + std::to_string(bound.config);
             po.ram_budget = (size_t) o.prefix_cache_ram_mib << 20;
             po.disk_budget = (size_t) o.prefix_cache_disk_mib << 20;
             po.min_free = (size_t) o.conversation_cache_min_free_mib << 20;
             std::string log;
-            if (prefixes.open(po, log, err)) std::fprintf(stderr, "strata serve: prefix cache: %s\n", log.c_str());
+            if (bound_ok && prefixes.open(po, log, err)) std::fprintf(stderr, "strata serve: prefix cache: %s\n", log.c_str());
             else std::fprintf(stderr, "strata serve: prefix cache off: %s\n", err.c_str());
             err.clear();
         } else if (!o.prefix_cache_dir.empty()) {
