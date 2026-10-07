@@ -1147,6 +1147,18 @@ void pl_diag_print(std::FILE* f) {
             if (d.v[st][par] != nullptr) d.v[st][par]->diag_pipelined(f, names[st][par]);
 }
 
+// #1341 #964: CUDA_LAUNCH_BLOCKING=1 in the environment.  A verify window's graph waits on the GPU for flags the host
+// raises once cudaGraphLaunch has returned, and a blocking launch returns only when the graph has finished, so the
+// first window never ends (the batched prompt path has no such wait and runs).  HIP's own switches are not checked.
+bool launch_blocking() {
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
+    return false;
+#else
+    const char* v = std::getenv("CUDA_LAUNCH_BLOCKING");
+    return v != nullptr && std::atoi(v) != 0;
+#endif
+}
+
 void stall_report(std::FILE* f, uint64_t layers_during) {
     strata::core::Progress& p = strata::core::progress();
     std::fprintf(f, "strata serve: stall report (engine %s): stage \"%s\" for %lld s; %llu layers served since the "
@@ -1537,6 +1549,10 @@ int main(int argc, char** argv) {
         setenv("CUDA_MODULE_LOADING", "EAGER", 0);
 #endif
     }
+    if (launch_blocking())
+        std::fprintf(stderr, "warning: CUDA_LAUNCH_BLOCKING=1: the verify windows cannot run with blocking launches, so "
+                             "the first one after a prompt hangs until the watchdog ends the engine (#1341). Unset it; "
+                             "STRATA_PF_STEP_SYNC=1 narrows down a failing prompt step without it\n");
     // --gpu LIST pins the visible GPUs (nvidia-smi/PCI order) from the command line instead of the caller's
     // environment: CUDA_VISIBLE_DEVICES is read at the first CUDA call, so this has to happen here, before
     // anything else.  The value itself is consumed again by the option loop below.
@@ -7866,8 +7882,10 @@ int main(int argc, char** argv) {
                         // a blocking step's explicit allowance (session files): still within it, not yet stuck
                         if (strata::core::progress_now_ms() < p.allow_until_ms.load()) continue;
                         std::fprintf(stderr, "strata serve: no progress for %d s during a request (%s) - stopping "
-                                             "the engine so the server starts it again (issue #29)\n",
-                                     limit, stage_text().c_str());
+                                             "the engine so the server starts it again (issue #29)%s\n",
+                                     limit, stage_text().c_str(),
+                                     launch_blocking() ? "; CUDA_LAUNCH_BLOCKING=1 is set, and no verify window can "
+                                                         "finish with it (#1341)" : "");
                         stall_report(stderr, p.ticks.load() - ticks_at);
                         strata::core::release_gpu_waits(stderr);   // #267: no spin kernel outlives the process
                         std::fflush(stderr);
