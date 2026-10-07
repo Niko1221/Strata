@@ -1434,6 +1434,12 @@ if(STRATA_ENABLE_CUDA AND STRATA_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_
 endif()
 
 if(STRATA_BUILD_TESTS)
+  if(STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX906)
+    add_executable(ple_host_buffer_test src/prefill/ple_host_buffer_test.cpp)
+    target_link_libraries(ple_host_buffer_test PRIVATE CUDA::cudart)
+    add_test(NAME ple_host_buffer_test COMMAND ple_host_buffer_test)
+    set_tests_properties(ple_host_buffer_test PROPERTIES SKIP_RETURN_CODE 77)
+  endif()
   if(WIN32)
     add_executable(pool_affinity_test src/kernels/cpu/pool_affinity_test.cpp)
     target_link_libraries(pool_affinity_test PRIVATE strata_kernels_cpu)

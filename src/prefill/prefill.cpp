@@ -1,5 +1,6 @@
 // src/prefill/prefill.cpp - see include/strata/prefill/prefill.hpp.
 #include "strata/prefill/prefill.hpp"
+#include "ple_host_buffer.hpp"
 #include "mmq_resident_sort.hpp"
 #include "wmma_gemm.h"
 #include "strata/core/mtp.hpp"
@@ -675,6 +676,7 @@ struct Prefill::Impl {
     // PLE
     float* ple_emb = nullptr;
     std::vector<float> ple_pageable[2];      // the fallback when no more RAM can be pinned
+    size_t ple_host_elements[2] = {};        // retained capacity; allocated only when a run needs PLE
     float* ple_emb_host[2] = {};             // pinned, double-buffered: the next chunk's rows are read while this
     cudaEvent_t ple_copied[2] = {};          // one runs; the event marks that buffer's upload done
     std::vector<uint32_t> ple_rows[2];
@@ -961,12 +963,6 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
         }
     }
     for (int b = 0; b < 2; ++b) {
-        if (!m.ple_emb_host[b] &&
-            (force_pageable() || cudaHostAlloc((void**) &m.ple_emb_host[b], (size_t) T * N * 4, cudaHostAllocDefault) != cudaSuccess)) {
-            cudaGetLastError();
-            m.ple_pageable[b].resize(T * N);          // pageable: the upload is staged before it returns
-            m.ple_emb_host[b] = m.ple_pageable[b].data();
-        }
         if (!m.ple_copied[b] && cudaEventCreateWithFlags(&m.ple_copied[b], cudaEventDisableTiming) != cudaSuccess)
             ok = false;
         m.ple_rows[b].resize(T * strata::kernels::PLE_N_HEADS);
@@ -1820,6 +1816,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     // after this one is read on a thread while the GPU runs this one, into the other of two buffers.  The rows
     // depend only on the tokens (the two before a position name its n-grams), so this is the same data.
     const bool ple_on = ss.ple.ready() && LB <= 1 && 1 < LE;
+    // A run starts in buffer zero. Only a following chunk needs the second buffer.
+    if (ple_on) for (int b = 0; b < (n > m.T ? 2 : 1); ++b) {
+        if (!detail::ensure_ple_host(m.ple_emb_host[b], m.ple_pageable[b], m.ple_host_elements[b],
+                                     (size_t) m.T * N, m.ple_copied[b], force_pageable())) {
+            err = "prefill: PLE host buffers could not be prepared";
+            return false;
+        }
+    }
     // the PLE block batched over the chunk: the pinned postops and a BF16 or GGUF-native key (else token by token);
     // STRATA_PLE_BATCH=0 keeps the per-token block (the A/B)
     static const bool ple_batch_env = [] {
