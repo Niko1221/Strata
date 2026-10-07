@@ -24,6 +24,7 @@
 #include "strata/core/conversation_file.hpp"
 #include "strata/core/conversation_memory.hpp"
 #include "strata/core/conversation_spill.hpp"
+#include "strata/core/conversation_prompt_cache.hpp"
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/expert_source.hpp"
 #include "strata/core/foresight_swap.hpp"
@@ -601,6 +602,21 @@ struct Options {
     int64_t conversation_cache_disk_mib = 8192;   // the spill directory's limit (0 = off)
     double conversation_cache_similarity = 0.0;   // least LCP/new-prompt fraction a disk hit may offer (range [0,1))
     int64_t conversation_cache_n_min = 0;         // least common-prefix tokens a disk hit may offer
+    /// --conversation-cache-spill-when-full: what the disk tier does at its budget. "evict-oldest" (default, what
+    /// upstream always did) has the GC drop the oldest conversation; "reject" refuses a new spill and removes nothing.
+    std::string conversation_cache_spill_when_full = "evict-oldest";
+    /// --conversation-cache-spill-max-age-days: optional age pruning of the spill directory (0 = off, no deletion
+    /// by time at all; positive = the GC drops conversations older than that, oldest first).
+    int64_t conversation_cache_spill_max_age_days = 0;
+    /// --system-prompt-cache (F5, opt-in): persist the checkpoint root that ends the system prompt (the one
+    /// --prompt-cache-root builds in RAM) as an ordinary session file, and reload it at start so a NEW chat reads
+    /// only the tokens after it. Off by default: no directory is created and no byte is written.
+    bool system_prompt_cache = false;
+    std::string system_prompt_cache_dir;          ///< its own folder, separate from the spill directory
+    int64_t system_prompt_cache_mib = 2048;       ///< the folder's byte budget (0 = no byte budget)
+    int64_t system_prompt_cache_slots = 2;        ///< how many system-prompt variants coexist (0 = no cap)
+    int64_t system_prompt_cache_max_age_days = 0; ///< optional age pruning (0 = off)
+    std::string system_prompt_cache_key;          ///< an optional declared identity, added to the key
     /// --serve: also keep a checkpoint every N freshly read prompt tokens (0 = only at the last turn boundary)
     int64_t prompt_cache_every = 16384;
     bool prompt_cache_tail = false;   // optional extra checkpoint at an existing near-tail chunk boundary
@@ -750,6 +766,21 @@ void usage() {
                  "  --conversation-cache-similarity F  --serve: least common-prefix fraction a disk hit may offer\n"
                  "                       (default 0 = any; range [0,1))\n"
                  "  --conversation-cache-n-min N  --serve: least common-prefix tokens a disk hit may offer (default 0)\n"
+                 "  --conversation-cache-spill-when-full MODE  --serve: at the spill directory's budget, evict-oldest\n"
+                 "                       (default) drops the oldest conversation, reject refuses the new spill and\n"
+                 "                       removes nothing\n"
+                 "  --conversation-cache-spill-max-age-days N  --serve: prune spill conversations older than N days,\n"
+                 "                       oldest first (default 0 = off; no deletion by time at all)\n"
+                 "  --system-prompt-cache  --serve: persist the system-prompt checkpoint root (--prompt-cache-root) to\n"
+                 "                       disk and reload it at start, so a new chat of the same client reads only the\n"
+                 "                       tokens after it (default off; needs --system-prompt-cache-dir)\n"
+                 "  --system-prompt-cache-dir DIR  --serve: the system-prompt cache's own folder (separate from the\n"
+                 "                       spill directory)\n"
+                 "  --system-prompt-cache-mib N  --serve: that folder's byte budget (default 2048)\n"
+                 "  --system-prompt-cache-slots N  --serve: how many system-prompt variants coexist (default 2; 0 = no cap)\n"
+                 "  --system-prompt-cache-max-age-days N  --serve: prune variants older than N days, oldest first\n"
+                 "                       (default 0 = off)\n"
+                 "  --system-prompt-cache-key STR  --serve: an optional declared identity added to the variant key\n"
                  "  --vram-elastic       --serve (#533, opt-in, NVIDIA): the expert cache in segments (--vram-segment-mib,\n"
                  "                       default 512), so the command `VRAM <reserve_mib>` (the server's POST /v1/vram) can\n"
                  "                       give VRAM back to other programs between requests and take it back later\n"
@@ -1859,6 +1890,43 @@ int main(int argc, char** argv) {
             }
             o.conversation_cache_similarity = similarity;
         }
+        else if (a == "--conversation-cache-spill-when-full") {
+            const std::string value = next("--conversation-cache-spill-when-full");
+            if (value != "evict-oldest" && value != "reject") {
+                std::fprintf(stderr, "--conversation-cache-spill-when-full takes evict-oldest or reject\n");
+                return 2;
+            }
+            o.conversation_cache_spill_when_full = value;
+        }
+        else if (a == "--conversation-cache-spill-max-age-days") {
+            const std::string value = next("--conversation-cache-spill-max-age-days");
+            int64_t number = 0;
+            const auto result = std::from_chars(value.data(), value.data() + value.size(), number);
+            if (result.ec != std::errc{} || result.ptr != value.data() + value.size() || number < 0 ||
+                number > INT64_MAX / 86400) {
+                std::fprintf(stderr, "--conversation-cache-spill-max-age-days needs a nonnegative integer within range\n");
+                return 2;
+            }
+            o.conversation_cache_spill_max_age_days = number;
+        }
+        else if (a == "--system-prompt-cache") o.system_prompt_cache = true;
+        else if (a == "--system-prompt-cache-dir") o.system_prompt_cache_dir = next("--system-prompt-cache-dir");
+        else if (a == "--system-prompt-cache-key") o.system_prompt_cache_key = next("--system-prompt-cache-key");
+        else if (a == "--system-prompt-cache-mib" || a == "--system-prompt-cache-slots" ||
+                 a == "--system-prompt-cache-max-age-days") {
+            const std::string value = next(a.c_str());
+            int64_t number = 0;
+            const auto result = std::from_chars(value.data(), value.data() + value.size(), number);
+            const int64_t limit = a == "--system-prompt-cache-slots" ? INT32_MAX :
+                                  a == "--system-prompt-cache-max-age-days" ? INT64_MAX / 86400 : INT64_MAX / (1024 * 1024);
+            if (result.ec != std::errc{} || result.ptr != value.data() + value.size() || number < 0 || number > limit) {
+                std::fprintf(stderr, "%s needs a nonnegative integer within range\n", a.c_str());
+                return 2;
+            }
+            if (a == "--system-prompt-cache-mib") o.system_prompt_cache_mib = number;
+            else if (a == "--system-prompt-cache-slots") o.system_prompt_cache_slots = number;
+            else o.system_prompt_cache_max_age_days = number;
+        }
         else if (a == "--prompt-cache-tail") o.prompt_cache_tail = true;
         else if (a == "--prompt-cache-every") o.prompt_cache_every = std::max(0LL, std::atoll(next("--prompt-cache-every")));
         else if (a == "--prompt-cache-root") o.prompt_cache_root = std::max(0LL, std::atoll(next("--prompt-cache-root")));
@@ -2004,6 +2072,12 @@ int main(int argc, char** argv) {
          o.conversation_cache_disk_mib == 0))
         std::fprintf(stderr, "strata serve: warning: the disk conversation cache needs --conversation-cache-mib, "
                              "--prompt-cache, --conversation-cache-slots and a nonzero --conversation-cache-disk-mib\n");
+    if (o.serve && o.system_prompt_cache && o.system_prompt_cache_dir.empty())
+        std::fprintf(stderr, "strata serve: warning: --system-prompt-cache needs --system-prompt-cache-dir; it stays off\n");
+    if (o.serve && o.system_prompt_cache && !o.system_prompt_cache_dir.empty() &&
+        (o.prompt_cache <= 0 || o.prompt_cache_root <= 0 || o.turn_token < 0))
+        std::fprintf(stderr, "strata serve: warning: the system prompt cache needs --prompt-cache > 0, "
+                             "--prompt-cache-root > 0 and a turn token; it will not find a root to save\n");
     // parking with --layer-split saves every stage (SavedConversation::stage_images)
     // Layer split (multi-GPU): the later stages run layers [K_i, K_i+1) on their own GPUs (--split-device, default
     // the next visible ones); "auto" places the K from each GPU's free VRAM once the weights are in (below).  KV
@@ -7092,15 +7166,51 @@ int main(int argc, char** argv) {
             } else {
                 std::string spill_error;
                 if (!conversation_spill.open(o.conversation_cache_spill_dir, spill_identity,
-                        (uint64_t) o.conversation_cache_disk_mib * 1024 * 1024, spill_error)) {
+                        (uint64_t) o.conversation_cache_disk_mib * 1024 * 1024, spill_error,
+                        o.conversation_cache_spill_when_full == "reject" ? strata::core::SpillWhenFull::reject
+                                                                         : strata::core::SpillWhenFull::evict_oldest,
+                        o.conversation_cache_spill_max_age_days)) {
                     std::fprintf(stderr, "strata serve: conversation cache: disk tier disabled (%s)\n", spill_error.c_str());
                 } else if (conversation_spill.enabled()) {
                     std::fprintf(stderr, "strata serve: conversation cache: spill dir ready (%zu conversations, %llu MiB, "
-                                 "%zu oversized kept, %zu stale kept, %zu foreign kept, %zu orphans kept, %zu disk evictions)\n",
+                                 "when-full=%s, max-age=%lld d, %zu oversized kept, %zu stale kept, %zu foreign kept, "
+                                 "%zu orphans kept, %zu disk evictions, %zu age evictions)\n",
                                  conversation_spill.size(), (unsigned long long) (conversation_spill.bytes() >> 20),
+                                 o.conversation_cache_spill_when_full.c_str(),
+                                 (long long) o.conversation_cache_spill_max_age_days,
                                  conversation_spill.oversized_files_kept(), conversation_spill.stale_files_kept(),
                                  conversation_spill.foreign_files_kept(), conversation_spill.orphan_files_kept(),
-                                 conversation_spill.disk_evictions());
+                                 conversation_spill.disk_evictions(), conversation_spill.age_evictions());
+                }
+            }
+        }
+        // The system-prompt prefill cache (F5): the checkpoint root that ends the system prompt (--prompt-cache-root)
+        // persisted as an ordinary session file and reloaded at start, so a NEW chat of the same client reads only
+        // the tokens after it.  Its own directory, its own budget, its own variant count.  Off unless
+        // --system-prompt-cache; single-session only (no layer split), because the artifact is one session file of
+        // this engine's own carve.
+        // A session with the draft layer (--mtp) only: the disk save streams the K/V (conversation_snapshot_sources),
+        // which needs the draft's own K/V to be part of the artifact, and the restore path checks for it. Without
+        // --mtp the feature stays off (reported) rather than capturing a different artifact.
+        strata::core::ConversationPromptCache system_prompt_cache;
+        strata::core::SessionFileIdentity system_prompt_identity;
+        if (o.serve && o.system_prompt_cache && !o.system_prompt_cache_dir.empty() && stages.empty() && use_mtp) {
+            std::string identity_error;
+            if (!session_identity(system_prompt_identity, identity_error, nullptr)) {
+                std::fprintf(stderr, "strata serve: system prompt cache: disabled (%s)\n", identity_error.c_str());
+            } else {
+                std::string sp_error;
+                if (!system_prompt_cache.open(o.system_prompt_cache_dir, system_prompt_identity,
+                        (uint64_t) o.system_prompt_cache_mib * 1024 * 1024, o.system_prompt_cache_slots,
+                        o.system_prompt_cache_max_age_days, sp_error)) {
+                    std::fprintf(stderr, "strata serve: system prompt cache: disabled (%s)\n", sp_error.c_str());
+                } else if (system_prompt_cache.enabled()) {
+                    std::fprintf(stderr, "strata serve: system prompt cache: ready (%zu variants, %llu MiB, slots=%lld, "
+                                 "max-age=%lld d, %zu foreign kept, %zu stale kept, %zu orphans kept, %zu oversized kept)\n",
+                                 system_prompt_cache.variants(), (unsigned long long) (system_prompt_cache.bytes() >> 20),
+                                 (long long) o.system_prompt_cache_slots, (long long) o.system_prompt_cache_max_age_days,
+                                 system_prompt_cache.foreign_files_kept(), system_prompt_cache.stale_files_kept(),
+                                 system_prompt_cache.orphan_files_kept(), system_prompt_cache.oversized_files_kept());
                 }
             }
         }
@@ -9370,6 +9480,82 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+            // F5: the system-prompt prefill cache. A stored variant whose EXACT system-prompt prefix this prompt
+            // begins with is the checkpoint root of a new chat: loading it parks the outgoing session and this request
+            // reads only the tokens after the root. CAUSALITY: the key is the hash of the prefix's own tokens, and the
+            // loaded root is checked to be exactly this prompt's first tokens before it is used, so a stored tail K/V
+            // can never ride behind a different system prompt. A changed system prompt is a different key: it misses,
+            // is reprocessed from the start and is stored as its own variant (the old one is kept for the GC).
+            if (!incoming && system_prompt_cache.enabled() && stages.empty() && req_imgs.empty()) {
+                int64_t sys_turn = -1;   // the last turn boundary (the history's end, as the reader sees it)
+                if (o.turn_token >= 0)
+                    for (int64_t i = n - 1; i > 0; --i)
+                        if (ids[(size_t) i] == o.turn_token) { sys_turn = i; break; }
+                int64_t sys_len = -1;    // the FIRST turn boundary at/after --prompt-cache-root: the end of the system prompt
+                if (sys_turn > 0 && o.prompt_cache_root > 0)
+                    for (int64_t i = 1; i < sys_turn; ++i)
+                        if (ids[(size_t) i] == o.turn_token) { if (i >= o.prompt_cache_root) sys_len = i; break; }
+                if (sys_len > 0) {
+                    const uint64_t key = system_prompt_cache.key_for(ids.data(), (size_t) sys_len, o.system_prompt_cache_key);
+                    strata::core::ConversationPromptMatch hit;
+                    if (!system_prompt_cache.lookup(key, hit)) {
+                        system_prompt_cache.note_miss(key);
+                        if (system_prompt_cache.variants() > 0)
+                            std::fprintf(stderr, "strata serve: system prompt cache: prefix changed (miss, %zu variants live); "
+                                         "reprocessing and rewriting\n", system_prompt_cache.variants());
+                    } else if (hit.tokens <= std::max(resume, std::max(slot_tokens, parked.tokens))) {
+                        system_prompt_cache.note_hit(key, hit.tokens);   // our live state or the RAM cache already reaches it
+                    } else {
+                        constexpr uint64_t admission_extra = 1ull << 20;
+                        const uint64_t estimate = hit.file_bytes > UINT64_MAX - hit.file_bytes / 8 - admission_extra
+                                                      ? UINT64_MAX
+                                                      : hit.file_bytes + hit.file_bytes / 8 + admission_extra;
+                        const uint64_t ram_budget = o.conversation_cache_mib > 0
+                                                        ? (uint64_t) o.conversation_cache_mib * 1024 * 1024 : UINT64_MAX;
+                        const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
+                        if (estimate > ram_budget || estimate > SIZE_MAX) {
+                            std::fprintf(stderr, "strata serve: system prompt cache: hit is %llu MiB, over the RAM budget\n",
+                                         (unsigned long long) (estimate >> 20));
+                        } else if (conversations.enabled() && !conversations.make_room((size_t) estimate, 0, spill_evicted)) {
+                            std::fprintf(stderr, "strata serve: system prompt cache: hit does not fit the RAM cache budget\n");
+                        } else if (!strata::core::conversation_memory_admit(strata::core::conversation_available_memory(),
+                                       estimate, floor)) {
+                            std::fprintf(stderr, "strata serve: system prompt cache: hit skipped (physical RAM admission)\n");
+                        } else {
+                            strata::core::SessionReadLimits limits;
+                            limits.admit = [floor](uint64_t need, std::string& why) {
+                                const auto avail = strata::core::conversation_available_memory();
+                                if (strata::core::conversation_memory_admit(avail, need, floor)) return true;
+                                why = "not enough RAM to read it";
+                                return false;
+                            };
+                            std::string limits_error;
+                            if (!strata::core::conversation_session_read_limits(limits, ss, g, mtp.kv_state(),
+                                    (uint64_t) o.max_context, (uint64_t) std::max(o.prompt_cache, 1), limits_error)) {
+                                std::fprintf(stderr, "strata serve: system prompt cache: hit skipped (%s)\n", limits_error.c_str());
+                            } else {
+                                strata::core::SavedConversation restored;
+                                std::string load_error;
+                                if (!system_prompt_cache.load(hit.path, restored, {limits}, load_error)) {
+                                    std::fprintf(stderr, "strata serve: system prompt cache: unreadable variant (%s); "
+                                                 "kept for the GC\n", load_error.c_str());
+                                    system_prompt_cache.note_miss(key);
+                                } else if (!starts_with(restored.live.ids, restored.live.imgs)) {
+                                    // not exactly this prompt's first tokens (hash collision or a changed prompt):
+                                    // NEVER attach a root that is not precisely this prompt's prefix.
+                                    system_prompt_cache.note_miss(key);
+                                } else {
+                                    parked = {0, (int64_t) restored.live.ids.size(), true};
+                                    incoming.emplace(std::move(restored));
+                                    system_prompt_cache.note_hit(key, parked.tokens);
+                                    std::fprintf(stderr, "strata serve: system prompt cache: hit %lld tokens (%zu variants)\n",
+                                                 (long long) parked.tokens, system_prompt_cache.variants());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             if (!incoming && parked.tokens > std::max(resume, slot_tokens)) incoming.emplace(conversations.take(parked.index));
             if (incoming) slot_source = -1;
             // Reject the entire image before parking/overwriting the outgoing
@@ -10098,6 +10284,41 @@ int main(int argc, char** argv) {
                 cuts.push_back(pin_at);
                 std::sort(cuts.begin(), cuts.end());   // the skipped -1s first, n - 1 still last
             }
+            // F5: persist the system-prompt root as a session file the moment it is captured (the session is exactly
+            // at `L` tokens: root_at <= read_from has already been skipped, so at == L when this runs).  It reuses
+            // the existing session-file format through conversation_snapshot_sources, and never rewrites a variant
+            // whose exact prefix is already stored.  CAUSALITY: the artifact holds only the system-prompt prefix's
+            // running state and K/V, keyed by the exact hash of those tokens, so it is only ever the root of a prompt
+            // that begins with them - a different system prompt is a different key and is reprocessed from scratch.
+            auto store_system_prompt_root = [&](int64_t L) {
+                if (!system_prompt_cache.enabled() || L < 1) return;
+                const uint64_t key = system_prompt_cache.key_for(ids.data(), (size_t) L, o.system_prompt_cache_key);
+                strata::core::ConversationPromptMatch stored;
+                if (system_prompt_cache.lookup(key, stored)) return;   // this exact prefix is already persisted
+                try {
+                    std::vector<int32_t> prefix(ids.begin(), ids.begin() + (std::ptrdiff_t) L);
+                    std::vector<ImgKey> imgs = imgs_below(req_imgs, L);
+                    const std::vector<strata::core::ConversationCheckpoint> no_checks;
+                    const strata::core::ConversationView view{prefix, imgs, no_checks, cvec_cached};
+                    std::string e;
+                    strata::core::SavedConversation meta;
+                    std::vector<strata::core::SessionKvSource> sources;
+                    const bool ok = strata::core::conversation_snapshot_sources(meta, sources, view, ss, g,
+                                        mtp.kv_state(), e) &&
+                                    system_prompt_cache.store_streamed(key, meta, sources, e);
+                    if (!ok)
+                        std::fprintf(stderr, "strata serve: system prompt cache: cannot persist the %lld-token root (%s)\n",
+                                     (long long) L, e.c_str());
+                    else
+                        std::fprintf(stderr, "strata serve: system prompt cache: persisted the %lld-token root (%zu variants, "
+                                     "%llu MiB)\n", (long long) L, system_prompt_cache.variants(),
+                                     (unsigned long long) (system_prompt_cache.bytes() >> 20));
+                } catch (const std::bad_alloc&) {
+                    std::fprintf(stderr, "strata serve: system prompt cache: not enough RAM to persist the root\n");
+                } catch (const std::exception& ex) {
+                    std::fprintf(stderr, "strata serve: system prompt cache: %s\n", ex.what());
+                }
+            };
             int64_t at = read_from;
             for (const int64_t to : cuts) {
                 if (to <= at) continue;
@@ -10143,6 +10364,7 @@ int main(int argc, char** argv) {
                 }
                 if (to == pin_at && !pin_checkpoint(pin_at))
                     std::fprintf(stderr, "strata serve: pin=%lld: its checkpoint was not kept\n", (long long) pin_at);
+                if (to == root_at) store_system_prompt_root(root_at);   // F5: the same root, made durable
                 if (trace && to == message_at)
                     std::fprintf(stderr, "strata serve: message boundary checkpoint: %lld tokens, %lld tail\n",
                                  (long long) message_at, (long long) (turn_at - message_at));
@@ -11351,6 +11573,14 @@ int main(int argc, char** argv) {
                          "disk_evictions=%zu\n", resident, (size_t) (conversation_spill.bytes() >> 20),
                          conversation_spill.disk_evictions());
         }
+        if (system_prompt_cache.enabled())   // F5: the system prompt cache's own accounting, at shutdown
+            std::fprintf(stderr, "strata serve: system prompt cache: shutdown: %zu variants, %llu MiB, hits=%llu misses=%llu, "
+                         "tokens_saved=%llu, hash_changes=%llu, evicted_by_space=%zu, evicted_by_age=%zu\n",
+                         system_prompt_cache.variants(), (unsigned long long) (system_prompt_cache.bytes() >> 20),
+                         (unsigned long long) system_prompt_cache.hits(), (unsigned long long) system_prompt_cache.misses(),
+                         (unsigned long long) system_prompt_cache.tokens_saved(),
+                         (unsigned long long) system_prompt_cache.hash_changes(), system_prompt_cache.evicted_by_space(),
+                         system_prompt_cache.evicted_by_age());
         save_profile("exit");   // #477: QUIT, or the server closed stdin
         return 0;
     }

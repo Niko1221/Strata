@@ -959,11 +959,22 @@ The index holds at most 256 conversations and evicts the oldest first. On a clea
 captures the active conversation and spills the parked ones before it exits. Use a separate directory per model.
 
 Each spilled conversation is a session file (`.sess`) plus a small metadata sidecar (`.meta`) that holds only its
-token and image lists, so a new request finds the best disk match without reading the conversation's K/V. A file
-whose recorded model or configuration identity differs is refused, and a sidecar whose session file is missing, or
-whose own checksum fails, is removed when the directory is scanned. The identity is the same model fingerprint and
-configuration fingerprint the session files below are bound to, so a spilled conversation and a hand-saved session
-file are interchangeable.
+token and image lists, so a new request finds the best disk match without reading the conversation's K/V. The
+directory is only read when it is scanned: a file of another model/configuration identity, a sidecar whose session
+file is missing, a sidecar whose own checksum fails, an orphan session file and a leftover temporary are all
+ignored and counted (`foreign`, `stale`, `orphan`), never removed. Removal happens only in the GC. The identity is
+the same model fingerprint and configuration fingerprint the session files below are bound to, so a spilled
+conversation and a hand-saved session file are interchangeable. A layer-split conversation is one session file per
+stage (`<stem>.sess`, `<stem>.stage1.sess`, ...) plus one joint sidecar; the restore reads each stage with its own
+carve.
+
+`--conversation-cache-spill-when-full MODE` chooses what the GC does at the budget: `evict-oldest` (default, what
+Strata always did) drops the oldest conversation to make room; `reject` never evicts - a spill that would not fit is
+refused and logged, and nothing stored is removed. A conversation larger than the whole budget is always kept
+(counted as `oversized`), because removing it could not bring the directory under the budget.
+`--conversation-cache-spill-max-age-days N` is an independent, optional age lever: `0` (default) means no deletion
+by time at all; a positive N prunes conversations older than N days, oldest first, counted separately. Both counters
+appear in the start log and the shutdown line.
 
 `--conversation-cache-similarity F` sets the least longest-common-prefix fraction of the new prompt a disk hit may
 offer (the fraction is `common_prefix_tokens / new_prompt_tokens`, and must be strictly greater than F);
@@ -974,8 +985,27 @@ the next verify window starts in the right position.
 
 A disk hit is read into host RAM before it is restored: it must fit the configured RAM cache budget and leave the
 `--conversation-cache-min-free-mib` physical-memory floor available, or the request reads the prompt normally. The
-engine logs spill, restore, stale-file and disk-budget events. The disk tier keeps the existing single-GPU parking
-limit: with `--layer-split` the disk tier stays off.
+engine logs spill, restore and disk-budget events. The disk tier works with `--layer-split` (one file per stage).
+
+**System-prompt prefill cache (opt-in).** `--system-prompt-cache` persists the checkpoint root that ends the
+system prompt - the one `--prompt-cache-root` builds in RAM - as an ordinary session file in
+`--system-prompt-cache-dir`, and reloads it at the next start, so a NEW chat of the same client reads only the
+tokens after the root instead of the whole system prompt again. It is off by default (no directory is created, no
+byte written), needs `--prompt-cache > 0`, `--prompt-cache-root > 0`, `--turn-token` and `--mtp`, and runs on a
+single session (no `--layer-split`).
+
+A variant is keyed by the hash of the exact system-prompt token prefix plus `--system-prompt-cache-key` (when
+given) and the model/configuration identity, so only a prompt that begins with exactly those tokens can attach it.
+Causality (the reason the key is the prefix's own hash): attention is causal, so a token's K/V was computed against
+the system prompt that was in front of it; attaching a stored tail to a different system prompt would corrupt every
+later token. When the system prompt changes its hash changes: the request is a miss, is reprocessed from the start
+(the system prompt is re-read) and is stored as its own variant, with a log line and a `hash_changes` counter. A
+variant is never removed because the system prompt changed - only the GC removes one, by count
+(`--system-prompt-cache-slots`, default 2; 0 = no cap) or size (`--system-prompt-cache-mib`, default 2048), oldest
+first, plus the optional `--system-prompt-cache-max-age-days` (0 = off). The scan never deletes. The metrics (hits,
+misses, tokens saved, bytes, live variants, evictions by space and age, hash changes) are logged at start and at
+shutdown. This is a disk-resident prefill cache: it does not change what the model computes, only how much of the
+system prompt is read again.
 
 **Session files (disk).** The conversation the engine holds can be saved to a file and restored later, also after a
 restart of the same engine version, so a long prompt is not read again. The server exposes the save and restore
