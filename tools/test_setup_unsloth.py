@@ -331,14 +331,18 @@ class Main(Base):
         self.assertEqual(code, 2)                                                   # argparse: N > 0
         self.assertIsNone(cfg)
 
-    def test_one_gpu_and_no_images(self):
+    def test_one_gpu_and_images_with_a_warning(self):
+        """#967: images are allowed with UD-Q4_K_XL, said to be untested."""
         code, out, cfg = self.main(["--context", "8192", "--vision", "yes", "--low-ram", "on"], n_gpus=2)
         self.assertEqual(code, 0, out)
         self.assertIn("(NVIDIA GeForce RTX 5070, 12 GB) only (--gpus 0,1 uses them together anyway)", out)
-        self.assertIn("images are not available with UD-Q4_K_XL", out)
+        self.assertNotIn("images are not available", out)
+        self.assertIn("images: on", out)
+        self.assertIn("images with UD-Q4_K_XL are untested", out)
         self.assertIn("--low-ram on does not apply", out)
         self.assertNotIn("layer_split", cfg)
-        self.assertNotIn("--vision", cfg["args"])
+        self.assertIn("--vision", cfg["args"])
+        self.assertTrue(cfg["vision"]["model"].endswith("UD-Q4_K_XL-00001-of-00004.gguf"))
         self.assertNotIn("--mmap-experts", cfg["args"])
         self.assertFalse(any("--experts-bin" in r for r in self.runs))
 

@@ -631,6 +631,71 @@ test an SM-holding NVIDIA bench (not built). Outputs identical to 0.1.33 (Coder 
 - Speculative decoding on the llama.cpp path (the GGUF carries no draft layer llama.cpp can use). The SYCL
   port has it (MTP draft layer, `--mtp`).
 
+## Arc Pro B70 with a model that does not fit: Flash-Next IQ3_S (2026-10-07, branch f-141-intel)
+
+The earlier B70 rows are for models whose experts all fit in VRAM. IQ3_S has 24,576 experts of 1.97 MB (46 GB): the 32 GB
+card holds 11.5k of them (22 GiB of cache) and the rest sit in a pinned host mirror that the GPU reads over PCIe. Tested on
+the B70 VM (xe driver, kernel 7.0, oneAPI 2026.1, PCIe measured at 13.3 GB/s host to device), engine 0.1.40-sycl.
+
+**Two things made it produce garbage, both fixed or documented here.**
+
+- **Aliased pages in big allocations (fixed in the engine).** The xe driver returned the 22 GiB expert-cache arena with two
+  of its 2 MiB pages mapped onto the same memory: a write at +2 MiB showed at +1022 MiB. Cache slots there held other
+  experts' bytes, and the prompt came out NaN at the first layer that routed to one (layer 4, expert 249); the same run
+  with another `--max-context`, or with an MTP window of 4 instead of 6, was clean. `STRATA_VERIFY_ALL_SLOTS=1`
+  (`STRATA_VERIFY_FIND=1`, `STRATA_VERIFY_DUMP=dir`) reads every filled slot back and compares it with the GGUF; that is how
+  the aliasing was found (the wrong bytes were slot 0's blob). Every allocation of 32 MiB or more now goes through
+  `strata::malloc_device_guarded`: it tags every 64 KiB, reads the tags back in a second kernel, and allocates again behind a
+  growing spacer until the range is clean (a warning names each retry; the check costs under 0.5 s at startup;
+  `STRATA_ARENA_ALIAS_CHECK=0` skips it). `sycl/probe/arena_rw.cpp` and `alias_scan.cpp` do not reproduce it on their own: it
+  needs the engine's allocation history.
+- **`STRATA_VERIFY_NO_HOST=1` is required whenever part of the experts is not in VRAM.** `sycl/serve/strata-sycl.sh` sets
+  it; a by-hand run must too. Without it the per-layer host/GPU handshake is not visible across the bus on xe and the logits
+  turn NaN a few tokens into the answer, differently on every run. With it (and the mirror covering every miss) the run is
+  deterministic: two runs gave identical tokens.
+
+**Numbers** (greedy, `--spec 4 --spec-min-p 0.5 --mtp`, INT8 KV, 32K context, `--stream-experts --vram-reserve-mib 1024
+--ple-io ram`, 11.5k experts resident; the 10-prompt `mg_norepeat` gate passes 10 of 10, the xe error counters did not move):
+
+| | before | after |
+|---|---|---|
+| 4,095-token prompt, `--prefill auto` (2,048-token chunks) | 618 tok/s | 730 |
+| 4,095-token prompt, `--prefill 4096` | 784 | **980-1,002** |
+| 8,169-token prompt: auto / 4096 / 8192 lending cache slots / 8192 own buffers | 676 | 953 / 1,037 / 1,117 (9.4k slots) |
+| decode, 200-token story (66% of drafts accepted, 1.98 tokens per round) | 31.4 tok/s | 30.5 with 4096-token chunks (700 fewer cache slots) |
+| decode, 200-token code answer (90% accepted, 3.65 tokens per round) | not measured | 40.8 with 4096-token chunks |
+
+(Interleaved A/B pairs, medians of 3-5. "Before" is the same build with the old short first chunk; the decode figures are
+the old default and `--prefill 4096`.)
+
+**Why the prompt is slow here, and the two changes.** Every prompt chunk streams the experts the cache does not hold over
+PCIe, and a 4K prompt touches nearly all 512 experts of every layer: 13.5k missing experts x 1.97 MB = 26 GB, 2 s of the
+bus per chunk. So the prompt reads faster in fewer, bigger chunks, and the short first chunk (`STRATA_PREFILL_FIRST`, 256
+tokens, there to start the GPU while the PLE rows are read) cost a whole extra pass of that stream. It is now 256 only when
+the cache holds every expert, else 0. `setup_intel.py` writes `--prefill 4096` for a card with 24 GB or more (the chunk's
+buffers take ~700 cache slots; `--prefill 8192 --prefill-borrow` lends cache slots instead and keeps all of them for decode,
+at ~1 s of refill per prompt). Where the 4K prompt's GPU time goes now (GPU timeline, timing on): expert dequant 20%, the two
+expert GEMMs 34%, QSA attention 14%, host grouping 6.5%, GDN 9%, hyper-connection reads 4.6%.
+
+**Draft length** (200 tokens, medians of 5 interleaved pairs, `--spec-min-p 0.5`): `--spec 6` against `--spec 4` is +6.5% on
+code (43.4 against 40.8 tok/s, 84% accepted against 90%) and -1.5% on prose (29.9 against 30.4). A 2-run sweep of the rest
+(`--spec 2/3/5`, min-p 0.3/0.7) was within the run-to-run noise of ~1 tok/s; the setup default (4, 0.5) stays.
+
+**FP64.** Arc Alchemist emulates it (`IGC_EnableDPEmulation=1`); on the A750 one row of the sampler's top_p/temperature tail
+costs 451 us in double and 20 us in float (`sycl/probe/fp64_cost.cpp`), and a sampled decode ran at 7.6 tok/s against 12 for
+a greedy one. On the B70 the same kernels cost 3.4 against 2.1 us, so FP64 is not a B70 problem. Of the kernels that use
+double, the native-pack path (the packs setup builds) runs only the sampler (a 16-token greedy run created 173 kernels, the
+double ones among them: `sample_tokens` only; the native router, combine, gate and norm kernels are float). The sampler's tail
+now accumulates in `strata::samp_acc_t`, float by default (`-DSTRATA_SYCL_SAMPLER_FP64=1` keeps double): A750 sampled decode
+7.62 -> 8.10 tok/s (medians of 5 interleaved pairs, runs 7.1-9.2), `sampler_parity` 0 failures on both cards, and the B70 gate's
+sampled cases picked the same tokens.
+
+**XMX.** oneMKL's FP16 GEMMs already run on the matrix engines; per expert the dequant (42 us for a gate/up matrix) costs
+twice the GEMM (20 us), and the fused dequant+XMX kernel (`xmx_gemm_bench`) is 0.22x of the pair on this card. The speed left
+on this card for this model is the dequant kernels (at ~200 GB/s against a 600 GB/s card), the host grouping, and the QSA
+prompt attention (14%); the multi-column int8 DPAS decode kernels of llama.cpp PR 29864 target K-quant and Q8_0 weights, not
+the IQ-quant experts, and were not ported.
+
 ## Measured, 2026-10-01, Arc Pro B70, Coder IQ1_M, 32K context, INT8 KV: the SYCL port (engine 0.1.31-sycl)
 
 | | |

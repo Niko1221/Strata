@@ -19,6 +19,9 @@ GPUS="${GPUS:-}"                # "0,2" or "all": one model across several cards
 GPU="${GPU:-}"                  # one card, numbered as nvidia-smi numbers them
 LAYER_SPLIT="${LAYER_SPLIT:-}"  # with GPUS: where each later card's layers start (default: auto)
 LOW_RAM="${LOW_RAM:-auto}"      # on: the experts come from the pack's experts.bin, not from RAM
+GGUF_DIR="${GGUF_DIR:-}"        # a mounted folder with GGUF files you already have: no download
+RESIDENT_BUDGET_GIB="${RESIDENT_BUDGET_GIB:-}"   # UD-Q4_K_XL: GiB of experts kept in RAM (default: setup's pick)
+KV_STREAMING="${KV_STREAMING:-}" # auto | on | off; empty: setup.py's own default (auto)
 
 # setup.py starts the newest strata-*.json it finds, so link in exactly the one
 # this family and model were set up with. The config is the recorded output of
@@ -38,7 +41,11 @@ mkdir -p "$STRATA_DATA/config"
 # from /proc/meminfo, which in a container is the host's total, not the container's
 # limit, so a memory-capped container has to ask for the low-RAM mode itself.
 if [ "${REINSTALL:-0}" = "1" ] || [ ! -f "$cfg" ]; then
-  echo "Setting up $tag: downloading the model (~70 GB; the engine is already in the image)."
+  if [ -n "$GGUF_DIR" ]; then
+    echo "Setting up $tag from the GGUF files in $GGUF_DIR (the engine is already in the image)."
+  else
+    echo "Setting up $tag: downloading the model (~70 GB; the engine is already in the image)."
+  fi
   set -- --family "$FAMILY" --model "$MODEL" --context "$CONTEXT" --vision "$VISION" \
     --data-dir "$STRATA_DATA" --host "$HOST" --api-key "$API_KEY" \
     --port "$PORT" --no-start --low-ram "$LOW_RAM"
@@ -46,10 +53,15 @@ if [ "${REINSTALL:-0}" = "1" ] || [ ! -f "$cfg" ]; then
   if [ -n "$GPUS" ]; then set -- "$@" --gpus "$GPUS"; fi
   if [ -n "$GPU" ]; then set -- "$@" --gpu "$GPU"; fi
   if [ -n "$LAYER_SPLIT" ]; then set -- "$@" --layer-split "$LAYER_SPLIT"; fi
+  if [ -n "$GGUF_DIR" ]; then set -- "$@" --gguf-dir "$GGUF_DIR"; fi
+  if [ -n "$RESIDENT_BUDGET_GIB" ]; then set -- "$@" --resident-budget-gib "$RESIDENT_BUDGET_GIB"; fi
+  if [ -n "$KV_STREAMING" ]; then set -- "$@" --kv-streaming "$KV_STREAMING"; fi
   .venv/bin/python setup.py --setup --yes "$@"
   [ -e "/opt/strata/strata-$tag.json" ] && { cmp -s "/opt/strata/strata-$tag.json" "$cfg" || cp -f "/opt/strata/strata-$tag.json" "$cfg"; }
 else
-  [ -e "/opt/strata/strata-$tag.json" ] || ln -s "$cfg" "/opt/strata/strata-$tag.json"
+  # #1244: the copy on the volume is the one that counts, so a regular file left in /opt/strata by an earlier setup
+  # (or by an image built with one) must not stand in for it: edits to /data/config would be ignored
+  ln -sfn "$cfg" "/opt/strata/strata-$tag.json"
 fi
 
 # Later starts skip straight here: setup.py finds the installed config and

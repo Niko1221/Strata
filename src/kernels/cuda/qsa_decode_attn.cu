@@ -9,6 +9,7 @@
 #include <cfloat>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 namespace strata::kernels {
 namespace {
@@ -218,34 +219,63 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __rest
 
 // PR #540 (sskver): the same attention with fewer shuffles and less shared-memory traffic, bit for bit the kernel
 // above (same operands, same order); +7% prompt speed on a V100, where this kernel reads every prompt chunk.  It
-// uses more registers (80 vs 38 on sm_70), so it runs on cards below sm_75 only, and exists only in the experimental
-// build (-DSTRATA_EXPERIMENTAL_SM60=ON): the ready-made engine keeps exactly the kernel above.
-#if defined(STRATA_EXPERIMENTAL_SM60)
+// uses more registers (80 vs 38 on sm_70), so on CUDA it runs on cards below sm_75 only, and exists only in the
+// experimental build (-DSTRATA_EXPERIMENTAL_SM60=ON).  HIP: built for wave32 cards (not the gfx906 wave64 backend) and
+// run on gfx103x (RDNA2), with 8 cells per step and the butterfly's lane exchanges in registers (DPP / permlanex16)
+// instead of ds_bpermute: there the score loop is bound by the LDS pipe (the q reads and ds_bpermute share it), not by
+// occupancy - 8 cells per step at 7 waves/SIMD beat 1 cell at 9.  Every other card keeps exactly the kernel above.
+#if defined(STRATA_EXPERIMENTAL_SM60) || (defined(__HIPCC__) && !defined(STRATA_HIP_GFX906))
+#define STRATA_ATTN_PRE75_BUILT 1
+#endif
+#if defined(STRATA_ATTN_PRE75_BUILT)
+// A butterfly step's lane exchange, `M` = 1, 2, 4, 8 or 16.  DPP (HIP, wave32): in registers - DPP row_xmask within a
+// 16-lane row, v_permlanex16 across the two rows - instead of ds_bpermute; the same value moves, so every sum is
+// unchanged bit for bit.
+template <bool DPP, int M> __device__ __forceinline__ float shfl_x(float v) {
+#if defined(__HIPCC__)
+    if constexpr (DPP) {
+        const int x = __float_as_int(v);
+        if constexpr (M == 16) return __int_as_float(__builtin_amdgcn_permlanex16(x, x, 0x76543210, 0xfedcba98, false, false));
+        else return __int_as_float(__builtin_amdgcn_mov_dpp(x, 0x160 | M, 0xF, 0xF, false));   // row_xmask:M
+    }
+#endif
+    return __shfl_xor_sync(0xffffffffu, v, M);
+}
+// warp_sum / warp_max with the same pairing order (xor 16, 8, 4, 2, 1)
+template <bool DPP> __device__ __forceinline__ float warp_sum_x(float v) {
+    v += shfl_x<DPP, 16>(v); v += shfl_x<DPP, 8>(v); v += shfl_x<DPP, 4>(v); v += shfl_x<DPP, 2>(v); v += shfl_x<DPP, 1>(v);
+    return v;
+}
+template <bool DPP> __device__ __forceinline__ float warp_max_x(float v) {
+    v = fmaxf(v, shfl_x<DPP, 16>(v)); v = fmaxf(v, shfl_x<DPP, 8>(v)); v = fmaxf(v, shfl_x<DPP, 4>(v));
+    v = fmaxf(v, shfl_x<DPP, 2>(v)); v = fmaxf(v, shfl_x<DPP, 1>(v));
+    return v;
+}
 // The 12 heads' lane sums (`part[12..15]` zero), reduce-scattered with warp_sum's pairing order (xor 16, 8, 4, 2, 1):
 // every output adds the same two operands at every level, so each sum is bit for bit warp_sum's (float add commutes),
 // for 16 shuffles instead of 12 x 5.  Lane l ends holding head head_of_lane(l); lanes l and l^1 agree.
-__device__ __forceinline__ float reduce12(const float (&part)[16], int lane) {
+template <bool DPP> __device__ __forceinline__ float reduce12(const float (&part)[16], int lane) {
     float r8[8];
 #pragma unroll
     for (int i = 0; i < 8; ++i) {
         const bool hi = (lane & 16) != 0;
-        r8[i] = (hi ? part[i + 8] : part[i]) + __shfl_xor_sync(0xffffffffu, hi ? part[i] : part[i + 8], 16);
+        r8[i] = (hi ? part[i + 8] : part[i]) + shfl_x<DPP, 16>(hi ? part[i] : part[i + 8]);
     }
     float r4[4];
 #pragma unroll
     for (int i = 0; i < 4; ++i) {
         const bool hi = (lane & 8) != 0;
-        r4[i] = (hi ? r8[i + 4] : r8[i]) + __shfl_xor_sync(0xffffffffu, hi ? r8[i] : r8[i + 4], 8);
+        r4[i] = (hi ? r8[i + 4] : r8[i]) + shfl_x<DPP, 8>(hi ? r8[i] : r8[i + 4]);
     }
     float r2[2];
 #pragma unroll
     for (int i = 0; i < 2; ++i) {
         const bool hi = (lane & 4) != 0;
-        r2[i] = (hi ? r4[i + 2] : r4[i]) + __shfl_xor_sync(0xffffffffu, hi ? r4[i] : r4[i + 2], 4);
+        r2[i] = (hi ? r4[i + 2] : r4[i]) + shfl_x<DPP, 4>(hi ? r4[i] : r4[i + 2]);
     }
     const bool hi2 = (lane & 2) != 0;
-    const float r1 = (hi2 ? r2[1] : r2[0]) + __shfl_xor_sync(0xffffffffu, hi2 ? r2[0] : r2[1], 2);
-    return r1 + __shfl_xor_sync(0xffffffffu, r1, 1);
+    const float r1 = (hi2 ? r2[1] : r2[0]) + shfl_x<DPP, 2>(hi2 ? r2[0] : r2[1]);
+    return r1 + shfl_x<DPP, 1>(r1);
 }
 __device__ __forceinline__ int head_of_lane(int lane) {
     return ((lane >> 4) & 1) * 8 + ((lane >> 3) & 1) * 4 + ((lane >> 2) & 1) * 2 + ((lane >> 1) & 1);
@@ -272,7 +302,7 @@ __device__ __forceinline__ float load_v1(const QsaAttnPools& p, long long row, i
     }
 }
 
-template <int KV_MODE>
+template <int KV_MODE, int NC_ = 2, bool DPP_ = false>
 __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* __restrict__ q, QsaAttnPools p,
                                                              const int32_t* __restrict__ ids,
                                                              const int32_t* __restrict__ step, int n_kv_heads,
@@ -321,7 +351,7 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* 
     // (warp + 8 * (i + j)): a lane's q slice comes out of shared memory once for all of them, which cuts the traffic
     // that bounds this phase (24 x 16 B per lane per cell, against the FMAs) by NC; every dot product is the same
     // expression as for a single cell, so the scores are unchanged.
-    constexpr int NC = 2;   // 4 measured slower on a V100 (the registers cost occupancy)
+    constexpr int NC = NC_;   // CUDA 2 (4 measured slower on a V100: the registers cost occupancy); HIP gfx103x 8
     const int hd = head_of_lane(lane);
     for (int i = 0; i < CHUNK / WARPS; i += NC) {
         int cc[NC];
@@ -349,7 +379,7 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* 
             for (int j = 0; j < NC; ++j) {
 #pragma unroll
                 for (int h = G; h < 16; ++h) pp[j][h] = 0.0f;
-                const float sj = reduce12(pp[j], lane);
+                const float sj = reduce12<DPP_>(pp[j], lane);
                 if ((lane & 1) == 0 && hd < G) sp[hd][cc[j]] = sj * scale;
             }
         } else {
@@ -371,7 +401,7 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* 
                 }
 #pragma unroll
                 for (int h = G; h < 16; ++h) part[h] = 0.0f;
-                const float s = reduce12(part, lane);
+                const float s = reduce12<DPP_>(part, lane);
                 if ((lane & 1) == 0 && hd < G) sp[hd][c] = s * scale;
             }
         }
@@ -380,12 +410,12 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* 
     // per-head chunk max and exp-sum: warp w handles heads w and w+8.
     for (int h = warp; h < G; h += WARPS) {
         const float a = sp[h][lane], b = sp[h][lane + 32];
-        const float m = warp_max(fmaxf(a, b));
+        const float m = warp_max_x<DPP_>(fmaxf(a, b));
         const float ea = (lane < n_here && srow[lane] >= 0) ? __expf(a - m) : 0.0f;
         const float eb = (lane + 32 < n_here && srow[lane + 32] >= 0) ? __expf(b - m) : 0.0f;
         spt[lane][h] = ea;
         spt[lane + 32][h] = eb;
-        const float l = warp_sum(ea + eb);
+        const float l = warp_sum_x<DPP_>(ea + eb);
         if (lane == 0) { part_m[slot * G + h] = m; part_l[slot * G + h] = l; }
     }
     __syncthreads();
@@ -425,7 +455,7 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* 
 #pragma unroll
     for (int h = 0; h < G; ++h) part_acc[((size_t) slot * G + h) * HD + t] = acc[h];
 }
-#endif  // STRATA_EXPERIMENTAL_SM60
+#endif  // STRATA_ATTN_PRE75_BUILT
 
 __global__ void __launch_bounds__(HD) attn_merge_kernel(const float* __restrict__ part_acc,
                                                         const float* __restrict__ part_m,
@@ -452,18 +482,26 @@ __global__ void __launch_bounds__(HD) attn_merge_kernel(const float* __restrict_
     attn[(size_t) h * HD + d] = L > 0.0f ? acc / L : 0.0f;
 }
 
-#if defined(STRATA_EXPERIMENTAL_SM60)
-// the current device is below sm_75 (per device: a layer split can mix cards); STRATA_ATTN_PRE75=0 turns PR #540's
-// kernel off (A/B)
+#if defined(STRATA_ATTN_PRE75_BUILT)
+// CUDA: the current device is below sm_75; HIP: it is gfx103x (per device: a layer split can mix cards).
+// STRATA_ATTN_PRE75=0 turns PR #540's kernel off (A/B); on HIP =1 also runs it on another wave32 card.
 bool pre75_attn() {
-    static const bool off = [] {
+    static const int env = [] {
         const char* e = std::getenv("STRATA_ATTN_PRE75");
-        return e != nullptr && e[0] == '0';
+        return e == nullptr ? -1 : e[0] == '0' ? 0 : e[0] == '1' ? 1 : -1;
     }();
     static int cc[64] = {};
     int dev = 0;
-    if (off) return false;
+    if (env == 0) return false;
     if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return false; }
+#if defined(__HIPCC__)
+    if (cc[dev] == 0) {   // 2: gfx103x, 1: another card
+        hipDeviceProp_t prop{};
+        if (hipGetDeviceProperties(&prop, dev) != hipSuccess) { (void) hipGetLastError(); return false; }
+        cc[dev] = std::strncmp(prop.gcnArchName, "gfx103", 6) == 0 ? 2 : 1;
+    }
+    return env == 1 || cc[dev] == 2;
+#else
     if (cc[dev] == 0) {
         int major = 0, minor = 0;
         if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess ||
@@ -474,8 +512,13 @@ bool pre75_attn() {
         cc[dev] = 10 * major + minor;
     }
     return cc[dev] < 75;
+#endif
 }
+#if defined(__HIPCC__)
+#define STRATA_ATTN_CHUNK(M) (pre75_attn() ? attn_chunk_kernel_pre75<M, 8, true> : attn_chunk_kernel<M>)
+#else
 #define STRATA_ATTN_CHUNK(M) (pre75_attn() ? attn_chunk_kernel_pre75<M> : attn_chunk_kernel<M>)
+#endif
 #else
 #define STRATA_ATTN_CHUNK(M) attn_chunk_kernel<M>
 #endif

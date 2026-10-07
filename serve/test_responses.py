@@ -14,9 +14,10 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from serve import responses  # noqa: E402
 from serve.frontend import ChatTemplate  # noqa: E402
-from serve.responses import (ENCRYPTED_PREFIX, ResponsesError, input_messages, request_tools,  # noqa: E402
-                             template_kwargs, text_format)
+from serve.responses import (ENCRYPTED_PREFIX, ResponsesError, collect, input_messages, prompt_made,  # noqa: E402
+                             prompt_tools, request_tools, template_kwargs, text_format, thread_title_events)
 from serve.server import ByteTokenizer, MockEngine, Service, serve  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -115,6 +116,17 @@ class Parsing(unittest.TestCase):
         self.assertEqual(skipped, ["web_search"])
         self.assertIsNone(request_tools({"tools": TOOLS, "tool_choice": "none"})[0])
 
+    def test_additional_tools_input_items_are_accepted(self):
+        """#782: Codex sends an `additional_tools` input item; it used to be refused with a 400."""
+        extra = {"type": "additional_tools", "tools": [{"type": "function", "name": "later_tool",
+                                                         "parameters": {"type": "object"}}]}
+        req = {"input": [{"type": "message", "role": "user", "content": "hi"}, extra,
+                         {"type": "additional_tools"}], "tools": TOOLS}
+        self.assertEqual([m["role"] for m in input_messages(req)], ["user"])
+        tools, names, _ = request_tools(req)
+        self.assertEqual([t["name"] for t in tools], ["exec_command", "later_tool"])
+        self.assertIn("later_tool", names)
+
     def test_effort_and_text_format(self):
         self.assertEqual(template_kwargs({"reasoning": {"effort": "minimal"}}, {}), {"enable_thinking": False})
         self.assertEqual(template_kwargs({"reasoning": {"effort": "high"}}, {}), {"reasoning_effort": "xhigh"})
@@ -125,6 +137,138 @@ class Parsing(unittest.TestCase):
         self.assertEqual(text_format({"text": {"format": {"type": "json_schema", "name": "n", "schema": {}}}}),
                          {"type": "json_schema", "json_schema": {"name": "n", "schema": {}}})
         self.assertIsNone(text_format({"text": {"format": {"type": "text"}}}))
+
+
+# ------------------------------------------------------------------------------------------------ Codex compaction
+HISTORY = [{"role": "user", "content": "hi"},
+           {"type": "function_call", "name": "exec_command", "arguments": "{}", "call_id": "c1"},
+           {"type": "function_call_output", "call_id": "c1", "output": "ok"}]
+COMPACT_PROMPT = "You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary."   # Codex's default
+OTHER_TOOLS = [{"type": "function", "name": "read_file", "description": "Reads a file.",
+                "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}}]
+A, B = ("019a-a", "019a-a"), ("019a-b", "019a-b")    # (session_id, thread_id) of two root conversations
+
+
+def codex_meta(kind, conversation=A):
+    """client_metadata as Codex 0.160 sends it: the turn metadata is a JSON string."""
+    session, thread = conversation
+    return {"session_id": session, "thread_id": thread, "x-codex-turn-metadata": json.dumps(
+        {"session_id": session, "thread_id": thread, "request_kind": kind})}
+
+
+def codex_request(kind, conversation=A, tools=None, last=COMPACT_PROMPT, meta=None):
+    """A Codex request; a compaction one is the conversation again with `tools: []` (codex-rs compact.rs).  Every
+    conversation sends the same prompt_cache_key here: it is not what tells them apart."""
+    req = {"instructions": "Be brief", "tools": tools or [], "tool_choice": "auto", "prompt_cache_key": "same",
+           "parallel_tool_calls": bool(tools), "input": HISTORY + ([{"role": "user", "content": last}]
+                                                                    if kind == "compaction" else [])}
+    req["client_metadata"] = codex_meta(kind, conversation) if meta is None else meta
+    return req
+
+
+def tools_of(req):
+    """(the request's tools, the prompt's tools), as _responses_prepare gets them (the prompt then goes out)."""
+    tools = request_tools(req)[0]
+    shown = prompt_tools(req, tools)
+    prompt_made(req, shown)
+    return tools, shown
+
+
+class CodexCompaction(unittest.TestCase):
+    def setUp(self):
+        responses._kept_prompt_tools = (None, None)
+
+    def test_a_compaction_prompt_starts_as_its_conversations_last_prompt(self):
+        turn = codex_request("turn", tools=TOOLS)
+        before = TEMPLATE.render(input_messages(turn), tools=tools_of(turn)[1], add_generation_prompt=False)
+        req = codex_request("compaction")
+        own, shown = tools_of(req)
+        self.assertIsNone(own)                           # the request's tools: still none
+        self.assertEqual(shown, request_tools(turn)[0])
+        self.assertTrue(TEMPLATE.render(input_messages(req), tools=shown).startswith(before))
+        self.assertFalse(TEMPLATE.render(input_messages(req), tools=own).startswith(before))   # what it was
+        shown.clear()                                    # the kept list is nobody's to change
+        self.assertEqual(tools_of(req)[1], request_tools(turn)[0])
+        self.assertEqual(tools_of(req)[1], request_tools(turn)[0])   # a compaction leaves the entry as it was
+
+    def test_another_conversation_never_gets_these_tools(self):
+        tools_of(codex_request("turn", A, TOOLS))
+        b = tools_of(codex_request("turn", B, OTHER_TOOLS))[1]
+        self.assertIsNone(tools_of(codex_request("compaction", A))[1])    # one entry, B's: A reads again
+        self.assertEqual(tools_of(codex_request("compaction", B))[1], b)
+        for other in (("019a-b", "019a-sub"),            # a sub-agent: the root's session, its own thread
+                      ("019a-fork", "019a-fork")):        # a fork, or an ephemeral fork (same prompt_cache_key)
+            self.assertIsNone(tools_of(codex_request("compaction", other))[1])
+        self.assertEqual(tools_of(codex_request("compaction", B))[1], b)  # and they changed nothing
+        tools_of(codex_request("turn", A, TOOLS))
+        self.assertIsNone(tools_of(codex_request("compaction", B))[1])    # A's turn came last: B reads again
+        self.assertEqual(tools_of(codex_request("compaction", A))[1], request_tools({"tools": TOOLS})[0])
+
+    def test_requests_that_are_not_a_codex_compaction_are_rendered_as_sent(self):
+        tools_of(codex_request("turn", tools=TOOLS))
+        self.assertEqual(tools_of({"input": "another chat"}), (None, None))
+        self.assertEqual(tools_of({"input": COMPACT_PROMPT, "prompt_cache_key": "same"}), (None, None))
+        self.assertEqual(tools_of(codex_request("compaction", meta={})), (None, None))
+        self.assertEqual(tools_of(codex_request("compaction"))[1], request_tools({"tools": TOOLS})[0])
+        self.assertEqual(tools_of(codex_request("turn")), (None, None))   # a turn of A without tools ...
+        self.assertIsNone(tools_of(codex_request("compaction"))[1])        # ... is what its compaction follows
+
+    def test_the_compact_prompt_in_a_message_is_not_a_compaction(self):
+        tools_of(codex_request("turn", tools=TOOLS))
+        quoted = {"input": HISTORY + [{"role": "user", "content": COMPACT_PROMPT}], "tools": []}
+        self.assertEqual(tools_of(quoted), (None, None))  # the compact prompt's words, without Codex saying so
+        turn = codex_request("turn", last=COMPACT_PROMPT)
+        turn["input"] = HISTORY + [{"role": "user", "content": "Explain this: " + COMPACT_PROMPT}]
+        self.assertEqual(tools_of(turn), (None, None))   # Codex says it is a turn: as sent
+
+    def test_a_thread_title_turn_does_not_replace_the_kept_tools(self):
+        tools_of(codex_request("turn", tools=TOOLS))
+        kept = responses._kept_prompt_tools
+        title = codex_request("turn", ("019a-title", "019a-title"))
+        meta = json.loads(title["client_metadata"]["x-codex-turn-metadata"])
+        meta["thread_source"] = "thread_title"
+        title["client_metadata"]["x-codex-turn-metadata"] = json.dumps(meta)
+        prompt_made(title, None)
+        self.assertEqual(responses._kept_prompt_tools, kept)
+        self.assertEqual(tools_of(codex_request("compaction"))[1], request_tools({"tools": TOOLS})[0])
+
+    def test_a_custom_compact_prompt_is_a_compaction_when_codex_says_so(self):
+        first = tools_of(codex_request("turn", tools=TOOLS))[1]
+        self.assertEqual(tools_of(codex_request("compaction", last="Summarize it my way."))[1], first)
+
+    def test_a_compaction_that_sends_tools_keeps_them(self):
+        tools_of(codex_request("turn", tools=TOOLS))
+        own, shown = tools_of(codex_request("compaction", tools=OTHER_TOOLS))
+        self.assertEqual(shown, own)
+
+    def test_without_its_conversation_nothing_is_kept_or_used(self):
+        for meta in ({}, {"session_id": "019a-a", "thread_id": "019a-a"},     # only the flat keys
+                     {"x-codex-turn-metadata": json.dumps({"request_kind": "turn"})},
+                     {"x-codex-turn-metadata": json.dumps({"request_kind": "turn", "session_id": "019a-a"})},
+                     {"x-codex-turn-metadata": json.dumps({"request_kind": "turn", "thread_id": "019a-a"})}):
+            tools_of(codex_request("turn", tools=TOOLS, meta=meta))
+            self.assertEqual(responses._kept_prompt_tools, (None, None))
+        tools_of(codex_request("turn", tools=TOOLS))
+        kept = responses._kept_prompt_tools
+        compaction = {"x-codex-turn-metadata": json.dumps({"request_kind": "compaction"})}
+        self.assertEqual(tools_of(codex_request("compaction", meta=compaction)), (None, None))
+        self.assertEqual(responses._kept_prompt_tools, kept)
+
+    def test_malformed_metadata_is_no_error_and_no_reuse(self):
+        first = tools_of(codex_request("turn", tools=TOOLS))[1]
+        for meta in ("x", ["x"], {"x-codex-turn-metadata": None}, {"x-codex-turn-metadata": "{not json"},
+                     {"x-codex-turn-metadata": "[]"}, {"x-codex-turn-metadata": "\"compaction\""},
+                     {"x-codex-turn-metadata": {"request_kind": "compaction", "session_id": "019a-a",
+                                                "thread_id": "019a-a"}},          # an object: not what Codex sends
+                     {"x-codex-turn-metadata": json.dumps({"request_kind": "compaction", "session_id": 1,
+                                                           "thread_id": 1})},
+                     {"x-codex-turn-metadata": json.dumps({"request_kind": "compaction", "session_id": "",
+                                                           "thread_id": ""})}):
+            self.assertEqual(tools_of(codex_request("compaction", meta=meta)), (None, None), meta)
+        self.assertEqual(tools_of(codex_request("compaction"))[1], first)   # A's entry was not touched
+        odd = {"x-codex-turn-metadata": json.dumps({"request_kind": ["compaction"], "session_id": "019a-a",
+                                                    "thread_id": "019a-a"})}
+        self.assertEqual(tools_of(codex_request("compaction", meta=odd)), (None, None))   # not a compaction: as sent
 
 
 # ------------------------------------------------------------------------------------------------ over HTTP
@@ -392,6 +536,179 @@ class ToolRoundTrip(Server):
                                           "output": "2"}]})
         self.assertEqual([c["function"]["name"] for c in msgs[1]["tool_calls"]],
                          ["multi_agent_v1.spawn_agent", "apply_patch"])
+
+
+class JsonFormatWithTools(Server):
+    """#782: Codex's review request carries an `additional_tools` item, tools, and `text.format` json_schema together.
+    A tool call passes through; the schema is checked on the answer that ends in text."""
+    FMT = {"type": "json_schema", "name": "guardian_review", "strict": True,
+           "schema": {"type": "object", "properties": {"outcome": {"type": "string"}, "rationale": {"type": "string"}},
+                      "required": ["outcome", "rationale"], "additionalProperties": False}}
+
+    def request(self, **extra):
+        user = {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "review this call"}]}
+        more = {"type": "additional_tools", "role": "developer", "tools": [
+            {"type": "function", "name": "later_tool", "parameters": {"type": "object"}}]}
+        return {"model": "m", "instructions": "You are a reviewer.", "input": [more, user], "tools": TOOLS,
+                "tool_choice": "auto", "parallel_tool_calls": False, "store": False,
+                "text": {"format": self.FMT}, **extra}
+
+    def script_with(self, text):
+        self.engine.scripts = [self.tok.encode(text, parse_special=True)]
+        self.engine.script = self.engine.scripts[0]
+
+    def test_a_tool_call_passes_through(self):
+        self.script_with(CALL + "<|im_end|>")
+        for stream in (False, True):
+            code, r = self.post(self.request(stream=stream))
+            self.assertEqual(code, 200, r)
+            final = r if not stream else r[-1]["response"]
+            self.assertEqual(final["status"], "completed")
+            self.assertEqual([o["type"] for o in final["output"]][-2:], ["message", "function_call"])
+            call, = [o for o in final["output"] if o["type"] == "function_call"]
+            self.assertEqual((call["type"], call["name"], json.loads(call["arguments"])),
+                             ("function_call", "exec_command", {"cmd": "cat a.txt"}))
+        # the model is told the schema is for its final answer, not for a turn that calls a tool
+        self.assertIn("applies only to your final answer", self.tok.decode(self.engine.last_prompt))
+
+    def test_the_final_text_answer_is_the_schema_object(self):
+        self.script_with('</think>\n\n{"outcome": "allow", "rationale": "read only"}<|im_end|>')
+        code, r = self.post(self.request())
+        self.assertEqual(code, 200, r)
+        self.assertEqual(json.loads(r["output"][-1]["content"][0]["text"]),
+                         {"outcome": "allow", "rationale": "read only"})
+        code, events = self.post(self.request(stream=True))
+        self.assertEqual(events[-1]["type"], "response.completed")
+        self.assertEqual(len([e for e in events if e["type"] == "response.output_text.delta"]), 1)
+
+    def test_a_text_answer_that_breaks_the_schema_fails_as_without_tools(self):
+        try:
+            import jsonschema  # noqa: F401
+        except ImportError:
+            self.skipTest("the schema check needs jsonschema")
+        self.script_with('</think>\n\n{"outcome": 3}<|im_end|>')
+        code, r = self.post(self.request())
+        self.assertEqual((code, r["error"]["code"]), (502, "structured_output_failed"))
+
+
+class ThreadTitle(Server):
+    def test_a_thread_title_is_answered_without_the_engine(self):
+        self.svc.codex_thread_titles = True                      # opt-in: "codex_thread_titles": true in the config
+        user = {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "what is in a.txt?"}]}
+        code, r = self.post({"model": "m", "instructions": "You are a coding agent.", "input": [user], "tools": TOOLS})
+        self.assertEqual(code, 200, r)
+        seen = list(self.engine.last_prompt)
+        self.assertTrue(seen)
+        meta = {"session_id": "019a-title", "thread_id": "019a-title", "request_kind": "turn",
+                "thread_source": "thread_title"}
+        code, r = self.post({
+            "model": "m", "instructions": "You are Codex", "tools": [],
+            "client_metadata": {"x-codex-turn-metadata": json.dumps(meta)},
+            "input": [{"type": "message", "role": "user", "content": [
+                {"type": "input_text", "text": "Generate a concise title.\n\nUser prompt:\n只回四個字然後停：傾印測試"}]}]})
+        self.assertEqual(code, 200, r)
+        self.assertEqual(self.engine.last_prompt, seen)
+        self.assertEqual(json.loads(r["output"][0]["content"][0]["text"]), {"title": "只回四個字然後停：傾印測試"})
+        long = {"model": "m", "instructions": "You are Codex", "tools": [],
+                "client_metadata": {"x-codex-turn-metadata": json.dumps(meta)},
+                "input": "User prompt:\n" + ("甲" * 40) + "。"}
+        self.assertEqual(json.loads(collect(thread_title_events(long, "m"))["output"][0]["content"][0]["text"]),
+                         {"title": "甲" * 36})
+
+    def test_off_by_default_the_engine_answers(self):
+        meta = {"thread_source": "thread_title"}
+        code, r = self.post({"model": "m", "instructions": "You are Codex", "tools": [],
+                             "client_metadata": {"x-codex-turn-metadata": json.dumps(meta)},
+                             "input": "User prompt:" + chr(10) + "hello"})
+        self.assertEqual(code, 200, r)
+        self.assertTrue(self.engine.last_prompt)                  # it ran on the engine
+        self.assertNotIn('"title"', json.dumps(r["output"]))
+
+
+class CodexCompactionOverHttp(Server):
+    # the compaction answer is tool calls the conversation's tools would make a namespace call and a custom call
+    script = [CALL, "</think>\n\n<tool_call>\n<function=multi_agent_v1.spawn_agent>\n<parameter=message>\nhi\n"
+                    "</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=apply_patch>\n<parameter=input>\n"
+                    "*** Begin Patch\n</parameter>\n</function>\n</tool_call>"]
+    tools = TOOLS + [{"type": "namespace", "name": "multi_agent_v1", "description": "Agents.", "tools": [
+        {"type": "function", "name": "spawn_agent", "parameters": {"type": "object", "properties": {
+            "message": {"type": "string"}}}}]}, {"type": "custom", "name": "apply_patch", "description": "Edit files."}]
+
+    def setUp(self):
+        super().setUp()
+        responses._kept_prompt_tools = (None, None)
+        self.svc.codex_compaction_cache = True       # opt-in (#924)
+        self.parser_tools = []
+        run = self.svc.run
+
+        def recorded(ids, thinking, tools, *rest):
+            self.parser_tools.append(tools)
+            return run(ids, thinking, tools, *rest)
+        self.svc.run = recorded
+
+    def compaction(self, meta, output="before", between=None, **extra):
+        """Codex's turn, (`between`,) then its compaction request: (the compaction prompt, its status and response)."""
+        self.engine.turns, self.engine.script = 0, self.engine.scripts[0]
+        user = {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "what is in a.txt?"}]}
+        turn = {"model": "m", "instructions": "You are a coding agent.", "input": [user], "tools": self.tools,
+                "include": ["reasoning.encrypted_content"], "client_metadata": codex_meta("turn")}
+        code, r = self.post(turn)
+        self.assertEqual(code, 200, r)
+        self.first_prompt = self.tok.decode(self.engine.last_prompt)
+        call = r["output"][-1]
+        if between:
+            between()
+        code, r = self.post({**turn, "tools": [], "parallel_tool_calls": False, "client_metadata": meta, "input": [
+            user, *r["output"], {"type": "function_call_output", "call_id": call["call_id"], "output": output},
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": COMPACT_PROMPT}]}],
+            **extra})
+        return self.tok.decode(self.engine.last_prompt), code, r
+
+    def test_the_kept_tools_shape_only_the_prompt(self):
+        prompt, code, r = self.compaction(codex_meta("compaction"))
+        self.assertEqual(code, 200, r)
+        self.assertTrue(prompt.startswith(self.first_prompt + CALL + "<|im_end|>"))   # the cached conversation
+        self.assertIn("multi_agent_v1.spawn_agent", prompt[:prompt.index("<|im_end|>")])
+        self.assertEqual(self.parser_tools[-1], None)    # the parser gets the request's tools: none
+        self.assertEqual(r["tools"], [])
+        # the calls come back as for any request without tools: no namespace, no custom tool
+        outputs = [(o["type"], o["name"], o.get("namespace")) for o in r["output"]]
+        self.assertEqual(outputs, [("function_call", "multi_agent_v1.spawn_agent", None),
+                                   ("function_call", "apply_patch", None)])
+        # the same request without Codex's metadata (upstream's behaviour): the same answer, but its prompt starts
+        # differently, so the engine reads it from the start
+        plain, code, r2 = self.compaction({})
+        self.assertEqual(code, 200, r2)
+        self.assertFalse(plain.startswith(self.first_prompt))
+        self.assertNotIn("multi_agent_v1.spawn_agent", plain[:plain.index("<|im_end|>")])
+        self.assertEqual(self.parser_tools[-1], None)
+        self.assertEqual([(o["type"], o["name"], o.get("namespace")) for o in r2["output"]], outputs)
+
+    def test_a_compaction_too_long_with_the_kept_tools_is_rendered_as_sent(self):
+        long = "before\n" * 300                         # a long tool output: the turn fits, its compaction barely
+        plain, code, r = self.compaction({}, long, max_output_tokens=64)
+        self.assertEqual(code, 200, r)
+        fits = len(self.engine.last_prompt) + 64 + 8     # the request as sent, its output, CTX_SLACK
+        shown, code, r = self.compaction(codex_meta("compaction"), long, max_output_tokens=64)
+        self.assertGreater(len(self.engine.last_prompt) + 64 + 8, fits)   # with the kept tools it would not fit
+        self.engine.max_context = fits
+        again, code, r = self.compaction(codex_meta("compaction"), long, max_output_tokens=64)
+        self.assertEqual(code, 200, r)                   # as without the kept tools, not a context error
+        self.assertEqual(again, plain)
+        self.assertEqual(self.parser_tools[-1], None)
+
+
+    def test_a_request_that_fails_leaves_the_kept_tools_as_they_were(self):
+        before, code, r = self.compaction(codex_meta("compaction"))
+        self.assertEqual(code, 200, r)
+
+        def fails():                                     # B's turn is too long: its prompt never reaches the engine
+            code, r = self.post({"model": "m", "input": "x" * 20000, "tools": TOOLS,
+                                 "client_metadata": codex_meta("turn", B)})
+            self.assertEqual((code, r["error"]["code"]), (400, "context_length_exceeded"))
+        again, code, r = self.compaction(codex_meta("compaction"), between=fails)
+        self.assertEqual(code, 200, r)
+        self.assertEqual(again, before)                  # so A's compaction still starts as A's turn
 
 
 if __name__ == "__main__":

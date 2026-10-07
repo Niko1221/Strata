@@ -12,9 +12,7 @@
 //
 // and takes the lookup window only when its best E/cost beats the MTP's by `margin`. Costs are the measured round
 // times per window size (EMA; sizes not seen yet are scaled from seen ones by a prior shape), so the policy adapts
-// to the machine and the context length. A confident full lookup window is retried after 64 timed rounds at other
-// sizes; its first fresh sample replaces the stale cost. It only chooses which drafts to verify: the output is
-// unchanged.
+// to the machine and the context length. It only chooses which drafts to verify: the output is unchanged.
 #pragma once
 
 #include <array>
@@ -51,15 +49,16 @@ public:
 private:
     static int bucket(int match);
     double mtp_tokens(int t) const;
-    void observe_cost(int t, double round_ms);
+    bool stale(int t) const;               // a size not measured for a long stretch of rounds
 
     int max_t_;
     double margin_;
     std::array<double, kMaxT + 1> cost_{}, cost_n_{};      // round ms by window size
-    std::array<int, kMaxT + 1> cost_age_{};               // timed rounds at other sizes, saturated
     std::array<double, kMaxT + 1> mtp_tok_{}, mtp_n_{};    // tokens committed by MTP windows of that size
     std::array<double, kBuckets> ok_{}, bad_{};            // lookup drafts accepted / windows cut short, decayed
     std::array<double, kBuckets> cok_{}, cbad_{};          // chained lookup drafts, the same (reached rounds only)
+    double rounds_ = 0;                                    // rounds observed so far
+    std::array<double, kMaxT + 1> last_{};                 // the round at which each size was last measured
 };
 
 }  // namespace strata::spec

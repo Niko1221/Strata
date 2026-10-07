@@ -7,6 +7,7 @@ requirements file, and an existing install left as it is.  Mocked network - noth
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 import re
@@ -73,7 +74,9 @@ class HuggingFacePins(unittest.TestCase):
                 raise not_found(req.full_url)
             return Response(b"model bytes", status=200)
 
-        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup.urllib.request, "urlopen", urlopen):
+        # the pinned Hugging Face path itself (setup's --source huggingface; auto may pick ModelScope)
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup.urllib.request, "urlopen", urlopen), \
+                mock.patch.dict(setup.os.environ, {"STRATA_SOURCE": "huggingface"}):
             dst = Path(d) / "m.gguf"
             _, out = quiet(setup.download, setup.FAMILIES["qwen"]["mmproj_hf"] + "m.gguf", dst)
             self.assertEqual(dst.read_bytes(), b"model bytes")
@@ -176,16 +179,31 @@ class Engine(unittest.TestCase):
             p.stop()
         self.tmp.cleanup()
 
-    def fake_download(self, got):
+    def fake_download(self, got, wrote=None):
         def download(url, dst, what=None):
             got.append(url)
+            if wrote is not None:
+                wrote.append(Path(dst))
             with zipfile.ZipFile(dst, "w") as z:
                 z.writestr("BUILD.json", json.dumps({"version": ".".join(map(str, setup.MIN_ENGINE)), "archs": [89]}))
                 z.writestr(setup.EXE, b"engine")
         return download
 
+    def fake_digest(self, wrote):
+        """The SHA-256 of whatever the fake download just wrote, computed for real.
+
+        `get_prebuilt()` now checks the archive against GitHub's size and SHA-256 before it unpacks
+        anything, so a test that mocks the download has to supply a hash or it stops at the check. These
+        tests are about WHICH release and WHICH asset are chosen, not about the bytes; what happens when
+        the hash is wrong has its own file (tools/test_setup_engine_hash.py).
+        """
+        def digest(asset, base):
+            data = Path(wrote[-1]).read_bytes()
+            return len(data), hashlib.sha256(data).hexdigest()
+        return digest
+
     def run_get(self, published):
-        heads, got = [], []
+        heads, got, wrote = [], [], []
 
         def urlopen(req, timeout=None):
             heads.append(req.full_url)
@@ -194,7 +212,8 @@ class Engine(unittest.TestCase):
             return Response()
 
         with mock.patch.object(setup.urllib.request, "urlopen", urlopen), \
-                mock.patch.object(setup, "download", self.fake_download(got)):
+                mock.patch.object(setup, "download", self.fake_download(got, wrote)), \
+                mock.patch.object(setup, "engine_digest", self.fake_digest(wrote)):
             eng, out = quiet(setup.get_prebuilt, setup.PREBUILT_URL, {"arch": 89}, "gpu")
         return eng, out, heads, got
 
@@ -222,14 +241,18 @@ class Engine(unittest.TestCase):
         for meta in ({"version": "0.1.0", "archs": [89]},
                      {"version": ".".join(map(str, setup.MIN_ENGINE)), "archs": [120]}):
             with self.subTest(meta=meta):
+                wrote = []
+
                 def download(url, dst, what=None):
+                    wrote.append(Path(dst))
                     with zipfile.ZipFile(dst, "w") as z:
                         z.writestr("BUILD.json", json.dumps(meta))
                         z.writestr(setup.EXE, b"engine")
                     setup.mark(dst)
 
                 with mock.patch.object(setup.urllib.request, "urlopen", lambda req, timeout=None: Response()), \
-                        mock.patch.object(setup, "download", download):
+                        mock.patch.object(setup, "download", download), \
+                        mock.patch.object(setup, "engine_digest", self.fake_digest(wrote)):
                     eng, _ = quiet(setup.get_prebuilt, setup.PREBUILT_URL, {"arch": 89}, "gpu")
                 self.assertIsNone(eng)
                 z = self.root / "engine" / setup.PREBUILT_ASSET

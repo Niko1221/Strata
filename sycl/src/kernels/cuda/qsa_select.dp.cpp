@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include "strata/kernels/qsa_select.hpp"
+#include "strata/kernels/gfx_arch.hpp"
 
 #include <cfloat>
 #include <cstdio>
@@ -432,14 +433,32 @@ __dpct_inline__ void block_scores_tc_kernel(
 //   a lane ends up with 8 consecutive blocks of ONE query, written as one run.  No LDS for keys: a lane reads its
 //   32-byte slice of the key row from global (the 16 query tiles of a launch re-read them from L2); the queries are
 //   split once per CTA into LDS.
+// gfx11 (RDNA3 / RDNA3.5) has the same instruction with another fragment layout: a lane holds all 16 k of its row
+// (A) or column (B) - lanes 16..31 repeat lanes 0..15 - and D[2i + l/16][l%16]; SEL_KL is the k per lane, SEL_KOFF(g)
+// the first, SEL_ROW(i, g) the D row of element i.  Same products, same order per element as on gfx12.
 #if defined(__gfx1200__) || defined(__gfx1201__)
 #define STRATA_SEL_GFX12 1
+#define STRATA_SEL_GFX11 0
+#elif defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1150__) || \
+    defined(__gfx1151__)
+#define STRATA_SEL_GFX12 0
+#define STRATA_SEL_GFX11 1
 #else
 #define STRATA_SEL_GFX12 0
+#define STRATA_SEL_GFX11 0
 #endif
-typedef short sel_s8 __attribute__((ext_vector_type(8)));
+#if STRATA_SEL_GFX11
+constexpr int SEL_KL = 16;
+#define SEL_KOFF(g) 0
+#define SEL_ROW(i, g) (2 * (i) + (g))
+#else
+constexpr int SEL_KL = 8;
+#define SEL_KOFF(g) ((g) * 8)
+#define SEL_ROW(i, g) ((g) * 8 + (i))
+#endif
+typedef short sel_s8 __attribute__((ext_vector_type(SEL_KL)));
 typedef float sel_f8 __attribute__((ext_vector_type(8)));
-typedef uint32_t sel_u4 __attribute__((ext_vector_type(4)));
+typedef uint32_t sel_u4 __attribute__((ext_vector_type(SEL_KL / 2)));
 constexpr int WQT = 16;                    // queries per CTA (the N of one WMMA)
 constexpr int WITER = 4;                   // key tiles per warp (the CTA covers 4 warps * WITER * 16 blocks)
 constexpr int WQS = IDX_DIM + 8;           // bf16 elements per LDS row: 272 bytes, conflict-free 16-byte reads
@@ -447,6 +466,8 @@ constexpr int WQS = IDX_DIM + 8;           // bf16 elements per LDS row: 272 byt
 __device__ __forceinline__ sel_f8 wmma_bf16(const sel_s8& a, const sel_s8& b, const sel_f8& c) {
 #if STRATA_SEL_GFX12
     return __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32_gfx12(a, b, c);
+#elif STRATA_SEL_GFX11
+    return __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, c);
 #else
     /* unreachable on SYCL: the launcher refuses this device */
     return c;
@@ -460,7 +481,7 @@ __device__ __forceinline__ void split3(float x, uint32_t& hi, uint32_t& mid, uin
     lo = sycl::bit_cast<uint32_t>(r1 - __uint_as_float(mid)) & 0xffff0000u;   // exact: at most 8 significant bits left
 }
 __device__ __forceinline__ uint32_t pack_bf16x2(uint32_t a, uint32_t b) {   // low half = a's bf16, high half = b's
-#if STRATA_SEL_GFX12
+#if STRATA_SEL_GFX12 || STRATA_SEL_GFX11
     return __builtin_amdgcn_perm(b, a, 0x07060302u);
 #else
     return (a >> 16) | (b & 0xffff0000u);
@@ -501,7 +522,7 @@ __global__ void __launch_bounds__(128) block_scores_wmma_kernel(const float* __r
         if (b0 >= reach || b0 >= hi_nbid) break;          // warp-uniform; later tiles start higher
         const int64_t row = b0 + l16;
         const bool rv = row < hi_nbid && row < max_blocks;
-        const float* kp = pooled + (rv ? row : 0) * IDX_DIM + g * 8;
+        const float* kp = pooled + (rv ? row : 0) * IDX_DIM + SEL_KOFF(g);
         // acc: the hi*hi products; cor: the five smaller ones (<= 2^-8 of it). Kept apart and added once at the end: a
         // correction summed into the big accumulator is rounded to ITS ulp at every one of the 48 steps (measured: 8e-7
         // of the score scale; apart, near the warp kernel's)
@@ -510,18 +531,19 @@ __global__ void __launch_bounds__(128) block_scores_wmma_kernel(const float* __r
         for (int h = 0; h < IDX_HEADS; ++h) acc[h] = cor[h] = sel_f8{0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
 #pragma unroll 2
         for (int kk = 0; kk < IDX_DIM / 16; ++kk) {
-            float4 k0 = make_float4(0.f, 0.f, 0.f, 0.f), k1 = k0;
-            if (rv) {
-                k0 = *reinterpret_cast<const float4*>(kp + kk * 16);
-                k1 = *reinterpret_cast<const float4*>(kp + kk * 16 + 4);
-            }
-            const float x[8] = {k0.x, k0.y, k0.z, k0.w, k1.x, k1.y, k1.z, k1.w};
-            uint32_t hb[8], mb[8], lb[8];
+            float x[SEL_KL];
 #pragma unroll
-            for (int j = 0; j < 8; ++j) split3(x[j], hb[j], mb[j], lb[j]);
+            for (int j = 0; j < SEL_KL / 4; ++j) {
+                float4 kv = make_float4(0.f, 0.f, 0.f, 0.f);
+                if (rv) kv = *reinterpret_cast<const float4*>(kp + kk * 16 + 4 * j);
+                x[4 * j] = kv.x; x[4 * j + 1] = kv.y; x[4 * j + 2] = kv.z; x[4 * j + 3] = kv.w;
+            }
+            uint32_t hb[SEL_KL], mb[SEL_KL], lb[SEL_KL];
+#pragma unroll
+            for (int j = 0; j < SEL_KL; ++j) split3(x[j], hb[j], mb[j], lb[j]);
             sel_u4 ah, am, al;
 #pragma unroll
-            for (int j = 0; j < 4; ++j) {
+            for (int j = 0; j < SEL_KL / 2; ++j) {
                 ah[j] = pack_bf16x2(hb[2 * j], hb[2 * j + 1]);
                 am[j] = pack_bf16x2(mb[2 * j], mb[2 * j + 1]);
                 al[j] = pack_bf16x2(lb[2 * j], lb[2 * j + 1]);
@@ -530,9 +552,9 @@ __global__ void __launch_bounds__(128) block_scores_wmma_kernel(const float* __r
                          Al = __builtin_bit_cast(sel_s8, al);
 #pragma unroll
             for (int h = 0; h < IDX_HEADS; ++h) {
-                const sel_s8 Bh = *reinterpret_cast<const sel_s8*>(&sq[0][h][l16][kk * 16 + g * 8]);
-                const sel_s8 Bm = *reinterpret_cast<const sel_s8*>(&sq[1][h][l16][kk * 16 + g * 8]);
-                const sel_s8 Bl = *reinterpret_cast<const sel_s8*>(&sq[2][h][l16][kk * 16 + g * 8]);
+                const sel_s8 Bh = *reinterpret_cast<const sel_s8*>(&sq[0][h][l16][kk * 16 + SEL_KOFF(g)]);
+                const sel_s8 Bm = *reinterpret_cast<const sel_s8*>(&sq[1][h][l16][kk * 16 + SEL_KOFF(g)]);
+                const sel_s8 Bl = *reinterpret_cast<const sel_s8*>(&sq[2][h][l16][kk * 16 + SEL_KOFF(g)]);
                 cor[h] = wmma_bf16(Al, Bh, cor[h]);
                 cor[h] = wmma_bf16(Ah, Bl, cor[h]);
                 cor[h] = wmma_bf16(Am, Bm, cor[h]);
@@ -541,11 +563,11 @@ __global__ void __launch_bounds__(128) block_scores_wmma_kernel(const float* __r
                 acc[h] = wmma_bf16(Ah, Bh, acc[h]);
             }
         }
-        // relu per head, heads added in order (as the warp kernel); this lane: query qi, blocks b0 + 8g .. 8g+7
+        // relu per head, heads added in order (as the warp kernel); this lane: query qi, blocks b0 + SEL_ROW(i, g)
         if (qi < nq) {
 #pragma unroll
             for (int i = 0; i < 8; ++i) {
-                const int64_t b = b0 + g * 8 + i;
+                const int64_t b = b0 + SEL_ROW(i, g);
                 if (b >= nb_q || b >= max_blocks) continue;
                 float score = 0.0f;
 #pragma unroll
@@ -559,7 +581,7 @@ __global__ void __launch_bounds__(128) block_scores_wmma_kernel(const float* __r
     }
 }
 
-// the gfx12 kernel needs gfx1200/gfx1201 code objects and a gfx12 device (gfx1100 has WMMA too, with another layout)
+// the WMMA kernel needs gfx12 (gfx1200/gfx1201) or gfx11 (gfx110x/gfx115x: the other fragment layout) code objects
 bool sel_gfx12_device() {
     static int ok[64] = {};   // per device: 0 unknown, 1 yes, 2 no
     int dev = 0;
@@ -567,7 +589,8 @@ bool sel_gfx12_device() {
     if (ok[dev] == 0) {
         cudaDeviceProp prop;
         ok[dev] = (cudaGetDeviceProperties(&prop, dev) == cudaSuccess &&
-                   (std::strncmp(prop.gcnArchName, "gfx1200", 7) == 0 || std::strncmp(prop.gcnArchName, "gfx1201", 7) == 0))
+                   (std::strncmp(prop.gcnArchName, "gfx1200", 7) == 0 || std::strncmp(prop.gcnArchName, "gfx1201", 7) == 0 ||
+                    strata::kernels::gfx_arch_is_gfx11_wmma(prop.gcnArchName)))
                       ? 1 : 2;
         cudaGetLastError();
     }
@@ -842,6 +865,248 @@ auto &hist =
     }
 }
 
+#if !defined(__HIPCC__)
+// ---- a query with more blocks than the register kernel holds (contexts past 4 * 1024 * TK_PER cells): the register
+// kernel's threads, per-warp histograms and warp scans, with each key read from memory again on every pass.  A
+// histogram has no order, so on the four radix passes thread t reads blocks t, t + 1024, ...: a warp reads 32
+// neighbours at a time.  The cells are emitted ascending in the order (warp, row, lane): warp w holds the `per` rows
+// of 32 consecutive blocks from block w * 32 * per.  block_topk_kernel's selection rule (radix threshold, ties to the
+// lowest index): identical ids.
+/*
+DPCT1110: The total declared local variable size in device function
+block_topk_wide_kernel exceeds 128 bytes and may cause high register pressure.
+Consult with your hardware vendor to find the total register size available and
+adjust the code, or use smaller sub-group size to avoid high register pressure.
+*/
+__dpct_inline__ void block_topk_wide_kernel(const float *__restrict__ scores,
+                                            const int32_t *__restrict__ steps,
+                                            int64_t max_blocks, int64_t cap,
+                                            int32_t *__restrict__ ids) {
+    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+auto &hist =
+    *sycl::ext::oneapi::group_local_memory_for_overwrite<int[TK_T / 32][256]>(
+        sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    auto &s_gt =
+        *sycl::ext::oneapi::group_local_memory_for_overwrite<int[TK_T / 32]>(
+            sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    auto &s_eq =
+        *sycl::ext::oneapi::group_local_memory_for_overwrite<int[TK_T / 32]>(
+            sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    auto &s_digit = *sycl::ext::oneapi::group_local_memory_for_overwrite<int>(
+        sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    auto &s_above = *sycl::ext::oneapi::group_local_memory_for_overwrite<int>(
+        sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    const int64_t qi = item_ct1.get_group(2);
+    const int32_t* st = steps + qi * kStepCount;
+    const int64_t n_kv = st[kStepNKv], n_bid = st[kStepNBid], width = st[kStepWidth];
+    int32_t* out = ids + qi * cap;
+    const int t = item_ct1.get_local_id(2), lane = t & 31, warp = t >> 5;
+    if (n_kv <= width) {
+#pragma unroll
+        for (int64_t j = t; j < n_kv; j += TK_T) out[j] = (int32_t)j;
+        return;
+    }
+    const float* sc = scores + qi * max_blocks;
+    const int64_t nb = n_bid + 1;
+    const int64_t per = (nb + TK_T - 1) / TK_T;       // rows of 32 blocks per warp
+    auto weight = [&](int64_t b) -> int { return b < n_bid ? R : (int) (n_kv - n_bid * R); };
+    uint32_t prefix = 0;
+    int above = 0;
+    for (int shift = 24; shift >= 0; shift -= 8) {
+#pragma unroll
+        for (int i = lane; i < 256; i += 32) hist[warp][i] = 0;
+        sycl::group_barrier(sycl::ext::oneapi::this_work_item::get_sub_group());
+        const uint32_t hi_mask = shift == 24 ? 0u : (0xffffffffu << (shift + 8));
+        for (int64_t b = t; b < nb; b += TK_T) {
+            const int w = weight(b);
+            if (w == 0) continue;
+            const uint32_t k = order_key(sc[b]);
+            if ((k & hi_mask) == (prefix & hi_mask)) dpct::atomic_fetch_add<
+                sycl::access::address_space::generic_space>(
+                &hist[warp][(k >> shift) & 255], w);
+        }
+        /*
+        DPCT1118: SYCL group functions and algorithms must be encountered in
+        converged control flow. You may need to adjust the code.
+        */
+        /*
+        DPCT1065: Consider replacing sycl::nd_item::barrier() with
+        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
+        better performance if there is no access to global memory.
+        */
+        item_ct1.barrier();
+        if (t < 256) {                                // fold the warps' histograms into warp 0's
+            int sum = 0;
+#pragma unroll
+            for (int w2 = 0; w2 < TK_T / 32; ++w2) sum += hist[w2][t];
+            hist[0][t] = sum;
+        }
+        /*
+        DPCT1118: SYCL group functions and algorithms must be encountered in
+        converged control flow. You may need to adjust the code.
+        */
+        /*
+        DPCT1065: Consider replacing sycl::nd_item::barrier() with
+        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
+        better performance if there is no access to global memory.
+        */
+        item_ct1.barrier();
+        if (t == 0) {
+            int cum = above, d = 255;
+#pragma unroll
+            for (; d > 0; --d) {
+                if (cum + hist[0][d] >= width) break;
+                cum += hist[0][d];
+            }
+            s_digit = d;
+            s_above = cum;
+        }
+        /*
+        DPCT1118: SYCL group functions and algorithms must be encountered in
+        converged control flow. You may need to adjust the code.
+        */
+        /*
+        DPCT1065: Consider replacing sycl::nd_item::barrier() with
+        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
+        better performance if there is no access to global memory.
+        */
+        item_ct1.barrier();
+        prefix |= (uint32_t) s_digit << shift;
+        above = s_above;
+        /*
+        DPCT1118: SYCL group functions and algorithms must be encountered in
+        converged control flow. You may need to adjust the code.
+        */
+        /*
+        DPCT1065: Consider replacing sycl::nd_item::barrier() with
+        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
+        better performance if there is no access to global memory.
+        */
+        item_ct1.barrier();
+    }
+    const uint32_t thr = prefix;
+    const int eq_budget = (int) (width - above);      // cells equal to thr that fit, lowest index first
+    const int64_t w0 = (int64_t) warp * 32 * per;
+    int gt = 0, eq = 0;
+    for (int64_t b = w0 + lane; b < nb && b < w0 + 32 * per; b += 32) {
+        const int w = weight(b);
+        if (w == 0) continue;
+        const uint32_t k = order_key(sc[b]);
+        if (k > thr) gt += w;
+        else if (k == thr) eq += w;
+    }
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) {
+        /*
+        DPCT1108: '__shfl_xor_sync' was migrated with the experimental
+        feature masked sub_group function which may not be supported by all
+        compilers or runtimes. You may need to adjust the code.
+        */
+        gt += dpct::experimental::permute_sub_group_by_xor(
+            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), gt,
+            o);
+        /*
+        DPCT1108: '__shfl_xor_sync' was migrated with the experimental
+        feature masked sub_group function which may not be supported by all
+        compilers or runtimes. You may need to adjust the code.
+        */
+        eq += dpct::experimental::permute_sub_group_by_xor(
+            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), eq,
+            o);
+    }
+    if (lane == 0) { s_gt[warp] = gt; s_eq[warp] = eq; }
+    /*
+    DPCT1065: Consider replacing sycl::nd_item::barrier() with
+    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
+    performance if there is no access to global memory.
+    */
+    item_ct1.barrier();
+    if (t == 0) {                                     // per warp: the selected cells and the tied cells before it
+        int eb = 0, sb = 0;
+        for (int w2 = 0; w2 < TK_T / 32; ++w2) {
+            const int g2 = s_gt[w2], e2 = s_eq[w2];
+            const int take = eq_budget - eb < 0 ? 0 : (eq_budget - eb > e2 ? e2 : eq_budget - eb);
+            s_gt[w2] = sb;
+            s_eq[w2] = eb;
+            sb += g2 + take;
+            eb += e2;
+        }
+    }
+    /*
+    DPCT1065: Consider replacing sycl::nd_item::barrier() with
+    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
+    performance if there is no access to global memory.
+    */
+    item_ct1.barrier();
+    int run_sel = s_gt[warp], run_eq = s_eq[warp];
+    for (int64_t r0 = w0; r0 < nb && r0 < w0 + 32 * per; r0 += 32) {
+        const int64_t b = r0 + lane;
+        const int w = b < nb ? weight(b) : 0;
+        const uint32_t k = w ? order_key(sc[b]) : 0u;
+        const int my_gt = (w && k > thr) ? w : 0, my_eq = (w && k == thr) ? w : 0;
+        if (sycl::reduce_over_group(
+                sycl::ext::oneapi::this_work_item::get_sub_group(),
+                (0xffffffffu &
+                 (0x1 << sycl::ext::oneapi::this_work_item::get_sub_group()
+                             .get_local_linear_id())) &&
+                        (my_gt | my_eq) != 0
+                    ? (0x1 << sycl::ext::oneapi::this_work_item::get_sub_group()
+                                  .get_local_linear_id())
+                    : 0,
+                sycl::ext::oneapi::plus<>()) ==
+            0u) continue; // a row without a selected block
+        int pe = my_eq;                               // tied cells up to and with this lane
+#pragma unroll
+        for (int o = 1; o < 32; o <<= 1) {
+            /*
+            DPCT1108: '__shfl_up_sync' was migrated with the experimental
+            feature masked sub_group function which may not be supported by all
+            compilers or runtimes. You may need to adjust the code.
+            */
+            const int y = dpct::experimental::shift_sub_group_right(
+                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+                pe, o);
+            if (lane >= o) pe += y;
+        }
+        const int left = eq_budget - (run_eq + pe - my_eq);
+        const int take = left < 0 ? 0 : (left > my_eq ? my_eq : left);
+        const int my_sel = my_gt + take;
+        int ps = my_sel;
+#pragma unroll
+        for (int o = 1; o < 32; o <<= 1) {
+            /*
+            DPCT1108: '__shfl_up_sync' was migrated with the experimental
+            feature masked sub_group function which may not be supported by all
+            compilers or runtimes. You may need to adjust the code.
+            */
+            const int y = dpct::experimental::shift_sub_group_right(
+                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+                ps, o);
+            if (lane >= o) ps += y;
+        }
+        int32_t* dst = out + run_sel + ps - my_sel;
+#pragma unroll
+        for (int c = 0; c < my_sel; ++c) dst[c] = (int32_t)(b * R + c);
+        /*
+        DPCT1108: '__shfl_sync' was migrated with the experimental feature
+        masked sub_group function which may not be supported by all compilers or
+        runtimes. You may need to adjust the code.
+        */
+        run_eq += dpct::experimental::select_from_sub_group(
+            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), pe,
+            31);
+        /*
+        DPCT1108: '__shfl_sync' was migrated with the experimental feature
+        masked sub_group function which may not be supported by all compilers or
+        runtimes. You may need to adjust the code.
+        */
+        run_sel += dpct::experimental::select_from_sub_group(
+            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), ps,
+            31);
+    }
+}
+#endif
+
 
 // Block scores with every key block read ONCE for all of a call's queries (block_scores_kernel's grid is
 // (max_blocks / 8) x nq: ~24,600 mostly-idle blocks per layer at a decode window, each key re-read per query).  A fixed
@@ -859,7 +1124,7 @@ register pressure.
 __dpct_inline__ void block_scores_multi_kernel(
     const float *__restrict__ pooled, const float *__restrict__ dead,
     const float *__restrict__ q_idx, const int32_t *__restrict__ steps, int nq,
-    int64_t max_blocks, float *__restrict__ out) {
+    int64_t max_blocks, float *__restrict__ out, bool early_exit) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
 auto &qs = *sycl::ext::oneapi::group_local_memory_for_overwrite<
     float[MQ * IDX_HEADS * IDX_DIM]>(
@@ -870,9 +1135,10 @@ auto &qs = *sycl::ext::oneapi::group_local_memory_for_overwrite<
     auto &s_nbid =
         *sycl::ext::oneapi::group_local_memory_for_overwrite<int64_t[MQ]>(
             sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    if (!early_exit)
 #pragma unroll
-    for (int i = item_ct1.get_local_id(2); i < nq * IDX_HEADS * IDX_DIM;
-         i += item_ct1.get_local_range(2)) qs[i] = q_idx[i];
+        for (int i = item_ct1.get_local_id(2); i < nq * IDX_HEADS * IDX_DIM;
+             i += item_ct1.get_local_range(2)) qs[i] = q_idx[i];
     if (item_ct1.get_local_id(2) < nq) {
         s_nkv[item_ct1.get_local_id(2)] =
             steps[item_ct1.get_local_id(2) * kStepCount + kStepNKv];
@@ -883,6 +1149,20 @@ auto &qs = *sycl::ext::oneapi::group_local_memory_for_overwrite<
     int64_t top = 0;
 #pragma unroll
     for (int q = 0; q < nq; ++q) top = s_nbid[q] > top ? s_nbid[q] : top;
+    if (early_exit) {
+        // (#783, stuchapin909) a CTA whose first block is past the batch's largest n_bid has no work: the grid is a
+        // fixed 256 CTAs and a decode window reaches only a few of them, so those return before staging the queries.
+        // Every thread of the CTA takes the same branch (top and blockIdx are CTA-uniform), so the barrier is safe.
+        if ((int64_t)item_ct1.get_group(2) * SCORE_WARPS > top) return;
+#pragma unroll
+        for (int i = item_ct1.get_local_id(2); i < nq * IDX_HEADS * IDX_DIM;
+             i += item_ct1.get_local_range(2)) qs[i] = q_idx[i];
+        /*
+        DPCT1118: SYCL group functions and algorithms must be encountered in
+        converged control flow. You may need to adjust the code.
+        */
+        item_ct1.barrier(sycl::access::fence_space::local_space);
+    }
     const int lane = item_ct1.get_local_id(2) & 31;
     const int64_t wstride = (int64_t)item_ct1.get_group_range(2) * SCORE_WARPS;
     for (int64_t b = (int64_t)item_ct1.get_group(2) * SCORE_WARPS +
@@ -1293,28 +1573,35 @@ void qsa_block_scores(const float* pooled, const float* dead, const float* q_idx
     // a block past a query's n_bid returns at once: the grid need only reach the batch's largest n_bid (C-1)
     static const bool multi = [] { const char* v = std::getenv("STRATA_SCORES_MULTI"); return v == nullptr || std::atoi(v) != 0; }();
     if (multi && nq <= MQ && active_blocks <= 0) {   // no active count: decode (captured or not) and prefill's pooled16
+        // STRATA_QSA_EARLY_EXIT=0 keeps the old staging (every CTA loads the queries first); the scores are the same bits
+        static const bool early = [] { const char* v = std::getenv("STRATA_QSA_EARLY_EXIT"); return v == nullptr || std::atoi(v) != 0; }();
         {
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
             strata::q_of(stream)
-                ->parallel_for<
-                    dpct_kernel_name<class block_scores_multi_kernel_dea7d4>>(
-                    sycl::nd_range<3>(sycl::range(1, 1, 256) *
-                                          sycl::range(1, 1, SCORE_WARPS * 32),
-                                      sycl::range(1, 1, SCORE_WARPS * 32)),
-                    exp_props,
-                    [=](sycl::nd_item<3> item_ct1)
-                        [[sycl::reqd_sub_group_size(32)]] {
-                            block_scores_multi_kernel(pooled, dead, q_idx,
-                                                      steps, (int)nq,
-                                                      max_blocks, scores);
-                        });
+                ->submit([&](sycl::handler &cgh) {
+                    auto early_ct7 = early;
+
+                    cgh.parallel_for<dpct_kernel_name<
+                        class block_scores_multi_kernel_dea7d4>>(
+                        sycl::nd_range<3>(
+                            sycl::range(1, 1, 256) *
+                                sycl::range(1, 1, SCORE_WARPS * 32),
+                            sycl::range(1, 1, SCORE_WARPS * 32)),
+                        exp_props,
+                        [=](sycl::nd_item<3> item_ct1)
+                            [[sycl::reqd_sub_group_size(32)]] {
+                                block_scores_multi_kernel(
+                                    pooled, dead, q_idx, steps, (int)nq,
+                                    max_blocks, scores, early_ct7);
+                            });
+                });
         }
         /*
-        DPCT1010: SYCL uses exceptions to report errors and does not use the
-        error codes. The cudaGetLastError function call was replaced with 0. You
-        need to rewrite this code.
+        DPCT1010: SYCL uses exceptions to report errors and does not use
+        the error codes. The cudaGetLastError function call was replaced with 0.
+        You need to rewrite this code.
         */
         const dpct::err0 e = 0;
         /*
@@ -1665,8 +1952,8 @@ catch (sycl::exception const &exc) {
 
 void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64_t max_blocks, int64_t cap,
                     const QsaShapes& s, int32_t* ids, void* stream, int64_t active_blocks) {
-    // keys in registers when every query's blocks fit (contexts up to ~135K cells); the same ids. STRATA_TOPK_OLD=1:
-    // the kernel that reads them from memory on every pass
+    // keys in registers when every query's blocks fit (contexts up to ~135K cells), else (CUDA) the same threads
+    // reading them from memory; the same ids. STRATA_TOPK_OLD=1: the original kernel
     static const bool old = std::getenv("STRATA_TOPK_OLD") != nullptr;
     if (nq <= 0) return;
 #if !defined(__HIPCC__)
@@ -1700,10 +1987,12 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
 #if defined(__HIPCC__)
     constexpr int64_t kRegMinBlocks = 7168;   // gfx1201: below ~28K cells the 1,024-thread kernel's fixed cost loses to the ref
     const bool too_small = counted && reach < kRegMinBlocks;
-#else
-    const bool too_small = false;
-#endif
     if (old || too_small || reach > fit) {
+#else
+    constexpr int64_t kWideMinBlocks = 4608;   // RTX 3060: a prompt batch below ~18K cells is faster on the ref
+    const bool too_small = reach > fit && active_blocks > 0 && active_blocks < kWideMinBlocks;
+    if (old || too_small) {
+#endif
         qsa_block_topk_ref(scores, steps, nq, max_blocks, cap, s, ids, stream);
         return;
     }
@@ -1711,7 +2000,15 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
         std::fprintf(stderr, "qsa_block_topk: unsupported geometry or cap\n");
         std::exit(1);
     }
-    if (reach <= (int64_t) TK_T * TK_PER)
+#if !defined(__HIPCC__)
+    // Turing prefill (the `counted` bound) above ~90K cells (22,528 blocks): the wide kernel, which reads the keys
+    // coalesced, instead of the register kernel's uncoalesced per-thread runs (PR #743: 131K, 1.03 -> 0.75 ms); the
+    // same ids.  STRATA_TOPK_STREAM=0 restores the register kernel there.
+    static const bool turing_wide = [] {
+        const char* v = std::getenv("STRATA_TOPK_STREAM");
+        return v == nullptr || v[0] != '0';
+    }();
+    if (reach > fit || (turing_wide && counted && reach > 22528))   // past the register kernel's reach, or Turing's band
         /*
         DPCT1049: The work-group size passed to the SYCL kernel may exceed
         the limit. To get the device limit, query
@@ -1722,7 +2019,31 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
             sycl::ext::oneapi::experimental::use_root_sync};
 
         strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class block_topk_reg_kernel_652097,
+            ->parallel_for<
+                dpct_kernel_name<class block_topk_wide_kernel_5162c4>>(
+                sycl::nd_range<3>(sycl::range(1, 1, (unsigned)nq) *
+                                      sycl::range(1, 1, TK_T),
+                                  sycl::range(1, 1, TK_T)),
+                exp_props,
+                [=](sycl::nd_item<3> item_ct1)
+                    [[sycl::reqd_sub_group_size(32)]] {
+                        block_topk_wide_kernel(scores, steps, max_blocks, cap,
+                                               ids);
+                    });
+    } else
+#endif
+        if (reach <= (int64_t)TK_T * TK_PER)
+        /*
+        DPCT1049: The work-group size passed to the SYCL kernel may exceed
+        the limit. To get the device limit, query
+        info::device::max_work_group_size. Adjust the work-group size if needed.
+        */
+    {
+        auto exp_props = sycl::ext::oneapi::experimental::properties{
+            sycl::ext::oneapi::experimental::use_root_sync};
+
+        strata::q_of(stream)
+            ->parallel_for<dpct_kernel_name<class block_topk_reg_kernel_6ae5f0,
                                             dpct_kernel_scalar<TK_PER>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, (unsigned)nq) *
                                       sycl::range(1, 1, TK_T),
@@ -1744,7 +2065,7 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
             sycl::ext::oneapi::experimental::use_root_sync};
 
         strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class block_topk_reg_kernel_652098,
+            ->parallel_for<dpct_kernel_name<class block_topk_reg_kernel_10a848,
                                             dpct_kernel_scalar<TK_PER_MAX>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, (unsigned)nq) *
                                       sycl::range(1, 1, TK_T),
