@@ -490,6 +490,29 @@ the same worker count and workload. This does not change kernels, phase barriers
 does not affect the legacy single-token/oracle fallback. Setup's `--calibrate` does not tune it yet.
 For the server, add `"--pool-tasks", "192"` to the existing `args` list in its configuration, then restart it.
 
+**Independent Linux servers and CPU contention.** Separate one-GPU engines otherwise choose the same physical
+cores for their host threads and expert pools. Reducing `--pool-workers` alone does not separate those cores.
+Give each server a disjoint `taskset --cpu-list` mask; keep both SMT siblings of a physical core in the same
+mask. The engine inherits the mask and chooses its workers within it.
+
+The reference `setup_multigpu.sh` launcher uses `serve/cpu_affinity.py` to divide the launcher's allowed physical
+cores between the selected instances. It is root-relative, but follows a local four-GPU IQ3_S replica setup:
+it requires `.venv/bin/python`, existing `strata-iq3_s_gpu0.json` through `strata-iq3_s_gpu3.json` for the selected
+GPUs, Linux `taskset` and `flock`, `ss`, `curl`, and NVIDIA's `nvidia-smi`. It sets each selected GPU to 200 W
+using `sudo` unless run as root; the hardware and permissions must support that limit. It starts ports 8080-8083
+and defaults to `0.0.0.0`, always supplying an API key before binding (provided, loaded, or generated and saved
+in `${STRATA_API_KEY_FILE:-$HOME/.config/strata/api-key}`). Use `--host 127.0.0.1` for local-only access.
+
+On an 18-core, 36-thread Xeon W-2295, four instances get 5, 5, 4 and 4 physical cores rather than four overlapping
+18-core pools. It respects an existing CPU restriction, keeps allowed SMT siblings together, and avoids physical
+cores reserved by running unselected managed instances. A single instance without reservations keeps the full
+allowed mask. If there are not enough free physical cores, startup fails before stopping any servers; restart
+the managed instances together. A `flock` lock serializes allocation and launch. The masks take effect on the
+next launcher startup; existing servers are not changed until the launcher restarts the selected instances.
+On the same Xeon, a real GPU-3 IQ3_S engine under the four-core mask `14,15,16,17,32,33,34,35` selected the host
+on CPU 14 and workers on 15, 16 and 17. No explicit worker override is needed. This prevents affinity overlap,
+but does not eliminate shared DRAM or memory-bandwidth contention; no fleet throughput improvement is claimed.
+
 ### Running it at startup (Task Scheduler)
 
 To have the model up at logon, people start the serve from **Task Scheduler** (or a service). Beware: Windows
