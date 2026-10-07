@@ -675,6 +675,7 @@ test an SM-holding NVIDIA bench (not built). Outputs identical to 0.1.33 (Coder 
 - AOT device code is what runs: `AOT=bmg-g31 BUILD_DIR=.../build-sycl-aot` (the JIT build costs ~47 s of
   compiling on the first window).
 
+<<<<<<< HEAD
 ## Arc A750 and the other Alchemist cards (`i915`, 2026-10-07)
 
 Measured on an Arc A750 (8 GB, `i915`, PCIe 4.0) with the Flash-Next IQ3_XXS in a PC with 64 GB of RAM, a Ryzen 5 5600X
@@ -719,6 +720,47 @@ Measured on an Arc A750 (8 GB, `i915`, PCIe 4.0) with the Flash-Next IQ3_XXS in 
   1.3 s; the A750's PCIe link probes at 10.6 GB/s.
 - **A750 and the xe error counters.** The engine segfaults in a worker thread of the CPU pool when it exits (dmesg only, the server
   has already printed "stopped"); it is not a GPU event.
+=======
+## Windows: native, OpenCL (experimental)
+
+`setup --backend sycl` runs on Windows too. There is no container and no Docker: the engine is built from source
+with Intel oneAPI (`sycl\tools\build.bat`, `icx` for C and CXX, MSVC `cl` is not supported) and launched through
+`sycl\serve\strata-sycl.bat`. Setup detects the card the way `amd_gpus_windows` does - the display adapters plus
+the display-class registry's 64-bit VRAM size, which is the true VRAM (WMI's `AdapterRAM` stops at 4 GB) - and
+`setup --check` names it. The Monitor tab reads the name and VRAM from the same detection; util, temperature and
+power are not read yet.
+
+Measured 2026-10-07 on Windows 10, Arc Pro B70 32 GB, driver 32.0.101.8976, i9-9900 / 64 GB, conda-forge
+`dpcpp_win-64` 2026.1.1, Coder IQ1_M (12,288/12,288 experts resident, `--stream-experts`, INT8 KV,
+`--spec 4 --spec-min-p 0.5 --mtp`), through the OpenAI API:
+
+| | this build (OpenCL) | the same card on Linux (Level Zero, AOT, command graphs) |
+|---|---|---|
+| decode, 155-token answer, warm, 3 runs | **47.7-50.5 tok/s** (75% of drafts accepted) | **78.2 tok/s** (19-token prompt, 256 tokens) |
+| decode, suffix drafter only (`--spec 2`) | **24.4 tok/s** | 33.6 |
+| prompt reading, warm (22 tokens, 17 reused) | 66-68 tok/s | 790 tok/s at 2,184 tokens |
+| `quantize_act_parity --selftest`, `sampler_parity` | byte-exact, 0 failures | same |
+
+The same test on the previous 0.1.39-based Windows build of this port ran at **74.7-77.4 tok/s** with the draft
+layer and 31-33 tok/s without, so the 0.1.40 changes are not a speed-up here - see the profile below.
+
+**Why it is slower, and what it is not.** `STRATA_VERIFY_PROFILE=1` prints the window's stages per request (host
+clocks under `STRATA_VERIFY_EAGER=1`). A 4-token window is ~65 ms, and the GDN hyper-connection read is ~24 ms of
+it - almost flat from T=2 (23.6 ms) to T=6 (25.6 ms), i.e. a per-layer *fixed* cost of ~0.5 ms across 48 layers,
+not per-token arithmetic. That is the shape of kernel dispatch without command graphs: this Windows driver
+exposes no user-mode Level Zero adapter (`sycl-ls` lists only `opencl:gpu`), so the OpenCL adapter has neither the
+Graph extension nor sysman's free-VRAM query, and every window, commit and draft step is enqueued one kernel at a
+time. Level Zero with `ze_intel_gpu.dll` and an AOT build (`build-sycl-aot`) is what the Linux rows above use.
+
+Also true here, both by measurement on this card: oneMKL SYCL BLAS has no OpenCL Xe2 backend, so the prompt GEMM
+runs as a plain SYCL kernel (`sycl/src/prefill/gemm.dp.cpp`, slow prompts, identical answers), and the VRAM sizes
+come from `STRATA_DEVICE_FREE_MIB` / `STRATA_DEVICE_TOTAL_MIB` (setup writes them from the registry).
+
+**Windows-SDK macro names.** `<sycl/sycl.hpp>` reaches the Windows SDK, whose headers define `OUT` (minwindef.h),
+`small` (rpcndr.h) and `near` (windef.h) as macros. An identifier with one of those names is macro-expanded away,
+so `template <bool OUT>` loses its parameter and every use is a parse error ("expected expression") - this hit
+`verify_kernels.dp.cpp`, `generate.cpp` and `sampler_parity.cpp`. Renamed, not worked around.
+>>>>>>> aecddb6 (docs/INTEL.md: the Windows path, measured on a B70 (OpenCL), and what it costs)
 
 ## Not done
 
