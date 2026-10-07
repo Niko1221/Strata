@@ -1706,9 +1706,21 @@ int main(int argc, char** argv) {
         else if (a == "--remote-expert-opt") o.remote_expert_opt = true;
         else if (a == "--expert-cache-remote-placement")
             o.expert_cache_remote_placement = next("--expert-cache-remote-placement");
-        else if (a == "--vram-reserve-mib") { o.vram_reserve_mib = std::atoi(next("--vram-reserve-mib")); o.vram_reserve_given = true; }
-        else if (a == "--vram-reserve-later-mib")
-            o.vram_reserve_later_mib = std::atoi(next("--vram-reserve-later-mib"));
+        else if (a == "--vram-reserve-mib" || a == "--vram-reserve-later-mib") {
+            // A value that is not a number read as 0 here, and 0 means "reserve nothing": the expert cache then
+            // takes every free MiB and the run dies later in cublasCreate at the first prompt, with no hint of the
+            // cause (seen on this box from a config written with the literal "$VRAM_RESERVE", a shell that did not
+            // expand it).  Refuse at the flag, where the mistake is.
+            const std::string v = next(a.c_str());
+            bool digits = !v.empty();
+            for (const char c : v) if (c < '0' || c > '9') digits = false;
+            if (!digits) {
+                std::fprintf(stderr, "strata generate: %s needs a whole number of MiB, got '%s'\n", a.c_str(), v.c_str());
+                return 2;
+            }
+            if (a == "--vram-reserve-mib") { o.vram_reserve_mib = std::atoi(v.c_str()); o.vram_reserve_given = true; }
+            else o.vram_reserve_later_mib = std::atoi(v.c_str());
+        }
         else if (a == "--prefill") {
             const std::string v = next("--prefill");
             o.prefill_auto = v == "auto" || v.rfind("auto:", 0) == 0;
