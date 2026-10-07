@@ -16,11 +16,14 @@
 //   * the attention is DENSE over every cell the layer has seen - identical to the model's sparse selection
 //     below 2,051 cells - so speculative cells (draft steps, rejected window rows) never touch indexer state and
 //     are simply overwritten when their positions are processed again;
-//   * all 512 routed experts live in VRAM (708 MB) and run through the grouped hit kernels.
+//   * all 512 routed experts live in VRAM and run through the grouped hit kernels, at Q2_0 by default (708 MB) or,
+//     when the runtime directory carries an `experts.fmt` marker, at the GGUF format it names (Q8_0 2.49 GB,
+//     BF16 4.69 GB).  Whatever the format, the verify window still decides every emitted token.
 #pragma once
 
 #include "strata/core/layer.hpp"
 #include "strata/core/session.hpp"
+#include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/sampler.hpp"
 
 #include <cuda_runtime.h>
@@ -258,7 +261,14 @@ private:
     float* attn_scratch_ = nullptr;
     float *logits_ = nullptr, *w_ = nullptr, *shared_ = nullptr, *parts_ = nullptr, *y_ = nullptr, *sample_ = nullptr;
     int32_t *ids_ = nullptr, *hit_slot_ = nullptr, *hit_dst_ = nullptr, *hit_count_ = nullptr, *out_ids_ = nullptr;
-    uint8_t* hit_xq_ = nullptr;
+    // The 512 routed experts.  Q2_0 - the default, and what every `rt/` written before this carried - is the bespoke
+    // `cpu::BLOB` blob layout; q8_0 and bf16 use the engine's native GGUF layout, chosen by an `experts.fmt` marker
+    // beside experts.bin (`tools/mtp_rt.py`).  `expert_lay_` is the one description of the native layout: the
+    // allocation, the read and the forward all take their per-expert stride from it, so they cannot disagree.
+    bool native_experts_ = false;
+    strata::kernels::NativeExpertLayout expert_lay_{};
+    std::string expert_fmt_ = "q2_0";
+    uint8_t* hit_xq_ = nullptr;   // activation blocks: 36 bytes per 32 values, whichever contract the path reads
     unsigned long long* grp_ptr_ = nullptr;
     int32_t *grp_start_ = nullptr, *grp_counts_ = nullptr;
     float* hit_xs_ = nullptr;

@@ -5,6 +5,7 @@ no longer on this PC, so Strata packs its own from the 31 `mtp.*` tensors fetche
 
     python tools/mtp_pack.py --src Desktop/Strata/mtp-bf16 --experts q2_0 --out mtp-q2_0.gguf
     python tools/mtp_pack.py --src ... --experts q4_0 --out mtp-q4_0.gguf       (acceptance comparison arm)
+    python tools/mtp_pack.py --src ... --experts bf16 --out mtp-bf16.gguf
 
 Layout: dense tensors (attention, indexer, hyper-connections, shared expert, router, fc/norms) stay BF16 (F32 for
 1-D norms), ~0.18 GB. The routed experts keep the checkpoint's fused layout - `gate_up_proj` [512, 1280, 2560] and
@@ -14,6 +15,8 @@ Layout: dense tensors (attention, indexer, hyper-connections, shared expert, rou
            that grid (the ggml reference sets d = max|w| and never uses the +2 level). Same format as the main
            model's experts, so Strata's CPU VNNI kernel and GPU hit kernel serve it unchanged. ~0.71 GB.
     q4_0   ggml reference rounding. ~1.42 GB.       q8_0   ggml reference. ~2.67 GB.
+    bf16   no quantization at all: the checkpoint's own 16-bit words, copied through. ~5.03 GB. The one arm whose
+           reconstruction error is exactly zero, so it is the ceiling any other format is measured against.
 
 This is round-to-nearest, not GSQ: the plan picks the expert format by MEASURED draft acceptance (P0.3/P6), not
 by this file's reconstruction error, which is reported per tensor only as a sanity check. No model runs here.
@@ -108,7 +111,16 @@ def q8_0(w: np.ndarray) -> np.ndarray:
     return out.reshape(-1)
 
 
+def bf16(w: np.ndarray) -> np.ndarray:
+    """No quantizer. `w` is the expert's 16-bit words as they sit in the checkpoint; return them as bytes."""
+    return np.asarray(w).reshape(-1).view(np.uint8)
+
+
 def dequant(kind: str, blob: np.ndarray, n: int) -> np.ndarray:
+    if kind == "bf16":
+        # No block header, no scale: the words are the values. This is what makes the arm's error report read
+        # exactly 0.0 - it is a self-check that the copy stayed a copy.
+        return (blob.view(np.uint16).astype(np.uint32) << 16).view(np.float32).reshape(-1)[:n]
     if kind == "q2_0":
         b = blob.reshape(-1, 18)
         d = b[:, :2].copy().view(np.float16).astype(np.float32)
@@ -128,7 +140,11 @@ def dequant(kind: str, blob: np.ndarray, n: int) -> np.ndarray:
 
 QUANT = {"q2_0": (q2_0, gguf.GGMLQuantizationType.Q2_0, 64, 18),
          "q4_0": (q4_0, gguf.GGMLQuantizationType.Q4_0, 32, 18),
-         "q8_0": (q8_0, gguf.GGMLQuantizationType.Q8_0, 32, 34)}
+         "q8_0": (q8_0, gguf.GGMLQuantizationType.Q8_0, 32, 34),
+         "bf16": (bf16, gguf.GGMLQuantizationType.BF16, 1, 2)}
+
+QUANTIZER = {"q2_0": "per-block MSE scale search", "q4_0": "ggml reference", "q8_0": "ggml reference",
+             "bf16": "none - the checkpoint's own 16-bit words"}
 
 
 def main() -> int:
@@ -146,7 +162,7 @@ def main() -> int:
     w.add_string("strata.mtp.source_sha256", hashlib.sha256(
         json.dumps({t["name"]: t["sha256"] for t in manifest}, sort_keys=True).encode()).hexdigest())
     w.add_string("strata.mtp.expert_format", a.experts)
-    w.add_string("strata.mtp.expert_quantizer", "per-block MSE scale search" if a.experts == "q2_0" else "ggml reference")
+    w.add_string("strata.mtp.expert_quantizer", QUANTIZER[a.experts])
     report = []
     for t in sorted(manifest, key=lambda t: t["name"]):
         name, shape = t["name"], t["shape"]
@@ -158,7 +174,12 @@ def main() -> int:
             x = _Experts(raw)
             if shape[-1] % block:
                 raise ValueError(f"{name}: inner dim {shape[-1]} not a multiple of {block}")
-            parts = [fn(x[e]) for e in range(shape[0])]            # one expert at a time bounds memory
+            if a.experts == "bf16":
+                # Lossless. Going through `fn(x[e])` would send every word through _Experts' float32 round trip -
+                # a rounding step the quantizing arms cannot avoid but this one has no reason to take.
+                parts = [bf16(raw[e]) for e in range(shape[0])]
+            else:
+                parts = [fn(x[e]) for e in range(shape[0])]        # one expert at a time bounds memory
             blob = np.concatenate(parts)
             errs = []
             for e in range(min(a.check_experts, shape[0])):
