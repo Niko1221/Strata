@@ -61,6 +61,15 @@ class BatchProtocolTest(unittest.TestCase):
         self.assertEqual(eng.commands, ["GEN 20 1,2", "STOP", "BGEN 0 17 1,2,10,11,12", "BGEN 1 20 3,4"])
         self.assertEqual(stats["promotion"], {"stop_sent_at_tokens": 2, "resumed_after_tokens": 3})
 
+    def test_explicit_slot_ids_cover_group_spreading_and_padding(self):
+        eng = RecordingEngine()
+        got, stats = run_batch(eng, iter(["T 10", "BADM 1 1", "BT 1 11", "T 20", "BADM 6 1",
+                                         "BT 6 21", "BDONE 6", "BT 1 12", "BDONE 1"]),
+                               [[1], [2]], 20, "", [2], engine_slots=[1, 6])
+        self.assertEqual(got, {0: [10, 11, 12], 1: [20, 21]})
+        self.assertEqual([c.split()[1] for c in eng.commands], ["1", "6"])
+        self.assertEqual(stats["admissions"][1]["active_slots"], [1])
+
 
 if __name__ == "__main__":
     unittest.main()

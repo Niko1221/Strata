@@ -77,6 +77,8 @@ new prompt is read. The anchor must still be active after each scheduled admissi
 and asks for a larger `--max-new`. Add `--promote-after 4`
 to exercise the server's `GEN` → `STOP` → `BGEN(prompt + emitted tokens)` transition before the staggered admissions.
 Add `--long-tokens 1200` to make the last request read a longer prompt.
+Use `--slots 0,2,4,6` to spread these requests across all four groups, as the server does, or `--slots 1,3,5,7`
+to exercise each group's padded leading row. Without `--slots`, the requests occupy consecutive slots.
 
 The test sets `STRATA_IQ_MT_MIN=1` by default to keep the CPU expert arithmetic independent of batch width.
 Use `--mt-min ""` to compare the engine's default arithmetic instead. With one batch group, the long prompt's
