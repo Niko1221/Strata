@@ -32,6 +32,11 @@ keeps its own draft K/V and buffers; the draft weights, head quantization type, 
 or output limit a slot uses one row. The engine reports `INFO ... batch_mtp=1` when enabled, and logs
 `strata batch MTP: drafts accepted A of B` when all slots become idle.
 
+The batch graph cache keeps at most 16 layouts, evicting the least recently used one. Leave VRAM for graph
+creation as well as draft state: on an RTX 4090 (24 GB), IQ3_S, four slots, 262144 context and 32768 resident
+int8 KV, the 700 MiB default reserve ran out with the previous 64-layout cache during repeated HTTP requests.
+Use `--vram-reserve-mib 1536` for this configuration; the extra reserve comes out of the expert cache.
+
 With a layer split, the engine options go into the config's `args`:
 
 ```

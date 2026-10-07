@@ -6136,7 +6136,7 @@ int main(int argc, char** argv) {
             ver_b.set_next(&gs.ver_b, &split_drive_b);   // the setters reach it; the pipeline never chains run/commit
         }
         ver.set_remote_expert_opt(remote_opt.get());
-        if (batch_mtp) ver.set_batch_graph_limit(64);   // --batch-mtp only: slot rotation makes many layouts (LRU); 0.1.39 keeps all
+        if (batch_mtp) ver.set_batch_graph_limit(16);   // --batch-mtp only: bound layout graphs' VRAM (LRU); plain batching keeps all
         if (!ver.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr,
                       batch_mtp ? strata::kernels::kVerifyMaxT : std::max(o.spec, o.batch), err) ||
             (use_mtp && !mtp.bind(last_st ? last_st->wt : wt, last_st ? &last_st->head : &native_head,
