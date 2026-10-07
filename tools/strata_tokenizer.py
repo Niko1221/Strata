@@ -63,12 +63,26 @@ QWEN35_PATTERN = (
     r"|\s+"
 )
 
+# llama.cpp's CHATGLM4 pre-tokenizer (used by glm4/glm5).
+GLM_PATTERN = (
+    r"(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])"
+    r"|[^\r\n\p{L}\p{N}]?\p{L}+"
+    r"|\p{N}{1,3}"
+    r"| ?[^\s\p{L}\p{N}]+[\r\n]*"
+    r"|\s*[\r\n]+"
+    r"|\s+(?!\S)"
+    r"|\s+"
+)
+
 
 class Tokenizer:
     def __init__(self, tokens: list[str], merges: list[str], token_types: list[int] | None = None,
                  pre: str = "qwen35", special_ids: dict[str, int] | None = None):
         self.tokens = tokens
         self.pre = pre
+        if pre not in ("qwen35", "glm4", "glm5"):
+            raise ValueError("unsupported pre-tokenizer %r" % pre)
+        self.ignore_merges = pre in ("glm4", "glm5")
         self.token_types = token_types
         self.special_ids = special_ids or {}
         self.ids = {t: i for i, t in enumerate(tokens)}
@@ -86,7 +100,7 @@ class Tokenizer:
             if parts[0] not in self.ids or parts[1] not in self.ids:
                 raise ValueError("merge %d names a token outside the vocabulary: %r" % (i, m))
             self.ranks[(parts[0], parts[1])] = i
-        self._re = regex.compile(QWEN35_PATTERN)
+        self._re = regex.compile(GLM_PATTERN if self.ignore_merges else QWEN35_PATTERN)
 
         # The literals matched directly instead of being run through BPE.  GGUF token types: 3 = CONTROL,
         # 4 = USER_DEFINED.  The two classes behave DIFFERENTLY and llama.cpp's own tokenizer settled which:
@@ -212,6 +226,9 @@ class Tokenizer:
         out: list[int] = []
         for piece in self._re.findall(text):
             mapped = "".join(BYTE_TO_UNICODE[b] for b in piece.encode("utf-8"))
+            if self.ignore_merges and mapped in self.ids:
+                out.append(self.ids[mapped])
+                continue
             for tok in self._bpe(mapped):
                 i = self.ids.get(tok)
                 if i is None:
@@ -287,8 +304,10 @@ def extract(gguf_path, out_dir) -> dict:
         "add_bos_token": False,
         # The pattern is SHIPPED, not recomputed by the reader: it is transcribed from llama.cpp for the
         # declared `pre` type, and a C++ port that re-derived it would be free to get `\p{M}` wrong again.
-        "pre_pattern": QWEN35_PATTERN,
-        "pre_pattern_source": ".ref/llama.cpp src/llama-vocab.cpp L396 (LLAMA_VOCAB_PRE_TYPE_QWEN35)",
+        "pre_pattern": GLM_PATTERN if tk.ignore_merges else QWEN35_PATTERN,
+        "ignore_merges": tk.ignore_merges,
+        "pre_pattern_source": ("llama.cpp src/llama-vocab.cpp (LLAMA_VOCAB_PRE_TYPE_CHATGLM4)" if tk.ignore_merges
+                               else ".ref/llama.cpp src/llama-vocab.cpp L396 (LLAMA_VOCAB_PRE_TYPE_QWEN35)"),
     }
     (out / "vocab.json").write_text(json.dumps(tk.ids, ensure_ascii=False), encoding="utf-8")
     (out / "merges.txt").write_text("\n".join("%s %s" % k for k, _ in

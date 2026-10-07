@@ -232,6 +232,20 @@ MODELS = {
                   "shards": 3, "file": "Qwen3.8-Flash-Next-{q}-0000{i}-of-00003.gguf", "engine": (0, 1, 38),
                   "vision": True},
 }
+
+# Project Maya's published Maya-S v2 release (commit 444030a).  Kept separate from Qwen's
+# MODELS/FAMILIES because its architecture, engine flags and pack are different.
+GLM_MODEL = "Maya-S-v2-IQ2_XXS"
+GLM_REPO = "peasantsmith/GLM-5.3-Flash-Maya-GGUF"
+GLM_FILES = {
+    "GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-00001-of-00003.gguf": "a507f2b7b25e04624ee55c631d3b281caea7cfffc747e5247970cd5a7ea91b3f",
+    "GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-00002-of-00003.gguf": "2d65d88a69f8dc124c8d24bd33b33161ddab218918b4253ad4f500aeede84df5",
+    "GLM-5.3-Flash-Maya-S-v2-IQ2_XXS-00003-of-00003.gguf": "a6a981c4fee7a53d78bdbd97d8f465d48ddf439cf938ff90617f395e0351b5a6",
+}
+GLM_VISION_FILES = {
+    "mmproj-GLM-5.3-Flash-F16.gguf": "3627575df16bd152db0f3fd7e488d270b33f3a9e6c7fa3b1b8ac381faafde882",
+    "GLM-5.3-Flash-vocab.gguf": "8f53cb1bd2e631c14ef413e3284735d9e53f3c508d07a6f609e705b487105912",
+}
 # The experimental Unsloth file's four shards at the pinned revision: name -> (bytes, sha256), checked after the
 # download (setup trusts no other model file by name and size alone either: check_shards reads their directories).
 UNSLOTH_SHARDS = {
@@ -3123,7 +3137,7 @@ def prebuilt_vision(meta: dict, gpu: dict, vision: str) -> str:
     return vision
 
 
-def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
+def build_engine(gpu, vision, yes, llama, toolkit=None, glm=False) -> Path:
     """Compile the engine (and, for images, the encoder) for this GPU; the results go to engine/.  A compiled
     engine whose source files changed since (a `git pull`) is compiled again: only the changed files, a few minutes.
     toolkit 12 (default: 12 for a card older than CUDA 13 supports): the experimental CUDA 12 engine, in
@@ -3131,7 +3145,7 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
     if toolkit is None:
         toolkit = 12 if min(int(x) for x in gpu.get("archs", [gpu["arch"]])) < CUDA13_MIN_ARCH else 13
     t12 = int(toolkit) == 12
-    eng = engine_dir(toolkit)
+    eng = ROOT / "engine-glm" if glm else engine_dir(toolkit)
     eng.mkdir(exist_ok=True)
     stamp = eng / "BUILD.json"
     meta = json.loads(stamp.read_text(encoding="utf-8")) if stamp.exists() else {}
@@ -3154,7 +3168,9 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
         archs = sorted(built | set(archs))
     nvcc, vcvars = install_build_tools({**gpu, "archs": archs, "toolkit": toolkit}, yes)
     cuda_archs = ";".join(str(x) for x in archs)
-    bdir, vdir = (ROOT / "build-cuda12", ROOT / "build-vision-cuda12") if t12 else (ROOT / "build", ROOT / "build-vision")
+    bdir, vdir = ((ROOT / "build-glm", ROOT / "build-vision-glm") if glm else
+                  (ROOT / "build-cuda12", ROOT / "build-vision-cuda12") if t12 else
+                  (ROOT / "build", ROOT / "build-vision"))
     if not engine_ok:
         say("  Compiling the engine for " + ", ".join(f"sm_{x}" for x in archs) + " (a card it had no code for; "
             "10-20 minutes, once) ..." if new_arch else
@@ -3162,7 +3178,9 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
             if local and (eng / EXE).exists() else "  Compiling the Strata engine for your GPU (10-20 minutes, once) ...")
         cmake_build(ROOT, bdir, "strata",
                     ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_BUILD_TESTS=OFF", f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}",
-                     f"-DCMAKE_CUDA_COMPILER={nvcc}", f"-DSTRATA_GGML_DIR={llama}", *engine_defs(archs, toolkit),
+                     f"-DCMAKE_CUDA_COMPILER={nvcc}", f"-DSTRATA_GGML_DIR={llama}",
+                     *(["-DSTRATA_ENABLE_GLM=ON", "-DSTRATA_NATIVE_EXPERTS=ON"] if glm else []),
+                     *engine_defs(archs, toolkit),
                      *isa_floor_defs(floor, bdir, meta)],
                     vcvars, "build-strata-cuda12.bat" if t12 else "build-strata.bat")
         shutil.copy2(bdir / EXE, eng / EXE)
@@ -3583,6 +3601,8 @@ def data_folder(requested: str | None) -> tuple:
 def write_config(path: Path, cfg: dict):
     """A run config, written whole or not at all (#459): to a temporary file first, then moved over the old one, so
     a setup stopped half-way (a closed window, a full disk) never leaves an empty strata-*.json behind."""
+    if not glm_local_host(str(cfg.get("host") or "127.0.0.1")) and not str(cfg.get("api_key") or "").strip():
+        fail("a run config with a host outside this PC requires an API key")
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
     os.replace(tmp, path)
@@ -4510,10 +4530,151 @@ def sycl_setup(argv) -> int:
     return subprocess.call([sys.executable, str(script), *rest])
 
 
+def glm_sha256_ok(path: Path, want: str) -> bool:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(64 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest() == want
+
+
+def glm_local_host(host: str) -> bool:
+    import ipaddress
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
+def setup_glm(a) -> int:
+    """Maya-S v2 installation; its architecture has no Qwen setup defaults."""
+    if WIN or not sys.platform.startswith("linux") or is_wsl():
+        fail("GLM-5.3-Flash setup requires native Linux and NVIDIA CUDA")
+    if a.backend not in (None, "cuda") or a.model not in (None, GLM_MODEL):
+        fail(f"--family glm supports CUDA and {GLM_MODEL} only")
+    if platform.machine().lower() not in ("x86_64", "amd64") or not cpu_info()[1]:
+        fail("GLM-5.3-Flash needs an x86-64 CPU with AVX2")
+    if ram_gb() < 30:
+        fail("GLM-5.3-Flash needs a nominal 32 GB of system RAM (at least 30 GiB usable)")
+    host = a.host or "127.0.0.1"
+    if not glm_local_host(host) and not (a.api_key or "").strip():
+        fail("--host outside this PC requires a nonempty --api-key")
+    found = [g for g in gpus() if int(g["arch"]) >= 70]
+    if not found:
+        fail("GLM-5.3-Flash needs an NVIDIA GPU with compute capability 7.0 or newer")
+    requested = a.gpus or (str(a.gpu) if a.gpu is not None else None)
+    if requested:
+        ids = [int(x) for x in requested.split(",") if x.strip().isdigit()]
+        if ",".join(map(str, ids)) != requested or not 1 <= len(ids) <= 2 or len(set(ids)) != len(ids):
+            fail("GLM --gpus takes one or two distinct GPU numbers, e.g. 0,1")
+        selected = [next((g for g in found if g["index"] == i), None) for i in ids]
+        if any(g is None for g in selected):
+            fail("a selected NVIDIA GPU is unavailable or older than compute capability 7.0")
+    else:
+        selected = sorted(found, key=lambda g: (-round(g["vram_gb"]), g["index"]))[:2]
+    gpu = {**selected[0], "archs": sorted({int(g["arch"]) for g in selected})}
+    nvcc, cuda_v = find_nvcc(below=(13, 0)) if min(gpu["archs"]) < 75 else find_nvcc()
+    minimum = (12, 8) if max(gpu["archs"]) >= 100 else (12, 0)
+    if nvcc is None or cuda_v is None or cuda_v < minimum:
+        fail(f"GLM needs CUDA Toolkit {minimum[0]}.{minimum[1]} or newer" +
+             (" in the 12.x series for Volta" if min(gpu["archs"]) < 75 else ""),
+             "install a compatible toolkit; STRATA_NVCC selects its nvcc")
+    if shutil.which("g++") is None:
+        fail("GLM's source build needs g++", "install your distribution's C++ build tools")
+    need_driver = 580 if cuda_v >= (13, 0) else 525
+    if any(driver_major(g) < need_driver for g in selected):
+        fail(f"GLM with CUDA {cuda_v[0]}.{cuda_v[1]} needs NVIDIA driver {need_driver} or newer")
+    say("GLM-5.3-Flash Maya-S v2: " + " + ".join(g["name"] for g in selected))
+    if a.check:
+        ok("Linux, AVX2, RAM, NVIDIA driver and CUDA build checks passed; no files downloaded or built")
+        return 0
+    ctx = a.context or 32768
+    if ctx < 1:
+        fail("--context must be at least 1")
+    data, _ = data_folder(a.data_dir)
+    folder = Path(a.gguf_dir).expanduser().resolve() if a.gguf_dir else \
+        (Path(a.models_dir).expanduser().resolve() if a.models_dir else data / "models") / "glm-maya-s-v2"
+    shards = [folder / name for name in GLM_FILES]
+    if not a.gguf_dir and any(not p.is_file() for p in shards):
+        say(f"Maya-S v2: 96.5 GB from https://huggingface.co/{GLM_REPO}/tree/main/Maya-S-v2-IQ2_XXS")
+        if not (a.download_model or (not a.yes and ask("Download the missing model shards?", ["y", "n"], "n", False) == "y")):
+            say("Model download skipped. Put all three GGUF shards in " + str(folder) + " or pass --gguf-dir.")
+            return 0
+    disk = folder
+    while not disk.exists() and disk != disk.parent:
+        disk = disk.parent
+    # Reserve 10 GB for the pack and source build, plus the missing shards and vision files.
+    need_disk = 10 + (0 if a.no_vision else 1.14) + 96.5 * sum(not p.is_file() for p in shards) / len(shards)
+    if shutil.disk_usage(disk).free / 1e9 < need_disk:
+        fail(f"GLM setup needs {need_disk:.1f} GB free on {disk} for missing files, the pack and build")
+    if shutil.disk_usage(ROOT).free / 1e9 < 5:
+        fail(f"GLM's source build needs at least 5 GB free on {ROOT}")
+    for shard in shards:
+        if not shard.is_file():
+            if a.gguf_dir:
+                fail(f"missing {shard}; --gguf-dir needs the three Maya-S v2 shards")
+            download(f"https://huggingface.co/{GLM_REPO}/resolve/main/Maya-S-v2-IQ2_XXS/{shard.name}", shard)
+        if not glm_sha256_ok(shard, GLM_FILES[shard.name]):
+            fail(f"{shard.name}: SHA-256 differs from Maya-S v2's published hash")
+    check_shards(shards)
+    sys.path.insert(0, str(ROOT / "tools"))
+    from gguf_reader import GGUFFile
+    if GGUFFile(shards[0]).metadata.get("general.architecture") not in ("glm5-next", "glm5next"):
+        fail(f"{shards[0].name} is not a glm5-next GGUF")
+    if not os.access(folder, os.W_OK):
+        fail(f"{folder} is read-only; GLM's pack must be written beside its GGUF shards")
+    if not a.no_vision:
+        vision_folder = data / "models" / "glm-maya-s-v2-vision"
+        files = {name: vision_folder / name for name in GLM_VISION_FILES}
+        if any(not p.is_file() for p in files.values()):
+            say(f"GLM vision: 1.14 GB from https://huggingface.co/{GLM_REPO}/tree/main/vision")
+            if not (a.download_model or (not a.yes and ask("Download the missing vision files?", ["y", "n"], "n", False) == "y")):
+                fail("vision files missing; rerun with --no-vision for text only")
+        for name, p in files.items():
+            if not p.is_file():
+                download(f"https://huggingface.co/{GLM_REPO}/resolve/main/vision/{name}", p)
+            if not glm_sha256_ok(p, GLM_VISION_FILES[name]):
+                fail(f"{name}: SHA-256 differs from Maya's published hash")
+    pip_install(requirement_lines() if REQUIREMENTS.exists() else PY_PACKAGES, "Strata Python packages")
+    llama = get_llama_cpp()
+    if not a.no_vision:
+        run([sys.executable, str(ROOT / "tools" / "vision" / "glm5next_patch.py"), str(llama)])
+    eng = build_engine(gpu, "none" if a.no_vision else "gpu", a.yes, llama, toolkit=cuda_v[0], glm=True)
+    meta = json.loads((eng / "BUILD.json").read_text(encoding="utf-8"))
+    pack = folder / "pack"
+    if not all((pack / p).is_file() for p in ("native_experts.txt", "index.txt", "dense.bin",
+                    "tokenizer/vocab.json", "tokenizer/merges.txt", "tokenizer/token_type.json",
+                    "tokenizer/tokenizer.json", "tokenizer/chat_template.jinja")):
+        run([sys.executable, str(ROOT / "tools" / "iq_pack.py"), "--gguf", str(shards[0]), "--out", str(pack),
+             "--compat-bf16"], env=dict(os.environ, STRATA_GGUF_PY=str(llama / "gguf-py")))
+    cfg = {"exe": str(eng / EXE), "args": ["--glm-pack", str(pack), "--max-context", str(ctx)],
+           "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"), "model_name": "glm-5.3-flash",
+           "gpu": [g["index"] for g in selected], "sampling": {"temperature": 1.0, "top_p": 0.95},
+           "reasoning_effort": "medium", "lib_dirs": meta.get("cuda_dirs") or [],
+           "port": a.port or 8080, "host": host, "open_browser": a.browser is not False}
+    if a.api_key:
+        cfg["api_key"] = a.api_key
+    if not a.no_vision:
+        cfg["vision"] = {"exe": str(eng / VEXE), "mmproj": str(files["mmproj-GLM-5.3-Flash-F16.gguf"]),
+                         "model": str(files["GLM-5.3-Flash-vocab.gguf"]),
+                         "gpu": True, "no_flash_attn": True, "max_tokens": 4096}
+    cfg_path = ROOT / "strata-glm-maya-s-v2-iq2_xxs.json"
+    cfg["log"] = str(cfg_path.with_suffix(".log"))
+    write_config(cfg_path, cfg)
+    script = write_run_script("glm-maya-s-v2-iq2_xxs", cfg_path, cfg["port"], cfg["open_browser"])
+    ok(f"GLM config: {cfg_path}; start script: {script}")
+    if a.no_start:
+        return 0
+    return run([sys.executable, str(ROOT / "serve" / "server.py"), "--engine", "strata", "--config", str(cfg_path),
+                "--port", str(cfg["port"]) ] + (["--open"] if cfg["open_browser"] else [])).returncode
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--family", choices=list(FAMILIES), help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5")
-    ap.add_argument("--model", choices=list(MODELS))
+    ap.add_argument("--family", choices=[*FAMILIES, "glm"], help="qwen, swift, coder, unsloth, or glm = GLM-5.3-Flash")
+    ap.add_argument("--model", choices=[*MODELS, GLM_MODEL])
     ap.add_argument("--context", type=int)
     ap.add_argument("--rope-scaling", choices=["none", "linear", "yarn"],
                     help="the RoPE extension for a context past the model's trained 262144: linear (position "
@@ -4558,6 +4719,8 @@ def main() -> int:
     ap.add_argument("--models-dir", help="where the GGUF files go (default: <data folder>/models)")
     ap.add_argument("--gguf-dir", help="use GGUF files you already have (a folder with every shard: "
                                        "<name>-00001-of-0000N.gguf ... -0000N-of-0000N.gguf)")
+    ap.add_argument("--download-model", action="store_true", help="GLM: download missing Maya-S v2 files without asking")
+    ap.add_argument("--no-vision", action="store_true", help="GLM: install text only")
     ap.add_argument("--yes", action="store_true", help="accept the recommended answers")
     ap.add_argument("--setup", action="store_true", help="install another model or change settings")
     ap.add_argument("--no-start", action="store_true", help="install only, do not start the model")
@@ -4611,6 +4774,10 @@ def main() -> int:
                          "sycl = Intel Arc, EXPERIMENTAL: Linux, built from source (docs/INTEL_ARC.md)")
     ap.add_argument("--skip-build", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
+    if a.family == "glm":
+        return setup_glm(a)
+    if a.model == GLM_MODEL:
+        ap.error(f"{GLM_MODEL} requires --family glm")
     if a.source:
         os.environ["STRATA_SOURCE"] = a.source
     if a.inspect:                                      # headers only: nothing is installed

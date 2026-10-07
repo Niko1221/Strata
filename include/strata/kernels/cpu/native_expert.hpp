@@ -32,7 +32,8 @@ struct NativeFmt {
 /// Whether this build has the ggml-cpu path.
 bool native_experts_available() noexcept;
 /// Fills `f` for a layer; false (with a reason) when ggml-cpu has no dot product for a type.
-bool native_fmt(int gu_type, int d_type, int64_t n_embd, int64_t n_ff, NativeFmt& f, std::string& err);
+bool native_fmt(int gu_type, int d_type, int64_t n_embd, int64_t n_ff, NativeFmt& f, std::string& err,
+                size_t act_capacity = kNativeActBytes, size_t h_capacity = kNativeHBytes);
 
 /// x (n_embd floats) -> the gate/up activation (act_bytes).
 void native_quant_act(const NativeFmt& f, const float* x, void* dst);
@@ -45,6 +46,11 @@ int native_gu_mt_min(int gu_type);
 /// ff[t][r] = silu(gate_r . a[t]) * (up_r . a[t]) for rows r in [r0, r1), `nt` tokens.
 void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* act, int nt, float* const* ff,
                     int r0, int r1);
+/// Separate GGUF gate/up/down bases, with GLM's gate ceiling and symmetric up clamp.
+void native_gu_rows_split(const NativeFmt& f, const uint8_t* gate, const uint8_t* up,
+                          const void* const* act, int nt, float* const* ff, int r0, int r1, float swiglu_limit);
+void native_down_rows_split(const NativeFmt& f, const uint8_t* down, const void* const* hq,
+                            int nt, float* const* out, int r0, int r1);
 /// out[t][r] = down_r . hq[t] for rows r in [r0, r1).
 void native_down_rows(const NativeFmt& f, const uint8_t* blob, const void* const* hq, int nt, float* const* out,
                       int r0, int r1);

@@ -1,8 +1,10 @@
 # Which model? Sizes, versions and what fits
 
-Strata runs one model, [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next), in several **sizes**
+Strata's default family is [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next), in several **sizes**
 (the same model, compressed more or less) and several **versions** (the original, a coding version, a fine-tune).
 The installer recommends one for your PC; this page explains the choice. Back to the [README](../README.md).
+
+The optional GLM-5.3-Flash family has different hardware and build requirements; see [GLM on Linux/NVIDIA](GLM.md).
 
 > **On this page:** [Pick by RAM](#pick-by-ram) · [Speed](#how-fast-is-each-size) · [The sizes](#the-sizes) ·
 > [Will it fit?](#will-it-fit) · [The versions](#the-versions) · [Adding another model](#adding-or-switching-models)
