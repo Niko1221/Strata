@@ -2197,12 +2197,14 @@ class WebApp(unittest.TestCase):
                 with self.subTest(path=path):
                     self.assertEqual(self.moved(path), (301, to))
             self.svc.landing = "#monitor"                 # the config's "landing": which tab the page opens on.
-            for path, to in (("/", "/ui/#monitor"),        # Nothing about serving changes for it - the page reads
-                             ("/?q=hi", "/ui/?q=hi#monitor"),  # a # itself - only the address moved with it needs
-                             ("/ui", "/ui/#monitor")):      # to carry it
+            for path, to in (("/", "/ui/#monitor"),        # the addresses Strata hands out carry it, and so does
+                             ("/?q=hi", "/ui/?q=hi#monitor"),   # the page itself: a /ui/ typed by hand has no # to
+                             ("/ui", "/ui/#monitor")):      # read, so it reads the line instead
                 with self.subTest(path=path):
                     self.assertEqual(self.moved(path), (301, to))
+            self.assertIn(b'<meta name="strata-landing" content="#monitor">', self.get("/ui/")[2])
             self.svc.landing = ""
+            self.assertNotIn(b"strata-landing", self.get("/ui/")[2])   # no "landing", the page as it always was
             for path in ("/ui/web/app.js", "/ui/web/app.css", "/ui/web/tokens.css", "/ui/web/sprite.svg",
                          "/ui/health", "/ui/metrics", "/ui/status", "/ui/v1/models"):
                 with self.subTest(path=path):

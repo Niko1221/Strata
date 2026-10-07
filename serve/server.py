@@ -1633,6 +1633,14 @@ def landing_of(value, what: str) -> str:
     return "#" + name
 
 
+def landing_meta(landing: str) -> str:
+    """The one line the app page carries when the config names a landing tab.  A browser never sends a # to a
+    server, so a /ui/ typed by hand arrives without the # a redirect would have added; the page reads this line
+    instead and opens that tab itself (serve/web/app.js).  With no "landing" the line is empty and the page is
+    exactly what it has always been."""
+    return "" if not landing else f'<meta name="strata-landing" content="{landing}">\n'
+
+
 class Vision:
     """The resident image encoder: `strata-vision` (llama.cpp mtmd + the mmproj file) reads `ENC <image> <out>`
     lines and writes each image's embeddings; results are cached by the image's hash, so a conversation that
@@ -3911,6 +3919,8 @@ def make_handler(svc: Service):
             if path == "" or (path == "/api-monitor" and svc.api_monitor):
                 # "" is the app's own path: / at the default, or /ui/ when the config says "dashboard": "/ui"
                 body = (ROOT / "serve" / "web" / ("monitor.html" if path else "index.html")).read_bytes()
+                if not path:                       # the app page carries the tab its config asks it to open on
+                    body = body.replace(b"</head>", (landing_meta(svc.landing) + "</head>").encode(), 1)
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))

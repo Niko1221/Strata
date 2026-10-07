@@ -114,7 +114,8 @@ def install_switcher(argv):
                 if path == "":               # upstream's page: / at the default, /ui/ when "dashboard" is set
                     page = (ROOT / "serve" / "web" / "index.html").read_text(encoding="utf-8")
                     page = page.replace("</head>", '<link rel="stylesheet" href="sycl-web/switcher.css">\n</head>', 1)
-                    page = page.replace("</body>", '<script src="sycl-web/switcher.js"></script>\n</body>', 1)
+                                        page = page.replace("</body>", '<script src="sycl-web/switcher.js"></script>\n</body>', 1)
+                    page = page.replace("</head>", S.landing_meta(svc.landing) + "</head>", 1)   # the "landing" tab
                     self._send(page.encode("utf-8"), "text/html; charset=utf-8")
                     return
                 super().do_GET()

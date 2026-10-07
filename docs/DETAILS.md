@@ -554,9 +554,13 @@ asked for at its old address - stays a 404. A path that is not one of the server
 `/health`, ...) is refused before the model loads.
 
 `"landing": "#monitor"` in the run config (or `serve/server.py --landing monitor`) opens the page on the Monitor tab
-instead of Chat - `about` is the other one; the address Strata prints at startup, the one it opens in a browser and
-the one it redirects to all carry it (`/ui/#monitor`). Nothing is served differently for it: the page already reads a
-`#` in its own address, so `chat` - or leaving it out - is exactly what the page has always done.
+instead of Chat - `about` is the other one. The address Strata prints at startup, the one it opens in a browser and
+the one `/` redirects to all carry it (`/ui/#monitor`), and the served page carries it too as
+`<meta name="strata-landing" content="#monitor">`, because a browser never sends a `#` to a server: type `/ui/` by
+hand and the page opens Monitor and puts `#monitor` in its own address. Every view has its own address - `#chat`,
+`#monitor`, `#about` - so a bookmark says which one it is, and an address with a `?q=` opens Chat, because asking a
+question is what Chat is for. `chat` - or leaving `landing` out - is what the page has always done; an unknown value
+is refused before the model loads.
 
 `/models` and `/v1/models` list only the loaded model, with its context limit and input modalities. `/props` exposes the original chat template, context limit, configured generation defaults (shared settings take precedence), model path and engine version when available. Context means the full engine context, not the resident KV window. `n_predict: -1` means no fixed output cap. Unconfigured sampling fields are omitted. `autoload` has no effect; an unknown `model` returns 404. These metadata endpoints and `/slots` require the API key when one is configured. They do not load, unload or restart models.
 
