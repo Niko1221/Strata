@@ -1559,7 +1559,7 @@ void native_mmvq_q6k_wide_kernel(const Q6KBlock* __restrict__ w, const Q81Block*
         for (int r = 0; r < RPW; ++r) {
             const Q6KBlock* b = reinterpret_cast<const Q6KBlock*>(reinterpret_cast<const uint8_t*>(w) +
                 (std::size_t(row0 + (row0 + r < n_out ? r : 0)) * blocks_per_row + kbx) * BS);
-            if constexpr (A2) {
+            if constexpr (A2 && BS % 16 != 0) {   // a 16-byte block stride needs no shifting: every load is aligned
                 ql4[r] = load16_a2(b->ql + 16 * g);
                 qh4[r] = load16_a2(b->qh + 16 * qh4_idx);
             } else {
@@ -1575,7 +1575,7 @@ void native_mmvq_q6k_wide_kernel(const Q6KBlock* __restrict__ w, const Q81Block*
 #pragma unroll
         for (int j = 0; j < NCOLS; ++j) {
             const Q81Block* xb = x + std::size_t(j) * x_stride + kby + bq8_offset;
-            if constexpr (A2) {   // Q8_1 qs sits at offset 4 of a 36-byte block: 4-byte aligned, so four int loads
+            if constexpr (A2 || BS % 16 == 0) {   // Q8_1 qs sits at offset 4 of a 36-byte block: 4-byte aligned, so four int loads
                 const int* p0 = reinterpret_cast<const int*>(xb[0].qs) + 4 * u_int4;
                 const int* p1 = reinterpret_cast<const int*>(xb[2].qs) + 4 * u_int4;
                 u0[j] = sycl::int4(p0[0], p0[1], p0[2], p0[3]);
@@ -1985,6 +1985,16 @@ void launch_q6k_wide224(const void* weights, const void* x_q8_1, float* y, int n
     s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_wide224, dpct_kernel_scalar<NCOLS>>>(
         sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
         [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { native_mmvq_q6k_wide_kernel<NCOLS, 1, WARP, 224>(w, x, y, n_in, n_out); });
+}
+// the serving layout of tag 114: 224-byte blocks, aligned weight loads, scalar activation loads (the A2 flag), 1-4 columns a launch
+template <int NCOLS>
+void launch_q6k_s224(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, dpct::queue_ptr s) {
+    const auto* w = static_cast<const Q6KBlock*>(weights);
+    const auto* x = static_cast<const Q81Block*>(x_q8_1);
+    const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
+    s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_s224, dpct_kernel_scalar<NCOLS>>>(
+        sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
+        [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { native_mmvq_q6k_wide_kernel<NCOLS, 1, WARP, 224, true>(w, x, y, n_in, n_out); });
 }
 bool g_q6k_wide = std::getenv("STRATA_MMVQ_WIDE") == nullptr || std::atoi(std::getenv("STRATA_MMVQ_WIDE")) != 0;
 
@@ -2953,6 +2963,40 @@ void native_q6_k_unpack(const void* weights) {
 
 void native_mmvq_set_multi_exact(bool exact) { g_multi_exact = exact; }
 void native_mmvq_set_q6k_wide(bool on) { g_q6k_wide = on; }
+void native_q6_k_mmvq_s224(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream) {
+    const auto s = strata::q_of(stream);
+    const auto* x = static_cast<const Q81Block*>(x_q8_1);
+    const std::size_t x_stride = std::size_t(n_in) / Q8K;   // Q8_1 blocks per column
+    while (ncols > 0) {
+        const int c = ncols < 4 ? ncols : 4;   // 5 and 6 columns in one launch spill registers (0.14x measured): chunks of at most 4
+        switch (c) {
+        case 1: launch_q6k_s224<1>(weights, x, y, n_in, n_out, s); break;
+        case 2: launch_q6k_s224<2>(weights, x, y, n_in, n_out, s); break;
+        case 3: launch_q6k_s224<3>(weights, x, y, n_in, n_out, s); break;
+        default: launch_q6k_s224<4>(weights, x, y, n_in, n_out, s); break;
+        }
+        x += std::size_t(c) * x_stride;
+        y += std::size_t(c) * n_out;
+        ncols -= c;
+    }
+}
+int native_mmvq_serving_type(int ggml_type) {
+    static const bool on = [] {
+        const char* value = std::getenv("STRATA_Q6K_REPACK");
+        return value && std::strcmp(value, "1") == 0;
+    }();
+    return ggml_type == 14 && on ? kNativeQ6KStride224 : ggml_type;
+}
+void native_mmvq_pack(int serving_type, const void* gguf_bytes, int n_in, int n_out, void* packed) {
+    if (serving_type != kNativeQ6KStride224) throw std::invalid_argument("native_mmvq_pack: the serving type needs no packing");
+    const std::size_t blocks = std::size_t(n_out) * std::size_t(n_in / 256);
+    const auto* src = static_cast<const uint8_t*>(gguf_bytes);
+    auto* dst = static_cast<uint8_t*>(packed);
+    for (std::size_t b = 0; b < blocks; ++b) {
+        std::memcpy(dst + b * 224, src + b * 210, 210);
+        std::memset(dst + b * 224 + 210, 0, 14);
+    }
+}
 void native_q6_k_mmvq_stride224(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, int ncols,
                                 void* stream) {
     const auto s = strata::q_of(stream);
@@ -3650,7 +3694,7 @@ void native_iq4_nl_f32(const void* weights, const float* x, void* scratch_q8_1,
 
 bool native_mmvq_supported(int ggml_type) noexcept {
     return ggml_type == 2 || ggml_type == 6 || ggml_type == 7 || ggml_type == 8 || ggml_type == 11 ||
-           ggml_type == 12 || ggml_type == 13 || ggml_type == 14 || ggml_type == 20 ||
+           ggml_type == 12 || ggml_type == 13 || ggml_type == 14 || ggml_type == 114 || ggml_type == 20 ||
            ggml_type == 23 || ggml_type == 42 || ggml_type == 16 || ggml_type == 17 || ggml_type == 18 ||
            ggml_type == 21 || ggml_type == 22 || ggml_type == 29;
 }
@@ -3667,6 +3711,7 @@ std::size_t native_mmvq_weight_bytes(int ggml_type, int n_in, int n_out) {
     case 12: block_elems = 256; block_bytes = 144; break;
     case 13: block_elems = 256; block_bytes = 176; break;
     case 14: block_elems = 256; block_bytes = 210; break;
+    case 114: block_elems = 256; block_bytes = 224; break;
     case 23: block_elems = 256; block_bytes = 136; break;
     case 42: block_elems = 64; block_bytes = 18; break;
     case 16: case 17: case 18: case 21: case 22: case 29:
@@ -3694,6 +3739,7 @@ void native_mmvq(int ggml_type, const void* weights, const void* x_q8_1, float* 
     case 12: native_q4_k_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
     case 13: native_q5_k_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
     case 14: native_q6_k_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
+    case 114: native_q6_k_mmvq_s224(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
     case 23: native_iq4_xs_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
     case 42: native_q2_0_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
     case 16: case 17: case 18: case 21: case 22: case 29:

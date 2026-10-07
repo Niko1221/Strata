@@ -293,6 +293,7 @@ if(STRATA_SYCL_PARITY)
   target_link_libraries(dequant_bench PRIVATE strata_kernels)
   add_executable(mmvq_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/mmvq_bench.cpp)   # dense mmvq timing
   target_link_libraries(mmvq_bench PRIVATE strata_kernels)
+  add_test(NAME q6k_repack_parity COMMAND mmvq_bench --selftest)
   add_executable(mmvq_sg_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/mmvq_sg_bench.cpp)   # SIMD16 vs 32 decode mmvq
   target_link_libraries(mmvq_sg_bench PRIVATE strata_kernels)
   add_executable(q6k_align_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/q6k_align_bench.cpp)   # Q6_K block alignment
