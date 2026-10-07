@@ -273,6 +273,9 @@ def write_bundle(stream: BinaryIO, bundle: MediaBundle, limits: MediaLimits = DE
 def _qwen4_structure(bundle: MediaBundle):
     """Verified kind/pad, wrappers and per-group positions; not a codec-wide rule."""
     _require(bundle.width == 2560, "Qwen4 media needs projection width 2560")
+    covered = {i for span in bundle.spans for i in range(span.start, span.start + len(span.positions))}
+    _require(all(i in covered or token not in (248056, 248057) for i, token in enumerate(bundle.tokens)),
+             "an unbound Qwen4 visual pad is not allowed")
     for span in bundle.spans:
         pad = 248056 if span.kind == MediaKind.IMAGE else 248057
         _require(span.pad_id == pad, "media kind/pad does not match the Qwen4 profile")

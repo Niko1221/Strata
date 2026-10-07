@@ -178,7 +178,15 @@ void validate_media(const MediaBundle& b, const MediaLimits& l) {
 
 static void qwen4_structure(const MediaBundle& b) {
     need(b.width == 2560, "Qwen4 media needs projection width 2560");
+    uint64_t covered = 0;
+    const auto unbound = [&](uint64_t end) {
+        for (; covered < end; ++covered)
+            need(b.tokens[size_of(covered)] != 248056 && b.tokens[size_of(covered)] != 248057,
+                 "an unbound Qwen4 visual pad is not allowed");
+    };
     for (const auto& span : b.spans) {
+        unbound(span.start);
+        covered = span.start + span.positions.size();
         const int32_t pad = span.kind == MediaKind::Image ? 248056 : 248057;
         need(span.pad_id == pad, "media kind/pad does not match the Qwen4 profile");
         const uint64_t rows = span.positions.size(), end = span.start + rows;
@@ -192,6 +200,7 @@ static void qwen4_structure(const MediaBundle& b) {
             need(span.positions[size_t(i)] == MediaPosition{0, int32_t(i / nx), int32_t(i % nx)},
                  "Qwen4 groups need zero relative time and row-major spatial positions");
     }
+    unbound(b.tokens.size());
 }
 
 MediaBundle read_media(std::istream& in, const MediaLimits& l, bool qwen4, const std::vector<int64_t>* request_tokens) {
