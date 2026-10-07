@@ -493,6 +493,19 @@ void fallback_note() {
     }
     onemkl_broken = true;
 }
+
+// oneMKL SYCL BLAS has no OpenCL Xe2 backend: its attempt not only fails but poisons the queue
+// (UR_RESULT_ERROR_IN_EVENT_LIST_EXEC_STATUS on what follows), so skip it outright there.
+bool onemkl_usable(void* stream) {
+    if (onemkl_broken) return false;
+    try {
+        if (strata::q_of(stream)->get_backend() == sycl::backend::opencl) {
+            fallback_note();
+            return false;
+        }
+    } catch (...) {}
+    return true;
+}
 }  // namespace
 
 void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
@@ -511,7 +524,7 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
     // Column-major view: Y^T[N, T] = W[N, K] (stored K x N col-major, transposed) . X^T[K, T].
     // oneMKL SYCL BLAS has no OpenCL Xe2 backend ("does not support this API"): fall back to the plain
     // SYCL kernel there (slow prompts, same answers) instead of failing the prompt.
-    if (onemkl_broken ||
+    if (!onemkl_usable(stream_) ||
         DPCT_CHECK_ERROR(dpct::blas::gemm(
            (dpct::blas::descriptor_ptr)handle_, oneapi::mkl::transpose::trans,
            oneapi::mkl::transpose::nontrans, (int)N, (int)T, (int)K, &alpha, W,
@@ -538,7 +551,7 @@ void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_
         return;
     }
 #endif
-    if (onemkl_broken ||
+    if (!onemkl_usable(stream_) ||
         DPCT_CHECK_ERROR(dpct::blas::gemm(
            (dpct::blas::descriptor_ptr)handle_, oneapi::mkl::transpose::trans,
            oneapi::mkl::transpose::nontrans, (int)N, (int)T, (int)K, &alpha, W,
