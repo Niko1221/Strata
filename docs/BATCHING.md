@@ -61,6 +61,31 @@ about 10-25% speed per request on this card". `--parallel N` is honoured as aske
 
 ## How the server uses the slots
 
+### Checking staggered admissions
+
+`tools/batch_test.py` compares each slot's complete token sequence with its solo reference. To admit requests
+while the first slot is already decoding, give one increasing token count per later request:
+
+```sh
+python tools/batch_test.py --exe build/strata --config strata-model.json --batch 8 --n 4 --max-new 128 \
+    --stagger-after 8,16,24 --dump staggered.json \
+    --extra "--batch-groups 4 --trim-stage-weights --pcie-frac 0 --adapt-every 1000000"
+```
+
+The JSON records the active slots and anchor token count at each admission, including tokens emitted while the
+new prompt is read. An anchor that finishes before a scheduled admission is a failed test. Add `--promote-after 4`
+to exercise the server's `GEN` → `STOP` → `BGEN(prompt + emitted tokens)` transition before the staggered admissions.
+Add `--long-tokens 1200` to make the last request read a longer prompt.
+
+The test sets `STRATA_IQ_MT_MIN=1` by default to keep the CPU expert arithmetic independent of batch width.
+Use `--mt-min ""` to compare the engine's default arithmetic instead. With one batch group, the long prompt's
+chunks can run between active slots' windows; use `--no-prefill-borrow` as the exactness control because a borrowed
+expert cache changes which experts run on the CPU. With multiple pipeline groups, admission first drains the
+groups in flight and the prompt is read without those interleaved windows. Record the group count and both
+arithmetic settings when investigating a difference; an exactness-control result alone does not identify its cause.
+
+### Request lifecycle
+
 - **One request alone** runs on the usual solo path (verify windows with MTP drafts): the fastest single stream.
 - **When a second request arrives**, the first is stopped (`STOP`) and continues in a batch slot with its prompt
   plus what it generated so far - the engine's prompt cache holds exactly that, so nothing is read again - and the
