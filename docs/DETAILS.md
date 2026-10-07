@@ -290,7 +290,8 @@ RAM copy, blobs and MB from the files, the time spent reading them; `routing pre
 been warmed). The server log has the same per request (`expert tiers: GPU ... hits ...; RAM ... blobs, files ...
 blobs ... MB read`), and `GET /metrics` lists `ram_blobs`, `file_blobs` and `file_mb` for each recent request (with
 engine 0.1.31 or newer). It also lists each request's speculative drafts, `drafts_offered` and `drafts_accepted`
-(`null` when the engine did not report them), and their sums since the server started in `totals` (#457).
+(`null` when the engine did not report them), and their sums since the server started in `totals` (#457). `totals` also
+has `rejected`, the number of requests answered 429 by the queue cap (see "Limiting the queue").
 Its `hit_rate` is the VRAM share of the experts looked up while answering: experts the GPU reads over PCIe
 (`--pcie-frac`) are not in it, so a higher `--pcie-frac` raises it even when decoding gets slower. `pcie_share`
 (engine 0.1.39 or newer, #588) is their share of all routed experts, and the server log and the Monitor tab show it
@@ -844,8 +845,8 @@ print(r.choices[0].message.content)
 - **Model settings in the web page (0.1.39, #564).** The About tab's Model settings card shows and changes a few of
   the keys above in `strata-<model>.json`: the `sampling` defaults (temperature, top_p, top_k, min_p),
   `reasoning_budget_tokens`, `fit_max_tokens`, `anthropic_thinking`, `effort_position`, `aliases`, `idle_unload_s`,
-  `lazy_load`, `engine_silence_s`, `api_monitor`, `open_browser` and `--vram-reserve-mib`. An empty field removes the
-  key (its default). Every other key of the file stays as it is, the earlier file is kept as
+  `max_queue`, `lazy_load`, `engine_silence_s`, `api_monitor`, `open_browser` and `--vram-reserve-mib`. An empty
+  field removes the key (its default). Every other key of the file stays as it is, the earlier file is kept as
   `strata-<model>.json.bak`, and the model uses the change from its next start. Only Strata's own page can save
   (JSON, the API key when one is set, as for the Chat settings); the network, key, MCP and program keys are not
   editable there.
@@ -1211,6 +1212,52 @@ without penalties, so more of its guesses are now rejected. Requests without pen
 **Sampled drafting (opt-in, 0.1.40.2).** With temperature above 0 the engine keeps a draft only when it equals the token the model sampled for that position, and the draft layer proposes its best guess. Two opt-in switches change how the draft layer drafts a sampled request; greedy requests (temperature 0) are never touched and stay byte-identical. `STRATA_SPEC_COUPLED=1` (or `--coupled-draft`) drafts by sampling with the request's own settings and the random number the checking row will use; the text for a seed does not change. `STRATA_SPEC_PROB=1` is speculative rejection sampling: the draft layer samples its guess from its own distribution q, the check accepts it with probability min(1, p/q) (p is the model's distribution after penalties, top_k, top_p, min_p and temperature) and otherwise samples the replacement from the leftover distribution, so every token is distributed exactly as without drafts (the text for a seed then depends on the drafts, so it is reproducible only for the same engine, flags and prompt). Guesses without a distribution (prompt lookup, suffix drafts) keep the exact-match rule, which is already exact. Neither is faster in a way that holds up: on an RTX 3060 (IQ3_XXS, 200-token story and code answers, 10 interleaved pairs) the default's median output speed was 42.4 / 43.2 / 43.3 tok/s at temperature 0.3 / 0.7 / 1.0, coupled drafting 40.6 / 42.4 / 43.3 and rejection sampling 41.0 / 42.6 / 42.6, with run-to-run differences of up to 5% between repeats; drafts kept per round fell at 0.3 and rose by about 5 points at 1.0, which the cost of the longer sampled windows ate. `STRATA_SPEC_DEPTH=1` prints the acceptance by draft depth for each request; `STRATA_SPEC_MIN_TEMP=0.9` limits sampled drafting to hotter requests. Proof that the rejection rule keeps the distribution: `spec_prob_test` (chi-square, 2 million trials per case) and `spec_verify_parity` (GPU against the host reference).
 
 ---
+
+### Limiting the queue (`--max-queue`)
+
+By default every request waits its turn, however many there are. `--max-queue N` (config key `"max_queue"`, a whole
+number from 0 up; empty or unset: no limit, as before) lets at most N requests wait beyond the running ones. The room
+is the running slots (`"parallel"` / `--batch`, or 1 when requests run one at a time) plus N; `0` rejects every request
+that cannot start at once. Only `/v1/chat/completions`, `/v1/messages` and `/v1/responses` count.
+
+A request beyond that gets an immediate **HTTP 429** with a `Retry-After` header, before anything is sent, so a
+streaming request also gets a plain 429, never a started stream. The body is the OpenAI error shape on chat
+completions (`{"error": {"type": "rate_limit_error", "code": "rate_limit_exceeded", ...}}`), the Anthropic one on
+`/v1/messages` (`{"type": "error", "error": {"type": "rate_limit_error", ...}}`) and the Responses API's error shape on
+`/v1/responses`. `Retry-After` is whole seconds from 1 to 60: the mean duration of the last 8 finished requests divided
+by the slots (10 s before any request has finished). It is an estimate, not a promise. `GET /metrics` counts the 429s
+since the start as `rejected` in `totals` (a client that retries is counted again each time).
+
+Measured on two RTX 3090s (layer split), Unsloth UD-Q4_K_XL, Strata 0.1.40.1, requests one at a time,
+`"max_queue": 2`: of 5 chat requests sent at once (400 tokens each), 3 were answered in 5.1, 7.7 and 10.1 s and 2
+got the 429 in under 2 ms. Behind
+a litellm proxy with live traffic (prompts of 1.4K-18K tokens, 2.7-13.5 s per request) and `"max_queue": 4`, the
+`Retry-After` it sent over 5,379 rejections had a median of 8 s, 90 % at 14 s or less and a maximum of 31 s; over
+10.6 hours it answered 3,885 requests and rejected 3,154 attempts, litellm's retries included.
+
+**Behind litellm** (read from litellm 1.106.0's router; check yours). litellm, like the OpenAI and Anthropic SDKs,
+retries a 429; a 503 counts as a server failure and puts the deployment in cooldown. It uses `Retry-After` only when
+it is a whole number from 1 to 60, which is why Strata stays in that range. If the model group has another
+deployment, litellm cools Strata down for the `Retry-After` time and sends the request to the other one at once; if
+Strata is the only one, it waits `Retry-After` and tries Strata again (`num_retries`, or `RateLimitErrorRetries` in a
+retry policy). Two settings work against this: a router-wide `allowed_fails` counts 429s like other errors, so a few
+in a minute cool even a single deployment down and send its requests to the fallbacks instead of waiting; and a
+`cooldown_time` on the deployment replaces `Retry-After` as the cooldown. A per-deployment policy keeps the 429 a
+"wait" without changing anything else (litellm's background health checks need the third setting, or a check that
+meets a full queue marks Strata unhealthy):
+
+```yaml
+model_list:
+  - model_name: strata
+    litellm_params: {model: hosted_vllm/strata, api_base: "http://strata-pc:8080/v1", api_key: none}
+    model_info:
+      allowed_fails_policy: {RateLimitErrorAllowedFails: 1000}   # a 429 never cools Strata down (0: at once)
+router_settings:
+  model_group_retry_policy:
+    strata: {RateLimitErrorRetries: 3}         # waits of Retry-After before the fallbacks or the client get it
+general_settings:
+  health_check_ignore_transient_errors: true   # a 429 from a full queue is not "unhealthy"
+```
 
 ### The Responses API and Codex CLI
 

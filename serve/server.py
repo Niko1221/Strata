@@ -300,6 +300,13 @@ class EngineDied(RuntimeError):
     """The engine process ended in the middle of a request (issue #27: on Linux, the out-of-memory killer)."""
 
 
+class QueueFull(RuntimeError):
+    """The queue cap ("max_queue") is reached: the request gets a 429 with `retry_after` whole seconds."""
+    def __init__(self, message, retry_after):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
 class EngineStarting(RuntimeError):
     """The engine is (re)starting and has not said READY yet (#344): no context size to plan a request with - a 503,
     not a 400 about the prompt."""
@@ -2772,7 +2779,13 @@ class Service:
         # since the server started (the Monitor's totals, issue #35)
         self.totals = {"since": time.time(), "requests": 0, "prompt_tokens": 0, "reused": 0, "output_tokens": 0,
                        "prompt_ms": 0.0, "decode_ms": 0.0,
-                       "drafts_offered": 0, "drafts_accepted": 0}   # #457: the MTP drafts, summed where reported
+                       "drafts_offered": 0, "drafts_accepted": 0,   # #457: the MTP drafts, summed where reported
+                       "rejected": 0}                   # answered 429: the queue cap (max_queue) was reached
+        # the queue cap: at most this many requests wait beyond the ones running (None: no limit; 0: reject what
+        # cannot start at once); inflight counts the admitted generation requests (running + waiting) under
+        # status_lock.  Kept here, not in the engine: a restart rebuilds the engine's state.
+        self.max_queue = None
+        self.inflight = 0
         self.last_timings = None                         # the last finished request's, llama.cpp's names (/v1/status)
         from serve.prometheus import Latencies
         self.latencies = Latencies()                     # GET /metrics in Prometheus text: the latency histograms
@@ -3175,6 +3188,39 @@ class Service:
             reading = self.status.get("busy") and self.status.get("first_token") is None
         return getattr(self.engine, "prefill_tok_s_mean", None) if reading else 0.0
 
+    def retry_after(self) -> int:
+        """Seconds a rejected client should wait (the 429's Retry-After; litellm only honours a whole number
+        1..60).  With the queue full, about one place opens per mean duration of the last 8 finished requests,
+        shared over the parallel slots.  How long the running ones have gone is not subtracted: under load they are
+        often past the mean, which would give 1 s and let litellm spend its retries in seconds.  Rough on purpose;
+        long prompts often give the cap of 60.  No finished request yet: 10."""
+        slots = max(int(getattr(self.engine, "batch", 0) or 0), 1)
+        with self.status_lock:
+            durs = [float(h["duration_s"]) for h in list(self.history)[-8:] if h.get("duration_s") is not None]
+        if not durs:
+            return 10
+        return int(min(60, max(1, math.ceil(sum(durs) / len(durs) / slots))))
+
+    def admit(self):
+        """The queue cap: count this generation request in, or raise QueueFull when `max_queue` requests already
+        wait beyond the engine's slots.  Atomic under status_lock; call release() once for every admit() that
+        returned."""
+        with self.status_lock:
+            cap = None if self.max_queue is None else max(int(getattr(self.engine, "batch", 0) or 0), 1) + self.max_queue
+            if cap is not None and self.inflight >= cap:
+                waiting = self.inflight - (cap - self.max_queue)
+                self.totals["rejected"] += 1
+            else:
+                self.inflight += 1
+                return
+        wait = self.retry_after()
+        raise QueueFull(f"the queue is full ({max(waiting, 0)} waiting, max_queue {self.max_queue}); "
+                        f"retry after {wait} s", wait)
+
+    def release(self):
+        with self.status_lock:
+            self.inflight = max(0, self.inflight - 1)
+
     def begin_request(self, path, req):
         """#332: a monitor record for this request, or None when the monitor is off (nothing is kept then)."""
         if not self.api_monitor:
@@ -3215,6 +3261,7 @@ class Service:
                 s = {**s, **dict(list(self.live_reqs.values())[-1][0]), "queued": s.get("queued", 0)}
             hist = list(self.history)
             totals = dict(self.totals)
+            inflight = self.inflight                    # admitted generation requests: running + waiting
         now = time.time()
         progress = getattr(self.engine, "progress", None)
         if s.get("busy") and s.get("first_token") is None:
@@ -3225,7 +3272,8 @@ class Service:
             state = "unloaded"
         else:
             state = "idle"
-        live = {"state": state, "queued": s.get("queued", 0), "phase": s.get("phase") if s.get("busy") else None,
+        live = {"state": state, "queued": s.get("queued", 0), "inflight": inflight, "max_queue": self.max_queue,
+                "phase": s.get("phase") if s.get("busy") else None,
                 "prompt_tokens": s.get("prompt_tokens") if s.get("busy") else None,
                 "prompt_read": None, "prompt_total": None, "generated": s.get("generated") if s.get("busy") else None,
                 "max_tokens": s.get("max_tokens") if s.get("busy") else None,
@@ -3294,7 +3342,7 @@ class Service:
         that polls its OpenAI-compatible server's status, collabosm's for one): the model and its window, images,
         the APIs, what is running, and the last request's timings in llama.cpp's names.  /metrics has the rest."""
         with self.status_lock:
-            s, totals = dict(self.status), dict(self.totals)
+            s, totals, inflight = dict(self.status), dict(self.totals), self.inflight
             last_t, last_at = (dict(self.last_timings) if self.last_timings else None), self.last_request_at
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "static": {}}
         hw, static = tel.get("now") or {}, tel.get("static") or {}
@@ -3319,6 +3367,7 @@ class Service:
             "dialects": ["/v1/chat/completions", "/v1/messages", "/v1/responses"],
             "vision": {"enabled": images, "available": images, "error": None},
             "activity": {"requests": totals["requests"] + int(busy), "in_flight": int(busy) + int(s.get("queued") or 0),
+                         "admitted": inflight, "max_queue": self.max_queue, "rejected": totals.get("rejected", 0),
                          "last_request_at": int(last_at) if last_at else None},
             "last_timings": last_t,
             "vram": dict((getattr(self.engine, "info", {}) or {}).get("vram") or {},
@@ -4688,7 +4737,7 @@ def make_handler(svc: Service):
             self.send_header("Content-Length", "0")
             self.end_headers()
 
-        def _json(self, code, obj):
+        def _json(self, code, obj, headers=None):
             if self.record is not None:
                 with svc.status_lock:
                     self.record["http_status"] = code
@@ -4700,6 +4749,8 @@ def make_handler(svc: Service):
             body = json.dumps(obj, ensure_ascii=False).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json")
+            for k, v in (headers or {}).items():
+                self.send_header(k, str(v))
             self._cors()
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -4904,6 +4955,7 @@ def make_handler(svc: Service):
                 except GpuBusy as e:
                     self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                 return
+            admitted = False                                 # this request holds a place under the queue cap
             try:
                 req = json.loads(self._body() or b"{}")
                 if not isinstance(req, dict):
@@ -4949,6 +5001,8 @@ def make_handler(svc: Service):
                     return
                 if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):
                     self.record = svc.begin_request(path, req)
+                    svc.admit()                              # the queue cap: before any byte of the answer
+                    admitted = True
                 if path == "/v1/responses":
                     self._responses(req)
                 elif path.startswith("/slots/"):
@@ -4974,6 +5028,16 @@ def make_handler(svc: Service):
                     self._json(400, responses_error_body(str(e)))
                 else:
                     self._json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
+            except QueueFull as e:
+                print(f"[strata] 429 queue full: {e}", flush=True)
+                hdr = {"Retry-After": int(e.retry_after)}
+                if path == "/v1/responses":
+                    self._json(429, responses_error_body(str(e), "rate_limit_error", code="rate_limit_exceeded"), hdr)
+                elif path == "/v1/messages":
+                    self._json(429, {"type": "error", "error": {"type": "rate_limit_error", "message": str(e)}}, hdr)
+                else:
+                    self._json(429, {"error": {"type": "rate_limit_error", "code": "rate_limit_exceeded",
+                                               "message": str(e)}}, hdr)
             except ModelBusy as e:
                 self._json(409, {"error": {"type": "model_busy", "message": str(e)}})
             except StructuredOutputError as e:
@@ -5001,6 +5065,8 @@ def make_handler(svc: Service):
                 self._note(outcome="disconnected")
                 raise                                        # as before #332: the server's own handling
             finally:
+                if admitted:
+                    svc.release()                            # every way out frees the place
                 svc.drop_embeddings()                        # the images' file of a request that never got to run()
                 if self.watch_done is not None:
                     self.watch_done.set()
@@ -6046,6 +6112,10 @@ def main() -> int:
                     help="unload the model after this many seconds without requests, so other programs (games, other "
                          "model servers) can use the VRAM; the next request loads it again (also \"idle_unload_s\" "
                          "in the config; default: never)")
+    ap.add_argument("--max-queue", type=int, default=None, metavar="N",
+                    help="at most N requests wait beyond the ones running; more get HTTP 429 with a Retry-After "
+                         "header (0: reject what cannot start at once; also \"max_queue\" in the config; default: "
+                         "no limit)")
     ap.add_argument("--min-free-vram-mib", type=int, default=None,
                     help="load an unloaded model only when this much VRAM is free, else answer 503 (also "
                          "\"min_free_vram_mib\" in the config; default: always load)")
@@ -6208,6 +6278,13 @@ def main() -> int:
               + ("" if svc.api_key or "*" not in svc.cors_origins else
                  " - WARNING: any web page may use the model (no API key)"), flush=True)
     svc.idle_unload_s = a.idle_unload if a.idle_unload is not None else float(cfg.get("idle_unload_s") or 0)
+    mq = a.max_queue if a.max_queue is not None else cfg.get("max_queue")
+    if mq is not None:
+        if isinstance(mq, bool) or not isinstance(mq, int) or mq < 0:
+            where = "--max-queue" if a.max_queue is not None else 'config "max_queue"'
+            raise SystemExit(f"[strata] {where} must be a whole number >= 0, not {mq!r}")
+        svc.max_queue = mq
+        print(f"[strata] queue cap: at most {mq} requests wait (more get 429 + Retry-After)", flush=True)
     svc.min_free_vram_mib = a.min_free_vram_mib if a.min_free_vram_mib is not None else \
         int(cfg.get("min_free_vram_mib") or 0)
     svc.before_load = a.before_load or cfg.get("before_load") or None
