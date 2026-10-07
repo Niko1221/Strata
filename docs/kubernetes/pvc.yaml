@@ -1,0 +1,12 @@
+# The model files (~70 GB for IQ3_S), the prepared pack, the MTP layer and the install configs. The engine is in
+# the image, not here. One volume can hold several models and several configs of one model.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: strata-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 200Gi
+  # storageClassName: local-path   # a local disk: the first start reads the whole model from it

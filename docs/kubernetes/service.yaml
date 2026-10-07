@@ -1,0 +1,15 @@
+# The port is named "http" and the Service carries app: strata, which is what docs/monitoring/servicemonitor.yaml
+# selects.
+apiVersion: v1
+kind: Service
+metadata:
+  name: strata
+  labels:
+    app: strata
+spec:
+  selector:
+    app: strata
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

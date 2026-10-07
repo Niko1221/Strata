@@ -1,0 +1,14 @@
+# Strata on Kubernetes: kubectl apply -k docs/kubernetes   (or kapp, see README.md)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: strata
+resources:
+  - namespace.yaml
+  - pvc.yaml
+  - deployment.yaml
+  - service.yaml
+# The image you built from this repository's Dockerfile and pushed (or imported into the node's containerd).
+images:
+  - name: strata
+    newName: registry.example.com/strata
+    newTag: "0.1.40.3"

@@ -1,0 +1,84 @@
+# One Strata server on one node's GPUs. The container runs the image's docker-entrypoint.sh: its first start sets the
+# model up (downloads ~70 GB into the volume), later starts go straight to serving. Every setting is one of the
+# entrypoint's env vars (docs/INSTALL.md, Docker).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: strata
+  labels:
+    app: strata
+spec:
+  replicas: 1
+  # The first start downloads the model: let a rollout run as long as the start-up probe allows (default: 10 min).
+  progressDeadlineSeconds: 7200
+  # Two servers cannot share the GPUs or the tens of GB of page-locked RAM: stop the old pod before the new one starts.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: strata
+  template:
+    metadata:
+      labels:
+        app: strata
+    spec:
+      # The NVIDIA runtime class: GPU Operator, or k3s with the NVIDIA Container Toolkit on the node.
+      runtimeClassName: nvidia
+      enableServiceLinks: false
+      # The engine releases its page-locked RAM on SIGTERM, which takes longer than the default 30 s.
+      terminationGracePeriodSeconds: 90
+      containers:
+        - name: strata
+          image: strata
+          # A locally imported image (k3s ctr images import) needs IfNotPresent or Never, and a tag other than latest.
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - { name: STRATA_DATA, value: /data }
+            - { name: FAMILY, value: qwen }
+            - { name: MODEL, value: IQ3_S }
+            - { name: CONTEXT, value: "262144" }
+            - { name: VISION, value: "yes" }
+            # Several cards: one model across them (docs/MULTI_GPU.md). Must match the GPU count requested below.
+            # - { name: GPUS, value: "0,1,2,3" }
+            # - { name: LAYER_SPLIT, value: "12,24,36" }
+            # A config you edited (extra args such as --batch 8): it wins over MODEL's /data/config/strata-<model>.json.
+            # Its "host" must be "0.0.0.0" for the Service to reach it (HOST only applies when setup writes a config).
+            # - { name: CONFIG, value: /data/config/strata-iq3_s.batch.json }
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef: { name: strata-api-key, key: key }
+          securityContext:
+            # The experts are kept in page-locked RAM: mlock needs IPC_LOCK, and the node's container runtime must not
+            # cap RLIMIT_MEMLOCK (k3s and containerd's systemd unit leave it unlimited; check yours).
+            capabilities:
+              add: [IPC_LOCK]
+          resources:
+            requests:
+              cpu: "8"
+              memory: 64Gi
+            limits:
+              nvidia.com/gpu: 1
+            # No memory limit: Strata keeps 32-62 GB in RAM and setup.py sizes that from the host's RAM, not from a
+            # cgroup limit. With a limit, set LOW_RAM=on (docs/INSTALL.md).
+          # /health answers before the API key gate. The port opens after the model has loaded: 1-3 minutes, and the
+          # first start also downloads the model, so the startup probe allows 2 hours.
+          startupProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 20
+            failureThreshold: 360
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: dshm, mountPath: /dev/shm }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: strata-data
+        # Docker's default /dev/shm is 64 MiB; give the server room like `docker run --shm-size`.
+        - name: dshm
+          emptyDir: { medium: Memory, sizeLimit: 8Gi }
