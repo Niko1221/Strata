@@ -28,6 +28,7 @@ import hashlib
 import hmac
 import codecs
 import ctypes
+import datetime
 import json
 import math
 import os
@@ -533,6 +534,111 @@ def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict) 
             "reused_tokens": totals.get("reused", 0), "prompt_tokens": totals.get("prompt_tokens", 0),
             "last_reused": last.get("reused") if last else None,
             "last_prompt": last.get("prompt_tokens") if last else None}
+
+
+METRICS_LOG_DEFAULT = "logs/metrics.jsonl"            # under the Strata folder, whatever folder the server runs in
+METRICS_LOG_MAX_MB = 100                               # about 38 hours at one sample a second
+
+
+def metrics_log_path(cli, cfg: dict, off: bool = False):
+    """The metrics log's file, or None when it is off.  On by default (logs/metrics.jsonl in the Strata folder);
+    --no-metrics-log or "metrics_log": false turns it off; --metrics-log FILE or "metrics_log": "FILE" moves it
+    (a relative path is the Strata folder's)."""
+    v = cfg.get("metrics_log", True)
+    if off or v is False or v is None or v == "":
+        return None
+    p = Path(cli or (v if isinstance(v, str) else METRICS_LOG_DEFAULT))
+    return str(p if p.is_absolute() else ROOT / p)
+
+
+def metrics_log_offset_at(f, size: int, since: float) -> int:
+    """The byte offset of the first line at or after Unix time `since` in an open metrics log (its lines are in time
+    order): a binary search on the lines' "t", so a long log is not read whole to find the last day."""
+    def t_after(pos):                                  # the first whole line starting at or after pos: (start, t)
+        f.seek(max(0, pos - 1))
+        if pos:
+            f.readline()                               # to the end of the line holding byte pos-1: pos itself if a line starts there
+        while True:
+            at = f.tell()
+            raw = f.readline()
+            if not raw:
+                return size, None
+            try:
+                return at, float(json.loads(raw)["t"])
+            except (ValueError, KeyError, TypeError):
+                continue
+    lo, hi = 0, size
+    while lo < hi:
+        mid = (lo + hi) // 2
+        at, t = t_after(mid)
+        if t is None or t >= since:
+            hi = mid
+        else:
+            lo = at + 1
+    return t_after(lo)[0]
+
+
+def metrics_log_lines(m: dict, done_before: int) -> tuple[list[dict], int]:
+    """--metrics-log: what the Monitor tab shows, from a /metrics answer `m`, as JSONL records in the page's units:
+    one "sample" (the state, the eight cards, context fill, experts in VRAM, system RAM), then a "request" for each
+    request finished since `done_before` (the totals' request count at the last call).  Returns them and the count."""
+    live, hw, eng = m["live"], m["hardware"], m["engine"]
+    reqs = m["requests"]                                # newest first
+    last = reqs[0] if reqs else None
+
+    def r(v, d=1):
+        return round(v, d) if isinstance(v, (int, float)) else None
+
+    def gb(v):
+        return round(v / 2**30, 2) if isinstance(v, (int, float)) else None
+
+    def prefill_of(q):                                  # the page's "Prefill last request"
+        return r(max(0, q["prompt_tokens"] - (q.get("reused") or 0)) / (q["prompt_ms"] / 1000), 0) \
+            if q and q.get("prompt_ms") and q.get("prompt_tokens") is not None else None
+
+    state = live["state"]
+    if state != "idle":
+        used = (live.get("prompt_tokens") or 0) + (live.get("generated") or 0)
+    else:
+        used = ((last.get("prompt_tokens") or 0) + (last.get("output_tokens") or 0)) if last else 0
+    ctx = eng.get("max_context") or 0
+    t = m["time"]
+    sample = {
+        "type": "sample", "t": round(t, 3),
+        "ts": datetime.datetime.fromtimestamp(t).astimezone().isoformat(timespec="milliseconds"),
+        "state": state, "queued": live.get("queued"), "phase": live.get("phase"),
+        "prompt_read": live.get("prompt_read"), "prompt_total": live.get("prompt_total"),
+        "generated": live.get("generated"), "max_tokens": live.get("max_tokens"), "elapsed_s": live.get("elapsed_s"),
+        "decode_tok_s": live.get("tok_s") if state == "generating" else (last or {}).get("decode_tok_s"),
+        "prefill_tok_s": r(live.get("prefill_tok_s_mean"), 0) if state != "idle" else prefill_of(last),
+        "gpu_util_pct": r(hw.get("gpu_util")),
+        "vram_used_gb": gb(hw.get("gpu_mem_used")), "vram_total_gb": gb(hw.get("gpu_mem_total")),
+        "gpu_temp_c": r(hw.get("gpu_temp")),
+        "power_w": r(hw.get("gpu_power")), "power_limit_w": r(hw.get("gpu_power_limit")),
+        "pcie_gen": hw.get("gpu_pcie_gen"), "pcie_gen_max": hw.get("gpu_pcie_gen_max"),
+        "pcie_width": hw.get("gpu_pcie_width"),
+        "pcie_to_gpu_mb_s": r(hw.get("gpu_pcie_rx_mb")), "pcie_from_gpu_mb_s": r(hw.get("gpu_pcie_tx_mb")),
+        "cpu_pct": r(hw.get("cpu")),
+        "disk_read_mb_s": r(hw.get("disk_read_mb")), "disk_write_mb_s": r(hw.get("disk_write_mb")),
+        "ram_used_gb": gb(hw.get("ram_used")), "ram_total_gb": gb(hw.get("ram_total")),
+        "context_used": used, "context_max": ctx, "context_pct": r(100 * used / ctx) if ctx else None,
+        "expert_slots": eng.get("expert_slots"), "expert_cache_gb": gb((eng.get("expert_cache_mib") or 0) * 2**20),
+    }
+    if "parallel" in live:
+        sample.update(parallel=live["parallel"], running=live.get("running"), waiting=live.get("waiting"))
+    if len(hw.get("gpus") or []) > 1:                   # a model split across cards: each card's own
+        sample["gpus"] = [{"index": g["index"], "util_pct": r(g.get("util")), "vram_used_gb": gb(g.get("mem_used")),
+                           "temp_c": r(g.get("temp")), "power_w": r(g.get("power"))} for g in hw["gpus"]]
+    done = m["totals"].get("requests", 0)
+    new = max(0, min(done - done_before, len(reqs)))
+    out = [sample]
+    for q in reversed(reqs[:new]):                      # oldest first
+        out.append({"type": "request", "t": round(t, 3), "ts": sample["ts"],
+                    "started": datetime.datetime.fromtimestamp(q["time"]).astimezone().isoformat(timespec="seconds"),
+                    **{k: q.get(k) for k in ("finish", "duration_s", "prompt_tokens", "reused", "output_tokens",
+                                             "decode_tok_s", "prompt_ms", "decode_ms", "hit_rate", "pcie_share")},
+                    "prefill_tok_s": prefill_of(q)})
+    return out, done
 
 
 _BTRACE = bool(os.environ.get("STRATA_BATCH_TRACE"))
@@ -2775,6 +2881,79 @@ class Service:
                                        gpu_indices=getattr(self, "gpu_indices", None),
                                        amd=getattr(self, "backend", None) == "hip")
 
+    def start_metrics_log(self, path, every_s=1.0, max_mb=METRICS_LOG_MAX_MB):
+        """--metrics-log: append what the Monitor tab shows to the JSONL file `path` every `every_s` seconds (a
+        "sample" line), and a "request" line for each finished request, so a task's run can be looked at afterwards.
+        Past `max_mb` the file becomes <name>.1 (one older file is kept) and a new one starts (0: never).
+        A write that fails is reported once and retried; it never stops the server."""
+        p = Path(path)
+        old = p.with_name(p.name + ".1")
+        with self.status_lock:
+            done = self.totals.get("requests", 0)
+        static = (getattr(self, "telemetry", None).snapshot()["static"]
+                  if getattr(self, "telemetry", None) else {})
+        start = {"type": "start", "t": round(time.time(), 3),
+                 "ts": datetime.datetime.now().astimezone().isoformat(timespec="milliseconds"),
+                 "model": self.model, "max_context": self.engine.max_context, **static}
+
+        def loop():
+            nonlocal done
+            lines, failed = [start], False
+            while True:
+                try:
+                    recs, done = metrics_log_lines(self.metrics(), done)
+                    lines += recs
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    if max_mb and p.exists() and p.stat().st_size >= max_mb * 2**20:
+                        os.replace(p, old)              # the page sees a shorter file and reads it from its start
+                        lines.insert(0, start)          # each file begins with what the server is
+                    with open(p, "a", encoding="utf-8") as f:
+                        f.write("".join(json.dumps(x, ensure_ascii=False) + "\n" for x in lines))
+                    lines, failed = [], False
+                except Exception as e:  # noqa: BLE001 - the log must never take the server down
+                    if not failed:
+                        print(f"[strata] metrics log: cannot write {p}: {e}", file=sys.stderr, flush=True)
+                    failed, lines = True, lines[-600:]
+                time.sleep(every_s)
+
+        threading.Thread(target=loop, daemon=True, name="metrics-log").start()
+        print(f"[strata] metrics log: the Monitor's values every {every_s:g} s to {p.resolve()} "
+              f"(charts at /metrics-history; \"metrics_log\": false turns it off)", flush=True)
+
+    def metrics_log_read(self, offset=None, since=None, max_bytes=8 << 20) -> dict:
+        """GET /metrics-log: the metrics log's lines for the /metrics-history page.  `offset`: the byte to go on from
+        (the last answer's "offset"; the page polls with it), else from the start; `since`: only lines at or after this
+        Unix time (without an offset the read starts there, found by a binary search).  At most `max_bytes` per answer,
+        cut at a whole line; "more" says to ask again at once.  A file that got shorter than `offset` (rotated, deleted
+        or replaced) is read from its start again, with "reset"."""
+        path = getattr(self, "metrics_log", None)
+        if not path:
+            return {"enabled": False, "lines": [], "offset": 0, "more": False}
+        p = Path(path)
+        size = p.stat().st_size if p.exists() else 0
+        start, reset = int(offset or 0), False
+        if start > size:
+            start, reset = 0, True
+        lines, end = [], start
+        if size > start:
+            with open(p, "rb") as f:
+                if offset is None and since is not None:
+                    start = end = metrics_log_offset_at(f, size, since)
+                f.seek(start)
+                chunk = f.read(min(size - start, max_bytes))
+            cut = chunk.rfind(b"\n") + 1               # a line still being written waits for the next poll
+            end = start + cut
+            for raw in chunk[:cut].splitlines():
+                try:
+                    rec = json.loads(raw)
+                except ValueError:
+                    continue
+                if since is None or rec.get("t", 0) >= since:
+                    lines.append(rec)
+        return {"enabled": True, "path": str(p.resolve()), "lines": lines, "offset": end, "size": size,
+                "more": end < size and end > start, "reset": reset,
+                "every_s": getattr(self, "metrics_log_every_s", 1.0)}
+
     def _tok_s(self):
         """tok/s over the last RATE_WINDOW_S seconds.  Returns 0.0 while nothing is generating.  With parallel requests:
         the sum of theirs."""
@@ -4260,6 +4439,18 @@ def make_handler(svc: Service):
                     # the last 12 requests; `?requests=all` every one kept (the Monitor's "Show all", issue #35)
                     self._json(200, svc.metrics(all_requests="requests=all" in self.path))
                 return
+            if path == "/metrics-log":
+                # the metrics log's lines from a byte offset (the /metrics-history page polls this)
+                if self._authorized():
+                    q = parse_qs(urlsplit(self.path).query)
+                    try:
+                        offset = int(q["offset"][0]) if "offset" in q else None
+                        since = float(q["since"][0]) if "since" in q else None
+                    except ValueError:
+                        self._json(400, {"error": {"message": "offset and since must be numbers"}})
+                        return
+                    self._json(200, svc.metrics_log_read(offset, since))
+                return
             if path == "/api/requests" and svc.api_monitor:
                 if self._authorized():
                     request_id = parse_qs(urlsplit(self.path).query).get("id", [None])[0]
@@ -4282,8 +4473,9 @@ def make_handler(svc: Service):
                 if self._authorized():
                     self._json(200, svc.mcp.status() if svc.mcp else {"servers": [], "tools": 0})
                 return
-            if path == "" or (path == "/api-monitor" and svc.api_monitor):
-                body = (ROOT / "serve" / "web" / ("monitor.html" if path else "index.html")).read_bytes()
+            if path in ("", "/metrics-history") or (path == "/api-monitor" and svc.api_monitor):
+                page = {"": "index.html", "/api-monitor": "monitor.html", "/metrics-history": "history.html"}[path]
+                body = (ROOT / "serve" / "web" / page).read_bytes()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
@@ -5195,6 +5387,9 @@ def origin_allowed(origin: str, host, names, origins=()) -> bool:
 def serve(svc: Service, host="127.0.0.1", port=8095) -> ThreadingHTTPServer:
     svc.host_names = host_names_for(host, svc.allowed_hosts, svc.trusted_origins)
     svc.start_telemetry()
+    if getattr(svc, "metrics_log", None):
+        svc.start_metrics_log(svc.metrics_log, getattr(svc, "metrics_log_every_s", 1.0),
+                              getattr(svc, "metrics_log_max_mb", METRICS_LOG_MAX_MB))
     httpd = Server((host, port), make_handler(svc))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd
@@ -5354,6 +5549,15 @@ def main() -> int:
     ap.add_argument("--api-monitor", action="store_true",
                     help="the API request monitor at /api-monitor: keeps the last 100 requests' prompts and answers in "
                          "memory (also \"api_monitor\": true in the config; off by default)")
+    ap.add_argument("--metrics-log", nargs="?", const=METRICS_LOG_DEFAULT, default=None, metavar="FILE",
+                    help="the JSONL file the Monitor tab's values (speed, GPU, VRAM, power, PCIe, CPU, disk, RAM, "
+                         "context) are appended to every second, with a line per finished request; charts at "
+                         "/metrics-history.  On by default, to logs/metrics.jsonl in the Strata folder (also "
+                         "\"metrics_log\": \"FILE\" in the config)")
+    ap.add_argument("--no-metrics-log", action="store_true",
+                    help="no metrics log (also \"metrics_log\": false in the config)")
+    ap.add_argument("--metrics-log-every", type=float, default=None, metavar="SECONDS",
+                    help="seconds between the metrics log's samples (default 1; also \"metrics_log_every_s\")")
     ap.add_argument("--idle-unload", type=float, default=None, metavar="SECONDS",
                     help="unload the model after this many seconds without requests, so other programs (games, other "
                          "model servers) can use the VRAM; the next request loads it again (also \"idle_unload_s\" "
@@ -5492,6 +5696,10 @@ def main() -> int:
         print(f"[strata] CORS on /v1/* for {', '.join(svc.cors_origins)}"
               + ("" if svc.api_key or "*" not in svc.cors_origins else
                  " - WARNING: any web page may use the model (no API key)"), flush=True)
+    svc.metrics_log = metrics_log_path(a.metrics_log, cfg, off=a.no_metrics_log)
+    svc.metrics_log_every_s = max(0.2, a.metrics_log_every if a.metrics_log_every is not None else
+                                  float(cfg.get("metrics_log_every_s") or 1.0))
+    svc.metrics_log_max_mb = float(cfg.get("metrics_log_max_mb", METRICS_LOG_MAX_MB) or 0)
     svc.idle_unload_s = a.idle_unload if a.idle_unload is not None else float(cfg.get("idle_unload_s") or 0)
     svc.min_free_vram_mib = a.min_free_vram_mib if a.min_free_vram_mib is not None else \
         int(cfg.get("min_free_vram_mib") or 0)
@@ -5580,7 +5788,10 @@ def main() -> int:
                   "       (and set this network to Private in Windows' network settings)", flush=True)
     if a.open and cfg.get("open_browser") is not False:   # #609: the config's "open_browser": false wins (an older
         import webbrowser                                  # run-<model>.bat still passes --open)
-        webbrowser.open(f"http://{'127.0.0.1' if a.host in ('0.0.0.0', '') else a.host}:{a.port}/")
+        page = f"http://{'127.0.0.1' if a.host in ('0.0.0.0', '') else a.host}:{a.port}/"
+        webbrowser.open(page)
+        if svc.metrics_log and cfg.get("open_history") is not False:   # the metrics charts in a second tab
+            webbrowser.open_new_tab(page + "metrics-history")
     # #96: docker stop sends SIGTERM, which Python ignores by default, so the container's PID 1 would be killed after
     # the grace period with the engine still running. SIGTERM takes Ctrl+C's path below (QUIT to the engine).
     # SIGINT keeps Python's own handler, so Ctrl+C and a second Ctrl+C work as before.

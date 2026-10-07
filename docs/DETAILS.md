@@ -1582,3 +1582,35 @@ with **262,144 characters per input/output/reasoning/response field** and visibl
 responses are unaffected. Headers are not recorded, and the monitor key is kept in this tab's session storage.
 Treat request history as sensitive input/output when exposing Strata on a network: set an API key as above.
 The page uses relative URLs and works through the existing host binding or a reverse proxy.
+
+### Metrics log
+
+The server keeps a record of the Monitor tab's values, so you can see how they changed during a task. It starts with
+the server and writes to `logs/metrics.jsonl` in the Strata folder, whatever folder the server runs in.
+`"metrics_log": "FILE"` in `strata-<model>.json` (or `serve/server.py --metrics-log FILE`) writes it somewhere else;
+`"metrics_log": false` (or `--no-metrics-log`) turns it off. It appends JSON lines, one object per line:
+
+- `"type": "start"` once per server start: the model, context size, GPU and CPU names, cores and threads.
+- `"type": "sample"` every second (`--metrics-log-every SECONDS` / `"metrics_log_every_s"`): the time (`t` in Unix
+  seconds, `ts` in local ISO time), the model state and its progress, decode and prefill tok/s, GPU load, VRAM, GPU
+  temperature, power and its limit, PCIe generation and width with the MB/s in each direction, CPU, disk read and
+  write, system RAM, context fill, and the expert slots in VRAM. With several GPUs it also has each card's own values.
+  The units are the Monitor's (GB, MB/s, W, °C, %).
+- `"type": "request"` once for each finished request: its prompt, reused and output tokens, decode and prefill
+  tok/s, the VRAM hit rate with the PCIe share, and its duration.
+
+No prompts or answers are written. Measured on an RTX 3090 PC over 4.4 hours (15,710 samples): a sample line is 739
+bytes on average, 2.54 MB an hour. At 100 MB (`"metrics_log_max_mb"`, 0 = no limit), about 39 hours at that rate,
+the file is renamed to `metrics.jsonl.1`, replacing an older one, and a new file starts, so the log takes at most
+about 200 MB.
+
+**`/metrics-history`** draws the log as line charts and adds each new sample within a second. Started with
+`--open` (as the run scripts do), the server opens it in a second tab next to the chat page (`"open_history":
+false` keeps it closed). It is also linked as "History charts" on the Monitor tab. It shows decode and prefill speed
+(a line while a request runs, a dot for each finished request), model state, context fill, GPU and CPU load, memory,
+power with its limit, GPU temperature, PCIe and disk, with tiles for the current values and a table of the finished
+requests. Choose 5 min to 24 h; Live off holds the view; hovering shows every chart's values at that moment. The
+page reads `GET /metrics-log`: `?since=<unix time>` once (the last 24 hours, found by a binary search on the file's
+times, so a long file is not read whole), then `?offset=<byte>` for the new lines only. It uses the API key like
+`/metrics`.
+For example, `pandas.read_json("logs/metrics.jsonl", lines=True)` loads the file into a table.

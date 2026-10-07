@@ -58,6 +58,7 @@ build-vision-cuda12.bat
 .vscode/
 .idea/
 .cursor/
+.claude/
 
 /.ccache/
 /.rocm-win/
