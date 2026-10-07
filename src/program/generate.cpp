@@ -2600,6 +2600,12 @@ int main(int argc, char** argv) {
                          "skipped: served natively)\n",
                  (unsigned long long) (pool_bytes >> 20), o.pack.c_str(), load_s(), skip.size());
 
+    // --- STRATA PROGRESSIVE LOADING (TRUNK STREAM) ---
+    // At this point, the streaming trunk reader can be initialized 
+    // to manage blk.* weights dynamically.
+    // trunk_streamer.open(o.pack, wt, trunk_budget_bytes, err);
+    // -------------------------------------------------
+
     strata::core::NativeDense native_dense;
     if (!o.native_dense_gguf.empty()) {
         if (!native_dense.load(o.native_dense_gguf, wt, err, o.native_ple_key)) {
