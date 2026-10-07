@@ -991,8 +991,10 @@ engine logs spill, restore and disk-budget events. The disk tier works with `--l
 system prompt - the one `--prompt-cache-root` builds in RAM - as an ordinary session file in
 `--system-prompt-cache-dir`, and reloads it at the next start, so a NEW chat of the same client reads only the
 tokens after the root instead of the whole system prompt again. It is off by default (no directory is created, no
-byte written), needs `--prompt-cache > 0`, `--prompt-cache-root > 0`, `--turn-token` and `--mtp`, and runs on a
-single session (no `--layer-split`).
+byte written), needs `--prompt-cache > 0`, `--prompt-cache-root > 0`, `--turn-token` and `--mtp` (without MTP it
+reports itself off instead of capturing a different artifact). It works with `--layer-split` the way the disk tier
+does - one session file per stage under the variant's key, with a joint sidecar holding the stage count - and a
+variant stored while part of the context lived in host RAM loads back.
 
 A variant is keyed by the hash of the exact system-prompt token prefix plus `--system-prompt-cache-key` (when
 given) and the model/configuration identity, so only a prompt that begins with exactly those tokens can attach it.

@@ -96,8 +96,8 @@ flowchart TD
   `--conversation-cache-spill-when-full` chooses `evict-oldest` (default) or `reject`;
   `--conversation-cache-spill-max-age-days` adds optional age pruning (0 = off).
 - System-prompt cache: `--system-prompt-cache` with `--system-prompt-cache-dir DIR`. It also needs
-  `--prompt-cache > 0`, `--prompt-cache-root > 0`, a turn token and `--mtp`, and runs on a single session (no
-  `--layer-split`). Its folder is separate from the spill folder.
+  `--prompt-cache > 0`, `--prompt-cache-root > 0`, a turn token and `--mtp` (without MTP the feature reports
+  itself off rather than capturing a different artifact). Its folder is separate from the spill folder.
 
 Both can be set in a config's `args` and edited from the Settings page (see `serve/runconfig.py`). The Monitor
 shows their counters under `/metrics` in `conversation_cache` (`disk` and `system_prompt_cache`).
@@ -105,6 +105,10 @@ shows their counters under `/metrics` in `conversation_cache` (`disk` and `syste
 **Limits.**
 
 - The disk tier works with `--layer-split`: one session file per stage plus one joint sidecar.
+- The system-prompt cache works with `--layer-split` too, the same way: one session file per stage under the
+  variant's key, and a joint sidecar holding the stage count (its sidecar is version 2; a version 1 file, the
+  single-file form, is still read). It also loads a variant whose K/V was stored while the engine kept part of
+  the context in host RAM.
 - A disk hit is read into host RAM before it is restored: it must fit `--conversation-cache-mib` and leave the
   `--conversation-cache-min-free-mib` floor available, or the request reads the prompt normally.
 - The scan never deletes. A file of another identity, a broken or missing sidecar, an orphan session file and a
