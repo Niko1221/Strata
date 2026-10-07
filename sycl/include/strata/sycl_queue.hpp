@@ -44,7 +44,7 @@ inline void big_fill_zero(sycl::queue& q, void* p, size_t bytes, size_t chunk = 
 // system-scope atomics: every ring wait runs to its bound and the window reads stale rows (NaN logits). Host memory
 // from zeMemAllocHost with ZE_HOST_MEM_ALLOC_FLAG_BIAS_UNCACHED does work there (sycl/probe/doorbell.cpp mode 2,
 // "HANDSHAKE OK"), so those buffers come from it when the Level Zero headers are present (libze-dev), else from
-// sycl::malloc_host. STRATA_HOST_UNCACHED=0 turns it off.
+// sycl::malloc_host. STRATA_HOST_UNCACHED=0 turns it off, and STRATA_VERIFY_NO_HOST (nothing waits on the host) leaves it off.
 #if defined(__has_include)
 #if __has_include(<level_zero/ze_api.h>) && __has_include(<sycl/ext/oneapi/backend/level_zero.hpp>)
 #include <level_zero/ze_api.h>
@@ -62,7 +62,12 @@ inline std::mutex& uncached_mu() { static std::mutex m; return m; }
 }  // namespace detail
 inline void* host_malloc_polled(size_t bytes, sycl::queue& q) {
 #ifdef STRATA_HAVE_ZE
-    static const bool on = [] { const char* v = std::getenv("STRATA_HOST_UNCACHED"); return !(v && v[0] == '0'); }();
+    // STRATA_VERIFY_NO_HOST: nothing waits on the host's stores, so the buffers stay plain - uncached ones cost 42 ms per
+    // decode window on the A770 (decode 13.1 against 17.5 tok/s)
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_HOST_UNCACHED");
+        return !(v && v[0] == '0') && std::getenv("STRATA_VERIFY_NO_HOST") == nullptr;
+    }();
     if (on && q.get_backend() == sycl::backend::ext_oneapi_level_zero) {
         auto ctx = sycl::get_native<sycl::backend::ext_oneapi_level_zero>(q.get_context());
         ze_host_mem_alloc_desc_t d{ZE_STRUCTURE_TYPE_HOST_MEM_ALLOC_DESC, nullptr, ZE_HOST_MEM_ALLOC_FLAG_BIAS_UNCACHED};
