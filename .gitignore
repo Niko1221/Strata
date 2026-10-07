@@ -27,6 +27,8 @@ td.log
 
 # created by setup.py on the user's machine
 /.venv/
+/.venv-mtp/
+/Makefile.local
 /build/
 /third_party/llama.cpp
 /models/
@@ -49,6 +51,7 @@ build-vision-cuda12.bat
 # setup.py outputs (engine, downloads) and release builds
 /engine/
 /engine-cuda12/
+/engine-metal/
 /build-release*/
 /dist/
 *.done
