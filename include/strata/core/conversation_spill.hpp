@@ -22,6 +22,11 @@
 
 namespace strata::core {
 
+// What the disk tier does when its budget is reached (--conversation-cache-spill-when-full).
+//   evict_oldest  the default, and what upstream always did: the GC drops the oldest conversation to make room.
+//   reject        never evicts: a spill that would not fit the budget is refused and reported, and nothing is removed.
+enum class SpillWhenFull { evict_oldest, reject };
+
 struct ConversationSpillMatch {
     std::string path;        // the session file to read back
     uint64_t file_bytes = 0;
@@ -36,12 +41,18 @@ public:
     // Opens (creating if needed) the spill directory and indexes the conversations already in it. The SCAN NEVER
     // DELETES: a file of another model/config identity, an unreadable sidecar, a session file whose sidecar is gone,
     // an orphan session file and a leftover temporary are all ignored and counted, never removed - so a variant or a
-    // newer format beside this one is left alone. Removal happens only in the GC (enforce_budget): budget plus age,
-    // oldest first, with a counter. The GC also leaves a single conversation larger than the whole budget alone
-    // (removing it could not bring the directory under the budget), and reports it.
+    // newer format beside this one is left alone. Removal happens only in the GC (enforce_budget and enforce_age):
+    // budget plus age, oldest first, with counters. The GC also leaves a single conversation larger than the whole
+    // budget alone (removing it could not bring the directory under the budget), and reports it.
+    //   `when_full`  evict_oldest (default) = the GC drops the oldest to make room; reject = the GC removes nothing
+    //                and a spill that would not fit is refused (nothing is ever removed for a full directory).
+    //   `max_age_days`  0 = off: no deletion by time at all. A positive value prunes conversations older than that,
+    //                oldest first, counted in age_evictions(). This age lever is independent of `when_full`.
     bool open(const std::filesystem::path& directory, SessionFileIdentity identity, uint64_t budget_bytes,
-              std::string& error);
+              std::string& error, SpillWhenFull when_full = SpillWhenFull::evict_oldest, int64_t max_age_days = 0);
     bool enabled() const { return enabled_; }
+    SpillWhenFull when_full() const { return when_full_; }
+    int64_t max_age_days() const { return max_age_days_; }
     size_t size() const { return entries_.size(); }
     uint64_t bytes() const { return bytes_; }
     // What the last scan and the budget kept instead of wiping, by reason (reporting only; nothing is deleted here).
@@ -49,7 +60,8 @@ public:
     size_t foreign_files_kept() const { return foreign_files_kept_; }    // another model/config identity
     size_t orphan_files_kept() const { return orphan_files_kept_; }      // a session file with no sidecar
     size_t oversized_files_kept() const { return oversized_files_kept_; }// a conversation larger than the budget
-    size_t disk_evictions() const { return disk_evictions_; }
+    size_t disk_evictions() const { return disk_evictions_; }            // removed by the budget GC (oldest first)
+    size_t age_evictions() const { return age_evictions_; }              // removed by --conversation-cache-spill-max-age-days
 
     // The best resume this directory offers for the prompt, from the sidecars only (no K/V read). similarity and
     // n_min filter weak hits exactly as the RAM cache's best() does.
@@ -97,21 +109,25 @@ private:
         bool cvec = true;
         ConversationCheckpoint live_meta;    // ids + imgs only; no running state
         std::vector<size_t> checkpoint_lengths;
+        std::filesystem::file_time_type stamp{};   // last write, for the age lever and oldest-first ordering
         std::string session_path() const { return stem.string() + ".sess"; }
         std::string stage_path(size_t k) const { return ConversationSpillCache::stage_path(session_path(), k); }
         std::string meta_path() const { return stem.string() + ".meta"; }
     };
     const Entry* find(const std::string& path) const;
     void enforce_budget();
+    void enforce_age();
     bool remove_entry(size_t index);
     bool read_sidecar(const std::filesystem::path& meta, Entry& entry, bool& other_identity, std::string& error) const;
     bool write_sidecar(const std::filesystem::path& meta, const Entry& entry, std::string& error) const;
 
     bool enabled_ = false;
+    SpillWhenFull when_full_ = SpillWhenFull::evict_oldest;
+    int64_t max_age_days_ = 0;
     SessionFileIdentity identity_{};
     uint64_t budget_ = 0, bytes_ = 0, serial_ = 0;
     size_t stale_files_kept_ = 0, foreign_files_kept_ = 0, orphan_files_kept_ = 0, oversized_files_kept_ = 0;
-    size_t disk_evictions_ = 0;
+    size_t disk_evictions_ = 0, age_evictions_ = 0;
     std::filesystem::path directory_;
     std::vector<Entry> entries_;   // oldest spill first
     std::string pinned_path_;

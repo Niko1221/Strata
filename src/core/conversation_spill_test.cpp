@@ -262,6 +262,55 @@ int main() {
     check(orphan.orphan_files_kept() >= 1, "orphan reported");
     check(fs::exists(dir / "strata-conv-99.sess"), "orphan left in place");
 
+    // ---- --conversation-cache-spill-when-full: reject never evicts, evict-oldest (default) drops the oldest ----
+    fs::remove_all(dir);
+    ConversationSpillCache seed;
+    check(seed.open(dir, id, 1ull << 30, error), "seed open for the when-full test");
+    SavedConversation w1 = sample(1000), w2 = sample(1200);
+    check(seed.spill(w1, error), "seed one conversation");
+    const uint64_t one_file = seed.bytes();   // exactly one conversation's bytes: the budget below is "one file"
+    check(one_file > 0, "one conversation's bytes");
+    std::string keep_sess;
+    for (const auto& e : fs::directory_iterator(dir))
+        if (e.path().extension() == ".sess") keep_sess = e.path().string();
+    check(!keep_sess.empty(), "the stored session file is on disk");
+
+    ConversationSpillCache reject;
+    check(reject.open(dir, id, one_file, error, SpillWhenFull::reject, 0), "open with when-full=reject");
+    check(reject.when_full() == SpillWhenFull::reject, "reject mode recorded");
+    check(reject.size() == 1, "reject indexes the existing conversation");
+    std::string reject_error;
+    check(!reject.spill(w2, reject_error), "reject refuses a spill over the budget");
+    check(!reject_error.empty(), "reject says why");
+    check(reject.size() == 1 && reject.disk_evictions() == 0, "reject evicts nothing");
+    check(fs::exists(keep_sess), "reject leaves the stored conversation alone");
+
+    ConversationSpillCache evict;
+    check(evict.open(dir, id, one_file, error, SpillWhenFull::evict_oldest, 0), "open with when-full=evict-oldest");
+    check(evict.spill(w2, error), "evict-oldest accepts the spill");
+    check(evict.size() == 1, "one conversation after the eviction");
+    check(evict.disk_evictions() >= 1, "evict-oldest dropped the oldest");
+
+    // ---- --conversation-cache-spill-max-age-days: 0 = no deletion by time, positive = oldest first ----
+    fs::remove_all(dir);
+    ConversationSpillCache age_seed;
+    check(age_seed.open(dir, id, 1ull << 30, error), "age seed open");
+    check(age_seed.spill(sample(1000), error), "age seed spill one");
+    check(age_seed.spill(sample(1200), error), "age seed spill two");
+    check(age_seed.max_age_days() == 0, "max-age defaults to 0");
+    check(age_seed.age_evictions() == 0, "max-age 0 deletes nothing by time");
+    const auto ten_days_ago = fs::file_time_type::clock::now() - std::chrono::hours(24 * 10);
+    for (const auto& e : fs::directory_iterator(dir))
+        if (e.path().extension() == ".sess") fs::last_write_time(e.path(), ten_days_ago);
+    ConversationSpillCache keep0;
+    check(keep0.open(dir, id, 1ull << 30, error, SpillWhenFull::evict_oldest, 0), "open with max-age 0 on old files");
+    check(keep0.age_evictions() == 0 && keep0.size() == 2, "max-age 0 keeps the old conversations");
+    ConversationSpillCache aged;
+    check(aged.open(dir, id, 1ull << 30, error, SpillWhenFull::evict_oldest, 7), "open with max-age 7 days");
+    check(aged.max_age_days() == 7, "max-age recorded");
+    check(aged.age_evictions() >= 1, "old conversations pruned by age");
+    check(aged.size() == 0, "every conversation older than the limit went");
+
     fs::remove_all(dir);
     std::printf("conversation_spill_test: %d checks passed\n", checks);
     return 0;

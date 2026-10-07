@@ -9,6 +9,7 @@
 #include "strata/core/conversation_spill.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <fstream>
 #include <limits>
@@ -185,19 +186,23 @@ bool ConversationSpillCache::write_sidecar(const std::filesystem::path& meta, co
 }
 
 bool ConversationSpillCache::open(const std::filesystem::path& directory, SessionFileIdentity identity,
-                                  uint64_t budget_bytes, std::string& error) {
+                                  uint64_t budget_bytes, std::string& error, SpillWhenFull when_full,
+                                  int64_t max_age_days) {
     enabled_ = false;
     stale_files_kept_ = 0;
     foreign_files_kept_ = 0;
     orphan_files_kept_ = 0;
     oversized_files_kept_ = 0;
     disk_evictions_ = 0;
+    age_evictions_ = 0;
     entries_.clear();
     bytes_ = 0;
     pinned_path_.clear();
     directory_ = directory;
     identity_ = identity;
     budget_ = budget_bytes;
+    when_full_ = when_full;
+    max_age_days_ = max_age_days < 0 ? 0 : max_age_days;
     if (directory.empty() || !identity.model || !identity.config || !budget_) return true;
     try {
         std::error_code ec;
@@ -246,6 +251,8 @@ bool ConversationSpillCache::open(const std::filesystem::path& directory, Sessio
             }
             if (!complete) { ++stale_files_kept_; continue; }
             entry.file_bytes = total;
+            entry.stamp = std::filesystem::last_write_time(entry.session_path(), sec);   // for the age lever
+            if (sec) entry.stamp = {};
             if (total > budget_) ++oversized_files_kept_;   // KEPT: the GC alone decides, and leaves it alone too
             entries_.push_back(std::move(entry));
             bytes_ += total;
@@ -258,7 +265,8 @@ bool ConversationSpillCache::open(const std::filesystem::path& directory, Sessio
             ec.clear();
         }
         enabled_ = true;
-        enforce_budget();
+        enforce_age();      // the age lever is explicit (off unless --conversation-cache-spill-max-age-days > 0)
+        enforce_budget();   // the budget lever, oldest first, honoring --conversation-cache-spill-when-full
         return true;
     } catch (const std::bad_alloc&) {
         entries_.clear(); bytes_ = 0; enabled_ = false;
@@ -299,6 +307,16 @@ bool ConversationSpillCache::load(const std::string& path, SavedConversation& im
 bool ConversationSpillCache::spill(const SavedConversation& image, std::string& error) {
     if (!enabled_) return false;
     if (image.live.ids.empty()) { error = "spill needs a conversation with tokens"; return false; }
+    // --conversation-cache-spill-when-full reject: a full directory refuses a new spill instead of evicting. The
+    // estimate is the image's in-RAM size plus 1 MiB (the file is close); over-estimating only refuses slightly
+    // earlier. Nothing already stored is ever removed in this mode.
+    if (when_full_ == SpillWhenFull::reject) {
+        const uint64_t estimate = (uint64_t) image.bytes() + (1ull << 20);
+        if (entries_.size() >= kMaxSidecarEntries || bytes_ >= budget_ || estimate > budget_ - bytes_) {
+            error = "spill directory is full and --conversation-cache-spill-when-full is reject (nothing evicted)";
+            return false;
+        }
+    }
     std::error_code ec;
     std::filesystem::path stem;
     do {
@@ -339,6 +357,8 @@ bool ConversationSpillCache::spill(const SavedConversation& image, std::string& 
     entry.checkpoint_lengths.reserve(image.checkpoints.size());
     for (const auto& c : image.checkpoints) entry.checkpoint_lengths.push_back(c.ids.size());
     if (!write_sidecar(stem.string() + ".meta", entry, error)) { discard_written(); return false; }
+    entry.stamp = std::filesystem::last_write_time(session, ec);
+    ec.clear();
     if (total > budget_) ++oversized_files_kept_;
     try {
         entries_.push_back(std::move(entry));
@@ -430,12 +450,28 @@ size_t ConversationSpillCache::drop_superseded(const std::vector<int32_t>& ids,
 }
 
 void ConversationSpillCache::enforce_budget() {
-    // The GC: budget plus age, oldest first, with a counter. A conversation larger than the whole budget is left
-    // alone - removing it could never bring `bytes_` under `budget_` - and counted as oversized instead.
+    // The GC's budget lever: oldest first, with a counter. A conversation larger than the whole budget is left
+    // alone - removing it could never bring `bytes_` under `budget_` - and counted as oversized instead. With
+    // --conversation-cache-spill-when-full reject this lever removes nothing at all (the spill itself refuses).
+    if (when_full_ == SpillWhenFull::reject) return;
     for (size_t i = 0; (bytes_ > budget_ || entries_.size() > kMaxSidecarEntries) && i < entries_.size();) {
         if (entries_[i].session_path() == pinned_path_ || entries_[i].file_bytes > budget_) { ++i; continue; }
         if (!remove_entry(i)) { ++i; continue; }   // a failed removal: skip it
         ++disk_evictions_;
+    }
+}
+
+void ConversationSpillCache::enforce_age() {
+    // The GC's age lever: OFF unless --conversation-cache-spill-max-age-days is positive, so with 0 (the default)
+    // there is no deletion by time at all. The oldest entries go first; a pinned conversation (mid-restore) is kept.
+    if (max_age_days_ <= 0) return;
+    const std::filesystem::file_time_type now = std::filesystem::file_time_type::clock::now();
+    const std::chrono::seconds limit((int64_t) max_age_days_ * 86400);
+    for (size_t i = 0; i < entries_.size();) {
+        if (entries_[i].session_path() == pinned_path_) { ++i; continue; }
+        if (now - entries_[i].stamp < limit) { ++i; continue; }
+        if (!remove_entry(i)) { ++i; continue; }   // a failed removal: skip it
+        ++age_evictions_;
     }
 }
 
