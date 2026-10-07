@@ -741,8 +741,10 @@ Measured 2026-10-07 on Windows 10, Arc Pro B70 32 GB, driver 32.0.101.8976, i9-9
 | prompt reading, warm (22 tokens, 17 reused) | 66-68 tok/s | 790 tok/s at 2,184 tokens |
 | `quantize_act_parity --selftest`, `sampler_parity` | byte-exact, 0 failures | same |
 
-The same test on the previous 0.1.39-based Windows build of this port ran at **74.7-77.4 tok/s** with the draft
-layer and 31-33 tok/s without, so the 0.1.40 changes are not a speed-up here - see the profile below.
+The same test on the previous 0.1.39-based Windows build of this port, rebuilt and measured back to back on
+the same machine and model, ran at **63.9-67.1 tok/s** with the draft layer against 47.8-51.8 here, and took
+80% of its drafts against 72% - and that build was measured on the *longer* prompt, which costs it more.
+The 0.1.40 changes are not a speed-up on this backend; see the profile below.
 
 **Why it is slower, and what it is not.** `STRATA_VERIFY_PROFILE=1` prints the window's stages per request (host
 clocks under `STRATA_VERIFY_EAGER=1`). A 4-token window is ~65 ms, and the GDN hyper-connection read is ~24 ms of

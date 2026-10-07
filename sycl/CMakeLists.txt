@@ -270,9 +270,12 @@ if(WIN32 AND EXISTS "${STRATA_ONEMKL_LIB}")
       COMMENT "copying ${_dll} beside strata.exe")
   endforeach()
   # The SYCL runtime beside the compiler (conda dpcpp: sycl9.dll): the server's env may not have it on PATH.
-  # Plus the UR adapter DLLs: without ur_adapter_opencl beside the exe the loader reports 0 adapters and
-  # any gpu_selector terminates the process (0xC0000409 before main prints anything).
-  foreach(_dll sycl9.dll ur_adapter_opencl.dll ur_adapter_level_zero.dll ur_adapter_level_zero_v2.dll OpenCL.dll)
+  # libmmd.dll is Intel's own runtime and is a *static import* of strata.exe, and the UR adapters load
+  # ur_loader.dll / ur_win_proxy_loader.dll from beside the exe: without those three a fresh build's engine ends
+  # with 0xC0000135 (STATUS_DLL_NOT_FOUND) before it prints anything. ur_adapter_opencl beside the exe, or the
+  # loader reports 0 adapters and any gpu_selector terminates the process (0xC0000409 before main prints anything).
+  foreach(_dll sycl9.dll libmmd.dll ur_loader.dll ur_win_proxy_loader.dll ur_adapter_opencl.dll
+               ur_adapter_level_zero.dll ur_adapter_level_zero_v2.dll OpenCL.dll)
     add_custom_command(TARGET strata POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_icx_bin}/${_dll}" "$<TARGET_FILE_DIR:strata>"
       COMMENT "copying ${_dll} beside strata.exe")
