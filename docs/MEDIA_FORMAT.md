@@ -1,7 +1,7 @@
 # Visual embedding transport
 
-This is the host contract for the video implementation in progress. It does not enable video in the server or
-engine. Integration and shipment still require the unrun decoder, projector, inference and backend gates.
+This is the host contract for the video implementation in progress. Encoder/server/engine adapters now use
+it only with explicit video opt-in and matching capabilities; native inference remains unvalidated.
 
 Implementations: `serve/media.py` and `include/strata/program/media_embeddings.hpp`, with the C++ definitions in
 `src/program/media_embeddings.cpp`. Neither implementation requires a model, decoder, server or GPU.
@@ -9,7 +9,7 @@ Implementations: `serve/media.py` and `include/strata/program/media_embeddings.h
 ## Compatibility
 
 Existing image requests still use their existing `ENC` / `SVE1` / `GENI` path. Nothing in that path has been
-replaced. The new legacy adapter exists for future mixed image/video requests, not to change image-only requests.
+replaced. The legacy adapter is used for mixed image/video requests, not to change image-only requests.
 
 SVE1 is a concatenation of image records. Each has five little-endian signed 32-bit fields:
 `{0x31455653, rows, nx, ny, width}`, followed by `rows * width` IEEE float32 values. All dimensions are positive,
@@ -86,15 +86,26 @@ validate token/span/grid/position structure before reading embeddings, then requ
 finite floats and EOF. C++ float payload I/O is chunked and does not reserve the entire claimed payload before
 reading it. Python payload storage is immutable bytes. A truncated file or invalid bundle never returns a
 partially usable result. Writers validate the complete bundle before emitting its header; I/O failure may still
-leave a partial output, so future encoder/server callers must publish owned files atomically.
+leave a partial output; encoder/server adapters publish owned files atomically.
 
 The position planner builds `(t,h,w)` for each prompt cell and requested generation-tail cell. Text advances all
 three axes by one. A span adds its relative coordinates to the current base, then advances that base by its
 explicit advance, not its row count. Token capacity and rotary range are validated separately.
 
 Row bindings are indices `(span,row)`, not pointers into movable payload storage. C++ uses `MediaRow::text` and
-Python uses `None` for text/generation cells. A later engine adapter may bind pointers only after final storage
-is stable, and must compare bundle token IDs to the actual generation request before touching live state.
+Python uses `None` for text/generation cells. The engine adapter binds pointers only after final storage
+is stable. C++ `read_media(..., true, &request_tokens)` compares token count/content immediately after token
+reads, before descriptors, positions or embeddings. It then applies the Qwen profile before embedding reads.
+Python `read_bundle(..., qwen4=True)` applies the same profile before reading embeddings.
+
+### Qwen4 profile, separate from generic transport
+
+The candidate `qwen4_exp_16x2x2_2560_v1` profile requires width 2560, image pad 248056 and video pad 248057.
+Every visual pad must belong to a span. Every span has immediate vision-start/end tokens 248053/248054, relative
+time zero, a rectangular row-major spatial grid, and advance equal to its largest spatial dimension. Generic
+SVE2 remains broader: the width-2/nonzero-time fixture below is deliberately not a Qwen profile fixture.
+Ordered whole-slot splicing replaces complete image/video wrappers and rebases spans; it rejects missing,
+extra, mismatched or unbound slots. These checks do not prove that embeddings came from the correct projector.
 
 ## Cache fingerprints
 
@@ -102,7 +113,9 @@ Image fingerprints preserve the existing FNV seed `1469598103934665603` and byte
 signed 64-bit values `{rows,nx,ny}`, then embedding bytes, including the sign bit of zero. Video fingerprints
 add `SVE2`, width, kind, pad ID, start cell, row count, advance and all relative positions before embeddings.
 These are non-cryptographic cache aids, not authenticity checks. Cache callers still need exact token/prefix
-binding, model/preprocessing identity and span metadata comparisons. Decoder cache identity is a separate task.
+binding, model/preprocessing identity and span metadata comparisons. `media_fingerprints()` validates the
+complete C++ bundle once rather than rescanning its payload per span. The server's decoder/encoder cache has
+separate content identity, byte limits and read ownership; it is not secured by FNV.
 
 ## Host tests
 
