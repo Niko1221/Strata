@@ -28,7 +28,8 @@ class ModelProfile(unittest.TestCase):
 
     def test_profile_rejects_generic_valid_mutations(self):
         b = visual()
-        cases = [replace(b, tokens=(17, VIDEO, VIDEO, VE)), replace(b, tokens=(VS, VIDEO, VIDEO, 17)),
+        cases = [replace(b, tokens=b.tokens + (VIDEO,)), replace(b, spans=()),
+                 replace(b, tokens=(17, VIDEO, VIDEO, VE)), replace(b, tokens=(VS, VIDEO, VIDEO, 17)),
                  replace(b, width=1, spans=(replace(b.spans[0], embeddings=bytes(8)),)),
                  replace(b, tokens=(VS, IMAGE, IMAGE, VE), spans=(replace(b.spans[0], pad_id=IMAGE),)),
                  replace(b, spans=(replace(b.spans[0], positions=((1,0,0), (1,0,1))),)),

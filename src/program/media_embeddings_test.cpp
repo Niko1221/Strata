@@ -164,6 +164,8 @@ void tests(const char* fixture) {
     refused([&] { validate_qwen4_media(wrong_profile); }, "Qwen4 rejects nonzero relative video time");
     wrong_profile = q; wrong_profile.spans[0].advance = 3;
     refused([&] { validate_qwen4_media(wrong_profile); }, "Qwen4 rejects a wrong group advance");
+    wrong_profile = q; wrong_profile.tokens.push_back(248057);
+    refused([&] { validate_qwen4_media(wrong_profile); }, "Qwen4 rejects an unbound visual pad");
     uint32_t rng = 77;
     for (int i = 0; i < 4000; ++i) {
         auto fuzz = raw;
