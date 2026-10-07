@@ -26,6 +26,12 @@ check the engine's free-memory log before using it on a smaller card. If it cann
 split or helper GPU) the engine says so and batches as usual. RTX PRO 5000 owners measured +31% to +39% total
 throughput with 2 to 4 clients (a RX R9700 run too); it has not been validated with a layer split.
 
+With four slots, each window can hold all four current tokens and their four proposals (eight rows). Each slot
+keeps its own draft K/V and buffers; the draft weights, head quantization type, vocabulary subset and optional
+`--mtp-q4` projections are shared with the solo drafter. `--mtp-hnorm` also applies to every slot. At the context
+or output limit a slot uses one row. The engine reports `INFO ... batch_mtp=1` when enabled, and logs
+`strata batch MTP: drafts accepted A of B` when all slots become idle.
+
 With a layer split, the engine options go into the config's `args`:
 
 ```
@@ -182,13 +188,14 @@ two long conversations alternating through the HTTP server: the first turns took
 
 ## Testing
 
-Four scripts drive a built engine or a running server; each exits non-zero on a failure. `serve/test_parallel.py`
+These scripts drive a built engine or a running server; each exits non-zero on a failure. `serve/test_parallel.py`
 tests the server's side with a scripted engine (no GPU).
 
 | Script | What it checks |
 | --- | --- |
 | `tools/batch_test.py` | the same prompts alone (`GEN`) and together in the batch slots (`BGEN`): every slot's greedy tokens equal its solo tokens; prints the aggregate rate. `--batch-groups` in `--extra` tests the pipeline, `--keys "temperature=0.7"` the sampled rows. |
 | `tools/batch_interleave_test.py` | a long prompt read while two slots decode, a prompt that gives way (`BYIELD`) and goes on, and a next turn continued from its slot: each equal to its solo tokens. |
+| `tools/batch_mtp_test.py` | four MTP slots equal solo, output limits of 1–4 tokens, and continuation to the final context cell. Requires `--mtp` and `--spec >= 2`; checks that batch drafts were accepted. |
 | `tools/parking_test.py` | a follow-up to a conversation decodes the same tokens whether its state stayed live or came back from the parking cache (with a layer split: every stage's image). |
 | `tools/early_close_test.py` | a client that stops reading a streamed answer early (alone, and with a second request running) does not leave its tokens to the next request (server). |
 
@@ -202,6 +209,15 @@ python3 tools/batch_interleave_test.py --exe engine/strata --config strata-<mode
 python3 tools/parking_test.py --exe engine/strata --config strata-<model>.json \
     --extra "--layer-split 12,24,36 --conversation-cache-mib 8192 --conversation-cache-slots 4 --pcie-frac 0"
 STRATA_KEY=<key> python3 tools/early_close_test.py http://127.0.0.1:8080
+```
+
+For single-GPU MTP, add `--batch-mtp` to `--extra` for the parity and interleave tests. Run the boundary test
+with the native draft head, then with the optional shared Q4 projections and per-stream normalization:
+
+```
+python3 tools/batch_mtp_test.py --exe engine/strata --config strata-<model>.json
+python3 tools/batch_mtp_test.py --exe engine/strata --config strata-<model>.json \
+    --extra "--mtp-q4 all --mtp-hnorm stream"
 ```
 
 ## Engine protocol (`--serve`)
@@ -218,7 +234,7 @@ On top of `GEN` / `GENI`:
 | `BSTOP <slot>` | in | end that slot at its next window |
 | `BYIELD <slot>` | in | the prompt being read gives way at its next chunk boundary; its part read waits in `<slot>` (the admission's own, or a free slot for a solo request) |
 | `YIELDED <slot> <tokens>` | out | before the `DONE cancel` of a read that gave way: the request is sent again later and goes on from there |
-| `INFO ... batch_slots=N` | out | the slots the engine runs (only with `--batch`) |
+| `INFO ... batch_slots=N batch_mtp=0/1` | out | the slots the engine runs and whether they use MTP (only with `--batch`) |
 
 `tools/batch_test.py` drives the engine directly: the same prompts alone, then together, compared token by token,
 and the aggregate rate.

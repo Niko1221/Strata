@@ -7196,6 +7196,7 @@ int main(int argc, char** argv) {
                         o.spec_min_p, (long long) o.conversation_cache_mib, o.conversation_cache_slots,
                         (long long) o.conversation_cache_min_free_mib, (long long) o.tail_role_token, xcache.segmented() ? 1 : 0,
                         o.batch > 0 ? (" batch_slots=" + std::to_string(o.batch) +
+                                       " batch_mtp=" + std::to_string(batch_mtp ? 1 : 0) +
                                        " slot_cache=" + std::to_string(o.prompt_cache > 0 ? 1 : 0)).c_str() : "");
         }
         // issue #29: a request whose heartbeat (tokens, prompt chunks, verify windows) stops for this long is stuck on
@@ -7396,6 +7397,7 @@ int main(int argc, char** argv) {
         double bt_wait0 = 0, bt_pool0 = 0;
         int64_t bt_miss0 = 0, bt_hits0 = 0, bt_pcie0 = 0;
         int64_t bt_windows = 0, bt_rows = 0, bt_tokens = 0;
+        int64_t bt_drafts = 0, bt_accepted = 0;
         Clock::time_point bt_start = Clock::now();
         int admit_slot = -1;               ///< the slot the request being read will continue in (BGEN)
         long long admit_max_new = 0;
@@ -7495,6 +7497,7 @@ int main(int argc, char** argv) {
             int32_t tok[strata::kernels::kVerifyMaxT] = {}, outb[strata::kernels::kVerifyMaxT] = {};
             int64_t pos[strata::kernels::kVerifyMaxT] = {};
             int first[strata::kernels::kVerifyMaxT] = {}, active[strata::kernels::kVerifyMaxT] = {};
+            int width[strata::kernels::kVerifyMaxT] = {};
             static size_t next_slot = 0;
             // Each MTP slot uses two rows; rotate slots when more than four are active.
             int A = 0;
@@ -7507,7 +7510,9 @@ int main(int argc, char** argv) {
                     tok[S] = bs[(size_t) b].x;
                     pos[S] = bs[(size_t) b].p;
                     ++S;
-                    if (batch_mtp) {
+                    // Do not stage a speculative row past the context or the request's last output token.
+                    if (batch_mtp && bs[(size_t) b].p + 1 < o.max_context &&
+                        bs[(size_t) b].produced + 1 < bs[(size_t) b].max_new) {
                         rows[S] = b;
                         if (!bs[(size_t) b].draft_ready) {
                             err = "batch MTP: a live slot has no draft";
@@ -7517,6 +7522,7 @@ int main(int argc, char** argv) {
                         pos[S] = bs[(size_t) b].p + 1;
                         ++S;
                     }
+                    width[A - 1] = S - first[A - 1];
                 }
             }
             if (batch_mtp && A > 0) next_slot = ((size_t) active[A - 1] + 1) % bs.size();
@@ -7544,8 +7550,10 @@ int main(int argc, char** argv) {
                 const int b = active[a], i = first[a];
                 const BSlot& sl = bs[(size_t) b];
                 const bool eos = std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) outb[i]) != o.eos_ids.end();
-                keep[b] = batch_mtp && outb[i] == tok[i + 1] && !eos && !sl.stop &&
+                keep[b] = width[a] == 2 && outb[i] == tok[i + 1] && !eos && !sl.stop &&
                           sl.produced + 2 <= sl.max_new && sl.p + 3 <= o.max_context ? 2 : 1;
+                bt_drafts += width[a] == 2;
+                bt_accepted += keep[b] == 2;
             }
             if (!(batch_mtp ? ver.commit_slot_prefixes(keep.data(), err) : ver.commit_slots(err))) {
                 std::printf("ERR %s\n", err.c_str());
@@ -7582,8 +7590,8 @@ int main(int argc, char** argv) {
                     const size_t stride = (size_t) g.hc * (size_t) g.n_embd;
                     if (cudaMemcpy(slot_mtp_rows[(size_t) b].get(),
                                    ver.final_R_all() + (size_t) first[t] * stride,
-                                   2 * stride * sizeof(float), cudaMemcpyDeviceToDevice) != cudaSuccess ||
-                        !slot_mtp[(size_t) b]->draft(2, outb + first[t], pos[first[t]], keep[b] - 1,
+                                   (size_t) width[t] * stride * sizeof(float), cudaMemcpyDeviceToDevice) != cudaSuccess ||
+                        !slot_mtp[(size_t) b]->draft(width[t], outb + first[t], pos[first[t]], keep[b] - 1,
                                                     sl.draft.data(), err)) {
                         std::printf("ERR batch MTP slot %d: %s\n", b, err.c_str());
                         return false;
@@ -7595,6 +7603,10 @@ int main(int argc, char** argv) {
             bt_emit += msd(w2, Clock::now());
             strata::core::progress().busy.store(was_busy);
             if (!batch_on() && bt_windows > 0) {
+                if (batch_mtp)
+                    std::fprintf(stderr, "strata batch MTP: drafts accepted %lld of %lld\n",
+                                 (long long) bt_accepted, (long long) bt_drafts);
+                bt_drafts = bt_accepted = 0;
                 const double w = (double) bt_windows, wall = msd(bt_start, Clock::now());
                 const double L = (double) g.n_layers;
                 std::fprintf(stderr, "strata batch: %lld windows, avg %.2f rows, %.2f ms/window = run %.2f (CUDA0 GPU-reach "
