@@ -141,11 +141,37 @@ installation alone. `BUILD_JOBS` defaults to 8; `BUILD_DIR`, `ROCM_VENV`, `STRAT
 is 0.1.40's `10.2.0a20260930`. The pinned ggml Windows backend uses `GPU_TARGETS`, not CMake's HIP-language
 architecture flag. HIP virtual-memory allocation is disabled in this build.
 
-Stop the server, back up its config and encoder, and copy the new executable to `engine\strata-vision.exe`.
-Keep the matching `amdhip64_7.dll` and `amd_comgr.dll` beside it and `engine\rocm\bin` in the config's `lib_dirs`.
-Use the text model's matching mmproj, retain `--vision` in the engine arguments, and set `vision.gpu` to `true`
-in the model config. An existing CPU setup can retain its `max_tokens` cap initially; a larger cap reserves more
-GPU memory. Record the local encoder separately from the official engine in `engine\BUILD.json`.
+The stock Windows HIP setup does not create a vision config or add `--vision` to the engine arguments. Stop the
+server and back up the model config and encoder. Then copy `build-vision-hip\bin\strata-vision.exe` to
+`engine\strata-vision.exe`, keeping the matching `amdhip64_7.dll` and `amd_comgr.dll` beside it.
+
+Download the mmproj from the repository configured for the selected model family: [Qwen3.8-Flash-Next](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF)
+and [Coder](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF) use
+`mmproj-Qwen3.8-Flash-Next-BF16.gguf`; [Swift 1.5](https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF)
+uses `mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf`.
+
+Merge this `vision` object into the existing model config, keeping its other properties. Replace the example
+paths with absolute paths to your installation and model files. Point `vision.model` to the first text-model
+GGUF shard referenced by `--native` or `--ple-gguf` in the existing `args` array, and set `vision.mmproj` to the
+downloaded file:
+
+```json
+{
+  "vision": {
+    "exe": "C:\\Strata\\engine\\strata-vision.exe",
+    "mmproj": "C:\\Strata\\models\\mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "C:\\Strata\\models\\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+    "gpu": true,
+    "max_tokens": 300
+  }
+}
+```
+
+Add the string `"--vision"` to the existing `args` array if it is not already present, preserving its other
+arguments. Ensure the top-level `lib_dirs` array includes the absolute path to `engine\rocm\bin` (for this example,
+`"C:\\Strata\\engine\\rocm\\bin"` in JSON), preserving its existing entries. This example keeps the locally validated
+300-image-token cap; a larger `max_tokens` reserves more GPU memory. Record the local encoder separately from the
+official engine in `engine\BUILD.json`.
 
 Restart using the model's launcher. The encoder starts and warms its largest image before the engine chooses
 its expert cache size. Its log must identify `GPU backend ROCm`, the device and card, followed by a successful

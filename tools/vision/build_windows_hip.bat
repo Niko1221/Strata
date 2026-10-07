@@ -20,7 +20,9 @@ if not exist "%LLAMA_DIR%\tools\mtmd\CMakeLists.txt" (
 )
 set "PY="
 py -3 -c "import sys" >nul 2>nul && set "PY=py -3"
-if not defined PY python -c "import sys" >nul 2>nul && set "PY=python"
+if not defined PY (
+  python -c "import sys" >nul 2>nul && set "PY=python"
+)
 if not defined PY (echo Python 3.10+ is needed & exit /b 1)
 if not exist "%ROCM_VENV%\Scripts\python.exe" %PY% -m venv "%ROCM_VENV%" || exit /b 1
 set "EXTRAS=libraries,devel"
