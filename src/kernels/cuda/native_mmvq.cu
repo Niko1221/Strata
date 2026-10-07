@@ -2504,8 +2504,35 @@ constexpr IlRows kIlRows[] = {
     {13, {{0, 0, 1, 1, 1}, {0, 4, 1, 1, 1}, {0, 1, 1, 1, 2}}},   // Q5_K
     {14, {{0, 0, 1, 1, 0}, {0, 0, 1, 1, 2}, {0, 0, 1, 1, 1}}},   // Q6_K
 };
+// Volta (sm_70): read off mmvq_il_parity --bench on a V100-SXM2-32GB (two runs, mean), the same rule - per cell the
+// rows count whose every measured shape takes at least 3% off native_mmvq's time (e.g. the Q5_K head at 3 columns
+// 1094 -> 821 us, Q6_K 12288 rows 68.9 -> 47.9 us), else 0; unmeasured classes take a neighbour's value
+constexpr IlRows kIlRowsVolta[] = {
+    {23, {{0, 2, 2, 2, 2}, {0, 2, 2, 2, 2}, {0, 4, 2, 2, 2}}},   // IQ4_XS
+    {12, {{0, 2, 2, 4, 4}, {0, 2, 2, 2, 2}, {0, 2, 2, 2, 2}}},   // Q4_K
+    {13, {{0, 2, 2, 2, 2}, {0, 2, 2, 2, 2}, {0, 1, 2, 2, 2}}},   // Q5_K
+    {14, {{0, 1, 1, 1, 1}, {0, 2, 2, 2, 2}, {0, 2, 2, 4, 2}}},   // Q6_K
+};
+// the current device's compute capability as major * 10 + minor (0 unknown)
+int il_cc() {
+    static int cc[16] = {};
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 16) return 0;
+    if (cc[dev] == 0) {
+        int major = 0, minor = 0;
+        cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
+        cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
+        cc[dev] = major * 10 + minor;
+    }
+    return cc[dev];
+}
 int il_rows(int type, int ncols, int n_out) {
     const int cls = n_out < 2048 ? 0 : n_out < 4096 ? 1 : n_out < 8192 ? 2 : n_out < 12288 ? 3 : 4;
+    if (il_cc() == 70) {
+        for (const IlRows& e : kIlRowsVolta)
+            if (e.type == type) return e.r[ncols - 2][cls];
+        return 0;
+    }
     for (const IlRows& e : kIlRows)
         if (e.type == type) return e.r[ncols - 2][cls];
     return 0;
@@ -2515,14 +2542,18 @@ int g_tune_rows = 0;   // native_mmvq_il_tune (tests, benchmarks): rows a warp f
 void native_mmvq_il_tune(int rows) { g_tune_rows = rows; }
 
 namespace {
-// sm_80 and newer only (measured on sm_86 and sm_120): Pascal/Volta/Turing keep native_mmvq's kernels unchanged
+// sm_80 and newer (measured on sm_86 and sm_120) and Volta (sm_70, its own table above); Pascal/Turing keep
+// native_mmvq's kernels unchanged
 bool il_arch_ok() {
     static int ok[16] = {};   // 0 unknown, 1 yes, -1 no, by device ordinal
     int dev = 0;
     if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 16) return false;
     if (ok[dev] == 0) {
         int major = 0;
-        ok[dev] = (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess && major >= 8) ? 1 : -1;
+        int minor = 0;
+        cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
+        ok[dev] = (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
+                   (major >= 8 || (major == 7 && minor == 0))) ? 1 : -1;
     }
     return ok[dev] > 0;
 }
