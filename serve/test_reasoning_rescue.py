@@ -204,6 +204,34 @@ class VisibleAnswer(unittest.TestCase):
     def test_a_closed_call_in_a_length_cut_answer_stays_a_call(self):
         self.assertEqual(self.run_all(self.HEAD + "Now.\n" + CALL, finish="length")[0], ("write",))
 
+    def test_fenced_example_after_a_call_stays_text(self):
+        for fence in ("```", "~~~"):
+            for gap in ("\n", "\n\n"):
+                quoted = fence + "xml\n" + CALL.replace("file.txt", "example.txt") + "\n" + fence
+                body = "Calling now:" + CALL + gap + quoted + "\n" + CALL.replace("file.txt", "last.txt") + "\nDone."
+                text = self.HEAD + body
+                chunks = [("whole", [text]), ("chars", list(text))]
+                chunks += [(cut, [text[:cut], text[cut:]]) for cut in range(1, len(text))]
+                for stream_tools in (False, True):
+                    for cut, parts in chunks:
+                        with self.subTest(fence=fence, gap=gap, stream_tools=stream_tools, cut=cut):
+                            p = OutputParser(thinking=True, tools=SCHEMA, stream_tools=stream_tools)
+                            evs = []
+                            for part in parts:
+                                evs += p.feed(part)
+                            evs += p.finish()
+                            delivered = [e.call for e in evs if e.kind == "tool_call"]
+                            self.assertEqual([(c.name, c.arguments) for c in delivered],
+                                             [("write", {"path": "file.txt"}), ("write", {"path": "last.txt"})])
+                            self.assertEqual("".join(e.text for e in evs if e.kind == "content"),
+                                             "Calling now:" + quoted + "Done.")
+                            self.assertEqual(reasoning(evs), "ok")
+                            starts = [e.call.id for e in evs if e.kind == "tool_start"]
+                            self.assertEqual(starts, [c.id for c in delivered] if stream_tools else [])
+                            for c in delivered if stream_tools else []:
+                                args = "".join(e.text for e in evs if e.kind == "tool_args" and e.call.id == c.id)
+                                self.assertEqual(json.loads(args), c.arguments)
+
     def test_without_thinking(self):
         p = OutputParser(thinking=False, tools=SCHEMA)
         evs = p.feed("```\n" + RM + "\n```") + p.finish()
@@ -277,6 +305,8 @@ class OverHttp(unittest.TestCase):
     def test_visible_answer_fences_on_all_three_apis(self):
         for name, body, want in (("fence", "Format:\n```xml\n" + RM + "\n```\nDone.", 0),
                                  ("inline", "Use `" + RM + "` here.", 0),
+                                 ("after call, backticks", "Calling now:" + CALL + "\n```xml\n" + RM + "\n```\n" + CALL, 2),
+                                 ("after call, tildes", "Calling now:" + CALL + "\n~~~xml\n" + RM + "\n~~~\n" + CALL, 2),
                                  ("real", "Doing it.\n\n" + CALL, 1)):
             with self.subTest(name):
                 a = self.ask( "ok</think>\n\n" + body)

@@ -855,6 +855,8 @@ class OutputParser:
             elif self.state == "content":
                 if self.lead:                                   # newlines right after </think> or a call
                     stripped = self.buf.lstrip("\n")
+                    # Dropped newlines still separate Markdown lines before the next code fence.
+                    self._track(self.buf[:len(self.buf) - len(stripped)])
                     if not stripped:
                         self.buf = ""
                         return out
