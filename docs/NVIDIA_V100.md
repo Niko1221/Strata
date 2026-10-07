@@ -27,7 +27,7 @@ select "old" kernels everywhere: which kernel runs is decided per architecture w
 
 | Part of the prompt path | On sm_70 |
 | --- | --- |
-| MoE experts (ggml MMQ) | `dp4a` kernels (Volta has no int8 tensor cores) |
+| MoE experts | `gemm_iq_f16_grouped`: a group of experts per launch on the FP16 tensor cores, the weights dequantized in shared memory (+10% prompt speed against MMQ's `dp4a` kernels, [bench](../bench/results/2026-10-07-v100-prompt-experts/README.md); `STRATA_PF_WMMA=0`: MMQ) |
 | Dense projections (dequantized weights) | FP16 tensor-core GEMMs (cuBLAS / CUTLASS `s884`) |
 | BF16 projections (hyper-connection, router, indexer, ...) | converted to FP16 and run on the FP16 tensor cores (#655, #540; `STRATA_BF16_TC=0`: cuBLAS BF16, an FP32 SIMT kernel on Volta) |
 | QSA attention for decode and verify windows (and prompts with `STRATA_PROMPT_ATTN_OLD=1`) | #540's kernel (fewer shuffles, bit-exact; `STRATA_ATTN_PRE75=0`: the one other cards run) |
