@@ -138,4 +138,30 @@ Counted short runs hit the 256 cap (`length`). Two counted long runs stopped at 
 
 `tools/needle_bench.py`: not measured on IQ3_XXS either. TTFT, streaming, power, temperature, PCIe width, and VRAM during generation: not measured.
 
+## IQ3_XXS on engine 0.1.40
+
+Same PC, same IQ3_XXS pack, same prompts, and the same `strata-iq3_xxs` arguments (context 262,144, KV int8, expert cache auto, prefill auto, MTP spec 4). Only the executable changed: `engine-0.1.40/hip/strata.exe` from the v0.1.40 Windows HIP zip, launched through `strata-iq3_xxs-0140.json`. `/v1/status` reported engine 0.1.40. Rows: [runs-iq3_xxs-0140.csv](runs-iq3_xxs-0140.csv) and [runs-iq3_xxs-0140.json](runs-iq3_xxs-0140.json).
+
+| Configuration | Actual prompt tokens | Reused tokens | Generated tokens | Runs | Prompt tok/s median and range | Decode tok/s median and range | TTFT seconds |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| Short | 98 to 99 | 0 | 256 (cap) | 3 | 79.7 (79.2 to 80.1) | 66.8 (64.2 to 67.5) | not measured |
+| Long, 38K | 38,184 to 38,187 | 0 | 134 to 256 | 3 | 1,384.9 (1,384.1 to 1,386.7) | 66.0 (53.6 to 67.5) | not measured |
+
+Against the 0.1.40.2 IQ3_XXS runs above, the long-prompt medians are 1,384.9 tok/s versus 1,400.1, and decode 66.0 tok/s versus 72.3. The decode ranges overlap (53.6–67.5 and 59.4–73.1). This is not a clean win for either build. The short-prompt rate is overhead, not prefill speed.
+
+Two counted long runs quoted `amber-keel-2904`. The third hit the 256 cap and the visible text stopped at `"amber-keel-2`, the same cutoff as on 0.1.40.2. No request failed.
+
+## IQ3_S on engine 0.1.40
+
+Same PC and the same `strata-iq3_s` arguments (context 131,072, KV q4_0, expert cache auto, prefill auto, MTP spec 4). Executable: `engine-0.1.40/hip/strata.exe`, config `strata-iq3_s-0140.json`. `/v1/status` reported engine 0.1.40 and context 131,072. The start log chose an expert cache of 4,255 slots (8.12 GiB) and 2,170 MiB of VRAM free. The 0.1.40.2 IQ3_S start above chose 5,512 slots (10.48 GiB) and 323 MiB free. Both used `auto`. Rows: [runs-iq3_s-0140.csv](runs-iq3_s-0140.csv) and [runs-iq3_s-0140.json](runs-iq3_s-0140.json).
+
+| Configuration | Actual prompt tokens | Reused tokens | Generated tokens | Runs | Prompt tok/s median and range | Decode tok/s median and range | TTFT seconds |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| Short | 96 to 100 | 0 | 256 (cap) | 3 | 70.8 (70.7 to 71.6) | 54.0 (51.8 to 55.1) | not measured |
+| Long, 38K | 38,186 to 38,189 | 0 | 134 to 139 | 3 | 1,357.8 (1,355.5 to 1,361.0) | 54.1 (46.4 to 57.1) | not measured |
+
+Against the 0.1.40.2 IQ3_S runs, the long-prompt median is 1,357.8 tok/s here versus 1,015.8 there, and decode 54.1 tok/s versus 24.3. Those ranges do not overlap. On 0.1.40 the counted long-prompt decode stayed next to its warm-up (46.8 tok/s). On 0.1.40.2 the warm-up was 51.7 tok/s and the three counted runs fell to 21.4–25.4. The expert-cache sizes above were not held equal, so this is not a pure engine comparison.
+
+All three counted long runs stopped on their own and quoted `amber-keel-2904`. No request failed.
+
 A separate report, [2026-10-06 RX 7900 XTX](../2026-10-06-community-rx-7900-xtx/README.md), used IQ3_S and a similar 38k log on a different PC, with context 262,144, KV int8, and `--prefill auto:32768`. This report does not replace that one.
