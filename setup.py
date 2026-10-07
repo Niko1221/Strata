@@ -31,6 +31,14 @@ answers, no questions), --setup (install another model / change settings instead
 engine), --check (only check this PC), --resident-budget-gib N (UD-Q4_K_XL's or UD-IQ4_XS's experts in RAM),
 --kv-streaming on|off|auto.
 
+The on-disk layer (off by default, and nothing is written for it): --conversation-cache-spill-dir DIR keeps the
+conversations the RAM cache evicts on disk (with --conversation-cache-disk-mib N, and the optional
+--conversation-cache-spill-when-full evict-oldest|reject and --conversation-cache-spill-max-age-days N), and
+--system-prompt-cache keeps the system prompt's prefill checkpoint on disk across restarts (with
+--system-prompt-cache-dir DIR, --system-prompt-cache-mib N, --system-prompt-cache-slots N,
+--system-prompt-cache-max-age-days N, --system-prompt-cache-key STR).  The two are independent, and setup creates
+the feature's folder when it is turned on.
+
 Setup recommends, it never forces: the recommended answers are the defaults (--yes, or Enter), and a bigger choice
 than it recommends - a longer context, more GPUs, a bigger RAM budget, a size it thinks will not fit - is kept, with
 what it risks.  With --yes, an explicit flag (--model, --gpus, ...) is the consent to a risk setup would otherwise
@@ -4340,6 +4348,128 @@ def arg_after(args, flag):
     return args[args.index(flag) + 1] if flag in args[:-1] else None
 
 
+# ----------------------------------------------------------------------------- the on-disk layer (opt-in)
+CONVERSATION_SPILL_DIR_NAME = "flash"        # the RAM cache's evicted conversations (<slots>\flash)
+SYSTEM_PROMPT_CACHE_DIR_NAME = "sysprompt"   # the system prompt's prefill checkpoint (<slots>\sysprompt)
+CONVERSATION_SPILL_MIB = AGENT_CACHE_MIB     # 8192: the engine's own default for --conversation-cache-disk-mib
+SYSTEM_PROMPT_CACHE_MIB = 2048               # the engine's own default for --system-prompt-cache-mib
+
+
+def layer_root() -> Path:
+    """Where the on-disk layer's folders live (the proposed defaults; created only when a feature is turned on).  The
+    repo's own "slots" folder: nothing is written outside the install, and the default is the same everywhere.  Pass
+    --conversation-cache-spill-dir / --system-prompt-cache-dir to put them on another disk, which is what a machine
+    with a fast data drive should do."""
+    return ROOT / "slots"
+
+
+def default_layer_dir(name: str) -> Path:
+    return layer_root() / name
+
+
+def ask_value(question, default, yes):
+    """A free-text answer (Enter keeps `default`; --yes never asks).  Same contract as ask()."""
+    if yes:
+        return default
+    try:
+        s = input(f"{question} [{default}]: ").strip()
+    except EOFError:
+        fail("input ended before a setup answer was received",
+             "run setup in a terminal, or pass --yes to accept the recommended answers")
+    return s or default
+
+
+def ask_mib(question, default, yes):
+    """A whole number of MiB (Enter keeps `default`; --yes never asks)."""
+    if yes:
+        return default
+    while True:
+        try:
+            s = input(f"{question} [{default}]: ").strip()
+        except EOFError:
+            fail("input ended before a setup answer was received",
+                 "run setup in a terminal, or pass --yes to accept the recommended answers")
+        if not s:
+            return default
+        if s.isdigit():
+            return int(s)
+        say("  please write a whole number, 0 or more")
+
+
+def layer_args(a) -> list:
+    """The on-disk layer's engine options: the conversation cache's disk tier and the system prompt cache.  Off
+    unless the user turns one on, with a flag or by answering here; with nothing asked the list is empty and the run
+    config is what it was.  A feature's folder is created only when it is on.  The two features are independent."""
+    out: list = []
+
+    # 1) the conversation cache's disk tier: giving its folder is what turns it on
+    spill = a.conversation_cache_spill_dir
+    if not spill and not a.yes and ask(
+            "Keep on disk the conversations the RAM cache evicts, so a restart finds them again?",
+            ["y", "n"], "n", a.yes) == "y":
+        spill = ask_value("Folder for the spilled conversations",
+                          default_layer_dir(CONVERSATION_SPILL_DIR_NAME), a.yes)
+    if spill:
+        folder = Path(spill)
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            fail(f"cannot create the spill folder {folder}", str(exc))
+        out += ["--conversation-cache-spill-dir", str(folder)]
+        say("  note: the disk tier keeps the conversations the RAM conversation cache evicts, and that cache is off "
+            "by default: add \"--conversation-cache-mib\", \"8192\" (the Settings view, or --setup) too, or the "
+            "spill folder stays empty")
+        mib = a.conversation_cache_disk_mib
+        if mib is None and not a.yes:
+            mib = ask_mib("The spill folder's limit in MiB (0 = no limit)", CONVERSATION_SPILL_MIB, a.yes)
+        if mib is not None and mib != CONVERSATION_SPILL_MIB:
+            out += ["--conversation-cache-disk-mib", str(mib)]
+        if a.conversation_cache_spill_when_full:
+            out += ["--conversation-cache-spill-when-full", a.conversation_cache_spill_when_full]
+        if a.conversation_cache_spill_max_age_days:
+            out += ["--conversation-cache-spill-max-age-days", str(a.conversation_cache_spill_max_age_days)]
+    else:
+        asked_tier = (("--conversation-cache-disk-mib", a.conversation_cache_disk_mib is not None),
+                      ("--conversation-cache-spill-when-full", bool(a.conversation_cache_spill_when_full)),
+                      ("--conversation-cache-spill-max-age-days", bool(a.conversation_cache_spill_max_age_days)))
+        for flag, given in asked_tier:
+            if given:
+                warn(f"{flag} only applies with the disk tier: give --conversation-cache-spill-dir too")
+
+    # 2) the system prompt cache: --system-prompt-cache turns it on, and any of its flags asks for it
+    on = bool(a.system_prompt_cache) or any(v is not None for v in (
+        a.system_prompt_cache_dir, a.system_prompt_cache_mib, a.system_prompt_cache_slots,
+        a.system_prompt_cache_max_age_days, a.system_prompt_cache_key))
+    if not on and not a.yes and ask(
+            "Keep the system prompt's prefill on disk, so the first request after a restart reads only what is new?",
+            ["y", "n"], "n", a.yes) == "y":
+        on = True
+    if on:
+        out += ["--system-prompt-cache"]
+        folder = a.system_prompt_cache_dir
+        if not folder and not a.yes:
+            folder = ask_value("Folder for the system prompt cache",
+                               default_layer_dir(SYSTEM_PROMPT_CACHE_DIR_NAME), a.yes)
+        folder = folder or str(default_layer_dir(SYSTEM_PROMPT_CACHE_DIR_NAME))
+        try:
+            Path(folder).mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            fail(f"cannot create the system prompt cache folder {folder}", str(exc))
+        out += ["--system-prompt-cache-dir", str(folder)]
+        mib = a.system_prompt_cache_mib
+        if mib is None and not a.yes:
+            mib = ask_mib("The system prompt cache's limit in MiB", SYSTEM_PROMPT_CACHE_MIB, a.yes)
+        if mib is not None and mib != SYSTEM_PROMPT_CACHE_MIB:
+            out += ["--system-prompt-cache-mib", str(mib)]
+        if a.system_prompt_cache_slots is not None:      # 0 means no cap: keep it when it is asked for
+            out += ["--system-prompt-cache-slots", str(a.system_prompt_cache_slots)]
+        if a.system_prompt_cache_max_age_days:
+            out += ["--system-prompt-cache-max-age-days", str(a.system_prompt_cache_max_age_days)]
+        if a.system_prompt_cache_key:
+            out += ["--system-prompt-cache-key", a.system_prompt_cache_key]
+    return out
+
+
 def bench_tips(args, env, ram: float, model_ram_gb: float, vram_gb: float, vision: str, win: bool) -> list[str]:
     """Recommendations from the community bench data (plan 0.1.40 item 14).  Text only: nothing here changes a
     default, the config or the engine's arguments (recommend, never force).  `ram` is this PC's RAM, `model_ram_gb`
@@ -4664,6 +4794,31 @@ def main() -> int:
     ap.add_argument("--kv-streaming", choices=["auto", "on", "off"], default="auto",
                     help="from a 64K context: keep the KV cache in RAM and only the attention's window in VRAM (more "
                          "experts fit on the GPU); auto: when the RAM has room for it")
+    ap.add_argument("--conversation-cache-spill-dir", metavar="DIR",
+                    help="keep the conversations the RAM cache evicts on disk, in this folder, so a restart finds "
+                         "them again (the on-disk layer; off unless given. It complements --conversation-cache-mib, "
+                         "which turns the RAM cache on). docs/DETAILS.md")
+    ap.add_argument("--conversation-cache-disk-mib", type=int, metavar="N",
+                    help="the spill folder's limit in MiB (engine default 8192; 0 = no limit)")
+    ap.add_argument("--conversation-cache-spill-when-full", choices=["evict-oldest", "reject"],
+                    help="when the spill folder is full: evict-oldest (the default) drops the oldest conversation, "
+                         "reject keeps everything and saves nothing new (needs --conversation-cache-spill-dir)")
+    ap.add_argument("--conversation-cache-spill-max-age-days", type=int, metavar="N",
+                    help="delete spilled conversations older than N days (0 or omitted: never; needs "
+                         "--conversation-cache-spill-dir)")
+    ap.add_argument("--system-prompt-cache", action="store_true", default=None,
+                    help="keep the system prompt's prefill checkpoint on disk and reload it after a restart, so the "
+                         "first request reads only what is new (the on-disk layer; off unless given)")
+    ap.add_argument("--system-prompt-cache-dir", metavar="DIR",
+                    help="the system prompt cache's own folder (not the spill folder; turns the feature on)")
+    ap.add_argument("--system-prompt-cache-mib", type=int, metavar="N",
+                    help="the system prompt cache folder's limit in MiB (engine default 2048)")
+    ap.add_argument("--system-prompt-cache-slots", type=int, metavar="N",
+                    help="how many system prompt variants are kept (engine default 2; 0 = no cap)")
+    ap.add_argument("--system-prompt-cache-max-age-days", type=int, metavar="N",
+                    help="delete system prompt variants older than N days (0 or omitted: never)")
+    ap.add_argument("--system-prompt-cache-key", metavar="STR",
+                    help="an identity of your own added to the system prompt's cache key")
     ap.add_argument("--backend", choices=["cuda", "hip", "sycl"],
                     help="cuda = NVIDIA (default), hip = AMD RX 7900 / 7800 / 7700 XT, RX 9060 XT / 9070 / AI PRO R9700 on "
                          "Linux or Windows (chosen by itself when the PC has no NVIDIA card Strata can use), "
@@ -4682,6 +4837,16 @@ def main() -> int:
         ap.error("--vision-tokens takes a number of image tokens, 1 or more, e.g. --vision-tokens 768")
     if a.vram_reserve_mib is not None and a.vram_reserve_mib < 0:
         ap.error("--vram-reserve-mib takes a number of MiB, 0 or more, e.g. --vram-reserve-mib 2048")
+    if a.conversation_cache_disk_mib is not None and a.conversation_cache_disk_mib < 0:
+        ap.error("--conversation-cache-disk-mib takes a number of MiB, 0 or more, e.g. --conversation-cache-disk-mib 8192")
+    if a.conversation_cache_spill_max_age_days is not None and a.conversation_cache_spill_max_age_days < 0:
+        ap.error("--conversation-cache-spill-max-age-days takes a number of days, 0 or more")
+    if a.system_prompt_cache_mib is not None and a.system_prompt_cache_mib < 0:
+        ap.error("--system-prompt-cache-mib takes a number of MiB, 0 or more")
+    if a.system_prompt_cache_slots is not None and a.system_prompt_cache_slots < 0:
+        ap.error("--system-prompt-cache-slots takes a number of variants, 0 or more")
+    if a.system_prompt_cache_max_age_days is not None and a.system_prompt_cache_max_age_days < 0:
+        ap.error("--system-prompt-cache-max-age-days takes a number of days, 0 or more")
     if a.gpu is not None:                             # --gpu 0,2 means --gpus 0,2 (a user tried it: issue report)
         if "," in a.gpu:
             a.gpus, a.gpu = a.gpus or a.gpu, None
@@ -5450,6 +5615,7 @@ def main() -> int:
         # the package's profile, with llama.cpp's flags (the engine takes the same ones)
         args += ["--control-vector-scaled", f"{esp}:1.0", "--control-vector-layer-range", "4", "44",
                  "--cvec-mode", "project", "--cvec-dir", "per-layer"]
+    args += layer_args(a)              # the on-disk layer: off unless asked (adds nothing by default)
     cfg = {"exe": str(eng / EXE), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
            "model_name": f"{fam['name']}-{model.lower()}", "log": str(ROOT / f"strata-{tag.lower()}.log"),
            "lib_dirs": lib_dirs, "port": port}

@@ -162,6 +162,17 @@ Sizes, downloads and what fits where: [docs/MODELS.md](docs/MODELS.md). To add a
 
 More: [where your chats are stored](docs/INSTALL.md#where-things-are-stored), [the API](docs/DETAILS.md#using-it).
 
+## Keeping chats and the system prompt on disk (opt-in)
+
+By default Strata keeps a chat in RAM and forgets it when you restart, and a new chat reads its whole system prompt
+again. Two opt-in functions change that: `--conversation-cache-spill-dir DIR` (with `--conversation-cache-mib`)
+writes a chat the RAM cache evicts to a folder as an ordinary session file, so a later request or a restart reads it
+back; `--system-prompt-cache --system-prompt-cache-dir DIR` keeps the checkpoint at the end of the system prompt, so
+a new chat reads only what comes after it. Both are off unless you set the flags (the installer and Settings can set
+them), and with them off nothing is written. They do **not** make the model faster, use less VRAM, or help a chat
+that is already being reused — they only avoid reading a prompt again. Every flag:
+[FLAGS.md](docs/FLAGS.md); how it works and its limits: [SPILL_AND_PROMPT_CACHE.md](docs/SPILL_AND_PROMPT_CACHE.md).
+
 ## Something went wrong?
 
 - **My PC froze the first time Strata started.** This is normal while it loads the model. Wait, and don't close the
