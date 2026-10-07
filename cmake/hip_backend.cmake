@@ -9,10 +9,13 @@ endif()
 # same LDS limit and dot4 instruction and passed ctest (#192), but no model run has been reported yet. RDNA2 gfx1030 (RX 6800 / 6900) has the
 # same LDS limit and wave32 but an older dot4 instruction (v_dot4_i32_i8, hip_compat/intrinsics.hpp); a community
 # report ran it (#311), the maintainers have not. gfx1151 (Ryzen AI Max / Strix Halo, Radeon 8060S, RDNA3.5) is the
-# same wave32 / 64 KiB LDS / sudot4 family as gfx1100, on a unified-memory APU; experimental.
+# same wave32 / 64 KiB LDS / sudot4 family as gfx1100, on a unified-memory APU; experimental. gfx1150 (Ryzen AI 300 /
+# Strix Point, Radeon 890M / 880M, RDNA3.5) is the same family on a smaller APU with a smaller vector register file; the
+# matrix-core kernels already list it (include/strata/kernels/gfx_arch.hpp), but no card has run it yet; experimental
+# (docs/STRIX_POINT.md).
 set(_strata_hip_validated gfx1100 gfx1201)
 set(_strata_hip_community gfx1101 gfx1200)
-set(_strata_hip_unvalidated gfx1012 gfx1102 gfx1030 gfx1031 gfx1034 gfx1151)
+set(_strata_hip_unvalidated gfx1012 gfx1102 gfx1030 gfx1031 gfx1034 gfx1150 gfx1151)
 # CMake hands HIP a ';' list, but a -DCMAKE_HIP_ARCHITECTURES typed by hand (or ROCm's own Windows tooling) may use
 # spaces, which foreach(IN LISTS) would otherwise treat as one element.
 string(REPLACE " " ";" _strata_hip_norm "${CMAKE_HIP_ARCHITECTURES}")

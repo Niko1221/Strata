@@ -104,8 +104,11 @@ class ExactArch(unittest.TestCase):
         self.assertIn("gfx1151", setup.AMD_ARCHS)
         self.assertIn("gfx1151", setup.ROCM_INDEXES)
         self.assertTrue(setup.ROCM_INDEXES["gfx1151"].endswith("/gfx1151/"))
-        for a in ("gfx1150", "gfx1152", "gfx1103"):                                  # never supported by accident
+        for a in ("gfx1152", "gfx1103"):                                             # never supported by accident
             self.assertNotIn(a, setup.AMD_ARCHS)
+        self.assertIn("gfx1150", setup.AMD_ARCHS)                                    # Strix Point: experimental
+        self.assertIn("gfx1150", setup.ROCM_INDEXES)
+        self.assertIn("docs/STRIX_POINT.md", setup.AMD_CARDS)
         self.assertIn("docs/STRIX_HALO.md", setup.AMD_CARDS)
 
 
@@ -216,12 +219,31 @@ class OtherChips(LinuxBase):
         return setup.amd_gpus(str(root))[0]
 
     def test_strix_point(self):
+        """Strix Point (gfx1150) is an experimental unified-memory APU: usable, but never taken for Strix Halo."""
         g = self.one(110500, 0x150E, 512 << 20, 60 * GIB)
         self.assertEqual(g["arch"], "gfx1150")
-        self.assertFalse(setup.is_strix_halo(g) or g.get("uma"))
-        self.assertIn("gfx1150", setup.amd_problem(g))
-        self.assertIn("not Strix Halo", setup.amd_problem(g))
+        self.assertFalse(setup.is_strix_halo(g))                 # not the chip the gfx1151 defaults are measured on
+        self.assertTrue(setup.is_uma_apu(g) and g.get("uma"))
+        self.assertIsNone(setup.amd_problem(g))
         self.assertIn("890M", g["name"])
+        self.assertAlmostEqual(g["dedicated_gb"], 0.5)           # the BIOS carve-out only is "dedicated"
+        self.assertGreater(g["vram_gb"], g["dedicated_gb"])      # the shared pool counts as GPU-usable memory
+
+    def test_strix_point_notes_and_no_halo_recommendation(self):
+        g = self.one(110500, 0x150E, 512 << 20, 30 * GIB)
+        notes = setup.strix_halo_notes(g, 64.0)
+        text = "\n".join(notes)
+        self.assertIn("Strix Point", text)
+        self.assertIn("docs/STRIX_POINT.md", text)
+        self.assertNotIn("Strix Halo", text)
+        self.assertFalse(any("Recommended model" in n for n in notes))
+        self.assertFalse(setup.strix_halo_recommends(g, 256.0))  # UD-IQ4_XS is the gfx1151 measurement
+
+    def test_strix_point_matches_the_engines_header(self):
+        hpp = (ROOT / "include/strata/kernels/gfx_arch.hpp").read_text(encoding="utf-8")
+        wmma = re.search(r"gfx_arch_is_gfx11_wmma.*?\n}", hpp, re.S).group(0)
+        self.assertIn("gfx1150", set(re.findall(r'"(gfx\d+)"', wmma)))
+        self.assertNotIn('gfx_arch_is_gfx1151(const char* gcn) { return gfx_arch_is(gcn, "gfx1150")', hpp)
 
     def test_krackan(self):
         g = self.one(110502, 0x1114, 512 << 20, 30 * GIB)
@@ -272,10 +294,11 @@ class DualGpu(LinuxBase):
         fake_gpu(self.root, 2, 110501, 80, 129, 0x1586, 2 * GIB, 112 * GIB)
         g = setup.amd_gpus(str(self.root))
         self.assertEqual([x["arch"] for x in g], ["gfx1150", "gfx1151"])
-        self.assertEqual([bool(setup.amd_problem(x)) for x in g], [True, False])
-        self.assertEqual([bool(x.get("uma")) for x in g], [False, True])
+        self.assertEqual([bool(setup.amd_problem(x)) for x in g], [False, False])      # both usable now
+        self.assertEqual([bool(x.get("uma")) for x in g], [True, True])
+        self.assertEqual([setup.is_strix_halo(x) for x in g], [False, True])           # never confused
         usable = [x for x in g if setup.amd_problem(x) is None]
-        self.assertEqual(min(usable, key=setup.amd_rank)["index"], 1)
+        self.assertEqual(min(usable, key=setup.amd_rank)["index"], 1)                  # more memory first
 
     def test_two_strix_halo_ranked_by_index(self):
         fake_gpu(self.root, 0, 110501, 80, 128, 0x1586, 2 * GIB, 112 * GIB)
@@ -322,9 +345,16 @@ class WindowsDetection(unittest.TestCase):
         self.assertTrue(g[0]["uma"] and not g[1].get("uma"))
         self.assertEqual(min(g, key=setup.amd_rank)["arch"], "gfx1100")
 
+    def test_strix_point_is_unified_memory_and_usable(self):
+        ad = [{"name": "AMD Radeon(TM) 890M Graphics", "pnp": r"PCI\VEN_1002&DEV_150E&REV_C1\4&2", "ram": 512 << 20}]
+        g = setup.amd_gpus_windows(ad, [])[0]
+        self.assertEqual(g["arch"], "gfx1150")
+        self.assertTrue(g.get("uma"))
+        self.assertFalse(setup.is_strix_halo(g))
+        self.assertIsNone(setup.amd_problem(g))
+
     def test_other_integrated_radeons(self):
-        for did, name, arch in ((0x150E, "AMD Radeon(TM) 890M Graphics", "gfx1150"),
-                                (0x1114, "AMD Radeon(TM) 860M Graphics", "gfx1152"),
+        for did, name, arch in ((0x1114, "AMD Radeon(TM) 860M Graphics", "gfx1152"),
                                 (0x15BF, "AMD Radeon(TM) 780M Graphics", "gfx1103")):
             ad = [{"name": name, "pnp": rf"PCI\VEN_1002&DEV_{did:04X}&REV_C1\4&2", "ram": 512 << 20}]
             g = setup.amd_gpus_windows(ad, [])[0]

@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <cerrno>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
@@ -306,7 +308,27 @@ DirectFile::~DirectFile() { close(); delete impl_; }
 bool DirectFile::open(const std::string& path, std::string& err) {
     close();
     impl_->fd = ::open(path.c_str(), O_RDONLY | O_DIRECT);
-    if (impl_->fd < 0) { err = "DirectFile: cannot open " + path; return false; }
+    if (impl_->fd < 0) {
+        const int e = errno;
+        // Some filesystems refuse O_DIRECT (EINVAL / EOPNOTSUPP: an encrypted home, ZFS before 2.3, tmpfs on older
+        // kernels, some FUSE mounts).  Every request here is already aligned, so the same preads work on a buffered
+        // descriptor: slower on a cold read and it fills the page cache, but the engine runs instead of stopping.
+        const bool retried = (e == EINVAL || e == EOPNOTSUPP);
+        if (retried) {
+            impl_->fd = ::open(path.c_str(), O_RDONLY);
+            if (impl_->fd >= 0) {
+#ifdef POSIX_FADV_RANDOM
+                (void) posix_fadvise(impl_->fd, 0, 0, POSIX_FADV_RANDOM);   // random 4 KiB reads: no readahead
+#endif
+                std::fprintf(stderr, "strata: DirectFile: %s does not support O_DIRECT (%s); reading it through the page "
+                                     "cache instead\n", path.c_str(), std::strerror(e));
+            }
+        }
+        if (impl_->fd < 0) {
+            err = "DirectFile: cannot open " + path + " (" + std::strerror(retried ? errno : e) + ")";
+            return false;
+        }
+    }
     struct stat st;
     if (fstat(impl_->fd, &st) != 0) { err = "DirectFile: cannot size " + path; close(); return false; }
     impl_->size = (uint64_t) st.st_size;
