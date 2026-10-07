@@ -133,6 +133,34 @@ medians of 3, 2026-10-06, with other programs running (the answer speed moved by
   drafts). llama.cpp's `batched-bench` without MTP: 13.2 tok/s for one sequence, 22.5 for two, 29.7 for four.
 - The engine adds nothing on top of llama.cpp: `llama-bench` on the same file gives 16.9 tok/s output.
 
+### Compared with MLX (mlx-lm)
+
+Would Apple's MLX run this model faster? Measured on the test Mac, 2026-10-07. The same Q2_0 weights were converted to
+MLX: the 2-bit experts copied bit for bit, the other tensors requantized one bit higher, the 28 GB n-gram table at 5
+bits. They ran in mlx-lm on MLX 0.32.3 with the community port of this model
+([mlx-lm#1788](https://github.com/ml-explore/mlx-lm/pull/1788), not merged as of that date). Each server ran alone, in
+turn, on the same prompts: greedy, thinking off, MTP off, through its OpenAI API.
+
+| | Strata (llama.cpp Metal) | mlx-lm (MLX) |
+|---|---:|---:|
+| Writes the answer, best run | 48.3 tok/s | 41.5 tok/s |
+| Writes the answer, worst run (a virtual machine running) | 24.7 tok/s | 17.1 tok/s |
+| Reads a 3,290-token prompt | 364-895 tok/s | 286-493 tok/s |
+| Memory in use | ~35 GB of weights; the n-gram table stays in the file | ~81 GB, all of it in memory |
+| Start | ~35 s | ~160 s |
+
+- The load from other programs was not controlled and moved both engines by up to 2x (an Xcode build pulled MLX
+  down to 15-19 tok/s while a GPU benchmark kept its full speed), so read the table as ranges, not as a ranking.
+- The answers are not the same: 3 of 12 greedy answers matched; the rest parted after 2 to 58 tokens, because the
+  non-expert weights are requantized for MLX.
+- mlx-lm's server slowed down on repeated requests (40.7 to about 20 tok/s) until its prompt cache was turned off
+  (`--prompt-cache-size 0`).
+- Tried on the MLX side: the n-gram lookup on the GPU from one table, and fused hyper-connection steps (same tokens,
+  no change beyond the noise); 8-bit hyper-connection weights were slower (26.3 against 32.7 tok/s) and changed the
+  answer.
+- So MLX was not faster here and needs more than twice the memory: Strata stays on llama.cpp, and the MLX conversion
+  is not part of Strata.
+
 ## How it fits together
 
 - `metal/strata_metal.cpp`: the engine. It speaks the CUDA engine's line protocol (`GEN`/`GENI`, `T`, `PP`, `RESUME`,
