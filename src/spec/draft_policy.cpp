@@ -17,6 +17,7 @@ constexpr double kDecay = 0.97;       // lookup counts: older windows fade
 // on the same thing); worth 4 observations, so a few real windows override it
 constexpr double kPriorQ[DraftPolicy::kBuckets] = {0.75, 0.88, 0.93, 0.96};
 constexpr double kPriorN = 4.0;
+constexpr int kReprobeRounds = 64;  // retry a stale size at most once per this many other timed rounds
 constexpr int kProbes = 3;       // a lookup window size is tried this often before its guessed cost can veto it
 
 }  // namespace
@@ -69,24 +70,34 @@ DraftPolicy::Pick DraftPolicy::choose(int t_mtp, int lookup_k, int match) const 
     if (best_t > 0 && best > base * (1.0 + margin_)) {
         p.lookup = true;
         p.t = best_t;
-        return p;
     }
     // a guessed cost can keep the policy from ever measuring a size: the first few times a confident lookup would
     // need a size not measured yet, it is tried (verification keeps the output; only the one round's speed is at stake)
     const int t_full = std::min(lookup_k, max_t_ - 1) + 1;
-    if (t_full > p.t && cost_n_[t_full] < kProbes && q >= 0.85) {
+    // Even a measured cost can be stale after a slow start. Retry the full window occasionally, including when a
+    // smaller lookup already pays; otherwise that smaller window can keep the full size from ever being measured.
+    if (t_full > p.t && q >= 0.85 &&
+        ((!p.lookup && cost_n_[t_full] < kProbes) || cost_age_[t_full] >= kReprobeRounds)) {
         p.lookup = true;
         p.t = t_full;
     }
     return p;
 }
 
+void DraftPolicy::observe_cost(int t, double round_ms) {
+    if (!(round_ms > 0)) return;
+    // A stale estimate must not outweigh its first fresh measurement: otherwise infrequent probes can take
+    // hundreds of rounds to undo a few expensive startup samples. Keep the sample count (and startup probe budget).
+    cost_[t] = cost_n_[t] > 0 && cost_age_[t] < kReprobeRounds
+                   ? (1.0 - kCostAlpha) * cost_[t] + kCostAlpha * round_ms : round_ms;
+    cost_n_[t] += 1.0;
+    for (int& age : cost_age_) age = std::min(age + 1, kReprobeRounds);
+    cost_age_[t] = 0;
+}
+
 void DraftPolicy::observe(bool lookup, int t, int accepted, int match, double round_ms) {
     t = std::clamp(t, 1, kMaxT);
-    if (round_ms > 0) {
-        cost_[t] = cost_n_[t] > 0 ? (1.0 - kCostAlpha) * cost_[t] + kCostAlpha * round_ms : round_ms;
-        cost_n_[t] += 1.0;
-    }
+    observe_cost(t, round_ms);
     if (lookup) {
         const int b = bucket(match);
         ok_[b] = kDecay * ok_[b] + accepted;
@@ -119,19 +130,17 @@ int DraftPolicy::chain(int t_mtp, double p_mtp, int k_avail, int match) const {
         const double r = (e0 + p_mtp * gain) / cost_ms(t_mtp + k);
         if (r > best) { best = r; best_k = k; }
     }
-    if (best_k > 0 && best > base * (1.0 + margin_)) return best_k;
-    // as choose(): a size whose cost is only guessed is tried a few times when the continuation looks likely
+    const int picked = best_k > 0 && best > base * (1.0 + margin_) ? best_k : 0;
+    // As choose(): probe guessed costs, and occasionally retry stale costs even when a shorter chain pays.
     const int t_full = t_mtp + kmax;
-    if (cost_n_[t_full] < kProbes && p_mtp * c >= 0.6) return kmax;
-    return 0;
+    if (kmax > picked && p_mtp * c >= 0.6 &&
+        ((picked == 0 && cost_n_[t_full] < kProbes) || cost_age_[t_full] >= kReprobeRounds)) return kmax;
+    return picked;
 }
 
 void DraftPolicy::observe_chain(int t_mtp, int k, int accepted, int match, double round_ms) {
     const int t = std::clamp(t_mtp + k, 1, kMaxT);
-    if (round_ms > 0) {
-        cost_[t] = cost_n_[t] > 0 ? (1.0 - kCostAlpha) * cost_[t] + kCostAlpha * round_ms : round_ms;
-        cost_n_[t] += 1.0;
-    }
+    observe_cost(t, round_ms);
     // the MTP part is an ordinary MTP window as far as its own drafts go
     const int mtp_acc = std::min(accepted, t_mtp - 1);
     const double got = mtp_acc + 1.0;
