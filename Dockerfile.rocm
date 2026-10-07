@@ -7,17 +7,16 @@
 # The engine is compiled during docker build, so the first container start only
 # downloads the model (~70 GB) and starts the server. docker build has no GPU,
 # so the gfx targets are fixed here: the engine is a fat binary with a code
-# object per listed arch. Keep all archs unless you want a faster build for a
+# object per listed arch. Keep both archs unless you want a faster build for a
 # single card (narrow HIP_ARCHITECTURES to just yours).
 #
 # setup.py's rocm_root() accepts a system ROCm >= 7.0 when hipcc, libhipblas and 
 # the hip-lang dev files are present (the -full base has all three). This image
-# defaults to 7.2.4, but newer ROCm versions may also be used. A complete/full
-# release of the base image must be used as the base image.
+# defaults to 7.14.1, but newer ROCm versions may also be used.
 #
 # Build:
-#   docker build -t strata .
-#   docker build -t strata --build-arg HIP_ARCHITECTURES=gfx1100 .   # 7900 XT only
+#   docker build -t strata -f Dockerfile.rocm .
+#   docker build -t strata -f Dockerfile.rocm --build-arg HIP_ARCHITECTURES=gfx1100 .   # 7900 XT only
 #
 # Run (host needs the amdgpu driver; the container needs KFD + DRI passed through):
 #   docker run --rm \
@@ -55,7 +54,7 @@ FROM rocm/dev-ubuntu-24.04:7.2.4-complete
 # STRATA_EXECV=1: setup.py replaces itself with the server, so the server is PID 1
 # and docker stop's SIGTERM reaches it (see setup.start). Normal Linux starts, which
 # don't set it, keep spawning the server as a child.
-ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 LANG=C.UTF-8 STRATA_EXECV=1
+ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 LANG=C.UTF-8 STRATA_EXECV=1 BACKEND=hip
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential ca-certificates curl git libatomic1 libgomp1 \
@@ -90,6 +89,7 @@ RUN python3 -m venv .venv \
 RUN .venv/bin/python - <<'PYEOF'
 import json, os, pathlib, shutil
 import setup
+
 
 # Target all maintainer- and community-validated archs for a fat build by default.
 # Narrow to one for a faster build or add your own (e.g. gfx1030).
