@@ -277,6 +277,18 @@ struct QsaState {
 /// QSA layer. `with_rope = false` sizes a state that borrows it; `share_rope` points `st` at another state's table
 /// instead of building a copy (the session builds it once, in the first QSA layer).
 uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_rope = true, int64_t ring_cells = 0);
+
+/// Per-state initialization policy for callers that must OWN their K/V (the DFlash drafter):
+/// the pools are carved from the caller's arena whole-resident in FP16, never in the elastic VMM
+/// registry, never streamed, never a ring.  Default options reproduce the historic behavior
+/// byte-for-byte.  `qsa_state_bytes` and `qsa_state_init` apply these identically - a mismatch
+/// between the two would mis-carve the arena.
+struct QsaStateInitOptions {
+    bool force_owned_kv = false;   ///< K/V pools inside the caller's arena (never elastic/VMM)
+    bool force_f16_kv = false;     ///< FP16 K/V regardless of the process KV format
+    bool disable_streaming = false;  ///< never a ring / residency map (ring_cells forced to 0)
+    bool disable_elastic = false;  ///< never in the elastic VMM registry
+};
 /// KV streaming: keep `cells` cells of each QSA layer in VRAM and the rest in pinned host memory (0: all in VRAM,
 /// the default). Set before sizing and initializing the session; a context that fits in `cells` is not streamed.
 /// Also puts the MTP drafter's K/V in a ring of its window (`ring_cells` of qsa_state_bytes/init; -1 forces a fully
@@ -323,6 +335,10 @@ inline int qsa_kv_format(const QsaState& st) {
     if (st.kv_hybrid) return strata::kernels::kKvHybrid;   // K8V4: its own three runs (kv_stream.cu)
     return st.kv_q4 ? strata::kernels::kKvQ4 : st.kv_int8 ? strata::kernels::kKvInt8 : strata::kernels::kKvF16;
 }
+uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_rope, int64_t ring_cells,
+                         const QsaStateInitOptions& opts);
+uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaState& st,
+                        const QsaState* share_rope, int64_t ring_cells, const QsaStateInitOptions& opts);
 uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaState& st,
                         const QsaState* share_rope = nullptr, int64_t ring_cells = 0);
 /// KV streaming: the pools a reader sees (the VRAM slots) and, when streamed, make the selection's blocks resident.

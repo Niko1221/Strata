@@ -196,6 +196,8 @@ private:
     int32_t* h_pos_ = nullptr;       ///< host-side per-head positions staged to pos_
     void* attn_scratch_ = nullptr;
     int64_t max_rows_ = 0;
+    int64_t cycle_ = 0;              ///< proposes so far (the parity fixture's cycle selector)
+    char parity_dir_[512] = {};      ///< STRATA_DF_PARITY: the stage-dump directory (empty: off)
 };
 
 }  // namespace strata::core
