@@ -241,7 +241,8 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
   tok/s on a 4K prompt, 52.0 -> 60.5 warm) and +5-7% on the 9070 XT, prompts unchanged, the same tokens.
 - **hipBLASLt:** the validation above used hipBLASLt 1.4.1. A table calibrated on the R9700 at the engine's shapes
   with that version (0.98-1.76x per GEMM over hipBLAS) changed the end-to-end prompt speed by 0-3%, within noise,
-  so none was shipped for it: there the plain hipBLAS path is already close. For hipBLASLt 1.5.0 (ROCm
+  so none was shipped for it: there the plain hipBLAS path is already close (a table I calibrated on my own R9700
+  with 1.4.1 measured the same: 1.15x per GEMM, +1% prompt - see "Tuning table" below). For hipBLASLt 1.5.0 (ROCm
   10.2.0a nightly) `tools/hip/gfx1201-hipblaslt-100500.txt` is shipped (see "Tuning table" below); on one R9700 it
   measured +3.9% prompt speed on 4,210-token prompts (1,590 vs 1,531 tok/s), a modest gain.
   With the hipBLASLt 1.2.2 of a system ROCm 7.2.4 the plain path is far off, and `tools/hip/gfx1201-hipblaslt-100202.txt`
@@ -476,6 +477,31 @@ Shipped tables:
   valid: the engine falls back to hipBLASEx for an id the library rejects, and the test still passes. Run it with
   `STRATA_HIPBLASLT_VERBOSE=1` and look for `fallbacks=0` in its summary line, and recalibrate with
   `tune_hipblaslt` before using this table with a different 1.5.0 build.
+
+Calibrated on my PC and kept in this checkout, not shipped: `gfx1201-hipblaslt-100401.txt`, a Radeon AI PRO
+R9700 (gfx1201, 32 GB, 1002:7551) on a Ryzen 9 9950X3D with 62 GiB RAM, CachyOS (kernel 7.3.0-rc6-1-cachyos-rc,
+`linux-firmware-amdgpu 20260916`, the kernel's amdgpu driver), system ROCm `rocm-gfx120x-bin 10.1.0` (hipBLASLt
+1.4.1, HIP 7.16.26385, clang 24.0.0), Python 3.14.7 in setup's own venv, engine 0.1.40 compiled there for gfx1201,
+the model files on a 4 TB NVMe (btrfs), IQ3_S at 131072 ctx with `--kv int8`, the GPU idle. `tune_hipblaslt` over
+the 32 geometries of `gfx1201-hipblaslt-100500.txt`: 1.15x geometric mean per GEMM over hipBLAS - 1.55-1.68x at
+N=512/640 K=2560, 0.99-1.13x at N=10240/12288 K=2560. End to end with `tools/hip/bench_prefill.py` over two
+server starts, fresh prompts of 4,210 and 8,830 tokens, three matched trials each - the first fresh prompt after
+each start is left out, it is cold (949 and 1,423 tok/s there): 1,606 -> 1,613, 1,701 -> 1,726 and 1,605 -> 1,610
+tok/s (+0.5, +1.5, +0.4%), medians 1,606 -> 1,613 and a 1.008x geometric mean over those three, decode
+87.1 -> 85.1 tok/s - within noise, as the R9700 paragraph above found. `hip_prefill_hipblaslt_gemm` passes with it: `tuning enabled (30 rows, gfx1201,
+version 100401)`, `launches=4 fallbacks=0`.
+
+Two rows were dropped from that table: bf16 N=10240 K=320 ldy=10240 at T=4096 and at T=8192. At T=8192 hipBLAS was
+faster in five separate `tune_hipblaslt` runs - 0.609-0.619 ms against 0.648-0.677 ms for the best of the 16
+hipBLASLt candidates (0.90-0.95x), with four different winning solution ids, all slower than hipBLAS. Dropping only
+the T=8192 row does not send that call back to hipBLAS: `closest()` matches dtype/N/K/ldy and takes the nearest T
+bucket, so T=8192 would run the T=4096 row; both rows go or neither.
+
+Two calibration notes from my machine. The first case of a fresh `tune_hipblaslt` process times its hipBLAS
+baseline while the clocks are still ramping: that T=4096 shape read 0.31-0.63 ms across five runs while the case
+timed right after it held 0.606-0.619 ms every time, so time a heavy case first and read the later ones. And the
+first fresh prompt after the model loads is not a measurement: it gave 949 and 1,423 tok/s in the two arms of that
+A/B, while the three trials after it differed by 0.4-1.5%.
 
 ## Original backend validation (PR #94)
 
