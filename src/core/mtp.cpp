@@ -1,6 +1,7 @@
 // src/core/mtp.cpp - see include/strata/core/mtp.hpp.
 #include "strata/core/mtp.hpp"
 #include "strata/core/coupled_draft.hpp"
+#include "strata/core/spec_prob.hpp"
 #include "strata/core/on_device.hpp"
 
 #include "strata/core/native_head.hpp"
@@ -141,6 +142,7 @@ MtpDrafter::~MtpDrafter() {
     if (cscratch_) cudaFree(cscratch_);
     if (h_cparams_) cudaFreeHost(h_cparams_);
     if (h_chist_) cudaFreeHost(h_chist_);
+    if (h_q_) cudaFreeHost(h_q_);
     if (cs_) cudaStreamDestroy(cs_);
     if (side_) cudaStreamDestroy(side_);
     if (sh_fork_) cudaEventDestroy(sh_fork_);
@@ -415,7 +417,7 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     // --pipeline-windows 2 (the forcing graphs): the chain shares its card with stage 1's windows and the next launch
     // on stage 0 waits for it, so its stream gets the highest priority there (STRATA_MTP_PRIORITY=0: the default)
     bool prio = false;
-#if !defined(STRATA_USE_HIP)   // (HIP: the default priority)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)   // (HIP: the default priority)
     static const bool hi_prio = [] { const char* v = std::getenv("STRATA_MTP_PRIORITY"); return v == nullptr || std::atoi(v) != 0; }();
     int prio_lo = 0, prio_hi = 0;
     if (force_on_ && hi_prio && cudaDeviceGetStreamPriorityRange(&prio_lo, &prio_hi) == cudaSuccess)
@@ -423,12 +425,15 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     cudaGetLastError();
 #endif
     if (!prio && cudaStreamCreateWithFlags(&cs_, cudaStreamNonBlocking) != cudaSuccess) { err = "mtp: stream"; return false; }
+#if !defined(STRATA_USE_HIP)
+    // HIP keeps the shared expert on cs_; only CUDA needs this branch stream.
     if (cudaStreamCreateWithFlags(&side_, cudaStreamNonBlocking) != cudaSuccess ||
         cudaEventCreateWithFlags(&sh_fork_, cudaEventDisableTiming) != cudaSuccess ||
         cudaEventCreateWithFlags(&sh_join_, cudaEventDisableTiming) != cudaSuccess) {
         err = "mtp: streams";
         return false;
     }
+#endif
     const double files_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_files).count();
     if (shared != nullptr) {
         std::fprintf(stderr, "strata mtp: shared draft weights, %.0f MiB of private state and buffers\n",
@@ -510,6 +515,11 @@ bool MtpDrafter::setup_coupled(std::string& err) {
         err = "mtp: the coupled draft sampler's buffers do not fit";
         return false;
     }
+    if (spec_prob_env() &&
+        !mapped((size_t) max_t_ * (size_t) kSpecQStride * sizeof(int32_t), (void**) &h_q_, (void**) &m_q_)) {
+        err = "mtp: the draft distributions' buffer does not fit";
+        return false;
+    }
     cudaMemset(cring_, 0xff, ring);   // -1: no token
     std::fill(h_chist_, h_chist_ + kCoupledHistCap, -1);
     vram_ += sizeof(strata::kernels::SamplerParams) + ring + scratch;
@@ -530,13 +540,18 @@ bool MtpDrafter::setup_coupled(std::string& err) {
         return false;
     }
     coupled_ok_ = true;
-    std::fprintf(stderr, "strata mtp: coupled draft sampling on (STRATA_SPEC_COUPLED): sampled requests draft with the "
-                         "target's chain and Philox draw over %lld tokens\n", (long long) nv);
+    if (spec_prob_env())
+        std::fprintf(stderr, "strata mtp: probabilistic draft acceptance on (STRATA_SPEC_PROB): sampled requests draft by "
+                             "sampling the draft head's distribution over %lld tokens; the verifier accepts with "
+                             "min(1, p/q) and resamples the residual\n", (long long) nv);
+    else
+        std::fprintf(stderr, "strata mtp: coupled draft sampling on (STRATA_SPEC_COUPLED): sampled requests draft with the "
+                             "target's chain and Philox draw over %lld tokens\n", (long long) nv);
     return true;
 }
 
 void MtpDrafter::set_draft_sampling(const strata::kernels::SamplerParams& sp) {
-    coupled_active_ = coupled_ok_ && !sp.greedy && sp.temperature > 0.0f;
+    coupled_active_ = coupled_ok_ && !sp.greedy && sp.temperature > 0.0f && sp.temperature >= spec_min_temp();
     if (!coupled_active_) return;
     *h_cparams_ = sp;   // read by the next round graph (after the previous one has synced)
     std::fill(h_chist_, h_chist_ + kCoupledHistCap, -1);
@@ -609,6 +624,7 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
             return false;
         }
         dhead_ = shared->dhead_;
+        dhead_type_ = shared->dhead_type_;   // the subset's type (the main head's, or Q4_0): -1 failed every --batch-mtp step
         dvocab_ = shared->dvocab_;
         n_dvocab_ = shared->n_dvocab_;
         owns_draft_head_ = false;
@@ -954,8 +970,13 @@ bool MtpDrafter::record_rest(int step_row, cudaStream_t cs, std::string& err) {
         if (coupled_rec_) {
             // coupled draft sampling: the target's chain and Philox draw for the row that will verify this draft
             // (counter = this cell + 1, from its step record), penalties over the ring; T == 1 (full layer)
-            coupled_draft_sample(head_logits_, (int) nv, sub ? dvocab_ : nullptr, sub ? dinv_ : nullptr, (int) n_vocab_,
-                                 cparams_, cring_, kCoupledHistCap, coupled_j_, step, cscratch_, out_ids_, probs_, cs);
+            if (m_q_ != nullptr)   // STRATA_SPEC_PROB: a draw from q with its own stream, and q's list for the verifier
+                spec_draft_sample(head_logits_, (int) nv, sub ? dvocab_ : nullptr, sub ? dinv_ : nullptr, (int) n_vocab_,
+                                  cparams_, cring_, kCoupledHistCap, coupled_j_, step, cscratch_, out_ids_, probs_, m_q_,
+                                  spec_gate_pick(), spec_draft_temp_scale(), cs);
+            else
+                coupled_draft_sample(head_logits_, (int) nv, sub ? dvocab_ : nullptr, sub ? dinv_ : nullptr, (int) n_vocab_,
+                                     cparams_, cring_, kCoupledHistCap, coupled_j_, step, cscratch_, out_ids_, probs_, cs);
             return true;
         }
         if (argmax_rows_wanted()) {

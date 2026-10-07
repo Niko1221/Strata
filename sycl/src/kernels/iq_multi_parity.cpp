@@ -507,9 +507,10 @@ void bench(dpct::queue_ptr s, std::mt19937 &rng) {
     }
 }
 
-// #606: both q8_1 activation quantizers (quantize_q8_1_rows and native_quantize_q8_1) against a host transcription
-// of the 0.1.38 formula: every finite block bit for bit; a block whose sum (or scale) overflowed fp16 is now stored
-// finite (the largest half, its sign), with its values in the int8 range.
+// #606: the q8_1 activation quantizers (quantize_q8_1_rows, native_quantize_q8_1 and the shared expert's fused
+// native_swiglu_quantize_q8_1) against a host transcription of the 0.1.38 formula: every finite block bit for bit; a
+// block whose sum (or scale) overflowed fp16 is now stored finite (the largest half, its sign), with its values in the
+// int8 range.  The fused one gets gate = 32 and up = x / 32: silu(32) is 32 in float, so its activations are x exactly.
 void check_q8_1_finite(dpct::queue_ptr s, std::mt19937 &rng) {
     const int n = 2560, rows = 3, nb = n / 32;
     std::vector<float> x = random_x((size_t) rows * n, rng);
@@ -527,10 +528,33 @@ void check_q8_1_finite(dpct::queue_ptr s, std::mt19937 &rng) {
     ck(DPCT_CHECK_ERROR(
            (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(dx, x.data(), x.size() * 4).wait()),
        "x");
+    std::vector<float> gate(x.size(), 32.0f), up(x.size());
+    for (size_t i = 0; i < x.size(); ++i) up[i] = x[i] / 32.0f;
+    float* dg = dalloc<float>(x.size());
+    float* du = dalloc<float>(x.size());
+    /*
+    DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming
+    in the original code the source host memory is pageable memory. If the
+    memory is not pageable, call wait() on event return by memcpy API to ensure
+    synchronization behavior.
+    */
+    ck(DPCT_CHECK_ERROR(
+           (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(dg, gate.data(), x.size() * 4).wait()),
+       "gate");
+    /*
+    DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming
+    in the original code the source host memory is pageable memory. If the
+    memory is not pageable, call wait() on event return by memcpy API to ensure
+    synchronization behavior.
+    */
+    ck(DPCT_CHECK_ERROR(
+           (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(du, up.data(), x.size() * 4).wait()),
+       "up");
     uint8_t* dq = dalloc<uint8_t>((size_t) rows * nb * 36);
-    for (int path = 0; path < 2; ++path) {
+    for (int path = 0; path < 3; ++path) {
         if (path == 0) k::quantize_q8_1_rows(dx, rows, n, dq, s);
-        else k::native_quantize_q8_1(dx, dq, n, rows, s);
+        else if (path == 1) k::native_quantize_q8_1(dx, dq, n, rows, s);
+        else k::native_swiglu_quantize_q8_1(dg, du, dq, n, rows, s);
         ck(DPCT_CHECK_ERROR(s->wait()), "quantize");
         std::vector<uint8_t> got((size_t) rows * nb * 36);
         ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
@@ -562,7 +586,7 @@ void check_q8_1_finite(dpct::queue_ptr s, std::mt19937 &rng) {
                     want[4 + i] = (uint8_t) (int8_t) (amax == 0.0f ? 0.0f : std::round(v[i] / d));
                 // native_mmvq.cu is built with --use_fast_math (its divisions are approximate): there the sum must be
                 // the same bits, the scale within one fp16 step and each value within one step
-                bool near = path == 1 && gs == os && std::abs((int) gd - (int) od) <= 1;
+                bool near = path >= 1 && gs == os && std::abs((int) gd - (int) od) <= 1;
                 for (int i = 0; near && i < 32; ++i) near = std::abs((int) (int8_t) g[4 + i] - (int) (int8_t) want[4 + i]) <= 1;
                 if (std::memcmp(want, g, 36) == 0 || near) ++same;
                 else { ++bad; std::printf("  q8_1 path %d block %d: changed although it was finite\n", path, b); }
@@ -576,10 +600,13 @@ void check_q8_1_finite(dpct::queue_ptr s, std::mt19937 &rng) {
             }
         }
         std::printf("q8_1 finite (%s): %d finite blocks as before, %d overflowed blocks clamped finite%s\n",
-                    path == 0 ? "quantize_q8_1_rows" : "native_quantize_q8_1", same, clamped, bad ? "  FAIL" : "");
+                    path == 0 ? "quantize_q8_1_rows" : path == 1 ? "native_quantize_q8_1" : "native_swiglu_quantize_q8_1",
+                    same, clamped, bad ? "  FAIL" : "");
         g_fail += bad + (clamped != 3);
     }
     sycl::free(dx, dpct::get_in_order_queue());
+    sycl::free(dg, dpct::get_in_order_queue());
+    sycl::free(du, dpct::get_in_order_queue());
     sycl::free(dq, dpct::get_in_order_queue());
 }
 

@@ -118,6 +118,34 @@ __global__ void rms_rep_kernel(const float* __restrict__ input, const float* __r
     const float scale = rsqrtf(mean + NG_RMS_EPS);
     for (int col = tid; col < N; col += BlockSize) output[col] = scale * input[col] * gamma[col];
 }
+// rms_rep_kernel with the column count as a RUN-TIME divisor, as weighted_rms_norm<1024> (native_gr_rms_norm_weighted,
+// the per-token path) divides: under --use_fast_math a division by the constant N may become a multiplication by its
+// rounded reciprocal, which is not bitwise the run-time division.
+__global__ void rms_rep_rt_kernel(const float* __restrict__ input, const float* __restrict__ gamma,
+                                  float* __restrict__ output, int n_cols, float epsilon) {
+    constexpr int BlockSize = 1024;
+    const int tid = threadIdx.x;
+    const size_t row_offset = size_t(blockIdx.x) * n_cols;
+    input += row_offset;
+    output += row_offset;
+    gamma += size_t(blockIdx.x % H) * n_cols;
+    float partial = 0.0f;
+    for (int col = tid; col < n_cols; col += BlockSize) {
+        const float value = input[col];
+        partial += value * value;
+    }
+    __shared__ float sums[32];
+    partial = norm_warp_sum(partial);
+    const int lane = tid % 32;
+    if (lane == 0) sums[tid / 32] = partial;
+    __syncthreads();
+    partial = 0.0f;
+    if (lane < BlockSize / 32) partial = sums[lane];
+    partial = norm_warp_sum(partial);
+    const float mean = partial / n_cols;
+    const float scale = rsqrtf(mean + epsilon);
+    for (int col = tid; col < n_cols; col += BlockSize) output[col] = scale * input[col] * gamma[col];
+}
 __global__ void broadcast_batch_kernel(const float* value, const float* gate, float* gated, int T) {
     const size_t i = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
     if (i >= size_t(T) * D) return;
@@ -154,6 +182,29 @@ __global__ void history_batch_kernel(float* history, const float* normalized, in
     }
 #pragma unroll
     for (int r = 0; r < HISTORY; ++r) history[size_t(c) * HISTORY + r] = h[r];
+}
+
+// history_batch_kernel that also writes the history after each of the T tokens (`snap`, T x 9 x 10240): pure copies,
+// the values T history advances (ple_history_advance) leave
+__global__ void history_batch_snap_kernel(float* history, const float* normalized, int T, float* snap) {
+    const int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= D) return;
+    float h0[HISTORY];
+#pragma unroll
+    for (int r = 0; r < HISTORY; ++r) h0[r] = history[size_t(c) * HISTORY + r];
+    for (int t = 0; t < T; ++t) {
+        float* out = snap + size_t(t) * HISTORY * D + size_t(c) * HISTORY;
+#pragma unroll
+        for (int r = 0; r < HISTORY; ++r) {
+            const int p = r + t + 1 - HISTORY;      // after t + 1 advances row r holds token p, or an older row
+            out[r] = p >= 0 ? normalized[size_t(p) * D + c] : h0[r + t + 1];
+        }
+    }
+#pragma unroll
+    for (int r = 0; r < HISTORY; ++r) {
+        const int p = r + T - HISTORY;
+        history[size_t(c) * HISTORY + r] = p >= 0 ? normalized[size_t(p) * D + c] : h0[r + T];
+    }
 }
 
 struct Span { const void* p; size_t bytes; size_t alignment; };
@@ -216,6 +267,23 @@ void native_ple_postops_batch(float* key, float* hidden, const float* value, flo
     rms_rep_kernel<<<rows, 1024, 0, st>>>(gated, w.norm_conv, query_norm);
     conv_residual_batch_kernel<<<blocks, 256, 0, st>>>(history, query_norm, w.conv1d_f16, hidden, gated, T);
     history_batch_kernel<<<D / 256, 256, 0, st>>>(history, query_norm, T);
+    launch_check();
+}
+
+void native_ple_postops_batch_snap(float* key, float* hidden, const float* value, float* history, const PleWeights& w,
+                                   float* query_norm, float* gated, float* gate, int T, float* snap, void* stream) {
+    if (!stream || T <= 0 || !key || !hidden || !value || !history || !query_norm || !gated || !gate || !snap)
+        throw std::invalid_argument("native PLE postops batch (snapshots): null input or empty batch");
+    auto st = static_cast<cudaStream_t>(stream);
+    const unsigned rows = unsigned(T) * H;
+    const unsigned blocks = unsigned((size_t(T) * D + 255) / 256);
+    rms_rep_rt_kernel<<<rows, 1024, 0, st>>>(key, w.norm_key, key, N, NG_RMS_EPS);
+    rms_rep_rt_kernel<<<rows, 1024, 0, st>>>(hidden, w.norm_query, query_norm, N, NG_RMS_EPS);
+    gate_kernel<<<rows, 512, 0, st>>>(key, query_norm, gate, 1.0f / std::sqrt(float(N)));
+    broadcast_batch_kernel<<<blocks, 256, 0, st>>>(value, gate, gated, T);
+    rms_rep_rt_kernel<<<rows, 1024, 0, st>>>(gated, w.norm_conv, query_norm, N, NG_RMS_EPS);
+    conv_residual_batch_kernel<<<blocks, 256, 0, st>>>(history, query_norm, w.conv1d_f16, hidden, gated, T);
+    history_batch_snap_kernel<<<D / 256, 256, 0, st>>>(history, query_norm, T, snap);
     launch_check();
 }
 } // namespace strata::kernels

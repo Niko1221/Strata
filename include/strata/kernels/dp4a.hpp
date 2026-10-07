@@ -4,11 +4,12 @@
 // (a Pascal build passes -DSTRATA_EXPERIMENTAL_SM60=ON).  A GP100-class card is compute capability 6.0, which is
 // missing exactly two things the i-quant kernels rely on:
 //
-//   * `__dp4a`, a byte-wise dot product, available from 6.1 (Pascal GP10x/GV11x).  Its fallback below is
-//     llama.cpp's own (`ggml/src/ggml-cuda/common.cuh`), which is the reference for the kernels in this
-//     directory: they are transcribed from llama.cpp's vecdotq.cuh, and that wrapper's operands are the same
-//     sites.  It reinterprets the operands as SIGNED bytes and accumulates in int32, which is what `__dp4a`
-//     does for these calls, so the fallback is bit-exact rather than merely close.
+//   * `__dp4a`, a byte-wise dot product, available from 6.1 (Pascal GP10x/GV11x).  The reference for its
+//     fallback is llama.cpp's own (`ggml/src/ggml-cuda/common.cuh`), since the kernels in this directory are
+//     transcribed from llama.cpp's vecdotq.cuh and that wrapper's operands are the same sites: it reinterprets
+//     the operands as SIGNED bytes and accumulates in int32, which is what `__dp4a` does for these calls.  The
+//     fallback below computes exactly that with four PTX `vmad` byte-select instructions, so it is bit-exact
+//     rather than merely close (tools/sm60_dp4a_check.cu checks it against the byte-wise form).
 //   * `__nanosleep`, available from 7.0 (Volta).  It only paces single-thread doorbell waits, so a loop that
 //     spins without it is correct, merely busier.
 //
@@ -25,9 +26,16 @@
 
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 610
 __device__ __forceinline__ int strata_dp4a(const int a, const int b, const int c) {
-    const int8_t* a8 = (const int8_t*) &a;
-    const int8_t* b8 = (const int8_t*) &b;
-    return c + a8[0] * b8[0] + a8[1] * b8[1] + a8[2] * b8[2] + a8[3] * b8[3];
+    // PTX vmad with byte selectors: compiles to four VMAD.S8.S8 (cuobjdump -sass), no byte extraction.
+    // Bit-exact with the byte-wise form it replaces: 1.07e9 cases (edge bytes, every per-lane byte pair, random),
+    // 0 mismatches, ~2.2x faster in isolation on a Tesla P100 (tools/sm60_dp4a_check.cu).
+    int r = c;
+    asm("vmad.s32.s32.s32 %0, %1.b0, %2.b0, %0;\n\t"
+        "vmad.s32.s32.s32 %0, %1.b1, %2.b1, %0;\n\t"
+        "vmad.s32.s32.s32 %0, %1.b2, %2.b2, %0;\n\t"
+        "vmad.s32.s32.s32 %0, %1.b3, %2.b3, %0;"
+        : "+r"(r) : "r"(a), "r"(b));
+    return r;
 }
 #define STRATA_DP4A(a, b, c) strata_dp4a((a), (b), (c))
 #else

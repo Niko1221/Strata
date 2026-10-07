@@ -23,6 +23,7 @@
 #include <string>
 
 namespace strata::core { class PeerExperts; }
+namespace strata::kernels::cpu { class ExpertPool; }
 
 namespace strata::prefill {
 
@@ -34,6 +35,8 @@ struct PrefillStats {
     int64_t experts_streamed = 0;   ///< expert blobs copied host -> device
     int64_t experts_dma = 0;        ///< ...of which straight from the pinned arena (no CPU copy)
     int64_t experts_resident = 0;   ///< expert-layer groups served from the VRAM tier
+    int64_t experts_cpu = 0;        ///< ...computed on the CPU pool instead of streamed (STRATA_PREFILL_CPU_SHARE)
+    double cpu_share = 0;           ///< ...the share of the streamed ones it took last (measured by default)
     double ms_ple = 0;
 };
 
@@ -162,9 +165,18 @@ public:
     /// run `init`.
     bool set_stage_helper(Prefill* helper, std::string& err);
 
+    /// The CPU expert pool (decode's, idle while a prompt is read). With STRATA_PREFILL_CPU_SHARE set, a chunk below
+    /// stream_all_min() tokens - an agent's tool output - hands it the non-resident experts routed by at most MAXT of
+    /// its tokens, fewest first, up to a share of the experts it would stream (`auto`: measured, where both sides end
+    /// together). The CPU reads them from RAM while the rest come over PCIe; their rows go to Dm's tail, as a peer's
+    /// do. Not bit-identical to the GPU's rows (the CPU's own activation format). Unset (default) or null: every
+    /// expert on the GPU. Only for a pool no other thread runs meanwhile (no batch slots). Set before `init`.
+    void set_cpu_pool(kernels::cpu::ExpertPool* pool);
+
 private:
     static uint64_t bytes_needed_impl(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk,
                                       bool owned_pages);
+    kernels::cpu::ExpertPool* cpu_pool_ = nullptr;   ///< set_cpu_pool
     // Stage-1 pipeline: intermediate stages return after handing their chunk to
     // the direct successor. The public run() drains the chain once at prompt end.
     bool run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err);
