@@ -148,7 +148,7 @@ Measured on Windows (Arc Pro B70 32 GB, driver 32.0.101.8976, i9-9900, 64 GB RAM
 `dpcpp_win-64` 2026.1.1, OpenCL backend, `STRATA_VERIFY_EAGER=1`): the `strata` engine builds with
 0 errors; `quantize_act_parity --selftest` and the sampler checks pass byte-exact; the Coder IQ1_M
 (12,288/12,288 experts resident, `--stream-experts`, 32K context) chats through the OpenAI API at
-31-33 tok/s pure decode and 75.8 tok/s over a 155-token answer with MTP drafts (Linux B70: 78.2).
+31-33 tok/s pure decode and up to 78.7 tok/s over a 155-token answer with MTP drafts (Linux B70: 78.2).
 Warm prompt re-reads reach 123-128 tok/s; cold first reads go through the plain-SYCL GEMM fallback
 (oneMKL SYCL BLAS has no OpenCL Xe2 backend) at single-digit tok/s. Partly-resident models
 (IQ3_XXS: 17,687/24,576) fall back per missing expert and need a RAM mirror (`STRATA_MIRROR_MIB`)
