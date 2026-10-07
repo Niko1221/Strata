@@ -3958,6 +3958,7 @@ int main(int argc, char** argv) {
     // artifact is parsed and validated HERE, before the expert cache is sized, exactly like the
     // MTP drafter above, so the cache auto-sizing reserves the drafter's footprint.
     strata::core::DFlashDrafter dflash;
+    int dflash_k = 0;   // THE effective draft length (1 anchor + dflash_k candidates = the window)
     if (!o.dflash.empty()) {
         if (!o.mtp.empty()) {
             std::fprintf(stderr, "strata generate: --dflash and --mtp are mutually exclusive; "
@@ -4007,7 +4008,21 @@ int main(int argc, char** argv) {
                          o.spec, o.spec - 1, trained, trained);
             return 2;
         }
-        const int block = o.dflash_block > 0 ? std::min(o.dflash_block, o.spec - 1) : std::min(o.spec - 1, trained);
+        // ONE authoritative effective draft length: the startup validation, the propose call, the
+        // verifier window and the statistics below all read this variable
+        dflash_k = o.dflash_block > 0 ? std::min(o.dflash_block, o.spec - 1) : std::min(o.spec - 1, trained);
+        // the effective mask token, resolved once: the CLI override wins over the artifact's metadata
+        const int64_t effective_mask = o.dflash_mask >= 0 ? o.dflash_mask : dg.mask_token_id;
+        if (effective_mask < 0 || effective_mask >= dg.vocab) {
+            std::fprintf(stderr, "strata generate: the DFlash mask token %lld sits outside the vocabulary %lld\n",
+                         (long long) effective_mask, (long long) dg.vocab);
+            return 2;
+        }
+        if (!o.greedy) {
+            std::fprintf(stderr, "strata generate: --dflash drafts greedy-only (docs/DFLASH.md); this run samples, "
+                                 "so the drafter would never be used - drop --dflash or run greedy\n");
+            return 2;
+        }
         std::string taps;
         for (size_t i = 0; i < dg.target_layers.size(); ++i) taps += (i ? "," : "") + std::to_string(dg.target_layers[i]);
         std::fprintf(stderr,
@@ -4015,7 +4030,7 @@ int main(int argc, char** argv) {
                      "%lld, pass K=%d, mask %lld, rope theta %.3g, %.1f MiB of BF16 weights\n",
                      o.dflash.c_str(), (long long) dg.layers, (long long) dg.hidden, (long long) dg.n_head,
                      (long long) dg.n_head_kv, (long long) dg.head_dim, (long long) dg.intermediate, taps.c_str(),
-                     (long long) dg.block_size, block, (long long)(dg.mask_token_id >= 0 ? dg.mask_token_id : o.dflash_mask),
+                     (long long) dg.block_size, dflash_k, (long long) effective_mask,
                      dg.rope_theta, (double) dflash.artifact().weight_bytes() / 1048576.0);
         std::fprintf(stderr, "dflash: prompt-lookup drafting is off (one model drafter at a time)\n");
         if (o.serve) {
@@ -4029,7 +4044,7 @@ int main(int argc, char** argv) {
             const strata::core::OnDevice on_dflash(last_st ? last_st->dev : -1);
             int dev = 0;
             cudaGetDevice(&dev);
-            if (!dflash.upload(g, ss, dev, o.dflash_window, err)) {
+            if (!dflash.upload(g, ss, dev, o.dflash_window, effective_mask, err)) {
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                 return 1;
             }
@@ -4376,8 +4391,9 @@ int main(int argc, char** argv) {
                                ? (int64_t) mtp.bind_bytes(native_head.row_bytes(), n_vocab) : 0;
         for (const auto& d : slot_mtp)
             mtp_bind += (int64_t) d->bind_bytes(native_head.row_bytes(), n_vocab);
-        const int64_t dflash_bind = !o.dflash.empty() ? (int64_t) dflash.bind_bytes(n_vocab, o.spec) : 0;
-        const int64_t reserve = (((int64_t) o.vram_reserve_mib + prefill_mib) << 20) + mtp_bind + dflash_bind + pipe_first;
+        // the drafter's VRAM is already held here (upload ran before the cache is sized) and free
+        // VRAM has shrunk by it, so nothing extra goes into the expert-cache math on its account
+        const int64_t reserve = (((int64_t) o.vram_reserve_mib + prefill_mib) << 20) + mtp_bind + pipe_first;
         const int64_t blob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
         int64_t slots = ((int64_t) free_b - reserve) / blob;
         if (!profile.empty()) slots = std::min<int64_t>(slots, (int64_t) profile.size());
@@ -11708,7 +11724,7 @@ int main(int argc, char** argv) {
         const int64_t misses0 = drive.d.multi_misses, entries0 = drive.d.multi_entries;
         while ((int64_t) produced.size() < max_new) {
             const Clock::time_point t0 = Clock::now();
-            int T = use_dflash ? o.spec : S_mtp;
+            int T = use_dflash ? dflash_k + 1 : S_mtp;
             if (use_mtp && o.spec_min_p > 0.0) {
                 T = 1;
                 while (T < S_mtp && dprob[(size_t) T - 1] >= (float) o.spec_min_p) ++T;
@@ -11747,6 +11763,14 @@ int main(int argc, char** argv) {
                 return 2;
             }
             window[0] = x;
+            if (use_dflash)   // candidate[i] from the drafter MUST be verify_window[i+1]: the window
+                              // once filled with token 0 here and accepted nothing, silently
+                for (int i = 1; i < T; ++i)
+                    if (window[(size_t) i] != drafts[(size_t) i - 1]) {
+                        std::fprintf(stderr, "strata generate: internal error: DFlash draft %d never reached "
+                                             "the verify window\n", i - 1);
+                        return 2;
+                    }
             for (int i = 1; i < T; ++i) {
                 const size_t at = produced.size() - 1 + (size_t) i;
                 // DFlash drafts ride the same slot as the MTP's: with neither drafter the window
@@ -11876,10 +11900,10 @@ int main(int argc, char** argv) {
                     const Clock::time_point td = Clock::now();
                     const bool ok = dflash.add_context_f32(ver.taps(), ver.n_taps(), ver.tap_stride(),
                                                            p - (a + 1), a + 1, err) &&
-                                    (drafted = dflash.propose(x, p, o.spec - 1, drafts.data(), err));
+                                    (drafted = dflash.propose(x, p, dflash_k, drafts.data(), err));
                     if (ok && std::getenv("STRATA_DF_DBG") != nullptr) {
                         std::fprintf(stderr, "df dbg: anchor=%d at %lld proposals:", x, (long long) p);
-                        for (int i = 0; i < o.spec - 1; ++i) std::fprintf(stderr, " %d", drafts[(size_t) i]);
+                        for (int i = 0; i < dflash_k; ++i) std::fprintf(stderr, " %d", drafts[(size_t) i]);
                         std::fprintf(stderr, "\n");
                     }
                     ms_dflash += std::chrono::duration<double, std::milli>(Clock::now() - td).count();
