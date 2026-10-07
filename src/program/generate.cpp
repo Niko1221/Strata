@@ -55,6 +55,7 @@
 #include "strata/core/native_head.hpp"
 #include "strata/core/verify.hpp"
 #include "strata/core/mtp.hpp"
+#include "strata/core/dflash.hpp"
 #include "strata/prefill/prefill.hpp"
 #include "strata/core/native_dense.hpp"
 #include "strata/program/logits_selection.hpp"
@@ -547,6 +548,13 @@ struct Options {
     /// Plan v0.3 P6: the MTP draft layer's runtime directory (tools/mtp_rt.py); drafts come from it.
     std::string mtp;
     int64_t mtp_window = 32768;   ///< the draft layer attends to the last N cells (0 = every cell)
+    /// DFlash (docs/DFLASH.md): the standalone block drafter's GGUF; --mtp and --dflash are exclusive.
+    std::string dflash;
+    int dflash_block = 0;          ///< cap the candidates per pass below the trained block (0 = min(spec-1, trained))
+    int64_t dflash_window = 32768; ///< the drafter's attention window in cells (the reference attends to every cell)
+    int64_t dflash_mask = -1;      ///< the mask token id when the artifact's metadata lacks it
+    bool suffix_draft_set = false; ///< --suffix-draft was passed explicitly (the dflash refusal is for requests, not defaults)
+    bool lookup_chain_set = false;
     /// Plan v0.3 P6: the share (0..1) of each layer's distinct missed experts the GPU reads over PCIe from the
     /// pinned arena while the CPU computes the rest (verify windows).
     double pcie_frac = -1.0;   ///< < 0: the model's default (0.2 direct for the Q2_0 pack, 0.55 DMA for native packs)
@@ -768,6 +776,13 @@ void usage() {
                  "                       (default) or one per stream (llama.cpp's MTP graph)\n"
                  "  --mtp-q4 all|proj|head  opt-in: the draft layer's projections and/or draft head as 4-bit copies\n"
                  "  --mtp-draft-vocab FILE  opt-in: the draft head's token subset (default <mtp>/draft_vocab.bin)\n"
+                 "  --dflash GGUF        experimental: the standalone DeepSpec DFlash block drafter (docs/DFLASH.md)\n"
+                 "                       instead of the MTP layer; needs --spec 2..8 (the window = 1 anchor + K\n"
+                 "                       candidates, K <= the artifact's trained block) and is exclusive with --mtp\n"
+                 "  --dflash-block K     cap the candidates per pass below the trained block (0 = min(--spec-1, trained))\n"
+                 "  --dflash-window N    the drafter's attention window in cells (default 32768; the reference model\n"
+                 "                       attends to every cell)\n"
+                 "  --dflash-mask-token ID  the mask token when the artifact's metadata lacks it (published artifact: 248077)\n"
                  "  --control-vector-scaled FILE:SCALE[,...]  a control vector GGUF on the residual stream (llama.cpp's\n"
                  "                       format; --control-vector FILE = scale 1).  --serve: requests switch it (cvec=0|1)\n"
                  "  --control-vector-layer-range A B  the layers it follows (inclusive; default 1 .. the last)\n"
@@ -1737,6 +1752,10 @@ int main(int argc, char** argv) {
         else if (a == "--window-hashes") o.window_hashes = next("--window-hashes");
         else if (a == "--mtp") o.mtp = next("--mtp");
         else if (a == "--mtp-window") o.mtp_window = std::atoll(next("--mtp-window"));
+        else if (a == "--dflash") o.dflash = next("--dflash");
+        else if (a == "--dflash-block") o.dflash_block = std::max(0, std::atoi(next("--dflash-block")));
+        else if (a == "--dflash-window") o.dflash_window = std::max(1024LL, std::atoll(next("--dflash-window")));
+        else if (a == "--dflash-mask-token") o.dflash_mask = std::atoll(next("--dflash-mask-token"));
         else if (a == "--pcie-frac") o.pcie_frac = std::atof(next("--pcie-frac"));
         else if (a == "--adapt-every") o.adapt_every = std::atoi(next("--adapt-every"));
         else if (a == "--adapt-decay") o.adapt_decay = (float) std::atof(next("--adapt-decay"));
@@ -1773,9 +1792,9 @@ int main(int argc, char** argv) {
         else if (a == "--tail-role-token") o.tail_role_token = std::atoll(next("--tail-role-token"));
         else if (a == "--short-read") o.short_read = std::max(0LL, std::atoll(next("--short-read")));
         else if (a == "--pipeline-windows") o.pipeline_windows = std::max(0, std::min(2, std::atoi(next("--pipeline-windows"))));
-        else if (a == "--suffix-draft") o.suffix_draft = std::max(0, std::atoi(next("--suffix-draft")));
+        else if (a == "--suffix-draft") { o.suffix_draft = std::max(0, std::atoi(next("--suffix-draft"))); o.suffix_draft_set = true; }
         else if (a == "--mtp-max-t") o.mtp_max_t = std::max(0, std::atoi(next("--mtp-max-t")));
-        else if (a == "--lookup-chain") o.lookup_chain = std::clamp(std::atoi(next("--lookup-chain")), 0, 7);
+        else if (a == "--lookup-chain") { o.lookup_chain = std::clamp(std::atoi(next("--lookup-chain")), 0, 7); o.lookup_chain_set = true; }
         else if (a == "--lookup-chain-min") o.lookup_chain_min = std::max(3, std::atoi(next("--lookup-chain-min")));
         else if (a == "--mtp-hnorm") {
             const std::string v = next("--mtp-hnorm");
@@ -3896,6 +3915,77 @@ int main(int argc, char** argv) {
                 slot_mtp.push_back(std::move(d));
             }
         }
+    }
+
+    // DFlash (docs/DFLASH.md): the standalone block drafter.  Mutually exclusive with --mtp; the
+    // artifact is parsed and validated HERE, before the expert cache is sized, exactly like the
+    // MTP drafter above, so the cache auto-sizing reserves the drafter's footprint.
+    strata::core::DFlashDrafter dflash;
+    if (!o.dflash.empty()) {
+        if (!o.mtp.empty()) {
+            std::fprintf(stderr, "strata generate: --dflash and --mtp are mutually exclusive; "
+                                 "select exactly one drafter\n");
+            return 2;
+        }
+        if (o.spec < 2) {
+            std::fprintf(stderr, "strata generate: --dflash requires --spec T (2 <= T <= %d; the window is "
+                                 "1 anchor + K candidates)\n", strata::kernels::kVerifyMaxT);
+            return 2;
+        }
+        if (o.spec > strata::kernels::kVerifyMaxT) {
+            std::fprintf(stderr, "strata generate: --spec %d exceeds the verify window's %d rows; the DFlash "
+                                 "window is 1 anchor + K candidates\n", o.spec, strata::kernels::kVerifyMaxT);
+            return 2;
+        }
+        if ((o.suffix_draft_set && o.suffix_draft > 0) || (o.lookup_chain_set && o.lookup_chain > 0)) {
+            std::fprintf(stderr, "strata generate: --dflash does not compose with --suffix-draft / "
+                                 "--lookup-chain (one model drafter at a time for now)\n");
+            return 2;
+        }
+        o.suffix_draft = 0;   // one model drafter at a time: prompt lookup stays off, said out loud below
+        o.lookup_chain = 0;
+        if (!dflash.load(o.dflash, err)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        const strata::core::DFlashGeometry& dg = dflash.artifact().geom();
+        if (!strata::core::DFlashArtifact::validate_supported(dg, err)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        if (dg.mask_token_id < 0 && o.dflash_mask < 0) {
+            std::fprintf(stderr, "strata generate: %s declares no dflash.mask_token_id; pass "
+                                 "--dflash-mask-token (the published artifact uses 248077)\n", o.dflash.c_str());
+            return 1;
+        }
+        const int trained = dflash.max_block();
+        if (o.dflash_block > trained) {
+            std::fprintf(stderr, "strata generate: --dflash-block %d exceeds the artifact's trained block %d\n",
+                         o.dflash_block, trained);
+            return 2;
+        }
+        if (o.spec - 1 > trained) {
+            std::fprintf(stderr, "strata generate: --spec %d asks for %d candidates per pass, above the artifact's "
+                                 "trained block %d; lower --spec or pass --dflash-block (never above %d)\n",
+                         o.spec, o.spec - 1, trained, trained);
+            return 2;
+        }
+        const int block = o.dflash_block > 0 ? std::min(o.dflash_block, o.spec - 1) : std::min(o.spec - 1, trained);
+        std::string taps;
+        for (size_t i = 0; i < dg.target_layers.size(); ++i) taps += (i ? "," : "") + std::to_string(dg.target_layers[i]);
+        std::fprintf(stderr,
+                     "dflash: %s: %lld layers, hidden %lld, %lldQ/%lldKV x %lld, MLP %lld, taps [%s], trained block "
+                     "%lld, pass K=%d, mask %lld, rope theta %.3g, %.1f MiB of BF16 weights\n",
+                     o.dflash.c_str(), (long long) dg.layers, (long long) dg.hidden, (long long) dg.n_head,
+                     (long long) dg.n_head_kv, (long long) dg.head_dim, (long long) dg.intermediate, taps.c_str(),
+                     (long long) dg.block_size, block, (long long)(dg.mask_token_id >= 0 ? dg.mask_token_id : o.dflash_mask),
+                     dg.rope_theta, (double) dflash.artifact().weight_bytes() / 1048576.0);
+        std::fprintf(stderr, "dflash: prompt-lookup drafting is off (one model drafter at a time)\n");
+        // Milestone: the artifact contract is done; the block forward and the verifier wiring land
+        // with the DFlash commits.  Never fall back silently to target-only or MTP.
+        std::fprintf(stderr, "dflash: artifact validated; the standalone block forward is not wired into this "
+                             "engine build yet\n");
+        return 1;
     }
     // THE HEAD BEFORE THE CACHE, AND BEFORE THE ARENA.  The expert cache takes what is free minus the reserve, so
     // everything allocated after it comes out of the reserve.  The native head (~0.5 GB with IQ3_S) was loaded after
