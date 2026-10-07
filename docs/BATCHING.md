@@ -217,6 +217,13 @@ several chats that alternate, come back without reading their history again. Mea
 two long conversations alternating through the HTTP server: the first turns took 3.9 s and 5.7 s to the first token
 (their prompts read), the follow-ups 0.53 s and 0.46 s.
 
+With the shared KV pool (`--kv-pool-tokens`) a solo conversation moves into its slot when admitted (the main
+session keeps nothing of it), and a parked conversation's K/V is captured through the pool's chunk table and
+restored through the same table into chunks the returning request has reserved. The K/V a restore kept for the
+next parking belongs to the conversation it came from: when the session gives its conversation up, that retained
+storage is dropped, so a parked image never carries another conversation's bytes. This combination is reviewed
+and CPU-tested (`conversation_cache_test`); it has not yet been measured on GPUs.
+
 ## Testing
 
 Four scripts drive a built engine or a running server; each exits non-zero on a failure. `serve/test_parallel.py`

@@ -941,6 +941,13 @@ If reserving space for growth would evict another conversation, parking uses a
 full capture instead.
 Oldest parked entries are evicted first.
 Oversized snapshots or host allocation failures fall back to ordinary prompt processing.
+
+The K/V retained after a restore belongs to the conversation it was restored from: the engine remembers that
+conversation's tokens and pictures, and a later parking may only reuse the bytes of the prefix two conversations
+actually share. When the session gives its conversation up - it moved into a batch slot (the shared KV pool,
+`--kv-pool-tokens`), the request was cancelled, the session was reset - the retained K/V is dropped with it
+instead of waiting to be mistaken for another conversation's.
+
 `--conversation-cache-min-free-mib N` (default 2560) additionally requires that
 physical-RAM headroom remain available: the engine checks before allocation and
 again after capture. Unknown telemetry or insufficient RAM skips parking. Windows
