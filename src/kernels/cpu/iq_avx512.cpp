@@ -6,8 +6,7 @@
 // `maddubs` and a `madd`.  The arithmetic is ggml's (ggml-cpu/quants.c, the `_generic` references): integer sums
 // per block, times d_x * d_y * the format's constant - only the order of the float additions differs.
 //
-// Formats: IQ2_XXS (16), IQ2_XS (17), IQ3_XXS (18), IQ3_S (21), IQ2_S (22).  IQ1_M stays on ggml-cpu (no shipped
-// model has IQ1_M expert rows: the 'Coder IQ1_M' pack's gate/up are IQ2_S / IQ3_XXS / IQ3_S).
+// Formats: IQ2_XXS (16), IQ2_XS (17), IQ3_XXS (18), IQ1_S (19), IQ3_S (21), IQ2_S (22), IQ1_M (29).
 #include "strata/kernels/cpu/iq_avx512.hpp"
 
 #define GGML_COMMON_DECL_CPP
@@ -152,6 +151,137 @@ template <> struct Fmt<21> {   // IQ3_S: d, qs[64], qh[8], signs[32], scales[4]
     }
 };
 
+inline void rows_prefetch(const uint8_t* blk) {
+    if (prefetch_ahead <= 0) return;
+    const uint8_t* ahead = blk + (size_t) prefetch_ahead;
+    _mm_prefetch((const char*) ahead, _MM_HINT_T0);
+    _mm_prefetch((const char*) ahead + 64, _MM_HINT_T0);
+}
+
+// ---- IQ1_S (19): 64 values (two 32-value sub-blocks) per pass.  Each sub-block is four 8-value grid entries
+// (iq1s_grid) plus one `qh` word: a 4-bit scale selector (bits 12-14) and a sign bit (15) for the -1 +/- 1/8
+// delta every value carries.  The grid half is the same maddubs/madd pair as the other formats (the grid bytes
+// are 0/-1/+1, so ggml's mul_add sign trick applies); the delta half is a scalar per sub-block, ls * delta *
+// (sum of the sub-block's activations), which q8_K precomputes in `bsums` as groups of 16.
+// Ported from ggml's ggml_vec_dot_iq1_s_q8_K (arch/x86/quants.c); only the float-addition order differs.
+template <int NT>
+inline void row_dot_iq1s(const uint8_t* row, int nblocks, const block_q8_K* const* y, float* res) {
+    __m512 accf[NT];
+    float accd[NT];
+    for (int t = 0; t < NT; ++t) { accf[t] = _mm512_setzero_ps(); accd[t] = 0.f; }
+    for (int i = 0; i < nblocks; ++i) {
+        const uint8_t* blk = row + (size_t) i * 50;
+        rows_prefetch(blk);
+        __m512i acci[NT];
+        float sd[NT];
+        for (int t = 0; t < NT; ++t) { acci[t] = _mm512_setzero_si512(); sd[t] = 0.f; }
+        for (int j = 0; j < 4; ++j) {
+            const uint16_t qh0 = u16(blk + 34 + 4 * j);       // sub-block 2j
+            const uint16_t qh1 = u16(blk + 34 + 4 * j + 2);   // sub-block 2j+1
+            const uint8_t* qs0 = blk + 2 + 8 * j;
+            const uint8_t* qs1 = blk + 2 + 8 * j + 4;
+            const __m512i g = _mm512_set_epi64(
+                (long long) iq1s_grid[qs1[3] | ((qh1 >> 1) & 0x700)],
+                (long long) iq1s_grid[qs1[2] | ((qh1 << 2) & 0x700)],
+                (long long) iq1s_grid[qs1[1] | ((qh1 << 5) & 0x700)],
+                (long long) iq1s_grid[qs1[0] | ((qh1 << 8) & 0x700)],
+                (long long) iq1s_grid[qs0[3] | ((qh0 >> 1) & 0x700)],
+                (long long) iq1s_grid[qs0[2] | ((qh0 << 2) & 0x700)],
+                (long long) iq1s_grid[qs0[1] | ((qh0 << 5) & 0x700)],
+                (long long) iq1s_grid[qs0[0] | ((qh0 << 8) & 0x700)]);
+            const int lsv0 = 2 * ((qh0 >> 12) & 7) + 1, lsv1 = 2 * ((qh1 >> 12) & 7) + 1;
+            const __m512i sc = scales4(lsv0, lsv0, lsv1, lsv1);
+            const float sgn0 = (qh0 & 0x8000) ? -1.f : 1.f;
+            const float sgn1 = (qh1 & 0x8000) ? -1.f : 1.f;
+            for (int t = 0; t < NT; ++t) {
+                const __m512i yv = _mm512_loadu_si512((const void*) (y[t][i].qs + 64 * j));
+                // iq1s_grid holds signed values in {-1,0,1}: ggml's mul_add_epi8 trick (|g| as the maddubs
+                // operand, q8's sign taken from g) - a direct maddubs would read -1 as 255.
+                const __m512i ga = _mm512_abs_epi8(g);
+                const __m512i ys = _mm512_mask_sub_epi8(yv, _mm512_movepi8_mask(g), _mm512_setzero_si512(), yv);
+                acci[t] = _mm512_add_epi32(acci[t], _mm512_madd_epi16(_mm512_maddubs_epi16(ga, ys), sc));
+                sd[t] += sgn0 * (float) lsv0 * (float) (y[t][i].bsums[4 * j] + y[t][i].bsums[4 * j + 1]) +
+                         sgn1 * (float) lsv1 * (float) (y[t][i].bsums[4 * j + 2] + y[t][i].bsums[4 * j + 3]);
+            }
+        }
+        const float dx = h2f(u16(blk));
+        for (int t = 0; t < NT; ++t) {
+            const float dd = dx * y[t][i].d;
+            accf[t] = _mm512_fmadd_ps(_mm512_set1_ps(dd), _mm512_cvtepi32_ps(acci[t]), accf[t]);
+            accd[t] += dd * sd[t];
+        }
+    }
+    for (int t = 0; t < NT; ++t) res[t] = _mm512_reduce_add_ps(accf[t]) + IQ1S_DELTA * accd[t];
+}
+
+// ---- IQ1_M (29): 64 values (two 32-value sub-blocks) per pass; qs[32] grid indices, qh[16] high bits + delta
+// signs, scales[8] packed 3-bit sub-scales.  Each sub-block splits into two 16-value halves with their own scale
+// (ls1 from the low 6 bits of scales[ib/2], ls2 from the bits above), and each 8-value group carries the qh delta
+// sign.  Ported from ggml's ggml_vec_dot_iq1_m_q8_K (arch/x86/quants.c); the shared f16 scale is assembled once
+// per block from the top nibbles of the four scale words.
+template <int NT>
+inline void row_dot_iq1m(const uint8_t* row, int nblocks, const block_q8_K* const* y, float* res) {
+    const __m512i one8 = _mm512_set1_epi8(1);
+    __m512 accf[NT];
+    float accd[NT];
+    for (int t = 0; t < NT; ++t) { accf[t] = _mm512_setzero_ps(); accd[t] = 0.f; }
+    for (int i = 0; i < nblocks; ++i) {
+        const uint8_t* blk = row + (size_t) i * 56;
+        rows_prefetch(blk);
+        const uint8_t* qh = blk + 32;
+        const uint16_t* sc = (const uint16_t*) (blk + 48);
+        const uint16_t su = (uint16_t) ((sc[0] >> 12) | ((sc[1] >> 8) & 0x00f0) | ((sc[2] >> 4) & 0x0f00) |
+                                        (sc[3] & 0xf000));
+        const float dscale = h2f(su);
+        __m512i acci[NT], acc2[NT];
+        for (int t = 0; t < NT; ++t) { acci[t] = _mm512_setzero_si512(); acc2[t] = _mm512_setzero_si512(); }
+        for (int j = 0; j < 4; ++j) {
+            const int ib0 = 2 * j, ib1 = 2 * j + 1;
+            const uint8_t qh0a = qh[2 * ib0], qh0b = qh[2 * ib0 + 1];
+            const uint8_t qh1a = qh[2 * ib1], qh1b = qh[2 * ib1 + 1];
+            const uint8_t* qs0 = blk + 4 * ib0;
+            const uint8_t* qs1 = blk + 4 * ib1;
+            const __m512i g = _mm512_set_epi64(
+                (long long) iq1s_grid[qs1[3] | ((qh1b << 4) & 0x700)],
+                (long long) iq1s_grid[qs1[2] | ((qh1b << 8) & 0x700)],
+                (long long) iq1s_grid[qs1[1] | ((qh1a << 4) & 0x700)],
+                (long long) iq1s_grid[qs1[0] | ((qh1a << 8) & 0x700)],
+                (long long) iq1s_grid[qs0[3] | ((qh0b << 4) & 0x700)],
+                (long long) iq1s_grid[qs0[2] | ((qh0b << 8) & 0x700)],
+                (long long) iq1s_grid[qs0[1] | ((qh0a << 4) & 0x700)],
+                (long long) iq1s_grid[qs0[0] | ((qh0a << 8) & 0x700)]);
+            const __m512i delta = _mm512_set_epi64(
+                (long long) (qh1b & 0x80 ? 0xffffffffffffffffULL : 0x0101010101010101ULL),
+                (long long) (qh1b & 0x08 ? 0xffffffffffffffffULL : 0x0101010101010101ULL),
+                (long long) (qh1a & 0x80 ? 0xffffffffffffffffULL : 0x0101010101010101ULL),
+                (long long) (qh1a & 0x08 ? 0xffffffffffffffffULL : 0x0101010101010101ULL),
+                (long long) (qh0b & 0x80 ? 0xffffffffffffffffULL : 0x0101010101010101ULL),
+                (long long) (qh0b & 0x08 ? 0xffffffffffffffffULL : 0x0101010101010101ULL),
+                (long long) (qh0a & 0x80 ? 0xffffffffffffffffULL : 0x0101010101010101ULL),
+                (long long) (qh0a & 0x08 ? 0xffffffffffffffffULL : 0x0101010101010101ULL));
+            const int ls0a = 2 * ((sc[ib0 / 2] >> (6 * (ib0 % 2) + 0)) & 0x7) + 1;
+            const int ls0b = 2 * ((sc[ib0 / 2] >> (6 * (ib0 % 2) + 3)) & 0x7) + 1;
+            const int ls1a = 2 * ((sc[ib1 / 2] >> (6 * (ib1 % 2) + 0)) & 0x7) + 1;
+            const int ls1b = 2 * ((sc[ib1 / 2] >> (6 * (ib1 % 2) + 3)) & 0x7) + 1;
+            const __m512i scv = scales4(ls0a, ls0b, ls1a, ls1b);
+            for (int t = 0; t < NT; ++t) {
+                const __m512i yv = _mm512_loadu_si512((const void*) (y[t][i].qs + 64 * j));
+                const __m512i ga = _mm512_abs_epi8(g);
+                const __m512i ys = _mm512_mask_sub_epi8(yv, _mm512_movepi8_mask(g), _mm512_setzero_si512(), yv);
+                acci[t] = _mm512_add_epi32(acci[t], _mm512_madd_epi16(_mm512_maddubs_epi16(ga, ys), scv));
+                const __m512i yd = _mm512_mask_sub_epi8(yv, _mm512_movepi8_mask(delta), _mm512_setzero_si512(), yv);
+                acc2[t] = _mm512_add_epi32(acc2[t], _mm512_madd_epi16(_mm512_maddubs_epi16(one8, yd), scv));
+            }
+        }
+        for (int t = 0; t < NT; ++t) {
+            const float dd = dscale * y[t][i].d;
+            accf[t] = _mm512_fmadd_ps(_mm512_set1_ps(dd), _mm512_cvtepi32_ps(acci[t]), accf[t]);
+            accd[t] += dd * _mm512_reduce_add_ps(_mm512_cvtepi32_ps(acc2[t]));
+        }
+    }
+    for (int t = 0; t < NT; ++t) res[t] = _mm512_reduce_add_ps(accf[t]) + IQ1M_DELTA * accd[t];
+}
+
 template <int TY, int NT>
 inline void row_dot(const uint8_t* row, int nblocks, const block_q8_K* const* y, float* res) {
     __m512 accf[NT];
@@ -186,6 +316,13 @@ inline void row_dot(const uint8_t* row, int nblocks, const block_q8_K* const* y,
 }
 
 template <int TY, int NT>
+inline void row_dot_any(const uint8_t* row, int nblocks, const block_q8_K* const* y, float* res) {
+    if constexpr (TY == 19) row_dot_iq1s<NT>(row, nblocks, y, res);
+    else if constexpr (TY == 29) row_dot_iq1m<NT>(row, nblocks, y, res);
+    else                    row_dot<TY, NT>(row, nblocks, y, res);
+}
+
+template <int TY, int NT>
 void gu_rows(const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act, float* const* ff,
              int r0, int r1) {
     const block_q8_K* y[NT];
@@ -193,8 +330,8 @@ void gu_rows(const uint8_t* blob, size_t gu_row, size_t up_off, int n, const voi
     const int nb = n / QK_K;
     float g[NT], u[NT];
     for (int r = r0; r < r1; ++r) {
-        row_dot<TY, NT>(blob + (size_t) r * gu_row, nb, y, g);
-        row_dot<TY, NT>(blob + up_off + (size_t) r * gu_row, nb, y, u);
+        row_dot_any<TY, NT>(blob + (size_t) r * gu_row, nb, y, g);
+        row_dot_any<TY, NT>(blob + up_off + (size_t) r * gu_row, nb, y, u);
         for (int t = 0; t < NT; ++t) ff[t][r] = (g[t] / (1.f + std::exp(-g[t]))) * u[t];
     }
 }
@@ -205,7 +342,7 @@ void dot_rows(const uint8_t* w, size_t row_bytes, int n, const void* const* act,
     for (int t = 0; t < NT; ++t) y[t] = (const block_q8_K*) act[t];
     float res[NT];
     for (int r = r0; r < r1; ++r) {
-        row_dot<TY, NT>(w + (size_t) r * row_bytes, n / QK_K, y, res);
+        row_dot_any<TY, NT>(w + (size_t) r * row_bytes, n / QK_K, y, res);
         for (int t = 0; t < NT; ++t) out[t][r] = res[t];
     }
 }
@@ -243,7 +380,7 @@ void dot_rows_nt(int nt, const uint8_t* w, size_t row_bytes, int n, const void* 
 }  // namespace
 
 bool iq512_supported(int type) noexcept {
-    return type == 16 || type == 17 || type == 18 || type == 21 || type == 22;
+    return type == 16 || type == 17 || type == 18 || type == 19 || type == 21 || type == 22 || type == 29;
 }
 
 void iq512_gu_rows(int type, const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act, int nt,
@@ -252,8 +389,10 @@ void iq512_gu_rows(int type, const uint8_t* blob, size_t gu_row, size_t up_off, 
         case 16: gu_rows_nt<16>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
         case 17: gu_rows_nt<17>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
         case 18: gu_rows_nt<18>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 19: gu_rows_nt<19>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
         case 21: gu_rows_nt<21>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
         case 22: gu_rows_nt<22>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 29: gu_rows_nt<29>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
         default: break;
     }
 }
@@ -264,8 +403,10 @@ void iq512_rows(int type, const uint8_t* w, size_t row_bytes, int n, const void*
         case 16: dot_rows_nt<16>(nt, w, row_bytes, n, act, out, r0, r1); break;
         case 17: dot_rows_nt<17>(nt, w, row_bytes, n, act, out, r0, r1); break;
         case 18: dot_rows_nt<18>(nt, w, row_bytes, n, act, out, r0, r1); break;
+        case 19: dot_rows_nt<19>(nt, w, row_bytes, n, act, out, r0, r1); break;
         case 21: dot_rows_nt<21>(nt, w, row_bytes, n, act, out, r0, r1); break;
         case 22: dot_rows_nt<22>(nt, w, row_bytes, n, act, out, r0, r1); break;
+        case 29: dot_rows_nt<29>(nt, w, row_bytes, n, act, out, r0, r1); break;
         default: break;
     }
 }
