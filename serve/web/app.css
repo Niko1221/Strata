@@ -182,3 +182,11 @@ main { flex: 1; min-height: 0; display: flex; }
   .facts { grid-template-columns: 1fr; gap: 2px; }
   .facts dd { margin-bottom: var(--st-s-2); }
 }
+
+.screenshot-hint, .attachment-status { font-size: var(--st-fs-xs); color: var(--st-ink-muted); padding: 0 4px; }
+.attachment-status { color: var(--st-ink-soft); }
+.chip { max-width: 100%; }
+.chip--image { height: auto; min-height: 62px; padding: 6px; border-radius: var(--st-r-md); gap: 10px; }
+.chip__preview { width: 64px; height: 48px; object-fit: contain; background: var(--st-surface); border-radius: var(--st-r-sm); }
+.chip__name { min-width: 0; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip--image .st-btn--icon { width: 32px; height: 32px; flex: none; }
