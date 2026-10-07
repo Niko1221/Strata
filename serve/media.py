@@ -211,7 +211,7 @@ def _write(stream: BinaryIO, data: bytes):
         view = view[written:]
 
 
-def read_bundle(stream: BinaryIO, limits: MediaLimits = DEFAULT_LIMITS) -> MediaBundle:
+def read_bundle(stream: BinaryIO, limits: MediaLimits = DEFAULT_LIMITS, *, qwen4: bool = False) -> MediaBundle:
     _limits(limits)
     magic, version, header_size, flags, width, nt, ns, nr, pb, eb, total = HEADER.unpack(_read(stream, HEADER.size))
     _require((magic, version, header_size, flags) == (b"SVE2", 2, HEADER.size, 0), "unsupported media header")
@@ -237,7 +237,10 @@ def read_bundle(stream: BinaryIO, limits: MediaLimits = DEFAULT_LIMITS) -> Media
                  for _, count, *_ in records]
     spans = tuple(VisualSpan(start, pad, kind, advance, pos, b"", nx, ny)
                   for (start, _, kind, pad, advance, nx, ny), pos in zip(records, positions))
-    _validate_structure(MediaBundle(width, tokens, spans), limits)
+    structure = MediaBundle(width, tokens, spans)
+    _validate_structure(structure, limits)
+    if qwen4:
+        _qwen4_structure(structure)  # BEFORE reading any embedding payload
     spans = tuple(VisualSpan(s.start, s.pad_id, s.kind, s.advance, s.positions,
                              _read(stream, len(s.positions) * width * 4), s.nx, s.ny) for s in spans)
     _require(stream.read(1) == b"", "trailing media bytes")
@@ -265,6 +268,57 @@ def write_bundle(stream: BinaryIO, bundle: MediaBundle, limits: MediaLimits = DE
             _write(stream, struct.pack("<iii", *pos))
     for span in bundle.spans:
         _write(stream, span.embeddings)
+
+
+def _qwen4_structure(bundle: MediaBundle):
+    """Verified kind/pad, wrappers and per-group positions; not a codec-wide rule."""
+    _require(bundle.width == 2560, "Qwen4 media needs projection width 2560")
+    for span in bundle.spans:
+        pad = 248056 if span.kind == MediaKind.IMAGE else 248057
+        _require(span.pad_id == pad, "media kind/pad does not match the Qwen4 profile")
+        rows, end = len(span.positions), span.start + len(span.positions)
+        _require(span.start > 0 and end < len(bundle.tokens) and bundle.tokens[span.start - 1] == 248053 and
+                 bundle.tokens[end] == 248054, "a Qwen4 visual span needs its vision delimiters")
+        nx, ny = span.positions[-1][2] + 1, span.positions[-1][1] + 1
+        _require(nx <= rows and ny <= rows and nx * ny == rows and span.advance == max(nx, ny),
+                 "Qwen4 temporal groups must have a rectangular spatial grid/advance")
+        _require(all(p == (0, i // nx, i % nx) for i, p in enumerate(span.positions)),
+                 "Qwen4 groups need zero relative time and row-major spatial positions")
+
+
+def validate_qwen4(bundle: MediaBundle, limits: MediaLimits = DEFAULT_LIMITS):
+    validate(bundle, limits)
+    _qwen4_structure(bundle)
+
+
+def splice_media(tokens, pieces, limits: MediaLimits = DEFAULT_LIMITS) -> MediaBundle:
+    """Replace WHOLE structural slots with ordered local bundles, rebasing spans.
+
+    Literal controls are escaped before template tokenization by the frontend.
+    Extra/missing slots, mismatched kinds and unbound pads are errors, not media.
+    """
+    from dataclasses import replace
+    out, spans, k, i = [], [], 0, 0
+    while i < len(tokens):
+        if i + 2 < len(tokens) and tokens[i] == 248053 and tokens[i + 1] in (248056, 248057) and tokens[i + 2] == 248054:
+            _require(k < len(pieces), "the prompt has more visual slots than its sources")
+            kind, piece = pieces[k]
+            wanted = MediaKind.IMAGE if tokens[i + 1] == 248056 else MediaKind.VIDEO
+            _require(kind == wanted, "visual slot/source order or kind does not match")
+            validate_qwen4(piece, limits)
+            _require(all(s.kind == kind for s in piece.spans) and bool(piece.spans), "invalid local visual sequence")
+            offset = len(out)
+            out.extend(piece.tokens)
+            spans.extend(replace(s, start=s.start + offset) for s in piece.spans)
+            k, i = k + 1, i + 3
+        else:
+            _require(tokens[i] not in (248056, 248057), "unbound visual pad token in the rendered prompt")
+            out.append(tokens[i])
+            i += 1
+    _require(k == len(pieces), "the selected template does not render one complete slot per visual source")
+    bundle = MediaBundle(2560, tuple(out), tuple(spans))
+    validate_qwen4(bundle, limits)
+    return bundle
 
 
 def decode(data: bytes, limits: MediaLimits = DEFAULT_LIMITS) -> MediaBundle:
