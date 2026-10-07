@@ -706,6 +706,354 @@ bool launch_i8(const float* q, const QsaAttnPools& pools, const int32_t* ids, co
     return true;
 }
 
+// ---- v3 (int8 KV, opt-in STRATA_PROMPT_ATTN_IMMA=1): v2's block, pipeline and online softmax, with both products on
+// INT8 tensor cores (mma m16n8k32 s8, int32 accumulation).  K and V enter as the int8 codes they are - no int8 -> fp16
+// conversion - and the other operand as THREE 8-bit parts: q per (head, 64-dim group) and p * v_scale per (head, chunk)
+// scaled to 127, then X = rint(x * 65536) split exactly into h (signed), l (signed) and m (unsigned) bytes - 24 bits,
+// as fine as FP32 itself and finer than the FP16 hi + lo split v2 uses (~22 bits).  Each part's int32 sum is exact; the three meet in
+// FP32 as h + (l * 256 + m) / 65536 (m unsigned: a u8 x s8 MMA).  INT8 MMA runs ~3.1x FP16's rate on sm_120 (732 vs 233 measured), so three INT8
+// MMAs cost about one FP16 MMA where v2 spends two.  p.v takes each thread's 8 consecutive dims across the 8 n-tiles
+// (n-tile j, column n = dim n * 8 + j), so a thread reads 8 bytes of a V row per cell and byte-transposes 4 cells.
+__device__ __forceinline__ void imma16832(int* c, const uint32_t* a, const uint32_t* b) {
+#if !STRATA_PA_SM80
+    __trap();
+#else
+    asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, "
+                 "{%0,%1,%2,%3};\n"
+                 : "+r"(c[0]), "+r"(c[1]), "+r"(c[2]), "+r"(c[3])
+                 : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
+#endif
+}
+// the low part's MMA: unsigned A (m in 0..255), signed B
+__device__ __forceinline__ void imma16832_us(int* c, const uint32_t* a, const uint32_t* b) {
+#if !STRATA_PA_SM80
+    __trap();
+#else
+    asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.u8.s8.s32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, "
+                 "{%0,%1,%2,%3};\n"
+                 : "+r"(c[0]), "+r"(c[1]), "+r"(c[2]), "+r"(c[3])
+                 : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
+#endif
+}
+// x (|x| <= 127) as X = rint(x * 65536) = h * 65536 + l * 256 + m exactly: h, l signed bytes, m an unsigned one
+__device__ __forceinline__ void split3(float x, int& h, int& l, int& m) {
+    const int X = __float2int_rn(x * 65536.0f);
+    h = (X + 32768) >> 16;
+    const int r = X - (h << 16);   // -32768 .. 32767
+    l = r >> 8;                    // -128 .. 127
+    m = r & 255;                   // 0 .. 255
+}
+__device__ __forceinline__ uint32_t pack4(int a, int b, int c, int d) {
+    return (uint32_t) (a & 0xff) | ((uint32_t) (b & 0xff) << 8) | ((uint32_t) (c & 0xff) << 16) | ((uint32_t) (d & 0xff) << 24);
+}
+__device__ __forceinline__ float join3(int h, int l, int m) {   // the parts' exact int32 sums -> h + (l*256 + m)/65536
+    return (float) h + (float) ((l << 8) + m) * (1.0f / 65536.0f);
+}
+// four words of four bytes each (word i = cell i) -> four words of the same byte position across the cells
+__device__ __forceinline__ void tr4x4(uint32_t w0, uint32_t w1, uint32_t w2, uint32_t w3, uint32_t* o) {
+    const uint32_t t0 = __byte_perm(w0, w1, 0x5140), t1 = __byte_perm(w0, w1, 0x7362);
+    const uint32_t t2 = __byte_perm(w2, w3, 0x5140), t3 = __byte_perm(w2, w3, 0x7362);
+    o[0] = __byte_perm(t0, t2, 0x5410);
+    o[1] = __byte_perm(t0, t2, 0x7632);
+    o[2] = __byte_perm(t1, t3, 0x5410);
+    o[3] = __byte_perm(t1, t3, 0x7632);
+}
+
+// v3's shared memory: ONE stage of K and one of V per warp (a warp gathers and reads only its own 64-dim slices, so
+// reusing a buffer needs only that warp's own order): K(c + 1) is gathered while the block runs softmax(c) and
+// p.v(c), V(c + 1) while it runs q.k(c + 1) and softmax(c + 1); and only the 12 real head rows of the partial sums
+// and p.  25.5 KB instead of v2's 45.6 KB: three blocks an SM instead of two (one block an SM ran 1.54x slower than
+// two - this kernel waits on latency, not on its MMAs).
+struct Smem3 {
+    int8_t kv[4][2][CH2][64];   // warp, K/V, cell, 64 dims in 16-byte pieces XOR-swizzled by the cell
+    float sc[4][2][CH2];        // warp, K/V scale of the cell for the warp's group
+    float part[4][G][CH2 + 1];  // q.k per dim group (the 12 head rows)
+    float p[G][CH2 + 1];
+    float alpha[16];
+    float lsum[16];
+    float mrow[16];
+};
+
+__global__ void __launch_bounds__(THREADS, 3) prompt_attn_i8v3_kernel(const float* __restrict__ q, QsaAttnPools p,
+                                                                      const int32_t* __restrict__ ids,
+                                                                      const int32_t* __restrict__ steps, int n_kv_heads,
+                                                                      int page_size, float scale_log2,
+                                                                      float* __restrict__ attn, int cap) {
+    extern __shared__ __align__(16) unsigned char smem_raw[];
+    Smem3& S = *reinterpret_cast<Smem3*>(smem_raw);
+    const int qi = blockIdx.x, kvh = blockIdx.y;
+    const int n_head = n_kv_heads * G;
+    q += (size_t) qi * n_head * HD + (size_t) kvh * G * HD;
+    attn += (size_t) qi * n_head * HD + (size_t) kvh * G * HD;
+    ids += (size_t) qi * cap;
+    const int n = __ldg(steps + (size_t) qi * kStepCount + kStepWidth);
+    const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
+    const int gid = lane >> 2, tig = lane & 3;
+    const int dim0 = warp * 64;
+    if (t < 16) { S.mrow[t] = -INFINITY; S.lsum[t] = 0.0f; S.alpha[t] = 0.0f; }
+
+    // q: rows gid / gid + 8 (heads; 12..15 are pad), this warp's 64 dims as the A fragments of two k-steps of 32,
+    // three 8-bit parts with a scale per (row, 64-dim group)
+    uint32_t qa[3][2][4];
+    float qinv[2];
+    {
+        float x[2][2][2][4];   // [row half][k-step][k half][4 dims]
+        float mx[2] = {0.0f, 0.0f};
+#pragma unroll
+        for (int rh = 0; rh < 2; ++rh) {
+            const int row = gid + rh * 8;
+#pragma unroll
+            for (int ks = 0; ks < 2; ++ks)
+#pragma unroll
+                for (int kh = 0; kh < 2; ++kh) {
+                    float4 v = make_float4(0.f, 0.f, 0.f, 0.f);
+                    if (row < G) v = *reinterpret_cast<const float4*>(q + (size_t) row * HD + dim0 + ks * 32 + kh * 16 + tig * 4);
+                    x[rh][ks][kh][0] = v.x; x[rh][ks][kh][1] = v.y; x[rh][ks][kh][2] = v.z; x[rh][ks][kh][3] = v.w;
+                    mx[rh] = fmaxf(mx[rh], fmaxf(fmaxf(fabsf(v.x), fabsf(v.y)), fmaxf(fabsf(v.z), fabsf(v.w))));
+                }
+#pragma unroll
+            for (int o = 1; o < 4; o <<= 1) mx[rh] = fmaxf(mx[rh], __shfl_xor_sync(0xffffffffu, mx[rh], o));
+        }
+        float up[2];
+#pragma unroll
+        for (int rh = 0; rh < 2; ++rh) {
+            up[rh] = mx[rh] > 0.0f ? 127.0f / mx[rh] : 0.0f;
+            qinv[rh] = mx[rh] * (1.0f / 127.0f);
+        }
+#pragma unroll
+        for (int ks = 0; ks < 2; ++ks)
+#pragma unroll
+            for (int r = 0; r < 4; ++r) {   // a0: row gid, k 0..15 half; a1: row gid + 8; a2: row gid, k 16..31; a3
+                const int rh = r & 1, kh = r >> 1;
+                int hh[4], ll[4], mm[4];
+#pragma unroll
+                for (int e = 0; e < 4; ++e) split3(x[rh][ks][kh][e] * up[rh], hh[e], ll[e], mm[e]);
+                qa[0][ks][r] = pack4(hh[0], hh[1], hh[2], hh[3]);
+                qa[1][ks][r] = pack4(ll[0], ll[1], ll[2], ll[3]);
+                qa[2][ks][r] = pack4(mm[0], mm[1], mm[2], mm[3]);
+            }
+    }
+
+    const int n_chunks = (n + CH2 - 1) / CH2;
+    auto cell_of = [&](int c) -> int { return c < n ? __ldg(ids + c) : -1; };
+    auto row_of = [&](int cell) -> long long {
+        if (cell < 0) return -1;
+        const long long page = (long long) __ldg(p.page_table + cell / page_size);
+        return (page * n_kv_heads + kvh) * page_size + (cell % page_size);
+    };
+    // this warp's 64-dim slice of K (kv = 0) or V (1) of the chunk whose rows the lanes hold, and the cells' scales
+    auto issue = [&](long long r, int kv) {
+        const int8_t* pool = kv == 0 ? p.k_q : p.v_q;
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            const int idx = lane + 32 * j, cell = idx >> 2, pc = idx & 3;
+            const long long rr = __shfl_sync(0xffffffffu, r, cell);
+            const bool ok = rr >= 0;
+            const size_t off = ok ? (size_t) rr * HD + dim0 + pc * 16 : 0;
+            cp_async16(&S.kv[warp][kv][0][0] + swz(cell, pc * 16), pool + off, ok);
+        }
+        const uint16_t* sc = kv == 0 ? p.k_scale : p.v_scale;
+        S.sc[warp][kv][lane] = r >= 0 ? __half2float(__ushort_as_half(__ldg(sc + r * (HD / KV_Q8_GROUP) + warp))) : 0.0f;
+    };
+    long long r_nxt = row_of(cell_of(lane));   // chunk 0
+    issue(r_nxt, 0);
+    cp_async_commit();
+    issue(r_nxt, 1);
+    cp_async_commit();
+    r_nxt = row_of(cell_of(CH2 + lane));       // chunk 1
+    int cell_nn = cell_of(2 * CH2 + lane);     // chunk 2
+    __syncthreads();
+
+    float acc[8][4];
+#pragma unroll
+    for (int j = 0; j < 8; ++j) acc[j][0] = acc[j][1] = acc[j][2] = acc[j][3] = 0.0f;
+    const int8_t* K = &S.kv[warp][0][0][0];
+    const int8_t* V = &S.kv[warp][1][0][0];
+
+    for (int ci = 0; ci < n_chunks; ++ci) {
+        const int c0 = ci * CH2;
+        const bool more = ci + 1 < n_chunks;
+        cp_async_wait1();   // K(ci) is in (pending: V(ci))
+        __syncwarp();
+        // q.k over this warp's 64 dims: n-tile nt holds cells nt * 8 .. + 7 (column n = cell nt * 8 + n)
+#pragma unroll
+        for (int nt = 0; nt < CH2 / 8; ++nt) {
+            int ch[4] = {0, 0, 0, 0}, cl[4] = {0, 0, 0, 0}, cm[4] = {0, 0, 0, 0};
+            const int cell = nt * 8 + gid;
+#pragma unroll
+            for (int ks = 0; ks < 2; ++ks) {
+                uint32_t b[2];
+                b[0] = *reinterpret_cast<const uint32_t*>(K + swz(cell, ks * 32 + tig * 4));
+                b[1] = *reinterpret_cast<const uint32_t*>(K + swz(cell, ks * 32 + 16 + tig * 4));
+                imma16832(ch, qa[0][ks], b);
+                imma16832(cl, qa[1][ks], b);
+                imma16832_us(cm, qa[2][ks], b);
+            }
+            const int c = nt * 8 + 2 * tig;
+            const float s0 = S.sc[warp][0][c], s1 = S.sc[warp][0][c + 1];
+            S.part[warp][gid][c] = join3(ch[0], cl[0], cm[0]) * qinv[0] * s0;
+            S.part[warp][gid][c + 1] = join3(ch[1], cl[1], cm[1]) * qinv[0] * s1;
+            if (gid + 8 < G) {
+                S.part[warp][gid + 8][c] = join3(ch[2], cl[2], cm[2]) * qinv[1] * s0;
+                S.part[warp][gid + 8][c + 1] = join3(ch[3], cl[3], cm[3]) * qinv[1] * s1;
+            }
+        }
+        __syncwarp();   // every lane has read K(ci) and its scales
+        if (more) issue(r_nxt, 0);
+        cp_async_commit();
+        __syncthreads();
+        // online softmax over the four groups' sum (fixed order): rows 0..11, 8 threads a row (warp 3 idles)
+        if (t < G * 8) {
+            const int r = t >> 3, sub = t & 7;
+            float x[4], mx = -INFINITY;
+#pragma unroll
+            for (int j = 0; j < 4; ++j) {
+                const int c = sub * 4 + j;
+                x[j] = c0 + c < n ? (((S.part[0][r][c] + S.part[1][r][c]) + S.part[2][r][c]) + S.part[3][r][c]) * scale_log2
+                                  : -INFINITY;
+                mx = fmaxf(mx, x[j]);
+            }
+#pragma unroll
+            for (int o = 1; o < 8; o <<= 1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffffu, mx, o));
+            const float m_old = S.mrow[r];
+            const float m_new = fmaxf(m_old, mx);
+            float sum = 0.0f;
+#pragma unroll
+            for (int j = 0; j < 4; ++j) {
+                const float e = x[j] == -INFINITY ? 0.0f : exp2f(x[j] - m_new);
+                S.p[r][sub * 4 + j] = e;
+                sum += e;
+            }
+#pragma unroll
+            for (int o = 1; o < 8; o <<= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o);
+            __syncwarp();
+            if (sub == 0) {
+                const float a = m_old == -INFINITY ? 0.0f : exp2f(m_old - m_new);
+                S.alpha[r] = a;
+                S.lsum[r] = fmaf(S.lsum[r], a, sum);
+                S.mrow[r] = m_new;
+            }
+        }
+        __syncthreads();
+        cp_async_wait1();   // V(ci) is in (pending: K(ci + 1))
+        __syncwarp();
+        // p.v over this warp's 64 dims: A = p * v_scale (rows gid / gid + 8, k = the chunk's 32 cells) in three parts
+        // scaled per row; B = V (k = cells, n-tile j column n = dim n * 8 + j)
+        {
+            uint32_t pa[3][4];
+            float pinv[2];
+            {   // a scale per row: a chunk whose p are all small still gets its 24 bits (one per warp and chunk lost
+                // ~3x of the accuracy against FP64)
+                float a[4][4], mx[2] = {0.0f, 0.0f};
+#pragma unroll
+                for (int r = 0; r < 4; ++r) {   // a0: row gid, cells tig * 4 ..; a1: row gid + 8; a2 / a3: cells 16 + ...
+                    const int row = gid + (r & 1) * 8, cb = (r >> 1) * 16 + tig * 4;
+#pragma unroll
+                    for (int e = 0; e < 4; ++e) {
+                        a[r][e] = row < G ? S.p[row][cb + e] * S.sc[warp][1][cb + e] : 0.0f;
+                        mx[r & 1] = fmaxf(mx[r & 1], a[r][e]);
+                    }
+                }
+                float up[2];
+#pragma unroll
+                for (int rh = 0; rh < 2; ++rh) {
+#pragma unroll
+                    for (int o = 1; o < 4; o <<= 1) mx[rh] = fmaxf(mx[rh], __shfl_xor_sync(0xffffffffu, mx[rh], o));
+                    up[rh] = mx[rh] > 0.0f ? 127.0f / mx[rh] : 0.0f;
+                    pinv[rh] = mx[rh] * (1.0f / 127.0f);
+                }
+#pragma unroll
+                for (int r = 0; r < 4; ++r) {
+                    int hh[4], ll[4], mm[4];
+#pragma unroll
+                    for (int e = 0; e < 4; ++e) split3(a[r][e] * up[r & 1], hh[e], ll[e], mm[e]);
+                    pa[0][r] = pack4(hh[0], hh[1], hh[2], hh[3]);
+                    pa[1][r] = pack4(ll[0], ll[1], ll[2], ll[3]);
+                    pa[2][r] = pack4(mm[0], mm[1], mm[2], mm[3]);
+                }
+            }
+            // B: this thread's 8 dims (gid * 8 .. + 7) of cells tig * 4 .. + 3 (b0) and 16 + tig * 4 .. + 3 (b1)
+            uint32_t bv[2][8];   // [k half][dim j]
+#pragma unroll
+            for (int kh = 0; kh < 2; ++kh) {
+                uint32_t lo[4], hi[4];
+#pragma unroll
+                for (int e = 0; e < 4; ++e) {
+                    const uint2 w = *reinterpret_cast<const uint2*>(V + swz(kh * 16 + tig * 4 + e, gid * 8));
+                    lo[e] = w.x;
+                    hi[e] = w.y;
+                }
+                tr4x4(lo[0], lo[1], lo[2], lo[3], &bv[kh][0]);
+                tr4x4(hi[0], hi[1], hi[2], hi[3], &bv[kh][4]);
+            }
+            __syncwarp();   // every lane has read V(ci) and its scales
+            if (more) issue(r_nxt, 1);
+            cp_async_commit();
+            const float a0 = S.alpha[gid], a1 = S.alpha[gid + 8];
+#pragma unroll
+            for (int j = 0; j < 8; ++j) {
+                int ch[4] = {0, 0, 0, 0}, cl[4] = {0, 0, 0, 0}, cm[4] = {0, 0, 0, 0};
+                const uint32_t b[2] = {bv[0][j], bv[1][j]};
+                imma16832(ch, pa[0], b);
+                imma16832(cl, pa[1], b);
+                imma16832_us(cm, pa[2], b);
+                acc[j][0] = fmaf(acc[j][0], a0, join3(ch[0], cl[0], cm[0]) * pinv[0]);
+                acc[j][1] = fmaf(acc[j][1], a0, join3(ch[1], cl[1], cm[1]) * pinv[0]);
+                acc[j][2] = fmaf(acc[j][2], a1, join3(ch[2], cl[2], cm[2]) * pinv[1]);
+                acc[j][3] = fmaf(acc[j][3], a1, join3(ch[3], cl[3], cm[3]) * pinv[1]);
+            }
+        }
+        r_nxt = row_of(cell_nn);
+        cell_nn = cell_of((ci + 3) * CH2 + lane);
+    }
+    __syncthreads();
+    const float l0 = S.lsum[gid], l1 = gid + 8 < G ? S.lsum[gid + 8] : 0.0f;
+    const float i0 = l0 > 0.0f ? 1.0f / l0 : 0.0f, i1 = l1 > 0.0f ? 1.0f / l1 : 0.0f;
+#pragma unroll
+    for (int j = 0; j < 8; ++j) {   // column 2 * tig is dim 16 * tig + j, column 2 * tig + 1 dim 16 * tig + 8 + j
+        const int d0 = dim0 + 16 * tig + j, d1 = d0 + 8;
+        attn[(size_t) gid * HD + d0] = acc[j][0] * i0;
+        attn[(size_t) gid * HD + d1] = acc[j][1] * i0;
+        if (gid + 8 < G) {
+            attn[(size_t) (gid + 8) * HD + d0] = acc[j][2] * i1;
+            attn[(size_t) (gid + 8) * HD + d1] = acc[j][3] * i1;
+        }
+    }
+}
+
+bool launch_i8v3(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
+                 const QsaShapes& s, float* attn, int64_t n_q, cudaStream_t st) {
+    static bool attr[64] = {};
+    int dev = 0;
+    cudaGetDevice(&dev);
+    const int bytes = (int) sizeof(Smem3);
+    if (dev < 0 || dev >= 64) return false;
+    if (!attr[dev]) {
+        if (cudaFuncSetAttribute(prompt_attn_i8v3_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes) !=
+            cudaSuccess) {
+            cudaGetLastError();
+            return false;
+        }
+        // the shared-memory side of the L1 split as large as it goes, so three blocks fit an SM
+        cudaFuncSetAttribute(prompt_attn_i8v3_kernel, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
+        cudaGetLastError();
+        attr[dev] = true;
+    }
+    const float scale_log2 = 1.4426950408889634f / sqrtf((float) HD);
+    for (int64_t q0 = 0; q0 < n_q; q0 += 65535) {
+        const int64_t nb = n_q - q0 < 65535 ? n_q - q0 : 65535;
+        prompt_attn_i8v3_kernel<<<dim3((unsigned) nb, (unsigned) s.n_head_kv), THREADS, bytes, st>>>(
+            q + q0 * s.n_head * HD, pools, ids + q0 * cap, steps + q0 * kStepCount, (int) s.n_head_kv,
+            (int) s.page_size, scale_log2, attn + q0 * s.n_head * HD, (int) cap);
+    }
+    const cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) {
+        std::fprintf(stderr, "qsa_prompt_attn_batch (v3): %s\n", cudaGetErrorString(e));
+        std::exit(1);
+    }
+    return true;
+}
+
 template <int KV_MODE>
 bool launch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
             const QsaShapes& s, float* attn, int64_t n_q, cudaStream_t st) {
@@ -1448,7 +1796,10 @@ bool launch_wmma(const float* q, const QsaAttnPools& pools, const int32_t* ids, 
 }
 #endif
 
+int g_pa_imma = -1;   // STRATA_PROMPT_ATTN_IMMA: -1 not read yet; qsa_prompt_attn_set_imma (tests) overrides it
 }  // namespace
+
+void qsa_prompt_attn_set_imma(int on) { g_pa_imma = on < 0 ? -1 : (on ? 1 : 0); }
 
 bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                            int64_t cap, const QsaShapes& s, float* attn, int64_t n_q, void* stream) {
@@ -1515,6 +1866,12 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
         static const bool v1 = std::getenv("STRATA_PROMPT_ATTN_V1") != nullptr;
         if (volta) return launch70<1>(q, pools, ids, steps, cap, s, attn, n_q, st);
         if (v1 || turing) return launch<1>(q, pools, ids, steps, cap, s, attn, n_q, st);
+        // STRATA_PROMPT_ATTN_IMMA=1 (opt-in, sm_80+): both products on INT8 tensor cores (prompt_attn_i8v3_kernel)
+        if (g_pa_imma < 0) {
+            const char* v = std::getenv("STRATA_PROMPT_ATTN_IMMA");
+            g_pa_imma = v != nullptr && v[0] == '1' ? 1 : 0;
+        }
+        if (g_pa_imma == 1) return launch_i8v3(q, pools, ids, steps, cap, s, attn, n_q, st);
         return launch_i8(q, pools, ids, steps, cap, s, attn, n_q, st);
     }
     if (!pools.k_pool || !pools.v_pool) return false;
