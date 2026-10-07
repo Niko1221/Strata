@@ -35,6 +35,7 @@ sys.path.insert(0, str(ROOT))
 import setup as S  # noqa: E402
 
 SYCL_WRAPPER = ROOT / "sycl" / "serve" / "strata-sycl.sh"
+SYCL_WRAPPER_WIN = ROOT / "sycl" / "serve" / "strata-sycl.bat"
 SYCL_IMAGE = "strata-sycl-dev"
 SERVER = ROOT / "sycl" / "serve" / "server_intel.py"
 MOUNT = Path(os.environ.get("STRATA_SYCL_ROOT") or ROOT.parent)   # what strata-sycl.sh mounts at /work
@@ -82,7 +83,11 @@ def intel_gpus():
 def sycl_engine():
     """The SYCL build: (binary, why-not)."""
     if S.WIN:
-        return None, "the SYCL port runs on Linux only"
+        exe = next((b for b in (ROOT / "build-sycl-aot" / "strata.exe", ROOT / "build-sycl" / "strata.exe")
+                    if b.exists()), None)
+        if exe is None:
+            return None, "it is not built (sycl\\tools\\build.bat; docs/INTEL.md)"
+        return exe, None
     exe = next((b for b in (ROOT / "build-sycl-aot" / "strata", ROOT / "build-sycl" / "strata") if b.exists()), None)
     if exe is None:
         return None, "it is not built (docs/INTEL.md, \"How to build it\": Docker, then sycl/tools/build.sh in the image)"
@@ -90,8 +95,10 @@ def sycl_engine():
 
 
 def sycl_path(path) -> str:
-    """A host path as the engine's container sees it: the folder above the Strata checkout (or STRATA_SYCL_ROOT) is
-    mounted at /work."""
+    """A host path as the engine sees it. On Linux the engine runs in a container: the folder above the Strata
+    checkout (or STRATA_SYCL_ROOT) is mounted at /work. On Windows the native exe runs directly: the host path."""
+    if S.WIN:
+        return str(Path(path).resolve())
     p, root = Path(path).resolve(), MOUNT.resolve()
     try:
         return "/work/" + p.relative_to(root).as_posix()
@@ -164,7 +171,10 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
                                                         # faster (Arc Pro B70, IQ3_S, a 4,095-token prompt: 2,048-token
                                                         # chunks 618 tok/s, 4,096: 1,002; docs/INTEL.md); it costs ~700 cache slots
     out = {k: v for k, v in cfg.items() if k not in ("lib_dirs", "env", "vision", "gpus")}
-    out.update({"backend": "sycl", "exe": str(SYCL_WRAPPER), "args": args, "sycl_root": str(MOUNT)})
+    if S.WIN:
+        out.update({"backend": "sycl", "exe": str(SYCL_WRAPPER_WIN), "args": args})
+    else:
+        out.update({"backend": "sycl", "exe": str(SYCL_WRAPPER), "args": args, "sycl_root": str(MOUNT)})
     env = {}
     if host_arena:
         env["STRATA_VERIFY_NO_HOST"] = "0"              # strata-sycl.sh sets 1 unless told otherwise (xe, every expert in VRAM)
@@ -172,9 +182,24 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
         # first launch - "'double' is not supported in ... device", the engine dies on the first request with a
         # temperature - unless the driver emulates it (docs/INTEL.md)
         env.update({"IGC_EnableDPEmulation": "1", "OverrideDefaultFP64Settings": "1", "NEOReadDebugKeys": "1"})
-    if exe != ROOT / "build-sycl-aot" / "strata":
-        env["STRATA_SYCL_BIN"] = exe.relative_to(ROOT).as_posix()
-    if MOUNT.resolve() != ROOT.parent.resolve():
+    aot = ROOT / "build-sycl-aot" / ("strata.exe" if S.WIN else "strata")
+    if exe != aot:
+        try:
+            env["STRATA_SYCL_BIN"] = exe.relative_to(ROOT).as_posix()   # forward slashes: the wrapper is a shell/batch
+        except ValueError:
+            env["STRATA_SYCL_BIN"] = str(exe)
+    if S.WIN and vram_gb > 0:
+        # The OpenCL backend has no free-VRAM query (dpct get_memory_info reads STRATA_DEVICE_FREE_MIB).
+        env["STRATA_DEVICE_FREE_MIB"] = str(int((vram_gb - 1.0) * 1024))
+        env["STRATA_DEVICE_TOTAL_MIB"] = str(int(vram_gb * 1024))
+    if S.WIN and vram_gb <= 0:
+        # Detection flaked on a rewrite (WMI hiccup): keep the previous config's values rather than
+        # silently dropping them - without them the cache sizes to 0 slots and nothing runs.
+        old_env = cfg.get("env") or {}
+        for k in ("STRATA_DEVICE_FREE_MIB", "STRATA_DEVICE_TOTAL_MIB", "STRATA_SYCL_BIN"):
+            if k in old_env and k not in env:
+                env[k] = old_env[k]
+    if not S.WIN and MOUNT.resolve() != ROOT.parent.resolve():
         env["STRATA_SYCL_ROOT"] = str(MOUNT)
     if env:
         out["env"] = env
@@ -183,16 +208,26 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
 
 
 def install(argv) -> None:
-    intel = [] if S.WIN else intel_gpus()
+    if S.WIN:
+        try:
+            intel = S.intel_gpus_windows()
+        except (OSError, ValueError):
+            intel = []
+    else:
+        intel = intel_gpus()
     if not intel:
-        S.fail("no Intel Arc found (an xe or i915 card in /sys/class/drm)", "on an NVIDIA or AMD card, run ./setup.sh")
+        where = "the display adapters" if S.WIN else "an xe or i915 card in /sys/class/drm"
+        S.fail(f"no Intel Arc found ({where})", "on an NVIDIA or AMD card, run "
+               + ("START-HERE.bat" if S.WIN else "./setup.sh"))
     exe, why = sycl_engine()
     if exe is None:
         S.fail(f"Strata's SYCL engine cannot be used: {why}", "docs/INTEL.md: build it, then run this again")
     for name in ("gpus", "amd_gpus", "amd_problem", "hip_vision", "build_engine_hip", "hipblaslt_table", "ram_gb",
-                 "write_run_script", "start", "say", "main"):
+                 "write_run_script", "start", "say", "main", "get_prebuilt_hip", "hip_card", "intel_problem"):
         if not callable(getattr(S, name, None)):
             S.fail(f"setup.py has no {name}() any more: sycl/setup_intel.py needs updating for this setup.py")
+    if S.WIN and not callable(getattr(S, "intel_gpus_windows", None)):
+        S.fail("setup.py has no intel_gpus_windows() any more: sycl/setup_intel.py needs updating for this setup.py")
 
     real_ram = S.ram_gb()
     keep = {}                                           # hand-set keys setup does not write: kept across a rerun
@@ -229,9 +264,14 @@ def install(argv) -> None:
     S.say = say_intel
     S.gpus = lambda *a, **k: []
     S.amd_gpus = lambda *a, **k: intel
-    S.amd_problem = lambda g: None
+    # On Windows the list holds integrated GPUs too (like amd_gpus_windows): filter by the Intel table.
+    # On Linux intel_gpus() already drops the iGPU, so every entry is usable.
+    S.amd_problem = (lambda g: S.intel_problem(g)) if S.WIN else (lambda g: None)
     S.hip_vision = lambda asked: "none"                 # images are not wired on the SYCL port yet
     S.build_engine_hip = lambda *a, **k: stub
+    S.get_prebuilt_hip = lambda *a, **k: stub   # Windows: skip the ready-made HIP engine (its arch check
+    S.hip_card = lambda eng, gpu, listed: {**gpu, "count": len(listed)}  # would refuse xe; the SYCL build is
+    # already in place (sycl_engine above), and there is no HIP runtime to number against on Intel
     S.hipblaslt_table = lambda *a, **k: None
     S.ram_gb = lambda: fake_ram                         # the experts are in VRAM: setup's RAM rule does not apply
 
@@ -247,9 +287,18 @@ def install(argv) -> None:
 
     def write_run_script(model, cfg_path, port, open_browser=True):   # setup.write_run_script's signature (#870)
         cfg = json.loads(Path(cfg_path).read_text(encoding="utf-8"))
-        cfg = to_sycl(cfg, exe, real_ram, keep.get(Path(cfg_path).name, {}), intel[0]["vram_gb"], intel[0]["driver"])
+    if host_arena:
+        env["STRATA_VERIFY_NO_HOST"] = "0"              # strata-sycl.sh sets 1 unless told otherwise (xe, every expert in VRAM)
+        # an Alchemist has no FP64 hardware: a kernel that declares double (one is on the sampled path) is refused at its
+        # first launch - "'double' is not supported in ... device", the engine dies on the first request with a
+        # temperature - unless the driver emulates it (docs/INTEL.md)
+        env.update({"IGC_EnableDPEmulation": "1", "OverrideDefaultFP64Settings": "1", "NEOReadDebugKeys": "1"})
+        usable = [g for g in intel if S.intel_problem(g) is None] if S.WIN else intel
+        vram = max([g["vram_gb"] for g in usable] or [0.0])
+        driver = intel[0]["driver"] if not S.WIN else "xe"
+        cfg = to_sycl(cfg, exe, real_ram, keep.get(Path(cfg_path).name, {}), vram if S.WIN else 0.0, driver)
         need = S.MODELS.get(model, {}).get("ram_gb", 0)
-        if intel[0]["driver"] == "i915" and need and real_ram < need:
+        if driver == "i915" and need and real_ram < need:
             S.warn(f"{model} on this Arc loads its experts into RAM (about {need} GB; this PC has {real_ram:.0f} GB): "
                    "the start will be slow or fail - a smaller model (--model) fits better (docs/INTEL.md)")
         Path(cfg_path).write_text(json.dumps(cfg, indent=1), encoding="utf-8")
@@ -264,8 +313,11 @@ def install(argv) -> None:
         cfg = json.loads(Path(cfg_path).read_text(encoding="utf-8-sig"))
         if cfg.get("backend") != "sycl":
             return start(cfg_path, *a, **k)
-        script = ROOT / f"run-{Path(cfg_path).stem[len('strata-'):]}.sh"
+        stem = Path(cfg_path).stem[len('strata-'):]
+        script = ROOT / (f"run-{stem}.bat" if S.WIN else f"run-{stem}.sh")
         S.say(f"\nstarting {script.name} ...")
+        if S.WIN:
+            sys.exit(subprocess.call([str(script)]))
         os.execv("/bin/sh", ["/bin/sh", str(script)])
     S.start = start_sycl
 

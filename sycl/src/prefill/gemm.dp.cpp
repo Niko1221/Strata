@@ -659,6 +659,71 @@ catch (sycl::exception const &exc) {
 constexpr int64_t kXSliceElems = 16ll << 20;   // 32 MiB of FP16 activations per slice (64 MiB as fp32)
 }  // namespace
 #endif
+// SYCL port: oneMKL SYCL BLAS has no OpenCL Xe2 backend ("does not support this API"), and the failed attempt
+// poisons the queue (UR_RESULT_ERROR_IN_EVENT_LIST_EXEC_STATUS on everything that follows), so on OpenCL the
+// prompt GEMM runs as a plain SYCL kernel instead: slow prompts, identical answers.
+namespace {
+inline float half_bits_to_float(uint16_t b, bool as_fp) {
+    if (!as_fp) return sycl::bit_cast<float>((uint32_t) b << 16);   // bf16: mantissa-compatible shift
+    // fp16 bits -> fp32 (subnormals flushed; activations/weights never need them)
+    const uint32_t sign = (uint32_t) (b & 0x8000) << 16;
+    int exp = (b >> 10) & 0x1F;
+    uint32_t mant = (uint32_t) (b & 0x3FF);
+    if (exp == 0) return sycl::bit_cast<float>(sign);   // zero/subnormal -> signed zero
+    if (exp == 31) return sycl::bit_cast<float>(sign | 0x7F800000u | (mant << 13));   // inf/nan
+    return sycl::bit_cast<float>(sign | ((uint32_t) (exp + 112) << 23) | (mant << 13));
+}
+
+void fallback_gemm(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K,
+                   int64_t ldx, int64_t ldy, float alpha, float beta, bool as_fp, void* stream) {
+    if (ldx <= 0) ldx = K;
+    if (ldy <= 0) ldy = N;
+    sycl::queue* q = strata::q_of(stream);
+    constexpr int64_t TM = 4;   // outputs per work-item along N
+    const size_t ncols = (size_t) ((N + TM - 1) / TM);
+    q->parallel_for(sycl::range<2>((size_t) T, ncols), [=](sycl::id<2> id) {
+        const int64_t t = (int64_t) id[0];
+        const int64_t n0 = (int64_t) id[1] * TM;
+        float acc[TM];
+        for (int64_t m = 0; m < TM; ++m) acc[m] = 0.0f;
+        for (int64_t k = 0; k < K; ++k) {
+            const float x = half_bits_to_float(X[t * ldx + k], as_fp);
+            for (int64_t m = 0; m < TM; ++m) {
+                const int64_t n = n0 + m;
+                if (n < N) acc[m] += x * half_bits_to_float(W[n * K + k], as_fp);
+            }
+        }
+        for (int64_t m = 0; m < TM; ++m) {
+            const int64_t n = n0 + m;
+            // beta = 0 must not read Y (the caller's buffer is uninitialized there: 0 * NaN is NaN).
+            if (n < N) Y[t * ldy + n] = beta == 0.0f ? alpha * acc[m] : alpha * acc[m] + beta * Y[t * ldy + n];
+        }
+    }).wait();
+}
+
+bool fallback_once_logged = false;
+bool onemkl_broken = false;   // set after the first oneMKL failure: skip its (noisy) attempt afterwards
+void fallback_note() {
+    if (!fallback_once_logged) {
+        fallback_once_logged = true;
+        std::fprintf(stderr, "prefill gemm: oneMKL SYCL BLAS is not usable on this backend; "
+                             "plain SYCL fallback (slow prompts, same answers)\n");
+    }
+    onemkl_broken = true;
+}
+
+bool onemkl_usable(void* stream) {
+    if (onemkl_broken) return false;
+    try {
+        if (strata::q_of(stream)->get_backend() == sycl::backend::opencl) {
+            fallback_note();
+            return false;
+        }
+    } catch (...) {}
+    return true;
+}
+}  // namespace
+
 bool Gemm::bf16_hcd_exact(const uint16_t* X, int64_t ldx, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K) {
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
     static std::atomic<bool> told{false};
@@ -759,14 +824,20 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
 #endif
 #endif
     // Column-major view: Y^T[N, T] = W[N, K] (stored K x N col-major, transposed) . X^T[K, T].
-    ck(DPCT_CHECK_ERROR(dpct::blas::gemm(
+    // oneMKL SYCL BLAS has no OpenCL Xe2 backend ("does not support this API"): fall back to the plain
+    // SYCL kernel there (slow prompts, same answers) instead of failing the prompt.
+    if (!onemkl_usable(stream_) ||
+        DPCT_CHECK_ERROR(dpct::blas::gemm(
            (dpct::blas::descriptor_ptr)handle_, oneapi::mkl::transpose::trans,
            oneapi::mkl::transpose::nontrans, (int)N, (int)T, (int)K, &alpha, W,
            dpct::library_data_t::real_bfloat16, (int)K, X,
            dpct::library_data_t::real_bfloat16, (int)(ldx ? ldx : K), &beta, Y,
            dpct::library_data_t::real_float, (int)ldy,
-           dpct::compute_type::f32)),
-       "cublasGemmEx");
+           dpct::compute_type::f32)) != 0) {
+        fallback_note();
+        fallback_gemm(X, W, Y, T, N, K, ldx ? ldx : K, ldy, alpha, beta, false, stream_);
+        return;
+    }
     STRATA_ABSORB_HIPBLAS_STICKY("cublasGemmEx");
 }
 
@@ -796,14 +867,18 @@ void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_
         return;
     }
 #endif
-    ck(DPCT_CHECK_ERROR(dpct::blas::gemm(
+    if (!onemkl_usable(stream_) ||
+        DPCT_CHECK_ERROR(dpct::blas::gemm(
            (dpct::blas::descriptor_ptr)handle_, oneapi::mkl::transpose::trans,
            oneapi::mkl::transpose::nontrans, (int)N, (int)T, (int)K, &alpha, W,
            dpct::library_data_t::real_half, (int)K, X,
            dpct::library_data_t::real_half, (int)K, &beta, Y,
            dpct::library_data_t::real_float, (int)ldy,
-           dpct::compute_type::f32)),
-       "cublasGemmEx f16");
+           dpct::compute_type::f32)) != 0) {
+        fallback_note();
+        fallback_gemm(X, W, Y, T, N, K, K, ldy, alpha, beta, true, stream_);
+        return;
+    }
     STRATA_ABSORB_HIPBLAS_STICKY("cublasGemmEx f16");
 }
 

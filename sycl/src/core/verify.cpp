@@ -207,6 +207,12 @@ bool native_of(const WeightRef* w, const std::string& name, std::string& err) {
 }  // namespace
 
 namespace {
+// SYCL port: STRATA_VERIFY_EAGER=1 - the window, the commit and the drafter's chains are replayed on the
+// queue instead of launched from command graphs, which the OpenCL backend has none of.
+bool eager_verify() {
+    static const bool eager = std::getenv("STRATA_VERIFY_EAGER") != nullptr;
+    return eager;
+}
 std::atomic<const Verifier*> g_diag_verifier{nullptr};
 void diag_active_verifier(std::FILE* f) {
     if (const Verifier* v = g_diag_verifier.load()) v->diag(f);
@@ -1707,8 +1713,10 @@ catch (sycl::exception const &exc) {
   std::exit(1);
 }
 
-bool Verifier::capture_commit(std::string &err) try {
-    if (commit_exec_ != nullptr) return true;
+// SYCL port: the commit graph's body as a replayable function - capture_commit records it into
+// the graph, and with STRATA_VERIFY_EAGER (a backend without command graphs, e.g. the OpenCL
+// adapter) commit() runs it on the queue instead of launching the graph.
+bool Verifier::record_commit(std::string &err) {
     using namespace strata::kernels;
     const ModelGeometry& g = *g_;
     SessionState& ss = *ss_;
@@ -1718,10 +1726,6 @@ bool Verifier::capture_commit(std::string &err) try {
                                 (uint64_t) g.ssm_conv_channels * (g.ssm_d_conv - 1);
     const int64_t TS = (s.idx_block - 1) * ID;
     const int64_t HS = (int64_t) NG_HIST * NG_HC_DIM;
-    if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs_)) != 0) {
-        err = "verify: begin commit capture failed";
-        return false;
-    }
     bool ok = true;
     try {
         copy_i32_from_mapped(commit_, m_commit_, 2 + MT, cs_);
@@ -1759,11 +1763,21 @@ bool Verifier::capture_commit(std::string &err) try {
                 ++qsa_index;
             }
         }
-        if (ok && ss.ple.ready() && ple_stage()) copy_indexed(ss.ple.hist, hist_snap_, HS, commit_ + 1, HS, cs_);
     } catch (const std::exception& e) {
         err = std::string("verify commit: ") + e.what();
         ok = false;
     }
+    return ok;
+}
+
+bool Verifier::capture_commit(std::string &err) try {
+    if (commit_exec_ != nullptr) return true;
+    if (eager_verify()) return true;   // SYCL port: no graph, commit() replays the body
+    if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs_)) != 0) {
+        err = "verify: begin commit capture failed";
+        return false;
+    }
+    const bool ok = record_commit(err);
     dpct::experimental::command_graph_ptr graph = nullptr;
     const dpct::err0 ce =
         DPCT_CHECK_ERROR(dpct::experimental::end_recording(cs_, &graph));
@@ -1907,7 +1921,17 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
         const bool first_or_gap = t_prev_end.time_since_epoch().count() == 0 || (t_launch - t_prev_end) > std::chrono::milliseconds(20);
         if (wmode == 1 || (wmode == 2 && first_or_gap)) dpct::get_current_device().queues_wait_and_throw();
     }
-    const dpct::err0 le = (std::getenv("STRATA_VERIFY_EAGER") != nullptr)
+    // SYCL port, STRATA_VERIFY_EAGER=1: eager replay needs a plan the device does not wait for from the host -
+    // all of them resident (ar_on(), the "zero-doorbell graph") or planned on the device (device_plan_). With a
+    // host-served plan the mid-record waits (wait_flag_ge, bounded by kSpinMax) expire before the host publishes
+    // anything and the window runs on stale plans - silently wrong, not slow. Refuse loudly instead.
+    if (eager_verify() && !(ar_on() || device_plan_)) {
+        err = "verify: eager replay with a host-served expert plan: the mid-record waits would expire into stale "
+              "plans (silently wrong). Use a 100% VRAM-resident expert cache, STRATA_VERIFY_DEVICE_PLAN=1, or "
+              "command graphs (Level Zero) instead";
+        return false;
+    }
+    const dpct::err0 le = (eager_verify())
                               ? (record_window(T, cs_, err) ? 0 : 1)   // SYCL port: eager replay of the window body
                               : DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(*(ar_off_ ? exec_nr_[T] : exec_[T])));
     /*
@@ -2370,6 +2394,10 @@ bool Verifier::commit(int n_keep, std::string &err) try {
     for (int t = 0; t < max_t_; ++t) h_commit_[2 + t] = t < n_keep ? (int32_t) (last_pos0_ + t) : -1;
     if (last_t_ == 1 && one_token_self_commit()) {
         // a one-token window has advanced the state itself (record_window): no commit graph
+    } else if (eager_verify()) {
+        // SYCL port: no command graph on this backend - run the body now, then the same finish path. This is
+        // synchronous by nature: the drafter-round/commit overlap of wait=false has nothing to overlap with.
+        if (!record_commit(err)) return false;
     } else {
         std::atomic_thread_fence(std::memory_order_seq_cst);
         const dpct::err0 le =

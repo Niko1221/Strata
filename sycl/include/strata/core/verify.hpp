@@ -353,6 +353,9 @@ private:
     bool staged_ = false;
     bool copy_used_ = false;
     bool capture_commit(std::string& err);
+    // SYCL port, STRATA_VERIFY_EAGER=1: the bodies capture_commit/capture_window record into command
+    // graphs, replayed on the queue where the backend has no graph (the OpenCL adapter).
+    bool record_commit(std::string& err);
     bool record_window(int T, dpct::queue_ptr cs, std::string &err);
     // #649: STRATA_VERIFY_TRACE=1 - a host event ring (trace_ev) and GPU breadcrumbs: the profiler's stamp points,
     // per layer and token group, written to mapped memory (null when the trace is off)
