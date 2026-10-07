@@ -7,7 +7,12 @@
 // Switches that change bits (STRATA_PF_GEMM, STRATA_PF_FUSED, STRATA_HC_UPMIX, STRATA_PA_FAST, STRATA_HIP_WMMA,
 // STRATA_SELECT_WMMA, STRATA_HC_Q8: rounding-level, KL-gated) stay opt-in; docs/STRIX_HALO.md lists them.
 //
-// A switch the user set (to anything) is never overridden; STRATA_GFX1151_DEFAULTS=0 turns the whole table off.
+// gfx1150 (Strix Point, RDNA3.5, unified memory) takes the same table less STRATA_HCD_EXACT (it copies gfx1151's
+// hipBLASLt solutions); on one Radeon 890M those switches gave the same greedy answers as without them at 28 to 14K
+// prompt tokens (bench/results/2026-10-07-community-gfx1150).
+//
+// A switch the user set (to anything) is never overridden; STRATA_GFX1151_DEFAULTS=0 (STRATA_GFX1150_DEFAULTS=0 on
+// gfx1150) turns the whole table off.
 #pragma once
 
 #include <string>
@@ -17,7 +22,7 @@
 namespace strata::core {
 
 /// The environment settings that are the defaults of `gcn_arch` (hipDeviceProp_t::gcnArchName; "gfx1151" or
-/// "gfx1151:sramecc-:xnack-"): empty for every other architecture.
+/// "gfx1151:sramecc-:xnack-"; also gfx1150): empty for every other architecture.
 std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gcn_arch);
 
 /// Sets `arch_default_env(gcn_arch)` in this process's environment where the user has not set the variable, prints one

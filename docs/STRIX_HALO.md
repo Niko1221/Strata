@@ -83,7 +83,7 @@ settings of [DETAILS.md](DETAILS.md)); a pack of the Unsloth UD-IQ4_XS or UD-Q4_
 At start the engine looks at GPU 0; on a gfx1151 it sets the switches below unless you set them yourself
 (`STRATA_GFX1151_DEFAULTS=0` turns the whole table off, and the start-up line names what was set). **Every one of them gave
 byte-identical output on the maintainers' box** (the same token ids, 4K / 32K / 64K and four models, and a bitwise harness per kernel):
-they change speed, not answers. Nothing here applies to CUDA or to another AMD architecture.
+they change speed, not answers. Nothing here applies to CUDA or to another AMD architecture, except gfx1150 (Strix Point), which takes this table less `STRATA_HCD_EXACT` ([AMD_HIP.md](AMD_HIP.md), `STRATA_GFX1150_DEFAULTS=0` turns it off).
 
 | Switch | What it does |
 |---|---|

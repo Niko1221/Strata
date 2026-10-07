@@ -93,6 +93,12 @@ table picks others, 539-555 for the bf16 rows).
   every pair), prompts +4.1 / +4.3 / +6.0% at 3.6K and +2.1 / +3.6 / +4.0% at 7K. Without `STRATA_SH_STREAM` (16 on)
   one run read the same as with it.
 
+So this change also lists gfx1150 in `arch_default_env()`, with that table less `STRATA_HCD_EXACT`
+(`STRATA_GFX1150_DEFAULTS=0` turns it off). Built on 0.1.40.2 and started with only `STRATA_HIPBLASLT_TUNING` in the
+config's env, the engine printed `strata: gfx1150 (Strix Point): 17 exact speed switches on by default ...`, gave the
+same four greedy answers as with the 17 set by hand, and read 151 / 220 / 231 tok/s at 1K / 3.6K / 7K with decode
+15.4 tok/s (one run).
+
 ## Rounding-level switches (not on by default)
 
 One run each, each switch added alone to table+switches (prompts of about 1K / 3.6K / 7K tokens; that configuration read

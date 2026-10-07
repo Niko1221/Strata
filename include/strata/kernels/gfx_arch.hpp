@@ -27,4 +27,7 @@ inline bool gfx_arch_is_gfx11_wmma(const char* gcn) {
 /// Strix Halo (Ryzen AI Max, RDNA3.5): the part the gfx1151 defaults (docs/STRIX_HALO.md) are measured on.
 inline bool gfx_arch_is_gfx1151(const char* gcn) { return gfx_arch_is(gcn, "gfx1151"); }
 
+/// Strix Point (Ryzen AI 300, Radeon 890M / 880M, RDNA3.5): the gfx1150 defaults (docs/AMD_HIP.md) are measured on one.
+inline bool gfx_arch_is_gfx1150(const char* gcn) { return gfx_arch_is(gcn, "gfx1150"); }
+
 }  // namespace strata::kernels

@@ -420,8 +420,9 @@ run it; the report below is from a community machine: an RX 6900 XT 16 GB (gfx10
   raised to 64 GiB (`ttm.pages_limit=16777216 ttm.page_pool_size=16777216`), TheRock ROCm 7.14.1 for gfx1150, an unprivileged LXC container, IQ3_XXS: chat and
   tool calls work, decode 15-19 tok/s, the HIP ctest passes apart from tests that need files a public checkout lacks.
   Prompts read at about 125-130 tok/s on plain hipBLAS and 1.5-1.7x faster with `tools/hip/gfx1150-hipblaslt-100401.txt` (ROCm 7.14.1's
-  hipBLASLt; 3.6K tokens 124 -> 216 tok/s, 7K 130 -> 226 tok/s, decode unchanged):
-  [bench/results/2026-10-07-community-gfx1150](../bench/results/2026-10-07-community-gfx1150/README.md).
+  hipBLASLt; 3.6K tokens 124 -> 216 tok/s, 7K 130 -> 226 tok/s, decode unchanged). The engine turns on gfx1151's exact switches less
+  `STRATA_HCD_EXACT` there too (the same greedy answers with and without them; decode +2%, prompts +3-5%; `STRATA_GFX1150_DEFAULTS=0` turns
+  them off): [bench/results/2026-10-07-community-gfx1150](../bench/results/2026-10-07-community-gfx1150/README.md).
   Setup does not install for it yet (an integrated Radeon other than Strix Halo is named and not supported): build by hand with `-DCMAKE_HIP_ARCHITECTURES=gfx1150`
   and point `STRATA_HIPBLASLT_TUNING` at the table yourself.
 - **Not validated:** gfx1032 (the same `dp4a` path, no hardware report), setup's own build path and the
