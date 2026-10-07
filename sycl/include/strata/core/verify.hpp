@@ -193,6 +193,7 @@ private:
     void* next_user_ = nullptr;
     bool ple_stage() const { return lb_ <= 1 && 1 < le_; }   ///< holds layer 1, where the PLE block runs
     bool capture_commit(std::string& err);
+    bool record_commit(std::string& err);   // SYCL port (STRATA_VERIFY_EAGER): the commit body, replayable
     int pending_commit_ = 0;                  ///< n_keep of a launched, unfinished commit (0: none)
     std::chrono::steady_clock::time_point pending_commit_t0_{};
     bool record_window(int T, dpct::queue_ptr cs, std::string &err);

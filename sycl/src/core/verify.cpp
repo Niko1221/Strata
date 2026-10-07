@@ -1200,8 +1200,9 @@ catch (sycl::exception const &exc) {
   std::exit(1);
 }
 
-bool Verifier::capture_commit(std::string &err) try {
-    if (commit_exec_ != nullptr) return true;
+// SYCL port: the commit graph's body as a replayable function - capture_commit records it into the
+// graph, and with STRATA_VERIFY_EAGER (no command graphs on the OpenCL backend) commit() runs it directly.
+bool Verifier::record_commit(std::string &err) {
     using namespace strata::kernels;
     const ModelGeometry& g = *g_;
     SessionState& ss = *ss_;
@@ -1211,10 +1212,6 @@ bool Verifier::capture_commit(std::string &err) try {
                                 (uint64_t) g.ssm_conv_channels * (g.ssm_d_conv - 1);
     const int64_t TS = (s.idx_block - 1) * ID;
     const int64_t HS = (int64_t) NG_HIST * NG_HC_DIM;
-    if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs_)) != 0) {
-        err = "verify: begin commit capture failed";
-        return false;
-    }
     bool ok = true;
     try {
         copy_i32_from_mapped(commit_, m_commit_, 2 + MT, cs_);
@@ -1251,6 +1248,17 @@ bool Verifier::capture_commit(std::string &err) try {
         err = std::string("verify commit: ") + e.what();
         ok = false;
     }
+    return ok;
+}
+
+bool Verifier::capture_commit(std::string &err) try {
+    if (commit_exec_ != nullptr) return true;
+    if (std::getenv("STRATA_VERIFY_EAGER") != nullptr) return true;   // SYCL port: no graph, commit() replays the body
+    if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs_)) != 0) {
+        err = "verify: begin commit capture failed";
+        return false;
+    }
+    bool ok = record_commit(err);
     dpct::experimental::command_graph_ptr graph = nullptr;
     const dpct::err0 ce =
         DPCT_CHECK_ERROR(dpct::experimental::end_recording(cs_, &graph));
@@ -1756,6 +1764,14 @@ bool Verifier::commit(int n_keep, std::string &err, bool wait) try {
     h_commit_[1] = n_keep - 1;
     for (int t = 0; t < max_t_; ++t) h_commit_[2 + t] = t < n_keep ? (int32_t) (last_pos0_ + t) : -1;
     std::atomic_thread_fence(std::memory_order_seq_cst);
+    if (std::getenv("STRATA_VERIFY_EAGER") != nullptr) {
+        // SYCL port: no commit graph on this backend - run the body now, then the same finish path.
+        if (!record_commit(err)) return false;
+        pending_commit_ = n_keep;
+        pending_commit_t0_ = t0;
+        if (!commit_finish(err)) return false;
+        return next_ == nullptr || next_->commit(n_keep, err);
+    }
     const dpct::err0 le =
         DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(*commit_exec_));
     /*
