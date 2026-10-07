@@ -27,6 +27,7 @@
 #include "strata/core/layer.hpp"
 #include "strata/core/session.hpp"
 #include "strata/kernels/sampler.hpp"
+#include "strata/kernels/readonly_miss_cache.hpp"
 
 #include <cuda_runtime.h>
 
@@ -428,6 +429,11 @@ private:
     int32_t *ids_ = nullptr, *hit_slot_ = nullptr, *hit_dst_ = nullptr, *hit_count_ = nullptr;
     int32_t* plan_ = nullptr;                                     // device copy of the plan block
     uint8_t* staging_ = nullptr;                                  // VRAM slots for the PCIe share of the misses
+    int miss_cache_ways_ = 0;  // opt-in immutable secondary copies, per layer
+    uint8_t* miss_cache_data_ = nullptr;
+    int32_t* miss_cache_tags_ = nullptr;
+    uint64_t *miss_cache_ages_ = nullptr, *miss_cache_clock_ = nullptr, *miss_cache_counts_ = nullptr;
+    strata::kernels::ReadonlyMissCachePlan* miss_cache_plan_ = nullptr;
     static constexpr int64_t kStagingBlobs = 16;
     static constexpr int64_t kPcieGroupRows = 4;                  // the PCIe call's groups side by side (of <= 16)
     uint8_t* hit_xq_ = nullptr;

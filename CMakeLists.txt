@@ -1,6 +1,6 @@
-﻿# Strata Engine - top-level build (P1.S1).
+# Strata Engine - top-level build (P1.S1).
 #
-# Targets (phase-1 Ă‚Â§P1.S1): `strata_artifact` (no CUDA dependency), `tests`.  `strata_plan` and the C++
+# Targets (phase-1 Ä‚â€šÃ‚Â§P1.S1): `strata_artifact` (no CUDA dependency), `tests`.  `strata_plan` and the C++
 # `strata-pack` are added when their sources exist - a target with no sources would make the build graph
 # claim something the tree does not have, which is worse than an absent target.
 #
@@ -1440,4 +1440,16 @@ if(STRATA_HIP_GFX906)
     target_compile_definitions(strata_mmq PRIVATE GGML_USE_HIP)
   endif()
   set_source_files_properties(${_strata_cu} PROPERTIES LANGUAGE HIP)
+endif()
+
+if(STRATA_ENABLE_CUDA AND STRATA_NATIVE_EXPERTS)
+  target_sources(strata_kernels PRIVATE src/kernels/cuda/readonly_miss_cache.cu)
+  target_compile_definitions(strata_engine PRIVATE STRATA_VERIFY_READONLY_MISS_CACHE=1)
+  if(STRATA_BUILD_TESTS)
+foreach(name readonly_miss_cache_fixture compact_miss_fill_bench)
+  add_executable(${name} tools/${name}.cu)
+  target_link_libraries(${name} PRIVATE strata_kernels)
+endforeach()
+add_test(NAME readonly_miss_cache_fixture COMMAND readonly_miss_cache_fixture --quick)
+  endif()
 endif()
