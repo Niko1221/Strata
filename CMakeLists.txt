@@ -20,9 +20,9 @@ if(STRATA_ENABLE_SYCL)
   add_subdirectory(sycl)
   return()
 endif()
-# EXPERIMENTAL: the macOS / Apple Silicon engine in metal/ (docs/MACOS_PLAN.md): Strata's line protocol over
+# EXPERIMENTAL: the macOS / Apple Silicon engine in metal/ (docs/MACOS.md): Strata's line protocol over
 # llama.cpp's Metal backend.  Its own small project; with this on, nothing below is configured.
-option(STRATA_ENABLE_METAL "EXPERIMENTAL: build the macOS (Metal) engine from metal/ - docs/MACOS_PLAN.md" OFF)
+option(STRATA_ENABLE_METAL "EXPERIMENTAL: build the macOS (Metal) engine from metal/ - docs/MACOS.md" OFF)
 if(STRATA_ENABLE_METAL)
   if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP OR NOT APPLE)
     message(FATAL_ERROR "STRATA_ENABLE_METAL is the macOS backend; leave STRATA_ENABLE_CUDA and STRATA_ENABLE_HIP off")

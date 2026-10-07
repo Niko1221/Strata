@@ -60,7 +60,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 WIN = os.name == "nt"
-MAC = sys.platform == "darwin"   # Apple Silicon: the Metal engine (metal/setup_mac.py, docs/MACOS_PLAN.md)
+MAC = sys.platform == "darwin"   # Apple Silicon: the Metal engine (metal/setup_mac.py, docs/MACOS.md)
 # #214: every Hugging Face file comes from a fixed commit of its repository (the `sha` of
 # https://huggingface.co/api/models/<repo> when this was pinned), so a checkout installs the same files on any
 # day.  A revision the repository no longer has falls back to its current files, with a message (download()).
@@ -4790,7 +4790,7 @@ def sycl_setup(argv) -> int:
 
 
 def metal_setup(argv) -> int:
-    """macOS: the Metal engine (metal/, docs/MACOS_PLAN.md), experimental. metal/setup_mac.py runs this setup with the
+    """macOS: the Metal engine (metal/, docs/MACOS.md), experimental. metal/setup_mac.py runs this setup with the
     Apple steps swapped in; nothing of the CUDA / HIP paths is used or changed."""
     script = ROOT / "metal" / "setup_mac.py"
     if not script.exists():
@@ -5156,7 +5156,18 @@ def main() -> int:
         say()
         any_fits = False
         for m, d in MODELS.items():
-            verdict = "fits" if ram >= d["ram_gb"] else "tight" if ram >= d["ram_gb"] - 8 else "does not fit"
+            # a Mac's GPU gets ~75-85% of the memory, so the RAM figures of a PC undercount it: 64 GB is the floor there
+            need_gb = max(d["ram_gb"], 64) if MAC else d["ram_gb"]
+            verdict = "fits" if ram >= need_gb else "tight" if ram >= need_gb - 8 else "does not fit"
+            if MAC:                                    # docs/MACOS.md: only Q2_0 was measured on a Mac
+                if d.get("budget"):
+                    verdict = verdict if verdict == "does not fit" else ("untested on a Mac: the Metal engine does not "
+                                                                         "stream experts from the SSD, so all must fit in Metal's memory limit")
+                elif m != "Q2_0" and not verdict.startswith("does not fit"):
+                    verdict += " - untested on a Mac"
+                any_fits = any_fits or not verdict.startswith("does not fit")
+                say(f"  {m:8s} needs ~{need_gb} GB RAM: {verdict}")
+                continue
             if d.get("budget"):
                 verdict = (("EXPERIMENTAL, " if d.get("experimental") else "") +
                            f"fits with {resident_budget_gib(m, ram)} GiB of its experts in RAM, the rest "

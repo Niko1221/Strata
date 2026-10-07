@@ -3,7 +3,8 @@
 A background thread samples once a second and keeps the last 60 readings of each series for the sparklines:
 - GPU: NVIDIA's own NVML library (nvml.dll / libnvidia-ml.so.1, installed with every driver) through ctypes, so no
   pip package is needed: load, VRAM, temperature, power, PCIe link and throughput.  With the AMD backend (#301): the
-  amdgpu driver's Linux sysfs files - load, VRAM, temperature and power.
+  amdgpu driver's Linux sysfs files - load, VRAM, temperature and power.  On a Mac: the GPU's load and memory from
+  `ioreg` (IOAccelerator PerformanceStatistics) and Metal's working-set limit.
 - CPU, RAM, disk: `psutil` when it is installed (setup installs it); without it the CPU and RAM readings fall back to
   the OS (Windows GlobalMemoryStatusEx / GetSystemTimes, Linux /proc) and the disk rate is absent.
 Anything that cannot be read is None; nothing here can stop the server.
@@ -246,8 +247,65 @@ class _Amd:
         return out
 
 
+# ------------------------------------------------------------------------------------------------ Apple (macOS)
+def metal_working_set_bytes() -> int:
+    """Metal's recommendedMaxWorkingSetSize: the share of the unified memory the GPU may use (what llama.cpp's Metal
+    backend treats as its memory; a user's `sysctl iogpu.wired_limit_mb` moves it).  0 when it cannot be asked."""
+    try:
+        objc = ctypes.cdll.LoadLibrary("/usr/lib/libobjc.dylib")
+        metal = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/Metal.framework/Metal")
+        metal.MTLCreateSystemDefaultDevice.restype = ctypes.c_void_p
+        objc.sel_registerName.restype = ctypes.c_void_p
+        dev = metal.MTLCreateSystemDefaultDevice()
+        send = ctypes.CFUNCTYPE(ctypes.c_uint64, ctypes.c_void_p, ctypes.c_void_p)(("objc_msgSend", objc))
+        return int(send(dev, objc.sel_registerName(b"recommendedMaxWorkingSetSize"))) if dev else 0
+    except (OSError, AttributeError):
+        return 0
+
+
+class _Apple:
+    """An Apple Silicon GPU's readings, with _Nvml's interface: load ("Device Utilization %") and the memory the GPU
+    driver has in use ("In use system memory") from the IOAccelerator's PerformanceStatistics, which `ioreg` prints
+    without root; the memory's total is Metal's working-set limit.  No temperature or power (those need root)."""
+
+    def __init__(self):
+        self.total = metal_working_set_bytes() if sys.platform == "darwin" else 0
+
+    def ok(self):
+        return self.total > 0
+
+    def name(self):
+        try:
+            import subprocess
+            chip = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True,
+                                  timeout=5).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            chip = ""
+        return f"{chip or 'Apple'} GPU"
+
+    @staticmethod
+    def parse(text):
+        """ioreg's PerformanceStatistics line -> (utilization %, bytes in use); None for what it does not say."""
+        import re
+        util = re.search(r'"Device Utilization %"=(\d+)', text)
+        used = re.search(r'"In use system memory"=(\d+)', text)
+        return (int(util.group(1)) if util else None), (int(used.group(1)) if used else None)
+
+    def read(self):
+        try:
+            import subprocess
+            text = subprocess.run(["ioreg", "-r", "-d", "1", "-c", "IOAccelerator"], capture_output=True, text=True,
+                                  timeout=5).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            text = ""
+        util, used = self.parse(text)
+        return {"util": util, "mem_used": used, "mem_total": self.total or None}
+
+
 def gpu_reader(index=0, amd=False):
-    """The card's readings: NVML (NVIDIA), or the amdgpu sysfs files with the AMD backend (#301)."""
+    """The card's readings: NVML (NVIDIA), the amdgpu sysfs files with the AMD backend (#301), or a Mac's GPU."""
+    if sys.platform == "darwin" and not amd:
+        return _Apple()
     return _Amd(index) if amd else _Nvml(index)
 
 
@@ -270,6 +328,13 @@ def _cpu_name():
             k = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0")
             return winreg.QueryValueEx(k, "ProcessorNameString")[0].strip()
         except OSError:
+            pass
+    elif sys.platform == "darwin":
+        try:
+            import subprocess
+            return subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True,
+                                  timeout=5).stdout.strip() or None
+        except (OSError, subprocess.TimeoutExpired):
             pass
     elif os.path.exists("/proc/cpuinfo"):
         for line in open("/proc/cpuinfo", encoding="utf-8", errors="replace"):

@@ -838,6 +838,12 @@ class StatusNeedsTheKey(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as e:
                 urllib.request.urlopen(base, timeout=10)
             self.assertEqual(e.exception.code, 401)
+            # RFC 9110 11.6.1 / RFC 6750 3: the challenge; no error code when no key was sent (RFC 6750 3.1)
+            self.assertEqual(e.exception.headers["WWW-Authenticate"], 'Bearer realm="strata"')
+            e.exception.close()
+            with self.assertRaises(urllib.error.HTTPError) as e:
+                urllib.request.urlopen(urllib.request.Request(base, headers={"Authorization": "Bearer wrong"}), timeout=10)
+            self.assertEqual(e.exception.headers["WWW-Authenticate"], 'Bearer realm="strata", error="invalid_token"')
             e.exception.close()
             req = urllib.request.Request(base, headers={"Authorization": "Bearer k3y"})
             with urllib.request.urlopen(req, timeout=10) as r:
@@ -4062,6 +4068,29 @@ class ModelAliases(unittest.TestCase):
             httpd.server_close()
 
 
+class AppleTelemetry(unittest.TestCase):
+    """macOS (docs/MACOS.md): a Mac's GPU load and memory from ioreg's PerformanceStatistics line, its total from Metal."""
+
+    LINE = ('      "PerformanceStatistics" = {"In use system memory (driver)"=0,"Alloc system memory"=8902623232,'
+            '"Renderer Utilization %"=12,"Device Utilization %"=37,"In use system memory"=477233152}')
+
+    def test_parse(self):
+        from serve import telemetry
+        self.assertEqual(telemetry._Apple.parse(self.LINE), (37, 477233152))   # not the "(driver)" or "Alloc" figures
+        self.assertEqual(telemetry._Apple.parse(""), (None, None))
+
+    def test_read_uses_ioreg_and_the_working_set(self):
+        from serve import telemetry
+        with mock.patch.object(telemetry, "metal_working_set_bytes", return_value=64 << 30), \
+                mock.patch.object(telemetry.sys, "platform", "darwin"), \
+                mock.patch("subprocess.run", return_value=mock.Mock(stdout=self.LINE)):
+            g = telemetry.gpu_reader(0)
+            self.assertIsInstance(g, telemetry._Apple)
+            self.assertTrue(g.ok())
+            self.assertEqual(g.read(), {"util": 37, "mem_used": 477233152, "mem_total": 64 << 30})
+            self.assertIsInstance(telemetry.gpu_reader(0, amd=True), telemetry._Amd)   # an explicit AMD path stays
+
+
 class AmdTelemetry(unittest.TestCase):
     """#301: the AMD backend's readings from a fake amdgpu sysfs tree: KFD node -> render node, as setup numbers the
     cards (the CPU node skipped), and free_vram_mib on HIP."""
@@ -4849,7 +4878,8 @@ class VisionArgs(unittest.TestCase):
 
         with mock.patch.object(server.subprocess, "Popen", popen), mock.patch.object(server, "contain"):
             server.Vision({"exe": "strata-vision", "mmproj": "m.gguf", "model": "t.gguf", **cfg})
-        return seen[0]
+        # Popen is patched module-wide, so a telemetry thread of another test (ioreg, nvidia-smi) can land here too
+        return next(a for a in seen if a and a[0] == "strata-vision")
 
     def test_min_tokens_is_passed_only_when_set(self):
         base = self.args_for({"max_tokens": 300})

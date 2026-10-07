@@ -525,12 +525,23 @@ class IQ4XS(Base):
         self.assertIn("--resident-budget-gib", cfg["args"])
 
     def test_check_verdict(self):
-        code, out, _ = self.main(["--check"], m=X)
+        with mock.patch.object(setup, "MAC", False):          # a PC's verdicts; a Mac has its own (docs/MACOS.md)
+            code, out, _ = self.main(["--check"], m=X)
         self.assertEqual(code, 0, out)
         line = next(ln for ln in out.splitlines() if ln.strip().startswith(X))
         self.assertIn("fits with 40 GiB of its experts in RAM", line)
         self.assertNotIn("EXPERIMENTAL", line)
         self.assertIn("EXPERIMENTAL", next(ln for ln in out.splitlines() if ln.strip().startswith(M)))
+
+    def test_check_verdict_on_a_mac(self):
+        """A Mac: the Metal engine streams no experts from the SSD, and only Q2_0 was measured there."""
+        with mock.patch.object(setup, "MAC", True):
+            code, out, _ = self.main(["--check"], m=X, ram=64.0)   # a Mac reports all of its memory
+        lines = {ln.split()[0]: ln for ln in out.splitlines() if " needs ~" in ln}
+        self.assertNotIn("read from the SSD", lines[X])
+        self.assertIn("does not stream experts from the SSD", lines[X])
+        self.assertNotIn("untested", lines["Q2_0"])
+        self.assertIn("untested on a Mac", lines["IQ2_XS"])
 
     def test_check_below_every_floor(self):
         # #977: 16 GB fits no size; the RAM line is not [ok] and the verdict says so

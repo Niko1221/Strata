@@ -99,7 +99,7 @@ int main(int argc, char** argv) {
     llama_backend_init();
 
     const auto load_t0 = std::chrono::steady_clock::now();
-#if !defined(_WIN32)
+#if defined(__linux__)   // posix_fadvise: Linux only (macOS has none; the hint is skipped there)
     // ask the OS for the projector file up front (128 KiB steps) so the loader's sequential reads find it cached;
     // STRATA_READ_AHEAD=0 turns it off, as in the engine
     if (const char* ra = std::getenv("STRATA_READ_AHEAD"); ra == nullptr || std::atoi(ra) != 0) {

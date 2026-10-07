@@ -1,0 +1,288 @@
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.cpp b/ggml/src/ggml-metal/ggml-metal-device.cpp
+index 8ac6e0830..e55925c0e 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-device.cpp
+@@ -232,6 +232,11 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_concat(ggml_meta
+ }
+ 
+ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_unary(ggml_metal_library_t lib, const ggml_tensor * op) {
++    return ggml_metal_library_get_pipeline_unary_ext(lib, op, false);
++}
++
++// pre_scale: the kernel applies a fused SCALE (args.scale, args.bias) to its input first (GGML_METAL_FUSION_SCALE_UNARY)
++ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_unary_ext(ggml_metal_library_t lib, const ggml_tensor * op, bool pre_scale) {
+     char base[256];
+     char name[256];
+ 
+@@ -283,7 +288,7 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_unary(ggml_metal
+     const bool is_cnt = ggml_is_contiguous(op->src[0]) && ggml_nelements(op) < 32768;
+ 
+     snprintf(base, 256, "kernel_unary_%s_%s%s", t0_str, t_str, is_c4 ? "_4" : "");
+-    snprintf(name, 256, "%s_op=%d_cnt=%d", base, op_num, is_cnt);
++    snprintf(name, 256, "%s_op=%d_cnt=%d%s", base, op_num, is_cnt, pre_scale ? "_pre=1" : "");
+ 
+     ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
+     if (!res.pipeline) {
+@@ -291,6 +296,7 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_unary(ggml_metal
+ 
+         ggml_metal_cv_set_int16(cv, op_num, FC_UNARY + 0);
+         ggml_metal_cv_set_bool (cv, is_cnt, FC_UNARY + 1);
++        ggml_metal_cv_set_bool (cv, pre_scale, FC_UNARY + 2);
+ 
+         res = ggml_metal_library_compile_pipeline(lib, base, name, cv);
+ 
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.h b/ggml/src/ggml-metal/ggml-metal-device.h
+index 4012b9d5f..04c606fe8 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.h
++++ b/ggml/src/ggml-metal/ggml-metal-device.h
+@@ -117,6 +117,7 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_diag
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_repeat            (ggml_metal_library_t lib, enum ggml_type tsrc);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_concat            (ggml_metal_library_t lib, enum ggml_type tsrc);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_unary             (ggml_metal_library_t lib, const struct ggml_tensor * op);
++struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_unary_ext         (ggml_metal_library_t lib, const struct ggml_tensor * op, bool pre_scale);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_silu_back         (ggml_metal_library_t lib, const struct ggml_tensor * op);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_glu               (ggml_metal_library_t lib, const struct ggml_tensor * op);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_sum               (ggml_metal_library_t lib, const struct ggml_tensor * op);
+diff --git a/ggml/src/ggml-metal/ggml-metal-fusion.cpp b/ggml/src/ggml-metal/ggml-metal-fusion.cpp
+index d78ca7c4b..aa8b2eac4 100644
+--- a/ggml/src/ggml-metal/ggml-metal-fusion.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-fusion.cpp
+@@ -189,6 +189,46 @@ static bool ggml_metal_fusion_check_ssm_conv_silu(
+     return true;
+ }
+ 
++// SCALE + UNARY (silu, sigmoid): the unary kernel computes the scaled value itself, with the same expression and
++// the same f32 rounding the SCALE kernel stores, so the result is bit-identical to the two kernels
++static bool ggml_metal_fusion_check_scale_unary(
++        const ggml_metal_fusion       * fusion,
++        const ggml_tensor * const     * nodes,
++        const ggml_cgraph             * gf,
++        const int                     * node_idxs,
++              int                       idx,
++              ggml_metal_fusion_mode    mode) {
++    GGML_UNUSED(fusion);
++    GGML_UNUSED(gf);
++    GGML_UNUSED(node_idxs);
++    GGML_UNUSED(idx);
++    GGML_UNUSED(mode);
++
++    const ggml_tensor * scale = nodes[0];
++    const ggml_tensor * un    = nodes[1];
++
++    if (scale->op != GGML_OP_SCALE || un->op != GGML_OP_UNARY || un->src[0] != scale || un->src[1]) {
++        return false;
++    }
++
++    const ggml_unary_op uop = ggml_get_unary_op(un);
++    if (uop != GGML_UNARY_OP_SILU && uop != GGML_UNARY_OP_SIGMOID) {
++        return false;
++    }
++
++    if (scale->src[0]->type != GGML_TYPE_F32 || scale->type != GGML_TYPE_F32 || un->type != GGML_TYPE_F32) {
++        return false;
++    }
++
++    // the unary kernel picks flat indexing from its own source's (the SCALE output's) layout, and reads the SCALE's
++    // input with it: that input must be laid out the same way, so contiguous
++    if (!ggml_is_contiguous(scale->src[0]) || !ggml_are_same_shape(scale->src[0], un)) {
++        return false;
++    }
++
++    return true;
++}
++
+ // ADD x N: each ADD reads the previous ADD as src0, and all addends must share layout
+ // (and, in FULL mode, live in the same Metal buffer)
+ static bool ggml_metal_fusion_check_add_chain(
+@@ -757,6 +797,8 @@ static const std::vector<ggml_op> ops_moe_reduce_8 = {
+ 
+ static const std::vector<ggml_op> ops_mul_mat_add = { GGML_OP_MUL_MAT, GGML_OP_ADD };
+ 
++static const std::vector<ggml_op> ops_scale_unary = { GGML_OP_SCALE, GGML_OP_UNARY };
++
+ static const std::vector<ggml_metal_fusion> ggml_metal_fusions = {
+     { GGML_METAL_FUSION_NORM_MUL,       ops_norm_mul,               {},     false, ggml_metal_fusion_check_norm },
+     { GGML_METAL_FUSION_NORM_MUL_ADD,   ops_norm_mul_add,           {},     false, ggml_metal_fusion_check_norm },
+@@ -785,6 +827,7 @@ static const std::vector<ggml_metal_fusion> ggml_metal_fusions = {
+     { GGML_METAL_FUSION_MOE_REDUCE,     ops_moe_reduce_8,           {},     true,  ggml_metal_fusion_check_moe_reduce },
+     { GGML_METAL_FUSION_SSM_CONV_SILU,  ops_ssm_conv_silu,          {},     false, ggml_metal_fusion_check_ssm_conv_silu },
+     { GGML_METAL_FUSION_MUL_MAT_ADD,    ops_mul_mat_add,            {},     false, ggml_metal_fusion_check_mul_mat_add },
++    { GGML_METAL_FUSION_SCALE_UNARY,    ops_scale_unary,            {},     false, ggml_metal_fusion_check_scale_unary },
+ };
+ 
+ // ---- alloc deps -----------------------------------------------------------
+diff --git a/ggml/src/ggml-metal/ggml-metal-fusion.h b/ggml/src/ggml-metal/ggml-metal-fusion.h
+index 5d994c249..f56227e0f 100644
+--- a/ggml/src/ggml-metal/ggml-metal-fusion.h
++++ b/ggml/src/ggml-metal/ggml-metal-fusion.h
+@@ -43,6 +43,7 @@ typedef enum ggml_metal_fusion_id {
+     GGML_METAL_FUSION_MOE_REDUCE,   // MUL + expert VIEWs + ADD chain (MoE output reduction)
+     GGML_METAL_FUSION_SSM_CONV_SILU, // SSM_CONV + UNARY (silu)
+     GGML_METAL_FUSION_MUL_MAT_ADD,  // MUL_MAT + ADD (residual added in the few-row MMA store)
++    GGML_METAL_FUSION_SCALE_UNARY,  // SCALE + UNARY (silu, sigmoid): the scale applied in the unary kernel
+ } ggml_metal_fusion_id;
+ 
+ struct ggml_metal_fusion; // defined in ggml-metal-fusion.cpp
+diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+index 2a14cd0c2..a87485d55 100644
+--- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+@@ -820,14 +820,29 @@ int ggml_metal_op_unary(ggml_metal_op_t ctx, int idx) {
+     ggml_metal_library_t lib = ctx->lib;
+     ggml_metal_encoder_t enc = ctx->enc;
+ 
+-    GGML_TENSOR_LOCALS( int32_t, ne0, op->src[0], ne);
+-    GGML_TENSOR_LOCALS(uint64_t, nb0, op->src[0], nb);
+-    GGML_TENSOR_LOCALS( int32_t, ne,  op,         ne);
+-    GGML_TENSOR_LOCALS(uint64_t, nb,  op,         nb);
++    // SCALE + UNARY: one dispatch reads the SCALE's input and writes the UNARY's output
++    int n_fuse = 1;
++    const ggml_tensor * pre = nullptr;
++    if (op->op == GGML_OP_SCALE && ctx->use_fusion()) {
++        int n = 1;
++        const ggml_metal_fusion * fusion = ctx->can_fuse(idx, GGML_METAL_FUSION_FULL, &n);
++        if (fusion && ggml_metal_fusion_get_id(fusion) == GGML_METAL_FUSION_SCALE_UNARY) {
++            pre    = op;
++            op     = ctx->node(idx + 1);
++            n_fuse = n;
++            ctx->count_fusions(fusion);
++        }
++    }
++    const ggml_tensor * src = pre ? pre->src[0] : op->src[0];
+ 
+-    GGML_ASSERT(ggml_is_contiguous_rows(op->src[0]));
++    GGML_TENSOR_LOCALS( int32_t, ne0, src, ne);
++    GGML_TENSOR_LOCALS(uint64_t, nb0, src, nb);
++    GGML_TENSOR_LOCALS( int32_t, ne,  op,  ne);
++    GGML_TENSOR_LOCALS(uint64_t, nb,  op,  nb);
+ 
+-    ggml_metal_buffer_id bid_src0 = ggml_metal_get_buffer_id(op->src[0]);
++    GGML_ASSERT(ggml_is_contiguous_rows(src));
++
++    ggml_metal_buffer_id bid_src0 = ggml_metal_get_buffer_id(src);
+     ggml_metal_buffer_id bid_dst  = ggml_metal_get_buffer_id(op);
+ 
+     ggml_metal_kargs_unary args = {
+@@ -864,6 +879,11 @@ int ggml_metal_op_unary(ggml_metal_op_t ctx, int idx) {
+         args.bias  = ggml_get_op_params_f32(op, 1);
+     }
+ 
++    if (pre) {
++        args.scale = ggml_get_op_params_f32(pre, 0);
++        args.bias  = ggml_get_op_params_f32(pre, 1);
++    }
++
+     if (op->op == GGML_OP_FILL) {
+         args.val = ggml_get_op_params_f32(op, 0);
+     }
+@@ -880,7 +900,7 @@ int ggml_metal_op_unary(ggml_metal_op_t ctx, int idx) {
+         args.val   = ggml_get_op_params_f32(op, 4); // eps
+     }
+ 
+-    auto pipeline = ggml_metal_library_get_pipeline_unary(lib, op);
++    auto pipeline = ggml_metal_library_get_pipeline_unary_ext(lib, op, pre != nullptr);
+ 
+     if (pipeline.c4) {
+         args.ne00 = ne00/4;
+@@ -904,7 +924,11 @@ int ggml_metal_op_unary(ggml_metal_op_t ctx, int idx) {
+         ggml_metal_encoder_dispatch_threadgroups(enc, nk0*ne01, ne02, ne03, nth, 1, 1);
+     }
+ 
+-    return 1;
++    if (pre && ggml_metal_fusion_info_debug(ctx->finfo) > 1) {
++        GGML_LOG_DEBUG("%s: fuse: SCALE + UNARY\n", __func__);
++    }
++
++    return n_fuse;
+ }
+ 
+ int ggml_metal_op_glu(ggml_metal_op_t ctx, int idx) {
+diff --git a/ggml/src/ggml-metal/kernels/unary.metal b/ggml/src/ggml-metal/kernels/unary.metal
+index e50a64863..0f35f6b41 100644
+--- a/ggml/src/ggml-metal/kernels/unary.metal
++++ b/ggml/src/ggml-metal/kernels/unary.metal
+@@ -2,6 +2,7 @@
+ 
+ constant short FC_unary_op [[function_constant(FC_UNARY + 0)]];
+ constant bool  FC_unary_cnt[[function_constant(FC_UNARY + 1)]];
++constant bool  FC_unary_pre[[function_constant(FC_UNARY + 2)]];   // a fused SCALE first (SCALE + UNARY)
+ 
+ template <typename T0, typename T, typename TC>
+ kernel void kernel_unary_impl(
+@@ -45,7 +46,12 @@ kernel void kernel_unary_impl(
+             }
+         }
+ 
+-        const TC x = (TC) src0_ptr[i0];
++        TC x = (TC) src0_ptr[i0];
++
++        if (FC_unary_pre) {
++            // exactly what the SCALE kernel stores, then reads back as the next op's input
++            x = (TC) (T) (args.scale * x + args.bias);
++        }
+ 
+         if (FC_OP == OP_UNARY_NUM_SCALE) {
+             dst_ptr[i0] = (T) (args.scale * x + args.bias);
+diff --git a/tests/test-backend-ops.cpp b/tests/test-backend-ops.cpp
+index b080ab496..691c2ba56 100644
+--- a/tests/test-backend-ops.cpp
++++ b/tests/test-backend-ops.cpp
+@@ -3782,6 +3782,44 @@ struct test_rms_norm_back : public test_case {
+ };
+ 
+ // GGML_OP_RMS_NORM + GGML_OP_MUL + GGML_OP_ADD (+ GGML_OP_MUL)
++// GGML_OP_SCALE + GGML_OP_UNARY (silu / sigmoid): the Metal backend fuses them (GGML_METAL_FUSION_SCALE_UNARY)
++struct test_scale_unary : public test_case {
++    const std::array<int64_t, 4> ne;
++    const ggml_unary_op uop;
++    const float s;
++    const float b;
++
++    std::string op_desc(ggml_tensor * t) override {
++        GGML_UNUSED(t);
++        return "SCALE_UNARY";
++    }
++
++    bool run_whole_graph() override { return true; }
++
++    std::string vars() override {
++        return VARS_TO_STR4(ne, uop, s, b);
++    }
++
++    test_scale_unary(std::array<int64_t, 4> ne = {64, 5, 4, 3}, ggml_unary_op uop = GGML_UNARY_OP_SILU,
++            float s = 0.25f, float b = 0.0f)
++        : ne(ne), uop(uop), s(s), b(b) {}
++
++    ggml_tensor * build_graph(ggml_context * ctx) override {
++        ggml_tensor * x = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne.data());
++        ggml_tensor * y = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne.data());
++        ggml_set_param(x);
++        ggml_set_name(x, "x");
++        ggml_set_param(y);
++        ggml_set_name(y, "y");
++        // a computed input, so the SCALE is not the graph's first node
++        ggml_tensor * in  = ggml_add(ctx, x, y);
++        ggml_tensor * sc  = ggml_scale_bias(ctx, in, s, b);
++        ggml_tensor * out = ggml_unary(ctx, sc, uop);
++        ggml_set_name(out, "out");
++        return out;
++    }
++};
++
+ struct test_rms_norm_mul_add : public test_case {
+     const ggml_type type;
+     const std::array<int64_t, 4> ne;
+@@ -10160,6 +10198,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
+         test_cases.emplace_back(new test_rms_norm_mul_rope({ 128, 4, 3, 1 }, 1e-6f, false, true, false, GGML_ROPE_TYPE_NORMAL, false, false, set_rows_type));
+     }
+ 
++    for (ggml_unary_op uop : { GGML_UNARY_OP_SILU, GGML_UNARY_OP_SIGMOID }) {
++        for (std::array<int64_t, 4> ne : { std::array<int64_t, 4>{2560, 4, 1, 1}, std::array<int64_t, 4>{63, 5, 4, 3},
++                                            std::array<int64_t, 4>{10240, 8, 1, 1}, std::array<int64_t, 4>{640, 1, 1, 1} }) {
++            test_cases.emplace_back(new test_scale_unary(ne, uop, 0.25f, 0.0f));
++            test_cases.emplace_back(new test_scale_unary(ne, uop, 1.5f, -0.75f));
++        }
++    }
+     for (float eps : { 0.0f, 1e-6f, 1e-4f, 1e-1f, 1.0f }) {
+         for (uint32_t n : { 64, 1025 }) {
+             test_cases.emplace_back(new test_rms_norm_mul_add(GGML_TYPE_F32, { n, 5, 4, 3 }, eps, false));

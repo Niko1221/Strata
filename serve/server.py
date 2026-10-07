@@ -4688,7 +4688,7 @@ def make_handler(svc: Service):
             self.send_header("Content-Length", "0")
             self.end_headers()
 
-        def _json(self, code, obj):
+        def _json(self, code, obj, headers=None):
             if self.record is not None:
                 with svc.status_lock:
                     self.record["http_status"] = code
@@ -4700,6 +4700,8 @@ def make_handler(svc: Service):
             body = json.dumps(obj, ensure_ascii=False).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json")
+            for k, v in (headers or {}).items():
+                self.send_header(k, v)
             self._cors()
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -4712,7 +4714,11 @@ def make_handler(svc: Service):
             given = auth[7:].strip() if auth.lower().startswith("bearer ") else self.headers.get("x-api-key", "")
             if key_matches(given, svc.api_key):
                 return True
-            self._json(401, {"error": {"type": "authentication_error", "message": "missing or wrong API key"}})
+            # RFC 9110 11.6.1: a 401 MUST carry a WWW-Authenticate challenge; RFC 6750 3 / 3.1: the Bearer scheme, with
+            # error="invalid_token" for a key that was sent and is wrong, and no error code when none was sent
+            challenge = 'Bearer realm="strata"' + (', error="invalid_token"' if given else "")
+            self._json(401, {"error": {"type": "authentication_error", "message": "missing or wrong API key"}},
+                       {"WWW-Authenticate": challenge})
             return False
 
         def do_GET(self):

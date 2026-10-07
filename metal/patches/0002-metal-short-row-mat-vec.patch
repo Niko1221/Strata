@@ -1,0 +1,58 @@
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.cpp b/ggml/src/ggml-metal/ggml-metal-device.cpp
+index e55925c0e..62059182b 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-device.cpp
+@@ -1,4 +1,6 @@
+ #include "ggml-metal-device.h"
++
++#include <cstdlib>
+ #include "ggml-metal-common.h"
+ 
+ #include "ggml-metal-impl.h"
+@@ -1026,6 +1028,18 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv(ggml_meta
+                     nr1 = 1;
+                     smem = 32*sizeof(float)*nr0;
+                     suffix = ne00 % 4 == 0 ? "_4" : "";
++
++                    // short rows (qwen4exp's hyper-connection up projection: 10240 rows of 320): a row of at most 16
++                    // blocks of 32 is summed by simdgroup 0 alone whatever nsg is (the others only add their zeros in
++                    // the reduction), so one simdgroup with 8 rows a threadgroup gives the same bits with a third of
++                    // the threads and a quarter of the threadgroups.  ne01 % 8: the last threadgroup reads no row
++                    // past the matrix
++                    static const bool short_off = getenv("GGML_METAL_MV_SHORT_DISABLE") != nullptr;   // A/B switch
++                    if (!short_off && ne00 % 32 == 0 && ne00 <= 16*32 && ne01 % 8 == 0) {
++                        nsg = 1;
++                        nr0 = 8;
++                        smem = 32*sizeof(float)*nr0;
++                    }
+                 }
+             } break;
+         case GGML_TYPE_Q1_0:
+diff --git a/ggml/src/ggml-metal/kernels/mul_mv.metal b/ggml/src/ggml-metal/kernels/mul_mv.metal
+index 0d1069f2c..38b83fdd0 100644
+--- a/ggml/src/ggml-metal/kernels/mul_mv.metal
++++ b/ggml/src/ggml-metal/kernels/mul_mv.metal
+@@ -1144,6 +1144,7 @@ void kernel_mul_mv_t_t_4_disp(
+         case 2: kernel_mul_mv_t_t_4_impl<T0, T04, T1, T14, 2, args_t>(args, src0, src1, dst, shmem, tgpig, tiisg, sgitg); break;
+       //case 3: kernel_mul_mv_t_t_4_impl<T0, T04, T1, T14, 3, args_t>(args, src0, src1, dst, shmem, tgpig, tiisg, sgitg); break;
+       //case 4: kernel_mul_mv_t_t_4_impl<T0, T04, T1, T14, 4, args_t>(args, src0, src1, dst, shmem, tgpig, tiisg, sgitg); break;
++        case 8: kernel_mul_mv_t_t_4_impl<T0, T04, T1, T14, 8, args_t>(args, src0, src1, dst, shmem, tgpig, tiisg, sgitg); break;   // short rows
+     };
+ }
+ 
+diff --git a/tests/test-backend-ops.cpp b/tests/test-backend-ops.cpp
+index 691c2ba56..7b72affa8 100644
+--- a/tests/test-backend-ops.cpp
++++ b/tests/test-backend-ops.cpp
+@@ -11666,6 +11666,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
+ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
+     std::vector<std::unique_ptr<test_case>> test_cases;
+ 
++    // qwen4exp hyper-connection projections at decode (n = 1): BF16, hc_dim 10240 <-> hc_lr 320, and the inject
++    for (auto mk : std::vector<std::array<int64_t, 2>>{ {320, 10240}, {10240, 320}, {4, 10240}, {2560, 10240} }) {
++        test_cases.emplace_back(new test_mul_mat(GGML_TYPE_BF16, GGML_TYPE_F32, mk[0], 1, mk[1], {1, 1}, {1, 1}));
++    }
++
+     // SWIGLU at a 27B-class FFN width, fused [gate|up] vs split operands
+     // note: same bytes either way, so a backend that indexes them differently shows it here
+     for (ggml_type type : {GGML_TYPE_F16, GGML_TYPE_F32, GGML_TYPE_BF16}) {

@@ -4,7 +4,7 @@ setup.py runs this by itself on macOS (metal_setup()); `python metal/setup_mac.p
 
 Like sycl/setup_intel.py this does not edit setup.py's steps: it imports it, replaces the few that are NVIDIA/AMD
 specific, and runs setup's own main().  The model choice, the download, the tokenizer and the context and KV
-questions are setup's.  What is replaced (docs/MACOS_PLAN.md, phase A):
+questions are setup's.  What is replaced (docs/MACOS.md):
 
   - the GPU check: the Mac's GPU, offered through setup's AMD path (the one that compiles locally and has no images);
     its memory is the share of the unified memory macOS lets the GPU wire (iogpu.wired_limit_mb, else ~75%);
@@ -15,6 +15,7 @@ questions are setup's.  What is replaced (docs/MACOS_PLAN.md, phase A):
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform
@@ -31,6 +32,11 @@ import setup as S  # noqa: E402
 ENGINE = ROOT / "engine-metal"                         # not engine/: update_installed_engine() manages that one
 EXE = "strata-metal"
 TRAINED_CTX = 262144                                   # the Metal engine has no rope scaling past it yet
+MTP_FILE = "mtp-qwen3.8-flash-next-q8_0.gguf"
+CONVERT_NUMPY = "2.4.0"                                # see metal/mtp_gguf.py: Q8_0_DIGEST
+ENGINE_SOURCES = ("metal/strata_metal.cpp", "metal/CMakeLists.txt", "tools/vision/strata_vision.cpp",
+                  *sorted(f"metal/patches/{p.name}" for p in (ROOT / "metal" / "patches").glob("*.patch")))   # rebuilt on change
+MTP = {"on": False, "dir": None}                       # --mtp on|off (this file's own option), tools/mtp_fetch.py's --out
 
 
 def sysctl(name: str) -> str:
@@ -38,19 +44,9 @@ def sysctl(name: str) -> str:
 
 
 def metal_working_set_gb() -> float:
-    """Metal's recommendedMaxWorkingSetSize (what llama.cpp treats as the GPU's memory; it follows a user's
-    iogpu.wired_limit_mb), asked through the Objective-C runtime.  0.0 when it cannot be asked."""
-    import ctypes
-    try:
-        objc = ctypes.cdll.LoadLibrary("/usr/lib/libobjc.dylib")
-        metal = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/Metal.framework/Metal")
-        metal.MTLCreateSystemDefaultDevice.restype = ctypes.c_void_p
-        objc.sel_registerName.restype = ctypes.c_void_p
-        dev = metal.MTLCreateSystemDefaultDevice()
-        send = ctypes.CFUNCTYPE(ctypes.c_uint64, ctypes.c_void_p, ctypes.c_void_p)(("objc_msgSend", objc))
-        return send(dev, objc.sel_registerName(b"recommendedMaxWorkingSetSize")) / 2**30 if dev else 0.0
-    except (OSError, AttributeError):
-        return 0.0
+    """Metal's recommendedMaxWorkingSetSize in GiB (serve/telemetry.py asks it); 0.0 when it cannot be asked."""
+    from serve.telemetry import metal_working_set_bytes
+    return metal_working_set_bytes() / 2**30
 
 
 def apple_gpu(ram: float) -> dict:
@@ -74,13 +70,15 @@ def llama_commit() -> str:
 
 def build_engine(*_a, **_k) -> Path:
     """metal/ compiled here (once per Strata version and llama.cpp commit) -> engine-metal/ with BUILD.json."""
-    meta = {"version": strata_version(), "source": "local", "backend": "metal", "llama": llama_commit(), "lib_dirs": []}
+    src = hashlib.sha256(b"".join((ROOT / f).read_bytes() for f in ENGINE_SOURCES)).hexdigest()[:16]
+    meta = {"version": strata_version(), "source": "local", "backend": "metal", "llama": llama_commit(), "src": src,
+            "lib_dirs": []}
     info = ENGINE / "BUILD.json"
     try:
         old = json.loads(info.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         old = {}
-    if (ENGINE / EXE).exists() and all(old.get(k) == meta[k] for k in ("version", "llama")):
+    if all((ENGINE / x).exists() for x in (EXE, S.VEXE)) and all(old.get(k) == meta[k] for k in ("version", "llama", "src")):
         return ENGINE
     if not S.out(["xcrun", "--find", "clang++"]).strip():
         S.fail("the Xcode command-line tools are missing (the compiler)", "run: xcode-select --install, then this again")
@@ -97,11 +95,43 @@ def build_engine(*_a, **_k) -> Path:
     if os.environ.get("STRATA_LLAMA_DIR"):             # an offline build: a llama.cpp checkout at the pinned commit
         cfg.append(f"-DSTRATA_LLAMA_DIR={os.environ['STRATA_LLAMA_DIR']}")
     S.run(cfg, quiet=True)
-    S.run([cmake, "--build", str(build), "--target", EXE, "-j", str(os.cpu_count() or 8)], quiet=True)
+    S.run([cmake, "--build", str(build), "--target", EXE, S.VEXE, "-j", str(os.cpu_count() or 8)], quiet=True)
     ENGINE.mkdir(exist_ok=True)
-    shutil.copy2(build / "metal" / EXE, ENGINE / EXE)
+    for exe in (EXE, S.VEXE):                          # the engine and the image encoder (tools/vision, on Metal)
+        shutil.copy2(build / "metal" / exe, ENGINE / exe)
     info.write_text(json.dumps(meta, indent=1), encoding="utf-8")
     return ENGINE
+
+
+def llama_source() -> Path:
+    """The llama.cpp source the engine was built from (its converter makes the MTP file): CMake's fetched copy, or
+    STRATA_LLAMA_DIR."""
+    src = Path(os.environ.get("STRATA_LLAMA_DIR") or ROOT / "build-metal" / "_deps" / "llama_cpp-src")
+    if not (src / "convert_hf_to_gguf.py").exists():
+        S.fail(f"llama.cpp's converter is not in {src}", "run setup again: it compiles the engine and fetches llama.cpp")
+    return src
+
+
+def mtp_gguf(mtp_dir: Path) -> Path:
+    """The MTP draft head for llama.cpp (metal/mtp_gguf.py), made once: tools/mtp_fetch.py's tensors (fetched in step
+    6) plus the embeddings and LM head, converted by llama.cpp's own converter, which needs PyTorch: its pinned
+    requirements go into .venv-mtp (~730 MB, once)."""
+    out = mtp_dir / MTP_FILE
+    if out.exists():
+        return out
+    llama = llama_source()
+    py = ROOT / ".venv-mtp" / "bin" / "python"
+    ready = "import torch, transformers, sentencepiece, numpy; assert numpy.__version__ == '" + CONVERT_NUMPY + "'"
+    if not py.exists() or subprocess.run([str(py), "-c", ready], capture_output=True).returncode != 0:
+        S.say("  Installing llama.cpp's converter (PyTorch etc., ~730 MB, once) into .venv-mtp ...")
+        S.run([sys.executable, "-m", "venv", str(ROOT / ".venv-mtp")])
+        S.run([str(py), "-m", "pip", "install", "-q", "-r", str(llama / "requirements" / "requirements-convert_hf_to_gguf.txt")])
+        # llama.cpp pins numpy 2.2.6, which converts this head wrongly (metal/mtp_gguf.py checks the result)
+        S.run([str(py), "-m", "pip", "install", "-q", f"numpy=={CONVERT_NUMPY}"])
+    S.say("  Converting the MTP draft head for llama.cpp (one time; 2.5 GB more of the checkpoint is read) ...")
+    S.run([sys.executable, str(ROOT / "metal" / "mtp_gguf.py"), "--mtp-dir", str(mtp_dir), "--llama", str(llama),
+           "--out", str(out), "--python", str(py)])
+    return out
 
 
 def flag(args, name):
@@ -118,10 +148,19 @@ def to_metal(cfg: dict) -> dict:
     if ctx > TRAINED_CTX:
         S.fail(f"a {ctx // 1024}K context needs rope scaling, which the Metal engine does not have yet",
                f"run setup again with --context {TRAINED_CTX} or less")
-    out = {k: v for k, v in cfg.items() if k not in ("lib_dirs", "env", "vision", "gpu", "gpus_asked", "layer_split",
+    out = {k: v for k, v in cfg.items() if k not in ("lib_dirs", "env", "gpu", "gpus_asked", "layer_split",
                                                      "draft_vocab", "cuda")}
+    kv = flag(args, "--kv") or "int8"
+    extra = []
+    if MTP["on"]:
+        # drafts are checked in batches; with a quantized KV cache llama.cpp's batched attention rounds differently
+        # from its one-token decode, and the answer moved after ~17 tokens (f16: after ~128 on one prompt of three)
+        extra = ["--mtp", str(mtp_gguf(MTP["dir"])), "--spec", "3"]
+        if kv != "f16":
+            S.ok(f"KV cache: 16-bit with the MTP drafts (not {kv}: a quantized cache lets the drafts change the answer)")
+        kv = "f16"
     out.update({"backend": "metal", "exe": str(ENGINE / EXE),
-                "args": ["--gguf", gguf, "--max-context", str(ctx), "--kv", flag(args, "--kv") or "int8"]})
+                "args": ["--gguf", gguf, "--max-context", str(ctx), "--kv", kv, *extra]})
     return out
 
 
@@ -140,20 +179,24 @@ def install(argv) -> None:
     def say_mac(msg=""):
         """setup's words for its AMD and CPU paths, said for the Mac."""
         msg = str(msg)
-        msg = msg.replace("Your AMD GPUs:", "Your GPU:").replace(" (AMD: docs/AMD_HIP.md)", " (Metal: docs/MACOS_PLAN.md)")
+        msg = msg.replace("Your AMD GPUs:", "Your GPU:").replace(" (AMD: docs/AMD_HIP.md)", " (Metal: docs/MACOS.md)")
         msg = re.sub(r"([\d.]+) GB VRAM(, metal)?", r"\1 GB of the unified memory usable by the GPU", msg)
         msg = msg.replace("(AVX2)", "(Apple Silicon: the GPU computes every expert)")
-        if "MTP draft layer (speculative" in msg or "only its ~5 GB of MTP tensors" in msg:
-            return                                      # not fetched here (run_mac skips it)
+        msg = msg.replace("(speculative decoding, ~2x faster output)", "(speculative decoding, 1.2-1.5x faster output "
+                          "on a Mac)")
+        if not MTP["on"] and ("MTP draft layer (speculative" in msg or "only its ~5 GB of MTP tensors" in msg):
+            return                                      # not fetched (run_mac skips it)
         if "MTP draft layer: " in msg:
-            msg = msg.split("MTP")[0] + "MTP draft layer: not used by the Metal engine yet (no speculative decoding)"
+            msg = msg.split("MTP")[0] + ("MTP draft layer: on (--mtp on; it is converted for llama.cpp at the end)"
+                                         if MTP["on"] else "MTP draft layer: off (./setup.sh --setup --mtp on: 1.2-1.5x "
+                                         "faster answers, which can differ from the plain ones after many tokens)")
         say(msg)
     S.say = say_mac
     S.EXE = EXE
     S.gpus = lambda *a, **k: []
     S.amd_gpus = lambda *a, **k: [gpu]
     S.amd_problem = lambda g: None
-    S.hip_vision = lambda asked: "none"                 # images: not in the Metal engine yet
+    S.hip_vision = lambda asked: {"yes": "gpu", "gpu": "gpu", "cpu": "cpu"}.get(asked, "none")   # strata-vision, Metal
     S.hipblaslt_table = lambda *a, **k: None
     S.build_engine_hip = build_engine
     S.cpu_info = lambda: (chip, True, False)            # no AVX: nothing of setup's CPU-kernel choices applies
@@ -164,8 +207,11 @@ def install(argv) -> None:
     run = S.run
 
     def run_mac(cmd, *a, **k):
-        """setup's commands, less the MTP draft layer's (fetched and built for the CUDA engine's speculation)."""
-        if len(cmd) > 1 and Path(str(cmd[1])).name in ("mtp_fetch.py", "mtp_pack.py", "mtp_rt.py"):
+        """setup's commands, less the CUDA engine's MTP packing; its fetch only when --mtp on (where it went is kept)."""
+        name = Path(str(cmd[1])).name if len(cmd) > 1 else ""
+        if name == "mtp_fetch.py" and "--out" in cmd:
+            MTP["dir"] = Path(str(cmd[cmd.index("--out") + 1]))
+        if name in ("mtp_pack.py", "mtp_rt.py") or (name == "mtp_fetch.py" and not MTP["on"]):
             return subprocess.CompletedProcess(cmd, 0, "", "")
         return run(cmd, *a, **k)
     S.run = run_mac
@@ -183,8 +229,22 @@ def install(argv) -> None:
     if not gpu["wired_limit_set"]:
         S.say(f"  The GPU may use about {gpu['vram_gb']:.0f} GB of this Mac's {ram:.0f} GB (macOS' default share). "
               "More, until the next restart: sudo sysctl iogpu.wired_limit_mb=<MB> (setup changes no system setting)")
+    argv = list(argv)
+    if "--mtp" in argv[:-1]:                           # this file's option: setup.py does not know it
+        i = argv.index("--mtp")
+        if argv[i + 1] not in ("on", "off"):
+            S.fail("--mtp takes on or off")
+        MTP["on"] = argv[i + 1] == "on"
+        del argv[i:i + 2]
+    else:                                              # a setup run again keeps an earlier choice
+        def has_mtp(p):
+            try:
+                return "--mtp" in json.loads(p.read_text(encoding="utf-8-sig")).get("args", [])
+            except (OSError, ValueError, AttributeError):
+                return False
+        MTP["on"] = any(has_mtp(p) for p in ROOT.glob("strata-*.json"))
     sys.argv = [str(ROOT / "setup.py"), *argv]
-    for opt, default in (("--backend", "hip"), ("--vision", "none"), ("--low-ram", "off")):
+    for opt, default in (("--backend", "hip"), ("--low-ram", "off")):
         if not any(x == opt or x.startswith(opt + "=") for x in argv):
             sys.argv += [opt, default]
     sys.exit(S.main())
