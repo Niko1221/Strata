@@ -26,6 +26,10 @@ namespace strata::core {
 
 class NativeHead;
 
+/// The batch attention's identity selection, one [0, cap) row per query (testable; see
+/// DFlashDrafter::upload).
+void dflash_identity_fill(int32_t* host, int rows, int64_t cap);
+
 /// Everything the artifact's metadata says about the drafter.  Defaults are the unloaded state;
 /// `load` fills every field or fails.
 struct DFlashGeometry {

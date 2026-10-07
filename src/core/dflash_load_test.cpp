@@ -281,6 +281,15 @@ int main() {
         bad.n_head_kv = 4;
         check(!DFlashArtifact::validate_supported(bad, err), "wrong kv heads refused");
     }
+    {   // the batch attention's identity table: one [0, cap) row per query row
+        std::vector<int32_t> ids(3 * 7, -1);
+        dflash_identity_fill(ids.data(), 3, 7);
+        bool ok = true;
+        for (int r = 0; r < 3; ++r)
+            for (int64_t i = 0; i < 7; ++i)
+                if (ids[(size_t) r * 7 + (size_t) i] != (int32_t) i) ok = false;
+        check(ok, "identity selections valid for every query row");
+    }
     {   // a truncated file fails with a precise error, not a crash
         const fs::path p = dir / "cut.gguf";
         fixture::write(p, meta(), tensors_llama(), 64);
