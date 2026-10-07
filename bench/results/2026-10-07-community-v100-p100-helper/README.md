@@ -15,10 +15,10 @@ quality or performance on other workloads.
 
 ## Hardware and software
 
-- **GPU 1 (primary):** NVIDIA Tesla V100-PCIE-32GB (PG500-216, compute
+- **CUDA0 (primary):** NVIDIA Tesla V100-PCIE-32GB (PG500-216, compute
   capability 7.0), 32,768 MiB, 250 W power limit. PCIe **Gen3 8.0 GT/s x8**
   (electrical x8 riser limit; both cards).
-- **GPU 2 (helper):** NVIDIA Tesla P100-PCIE-16GB (GP100GL, compute capability
+- **CUDA1 (helper):** NVIDIA Tesla P100-PCIE-16GB (GP100GL, compute capability
   6.0), 16,384 MiB, 250 W power limit. Used as the expert-helper cache
   (`--expert-cache-device1 auto`): 9,188 additional experts / 15.01 GiB, results
   return through pinned host rows. The cards sit on different CPU sockets
