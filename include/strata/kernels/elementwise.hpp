@@ -66,6 +66,16 @@ void f32_to_bf16_bulk(const float* x, uint16_t* y, int64_t n, void* stream);
 /// `x[i] = x[i] / (1 + exp(-x[i]))`, in place.
 void silu_inplace(float* x, int64_t n, void* stream);
 
+/// `gate[i] = silu(gate[i]) * up[i]`, in place in `gate` - the SwiGLU pair of one MLP's rows
+/// (the same reading as the shared expert's `silu(gate) @ (up)`, silu on the GATE side).
+/// The DFlash drafter's MLP runs this before its bf16 down projection.
+void swiglu_inplace(float* gate, const float* up, int64_t n, void* stream);
+
+/// `dst[i] = (uint16_t) bf16(src[i])` for strided rows: row r of `dst` (row stride `dst_stride`
+/// values) takes `n` values from `src + r * src_stride`.  The DFlash fusion input's gather.
+void bf16_gather_strided(const uint16_t* src, int64_t src_stride, uint16_t* dst, int64_t dst_stride,
+                         int n, int rows, void* stream);
+
 /// `build_norm`: `y[r][c] = x[r][c] / sqrt(MEAN_c(x[r]^2) + eps) * w[c]`, over the LAST axis.
 ///
 /// QSA's norm, used on `attn_q` (24x256), `attn_k` (2x256) and `indexer.q_proj` (4x128). `w` may be null.
