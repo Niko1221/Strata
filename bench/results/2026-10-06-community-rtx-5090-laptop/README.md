@@ -116,4 +116,4 @@ Memory, from [monitor.py](monitor.py) sampling once per second from before model
   The 128,000-token prompt does not fill the full 131,072-token window.
 
 The author documents local AI on consumer hardware (in German) on the KI SOUVERÄN channels:
-[YouTube](https://www.youtube.com/channel/UCE6Ch6g6Bo8v4ROpYDzOOxA) and [Telegram](https://t.me/lokale_ki).
+[YouTube (@KISouverän)](https://www.youtube.com/@KISouver%C3%A4n) and [Telegram](https://t.me/lokale_ki).
