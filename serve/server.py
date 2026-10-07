@@ -594,6 +594,7 @@ class StrataEngine:
         self.max_context = int(args[args.index("--max-context") + 1]) if "--max-context" in args else 4096
         self.can_stop = False            # the engine honours a STOP line mid-request (READY <ctx> stop)
         self.last = {}
+        self.cache = {"state": "disabled"}
         self.info = {}                   # INFO key=value facts (engine 0.1.8+): kv, expert slots, ... (Monitor tab)
         self.prefill_tok_s_mean = None
         self.progress = None             # (read, total) prompt tokens while a prompt is read, from PP lines
@@ -726,6 +727,17 @@ class StrataEngine:
         slot_q = self.slot_q
         line = None
         for line in proc.stdout:
+            if line.startswith("CACHE "):
+                cache = {}
+                for field in line.split()[1:]:
+                    k, _, v = field.partition("=")
+                    try:
+                        cache[k] = float(v) if "." in v else int(v)
+                    except ValueError:
+                        cache[k] = v
+                if self.proc is proc:
+                    self.cache = cache
+                continue
             # checked before batch routing: a fatal line is never a slot's own
             if line.startswith(FATAL_PREFIXES):
                 # release_gpu_waits invalidates the verifier, even if the native
@@ -2916,6 +2928,7 @@ class Service:
             "engine": (getattr(self.engine, "info", {}) or {}).get("version"),
             "started": int(self.started_at), "uptime_s": int(time.time() - self.started_at),
             "cache_max_tokens": ctx,
+            "cache": dict(getattr(self.engine, "cache", {"state": "disabled"})),
             "context": {"native": ctx, "max_positions": ctx},
             # one request at a time (more wait their turn), or "parallel": N batch slots (#465)
             "concurrency": {"serving": max(1, int(getattr(self.engine, "batch", 0) or 0)),

@@ -23,6 +23,7 @@
 #include "strata/core/session.hpp"
 #include "strata/kernels/sampler.hpp"
 
+#include "strata/core/idle_cache.hpp"
 #include <cuda_runtime.h>
 
 #include <cstdint>
@@ -35,6 +36,8 @@ class NativeHead;
 
 class MtpDrafter {
 public:
+    void set_idle_cache(bool on) { idle_cache_ = on; }
+    IdleDeviceArena& idle_arena() { return idle_arena_; }
     MtpDrafter() = default;
     ~MtpDrafter();
     MtpDrafter(const MtpDrafter&) = delete;
@@ -234,6 +237,8 @@ private:
     // Slot drafters borrow immutable weights and head; each still owns its state and scratch.
     bool owns_weights_ = true;
     bool owns_draft_head_ = true;
+    bool idle_cache_ = false;
+    IdleDeviceArena idle_arena_;
     void* state_arena_ = nullptr;
     QsaState st_;
     void* arena_ = nullptr;
