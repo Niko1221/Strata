@@ -1,0 +1,12 @@
+4c1eb2ceb4915e1192f4f386021897bde56a97f40a0bb78bb86465e0f7d2aca3  G:\Strata-IvyBridge-20261002-data\models\IQ3_S\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf
+316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113  G:\Strata-IvyBridge-20261002-data\models\IQ3_S\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf
+b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0  G:\Strata-IvyBridge-20261002-data\models\vision\mmproj-Qwen3.8-Flash-Next-BF16.gguf
+c724dc0b0822ada5d2977bf5bde821605feabaa64ea2e0045b67ca656329070a  G:\Strata-IvyBridge-20261002-data\mtp\rt\dense.bin
+09398406be61f1f54c93861f449e48b8df0bfccbc9ec9b2b7636775a6ea9244f  G:\Strata-IvyBridge-20261002-data\mtp\rt\experts.bin
+d2af3d8331e5c7a1985d1d589747230f9d56719a6d33c7cddc9ee6b81cde6b13  G:\Strata-IvyBridge-20261002-data\packs\iq3_s\dense.bin
+b2a014878c3b61d6a6f915e194055a5e68ede34f9465dd1cb13249d902f008ac  G:\Strata-IvyBridge-20261002-data\packs\iq3_s\index.txt
+d9ac2dfa3ee63c55c9c6a6db26f72da0cec0ee41733f007e5cbbbba71617aa5d  G:\Strata-IvyBridge-20261002-data\packs\iq3_s\native_experts.txt
+aef6eb1635ca3250a68c0bb3330a892248baf529aea2b23ddabd9e2e93bbbd0b  G:\Strata-IvyBridge-20261002-data\packs\iq3_s\conversions.json
+12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce  G:\Strata-IvyBridge-20261002-data\packs\iq3_s\tokenizer\chat_template.jinja
+87be2ac47d8bc7393b7435df6ccd276740019a393941a2585d5edce59f450c54  G:\Strata-IvyBridge-20261002-data\packs\iq3_s\tokenizer\tokenizer.json
+aa9a58e80e013fa99be27328c23aac4ddcb04dce6f456b4969247b9aba2769bd  G:\Strata-IvyBridge-20261002\build-ivy-cuda\strata.exe
