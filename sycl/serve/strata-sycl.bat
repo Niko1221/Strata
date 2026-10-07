@@ -18,5 +18,9 @@ if not exist "%HERE%\%BIN%" (
 rem the port's run-time switches: the device-built verify plan without host handshakes (docs/INTEL.md)
 set STRATA_VERIFY_DEVICE_PLAN=1
 set STRATA_VERIFY_NO_HOST=1
+rem No SYCL command graphs on the OpenCL backend (begin_recording fails: verify: begin capture failed):
+rem replay each window's body instead of its captured graph (slower per round, same tokens).
+rem Level Zero (level_zero:0, with ze sysman) can unset this again once the driver exposes it.
+if not defined STRATA_VERIFY_EAGER set STRATA_VERIFY_EAGER=1
 if not defined STRATA_STAGER_THREADS set STRATA_STAGER_THREADS=12
 "%HERE%\%BIN%" %*

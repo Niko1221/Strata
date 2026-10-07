@@ -168,6 +168,17 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0) 
         # The OpenCL backend has no free-VRAM query (dpct get_memory_info reads STRATA_DEVICE_FREE_MIB).
         env["STRATA_DEVICE_FREE_MIB"] = str(int((vram_gb - 1.0) * 1024))
         env["STRATA_DEVICE_TOTAL_MIB"] = str(int(vram_gb * 1024))
+    if S.WIN and vram_gb <= 0:
+        # Detection flaked on a rewrite (WMI hiccup): keep the previous config's values rather than
+        # silently dropping them - without them the cache sizes to 0 slots and nothing runs.
+        old_env = cfg.get("env") or {}
+        for k in ("STRATA_DEVICE_FREE_MIB", "STRATA_DEVICE_TOTAL_MIB", "STRATA_SYCL_BIN"):
+            if k in old_env and k not in env:
+                env[k] = old_env[k]
+    if S.WIN and vram_gb > 0:
+        # The OpenCL backend has no free-VRAM query (dpct get_memory_info reads STRATA_DEVICE_FREE_MIB).
+        env["STRATA_DEVICE_FREE_MIB"] = str(int((vram_gb - 1.0) * 1024))
+        env["STRATA_DEVICE_TOTAL_MIB"] = str(int(vram_gb * 1024))
     if not S.WIN and MOUNT.resolve() != ROOT.parent.resolve():
         env["STRATA_SYCL_ROOT"] = str(MOUNT)
     if env:
