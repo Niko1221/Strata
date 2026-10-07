@@ -29,6 +29,7 @@
 #include "strata/core/remote_experts.hpp"
 #include "strata/core/on_device.hpp"
 #include "strata/core/peer_experts.hpp"
+#include "strata/core/peer_placement.hpp"
 #include "strata/core/layer.hpp"
 #include "strata/core/layout.hpp"
 #include "strata/core/session.hpp"
@@ -3066,6 +3067,14 @@ int main(int argc, char** argv) {
     }
     GpuStage* const last_st = stages.empty() ? nullptr : stages.back().get();
 
+    const bool peer_capacity = strata::core::peer_capacity_enabled(
+        o.peer_device, std::getenv("STRATA_PEER_CAPACITY_AWARE"));
+    if (peer_capacity && (!native_pack || o.expert_cache_per_layer || o.vram_elastic || o.no_pool ||
+                          o.expert_profile.empty())) {
+        std::fprintf(stderr, "strata generate: STRATA_PEER_CAPACITY_AWARE=1 needs a native pack, "
+                             "--expert-profile and a shared, non-elastic cache with the expert pool\n");
+        return 2;
+    }
     std::vector<std::pair<int32_t, int32_t>> profile;
     if (!o.expert_profile.empty()) {
         int64_t pslots = 0;
@@ -3082,7 +3091,7 @@ int main(int argc, char** argv) {
         // STRATA_PEER_HOT_AT (default 8700, ~ the primary's slots) ranks, every pair with floor((r+1)f) > floor(rf)
         // moves to just after that point: the primary fills past them, the peer (which takes what the primary does
         // not hold, in order) gets them first.
-        if (o.peer_device >= 1) {   // default 0.45 (measured: 0.3-0.6 all better than 0; 0 = off, e.g. for the gate)
+        if (o.peer_device >= 1 && !peer_capacity) {   // legacy balancing; capacity-aware planning follows allocation pricing
             const char* ph = std::getenv("STRATA_PEER_HOT");
             const double f = ph ? std::atof(ph) : 0.45;
             const char* pa = std::getenv("STRATA_PEER_HOT_AT");
@@ -4197,7 +4206,65 @@ int main(int argc, char** argv) {
                      (long long) o.prefill_chunk, (long long) mib, (long long) (160 + (o.prefill_chunk * 680) / 1024));
         return mib + 64;   // a margin for the allocator
     };
-    if (o.expert_cache < 0) {
+    strata::core::PeerExperts peer;
+    std::vector<std::pair<int32_t, int32_t>> peer_ranked;
+    std::vector<int64_t> sized_slots;
+    if (peer_capacity) {
+        // Phase one: the peer's real scratch allocations precede both expert
+        // arenas. Price each owner's aligned per-layer blobs, never guessed slots.
+        if (srcp == nullptr || !peer.prepare(o.peer_device, *srcp, g.n_layers, g.n_expert, err)) {
+            std::fprintf(stderr, "strata generate: capacity-aware peer preparation: %s\n", err.c_str());
+            return 1;
+        }
+        uint64_t peer_cap = 0;
+        if (!peer.byte_budget(o.peer_reserve_mib, peer_cap, err)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        int64_t mtp_bind = (!o.mtp.empty() && native_head.loaded())
+                              ? (int64_t) mtp.bind_bytes(native_head.row_bytes(), n_vocab) : 0;
+        for (const auto& d : slot_mtp)
+            mtp_bind += (int64_t) d->bind_bytes(native_head.row_bytes(), n_vocab);
+        const uint64_t reserve = (uint64_t) (((int64_t) o.vram_reserve_mib + owned_prefill_mib()) << 20) +
+                                 (uint64_t) mtp_bind + (uint64_t) pipe_first;
+        const uint64_t free_b = strata::core::device_free_bytes();
+        uint64_t primary_cap = free_b > reserve ? free_b - reserve : 0;
+        const auto& lay = strata::kernels::cpu::expert_layout();
+        if (!auto_cache)
+            primary_cap = std::min(primary_cap, (uint64_t) std::max(o.expert_cache, 0) * lay.max_blob);
+        std::vector<uint64_t> layer_bytes;
+        for (int64_t l = 0; l < g.n_layers; ++l) layer_bytes.push_back(lay.blob_bytes(l));
+        strata::core::PeerPlacement placement;
+        try {
+            placement = strata::core::plan_peer_placement(
+                profile, layer_bytes, (int32_t) g.n_expert, primary_cap, peer_cap,
+                o.peer_slots > 0 ? (size_t) o.peer_slots : std::numeric_limits<size_t>::max());
+        } catch (const std::invalid_argument& e) {
+            std::fprintf(stderr, "strata generate: capacity-aware %s\n", e.what());
+            return 1;
+        }
+        // Phase two: slot sizes and admission order are the same explicit owner
+        // list. Allocation retries may trim only its tail; peer fill consults
+        // actual primary residency and can backfill those dropped pairs.
+        profile = placement.primary;
+        profile.insert(profile.end(), placement.peer.begin(), placement.peer.end());
+        profile.insert(profile.end(), placement.missed.begin(), placement.missed.end());
+        peer_ranked = placement.peer;
+        peer_ranked.insert(peer_ranked.end(), placement.ranked.begin(), placement.ranked.end());
+        for (const auto& pr : placement.primary) sized_slots.push_back((int64_t) lay.blob_bytes(pr.first));
+        o.expert_cache = (int) sized_slots.size();
+        std::fprintf(stderr, "strata generate: STRATA_PEER_CAPACITY_AWARE=1: byte caps %.2f/%.2f GiB; "
+                             "planned primary/peer/missed %zu/%zu/%zu pairs (%.2f/%.2f GiB); "
+                             "rank-derived heat proxy, legacy STRATA_PEER_HOT ignored\n",
+                     (double) primary_cap / 1073741824.0, (double) peer_cap / 1073741824.0,
+                     placement.primary.size(), placement.peer.size(), placement.missed.size(),
+                     (double) placement.primary_bytes / 1073741824.0,
+                     (double) placement.peer_bytes / 1073741824.0);
+        if (o.expert_cache == 0) {
+            std::fprintf(stderr, "strata generate: capacity-aware peer: no primary expert fits its byte budget\n");
+            return 1;
+        }
+    } else if (o.expert_cache < 0) {
         size_t free_b = 0, total_b = 0;
         free_b = strata::core::device_free_bytes(); (void) total_b;
         // Plan v0.3 P5: the batched prompt path's chunk buffers are allocated later, so they are reserved here -
@@ -4334,9 +4401,8 @@ int main(int argc, char** argv) {
     // one layer can land in another layer's slot. Every expert in a layer is one size, so the per-layer list is
     // `quota` copies of that layer's own blob, in layer order. `--expert-cache N` stays the budget of N largest
     // blobs, and the quota is however many copies of every layer fit in it.
-    std::vector<int64_t> sized_slots;
     uint64_t per_layer_bytes = 0;
-    if (native_pack && o.expert_cache > 0 && o.expert_cache_per_layer) {
+    if (!peer_capacity && native_pack && o.expert_cache > 0 && o.expert_cache_per_layer) {
         const size_t free_b = strata::core::device_free_bytes();   // the same reading the shared-cache sizing uses
         const auto& lay = strata::kernels::cpu::expert_layout();
         const int asked = o.expert_cache;
@@ -4361,7 +4427,7 @@ int main(int argc, char** argv) {
                          asked, (double) budget / 1073741824.0, o.expert_cache, (long long) q,
                          (double) ((uint64_t) q * per_layer_bytes) / 1073741824.0);
         }
-    } else if (native_pack && o.expert_cache > 0 && !profile.empty()) {
+    } else if (!peer_capacity && native_pack && o.expert_cache > 0 && !profile.empty()) {
         size_t free_b = 0, total_b = 0;
         free_b = strata::core::device_free_bytes(); (void) total_b;
         const auto& lay = strata::kernels::cpu::expert_layout();
@@ -4809,15 +4875,17 @@ int main(int argc, char** argv) {
     }
 
     // ---- Multi-GPU: the second GPU's expert tier, filled with the ranked pairs the primary does not hold
-    strata::core::PeerExperts peer;
     if (o.peer_device >= 1) {
         if (profile.empty() || srcp == nullptr || o.expert_cache <= 0) {
             std::fprintf(stderr, "strata generate: --peer-device needs --expert-profile and the expert cache\n");
             return 1;
         }
         const auto tp0 = Clock::now();
-        if (!peer.open(o.peer_device, profile, xcache, *srcp, g.n_layers, g.n_expert, o.peer_reserve_mib, o.peer_slots,
-                       err)) {
+        const bool peer_ok = peer_capacity
+            ? peer.fill_ranked(peer_ranked, xcache, o.peer_reserve_mib, o.peer_slots, err, true)
+            : peer.open(o.peer_device, profile, xcache, *srcp, g.n_layers, g.n_expert,
+                        o.peer_reserve_mib, o.peer_slots, err);
+        if (!peer_ok) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }

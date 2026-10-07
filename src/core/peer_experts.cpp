@@ -81,6 +81,11 @@ void PeerExperts::close() {
 bool PeerExperts::open(int device, const std::vector<std::pair<int32_t, int32_t>>& ranked, const ExpertCache& primary,
                        ExpertSource& src, int64_t n_layers, int64_t n_expert, int reserve_mib, int64_t max_slots,
                        std::string& err) {
+    return prepare(device, src, n_layers, n_expert, err) &&
+           fill_ranked(ranked, primary, reserve_mib, max_slots, err);
+}
+
+bool PeerExperts::prepare(int device, ExpertSource& src, int64_t n_layers, int64_t n_expert, std::string& err) {
     close();
     int count = 0;
     if (!ck(cudaGetDeviceCount(&count), "cudaGetDeviceCount", err)) return false;
@@ -130,26 +135,53 @@ bool PeerExperts::open(int device, const std::vector<std::pair<int32_t, int32_t>
         ck(cudaMalloc((void**) &d_q8_, (size_t) CAP * (H / 32) * 36), "activations", err) &&
         ck(cudaMalloc(&d_scratch_, scratch), "scratch", err);
     if (!alloc_ok) { close(); return false; }
+    return true;
+}
 
-    // the pairs the primary does not hold, in rank order, as many as fit
+bool PeerExperts::byte_budget(int reserve_mib, uint64_t& budget, std::string& err) const {
+    if (!valid()) { err = "peer experts: scratch has not been prepared"; return false; }
+    On on(device_);
     size_t free_b = 0, total_b = 0;
-    if (!ck(cudaMemGetInfo(&free_b, &total_b), "cudaMemGetInfo", err)) { close(); return false; }
+    if (!ck(cudaMemGetInfo(&free_b, &total_b), "cudaMemGetInfo", err)) return false;
     const uint64_t reserve = (uint64_t) std::max(reserve_mib, 128) << 20;
-    const uint64_t budget = free_b > reserve ? free_b - reserve : 0;
+    budget = free_b > reserve ? free_b - reserve : 0;
+    return true;
+}
+
+bool PeerExperts::fill_ranked(const std::vector<std::pair<int32_t, int32_t>>& ranked, const ExpertCache& primary,
+                             int reserve_mib, int64_t max_slots, std::string& err, bool capacity_aware) {
+    uint64_t budget = 0;
+    if (!byte_budget(reserve_mib, budget, err)) { close(); return false; }
+    On on(device_);
+    const auto& lay = strata::kernels::cpu::expert_layout();
+    ExpertSource& src = *src_;
+    const int64_t n_layers = n_layers_, n_expert = n_expert_;
     std::vector<std::pair<int32_t, int32_t>> pick;
     std::vector<int64_t> sizes;
+    std::vector<uint8_t> seen(capacity_aware ? (size_t) (n_layers * n_expert) : 0, 0);
     uint64_t used = 0;
     for (const auto& pr : ranked) {
         if (primary.slot_of(pr.first, pr.second) >= 0) continue;
+        if (capacity_aware) {
+            const size_t i = (size_t) (pr.first * n_expert + pr.second);
+            if (seen[i]) continue;
+            seen[i] = 1;
+        }
         const uint64_t b = lay.blob_bytes(pr.first);
         const uint64_t b256 = lay.native ? (b + 255) / 256 * 256 : lay.max_blob;
-        if (used + b256 > budget) break;
+        if (b256 > budget - used) {
+            if (capacity_aware) continue;
+            break;
+        }
         if (max_slots > 0 && (int64_t) pick.size() >= max_slots) break;
         used += b256;
         pick.push_back(pr);
         sizes.push_back((int64_t) b);
     }
-    if (pick.empty()) { err = "peer experts: no room or no expert left for the peer"; close(); return false; }
+    if (pick.empty()) {
+        if (capacity_aware) { close(); return true; }
+        err = "peer experts: no room or no expert left for the peer"; close(); return false;
+    }
     const bool opened = lay.native ? cache_.open_sized(sizes, n_layers, n_expert, err)
                                    : cache_.open((int64_t) pick.size(), n_layers, n_expert, (int64_t) lay.max_blob, err);
     if (!opened) { err = "peer experts: " + err; close(); return false; }
