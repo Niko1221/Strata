@@ -33,6 +33,11 @@ class BatchProtocolTest(unittest.TestCase):
         with self.assertRaisesRegex(ProtocolError, "anchor finished"):
             run_batch(RecordingEngine(), iter(["T 1", "BADM 0 1", "BDONE 0"]), [[1], [2]], 20, "", [3])
 
+    def test_anchor_must_remain_active_after_a_staggered_admission(self):
+        with self.assertRaisesRegex(ProtocolError, "finished during admission"):
+            run_batch(RecordingEngine(), iter(["T 1", "BADM 0 1", "BT 0 2", "BDONE 0", "T 3", "BADM 1 1"]),
+                      [[1], [2]], 20, "", [2])
+
     def test_missing_completion_and_engine_error_fail(self):
         for tail, message in (([], "ended"), (["ERR verify failed"], "ERR verify failed")):
             with self.subTest(tail=tail), self.assertRaisesRegex(ProtocolError, message):

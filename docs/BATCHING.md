@@ -74,7 +74,8 @@ python tools/batch_test.py --exe build/strata --config strata-model.json --batch
 ```
 
 The JSON records the active slots and anchor token count at each admission, including tokens emitted while the
-new prompt is read. An anchor that finishes before a scheduled admission is a failed test. Add `--promote-after 4`
+new prompt is read. The anchor must still be active after each scheduled admission; otherwise the test fails
+and asks for a larger `--max-new`. Add `--promote-after 4`
 to exercise the server's `GEN` → `STOP` → `BGEN(prompt + emitted tokens)` transition before the staggered admissions.
 Add `--long-tokens 1200` to make the last request read a longer prompt.
 
