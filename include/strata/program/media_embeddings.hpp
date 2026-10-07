@@ -63,7 +63,10 @@ struct MediaPositionPlan {
 };
 
 void validate_media(const MediaBundle& bundle, const MediaLimits& limits = {});
-MediaBundle read_media(std::istream& in, const MediaLimits& limits = {});
+// Model profile is intentionally stricter than the general SVE2 codec.
+void validate_qwen4_media(const MediaBundle& bundle, const MediaLimits& limits = {});
+MediaBundle read_media(std::istream& in, const MediaLimits& limits = {}, bool qwen4 = false,
+                       const std::vector<int64_t>* request_tokens = nullptr);
 void write_media(std::ostream& out, const MediaBundle& bundle, const MediaLimits& limits = {});
 MediaPositionPlan media_positions(const MediaBundle& bundle, uint64_t capacity, const MediaLimits& limits = {});
 std::vector<LegacyImage> read_legacy_images(std::istream& in, const MediaLimits& limits = {});
@@ -71,5 +74,6 @@ void write_legacy_images(std::ostream& out, const std::vector<LegacyImage>& imag
 MediaBundle adapt_legacy_images(const std::vector<LegacyImage>& images, const std::vector<int32_t>& tokens,
                               int32_t pad_id, const MediaLimits& limits = {});
 uint64_t media_span_fingerprint(const MediaBundle& bundle, size_t index, const MediaLimits& limits = {});
+std::vector<uint64_t> media_fingerprints(const MediaBundle& bundle, const MediaLimits& limits = {});
 
 }  // namespace strata::program

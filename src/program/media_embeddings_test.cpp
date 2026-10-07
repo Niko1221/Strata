@@ -134,6 +134,36 @@ void tests(const char* fixture) {
     }
     refused([&] { adapt_legacy_images(images, {11,248056,12}, 248056); }, "legacy short pad run");
     refused([&] { adapt_legacy_images(images, {11,248056,248056}, 248056); }, "legacy terminal image refused");
+    check(media_fingerprints(b) == std::vector<uint64_t>{media_span_fingerprint(b, 0),
+                                                       media_span_fingerprint(b, 1)}, "batch fingerprints preserve legacy/video identity");
+    MediaBundle q;
+    q.width = 2560; q.tokens = {11, 248053, 248057, 248057, 248054, 12};
+    VisualSpan group;
+    group.kind = MediaKind::Video; group.pad_id = 248057; group.start = 2; group.advance = 2;
+    group.positions = {{0,0,0}, {0,0,1}}; group.embeddings.resize(2 * q.width);
+    q.spans = {group};
+    validate_qwen4_media(q);
+    const auto qr = bytes(q);
+    std::istringstream qi(qr, std::ios::binary);
+    check(bytes(read_media(qi, {}, true)) == qr, "Qwen4 profile read/roundtrip");
+    auto wrong_profile = q;
+    wrong_profile.tokens[1] = 17;
+    const auto short_wrong = bytes(wrong_profile).substr(0, 64 + q.tokens.size() * 4 + 64 + 24);
+    std::istringstream early(short_wrong, std::ios::binary);
+    try { read_media(early, {}, true); check(false, "invalid profile accepted"); }
+    catch (const MediaError& e) {
+        check(std::string(e.what()).find("delimiters") != std::string::npos, "profile rejection precedes embedding reads");
+    }
+    const std::vector<int64_t> other_request = {99, 248053, 248057, 248057, 248054, 12};
+    std::istringstream binding(qr.substr(0, 64 + q.tokens.size() * 4), std::ios::binary);
+    try { read_media(binding, {}, true, &other_request); check(false, "unbound request accepted"); }
+    catch (const MediaError& e) {
+        check(std::string(e.what()).find("match the request") != std::string::npos, "request binding precedes payload reads");
+    }
+    wrong_profile = q; wrong_profile.spans[0].positions[0][0] = 1;
+    refused([&] { validate_qwen4_media(wrong_profile); }, "Qwen4 rejects nonzero relative video time");
+    wrong_profile = q; wrong_profile.spans[0].advance = 3;
+    refused([&] { validate_qwen4_media(wrong_profile); }, "Qwen4 rejects a wrong group advance");
     uint32_t rng = 77;
     for (int i = 0; i < 4000; ++i) {
         auto fuzz = raw;

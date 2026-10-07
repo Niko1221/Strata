@@ -176,7 +176,25 @@ void validate_media(const MediaBundle& b, const MediaLimits& l) {
     for (const auto& s : b.spans) floats_ok(s.embeddings, mul(s.positions.size(), b.width));
 }
 
-MediaBundle read_media(std::istream& in, const MediaLimits& l) {
+static void qwen4_structure(const MediaBundle& b) {
+    need(b.width == 2560, "Qwen4 media needs projection width 2560");
+    for (const auto& span : b.spans) {
+        const int32_t pad = span.kind == MediaKind::Image ? 248056 : 248057;
+        need(span.pad_id == pad, "media kind/pad does not match the Qwen4 profile");
+        const uint64_t rows = span.positions.size(), end = span.start + rows;
+        need(span.start > 0 && end < b.tokens.size() && b.tokens[size_t(span.start - 1)] == 248053 &&
+             b.tokens[size_t(end)] == 248054, "a Qwen4 visual span needs its vision delimiters");
+        const uint64_t nx = uint64_t(span.positions.back()[2]) + 1;
+        const uint64_t ny = uint64_t(span.positions.back()[1]) + 1;
+        need(nx <= rows && ny <= rows && nx * ny == rows && span.advance == std::max(nx, ny),
+             "Qwen4 temporal groups must have a rectangular spatial grid/advance");
+        for (uint64_t i = 0; i < rows; ++i)
+            need(span.positions[size_t(i)] == MediaPosition{0, int32_t(i / nx), int32_t(i % nx)},
+                 "Qwen4 groups need zero relative time and row-major spatial positions");
+    }
+}
+
+MediaBundle read_media(std::istream& in, const MediaLimits& l, bool qwen4, const std::vector<int64_t>* request_tokens) {
     check_limits(l);
     const uint64_t magic = read_u(in, 4), version = read_u(in, 2), header = read_u(in, 2), flags = read_u(in, 4);
     need(magic == kV2 && version == 2 && header == kHeader && flags == 0, "unsupported media header");
@@ -195,6 +213,11 @@ MediaBundle read_media(std::istream& in, const MediaLimits& l) {
         const int32_t token = read_i(in);
         token_ok(token, l);
         b.tokens.push_back(token);
+    }
+    if (request_tokens != nullptr) {
+        need(b.tokens.size() == request_tokens->size(), "media tokens do not match the request");
+        for (size_t i = 0; i < b.tokens.size(); ++i)
+            need(int64_t(b.tokens[i]) == (*request_tokens)[i], "media tokens do not match the request");
     }
     b.spans.reserve(size_of(ns));
     std::vector<uint64_t> counts;
@@ -223,6 +246,7 @@ MediaBundle read_media(std::istream& in, const MediaLimits& l) {
         for (uint64_t row = 0; row < counts[i]; ++row) pos.push_back({read_i(in), read_i(in), read_i(in)});
     }
     validate_structure(b, l);
+    if (qwen4) qwen4_structure(b); // BEFORE reading any embedding payload
     for (size_t i = 0; i < b.spans.size(); ++i)
         b.spans[i].embeddings = read_floats(in, mul(counts[i], b.width));
     eof(in);
@@ -248,6 +272,11 @@ void write_media(std::ostream& out, const MediaBundle& b, const MediaLimits& l) 
     }
     for (const auto& s : b.spans) for (const auto& pos : s.positions) for (int32_t p : pos) write_u(out, uint32_t(p), 4);
     for (const auto& s : b.spans) write_floats(out, s.embeddings);
+}
+
+void validate_qwen4_media(const MediaBundle& b, const MediaLimits& l) {
+    validate_media(b, l);
+    qwen4_structure(b);
 }
 
 MediaPositionPlan media_positions(const MediaBundle& b, uint64_t capacity, const MediaLimits& l) {
@@ -349,8 +378,7 @@ MediaBundle adapt_legacy_images(const std::vector<LegacyImage>& images, const st
     return b;
 }
 
-uint64_t media_span_fingerprint(const MediaBundle& b, size_t index, const MediaLimits& l) {
-    validate_media(b, l);
+static uint64_t span_fingerprint(const MediaBundle& b, size_t index) {
     need(index < b.spans.size(), "invalid span index");
     const auto& s = b.spans[index];
     uint64_t h = 1469598103934665603ull;  // Existing image-cache seed.
@@ -363,6 +391,19 @@ uint64_t media_span_fingerprint(const MediaBundle& b, size_t index, const MediaL
     }
     for (float f : s.embeddings) hash_u(h, float_bits(f), 4);
     return h;
+}
+
+uint64_t media_span_fingerprint(const MediaBundle& b, size_t index, const MediaLimits& l) {
+    validate_media(b, l);
+    return span_fingerprint(b, index);
+}
+
+std::vector<uint64_t> media_fingerprints(const MediaBundle& b, const MediaLimits& l) {
+    validate_media(b, l); // once, not one full-payload scan per temporal group
+    std::vector<uint64_t> result;
+    result.reserve(b.spans.size());
+    for (size_t i = 0; i < b.spans.size(); ++i) result.push_back(span_fingerprint(b, i));
+    return result;
 }
 
 }  // namespace strata::program
