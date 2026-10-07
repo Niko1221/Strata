@@ -104,6 +104,19 @@ public:
         hist_len_ = history_len;
         if (next_) next_->set_history(history, history_len);
     }
+    /// PROBABILISTIC DRAFT ACCEPTANCE (core/spec_prob.hpp, STRATA_SPEC_PROB=1): for the NEXT run() only, judge the
+    /// window's first `n_q` drafts against the drafter's distributions `q` (host memory, n_q rows of kSpecQStride
+    /// int32: ids, -1 terminated, then probabilities as float bits) with rejection sampling instead of exact match; the
+    /// drafts past `n_q` (a lookup chain's tail) are point masses.  Has no effect on a greedy request, a window of one
+    /// token, or where the split sampler cannot run - those take the exact-match path.  Cleared by run().
+    void set_spec_q(const int32_t* q, int n_q) {
+        spec_q_ = q;
+        spec_nq_ = n_q;
+        if (next_) next_->set_spec_q(q, n_q);
+    }
+    /// Counters of the rejection path (windows judged, drafts kept / offered over its rows with a q list).
+    int64_t spec_windows = 0;
+
     /// Off: `run` skips the request's head sampling and `out` is the recorded greedy pick.  For windows whose
     /// picks are discarded - a prompt read through windows commits every token - so they cost no sampler launch
     /// or sync and never read a history staged for another position.
@@ -266,7 +279,7 @@ private:
     int brow_[8] = {};                     ///< ... and row t is slot brow_[t]
     bool last_batch_ = false;              ///< the last run was a batch window (set_plan_slot: one group)
     std::map<std::vector<int>, cudaGraphExec_t> exec_bm_, commit_bm_;   ///< full row layout avoids slot-ID collisions
-    std::map<std::vector<int>, uint64_t> bm_used_;   ///< last use of each captured layout (LRU, only with a graph limit)
+    std::map<std::vector<int>, uint64_t> bm_used_;   ///< last use of each captured layout (LRU)
     uint64_t bm_tick_ = 0;
     size_t batch_graph_limit_ = 0;         ///< 0: keep every captured batch graph (0.1.39); N: LRU-evict beyond N layouts
     int last_rows_[8] = {};                ///< the slots of the last batch window's rows
@@ -295,6 +308,11 @@ private:
     void* arena_b_ = nullptr;
     int64_t last_pos_b_[8] = {};
     bool capture_batch(const int* rows, int S, int hbase, std::string& err);
+    /// Free the graph pair of the least recently used batch layout other than `keep` (`evicted`: there was one).
+    bool evict_batch_graph(const std::vector<int>& keep, bool& evicted, std::string& err);
+    /// cudaGraphInstantiate; out of VRAM, batch layouts other than `key` are evicted (LRU) until it fits.
+    bool instantiate_evicting(cudaGraphExec_t& ex, cudaGraph_t graph, const std::vector<int>& key, const char* what,
+                              std::string& err);
     void collect_profile();   ///< STRATA_VERIFY_PROFILE: add the last window's stamps to prof_sum_
     void accumulate_profile(const unsigned long long* stamps);   ///< one window's stamps (host copy) into prof_sum_
     // pipelined windows (pl_launch ...)
@@ -318,6 +336,9 @@ private:
         return s;
     }();   ///< greedy by default; per-request via set_sampling
     const int32_t* hist_d_ = nullptr;   ///< penalty-history row (set_history); null = no penalties apply
+    const int32_t* spec_q_ = nullptr;   ///< set_spec_q: the drafter's q rows for the next window (host)
+    int spec_nq_ = 0;
+    int32_t* d_spec_ = nullptr;          ///< device: kVerifyMaxT draft ids, then kVerifyMaxT q rows
     int hist_len_ = 0;
     bool head_sampling_ = true;          ///< set_head_sampling
     int device_ = -1;                    ///< the device `init` ran on: run/commit switch to it (layer split)
@@ -376,6 +397,12 @@ private:
     cudaStream_t cs_ = nullptr;
     cudaStream_t sh_cs_ = nullptr;
     cudaEvent_t ev_fork_ = nullptr, ev_join_ = nullptr;
+    // STRATA_DF_BRANCH: a layer's mixer work that reads only the layer's input, captured as parallel graph branches
+    // on these side streams (record_window); the same kernels on the same inputs, only their order is freer
+    bool df_branch_ = false;
+    cudaStream_t df_side_[2] = {};
+    cudaEvent_t df_fork_ = nullptr;
+    cudaEvent_t df_join_[2] = {};
     cudaGraphExec_t exec_[9] = {};
     cudaGraphExec_t exec_nr_[9] = {};   // #871: the doorbell variant of a stage that is all-resident otherwise
     cudaGraphExec_t commit_exec_ = nullptr;
@@ -417,6 +444,7 @@ private:
     float *ple_ = nullptr, *emb_ = nullptr, *R_ = nullptr, *mixed_ = nullptr, *bo_ = nullptr;
     float *inj_ = nullptr, *inj2_ = nullptr, *lo_ = nullptr, *rs_ = nullptr, *xn_ = nullptr;
     uint8_t* xq_ = nullptr;                                   // T columns of q8_1
+    uint8_t* xil_ = nullptr;                                  // fork F4: the interleaved copy of xq_'s 2-4 columns
     uint8_t* sh_xq_ = nullptr;                                // T columns of q8_1 for shared expert branch
     float *qkv_L_ = nullptr, *h_L_ = nullptr, *gate_L_ = nullptr, *beta_L_ = nullptr;   // per GDN layer
     float *z_ = nullptr, *y_ = nullptr, *y_dummy_ = nullptr;

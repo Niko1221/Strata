@@ -6,12 +6,14 @@
 //
 //   strata-vision --mmproj <mmproj.gguf> --model <text model .gguf, first split> [--gpu] [--threads N]
 //                 [--max-tokens N] [--min-tokens N] [--flash-attn on|off|auto]
+// Flash attention defaults to auto, and to off on the CPU when ggml is built with AVX-512 (see main).
 //
 // Resident: prints "READY <n_embd>", then per stdin line
 //   ENC <image path> <output path>   ->  "OK <n_tokens> <nx> <ny> <ms>"  or  "ERR <message>"
 //   QUIT
 // The output file is  int32 {0x31455653 'SVE1', n_tokens, nx, ny, n_embd}  then float32 [n_tokens][n_embd],
 // row i at grid position (x = i % nx, y = i / nx).  The text model is opened vocab-only (no weights).
+#include "ggml-cpu.h"
 #include "gguf.h"
 #include "llama.h"
 #include "mtmd.h"
@@ -57,6 +59,7 @@ int main(int argc, char** argv) {
     bool gpu = false;
     int threads = 0, max_tokens = 0, min_tokens = 0;
     llama_flash_attn_type fa = LLAMA_FLASH_ATTN_TYPE_AUTO;
+    bool fa_given = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> std::string {
@@ -73,6 +76,7 @@ int main(int argc, char** argv) {
             const std::string v = next();
             fa = v == "on" ? LLAMA_FLASH_ATTN_TYPE_ENABLED : v == "off" ? LLAMA_FLASH_ATTN_TYPE_DISABLED
                                                                         : LLAMA_FLASH_ATTN_TYPE_AUTO;
+            fa_given = true;
         }
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
@@ -117,6 +121,12 @@ int main(int argc, char** argv) {
     cp.use_gpu = gpu;
     cp.print_timings = false;
     cp.warmup = false;
+    // On the CPU "auto" turns flash attention on.  ggml's fast (tiled) CPU kernel for it needs the head size, 72 in this
+    // encoder, to be a multiple of the vector width: 8 floats with AVX2 (the release builds), 16 with AVX-512 (a build
+    // from source on a CPU that has it), where ggml falls back to a kernel that is several times slower and accumulates
+    // in FP16.  A 1024x1024 picture on a Ryzen 7 7700X, 8 threads: AVX2 8-10 s with it, 14-15 s without; AVX-512 44 s
+    // with it (26% off the FP32 attention's output), 13 s without.
+    if (!gpu && !fa_given && ggml_cpu_has_avx512()) fa = LLAMA_FLASH_ATTN_TYPE_DISABLED;
     cp.flash_attn_type = fa;
     // on the CPU without --threads: one per core (mtmd's own default is 4 threads)
     if (threads <= 0 && !gpu) threads = std::max(1u, std::thread::hardware_concurrency() / 2);

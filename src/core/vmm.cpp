@@ -1,6 +1,6 @@
 #include "strata/core/vmm.hpp"
 
-#if !defined(STRATA_USE_HIP)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
 #include <cuda.h>
 #include <cuda_runtime.h>
 
@@ -25,9 +25,15 @@ struct Api {
 template <class F> bool resolve(const char* name, F& f) {
     cudaDriverEntryPointQueryResult q{};
     void* p = nullptr;
-    if (cudaGetDriverEntryPointByVersion(name, &p, 12000, cudaEnableDefault, &q) != cudaSuccess ||
-        q != cudaDriverEntryPointSuccess || p == nullptr)
+#if CUDART_VERSION >= 12050
+    const cudaError_t e = cudaGetDriverEntryPointByVersion(name, &p, 12000, cudaEnableDefault, &q);
+#else   // the versioned query arrived in CUDA 12.5
+    const cudaError_t e = cudaGetDriverEntryPoint(name, &p, cudaEnableDefault, &q);
+#endif
+    if (e != cudaSuccess || q != cudaDriverEntryPointSuccess || p == nullptr) {
+        (void) cudaGetLastError();
         return false;
+    }
     f = (F) p;
     return true;
 }

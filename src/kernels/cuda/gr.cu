@@ -300,6 +300,7 @@ __global__ void gr_write_kernel(const float* __restrict__ R, const float* __rest
 
 void gr_set_fp32_activations(bool enabled) { fp32_activations = enabled; }
 void gr_set_native_mmvf(bool enabled) { native_mmvf = enabled; }
+bool gr_native_mmvf_enabled() { return native_mmvf; }
 
 size_t gr_workspace_init(const GrShapes& s, void* base, GrWorkspace& out) {
     const size_t hc_dim = (size_t) s.hc * (size_t) s.n_embd;
