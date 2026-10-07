@@ -94,7 +94,7 @@ class ResourceServiceTests(unittest.TestCase):
         proc = self.svc.engine.proc
         for now in range(10, 19, 2):
             reading = sample(now)
-            reading["workload"] = {"complete": True, "codex_present": True,
+            reading["workload"] = {"complete": True,
                                    "cpu_percent": 0, "rss_bytes": 9 * 2**30}
             self.svc.memory_snapshot = mock.Mock(return_value=reading)
             with mock.patch("serve.server.time.time", return_value=now):

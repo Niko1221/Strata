@@ -270,7 +270,7 @@ void ram_blocks(bool pin, bool mixed = false) {
     require(!live_memory_ram_step(new_growth_done, [&](bool& reached) {
                 return source.resize_live_resident(rounded_target, block, UINT64_MAX, res, rank, reached, err);
             }) && !new_growth_done && source.resident_bytes() == block &&
-            err == "live RAM: physical memory headroom would be exceeded",
+            err == "live RAM: physical or commit headroom would be exceeded",
             "separate genuine growth remains an error and preserves the rounded-down layout");
     require(source.resize_live_resident(block * 2, block, 0, res, rank, done, err) && done,
             "restore fixture after pressure rounding regression");

@@ -62,6 +62,7 @@ from serve import runconfig  # noqa: E402
 from serve.winjob import contain  # noqa: E402
 from serve.memory_policy import MemoryPolicy  # noqa: E402
 from serve.resource_presets import ResourcePresets, WorkloadSampler, clean_config as clean_resource_config  # noqa: E402
+from serve.coadaptive import CoAdaptive  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
@@ -2522,6 +2523,7 @@ class Service:
         self.memory_error = None
         self.memory_limitation = None
         self.resource_presets = ResourcePresets()
+        self.coadaptive = CoAdaptive()
         self.resource_limits = None
         self.resource_generation = 0
         self.resource_sampler = None
@@ -2818,6 +2820,8 @@ class Service:
     def configure_resources(self, config):
         """Startup configuration or validated live selection; never reinitialize allocation state."""
         config = clean_resource_config(config)
+        if config["enabled"] and self.coadaptive.enabled:
+            raise ValueError("coadaptive and resource presets cannot both own targets")
         if config["enabled"] and (self.memory_policy is None or self.memory_policy.mode != "live"):
             raise ValueError("resource presets require enabled live memory policy")
         with self.memory_lock:
@@ -2825,8 +2829,24 @@ class Service:
             self._retarget_resources()
             self._sync_resource_sampler()
 
+    def configure_coadaptive(self, config):
+        args = getattr(self.engine, "spawn", (None, [], None, None, None))[1]
+        fraction = float(args[args.index("--pcie-frac") + 1]) if "--pcie-frac" in args else .5
+        policy = self.memory_policy
+        controller = CoAdaptive(config, ram_headroom_gib=policy.headroom if policy else 4,
+                                vram_reserve_mib=policy.reserve_floor if policy else 256, pcie_frac=fraction)
+        if controller.enabled and (policy is None or policy.mode != "live" or self.resource_presets.enabled
+                                   or "--pcie-frac" not in args):
+            raise ValueError("coadaptive needs live memory, explicit --pcie-frac, and resource presets disabled")
+        with self.memory_lock:
+            self.coadaptive = controller
+            if policy is not None:
+                policy.reclaim_gpu_headroom = controller.active
+            self._retarget_resources()
+            self._sync_resource_sampler()
+
     def _retarget_resources(self):
-        limits = self.resource_presets.limits()
+        limits = self.coadaptive.limits() if self.coadaptive.active else self.resource_presets.limits()
         if limits != self.resource_limits:
             self.memory_policy.update_resource_limits(*(limits if limits is not None else (None, None)))
             self.resource_limits = limits
@@ -2840,7 +2860,7 @@ class Service:
         telemetry = getattr(self, "telemetry", None)
         if telemetry is None:
             return
-        if self.resource_presets.enabled and self.resource_presets.selection == "auto":
+        if self.coadaptive.enabled or self.resource_presets.enabled and self.resource_presets.selection == "auto":
             if self.resource_sampler is None:
                 self.resource_sampler = WorkloadSampler(getattr(telemetry, "ps", None))
             telemetry.workload_sampler = lambda now: self.resource_sampler.sample(now, self._resource_exclusions())
@@ -2930,6 +2950,10 @@ class Service:
             if self.memory_loading:
                 return
             snapshot, now = self.memory_snapshot(), time.time()
+            with self.status_lock:
+                engine_idle = not self.status.get("busy") and not self.status.get("queued")
+            if self.coadaptive.observe(snapshot, now, engine_idle=engine_idle):
+                self._retarget_resources()
             if self.resource_presets.observe(snapshot, now):
                 self._retarget_resources()
             live = self.memory_policy.mode == "live"
@@ -3013,6 +3037,7 @@ class Service:
             return {"enabled": False}
         with self.memory_lock:
             return {**self.memory_policy.status(), "enabled": True,
+                    "coadaptive": self.coadaptive.status(time.time()),
                     "pending": self.memory_pending is not None or self.memory_live_pending is not None,
                     "request_id": self.memory_live_pending["id"] if self.memory_live_pending else None,
                     "last_reason": self.memory_last_reason, "error": self.memory_error,
@@ -3576,6 +3601,12 @@ class Service:
         if defaults:                   # the request's own fields win (explicit 0 stays greedy)
             req_values = {k: v for k, v in (sampling or {}).items() if v is not None}
             sampling = {**defaults, **req_values}
+        # Reuse the native request's existing expert split; explicit caller values
+        # win. Capacity changes use MEMORY independently at native safe points.
+        with self.memory_lock:
+            route = self.coadaptive.fraction(time.time()) if self.coadaptive.active else None
+        if route is not None and (sampling or {}).get("pcie_frac") is None:
+            sampling = {**(sampling or {}), "pcie_frac": route}
         # #123: read after the merge, so a budget shared through POST /settings is seen like the other keys
         budget = self.reasoning_budget(sampling) if thinking else None
         parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True, recover=self.tool_call_recovery)
@@ -5925,6 +5956,7 @@ def main() -> int:
     try:
         svc.configure_memory(cfg.get("memory_policy"))
         svc.configure_resources(cfg.get("resource_presets"))
+        svc.configure_coadaptive(cfg.get("coadaptive"))
     except (ValueError, TypeError) as e:
         raise SystemExit(f"[strata] config {e}")
     # --slot-save-path is relative to the working directory the server was started in; the config's slot_save_path

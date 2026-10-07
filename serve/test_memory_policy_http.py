@@ -185,10 +185,12 @@ class TelemetryCapacity(unittest.TestCase):
 
     def test_fresh_capacity_does_not_touch_cached_reading_history_or_deltas(self):
         telemetry = self.telemetry()
-        with mock.patch("serve.telemetry.time.time", return_value=123):
+        with mock.patch("serve.telemetry.time.time", return_value=123), \
+                mock.patch("serve.telemetry._commit_capacity", return_value={"ram_commit_available": 12 * GIB}):
             capacity = telemetry.capacity()
         self.assertEqual(capacity, {"sampled_at": 123, "ram_total": 64 * GIB, "ram_used": 44 * GIB,
-                                    "gpu_mem_total": 24 * GIB, "gpu_mem_used": 10 * GIB})
+                                    "gpu_mem_total": 24 * GIB, "gpu_mem_used": 10 * GIB,
+                                    "ram_commit_available": 12 * GIB})
         self.assertEqual(telemetry.now, {"old": True})
         self.assertEqual(telemetry.hist, {"old": [1]})
         self.assertEqual(telemetry._disk_prev, (1, 2, 3))

@@ -11,8 +11,8 @@ except ModuleNotFoundError:  # support the repository's direct script convention
     from telemetry import Telemetry
 
 
-def reading(now, codex=False, cpu=0, rss=0, complete=True):
-    return {"sampled_at": now, "workload": {"complete": complete, "codex_present": codex,
+def reading(now, cpu=0, rss=0, complete=True):
+    return {"sampled_at": now, "workload": {"complete": complete,
                                           "cpu_percent": cpu, "rss_bytes": rss}}
 
 
@@ -53,25 +53,25 @@ class PresetTests(unittest.TestCase):
             self.assertEqual(presets.status()["effective"], "daily")
             self.observe_until(presets, 8, 8, **pressure)
             self.assertEqual(presets.limits(), (8, 1536))
-            self.observe_until(presets, 9, 68, codex=True)
+            self.observe_until(presets, 9, 68, rss=2 * GIB)
             self.assertEqual(presets.status()["effective"], "busy")
-            self.observe_until(presets, 69, 69, codex=True)
+            self.observe_until(presets, 69, 69, rss=2 * GIB)
             self.assertEqual(presets.status()["effective"], "daily")
 
-    def test_codex_presence_returns_full_to_daily_after_eight_seconds(self):
+    def test_moderate_workload_returns_full_to_daily_after_eight_seconds(self):
         presets = ResourcePresets({"enabled": True, "selection": "full"})
         presets.configure({"enabled": True, "selection": "auto"})
         self.assertEqual(presets.status()["effective"], "daily")
         self.observe_until(presets, 0, 60)
         self.assertEqual(presets.status()["effective"], "full")
-        self.observe_until(presets, 61, 68, codex=True)
+        self.observe_until(presets, 61, 68, cpu=5)
         self.assertEqual(presets.status()["effective"], "full")
-        self.observe_until(presets, 69, 69, codex=True)
+        self.observe_until(presets, 69, 69, cpu=5)
         self.assertEqual(presets.status()["effective"], "daily")
 
     def test_manual_latches_and_disable_restores_legacy(self):
         presets = ResourcePresets({"enabled": True, "selection": "full"})
-        self.observe_until(presets, 0, 100, codex=True, cpu=90)
+        self.observe_until(presets, 0, 100, cpu=90)
         self.assertEqual(presets.limits(), (2, 256))
         presets.configure({"enabled": False, "selection": "busy"})
         self.assertIsNone(presets.limits())
@@ -88,7 +88,7 @@ class PresetTests(unittest.TestCase):
 
     def test_gaps_invalid_stale_or_duplicate_cannot_earn_absence(self):
         for interrupted in (reading(30, complete=False), reading(30, cpu=float("nan")),
-                            reading(20), reading(30, codex=None)):
+                            reading(20), reading(30, rss=None)):
             presets = ResourcePresets({"enabled": True})
             self.observe_until(presets, 0, 29)
             presets.observe(interrupted, 30)
@@ -125,7 +125,7 @@ class SamplerTests(unittest.TestCase):
         self.assertFalse(sampler.sample(0)["complete"])
         processes[0] = process(101, name="Codex.exe", cpu=2, rss=2 * GIB)
         sample = sampler.sample(1)
-        self.assertEqual(sample, {"complete": True, "codex_present": True,
+        self.assertEqual(sample, {"complete": True,
                                   "cpu_percent": 25, "rss_bytes": 2 * GIB})
         processes[0] = process(101, name="Codex.exe", created=2, cpu=200)
         self.assertFalse(sampler.sample(2)["complete"])
@@ -188,7 +188,7 @@ class SamplerTests(unittest.TestCase):
         sampler.sample(0, exclude_pids=(300,))
         sample = sampler.sample(1, exclude_pids=(300,))
         self.assertTrue(sample["complete"])
-        self.assertTrue(sample["codex_present"])
+        self.assertNotIn("codex_present", sample)
         self.assertEqual(sample["rss_bytes"], 1)
         self.assertEqual(sample["cpu_percent"], 0)
 

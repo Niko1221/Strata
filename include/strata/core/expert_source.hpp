@@ -627,6 +627,9 @@ public:
     //   - an expert whose pages are all cached is still handed out as the mapped pointer (no copy).
     // The bytes are the same bytes, so the output is the same.  `threads` = I/O threads (0: default 4).
     void set_io_prefetch(bool on, int threads);
+    /// Call after draining all producers, before mutating resident ownership.
+    /// Discard speculative queued reads and wait for workers already reading.
+    void drain_io_prefetch();
     bool io_prefetch() const { return io_pf_; }
     /// Counts the cached / uncached bytes of every blob read from the files (mincore, page-granular).  Free with
     /// io_prefetch; otherwise opt in with STRATA_IO_STATS=1 (the check costs a few microseconds per blob).
@@ -715,6 +718,7 @@ private:
     std::condition_variable io_cv_;
     std::deque<std::pair<int32_t, int32_t>> io_q_;   ///< (layer, expert) to read ahead
     bool io_quit_ = false;
+    size_t io_active_ = 0;                            ///< protected by io_mu_
     std::vector<char> stage_pf_;                      ///< per stage buffer: filled ahead, not yet used by a layer
     std::vector<int> io_fds_;                         ///< per mapped file: a plain descriptor (POSIX_FADV_RANDOM) for the preads
     mutable std::atomic<uint64_t> io_cached_{0}, io_uncached_{0}, io_pread_bytes_{0}, io_pread_us_{0}, io_pread_n_{0};

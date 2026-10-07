@@ -1,5 +1,9 @@
 # Live expert cache capacity
 
+This branch ports the unpublished implementation from [PR #726](https://github.com/Niko1221/Strata/pull/726)
+onto v0.1.40.3. The historical measurements below belong to that PR's earlier builds, not this port.
+See [ADAPTIVE_STRATA.md](ADAPTIVE_STRATA.md) for current validation and the broader research proposal.
+
 This experimental mode changes the space available to expert weights without unloading the model. It does
 not change model weights, quantization, context length or the attention/KV allocation. The default allocation
 and request-boundary reload policy remain available.
@@ -93,11 +97,12 @@ presets retain the percentage policy and do not sample application processes.
 | Daily | 4 GiB | 700 MiB |
 | Busy | 8 GiB | 1,536 MiB |
 
-Automatic starts in Daily. Codex or ChatGPT present selects Daily; external application CPU at least20% of
-the machine or aggregate process RSS at least8 GiB selects Busy; confirmed absence of Codex/ChatGPT otherwise
-selects Full. More conservative transitions require8 seconds; relaxing requires60 seconds. Incomplete or
+Automatic starts in Daily. External application CPU at least20% of the machine or aggregate process RSS
+at least8 GiB selects Busy; CPU at least5% or RSS at least2 GiB selects Daily; otherwise it selects Full.
+Application names do not select a preset. More conservative transitions require8 seconds; relaxing requires60 seconds. Incomplete or
 stale readings cannot earn a transition. RSS is a workload signal and can count shared pages more than once;
-the allocation policy separately uses measured system available RAM. Sampling excludes Strata/server descendants
+the allocation policy separately uses measured system available RAM and, on Windows, available commit capacity.
+An unavailable required commit reading freezes capacity decisions. Sampling excludes Strata/server descendants
 and reads only process identity, CPU counters and RSS. It runs in the existing telemetry loop.
 
 The full Monitor exposes Automatic, Full, Daily, Busy and Off. Manual selections persist

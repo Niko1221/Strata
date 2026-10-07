@@ -84,7 +84,7 @@ class ResourcePresets:
             return self._unavailable()
         stamp, work = snapshot.get("sampled_at"), snapshot.get("workload")
         if (not _number(stamp) or not 0 <= now - stamp <= MAX_SAMPLE_GAP or not isinstance(work, dict)
-                or work.get("complete") is not True or not isinstance(work.get("codex_present"), bool)
+                or work.get("complete") is not True
                 or not _number(work.get("cpu_percent")) or not 0 <= work["cpu_percent"] <= 100
                 or not _number(work.get("rss_bytes")) or work["rss_bytes"] < 0):
             return self._unavailable()
@@ -98,10 +98,10 @@ class ResourcePresets:
         self._last_sample = stamp
         if work["cpu_percent"] >= 20 or work["rss_bytes"] >= 8 * GIB:
             candidate, reason = "busy", "busy_workload"
-        elif work["codex_present"]:
-            candidate, reason = "daily", "codex_present"
+        elif work["cpu_percent"] >= 5 or work["rss_bytes"] >= 2 * GIB:
+            candidate, reason = "daily", "moderate_workload"
         else:
-            candidate, reason = "full", "no_codex"
+            candidate, reason = "full", "light_workload"
         if candidate == self.effective:
             self._candidate = self._since = None
             self.reason = reason
@@ -136,7 +136,7 @@ class WorkloadSampler:
 
     @staticmethod
     def unavailable():
-        return {"complete": False, "codex_present": False, "cpu_percent": None, "rss_bytes": None}
+        return {"complete": False, "cpu_percent": None, "rss_bytes": None}
 
     def sample(self, now, exclude_pids=()):
         if self.ps is None or not _number(now):
@@ -189,7 +189,7 @@ class WorkloadSampler:
         elapsed = now - self._last_sample if self._last_sample is not None else None
         advancing = elapsed is not None and 0 < elapsed <= MAX_SAMPLE_GAP
         complete = complete and advancing
-        previous, cpu, rss, codex = {}, 0.0, 0, False
+        previous, cpu, rss = {}, 0.0, 0
         for pid, info in processes.items():
             if pid in excluded or pid in (0, 4):
                 continue
@@ -202,7 +202,6 @@ class WorkloadSampler:
                 continue
             if not name:
                 complete = False
-            codex |= name in ("codex", "chatgpt")
             created, times, memory = info.get("create_time"), info.get("cpu_times"), info.get("memory_info")
             user, system = getattr(times, "user", None), getattr(times, "system", None)
             resident = getattr(memory, "rss", None)
@@ -227,5 +226,4 @@ class WorkloadSampler:
                 continue
             cpu += (total - baseline) / elapsed / cores * 100
         self._previous, self._last_sample = previous, now
-        return {"complete": complete, "codex_present": codex,
-                "cpu_percent": min(100.0, max(0.0, cpu)), "rss_bytes": rss}
+        return {"complete": complete, "cpu_percent": min(100.0, max(0.0, cpu)), "rss_bytes": rss}

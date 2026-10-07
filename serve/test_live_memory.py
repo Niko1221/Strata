@@ -26,6 +26,10 @@ def engine():
     e.ended = e.unloaded = False
     e.info.update(live_memory=1, memory_protocol=1, arena_mib=43008, expert_cache_mib=8192)
     e.lines = queue.Queue()
+    # A lazy engine has no native slot state until startup; these fixtures
+    # install a fake running process, so supply current upstream admission state.
+    e.slot_q = []
+    e.slot_cv = threading.Condition()
     return e
 
 

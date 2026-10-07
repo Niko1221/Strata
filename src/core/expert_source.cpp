@@ -611,6 +611,12 @@ void FileExpertSource::io_stop() {
     io_quit_ = false;
 }
 
+void FileExpertSource::drain_io_prefetch() {
+    std::unique_lock<std::mutex> lk(io_mu_);
+    io_q_.clear();
+    io_cv_.wait(lk, [&] { return io_active_ == 0; });
+}
+
 void FileExpertSource::io_enqueue(int64_t layer, int64_t expert) {
     {
         std::lock_guard<std::mutex> lk(io_mu_);
@@ -635,7 +641,14 @@ void FileExpertSource::io_worker() {
             layer = io_q_.back().first;   // the newest prediction first: it is the layer that comes next
             expert = io_q_.back().second;
             io_q_.pop_back();
+            ++io_active_;
         }
+        // Every early-continue path releases the drain waiter as well.
+        auto finish = [this](FileExpertSource*) {
+            { std::lock_guard<std::mutex> lk(io_mu_); --io_active_; }
+            io_cv_.notify_all();
+        };
+        const std::unique_ptr<FileExpertSource, decltype(finish)> active(this, finish);
         io_pf_jobs_.fetch_add(1, std::memory_order_relaxed);
         const size_t index = (size_t) layer * (size_t) n_expert_ + (size_t) expert;
         if (complement_ready_ && resident_blob(index) != nullptr) continue;
@@ -2655,9 +2668,10 @@ bool FileExpertSource::resize_live_resident(uint64_t target, uint64_t step, uint
         choose((size_t) (l * n_expert_ + e));
     for (size_t i = 0; i < live_blobs_.size(); ++i) choose(i);
     if (chosen.empty()) { done = true; return true; }
-    uint64_t available = 0;
-    if (!available_memory_bytes(available) || !conversation_memory_admit(available, bytes, headroom)) {
-        err = "live RAM: physical memory headroom would be exceeded"; return false;
+    uint64_t available = 0, commit = UINT64_MAX;
+    if (!available_memory_bytes(available, &commit) ||
+        !conversation_memory_admit(std::min(available, commit), bytes, headroom)) {
+        err = "live RAM: physical or commit headroom would be exceeded"; return false;
     }
     // No bookkeeping allocation may occur after a pinned block has been acquired.
     live_blocks_.reserve(live_blocks_.size() + 1);

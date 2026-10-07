@@ -21,6 +21,31 @@ import time
 HISTORY = 60
 
 
+def _commit_capacity():
+    """Windows allocation headroom, distinct from page-file usage or free RAM.
+
+    GlobalMemoryStatusEx reports the process/system commit limit that also
+    constrains the native allocator. An unreadable required sensor stays None.
+    Other OSes retain their existing available-RAM policy.
+    """
+    if os.name != "nt":
+        return {}
+    class MemoryStatus(ctypes.Structure):
+        _fields_ = [("length", ctypes.c_uint32), ("load", ctypes.c_uint32)] + [
+            (name, ctypes.c_uint64) for name in ("total_phys", "avail_phys", "total_commit", "avail_commit",
+                                                "total_virtual", "avail_virtual", "avail_extended")]
+    status = MemoryStatus()
+    status.length = ctypes.sizeof(status)
+    result = {"ram_commit_required": True, "ram_commit_available": None}
+    try:
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            if status.avail_commit <= status.total_commit:
+                result.update(ram_commit_available=status.avail_commit, ram_commit_total=status.total_commit)
+    except (AttributeError, OSError):
+        pass
+    return result
+
+
 # ------------------------------------------------------------------------------------------------ NVML
 class _Nvml:
     class Util(ctypes.Structure):
@@ -352,6 +377,7 @@ class Telemetry:
             values = [reading[field] for reading in reads]
             if values and all(value is not None for value in values):
                 s["gpu_" + field] = sum(values)
+        s.update(_commit_capacity())
         s["sampled_at"] = time.time()
         return s
 
@@ -385,14 +411,14 @@ class Telemetry:
             s["cpu"] = self.fallback.cpu()
             s["ram_used"], s["ram_total"] = self.fallback.ram()
         s["disk_read_mb"], s["disk_write_mb"] = self._disk()
+        s.update(_commit_capacity())
         sampler = getattr(self, "workload_sampler", None)
         if sampler is not None:
             try:
                 sample = sampler.sample if hasattr(sampler, "sample") else sampler
                 s["workload"] = sample(s["sampled_at"])
             except Exception:  # noqa: BLE001 - no failed workload sensor can stop telemetry
-                s["workload"] = {"complete": False, "codex_present": False,
-                                 "cpu_percent": None, "rss_bytes": None}
+                s["workload"] = {"complete": False, "cpu_percent": None, "rss_bytes": None}
         if self.extra:
             try:
                 s.update(self.extra())

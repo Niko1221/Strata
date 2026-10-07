@@ -32,6 +32,7 @@ class MemoryPolicy:
         self.configured_headroom = self.headroom
         self.configured_reserve_floor = self.reserve_floor
         self.fixed_resource_limits = False
+        self.reclaim_gpu_headroom = False  # co-adaptive owner only; legacy presets keep their admission rule
         self.overhead = self._setting(config, "overhead_ram_gib", 2, 2, 128)
         self.cooldown = self._setting(config, "cooldown_seconds", 600, 600, 86400)
         self.pressure_duration = self._setting(config, "pressure_seconds", 60, 2, 3600)
@@ -74,7 +75,20 @@ class MemoryPolicy:
             used, total = snapshot[prefix + "_used"], snapshot[prefix + "_total"]
             if total <= 0 or not 0 <= used <= total:
                 return None
+        # Windows can run out of commit while physical RAM is still available.
+        # A missing required sensor must not authorize cache growth.
+        if snapshot.get("ram_commit_required") or "ram_commit_available" in snapshot:
+            commit = snapshot.get("ram_commit_available")
+            if not _number(commit) or commit < 0:
+                return None
         return snapshot
+
+    @staticmethod
+    def _free_ram(reading):
+        available = reading["ram_total"] - reading["ram_used"]
+        if "ram_commit_available" in reading:
+            available = min(available, reading["ram_commit_available"])
+        return available / GIB
 
     def _reset_windows(self):
         self.pressure_since = self.growth_since = None
@@ -112,7 +126,7 @@ class MemoryPolicy:
         return max(self.headroom, reading["ram_total"] / GIB * (1 - self.ram_target))
 
     def _budget(self, reading, arena_gib=0, loaded=False):
-        free_ram = (reading["ram_total"] - reading["ram_used"]) / GIB
+        free_ram = self._free_ram(reading)
         headroom = self._required_headroom(reading)
         # Loaded telemetry already includes dense/vision/runtime allocations.
         # Charge the startup allowance only before those allocations exist.
@@ -266,7 +280,7 @@ class MemoryPolicy:
             return self._observe_fixed(reading, plan, stamp)
         ram_delta = plan["resident_budget_gib"] - self.current["resident_budget_gib"]
         vram_delta = plan["vram_reserve_mib"] - self.current["vram_reserve_mib"]
-        free_ram = (reading["ram_total"] - reading["ram_used"]) / GIB
+        free_ram = self._free_ram(reading)
         required_free_ram = self._required_headroom(reading)
         pressure = (reading["ram_used"] / reading["ram_total"] > self.ram_target
                     or free_ram < required_free_ram
@@ -342,7 +356,7 @@ class MemoryPolicy:
         self.reconcile_after_load = False
         ram_delta = plan["resident_budget_gib"] - self.current["resident_budget_gib"]
         vram_delta = plan["vram_reserve_mib"] - self.current["vram_reserve_mib"]
-        free_ram = (reading["ram_total"] - reading["ram_used"]) / GIB
+        free_ram = self._free_ram(reading)
         free_vram = (reading["gpu_mem_total"] - reading["gpu_mem_used"]) / MIB
         pressure = (free_ram < self.headroom or free_vram < self.reserve_floor
                     or self.current["vram_reserve_mib"] < self.reserve_floor)
@@ -350,7 +364,10 @@ class MemoryPolicy:
         # Use raw headroom as well as the rounded budget: rounding cannot earn
         # a two-GiB expansion from slightly less safe space.
         ram_grow = ram_delta >= 2 and free_ram - self.headroom >= 2
-        vram_grow = vram_delta <= -32
+        # A floor already reached is not a ceiling: newly freed GPU capacity can
+        # admit more experts even when the reserve value itself is unchanged.
+        # Native VMM admission leaves its additional mapping-granule margin.
+        vram_grow = vram_delta <= -32 or self.reclaim_gpu_headroom and free_vram >= self.reserve_floor + 256
         grow = not pressure and (ram_grow or vram_grow)
         self.pressure_since = (stamp if self.pressure_since is None else self.pressure_since) if shrink else None
         self.growth_since = (stamp if self.growth_since is None else self.growth_since) if not pressure and ram_grow else None

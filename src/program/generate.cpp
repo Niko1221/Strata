@@ -7365,7 +7365,7 @@ int main(int argc, char** argv) {
             }
         };
         auto apply_pending = [&](bool wait) {
-            if (o.live_memory) lookahead.drain();
+            if (o.live_memory) { lookahead.drain(); src.drain_io_prefetch(); }
             if (peer.valid()) peer.apply_pending(wait);
             if (pending.empty()) return;
             if (wait) cudaEventSynchronize(adapt_ev);
@@ -7391,7 +7391,7 @@ int main(int argc, char** argv) {
         // the VRAM tier follows the conversation (the same rule as the speculative loop below)
         auto adapt = [&]() -> bool {
             if (!pending.empty()) return true;   // the previous swaps are still in flight
-            if (o.live_memory) lookahead.drain();
+            if (o.live_memory) { lookahead.drain(); src.drain_io_prefetch(); }
             if (remote_opt && !remote_opt->adapt(drive.d.usage, host_res, pending, o.adapt_swaps, *srcp)) return false;
             struct Swap { float gain; int32_t layer, in, out; };
             std::vector<Swap> swaps;
@@ -7960,6 +7960,7 @@ int main(int argc, char** argv) {
             std::string why;
             sp.drain_expert_reads();
             lookahead.drain();
+            src.drain_io_prefetch();
             apply_pending(true);
             if (!ver.wait_commit(why) || cudaDeviceSynchronize() != cudaSuccess) {
                 fail_memory("gpu_sync", why); return;
