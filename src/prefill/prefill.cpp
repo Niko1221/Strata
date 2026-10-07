@@ -1553,6 +1553,10 @@ uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::Session
     return bytes_needed_impl(g, ss, chunk, false);
 }
 
+uint64_t Prefill::persistent_bytes_needed() {
+    return Gemm::bf16_cache_reserve_bytes();
+}
+
 // What `init` really allocates when the prompt path owns its buffers (no loan): every cudaMalloc rounds up to a 2 MiB
 // page, and the ring is one allocation (carve).  `bytes_needed` stays the borrowed region's sum.
 uint64_t Prefill::bytes_needed_owned(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk) {
@@ -1659,7 +1663,8 @@ bool native_proj(Gemm& gm, const core::WeightRef* w, const uint16_t* X, float* Y
 bool bf16_proj(Gemm& gm, const core::WeightRef* w, const uint16_t* X, float* Y, int64_t T, const std::string& name,
                std::string& err, int64_t ldy = 0, const uint16_t* X_lo = nullptr, int64_t ldx = 0) {
     if (w->kind != core::WeightKind::Bf16InF32 || !w->data) { err = "prefill: " + name + " is not a resident BF16 tensor"; return false; }
-    gm.bf16(X, (const uint16_t*) w->data, Y, T, w->ne1 > 0 ? w->ne1 : 1, w->ne0, ldy, 0.0f, ldx);
+    // Resident WeightTable tensors outlive this Prefill; scratch/dequantized and drafter weights do not opt in.
+    gm.bf16_immutable(X, (const uint16_t*) w->data, Y, T, w->ne1 > 0 ? w->ne1 : 1, w->ne0, ldy, 0.0f, ldx);
     if (X_lo) gm.bf16(X_lo, (const uint16_t*) w->data, Y, T, w->ne1 > 0 ? w->ne1 : 1, w->ne0, ldy, 1.0f);
     return true;
 }
@@ -2204,14 +2209,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     const float* emb = m.ple_emb + s0 * N;
                     if (pw.key_bf16 != nullptr) {
                         to_bf16(emb, e16, nb * N, m.cs, e16_lo);
-                        m.gemm.bf16(e16, pw.key_bf16, key, nb, HD, N);
+                        m.gemm.bf16_immutable(e16, pw.key_bf16, key, nb, HD, N);
                         if (e16_lo) m.gemm.bf16(e16_lo, pw.key_bf16, key, nb, HD, N, 0, 1.0f);
                     } else {
                         to_f16(emb, e16, nb * N, m.cs);
                         m.gemm.native(e16, pw.key_native_type, pw.key_native_data, key, nb, HD, N);
                         to_bf16(emb, e16, nb * N, m.cs, e16_lo);
                     }
-                    m.gemm.bf16(e16, pw.value_bf16, val, nb, N, N);
+                    m.gemm.bf16_immutable(e16, pw.value_bf16, val, nb, N, N);
                     if (e16_lo) m.gemm.bf16(e16_lo, pw.value_bf16, val, nb, N, N, 0, 1.0f);
                     try {
                         strata::kernels::native_ple_postops_batch(key, m.R + s0 * D, val, ss.ple.hist, pw, qn, gated,
@@ -3583,6 +3588,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                      (long long) kv_prefetches);
     }
     stats_.ms_total += ms_since(t_start);
+    m.gemm.report_bf16_cache();
     if (pt.on) {
         pt.fold();
         double total = 0.0;

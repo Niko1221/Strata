@@ -766,6 +766,16 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_executable(gemm_bf16_parity src/prefill/gemm_bf16_parity.cu)
     target_link_libraries(gemm_bf16_parity PRIVATE strata_prefill )
     add_test(NAME gemm_bf16_parity COMMAND gemm_bf16_parity)
+    add_test(NAME gemm_bf16_cache_config COMMAND gemm_bf16_parity --cpu-only)
+    add_test(NAME gemm_bf16_cache_parity COMMAND gemm_bf16_parity --cache-test)
+    set_tests_properties(gemm_bf16_cache_parity PROPERTIES
+      ENVIRONMENT "STRATA_BF16_TC=2;STRATA_BF16_TC_CACHE=1;STRATA_BF16_TC_CACHE_MIB=1")
+    add_test(NAME gemm_bf16_cache_shapes COMMAND gemm_bf16_parity --cache-shapes)
+    set_tests_properties(gemm_bf16_cache_shapes PROPERTIES
+      ENVIRONMENT "STRATA_BF16_TC=2;STRATA_BF16_TC_CACHE=1;STRATA_BF16_TC_CACHE_MIB=64")
+    add_test(NAME gemm_bf16_cache_inactive_reserve COMMAND gemm_bf16_parity --reserve-test)
+    set_tests_properties(gemm_bf16_cache_inactive_reserve PROPERTIES
+      ENVIRONMENT "STRATA_BF16_TC=0;STRATA_BF16_TC_CACHE=1;STRATA_BF16_TC_CACHE_MIB=65536")
   endif()
   # native_expert_grouped's group stride and fused SwiGLU + q8_1, bitwise vs the launches before them (GPU, synthetic,
   # no model; --bench adds v1/new timings of a window's 48 calls in a graph)
