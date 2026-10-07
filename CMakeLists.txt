@@ -98,6 +98,7 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt AND EXISTS ${CMAKE_CU
 endif()
 option(STRATA_BUILD_TESTS "Build the test suite" ${_strata_tests_default})
 option(STRATA_BUILD_CONVERSATION_TESTS "Build standalone conversation cache tests" OFF)
+option(STRATA_BUILD_MEDIA_TESTS "Build standalone media transport tests (no GPU or model)" OFF)
 option(STRATA_WERROR "Treat compiler warnings as errors" OFF)
 
 if(STRATA_BUILD_CONVERSATION_TESTS)
@@ -218,6 +219,20 @@ if(STRATA_WERROR)
     $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:MSVC>>:/WX>
     $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<NOT:$<CXX_COMPILER_ID:MSVC>>>:-Werror>
     $<$<COMPILE_LANGUAGE:HIP>:-Werror>)
+endif()
+
+# ---- host-only media transport ---------------------------------------------
+add_library(strata_media STATIC src/program/media_embeddings.cpp)
+target_include_directories(strata_media PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_features(strata_media PUBLIC cxx_std_17)
+target_link_libraries(strata_media PRIVATE strata_warnings)
+if(STRATA_BUILD_MEDIA_TESTS OR STRATA_BUILD_TESTS)
+  enable_testing()
+  add_executable(media_embeddings_test src/program/media_embeddings_test.cpp)
+  target_link_libraries(media_embeddings_test PRIVATE strata_media strata_warnings)
+  add_test(NAME media_embeddings_test COMMAND media_embeddings_test
+           ${CMAKE_CURRENT_SOURCE_DIR}/tools/vision/fixtures/media-v2.hex)
+  set_tests_properties(media_embeddings_test PROPERTIES TIMEOUT 30)
 endif()
 
 # ---- strata_artifact -------------------------------------------------------
