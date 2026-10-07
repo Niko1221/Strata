@@ -1206,6 +1206,21 @@ bool qsa_block_topk_cluster(const float* scores, const int32_t* steps, int64_t n
 #endif
 }
 
+namespace {
+// one block per query: ids[q][i] = i for every cell of its selection width (= n_kv with kDenseTopK)
+__global__ void qsa_select_all_kernel(const int32_t* __restrict__ steps, int64_t cap, int32_t* __restrict__ ids) {
+    const int q = blockIdx.x;
+    const int width = steps[(size_t) q * kStepCount + kStepWidth];
+    int32_t* row = ids + (size_t) q * (size_t) cap;
+    for (int i = threadIdx.x; i < width; i += blockDim.x) row[i] = i;
+}
+}  // namespace
+
+void qsa_select_all(const int32_t* steps, int64_t nq, int64_t cap, int32_t* ids, void* stream) {
+    if (nq <= 0) return;
+    qsa_select_all_kernel<<<(unsigned) nq, 256, 0, (cudaStream_t) stream>>>(steps, cap, ids);
+}
+
 void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64_t max_blocks, int64_t cap,
                     const QsaShapes& s, int32_t* ids, void* stream, int64_t active_blocks) {
     // keys in registers when every query's blocks fit (contexts up to ~135K cells), else (CUDA) the same threads

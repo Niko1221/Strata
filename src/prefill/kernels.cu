@@ -40,6 +40,8 @@ __device__ __forceinline__ uint16_t bf(float f) {
 // W.hi + W.lo carries ~16 mantissa bits of the activation - the decode path's FP32 x to within ~1e-5.
 __device__ __forceinline__ uint16_t bf_lo(float f, uint16_t hi) { return bf(f - __uint_as_float((uint32_t) hi << 16)); }
 __device__ __forceinline__ float sigm(float x) { return 1.0f / (1.0f + __expf(-x)); }
+// the GDN output gate on z: sigmoid (Flash-Next) or silu (Qwen3.6: llama.cpp's build_norm_gated)
+template <bool SILU> __device__ __forceinline__ float gdn_gate_act(float z) { return SILU ? z * sigm(z) : sigm(z); }
 __device__ __forceinline__ uint16_t hf(float f) { return __half_as_ushort(__float2half_rn(f)); }
 // A SwiGLU product for an FP16 GEMM: saturated, so a token with a massive activation cannot turn into inf and then
 // NaN in the down projection (decode's q8_1 has room to ~8e6; FP16 ends at 65504).  A NaN stays NaN (fminf/fmaxf
@@ -110,6 +112,29 @@ __global__ void gr_norm_rs_kernel(const float* __restrict__ R, const float* __re
         const uint16_t h = act16(v);
         xn16[xo + d] = h;
         if (xn16_lo) xn16_lo[xo + d] = bf_lo(v, h);
+    }
+}
+// One residual stream (qwen35moe): the RMSNorm of each row times w (llama.cpp's build_norm), as gr_mix_r writes the
+// mixer's input - FP32, the 16-bit activation image (+ its BF16 low part) and FP16
+__global__ void rms_mix_kernel(const float* __restrict__ R, const float* __restrict__ w, float eps, int64_t n,
+                               float* __restrict__ mixed, uint16_t* __restrict__ mixed16, uint16_t* __restrict__ mixed_h,
+                               uint16_t* __restrict__ mixed16_lo) {
+    __shared__ float sh[32];
+    const int64_t row = blockIdx.x;
+    const float* r = R + row * n;
+    float ss = 0.0f;
+    for (int64_t d = threadIdx.x; d < n; d += blockDim.x) ss += r[d] * r[d];
+    const float rs = rsqrtf(block_sum(ss, sh) / (float) n + eps);
+    for (int64_t d = threadIdx.x; d < n; d += blockDim.x) {
+        const float v = r[d] * rs * w[d];
+        const int64_t i = row * n + d;
+        mixed[i] = v;
+        if (mixed16) {
+            const uint16_t h = act16(v);
+            mixed16[i] = h;
+            if (mixed16_lo) mixed16_lo[i] = bf_lo(v, h);
+        }
+        if (mixed_h) mixed_h[i] = hf(v);
     }
 }
 __global__ void gr_mix_r_kernel(const float* __restrict__ R, const float* __restrict__ rs, const float* __restrict__ w,
@@ -279,6 +304,7 @@ __global__ void gr_broadcast_kernel(const float* __restrict__ e, float* __restri
 }
 
 // ---------------------------------------------------------------- GDN
+template <int HV = 48, int C = 10240>   // value heads and conv channels: Flash-Next's 48 / 10240, Qwen3.6's 32 / 8192
 __global__ void gdn_gates_kernel(const float* __restrict__ ab, const float* __restrict__ dt,
                                  const float* __restrict__ ssm_a, float* __restrict__ gate, float* __restrict__ beta,
                                  int64_t T) {
@@ -290,6 +316,7 @@ __global__ void gdn_gates_kernel(const float* __restrict__ ab, const float* __re
     beta[i] = sigm(ab[t * 2 * HV + HV + h]);
 }
 // one thread per channel, walks the chunk; then a second kernel normalises
+template <int HV = 48, int C = 10240>   // value heads and conv channels: Flash-Next's 48 / 10240, Qwen3.6's 32 / 8192
 __global__ void gdn_conv_kernel(float* __restrict__ hist, const float* __restrict__ qkv, const float* __restrict__ w,
                                 float* __restrict__ h, int64_t T) {
     const int c = blockIdx.x * blockDim.x + threadIdx.x;
@@ -308,6 +335,7 @@ __global__ void gdn_conv_kernel(float* __restrict__ hist, const float* __restric
 // chunk (or the history before it) instead of carrying them - the conv reads inputs, not its own outputs, so the
 // tiles are independent. The same expression per element (so the same bits); the history is written afterwards.
 constexpr int CONV_TILE = 64;
+template <int HV = 48, int C = 10240>   // value heads and conv channels: Flash-Next's 48 / 10240, Qwen3.6's 32 / 8192
 __global__ void gdn_conv_tiled_kernel(const float* __restrict__ hist, const float* __restrict__ qkv,
                                       const float* __restrict__ w, float* __restrict__ h, int64_t T) {
     const int c = blockIdx.x * blockDim.x + threadIdx.x;
@@ -329,6 +357,7 @@ __global__ void gdn_conv_tiled_kernel(const float* __restrict__ hist, const floa
 // are the 128 channels of one head, so for the q / k heads (block < 2 HK) the norm's sum of squares is the block's:
 // the same warp_sum, the same four partials added in the same order, the same v * rsqrtf(ss + eps) on the same
 // stored value - the same bits, without writing h and reading it back (16 tokens per round).
+template <int HV = 48, int C = 10240>   // value heads and conv channels: Flash-Next's 48 / 10240, Qwen3.6's 32 / 8192
 __global__ void gdn_conv_l2_kernel(const float* __restrict__ hist, const float* __restrict__ qkv,
                                    const float* __restrict__ w, float* __restrict__ h, int64_t T, float eps) {
     const int c = blockIdx.x * blockDim.x + threadIdx.x;
@@ -366,6 +395,7 @@ __global__ void gdn_conv_l2_kernel(const float* __restrict__ hist, const float* 
     }
 }
 // the history after the chunk: its last three inputs (the older history where the chunk is shorter than 3)
+template <int HV = 48, int C = 10240>   // value heads and conv channels: Flash-Next's 48 / 10240, Qwen3.6's 32 / 8192
 __global__ void gdn_conv_hist_kernel(float* __restrict__ hist, const float* __restrict__ qkv, int64_t T) {
     const int c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= C) return;
@@ -376,6 +406,7 @@ __global__ void gdn_conv_hist_kernel(float* __restrict__ hist, const float* __re
     }
     hist[c * 3] = v[0]; hist[c * 3 + 1] = v[1]; hist[c * 3 + 2] = v[2];
 }
+template <int HV = 48, int C = 10240>   // value heads and conv channels: Flash-Next's 48 / 10240, Qwen3.6's 32 / 8192
 __global__ void gdn_l2_kernel(float* __restrict__ h, float eps) {
     // block (t, head) over the 32 q/k heads, 128 threads
     const int64_t t = blockIdx.y;
@@ -390,6 +421,7 @@ __global__ void gdn_l2_kernel(float* __restrict__ h, float eps) {
     x[threadIdx.x] = v * rsqrtf(ss + eps);
 }
 constexpr int RG = 4, RPG = S / RG;
+template <int HV = 48, int C = 10240, bool SILU = false>   // value heads and conv channels: Flash-Next's 48 / 10240, Qwen3.6's 32 / 8192
 __global__ void __launch_bounds__(S * RG) gdn_rec_kernel(float* __restrict__ state, const float* __restrict__ h,
                                                          const float* __restrict__ gate,
                                                          const float* __restrict__ beta, const float* __restrict__ z,
@@ -437,7 +469,7 @@ __global__ void __launch_bounds__(S * RG) gdn_rec_kernel(float* __restrict__ sta
         __syncthreads();
         if (rg == 0) {
             const float ss = wsum[0] + wsum[1] + wsum[2] + wsum[3];
-            const float v = oc * rsqrtf(ss / (float) S + eps) * g_col * sigm(z[t * HV * S + head * S + col]);
+            const float v = oc * rsqrtf(ss / (float) S + eps) * g_col * gdn_gate_act<SILU>(z[t * HV * S + head * S + col]);
             y[t * HV * S + head * S + col] = v;
             y16[t * ld16 + head * S + col] = hf(v);
         }
@@ -451,6 +483,7 @@ __global__ void __launch_bounds__(S * RG) gdn_rec_kernel(float* __restrict__ sta
 // in its own kernel. Per column the same arithmetic in the same order (the 4 row-group partial sums added as
 // red[0] + red[1] + red[2] + red[3]; the norm's warp sums over the same 32-column warps): the same bits.
 constexpr int CB = 32, NCB = S / CB;
+template <int HV = 48, int C = 10240>   // value heads and conv channels: Flash-Next's 48 / 10240, Qwen3.6's 32 / 8192
 __global__ void __launch_bounds__(CB * RG) gdn_rec_cols_kernel(float* __restrict__ state, const float* __restrict__ h,
                                                                 const float* __restrict__ gate,
                                                                 const float* __restrict__ beta,
@@ -494,6 +527,7 @@ __global__ void __launch_bounds__(CB * RG) gdn_rec_cols_kernel(float* __restrict
 // gdn_rec_cols_kernel with the next token's inputs (q/k rows, v, gate, beta) loaded into registers while this token
 // computes (software pipelining).  The same arithmetic in the same order: the same bits, and the same CB-column split.
 // STRATA_GDN_PIPELINE=0: gdn_rec_cols_kernel.
+template <int HV = 48, int C = 10240>   // value heads and conv channels: Flash-Next's 48 / 10240, Qwen3.6's 32 / 8192
 __global__ void __launch_bounds__(CB * RG) gdn_rec_cols_pipe_kernel(float* __restrict__ state, const float* __restrict__ h,
                                                                       const float* __restrict__ gate,
                                                                       const float* __restrict__ beta,
@@ -591,11 +625,13 @@ __device__ __forceinline__ void gdn_cp_wait_prev() {   // every group but the ne
     asm volatile("cp.async.wait_group 1;\n" ::);
 #endif
 }
-constexpr int GDN_TB = 8, VPK = HV / HK;   // tokens per staged block, value heads per key head
+constexpr int GDN_TB = 8;   // tokens per staged block
+template <int HV = 48, int C = 10240>   // value heads and conv channels: Flash-Next's 48 / 10240, Qwen3.6's 32 / 8192
 __global__ void __launch_bounds__(CB * RG) gdn_rec_kh_kernel(float* __restrict__ state, const float* __restrict__ h,
                                                                const float* __restrict__ gate,
                                                                const float* __restrict__ beta,
                                                                float* __restrict__ oc_out, int64_t T) {
+    constexpr int VPK = HV / HK;   // value heads per key head
     constexpr int TB = GDN_TB, NT = CB * RG, QKP = S / 4, VP = CB / 4;   // threads, 16-byte pieces of a q/k row, of v
     __shared__ __align__(16) float sq[2][TB][S];
     __shared__ __align__(16) float sk[2][TB][S];
@@ -692,6 +728,7 @@ __global__ void __launch_bounds__(CB * RG) gdn_rec_kh_kernel(float* __restrict__
 // 64 SMs and more, 1.02-1.04x / 1.03-1.06x at 48 to 63 (two blocks against four: a draw, slower on neither),
 // 1.28-1.31x / 1.28-1.30x at 39 to 47, 1.53-1.57x / 1.54-1.55x at 32 to 38.  Per call, from the current device (a
 // layer split can mix cards).
+template <int HV = 48, int C = 10240>
 bool gdn_keyhead_ok() {
     static const bool off = [] { const char* v = std::getenv("STRATA_GDN_KEYHEAD"); return v != nullptr && std::atoi(v) == 0; }();
     if (off) return false;
@@ -702,7 +739,7 @@ bool gdn_keyhead_ok() {
         int major = 0, sms = 0, per_sm = 0;
         const bool yes = cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
                          cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev) == cudaSuccess && major >= 8 &&
-                         cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, gdn_rec_kh_kernel, CB * RG, 0) ==
+                         cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, gdn_rec_kh_kernel<HV, C>, CB * RG, 0) ==
                              cudaSuccess &&
                          (int64_t) per_sm * sms >= (int64_t) HK * NCB;
         if (!yes) cudaGetLastError();
@@ -727,6 +764,7 @@ constexpr int QTH = QCB * 4;                    // threads per block: 4 lanes pe
 constexpr int QRS = 36;                         // staged row-group stride (32 rows + 4 pad: the 4 groups' reads
                                                 // land in different LDS banks)
 constexpr int QPF = HT * 2 * S / 4 / QTH;       // float4 of q/k each thread prefetches per chunk (2)
+template <int HV = 48, int C = 10240>   // value heads and conv channels: Flash-Next's 48 / 10240, Qwen3.6's 32 / 8192
 __global__ void __launch_bounds__(QTH) gdn_rec_quad_kernel(float* __restrict__ state, const float* __restrict__ h,
                                                            const float* __restrict__ gate, const float* __restrict__ beta,
                                                            float* __restrict__ oc_out, int64_t T) {
@@ -835,6 +873,7 @@ __global__ void __launch_bounds__(QTH) gdn_rec_quad_kernel(float* __restrict__ s
 // that need 9.6): the stores' lane offset goes through an asm so the addresses are made again, 133 VGPRs, all blocks
 // resident.  (2) A full chunk's four tokens run with the state alternating between two register sets (the update
 // writes the other set), so the compiler emits no 32 register copies after the update.
+template <int HV = 48, int C = 10240>   // value heads and conv channels: Flash-Next's 48 / 10240, Qwen3.6's 32 / 8192
 __global__ void __launch_bounds__(QTH) gdn_rec_quad_pp_kernel(float* __restrict__ state, const float* __restrict__ h,
                                                            const float* __restrict__ gate, const float* __restrict__ beta,
                                                            float* __restrict__ oc_out, int64_t T) {
@@ -967,6 +1006,7 @@ __global__ void __launch_bounds__(QTH) gdn_rec_quad_pp_kernel(float* __restrict_
 // and two independent dependency chains in each wave).  Per column the same arithmetic in the same order.
 constexpr int C2CB = 64;                          // columns per block
 constexpr int C2PF = HT * 2 * S / 4 / QTH;        // float4 of q/k each thread prefetches per chunk (2)
+template <int HV = 48, int C = 10240>   // value heads and conv channels: Flash-Next's 48 / 10240, Qwen3.6's 32 / 8192
 __global__ void __launch_bounds__(QTH) gdn_rec_quad2c_kernel(float* __restrict__ state, const float* __restrict__ h,
                                                              const float* __restrict__ gate, const float* __restrict__ beta,
                                                              float* __restrict__ oc_out, int64_t T) {
@@ -1085,7 +1125,7 @@ __global__ void __launch_bounds__(QTH) gdn_rec_quad2c_kernel(float* __restrict__
 // gdn_out_norm_kernel's body over a grid-stride walk of the (token, head) rows: the old kernel launched a 128-thread
 // block per row (T * 48 blocks; ~45 GB/s on the 8060S).  The same code per row (the same compiled arithmetic: a wave
 // per row with four values per lane rounded differently in its first xor step).
-template <bool WY>
+template <bool WY, int HV = 48, int C = 10240, bool SILU = false>
 __global__ void __launch_bounds__(S) gdn_out_norm_loop_kernel(const float* __restrict__ z, const float* __restrict__ gamma,
                                                               float eps, float* __restrict__ y, uint16_t* __restrict__ y16,
                                                               int64_t rows, int64_t ld16) {
@@ -1103,7 +1143,7 @@ __global__ void __launch_bounds__(S) gdn_out_norm_loop_kernel(const float* __res
         if ((col & 31) == 0) wsum[col >> 5] = sp;
         __syncthreads();
         const float ss = wsum[0] + wsum[1] + wsum[2] + wsum[3];
-        const float bp = oc * rsqrtf(ss / (float) S + eps) * gamma[col], sg = sigm(z[at]);
+        const float bp = oc * rsqrtf(ss / (float) S + eps) * gamma[col], sg = gdn_gate_act<SILU>(z[at]);
         const size_t o16 = (size_t) (row / HV) * ld16 + (size_t) (row % HV) * S + col;
         if constexpr (WY) {
             const float v = bp * sg;
@@ -1119,6 +1159,7 @@ __global__ void __launch_bounds__(S) gdn_out_norm_loop_kernel(const float* __res
     }
 }
 #endif   // __HIPCC__
+template <int HV = 48, int C = 10240, bool SILU = false>   // value heads and conv channels: Flash-Next's 48 / 10240, Qwen3.6's 32 / 8192
 __global__ void __launch_bounds__(S) gdn_out_norm_kernel(const float* __restrict__ z, const float* __restrict__ gamma,
                                                          float eps, float* __restrict__ y, uint16_t* __restrict__ y16,
                                                          int64_t ld16) {
@@ -1131,12 +1172,12 @@ __global__ void __launch_bounds__(S) gdn_out_norm_kernel(const float* __restrict
     if ((col & 31) == 0) wsum[col >> 5] = sp;
     __syncthreads();
     const float ss = wsum[0] + wsum[1] + wsum[2] + wsum[3];
-    const float v = oc * rsqrtf(ss / (float) S + eps) * gamma[col] * sigm(z[t * HV * S + head * S + col]);
+    const float v = oc * rsqrtf(ss / (float) S + eps) * gamma[col] * gdn_gate_act<SILU>(z[t * HV * S + head * S + col]);
     y16[(size_t) t * ld16 + (size_t) head * S + col] = hf(v);   // (the FP32 normalized value is not stored: nothing reads it)
 }
 
 // ---------------------------------------------------------------- MoE
-template <int REG>
+template <int REG, int KS = 10>   // KS: experts per token (Flash-Next 10, Qwen3.6 8)
 __global__ void route_kernel(const float* __restrict__ logits, int32_t* __restrict__ ids, float* __restrict__ wout,
                              int64_t T) {
     const int64_t t = (int64_t) blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5);
@@ -1157,7 +1198,7 @@ __global__ void route_kernel(const float* __restrict__ logits, int32_t* __restri
 #pragma unroll
     for (int i = 0; i < REG; ++i) { v[i] *= rcp; if (isnan(v[i])) v[i] = -FLT_MAX; }
     float selected = 0.0f, selected_sum = 0.0f;
-    for (int rank = 0; rank < 10; ++rank) {
+    for (int rank = 0; rank < KS; ++rank) {
         float best = v[0];
         int ex = lane;
 #pragma unroll
@@ -1169,11 +1210,11 @@ __global__ void route_kernel(const float* __restrict__ logits, int32_t* __restri
             if (ob > best || (ob == best && oi < ex)) { best = ob; ex = oi; }
         }
         if ((ex & 31) == lane) { v[ex / 32] = -INFINITY; selected_sum += best; }
-        if (lane == 0) ids[t * 10 + rank] = ex;
+        if (lane == 0) ids[t * KS + rank] = ex;
         if (rank == lane) selected = best;
     }
     selected_sum = fmaxf(warp_sum(selected_sum), 6.103515625e-5f);
-    if (lane < 10) wout[t * 10 + lane] = selected / selected_sum;
+    if (lane < KS) wout[t * KS + lane] = selected / selected_sum;
 }
 // Strata blob: gate/up codes [1280][640 B], down codes [2560][160 B], gate/up scales [1280][40] f16, down scales [2560][10] f16
 template <bool HALF>
@@ -1201,17 +1242,17 @@ __global__ void blob_dequant_kernel(const uint8_t* __restrict__ blob, uint16_t* 
         for (int k = 0; k < 4; ++k) { const float v = (float) (((c >> (2 * k)) & 3) - 1) * d; o[k] = HALF ? hf(v) : bf(v); }
     }
 }
-__global__ void swiglu_il_kernel(const float* __restrict__ gu, uint16_t* __restrict__ h16, int64_t n) {
+__global__ void swiglu_il_kernel(const float* __restrict__ gu, uint16_t* __restrict__ h16, int64_t n, int64_t ff) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n * 640) return;
-    const int64_t r = i / 640, k = i % 640;
-    const float g = gu[r * 1280 + 2 * k], u = gu[r * 1280 + 2 * k + 1];
+    if (i >= n * ff) return;
+    const int64_t r = i / ff, k = i % ff;
+    const float g = gu[r * 2 * ff + 2 * k], u = gu[r * 2 * ff + 2 * k + 1];
     h16[i] = hf_sat(g / (1.0f + __expf(-g)) * u);
 }
 __global__ void swiglu_pair_kernel(const float* __restrict__ g, const float* __restrict__ u, uint16_t* __restrict__ h16,
-                                   int64_t n) {
+                                   int64_t n, int64_t ff) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n * 640) return;
+    if (i >= n * ff) return;
     const float a = g[i];
     h16[i] = hf_sat(a / (1.0f + __expf(-a)) * u[i]);
 }
@@ -1223,6 +1264,7 @@ __global__ void gather_rows16_kernel(const uint16_t* __restrict__ x, const int32
     const int64_t r = i / per, j = i % per;
     reinterpret_cast<uint4*>(dst)[r * per + j] = reinterpret_cast<const uint4*>(x)[(int64_t) src[r] * per + j];
 }
+template <int N = 2560, int KS = 10>   // n_embd and experts per token
 __global__ void moe_combine_kernel(const float* __restrict__ Dm, const int32_t* __restrict__ slot,
                                    const float* __restrict__ w, const float* __restrict__ shared,
                                    const float* __restrict__ sg, float* __restrict__ bo, int64_t T) {
@@ -1231,12 +1273,13 @@ __global__ void moe_combine_kernel(const float* __restrict__ Dm, const int32_t* 
     const int64_t t = i / N, d = i % N;
     float s = 0.0f;
 #pragma unroll
-    for (int k = 0; k < 10; ++k) s = fmaf(w[t * 10 + k], Dm[(int64_t) slot[t * 10 + k] * N + d], s);
+    for (int k = 0; k < KS; ++k) s = fmaf(w[t * KS + k], Dm[(int64_t) slot[t * KS + k] * N + d], s);
     bo[i] = s + shared[i] * sigm(sg[t]);
 }
 
 // W (X5): four columns per thread, one float4 load per slot; the per-element expression and the k order are unchanged
 // (bitwise equal to moe_combine_kernel). Needs 16-byte aligned Dm / shared / bo (N * 4 bytes per row is a multiple of 16).
+template <int N = 2560, int KS = 10>
 __global__ void moe_combine4_kernel(const float* __restrict__ Dm, const int32_t* __restrict__ slot,
                                     const float* __restrict__ w, const float4* __restrict__ shared,
                                     const float* __restrict__ sg, float4* __restrict__ bo, int64_t T) {
@@ -1244,15 +1287,15 @@ __global__ void moe_combine4_kernel(const float* __restrict__ Dm, const int32_t*
     if (i >= T * (N / 4)) return;
     const int64_t t = i / (N / 4), d = (i % (N / 4)) * 4;
     float4 s = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
-    float4 v[10];
-    float ww[10];
+    float4 v[KS];
+    float ww[KS];
 #pragma unroll
-    for (int k = 0; k < 10; ++k) {
-        ww[k] = w[t * 10 + k];
-        v[k] = *reinterpret_cast<const float4*>(Dm + (int64_t) slot[t * 10 + k] * N + d);
+    for (int k = 0; k < KS; ++k) {
+        ww[k] = w[t * KS + k];
+        v[k] = *reinterpret_cast<const float4*>(Dm + (int64_t) slot[t * KS + k] * N + d);
     }
 #pragma unroll
-    for (int k = 0; k < 10; ++k) {
+    for (int k = 0; k < KS; ++k) {
         s.x = fmaf(ww[k], v[k].x, s.x); s.y = fmaf(ww[k], v[k].y, s.y);
         s.z = fmaf(ww[k], v[k].z, s.z); s.w = fmaf(ww[k], v[k].w, s.w);
     }
@@ -1295,18 +1338,20 @@ __global__ void rope_kernel(float* __restrict__ x, int64_t heads, int64_t dim, i
     p[pair] = a * c - b * s;
     p[pair + 32] = a * s + b * c;
 }
+template <int NH = 24>   // query heads: Flash-Next's 24, Qwen3.6's 16
 __global__ void split_q_kernel(const float* __restrict__ qf, float* __restrict__ q, int64_t T) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= T * 24 * 256) return;
-    const int64_t t = i / (24 * 256), h = (i / 256) % 24, d = i % 256;
-    q[i] = qf[t * 24 * 512 + h * 512 + d];
+    if (i >= T * NH * 256) return;
+    const int64_t t = i / (NH * 256), h = (i / 256) % NH, d = i % 256;
+    q[i] = qf[t * NH * 512 + h * 512 + d];
 }
+template <int NH = 24>
 __global__ void gate_attn_kernel(const float* __restrict__ a, const float* __restrict__ qf, uint16_t* __restrict__ o16,
                                  int64_t T, int64_t ld16) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= T * 24 * 256) return;
-    const int64_t t = i / (24 * 256), h = (i / 256) % 24, d = i % 256;
-    o16[t * ld16 + h * 256 + d] = hf(a[i] * (1.0f / (1.0f + expf(-qf[t * 24 * 512 + h * 512 + 256 + d]))));
+    if (i >= T * NH * 256) return;
+    const int64_t t = i / (NH * 256), h = (i / 256) % NH, d = i % 256;
+    o16[t * ld16 + h * 256 + d] = hf(a[i] * (1.0f / (1.0f + expf(-qf[t * NH * 512 + h * 512 + 256 + d]))));
 }
 
 // one block per (token, kv head, 64-value group); 64 threads. KV streaming: the pool page only if the block is
@@ -1475,6 +1520,12 @@ void round_f16(const float* x, float* y, int64_t n, void* stream) {
     round_f16_kernel<<<(unsigned) ((n + 255) / 256 < 4096 ? (n + 255) / 256 : 4096), 256, 0, (cudaStream_t) stream>>>(x, y, n);
     check("round_f16");
 }
+void rms_mix(const float* R, const float* w, float eps, int64_t n, float* mixed, uint16_t* mixed16, int64_t T, void* stream,
+             uint16_t* mixed_h, uint16_t* mixed16_lo) {
+    if (T <= 0) return;
+    rms_mix_kernel<<<(unsigned) T, 256, 0, (cudaStream_t) stream>>>(R, w, eps, n, mixed, mixed16, mixed_h, mixed16_lo);
+    check("rms_mix");
+}
 void to_bf16(const float* x, uint16_t* y, int64_t n, void* stream, uint16_t* ylo) {
     if (n <= 0) return;
     to_bf16_kernel<<<(unsigned) ((n + 255) / 256 < 4096 ? (n + 255) / 256 : 4096), 256, 0, (cudaStream_t) stream>>>(x, y, ylo, n);
@@ -1549,49 +1600,52 @@ void gr_broadcast(const float* e, float* R, int64_t T, void* stream) {
     gr_broadcast_kernel<<<blocks_for(T * D), 256, 0, (cudaStream_t) stream>>>(e, R, T);
     check("gr_broadcast");
 }
-void gdn_gates(const float* ab, const float* dt, const float* ssm_a, float* gate, float* beta, int64_t T, void* stream) {
-    gdn_gates_kernel<<<blocks_for(T * HV), 256, 0, (cudaStream_t) stream>>>(ab, dt, ssm_a, gate, beta, T);
+template <int HV, int C>
+void gdn_gates_t(const float* ab, const float* dt, const float* ssm_a, float* gate, float* beta, int64_t T, void* stream) {
+    gdn_gates_kernel<HV, C><<<blocks_for(T * HV), 256, 0, (cudaStream_t) stream>>>(ab, dt, ssm_a, gate, beta, T);
     check("gdn_gates");
 }
-void gdn_conv(float* history, const float* qkv, const float* conv_w, float* h, int64_t T, float eps, void* stream) {
+template <int HV, int C>
+void gdn_conv_t(float* history, const float* qkv, const float* conv_w, float* h, int64_t T, float eps, void* stream) {
     static const bool serial = std::getenv("STRATA_GDN_CONV_SERIAL") != nullptr;   // the old walk (A/B)
     if (serial || T <= CONV_TILE) {
-        gdn_conv_kernel<<<C / 128, 128, 0, (cudaStream_t) stream>>>(history, qkv, conv_w, h, T);
+        gdn_conv_kernel<HV, C><<<C / 128, 128, 0, (cudaStream_t) stream>>>(history, qkv, conv_w, h, T);
     } else {
         static const bool fused = [] { const char* v = std::getenv("STRATA_GDN_CONVL2"); return v && std::atoi(v) != 0; }();
         if (fused) {
-            gdn_conv_l2_kernel<<<dim3(C / 128, (unsigned) ((T + CONV_TILE - 1) / CONV_TILE)), 128, 0,
+            gdn_conv_l2_kernel<HV, C><<<dim3(C / 128, (unsigned) ((T + CONV_TILE - 1) / CONV_TILE)), 128, 0,
                                  (cudaStream_t) stream>>>(history, qkv, conv_w, h, T, eps);
-            gdn_conv_hist_kernel<<<C / 128, 128, 0, (cudaStream_t) stream>>>(history, qkv, T);
+            gdn_conv_hist_kernel<HV, C><<<C / 128, 128, 0, (cudaStream_t) stream>>>(history, qkv, T);
             check("gdn_conv");
             return;
         }
-        gdn_conv_tiled_kernel<<<dim3(C / 128, (unsigned) ((T + CONV_TILE - 1) / CONV_TILE)), 128, 0,
+        gdn_conv_tiled_kernel<HV, C><<<dim3(C / 128, (unsigned) ((T + CONV_TILE - 1) / CONV_TILE)), 128, 0,
                                 (cudaStream_t) stream>>>(history, qkv, conv_w, h, T);
-        gdn_conv_hist_kernel<<<C / 128, 128, 0, (cudaStream_t) stream>>>(history, qkv, T);
+        gdn_conv_hist_kernel<HV, C><<<C / 128, 128, 0, (cudaStream_t) stream>>>(history, qkv, T);
     }
-    gdn_l2_kernel<<<dim3(2 * HK, (unsigned) T), S, 0, (cudaStream_t) stream>>>(h, eps);
+    gdn_l2_kernel<HV, C><<<dim3(2 * HK, (unsigned) T), S, 0, (cudaStream_t) stream>>>(h, eps);
     check("gdn_conv");
 }
-void gdn_recurrence_variant(int variant, float* state, const float* h, const float* gate, const float* beta,
-                            const float* z, const float* gamma, float eps, float* y, uint16_t* y16, int64_t T,
-                            void* stream, int64_t ld16) {
+template <int HV, int C, bool SILU>
+void gdn_recurrence_variant_t(int variant, float* state, const float* h, const float* gate, const float* beta,
+                              const float* z, const float* gamma, float eps, float* y, uint16_t* y16, int64_t T,
+                              void* stream, int64_t ld16) {
     if (ld16 <= 0) ld16 = (int64_t) HV * S;
 #if defined(__HIPCC__)
     if (variant == 3) {   // diagnostics: the quad recurrence + the old norm kernel
         if (T > 0) {
-            gdn_rec_quad_kernel<<<HV * (S / QCB), QTH, 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
-            gdn_out_norm_kernel<<<dim3((unsigned) T, HV), S, 0, (cudaStream_t) stream>>>(z, gamma, eps, y, y16, ld16);
+            gdn_rec_quad_kernel<HV, C><<<HV * (S / QCB), QTH, 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
+            gdn_out_norm_kernel<HV, C, SILU><<<dim3((unsigned) T, HV), S, 0, (cudaStream_t) stream>>>(z, gamma, eps, y, y16, ld16);
         }
         return;
     }
     if (variant == 4 || variant == 5) {   // diagnostics: the quad recurrence's PP / two-column kernels + the norm
         if (T > 0) {
             if (variant == 5)
-                gdn_rec_quad2c_kernel<<<HV * (S / C2CB), QTH, 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
+                gdn_rec_quad2c_kernel<HV, C><<<HV * (S / C2CB), QTH, 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
             else
-                gdn_rec_quad_pp_kernel<<<HV * (S / QCB), QTH, 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
-            gdn_out_norm_loop_kernel<true><<<(unsigned) std::min<int64_t>(T * HV, 4096), S, 0, (cudaStream_t) stream>>>(
+                gdn_rec_quad_pp_kernel<HV, C><<<HV * (S / QCB), QTH, 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
+            gdn_out_norm_loop_kernel<true, HV, C, SILU><<<(unsigned) std::min<int64_t>(T * HV, 4096), S, 0, (cudaStream_t) stream>>>(
                 z, gamma, eps, y, y16, T * HV, ld16);
         }
         check("gdn_recurrence (quad pp)");
@@ -1601,17 +1655,17 @@ void gdn_recurrence_variant(int variant, float* state, const float* h, const flo
         if (T > 0) {
             static const int pp = [] { const char* v = std::getenv("STRATA_GDN_PP"); return v ? std::atoi(v) : 0; }();
             if (pp == 2)
-                gdn_rec_quad2c_kernel<<<HV * (S / C2CB), QTH, 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
+                gdn_rec_quad2c_kernel<HV, C><<<HV * (S / C2CB), QTH, 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
             else if (pp)
-                gdn_rec_quad_pp_kernel<<<HV * (S / QCB), QTH, 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
+                gdn_rec_quad_pp_kernel<HV, C><<<HV * (S / QCB), QTH, 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
             else
-                gdn_rec_quad_kernel<<<HV * (S / QCB), QTH, 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
+                gdn_rec_quad_kernel<HV, C><<<HV * (S / QCB), QTH, 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
             static const bool noy = [] { const char* v = std::getenv("STRATA_GDN_NOY"); return v && std::atoi(v) != 0; }();
             if (noy)
-                gdn_out_norm_loop_kernel<false><<<(unsigned) std::min<int64_t>(T * HV, 4096), S, 0, (cudaStream_t) stream>>>(
+                gdn_out_norm_loop_kernel<false, HV, C, SILU><<<(unsigned) std::min<int64_t>(T * HV, 4096), S, 0, (cudaStream_t) stream>>>(
                     z, gamma, eps, y, y16, T * HV, ld16);
             else
-                gdn_out_norm_loop_kernel<true><<<(unsigned) std::min<int64_t>(T * HV, 4096), S, 0, (cudaStream_t) stream>>>(
+                gdn_out_norm_loop_kernel<true, HV, C, SILU><<<(unsigned) std::min<int64_t>(T * HV, 4096), S, 0, (cudaStream_t) stream>>>(
                     z, gamma, eps, y, y16, T * HV, ld16);
         }
         check("gdn_recurrence (quad)");
@@ -1622,38 +1676,69 @@ void gdn_recurrence_variant(int variant, float* state, const float* h, const flo
 #endif
     static const bool serial = std::getenv("STRATA_GDN_REC_HEADS") != nullptr;   // the one-block-per-head kernel (A/B)
     if (serial || T <= 0 || variant == 2) {
-        gdn_rec_kernel<<<HV, dim3(S, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, z, gamma, eps, y, y16, T, ld16);
+        gdn_rec_kernel<HV, C, SILU><<<HV, dim3(S, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, z, gamma, eps, y, y16, T, ld16);
     } else {
         static const bool pipe = [] { const char* v = std::getenv("STRATA_GDN_PIPELINE"); return v == nullptr || std::atoi(v) != 0; }();
 #if !defined(__HIPCC__)
-        if (pipe && gdn_keyhead_ok())   // the value heads of a key head in one thread (same bits)
-            gdn_rec_kh_kernel<<<HK * NCB, dim3(CB, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
+        if (pipe && gdn_keyhead_ok<HV, C>())   // the value heads of a key head in one thread (same bits)
+            gdn_rec_kh_kernel<HV, C><<<HK * NCB, dim3(CB, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
         else
 #endif
         if (pipe)   // the software-pipelined loads (same bits)
-            gdn_rec_cols_pipe_kernel<<<HV * NCB, dim3(CB, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
+            gdn_rec_cols_pipe_kernel<HV, C><<<HV * NCB, dim3(CB, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
         else
-            gdn_rec_cols_kernel<<<HV * NCB, dim3(CB, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
-        gdn_out_norm_kernel<<<dim3((unsigned) T, HV), S, 0, (cudaStream_t) stream>>>(z, gamma, eps, y, y16, ld16);
+            gdn_rec_cols_kernel<HV, C><<<HV * NCB, dim3(CB, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
+        gdn_out_norm_kernel<HV, C, SILU><<<dim3((unsigned) T, HV), S, 0, (cudaStream_t) stream>>>(z, gamma, eps, y, y16, ld16);
     }
     check("gdn_recurrence");
 }
+// the instances: Flash-Next (48 value heads, 10240 conv channels, sigmoid gate) and Qwen3.6 (32, 8192, silu)
+namespace {
+[[noreturn]] void gdn_bad(int64_t hv, bool silu) {
+    std::fprintf(stderr, "prefill GDN: no kernels for %lld value heads with the %s gate\n", (long long) hv, silu ? "silu" : "sigmoid");
+    std::exit(1);
+}
+}  // namespace
+void gdn_gates(const float* ab, const float* dt, const float* ssm_a, float* gate, float* beta, int64_t T, void* stream,
+               int64_t hv) {
+    if (hv == 48) gdn_gates_t<48, 10240>(ab, dt, ssm_a, gate, beta, T, stream);
+    else if (hv == 32) gdn_gates_t<32, 8192>(ab, dt, ssm_a, gate, beta, T, stream);
+    else gdn_bad(hv, false);
+}
+void gdn_conv(float* history, const float* qkv, const float* conv_w, float* h, int64_t T, float eps, void* stream, int64_t hv) {
+    if (hv == 48) gdn_conv_t<48, 10240>(history, qkv, conv_w, h, T, eps, stream);
+    else if (hv == 32) gdn_conv_t<32, 8192>(history, qkv, conv_w, h, T, eps, stream);
+    else gdn_bad(hv, false);
+}
+void gdn_recurrence_variant(int variant, float* state, const float* h, const float* gate, const float* beta,
+                            const float* z, const float* gamma, float eps, float* y, uint16_t* y16, int64_t T,
+                            void* stream, int64_t ld16, int64_t hv, bool silu) {
+    if (hv == 48 && !silu)
+        gdn_recurrence_variant_t<48, 10240, false>(variant, state, h, gate, beta, z, gamma, eps, y, y16, T, stream, ld16);
+    else if (hv == 32 && silu)
+        gdn_recurrence_variant_t<32, 8192, true>(variant, state, h, gate, beta, z, gamma, eps, y, y16, T, stream, ld16);
+    else gdn_bad(hv, silu);
+}
 void gdn_recurrence(float* state, const float* h, const float* gate, const float* beta, const float* z,
-                    const float* gamma, float eps, float* y, uint16_t* y16, int64_t T, void* stream, int64_t ld16) {
+                    const float* gamma, float eps, float* y, uint16_t* y16, int64_t T, void* stream, int64_t ld16,
+                    int64_t hv, bool silu) {
     // Aurora (S23): four lanes per column + the grid-stride norm, the same bits (tests/hip/gdn_rec_head.cpp);
     // STRATA_GDN_HEAD=1 (on by default on gfx1151; off with STRATA_GDN_HEAD=0 or STRATA_GDN_REC_HEADS) takes them
     // (AMD builds only; the arch defaults set STRATA_GDN_HEAD=1 on gfx1151 and leave other cards on the earlier kernels)
     static const bool head = [] { const char* v = std::getenv("STRATA_GDN_HEAD"); return v != nullptr && std::atoi(v) != 0; }();
     static const bool serial = std::getenv("STRATA_GDN_REC_HEADS") != nullptr;
-    gdn_recurrence_variant(head && !serial ? 1 : 0, state, h, gate, beta, z, gamma, eps, y, y16, T, stream, ld16);
+    gdn_recurrence_variant(head && !serial ? 1 : 0, state, h, gate, beta, z, gamma, eps, y, y16, T, stream, ld16, hv,
+                           silu);
 }
-void route(const float* logits, int32_t* ids, float* weights, int64_t T, int64_t n_expert, void* stream) {
-    if (n_expert == 512)
+void route(const float* logits, int32_t* ids, float* weights, int64_t T, int64_t n_expert, void* stream, int64_t k) {
+    if (n_expert == 512 && k == 10)
         route_kernel<16><<<(unsigned) ((T + 7) / 8), 256, 0, (cudaStream_t) stream>>>(logits, ids, weights, T);
-    else if (n_expert == 256)
+    else if (n_expert == 256 && k == 10)
         route_kernel<8><<<(unsigned) ((T + 7) / 8), 256, 0, (cudaStream_t) stream>>>(logits, ids, weights, T);
+    else if (n_expert == 256 && k == 8)
+        route_kernel<8, 8><<<(unsigned) ((T + 7) / 8), 256, 0, (cudaStream_t) stream>>>(logits, ids, weights, T);
     else
-        strata::kernels::router_top10(logits, (int) T, (int) n_expert, 10, ids, weights, stream);
+        strata::kernels::router_top10(logits, (int) T, (int) n_expert, (int) k, ids, weights, stream);
     check("route");
 }
 void blob_dequant(const uint8_t* blob, uint16_t* gu16, uint16_t* down16, void* stream) {
@@ -1664,13 +1749,13 @@ void blob_dequant_f16(const uint8_t* blob, uint16_t* gu16, uint16_t* down16, voi
     blob_dequant_kernel<true><<<blocks_for(1280LL * 640 + 2560LL * 160), 256, 0, (cudaStream_t) stream>>>(blob, gu16, down16);
     check("blob_dequant_f16");
 }
-void swiglu_interleaved(const float* gu, uint16_t* h16, int64_t n, void* stream) {
+void swiglu_interleaved(const float* gu, uint16_t* h16, int64_t n, void* stream, int64_t n_ff) {
     if (n <= 0) return;
-    swiglu_il_kernel<<<blocks_for(n * 640), 256, 0, (cudaStream_t) stream>>>(gu, h16, n);
+    swiglu_il_kernel<<<blocks_for(n * n_ff), 256, 0, (cudaStream_t) stream>>>(gu, h16, n, n_ff);
     check("swiglu_interleaved");
 }
-void swiglu_pair(const float* g, const float* u, uint16_t* h16, int64_t n, void* stream) {
-    swiglu_pair_kernel<<<blocks_for(n * 640), 256, 0, (cudaStream_t) stream>>>(g, u, h16, n);
+void swiglu_pair(const float* g, const float* u, uint16_t* h16, int64_t n, void* stream, int64_t n_ff) {
+    swiglu_pair_kernel<<<blocks_for(n * n_ff), 256, 0, (cudaStream_t) stream>>>(g, u, h16, n, n_ff);
     check("swiglu_pair");
 }
 namespace {
@@ -1703,18 +1788,27 @@ void gather_rows16(const uint16_t* x16, const int32_t* src, uint16_t* dst16, int
     gather_rows16_kernel<<<blocks_for(n * (width / 8)), 256, 0, (cudaStream_t) stream>>>(x16, src, dst16, n, width);
     check("gather_rows16");
 }
-void moe_combine(const float* Dm, const int32_t* slot, const float* w, const float* shared, const float* sg, float* bo,
-                 int64_t T, void* stream) {
+namespace {
+template <int NN, int KS>
+void moe_combine_t(const float* Dm, const int32_t* slot, const float* w, const float* shared, const float* sg, float* bo,
+                   int64_t T, void* stream) {
 #ifndef STRATA_W_NO_COMB
     if (((reinterpret_cast<uintptr_t>(Dm) | reinterpret_cast<uintptr_t>(shared) | reinterpret_cast<uintptr_t>(bo)) & 15) == 0) {
-        moe_combine4_kernel<<<blocks_for(T * (N / 4)), 256, 0, (cudaStream_t) stream>>>(
+        moe_combine4_kernel<NN, KS><<<blocks_for(T * (NN / 4)), 256, 0, (cudaStream_t) stream>>>(
             Dm, slot, w, reinterpret_cast<const float4*>(shared), sg, reinterpret_cast<float4*>(bo), T);
         check("moe_combine");
         return;
     }
 #endif
-    moe_combine_kernel<<<blocks_for(T * N), 256, 0, (cudaStream_t) stream>>>(Dm, slot, w, shared, sg, bo, T);
+    moe_combine_kernel<NN, KS><<<blocks_for(T * NN), 256, 0, (cudaStream_t) stream>>>(Dm, slot, w, shared, sg, bo, T);
     check("moe_combine");
+}
+}  // namespace
+void moe_combine(const float* Dm, const int32_t* slot, const float* w, const float* shared, const float* sg, float* bo,
+                 int64_t T, void* stream, int64_t n_embd, int64_t k) {
+    if (n_embd == 2560 && k == 10) moe_combine_t<2560, 10>(Dm, slot, w, shared, sg, bo, T, stream);
+    else if (n_embd == 2048 && k == 8) moe_combine_t<2048, 8>(Dm, slot, w, shared, sg, bo, T, stream);
+    else { std::fprintf(stderr, "moe_combine: no kernel for n_embd %lld, %lld experts\n", (long long) n_embd, (long long) k); std::exit(1); }
 }
 void rms_rows(float* x, const float* w, int64_t rows, int64_t cols, int64_t ld, float eps, void* stream) {
     if (rows <= 0) return;
@@ -1742,13 +1836,21 @@ void rope(float* x, int64_t T, int64_t heads, int64_t dim, int64_t ld, int64_t p
             strata::kernels::mrope_table(), rt);
     check("rope");
 }
-void split_q(const float* q_full, float* q, int64_t T, void* stream) {
-    split_q_kernel<<<blocks_for(T * 24 * 256), 256, 0, (cudaStream_t) stream>>>(q_full, q, T);
+void split_q(const float* q_full, float* q, int64_t T, void* stream, int64_t n_head) {
+    if (n_head == 16) split_q_kernel<16><<<blocks_for(T * 16 * 256), 256, 0, (cudaStream_t) stream>>>(q_full, q, T);
+    else if (n_head == 24) split_q_kernel<24><<<blocks_for(T * 24 * 256), 256, 0, (cudaStream_t) stream>>>(q_full, q, T);
+    else { std::fprintf(stderr, "split_q: no kernel for %lld heads\n", (long long) n_head); std::exit(1); }
     check("split_q");
 }
-void gate_attn(const float* attn, const float* q_full, uint16_t* out16, int64_t T, void* stream, int64_t ld16) {
-    gate_attn_kernel<<<blocks_for(T * 24 * 256), 256, 0, (cudaStream_t) stream>>>(attn, q_full, out16, T,
-                                                                                ld16 > 0 ? ld16 : 24 * 256);
+void gate_attn(const float* attn, const float* q_full, uint16_t* out16, int64_t T, void* stream, int64_t ld16,
+               int64_t n_head) {
+    if (n_head == 16)
+        gate_attn_kernel<16><<<blocks_for(T * 16 * 256), 256, 0, (cudaStream_t) stream>>>(attn, q_full, out16, T,
+                                                                                         ld16 > 0 ? ld16 : 16 * 256);
+    else if (n_head == 24)
+        gate_attn_kernel<24><<<blocks_for(T * 24 * 256), 256, 0, (cudaStream_t) stream>>>(attn, q_full, out16, T,
+                                                                                         ld16 > 0 ? ld16 : 24 * 256);
+    else { std::fprintf(stderr, "gate_attn: no kernel for %lld heads\n", (long long) n_head); std::exit(1); }
     check("gate_attn");
 }
 

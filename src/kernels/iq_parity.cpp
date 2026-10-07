@@ -13,6 +13,7 @@
 // activation rounding (a few 1e-3 relative), for 1 to 8 columns, every column of a multi-column call bitwise
 // equal to a one-column call on it.
 #include "strata/kernels/iq_kernels.hpp"
+#include <cstdlib>
 #include "strata/kernels/native_mmvq.hpp"
 
 #include <cuda_runtime.h>
@@ -26,7 +27,7 @@
 
 int main(int argc, char** argv) {
     const std::string dir = argc > 1 ? argv[1] : "logs/iq_fixture";
-    const char* names[] = {"IQ2_XXS", "IQ2_XS", "IQ2_S", "IQ3_XXS", "IQ3_S", "IQ1_M", "IQ4_NL", "IQ4_XS", "Q2_0", "Q3_K"};
+    const char* names[] = {"IQ2_XXS", "IQ2_XS", "IQ2_S", "IQ3_XXS", "IQ3_S", "IQ1_M", "IQ4_NL", "IQ4_XS", "Q2_0", "Q3_K", "Q2_K", "Q4_0"};
     int failures = 0, missing = 0;
     cudaStream_t s;
     cudaStreamCreate(&s);
@@ -83,14 +84,23 @@ int main(int argc, char** argv) {
         strata::kernels::quantize_q8_1_rows(dx, MC, cols, xq, s);
         std::vector<float> y((size_t) MC * rows), yn(y.size());
         int multi_bad = 0;
+        // the dense kernels' MMVQ where they take the type, else the expert kernels' (Fmt<>) one - Q2_K, which
+        // only the Qwen3.6 MTP layer's experts use
+        // STRATA_PARITY_IQ_MMVQ=1: the expert kernels' MMVQ even where the dense one takes the type (Q4_0: the
+        // bartowski MTP layer's experts run on it)
+        static const bool force_iq = std::getenv("STRATA_PARITY_IQ_MMVQ") != nullptr;
+        auto mmvq = [](int t, const void* w, const void* xq_, float* y_, int n_in, int n_out, int nc, cudaStream_t st) {
+            if (strata::kernels::native_mmvq_supported(t) && !force_iq)
+                strata::kernels::native_mmvq(t, w, xq_, y_, n_in, n_out, nc, st);
+            else strata::kernels::iq_mmvq(t, w, xq_, y_, n_in, n_out, nc, st);
+        };
         try {
             for (int c = 0; c < MC; ++c)
-                strata::kernels::native_mmvq(type, dw, (const uint8_t*) xq + (size_t) c * cols / 32 * 36,
-                                             dy + (size_t) c * rows, cols, rows, 1, s);
+                mmvq(type, dw, (const uint8_t*) xq + (size_t) c * cols / 32 * 36, dy + (size_t) c * rows, cols, rows, 1, s);
             cudaStreamSynchronize(s);
             cudaMemcpy(y.data(), dy, y.size() * 4, cudaMemcpyDeviceToHost);
             for (int nc = 2; nc <= MC; ++nc) {
-                strata::kernels::native_mmvq(type, dw, xq, dy, cols, rows, nc, s);
+                mmvq(type, dw, xq, dy, cols, rows, nc, s);
                 cudaStreamSynchronize(s);
                 cudaMemcpy(yn.data(), dy, yn.size() * 4, cudaMemcpyDeviceToHost);
                 if (strata::kernels::native_mmvq_multi_exact() &&

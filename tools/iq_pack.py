@@ -219,6 +219,20 @@ def tensor_bytes(mm, g, t) -> np.ndarray:
     return mm[g.data_start + t.offset: g.data_start + t.offset + n]
 
 
+def main_layers(model) -> int | None:
+    """The model's main layers when the file also carries MTP layers after them (a qwen35moe file's
+    nextn_predict_layers: blk.<main>.* is the draft layer, which is not part of the main pack), else None."""
+    meta = model.files[0].metadata
+    arch = meta.get("general.architecture", "")
+    if "%s.nextn_predict_layers" % arch not in meta or "%s.block_count" % arch not in meta:
+        return None
+    return int(meta["%s.block_count" % arch]) - int(meta["%s.nextn_predict_layers" % arch])
+
+
+def is_mtp_layer(name: str, n_main: int | None) -> bool:
+    return n_main is not None and name.startswith("blk.") and int(name.split(".")[1]) >= n_main
+
+
 def is_expert(name: str) -> bool:
     return name.startswith("blk.") and name.endswith(("_exps.weight",))
 
@@ -275,8 +289,9 @@ def index_standalone(src, out, model: Model, compat_bf16: bool = False) -> int:
     """Every non-expert tensor of the model: the floats the engine reads from the pack into dense.bin in the form it
     reads them (FORM; converted when stored otherwise, see above), quantized ones served natively from the GGUF."""
     todo, problems = [], []
+    n_main = main_layers(model)
     for name, (g, t, mm, p) in model.where.items():
-        if is_expert(t.name) or t.name in NOT_IN_PACK:
+        if is_expert(t.name) or t.name in NOT_IN_PACK or is_mtp_layer(t.name, n_main):
             continue
         if len(t.shape) > 2:
             print("tensor %s has %d dimensions; the index holds two" % (t.name, len(t.shape)))
@@ -435,7 +450,9 @@ def expert_layout(model: Model, src: pathlib.Path):
     exps = [n for n in T if n.startswith("blk.") and n.endswith("_exps.weight")]
     if not exps:
         return "the model has no expert tensors (blk.N.ffn_{gate,up,down}_exps.weight)"
-    n_layers = 1 + max(int(n.split(".")[1]) for n in exps)
+    n_layers = main_layers(model)
+    if n_layers is None:
+        n_layers = 1 + max(int(n.split(".")[1]) for n in exps)
     n_expert = int(T["blk.0.ffn_gate_inp.weight"].shape[1])   # router rows = experts kept (pruned models ship < 512)
     if any(int(T["blk.%d.ffn_gate_inp.weight" % l].shape[1]) != n_expert for l in range(n_layers)):
         return "the routers disagree on the expert count; a per-layer pruned model cannot be packed"

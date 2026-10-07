@@ -20,7 +20,8 @@ What the first run does (each step is skipped when it is already done):
   6. prepares the model for Strata and fetches the MTP draft layer (~5 GB, from the original Qwen checkpoint)
   7. writes run-<model>.bat / run-<model>.sh and starts the model
 
-Options: --family qwen|swift, --model Q2_0|IQ2_XS|IQ3_XXS|IQ3_S, --context 32768, --rope-scaling none|linear|yarn
+Options: --family qwen|swift|coder|unsloth|qwen36, --model Q2_0|IQ2_XS|IQ3_XXS|IQ3_S (qwen36: UD-IQ4_XS|UD-IQ3_S),
+--context 32768, --rope-scaling none|linear|yarn
 (--rope-scale F; past the trained 262144 the setup adds yarn and the factor is the final context over 262144,
 at least 1 - an explicit --rope-scaling none is refused for such a context), --vision yes|no|gpu|cpu, --port
 8080, --yes (recommended
@@ -67,6 +68,8 @@ HF_REVISIONS = {
     "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF": "b22d729eae29b5796f76fb70f91aef549b9fc52c",   # 2026-09-24
     "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF": "5348543e0147355ac9cbcb031184a3546350988e",  # 2026-09-29
     "unsloth/Qwen3.8-Flash-Next-GGUF": "38bb39ee97821de2c9009abb7e93950eec396e66",                   # 2026-09-30
+    "unsloth/Qwen3.6-35B-A3B-MTP-GGUF": "5bc3e238d916f48a861bac2f8a1990a0e9b7e98d",
+    "bartowski/Ornith-1.5-35B-A3B-GGUF": "64b0493d34a5ca4c1b4ad67bb99b41d74b4f07d6",
 }
 
 
@@ -121,6 +124,14 @@ KV_CELL_BYTES = {"q4_0": 576, "k8v4": 816}
 PY_PACKAGES = ["numpy", "jinja2", "regex", "pyyaml", "tqdm", "requests", "cmake", "ninja", "pillow", "psutil"]
 REQUIREMENTS = ROOT / "requirements.txt"   # the same packages and their dependencies, pinned (#214)
 
+# The first engine that runs Qwen3.6-35B-A3B (general.architecture qwen35moe): this source tree's version
+# (CMakeLists.txt).  The ready-made 0.1.40 engines were built before the qwen35moe support, so the version alone does
+# not tell them apart: setup looks for SMALL_ENGINE_MARK in the engine itself (engine_runs_small).
+QWEN36_ENGINE = (0, 1, 40)
+# A GGUF key only the engine's own qwen35moe support names (src/core/layout.cpp).  Not the bare architecture name: the
+# image encoder links llama.cpp, whose table of architectures has it.
+SMALL_ENGINE_MARK = b"qwen35moe.block_count"
+
 MODELS = {
     # the original model only for now: Swift 1.5's Q2_0 files split one layer's experts across the two shards, which
     # the pack tool (tools/iq_pack.py) cannot prepare yet (#171)
@@ -151,6 +162,45 @@ MODELS = {
                   "download_gb": 93.7, "ram_gb": 48, "arena_gb": 59.5, "families": ("unsloth",), "budget": True,
                   "shards": 3, "file": "Qwen3.8-Flash-Next-{q}-0000{i}-of-00003.gguf", "engine": (0, 1, 38),
                   "vision": True},
+    # Qwen3.6-35B-A3B (family "qwen36", a smaller model for 8-12 GB cards and 16-32 GB of RAM): Unsloth's single-file
+    # GGUFs with the MTP draft layer inside.  Its sizes share their names with other files (UD-IQ4_XS is also an
+    # Unsloth Flash-Next size), so their keys here carry the model and "size" is the published name: --model
+    # UD-IQ4_XS with --family qwen36 is this entry (model_key), and the folder, pack and config names use the size.
+    "Qwen3.6-UD-IQ4_XS": {"size": "UD-IQ4_XS", "about": "~4-bit i-quant (Unsloth Dynamic), the recommended size: "
+                                                        "~14 GiB of experts in RAM, comfortable on 32 GB",
+                          # 18,209,036,576 bytes; experts 14.17 GiB = 15.2 GB (measured: the engine's "loaded 14.17 GiB")
+                          "download_gb": 18.2, "ram_gb": 26, "arena_gb": 15.2, "families": ("qwen36",),
+                          "engine": QWEN36_ENGINE},
+    "Qwen3.6-UD-IQ3_S": {"size": "UD-IQ3_S", "about": "~3.5-bit i-quant (Unsloth Dynamic), smaller: for 16-24 GB of "
+                                                      "RAM (16 GB: a 12 GB card, the low-RAM mode)",
+                         # 15,346,432,288 bytes; experts 11.99 GiB = 12.9 GB (measured: the engine's "loaded 11.99 GiB")
+                         "download_gb": 15.3, "ram_gb": 24, "arena_gb": 12.9, "families": ("qwen36",),
+                         "engine": QWEN36_ENGINE},
+    # Ornith-1.5-35B-A3B (family "ornith"): ornith-ai's fine-tune of the same architecture (qwen35moe), for agentic
+    # coding.  No Unsloth files exist for it; bartowski's single-file GGUFs (with the MTP layer, stored Q4_0) are the
+    # closest to the Qwen3.6 sizes.  Its draft layer is accepted less often than Qwen3.6's (61% vs 80% of the drafts
+    # on a chat prompt, measured; a Q8_0 copy of it, mudler's APEX-MTP-Compact file, 44%), so
+    # it writes ~10-20% slower on the same PC - the answers are the main model's either way.  Experts: measured.
+    "Ornith-1.5-IQ4_XS": {"size": "IQ4_XS", "about": "~4-bit i-quant (bartowski), the recommended size: "
+                                                    "~16 GiB of experts in RAM, comfortable on 32 GB",
+                          # 19,278,554,784 bytes; experts 15.94 GiB = 17.1 GB (measured)
+                          "download_gb": 19.3, "ram_gb": 28, "arena_gb": 17.1, "families": ("ornith",),
+                          "engine": QWEN36_ENGINE},
+    "Ornith-1.5-IQ3_XXS": {"size": "IQ3_XXS", "about": "~3-bit i-quant (bartowski), smaller: for 16-24 GB of RAM "
+                                                      "(16 GB: a 12 GB card, the low-RAM mode)",
+                           # 15,340,447,392 bytes; experts 12.38 GiB = 13.3 GB (measured)
+                           "download_gb": 15.3, "ram_gb": 24, "arena_gb": 13.3, "families": ("ornith",),
+                           "engine": QWEN36_ENGINE},
+}
+# Qwen3.6-35B-A3B's two files at the pinned revision: name -> (bytes, sha256), checked after the download
+QWEN36_FILES = {
+    "Qwen3.6-35B-A3B-UD-IQ4_XS.gguf": (18209036576, "df27a780435b7b45c2597536112ea3cb091f8544c3d0c3318d9f4258b31f7adf"),
+    "Qwen3.6-35B-A3B-UD-IQ3_S.gguf": (15346432288, "ab639a7f330f96c47d3e6c2dd2d6445182e7b763e17e6048dc850a71bbc9f27f"),
+}
+# Ornith-1.5-35B-A3B's files at the pinned revision: name -> (bytes, sha256)
+ORNITH_FILES = {
+    "Ornith-1.5-35B-A3B-IQ4_XS.gguf": (19278554784, "d6aef57fa948e9bba3ca4959b3c237ed898c605471f48c73a32cedbd24aabe70"),
+    "Ornith-1.5-35B-A3B-IQ3_XXS.gguf": (15340447392, "8918ccb9ee29abe3875efec0c3e86f0e35ef0b8a03e3f0e1c422869859a518d0"),
 }
 # The experimental Unsloth file's four shards at the pinned revision: name -> (bytes, sha256), checked after the
 # download (setup trusts no other model file by name and size alone either: check_shards reads their directories).
@@ -218,6 +268,28 @@ FAMILIES = {
                 "mmproj": "mmproj-Qwen3.8-Flash-Next-BF16.gguf", "name": "qwen3.8-flash-next-unsloth",
                 "vision": False, "pack_args": ["--compat-bf16"],
                 "sha256": {**UNSLOTH_SHARDS, **UNSLOTH_IQ4_XS_SHARDS}},
+    # Qwen3.6-35B-A3B (general.architecture qwen35moe): one GGUF file, no PLE table (no --ple-gguf), its MTP draft
+    # layer inside the file (blk.40: --mtp is the model file, nothing else is fetched), the pack built like Unsloth's
+    # (--compat-bf16).  No images yet; one GPU (no layer split yet); its batched prompt path is NVIDIA-only (sm_75+)
+    # and it has not been run on AMD.  Suggested where no Flash-Next size fits the RAM (qwen36_recommended).
+    "qwen36": {"title": "Qwen3.6-35B-A3B", "by": "Qwen's smaller MoE; Unsloth's GGUFs with its MTP layer",
+               "about": "a smaller model for 16-32 GB of RAM and 8-12 GB cards (18 GB download); no images yet",
+               "hf": hf("unsloth/Qwen3.6-35B-A3B-MTP-GGUF"), "file": "Qwen3.6-35B-A3B-{q}.gguf", "shards": 1,
+               "tag": "qwen36-", "mmproj_hf": hf("unsloth/Qwen3.6-35B-A3B-MTP-GGUF"), "mmproj": None, "name": "qwen3.6-35b-a3b", "vision": False,
+               "pack_args": ["--compat-bf16"], "sha256": QWEN36_FILES, "profile": "expert-profile-qwen36.bin",
+               "license": "Apache 2.0: https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
+               "own_mtp": True, "ple": False, "one_gpu": True, "nvidia_only": True},
+    # Ornith-1.5-35B-A3B: a fine-tune of the same architecture (agentic coding), the same engine path as qwen36 (its
+    # draft layer in the file, no PLE, one GPU, NVIDIA's batched prompt path); the Qwen3.6 expert profile and draft
+    # vocabulary apply (the same geometry and tokenizer).
+    "ornith": {"title": "Ornith-1.5-35B-A3B", "by": "ornith-ai's agentic-coding fine-tune of the same 35B-A3B model",
+               "about": "Qwen3.6-35B-A3B's size, tuned for coding agents (19 GB download); no images yet",
+               "hf": hf("bartowski/Ornith-1.5-35B-A3B-GGUF"), "file": "Ornith-1.5-35B-A3B-{q}.gguf", "shards": 1,
+               "tag": "ornith15-", "mmproj_hf": hf("bartowski/Ornith-1.5-35B-A3B-GGUF"), "mmproj": None,
+               "name": "ornith-1.5-35b-a3b", "vision": False,
+               "pack_args": ["--compat-bf16"], "sha256": ORNITH_FILES, "profile": "expert-profile-qwen36.bin",
+               "license": "MIT: https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B",
+               "own_mtp": True, "ple": False, "one_gpu": True, "nvidia_only": True},
 }
 MMPROJ = "mmproj-Qwen3.8-Flash-Next-BF16.gguf"
 # EXPERIMENTAL, off by default (setup asks): a control vector shipped with the repository, see its README
@@ -939,11 +1011,87 @@ def split_mmap(cfg: dict) -> bool:
 
 def model_file(fam: dict, model: str, i: int) -> str:
     """Shard i's file name: the family's pattern, or the model's own (#621: UD-IQ4_XS has three shards, not four)."""
-    return MODELS.get(model, {}).get("file", fam["file"]).format(q=model, i=i)
+    return MODELS.get(model, {}).get("file", fam["file"]).format(q=size_of(model), i=i)
 
 
 def model_shards(fam: dict, model: str) -> int:
     return MODELS.get(model, {}).get("shards", fam.get("shards", 2))
+
+
+def size_of(model: str) -> str:
+    """The published size name of a MODELS key: the key itself, or its "size" (Qwen3.6-UD-IQ4_XS -> UD-IQ4_XS)."""
+    return MODELS.get(model, {}).get("size", model)
+
+
+def model_key(family: str, size: str | None) -> str | None:
+    """The MODELS key of `size` in `family` (--model UD-IQ4_XS is Unsloth's Flash-Next file with --family unsloth,
+    Qwen3.6-35B-A3B's with --family qwen36); a key is taken as it is.  None: the family has no such size."""
+    if not size:
+        return None
+    if size in MODELS and family in MODELS[size].get("families", ("qwen", "swift")):
+        return size
+    return next((m for m, d in MODELS.items() if size_of(m).upper() == size.upper()
+                 and family in d.get("families", ("qwen", "swift"))), None)
+
+
+def model_choices() -> list:
+    """What --model accepts: every size name, and the keys of the sizes another family shares a name with."""
+    return list(dict.fromkeys([*(size_of(m) for m in MODELS), *MODELS]))
+
+
+def config_family(cfg_path: Path) -> str:
+    """The family a strata-<tag>.json was set up for, from its tag (the original model's has no prefix)."""
+    tag = Path(cfg_path).stem[len("strata-"):]
+    return next((f for f, d in FAMILIES.items() if d["tag"] and tag.startswith(d["tag"])), "qwen")
+
+
+def one_gpu_family(cfg_path: Path) -> bool:
+    """A family the engine runs on one GPU only (no layer split yet: Qwen3.6-35B-A3B)."""
+    return bool(FAMILIES[config_family(cfg_path)].get("one_gpu"))
+
+
+FLASH_NEXT_FLOOR_SLACK_GB = 4    # step 1's tolerance under a size's RAM line ("the smallest model needs ...")
+
+
+def small_family(family: str) -> bool:
+    """A family of the 35B-A3B models (Qwen3.6-35B-A3B and its fine-tunes: qwen36, ornith) - the model file holds its
+    draft layer ("own_mtp"); the Flash-Next families do not."""
+    return bool(FAMILIES.get(family, {}).get("own_mtp"))
+
+
+def engine_runs_small(eng: Path) -> bool:
+    """Does the engine in `eng` run the 35B-A3B families (qwen35moe): its program names SMALL_ENGINE_MARK."""
+    try:
+        return SMALL_ENGINE_MARK in (eng / EXE).read_bytes()
+    except OSError:
+        return False
+
+
+def small_model(d: dict) -> bool:
+    """A MODELS entry of a 35B-A3B family."""
+    return any(small_family(f) for f in d.get("families", ()))
+
+
+def qwen36_recommended(ram: float) -> bool:
+    """Is Qwen3.6-35B-A3B the suggested family on this PC: no Flash-Next size reaches its RAM line (the Coder's 32 GB,
+    less step 1's 4 GB of slack) - the 16-24 GB PCs.  Where a Flash-Next size fits, the default stays as it was."""
+    floor = min(d["ram_gb"] for d in MODELS.values() if not small_model(d))
+    return ram < floor - FLASH_NEXT_FLOOR_SLACK_GB
+
+
+def small_size(family: str, ram: float, vram_gb: float = 0.0) -> str:
+    """The size of a 35B-A3B family suggested for this RAM: the biggest (first listed) whose experts fit the RAM with
+    the usual room beside them (no low-RAM mode), else the smallest (in the low-RAM mode).  On a card under
+    SMALL_MODEL_VRAM_GB the smallest: the 4-bit size needs ~0.4 GB more of the card free (measured, see there)."""
+    sizes = [m for m in MODELS if family in MODELS[m].get("families", ()) and not MODELS[m].get("experimental")]
+    if 0 < vram_gb < SMALL_MODEL_VRAM_GB:
+        return min(sizes, key=lambda m: MODELS[m]["arena_gb"])
+    return next((m for m in sizes if not low_ram_needed(m, ram)), min(sizes, key=lambda m: MODELS[m]["arena_gb"]))
+
+
+def qwen36_size(ram: float) -> str:
+    """The Qwen3.6 size suggested for this RAM (UD-IQ4_XS from ~26 GB, UD-IQ3_S from ~24 GB)."""
+    return small_size("qwen36", ram)
 
 
 def budget_model(cfg: dict) -> str:
@@ -1012,8 +1160,8 @@ def recommend_remote_expert_opt(cfg: dict, off: bool = False) -> None:
 def offer_together(cfg_path: Path, cfg: dict, yes: bool) -> dict:
     """Starting a model set up for one card on a PC with two or more that can share it: asked once (the answer is
     saved in its config)."""
-    if isinstance(cfg.get("gpu"), list) or cfg.get("gpus_asked"):
-        return cfg
+    if isinstance(cfg.get("gpu"), list) or cfg.get("gpus_asked") or one_gpu_family(cfg_path):
+        return cfg                                     # (Qwen3.6-35B-A3B: one GPU, no layer split yet)
     found = gpus()
     can = together_ok(found)
     if not can:
@@ -1267,7 +1415,9 @@ def gguf_dir_shards(folder: Path, fam: dict, model: str) -> list[Path]:
 GGUF_QUANT = re.compile(r"(?<![A-Za-z0-9])((?:UD-)?(?:I?Q\d+(?:_[A-Za-z0-9]+)*|BF16|F16|F32))"
                         r"(?=-\d{5}-of-\d{5}\.gguf$|\.gguf$)", re.I)
 SUPPORTED_GGUFS = ("Strata runs ISTA-DASLab's GSQ-RCO files (Qwen3.8-Flash-Next Q2_0, IQ2_XS, IQ3_XXS, IQ3_S; Swift "
-                   "1.5's; the Coder's IQ1_M) and Unsloth's UD-Q4_K_XL and UD-IQ4_XS only: other GGUFs (Unsloth's "
+                   "1.5's; the Coder's IQ1_M) and Unsloth's UD-Q4_K_XL and UD-IQ4_XS only (and Unsloth's "
+                   "Qwen3.6-35B-A3B-MTP UD-IQ4_XS and UD-IQ3_S; Ornith-1.5-35B-A3B's IQ4_XS and IQ3_XXS by "
+                   "bartowski): other GGUFs (Unsloth's "
                    "UD-IQ3_XXS or "
                    "UD-Q2_K_XL, K-quants) cannot be used")
 
@@ -1275,7 +1425,8 @@ SUPPORTED_GGUFS = ("Strata runs ISTA-DASLab's GSQ-RCO files (Qwen3.8-Flash-Next 
 def gguf_unsupported(name: str) -> str | None:
     """#444: the quantization a GGUF's name says, when it is one Strata cannot run (not a setup size); else None."""
     m = GGUF_QUANT.search(name)
-    return m.group(1) if m and m.group(1).upper() not in MODELS and not name.lower().startswith("mmproj") else None
+    sizes = {size_of(k).upper() for k in MODELS}
+    return m.group(1) if m and m.group(1).upper() not in sizes and not name.lower().startswith("mmproj") else None
 
 
 def gguf_choice(name: str) -> tuple | None:
@@ -1284,7 +1435,7 @@ def gguf_choice(name: str) -> tuple | None:
     for f, d in FAMILIES.items():
         for m in MODELS:
             if f in MODELS[m].get("families", ("qwen", "swift")) and name == model_file(d, m, 1):
-                return f, m
+                return f, size_of(m)
     return None
 
 
@@ -3251,10 +3402,11 @@ def choices_from_config(cfg_path: Path) -> dict:
     """The setup answers a config was written with (family, size, context, KV, images, projection, network)."""
     cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
     tag = cfg_path.stem[len("strata-"):]
-    family = next((f for f, d in FAMILIES.items() if d["tag"] and tag.startswith(d["tag"])), "qwen")
+    family = config_family(cfg_path)
     model = (tag[len(FAMILIES[family]["tag"]):] if tag.startswith(FAMILIES[family]["tag"]) else tag).upper()
-    if model not in MODELS:                            # (sizes have no dash except UD-Q4_K_XL: the old rule)
+    if model_key(family, model) is None and model not in MODELS:   # (sizes have no dash except UD-*: the old rule)
         model = tag.split("-")[-1].upper()
+    model = model_key(family, model) or model          # the MODELS key (Qwen3.6's UD-IQ4_XS is not Unsloth's)
     a = cfg.get("args", [])
     val = lambda k: a[a.index(k) + 1] if k in a and a.index(k) + 1 < len(a) else None   # noqa: E731
     vis = cfg.get("vision")
@@ -3479,6 +3631,8 @@ def update_install(have: list, a) -> int:
         cfg = upgrade_config(cfg_path, json.loads(cfg_path.read_text(encoding="utf-8-sig")))
         if "--mtp" in cfg["args"][:-1]:
             refresh_draft_vocab(Path(cfg["args"][cfg["args"].index("--mtp") + 1]), cfg.get("draft_vocab", "cjk"))
+        if point_draft_vocab(cfg):
+            write_config(cfg_path, cfg)
         if cfg.get("backend") == "hip" and WIN:
             hip_runtime_beside_exe(Path(cfg["exe"]).parent)   # #468 #461
         ok(f"{cfg.get('model_name', cfg_path.stem)}: up to date")
@@ -3541,6 +3695,12 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
     cfg_path.touch()                                     # the most recently used model
     if "--mtp" in cfg["args"][:-1]:
         refresh_draft_vocab(Path(cfg["args"][cfg["args"].index("--mtp") + 1]), cfg.get("draft_vocab", "cjk"))
+    if point_draft_vocab(cfg):
+        write_config(cfg_path, cfg)
+    if isinstance(gpu, list) and one_gpu_family(cfg_path):
+        warn(f"{FAMILIES[config_family(cfg_path)]['title']} runs on one GPU for now (the engine has no layer split "
+             f"for it yet): this start uses GPU {gpu[0]} only")
+        gpu = gpu[0]
     cmd = [sys.executable, str(ROOT / "serve" / "server.py"), "--engine", "strata", "--config", str(cfg_path),
            "--port", str(port or cfg.get("port", 8080))]
     if cfg.get("backend") == "hip":                    # AMD, numbered as HIP numbers them (setup's KFD order)
@@ -3709,6 +3869,20 @@ def draft_vocab_note(vram_gb: float, chosen: str | None) -> list[str]:
 
 
 SMALL_CARD_GB = 7.5            # #496: a card under 8 GB gets a tip (an 8 GB card lists 7.99)
+# The 35B-A3B families (qwen36, ornith) on a card under this: setup recommends the smallest size and an 8K context and
+# says what was measured.  Qwen3.6 with its draft layer (RTX 4070 Ti, the rest of its VRAM held): UD-IQ3_S at 32K and
+# int8 K/V started from 4.17 GB free (73 tok/s), at 8K with --draft-vocab en from 3.65-3.9 GB; UD-IQ4_XS needed 4.68
+# and 4.3 GB.  Below that the engine stops at the start and says how much is short.  (Emulated sizes, not measured on
+# 4 and 6 GB cards.)
+SMALL_MODEL_VRAM_GB = 5.5
+
+
+def small_model_vram_note(vram_gb: float) -> str:
+    """What a card under SMALL_MODEL_VRAM_GB can expect from Qwen3.6-35B-A3B / Ornith (measured, see above)."""
+    return (f"a {vram_gb:.0f} GB card is at this model's floor: its smallest size starts with ~3.7-3.9 GB of the card "
+            "free (no display on it, or a light desktop) with an 8K context and --draft-vocab en, and then writes ~70 "
+            "tokens/s; with less free the engine stops at the start and says how much is short. With 4.2 GB free or "
+            "more it runs with 32K")
 
 
 def small_card_note(ctx: int, draft_vocab: str | None) -> list[str]:
@@ -3882,6 +4056,22 @@ def refresh_draft_vocab(rt: Path, choice: str = "cjk") -> None:
     shutil.copyfile(new, dst)
 
 
+def point_draft_vocab(cfg: dict) -> bool:
+    """Qwen3.6-35B-A3B: its draft layer is the model file's own, so the token subset is named by --mtp-draft-vocab
+    (there is no MTP folder to copy it into, as refresh_draft_vocab does): pointed at the chosen subset ("draft_vocab",
+    cjk by default) in this Strata folder's data/.  A file of the user's own (not a shipped subset's name) is kept.
+    True when the config changed."""
+    a = cfg.get("args", [])
+    if "--mtp-draft-vocab" not in a[:-1]:
+        return False
+    i = a.index("--mtp-draft-vocab") + 1
+    new = str(ROOT / "data" / DRAFT_VOCABS.get(cfg.get("draft_vocab") or "cjk", "draft_vocab.bin"))
+    if Path(a[i]).name not in DRAFT_VOCABS.values() or a[i] == new or not Path(new).exists():
+        return False
+    a[i] = new
+    return True
+
+
 def ensure_engine_for(cards, cfg_path: Path, cfg: dict, yes: bool) -> dict:
     """The installed engine must have code for every card the model starts on: a card added later (--gpus with an
     older or newer generation, #128) or a new GPU in the PC otherwise stops the start with 'no kernel image'.  Such a
@@ -4029,8 +4219,10 @@ def sycl_setup(argv) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--family", choices=list(FAMILIES), help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5")
-    ap.add_argument("--model", choices=list(MODELS))
+    ap.add_argument("--family", choices=list(FAMILIES), help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5, coder = its "
+                                                             "Coder, unsloth = Unsloth's 4-bit files, qwen36 = "
+                                                             "Qwen3.6-35B-A3B (for 16-32 GB of RAM)")
+    ap.add_argument("--model", choices=model_choices())
     ap.add_argument("--context", type=int)
     ap.add_argument("--rope-scaling", choices=["none", "linear", "yarn"],
                     help="the RoPE extension for a context past the model's trained 262144: linear (position "
@@ -4312,24 +4504,37 @@ def main() -> int:
                  "update it with the NVIDIA App or from https://www.nvidia.com/drivers, restart, and run this again" +
                  ("" if cuda_tk == 12 else f" (or --cuda 12: the experimental CUDA 12 engine runs with driver "
                                            f"{CUDA12_MIN_DRIVER} or newer, docs/OLDER_GPUS.md)"))
-    if gpu["vram_gb"] < 11:
+    if gpu["vram_gb"] < 11 and not small_family(a.family or ""):   # the 35B-A3B families: their note is in step 2
         warn("less than 12 GB of " + ("GPU memory (this APU's carve-out + shared memory)" if gpu.get("uma") else "VRAM")
-             + ": Strata will run, but most experts stay on the CPU and it will be slow")
+             + ": Strata will run, but most experts stay on the CPU and it will be slow"
+             + ("" if a.family else " (Qwen3.6-35B-A3B, --family qwen36, is made for 6-12 GB cards)"))
     ram = ram_gb()
     cpu, avx2, avx512 = cpu_info()
-    need = min(d["ram_gb"] for d in MODELS.values())
-    low_ok = low_ram_fits("IQ1_M", ram, low_ram_vram(gpu)) and a.low_ram != "off"   # the smallest model, mapped
+    # the RAM floor: the smallest size of the family asked for (Qwen3.6-35B-A3B's own, or the Flash-Next ones), or of
+    # every family when none was named (Qwen3.6's UD-IQ3_S: a 16-24 GB PC is suggested that family in step 2)
+    floor_models = [m for m, d in MODELS.items()
+                    if a.family is None or (a.family in d.get("families", ()) if small_family(a.family)
+                                            else not small_model(d))]
+    smallest = min(floor_models, key=lambda m: (MODELS[m]["ram_gb"], MODELS[m]["arena_gb"]))
+    need = MODELS[smallest]["ram_gb"]
+    small_name = "the Coder" if smallest == "IQ1_M" else f"{FAMILIES[MODELS[smallest].get('families', ('qwen',))[0]]['title']} " \
+                                                         f"{size_of(smallest)}"
+    experts_gb = "23-50 GB" if smallest == "IQ1_M" else f"{MODELS[smallest]['arena_gb']:.0f}-50 GB"
+    low_ok = any(low_ram_fits(m, ram, low_ram_vram(gpu)) for m in floor_models if not MODELS[m].get("budget")) \
+        and a.low_ram != "off"                         # the smallest model, mapped
     if ram < need - 4 and not a.check and not low_ok:
-        # every model keeps ALL its experts in RAM (23+ GB); VRAM only holds a copy of the most-used ones, so a
+        # every model keeps ALL its experts in RAM (12+ GB); VRAM only holds a copy of the most-used ones, so a
         # bigger GPU does not lower this.  The owner's rule: a stop by default, a risk the user can take (--model
         # with --yes, or y)
-        confirm_risk(f"RAM: {ram:.0f} GB - the smallest model (the Coder) needs about {need} GB: Strata keeps all of "
-                     "the model's experts in RAM (23-50 GB, whatever the GPU), so the OS will page them from disk. "
-                     "Expect it to be very slow, and it may not start at all.", bool(a.model), a.yes,
-                     f"RAM: {ram:.0f} GB - the smallest model (the Coder) needs about {need} GB",
-                     "Strata keeps all of the model's experts in RAM (23-50 GB, whatever the GPU) and the GPU holds a "
-                     "copy of the most-used ones: it needs 32 GB of RAM or more (48 GB for the full model); --model "
-                     "NAME --yes installs one anyway")
+        confirm_risk(f"RAM: {ram:.0f} GB - the smallest model ({small_name}) needs about {need} GB: Strata keeps all "
+                     f"of the model's experts in RAM ({experts_gb}, whatever the GPU), so the OS will page them from "
+                     "disk. Expect it to be very slow, and it may not start at all.", bool(a.model), a.yes,
+                     f"RAM: {ram:.0f} GB - the smallest model ({small_name}) needs about {need} GB",
+                     f"Strata keeps all of the model's experts in RAM ({experts_gb}, whatever the GPU) and the GPU "
+                     f"holds a copy of the most-used ones: it needs {need} GB of RAM or more"
+                     + (" (48 GB for the full model)" if smallest == "IQ1_M" else
+                        f" ({small_name}; 32 GB for the Coder, 48 GB for the full model)")
+                     + "; --model NAME --yes installs one anyway")
         warn(f"going on with {ram:.0f} GB of RAM, as you chose")
     ram_msg = (f"RAM: {ram:.0f} GB" if ram >= need - 4 else f"RAM: {ram:.0f} GB (less than the {need} GB the smallest model needs)"
                + ("; the GPU's VRAM makes up for it (the low-RAM mode)" if ram < need - 4 and low_ok else ""))
@@ -4370,8 +4575,13 @@ def main() -> int:
                 verdict = (f"fits in the low-RAM mode (the GPU holds ~{100 * low_ram_gpu_share(m, low_ram_vram(gpu)):.0f}% "
                            "of its experts, " + ("the rest stays in RAM)" if low_ram_resident(m, ram, low_ram_vram(gpu))
                                                  else "the rest is read from the SSD as needed)"))
+            if hip and small_model(d) and not verdict.startswith("does not fit"):
+                verdict += " - untested on AMD (its batched prompt path is NVIDIA-only)"
             any_fits = any_fits or not verdict.startswith("does not fit")
             say(f"  {m:8s} needs ~{d['ram_gb']} GB RAM: {verdict}")
+        if qwen36_recommended(ram) and any_fits:
+            say(f"\nNo Qwen3.8-Flash-Next size fits {ram:.0f} GB of RAM well: setup suggests Qwen3.6-35B-A3B "
+                f"{size_of(qwen36_size(ram))} (--family qwen36).")
         if not any_fits:
             # #977: every size says "does not fit", so the verdict says so too (and the exit code, for scripts). It only
             # reports: --model NAME --yes still installs one anyway.
@@ -4388,23 +4598,31 @@ def main() -> int:
         family = a.family
     else:
         rec_fam = STRIX_HALO_FAMILY if strix_halo_recommends(gpu, ram) and STRIX_HALO_FAMILY in fams else fams[0]
+        if rec_fam == fams[0] and qwen36_recommended(ram) and "qwen36" in fams:
+            rec_fam = "qwen36"                         # no Flash-Next size fits this RAM: the smaller model
         for i, f in enumerate(fams, 1):
             d = FAMILIES[f]
             say(f"  {i}) {d['title']:20s} {d['by']} - {d['about']}" + ("   [experimental]" if d.get("experimental") else "")
-                + (f"   (recommended for Strix Halo: {STRIX_HALO_MODEL})" if f == rec_fam and rec_fam != fams[0] else ""))
+                + ((f"   (recommended for {ram:.0f} GB of RAM: {size_of(qwen36_size(ram))})" if f == "qwen36" else
+                    f"   (recommended for Strix Halo: {STRIX_HALO_MODEL})") if f == rec_fam and rec_fam != fams[0]
+                   else ""))
         family = fams[int(ask("Which model?", [str(i) for i in range(1, len(fams) + 1)],
                               str(fams.index(rec_fam) + 1), a.yes)) - 1]
     fam = FAMILIES[family]
     ok(f"model: {fam['title']}")
+    if small_family(family) and 0 < gpu["vram_gb"] < SMALL_MODEL_VRAM_GB:
+        warn(small_model_vram_note(gpu["vram_gb"]))
     if fam.get("license"):
         say(f"  Its license: {fam['license']}")
     say()
     names = [m for m in MODELS if family in MODELS[m].get("families", ("qwen", "swift"))]
     names.sort(key=lambda m: bool(MODELS[m].get("experimental")))   # an experimental size last, never the default
+    if a.model:                                        # a size name: this family's file of that size (model_key)
+        a.model = model_key(family, a.model) or a.model
     if a.model and a.model not in names:
         # #444: say which family has that size, and (with --gguf-dir) which files Strata can run at all
-        elsewhere_fams = [f for f in FAMILIES if f in MODELS[a.model].get("families", ("qwen", "swift"))]
-        fail(f"{fam['title']} has no {a.model} model file", "choose one of: " + ", ".join(names)
+        elsewhere_fams = [f for f in FAMILIES if model_key(f, a.model)]
+        fail(f"{fam['title']} has no {a.model} model file", "choose one of: " + ", ".join(map(size_of, names))
              + (f" (or {a.model}: " + ", ".join(f"--family {f} --model {a.model}" for f in elsewhere_fams) + ")"
                 if elsewhere_fams else "")
              + (f".\n       {SUPPORTED_GGUFS}" if a.gguf_dir else ""))
@@ -4412,16 +4630,35 @@ def main() -> int:
         d = MODELS[m]
         fit = "" if ram >= d["ram_gb"] else f"   <- needs {d['ram_gb']} GB RAM, you have {ram:.0f}"
         if d.get("budget"):
-            say(f"  {i}) {m} {d['about']}; download {d['download_gb']:.0f} GB, keeps ~"
+            say(f"  {i}) {size_of(m)} {d['about']}; download {d['download_gb']:.0f} GB, keeps ~"
                 f"{resident_budget_gib(m, ram)} GB of its {d['arena_gb']:.0f} GB of experts in RAM{fit}")
             continue
         if low_ram_needed(m, ram) and low_ram_fits(m, ram, low_ram_vram(gpu)) and a.low_ram != "off":
             fit = (f"   <- fits in the low-RAM mode (the GPU holds ~{100 * low_ram_gpu_share(m, low_ram_vram(gpu)):.0f}%, "
                    + ("the rest in RAM)" if low_ram_resident(m, ram, low_ram_vram(gpu)) else "the rest from the SSD)"))
-        say(f"  {i}) {m:8s} {d['about']}; download {d['download_gb']:.0f} GB, uses ~{d['arena_gb']:.0f} GB of RAM{fit}")
+        say(f"  {i}) {size_of(m):8s} {d['about']}; download {d['download_gb']:.0f} GB, uses ~{d['arena_gb']:.0f} GB of "
+            f"RAM{fit}")
     rec = str(names.index("IQ3_XXS") + 1) if ram >= 60 and "IQ3_XXS" in names else "1"
+    if small_family(family):                           # the biggest size whose experts fit the RAM (small_size)
+        rec = str(names.index(small_size(family, ram, gpu["vram_gb"])) + 1)
     model = a.model or names[int(ask("Which size?", [str(i) for i in range(1, len(names) + 1)], rec, a.yes)) - 1]
     budget, q4_split = None, False
+    if hip and fam.get("nvidia_only"):
+        # Qwen3.6-35B-A3B: the HIP engine compiles, but its batched prompt path is NVIDIA-only (sm_75+) - on AMD the
+        # prompt is read through the slower decode windows - and it has not been run on AMD.  Checked before the
+        # download; asked (default no), --family/--model with --yes goes on (the owner's rule)
+        confirm_risk(f"{fam['title']} has not been run on AMD cards yet: its batched prompt path is NVIDIA-only, so on "
+                     f"{gpu_name(gpu)} prompts are read through the slower decode path, and it may not work at all",
+                     bool(a.model or a.family), a.yes, f"{fam['title']} is untested on AMD",
+                     f"use an NVIDIA card, or --family {family} --model {size_of(model)} --yes to try it on AMD "
+                     "anyway", "  Try it anyway?")
+        warn(f"installing {fam['title']} {size_of(model)} on an AMD card, as you chose (untested: please report how "
+             "it runs)")
+    if fam.get("one_gpu") and multi:
+        # like UD-Q4_K_XL's RAM budget: the engine has no layer split for this model yet, so one card runs it
+        warn(f"{fam['title']} runs on one GPU for now (the engine has no layer split for it yet): using "
+             f"{gpu_name(gpu)} only" + (" - --gpus is not used" if a.gpus else ""))
+        multi, sel, chosen = [], [gpu["index"]], [gpu]
     if MODELS[model].get("budget"):
         # Unsloth's UD-Q4_K_XL: a RAM budget of experts, the rest from the GGUF on the SSD - not the low-RAM mode (no
         # experts.bin: it would be another 77 GB on the disk), and one GPU (the budget mode has no layer split) unless
@@ -4464,14 +4701,16 @@ def main() -> int:
     # before RESIDENT_SPLIT_ENGINE, #642)
     if not low_ram and budget is None and ram < MODELS[model]["ram_gb"] - 4:
         confirm_paging(model, ram, a.low_ram, a.yes, bool(a.model))
-    ok(f"size: {model}")
-    tag = fam["tag"] + model                           # names of the pack, config and start script
+    ok(f"size: {size_of(model)}")
+    tag = fam["tag"] + size_of(model)                  # names of the pack, config and start script
     small = min(x["vram_gb"] for x in chosen)         # each card keeps its layers' KV of the whole context
     rec_ctx = 32768 if small < 14 else 65536 if small < 20 else 131072
     if budget is not None:                             # UD-Q4_K_XL: every GB of KV is a GB fewer of cached experts
         rec_ctx = 8192 if small < 14 else 32768
     # #406: the RAM rule is part of the recommendation (the smaller of the two), no longer a cap over the user's choice
     rec_ctx = min(rec_ctx, ram_ctx(model, ram, low_ram))
+    if small_family(family) and small < SMALL_MODEL_VRAM_GB:
+        rec_ctx = min(rec_ctx, 8192)                   # a 4 GB card: the 8K context is what can start (measured)
     if a.context:
         ctx = a.context
     else:
@@ -4625,7 +4864,8 @@ def main() -> int:
     pack_bin = (pack_now / "experts.bin").exists() and (pack_now / "index.txt").exists()
     mtp_have = find_in(roots, "mtp/rt/experts.bin") is not None
     q2_avx = model == "Q2_0" and avx512 and family == "qwen"
-    need = to_fetch + (2 if mtp_have else 8) + \
+    own_mtp = bool(fam.get("own_mtp"))                # Qwen3.6: the draft layer is in the model file, nothing fetched
+    need = to_fetch + (1 if own_mtp else 2 if mtp_have else 8) + \
         (40 if q2_avx and not pack_bin else 0) + (1 if vision != "none" else 0) + \
         (MODELS[model]["arena_gb"] + 1 if low_ram and not q2_avx and not pack_bin else 0)
     if free_gb(models_dir) < need:
@@ -4653,6 +4893,16 @@ def main() -> int:
     else:
         eng = None if a.build or hip else get_prebuilt(a.prebuilt, gpu, vision, **({"toolkit": 12} if cuda_tk == 12
                                                                                     else {}))
+    if eng is not None and own_mtp and not engine_runs_small(eng):
+        # Qwen3.6 / Ornith: no ready-made engine runs them yet (the published ones predate qwen35moe), so this PC
+        # compiles the engine from this checkout, as it does for a card the ready-made one has no code for; that
+        # engine runs every family.  A ready-made engine that has it is used as is.
+        ver = json.loads((eng / "BUILD.json").read_text(encoding="utf-8")).get("version", "?")
+        if hip and WIN:
+            fail(f"the ready-made AMD engine ({ver}) does not run {fam['title']} yet",
+                 "compiling it on Windows: tools\\hip\\build_windows.bat (docs/AMD_HIP.md), or choose another model")
+        say(f"  The ready-made engine ({ver}) does not run {fam['title']} yet: compiling the engine on this PC instead")
+        eng = None
     if eng is not None and not hip and json.loads((eng / "BUILD.json").read_text(encoding="utf-8")).get("source") != "local":
         pip_cuda_libs(cuda_tk)
         if vision != "none" and not (eng / VEXE).exists():
@@ -4669,13 +4919,17 @@ def main() -> int:
         lib_dirs = meta.get("lib_dirs") or meta.get("cuda_dirs") or cuda_lib_dirs(cuda_tk)
     engine_ver = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:3] if x.isdigit())
     need_engine = MODELS[model].get("engine", UNSLOTH_ENGINE)
-    if budget is not None and engine_ver < need_engine:      # checked before the 94-111 GB download
+    if budget is not None and engine_ver < need_engine:   # checked before the 15-111 GB download
         fail(f"{model} needs engine {'.'.join(map(str, need_engine))} or newer; this one is {meta.get('version')}",
              "update Strata (or compile the engine with --build) and run setup again")
+    if own_mtp and not engine_runs_small(eng):          # e.g. --build of an older checkout; checked before the download
+        fail(f"{fam['title']} {size_of(model)} needs an engine with the qwen35moe support (Strata "
+             f"{'.'.join(map(str, QWEN36_ENGINE))} source or newer); this one ({meta.get('version')}) has none",
+             "update Strata and run setup again with --build")
     ok(f"engine: {eng / EXE}")
 
     # ---- 5. the model files
-    step(5, f"downloading {fam['title']} {model}")
+    step(5, f"downloading {fam['title']} {size_of(model)}")
     if not a.gguf_dir:
         missing = [s.name for s in shards if not (s.exists() and done(s))]
         if missing:                                    # #495: files downloaded by hand go here, or --gguf-dir
@@ -4698,14 +4952,14 @@ def main() -> int:
                     continue
                 except OSError:
                     pass
-            download(fam["hf"].format(q=model) + s.name, s)
+            download(fam["hf"].format(q=size_of(model)) + s.name, s)
     check_shards(shards)
     for s in shards:                                   # the Unsloth files: pinned sizes and SHA-256
         if s.name in fam.get("sha256", {}):
             verify_sha256(s, *fam["sha256"][s.name])
     ok("model files present")
-    mmproj = Path(a.models_dir) / fam["mmproj"]
-    if not mmproj.exists():
+    mmproj = Path(a.models_dir) / (fam["mmproj"] or "none")   # (Qwen3.6-35B-A3B: no image encoder yet)
+    if fam["mmproj"] and not mmproj.exists():
         mmproj = find_in(roots, f"models/{fam['mmproj']}") or mmproj
     if vision != "none":
         if not mmproj.exists() and a.gguf_dir and (Path(a.gguf_dir) / fam["mmproj"]).exists():
@@ -4743,22 +4997,29 @@ def main() -> int:
     ok(f"model prepared: {pack}")
     mtp = (find_in(roots, "mtp/rt/experts.bin") or data / "mtp/rt/experts.bin").parent.parent
     rt = mtp / "rt"
-    corrupt = (rt / "experts.bin").exists() and mtp_corrupt(mtp, env)
-    if corrupt:
-        warn("some MTP tensors are not the checkpoint's (a download mirror that ignored range requests, #327): "
-             "fetching them again and rebuilding the draft layer")
-    if corrupt or not (rt / "experts.bin").exists():
-        say("  The MTP draft layer (speculative decoding, ~2x faster output) comes from the original Qwen checkpoint:")
-        say("  only its ~5 GB of MTP tensors are downloaded.")
-        run([sys.executable, str(ROOT / "tools" / "mtp_fetch.py"), "fetch", "--out", str(mtp)], env=env)
-        run([sys.executable, str(ROOT / "tools" / "mtp_pack.py"), "--src", str(mtp), "--experts", "q2_0",
-             "--out", str(mtp / "mtp-q2_0.gguf")], env=env)
-        run([sys.executable, str(ROOT / "tools" / "mtp_rt.py"), "--gguf", str(mtp / "mtp-q2_0.gguf"), "--out", str(rt)],
-            env=env)
     # a setup run again without --draft-vocab keeps the subset this model's config chose before (cyrillic, fr, en)
     draft_vocab = a.draft_vocab or saved_draft_vocab(ROOT / f"strata-{tag.lower()}.json")
-    refresh_draft_vocab(rt, draft_vocab or "cjk")
-    ok(f"MTP draft layer: {rt}")
+    if own_mtp:
+        # Qwen3.6-35B-A3B: the draft layer is the model file's own MTP block (blk.40, "nextn") - nothing is fetched
+        # or converted; --mtp names the model file and --mtp-draft-vocab the shipped token subset (the same
+        # tokenizer as Flash-Next's, so data/'s subsets apply)
+        rt = shards[0]
+        ok(f"MTP draft layer: the model file's own ({shards[0].name})")
+    else:
+        corrupt = (rt / "experts.bin").exists() and mtp_corrupt(mtp, env)
+        if corrupt:
+            warn("some MTP tensors are not the checkpoint's (a download mirror that ignored range requests, #327): "
+                 "fetching them again and rebuilding the draft layer")
+        if corrupt or not (rt / "experts.bin").exists():
+            say("  The MTP draft layer (speculative decoding, ~2x faster output) comes from the original Qwen checkpoint:")
+            say("  only its ~5 GB of MTP tensors are downloaded.")
+            run([sys.executable, str(ROOT / "tools" / "mtp_fetch.py"), "fetch", "--out", str(mtp)], env=env)
+            run([sys.executable, str(ROOT / "tools" / "mtp_pack.py"), "--src", str(mtp), "--experts", "q2_0",
+                 "--out", str(mtp / "mtp-q2_0.gguf")], env=env)
+            run([sys.executable, str(ROOT / "tools" / "mtp_rt.py"), "--gguf", str(mtp / "mtp-q2_0.gguf"), "--out", str(rt)],
+                env=env)
+        refresh_draft_vocab(rt, draft_vocab or "cjk")
+        ok(f"MTP draft layer: {rt}")
     for line in draft_vocab_note(gpu.get("vram_gb", 0.0), draft_vocab):   # #474: a recommendation, nothing changes
         say("  " + line)
 
@@ -4766,13 +5027,20 @@ def main() -> int:
     step(7, "writing the start script")
     sys.path.insert(0, str(ROOT / "tools"))
     from gguf_reader import GGUFFile                   # the PLE table's shard: shard 2 (original) or 1 (Swift)
-    ple = next((s for s in shards if any(t.name == "per_layer_token_embd.weight" for t in GGUFFile(s).tensors)), None)
-    if ple is None:
-        fail("the model has no per_layer_token_embd tensor (is this a Qwen3.8-Flash-Next GGUF?)")
+    ple = None                                         # Qwen3.6-35B-A3B has no PLE table: no --ple-gguf
+    if fam.get("ple", True):
+        ple = next((s for s in shards if any(t.name == "per_layer_token_embd.weight" for t in GGUFFile(s).tensors)),
+                   None)
+        if ple is None:
+            fail("the model has no per_layer_token_embd tensor (is this a Qwen3.8-Flash-Next GGUF?)")
     # (a 4-shard file: the engine finds the PLE table's shard itself from shard 1, the measured setup)
-    args = ["--pack", str(pack), "--native", str(shards[0]), *(["--ple-gguf", str(ple)] if len(shards) <= 2 else []),
+    mtp_args = ["--mtp", str(rt)]
+    if own_mtp:                                        # the model file's own draft layer, the chosen token subset
+        mtp_args += ["--mtp-draft-vocab", str(ROOT / "data" / DRAFT_VOCABS.get(draft_vocab or "cjk", "draft_vocab.bin"))]
+    args = ["--pack", str(pack), "--native", str(shards[0]),
+            *(["--ple-gguf", str(ple)] if ple is not None and len(shards) <= 2 else []),
             "--expert-profile", str(ROOT / "data" / fam.get("profile", "expert-profile.bin")), "--expert-cache", "auto",
-            "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.5", "--mtp", str(rt),
+            "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.5", *mtp_args,
             "--max-context", str(ctx)]
     if scaling is not None:     # the resolved config: explicit flags as given, or the automatic yarn+factor
         args += ["--rope-scaling", scaling, "--rope-scale", f"{rope_scale:g}"]
@@ -4784,7 +5052,7 @@ def main() -> int:
            "the OS file cache (run setup again after the next engine update)")
     if low_ram:   # the experts from the pack's experts.bin: the ones the GPU does not hold copied into RAM, or mapped
         args += ["--resident-experts" if resident else "--mmap-experts"]
-    disk = None if is_wsl() else rotational_disk(ple)  # #605 (WSL's virtual disk says rotational)
+    disk = None if is_wsl() or ple is None else rotational_disk(ple)  # #605 (WSL's virtual disk says rotational)
     if disk:
         tensor = next((t for t in GGUFFile(ple).tensors if t.name == "per_layer_token_embd.weight"), None)
         size = getattr(tensor, "expected_bytes", lambda: None)()
@@ -4867,7 +5135,7 @@ def main() -> int:
         args += ["--control-vector-scaled", f"{esp}:1.0", "--control-vector-layer-range", "4", "44",
                  "--cvec-mode", "project", "--cvec-dir", "per-layer"]
     cfg = {"exe": str(eng / EXE), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
-           "model_name": f"{fam['name']}-{model.lower()}", "log": str(ROOT / f"strata-{tag.lower()}.log"),
+           "model_name": f"{fam['name']}-{size_of(model).lower()}", "log": str(ROOT / f"strata-{tag.lower()}.log"),
            "lib_dirs": lib_dirs, "port": port}
     if cuda_tk == 12:                                  # the experimental CUDA 12 engine (engine-cuda12/)
         cfg["cuda"] = 12

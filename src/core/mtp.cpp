@@ -9,6 +9,8 @@
 #include "strata/kernels/bf16_gemv.hpp"
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/elementwise.hpp"
+#include "strata/kernels/iq_kernels.hpp"
+#include "strata/artifact/gguf_reader.hpp"
 #include "strata/kernels/fused_gr.hpp"
 #include "strata/kernels/gr.hpp"
 #include "strata/kernels/kv_q4.hpp"
@@ -90,6 +92,7 @@ strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) {
     s.head_dim = g.head_dim;
     s.idx_n_head = g.idx_q_heads;
     s.idx_dim = g.idx_key_dim;
+    if (!g.has_indexer) s.idx_top_k = strata::kernels::kDenseTopK;   // dense attention (qwen35moe)
     return s;
 }
 
@@ -175,7 +178,11 @@ const void* MtpDrafter::wq(const char* name, int& type) const {
         for (const auto& e : q4_off_)
             if (e.first == name) { type = GGML_Q4_0; return dense4_ + e.second; }
     type = GGML_Q8_0;
-    return q8(name);
+    if (const void* p = q8(name)) return p;
+    // a qwen35moe file's MTP projection in another native type ("native<ggml type>")
+    for (const auto& t : tensors_)
+        if (t.name == name && t.kind.rfind("native", 0) == 0) { type = std::atoi(t.kind.c_str() + 6); return dense_ + t.off; }
+    return nullptr;
 }
 
 // --mtp-q4: every Q8_0 tensor of dense.bin as Q4_0 (ggml's reference quantizer), in one device buffer
@@ -239,6 +246,151 @@ bool MtpDrafter::make_q4_head(std::string& err) {
 #endif
 }
 
+bool MtpDrafter::load_gguf_layer(const std::string& gguf, const ModelGeometry& g, std::vector<uint8_t>& dense,
+                                 std::string& err) {
+    constexpr uint32_t kF32 = 0, kQ8_0 = 8, kBF16 = 30;
+    try {
+        const strata::GgufModel model = strata::GgufModel::open(gguf);
+        const std::string pfx = "blk." + std::to_string(g.n_layers) + ".";
+        auto tensor = [&](const char* suffix, const strata::TensorInfo*& t) -> const uint8_t* {
+            size_t at = 0;
+            t = model.find(pfx + suffix, &at);
+            if (t == nullptr || !model.in_bounds(*t, at)) {
+                err = "mtp: " + gguf + " has no " + pfx + suffix + " (a qwen35moe draft layer needs the file's MTP block, "
+                      "e.g. the -MTP GGUFs)";
+                return nullptr;
+            }
+            return model.shard(at).tensor_data(*t);
+        };
+        auto put = [&](const std::string& name, const char* kind, int64_t rows, int64_t cols, uint64_t bytes) {
+            Tensor x;
+            x.name = name; x.kind = kind; x.rows = rows; x.cols = cols; x.bytes = bytes;
+            x.off = (dense.size() + 255) & ~255ull;
+            dense.resize(x.off + bytes);
+            tensors_.push_back(x);
+            return dense.data() + x.off;
+        };
+        const int64_t N = g.n_embd;
+        const strata::TensorInfo* t = nullptr;
+        // the RMSNorm weights, used as stored (llama.cpp's qwen35moe graph multiplies by them directly)
+        const char* norms[][2] = {{"nextn.enorm.weight", "pre_fc_norm_embedding.weight"},
+                                  {"nextn.hnorm.weight", "pre_fc_norm_hidden.weight"},
+                                  {"attn_norm.weight", "input_layernorm.weight"},
+                                  {"attn_q_norm.weight", "self_attn.q_norm.weight"},
+                                  {"attn_k_norm.weight", "self_attn.k_norm.weight"},
+                                  {"post_attention_norm.weight", "post_attention_layernorm.weight"},
+                                  {"nextn.shared_head_norm.weight", "shared_head_norm.weight"}};
+        for (const auto& n : norms) {
+            const uint8_t* src = tensor(n[0], t);
+            if (src == nullptr) return false;
+            if (t->type != kF32) { err = std::string("mtp: ") + pfx + n[0] + " is not F32"; return false; }
+            std::memcpy(put(n[1], "f32", 1, (int64_t) t->elements(), t->elements() * 4), src, t->elements() * 4);
+        }
+        // the router and the shared expert's gate, read as BF16 (an F32 copy is rounded to nearest-even)
+        const char* routers[][2] = {{"ffn_gate_inp.weight", "mlp.gate.weight"},
+                                    {"ffn_gate_inp_shexp.weight", "mlp.shared_expert_gate.weight"}};
+        for (const auto& r : routers) {
+            const uint8_t* src = tensor(r[0], t);
+            if (src == nullptr) return false;
+            const uint64_t n = t->elements();
+            auto* dst = (uint16_t*) put(r[1], "bf16", (int64_t) (n / (uint64_t) N), N, n * 2);
+            if (t->type == kBF16) {
+                std::memcpy(dst, src, n * 2);
+            } else if (t->type == kF32) {
+                for (uint64_t i = 0; i < n; ++i) {
+                    uint32_t u;
+                    std::memcpy(&u, src + 4 * i, 4);
+                    dst[i] = (uint16_t) ((u + 0x7fffu + ((u >> 16) & 1u)) >> 16);
+                }
+            } else {
+                err = std::string("mtp: ") + pfx + r[0] + " is neither BF16 nor F32";
+                return false;
+            }
+        }
+        // the projections, rows of `cols` inputs: Q8_0 as the rt files hold them, or another type the native GEMV
+        // reads (the smaller Unsloth files keep the MTP layer's projections at Q5_K / Q6_K), kept as stored
+        const char* projs[][2] = {{"attn_q.weight", "self_attn.q_proj.weight"}, {"attn_k.weight", "self_attn.k_proj.weight"},
+                                  {"attn_v.weight", "self_attn.v_proj.weight"}, {"attn_output.weight", "self_attn.o_proj.weight"},
+                                  {"ffn_gate_shexp.weight", "mlp.shared_expert.gate_proj.weight"},
+                                  {"ffn_up_shexp.weight", "mlp.shared_expert.up_proj.weight"},
+                                  {"ffn_down_shexp.weight", "mlp.shared_expert.down_proj.weight"}};
+        auto kind_of = [](uint32_t type) { return type == kQ8_0 ? std::string("q8_0") : "native" + std::to_string(type); };
+        for (const auto& pj : projs) {
+            const uint8_t* src = tensor(pj[0], t);
+            if (src == nullptr) return false;
+            if (!strata::kernels::native_mmvq_supported((int) t->type) || t->shape.size() != 2) {
+                err = std::string("mtp: ") + pfx + pj[0] + " is " + t->type_name() + ", which the draft layer cannot read";
+                return false;
+            }
+            const uint64_t cols = t->shape[0], rows = t->shape[1], bytes = strata::tensor_payload_bytes(*t);
+            std::memcpy(put(pj[1], kind_of(t->type).c_str(), (int64_t) rows, (int64_t) cols, bytes), src, bytes);
+        }
+        // eh_proj [2N inputs (the normed embedding, then the normed hidden), N outputs]: the two column halves are
+        // the rt files' fc_embedding and fc_hidden (e_proj(e) + h_proj(h) = eh_proj(concat(e, h)))
+        {
+            const uint8_t* src = tensor("nextn.eh_proj.weight", t);
+            if (src == nullptr) return false;
+            if (!strata::kernels::native_mmvq_supported((int) t->type) || t->shape.size() != 2 ||
+                t->shape[0] != (uint64_t) (2 * N) || t->shape[1] != (uint64_t) N) {
+                err = "mtp: " + pfx + "nextn.eh_proj.weight is not a [2 x n_embd, n_embd] matrix the draft layer reads";
+                return false;
+            }
+            // a row's two halves are whole blocks (n_embd is a multiple of 256)
+            const uint64_t half = strata::tensor_payload_bytes(*t) / (uint64_t) N / 2;
+            // (both put() first: a put may grow `dense` and move it, so the pointers are taken after the second)
+            const uint64_t eo = put("fc_embedding.weight", kind_of(t->type).c_str(), N, N, half * (uint64_t) N) - dense.data();
+            const uint64_t ho = put("fc_hidden.weight", kind_of(t->type).c_str(), N, N, half * (uint64_t) N) - dense.data();
+            uint8_t* e = dense.data() + eo;
+            uint8_t* h = dense.data() + ho;
+            for (int64_t r = 0; r < N; ++r) {
+                std::memcpy(e + r * half, src + r * 2 * half, half);
+                std::memcpy(h + r * half, src + r * 2 * half + half, half);
+            }
+        }
+        // the routed experts, every one resident in VRAM, each blob gate | up | down as the native packs lay it out
+        const strata::TensorInfo *tg = nullptr, *tu = nullptr, *td = nullptr;
+        const uint8_t* sg = tensor("ffn_gate_exps.weight", tg);
+        const uint8_t* su = sg ? tensor("ffn_up_exps.weight", tu) : nullptr;
+        const uint8_t* sd = su ? tensor("ffn_down_exps.weight", td) : nullptr;
+        if (sd == nullptr) return false;
+        xgu_ = (int) tg->type;
+        xd_ = (int) td->type;
+        if (tu->type != tg->type || !strata::kernels::native_expert_supported(xgu_, xd_, N, g.n_ff)) {
+            err = std::string("mtp: the draft layer's experts are ") + tg->type_name() + "/" + td->type_name() +
+                  ", which this engine has no GPU kernels for";
+            return false;
+        }
+        const strata::kernels::NativeExpertLayout L = strata::kernels::native_expert_layout(xgu_, xd_, N, g.n_ff);
+        if (L.gu_row == 0 || L.d_row == 0) {
+            err = "mtp: no row size for the draft layer's expert types";
+            return false;
+        }
+        xblob_ = L.bytes;
+        const uint64_t gu_bytes = (uint64_t) L.gu_row * (uint64_t) g.n_ff, d_bytes = (uint64_t) L.d_row * (uint64_t) N;
+        if (L.up_off != gu_bytes || L.down_off != 2 * gu_bytes || L.bytes < 2 * gu_bytes + d_bytes) {
+            err = "mtp: unexpected native expert layout";
+            return false;
+        }
+        const uint64_t bytes = (uint64_t) g.n_expert * xblob_;
+        if (cudaMalloc((void**) &experts_, bytes) != cudaSuccess) {
+            err = "mtp: the draft layer's " + std::to_string(g.n_expert) + " experts do not fit in VRAM";
+            return false;
+        }
+        std::vector<uint8_t> blob(xblob_, 0);
+        for (int64_t e = 0; e < g.n_expert; ++e) {
+            std::memcpy(blob.data(), sg + e * gu_bytes, gu_bytes);
+            std::memcpy(blob.data() + L.up_off, su + e * gu_bytes, gu_bytes);
+            std::memcpy(blob.data() + L.down_off, sd + e * d_bytes, d_bytes);
+            cudaMemcpy(experts_ + e * xblob_, blob.data(), xblob_, cudaMemcpyHostToDevice);
+        }
+        vram_ += bytes;
+    } catch (const std::exception& ex) {
+        err = std::string("mtp: ") + gguf + ": " + ex.what();
+        return false;
+    }
+    return true;
+}
+
 bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, SessionState& ss, int max_t, std::string& err,
                       int64_t window, const MtpDrafter* shared) {
     cudaGetDevice(&device_);   // a layer split's last stage on another GPU: the drafter lives there
@@ -257,14 +409,26 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         dense_ = shared->dense_;
         experts_ = shared->experts_;
         tensors_ = shared->tensors_;
+        xgu_ = shared->xgu_;
+        xd_ = shared->xd_;
+        xblob_ = shared->xblob_;
         owns_weights_ = false;
         owns_draft_head_ = false;
     }
     // Loader fix (0.1.15+loaderfix.2): the two reads below are the whole “drafter files” cost; reporting
     // them apart from the rest of the stage is what makes the next regression visible.
     const auto t_files = std::chrono::steady_clock::now();
-    // ---- the index and the dense weights
-    if (shared == nullptr) {
+    // ---- the index and the dense weights (a model without hyper-connections: its GGUF's own MTP block)
+    const bool gguf_layer = !g.has_hc();
+    if (shared == nullptr && gguf_layer) {
+        std::vector<uint8_t> blob;
+        if (!load_gguf_layer(rt_dir, g, blob, err)) return false;
+        if (cudaMalloc((void**) &dense_, blob.size()) != cudaSuccess) { err = "mtp: the dense weights do not fit"; return false; }
+        cudaMemcpy(dense_, blob.data(), blob.size(), cudaMemcpyHostToDevice);
+        vram_ += blob.size();
+        if (q4_ && !make_q4_dense(blob, err)) return false;
+    }
+    if (shared == nullptr && !gguf_layer) {
         std::ifstream idx(rt_dir + "/dense.txt");
         if (!idx) { err = "mtp: cannot open " + rt_dir + "/dense.txt (run tools/mtp_rt.py)"; return false; }
         std::string line;
@@ -292,7 +456,7 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         if (q4_ && !make_q4_dense(blob, err)) return false;
     }
     // ---- the 512 routed experts, one blob each
-    if (shared == nullptr) {
+    if (shared == nullptr && !gguf_layer) {
         const uint64_t bytes = (uint64_t) g.n_expert * strata::kernels::cpu::BLOB;
         // Loader fix (0.1.15+loaderfix.2): each 64 MiB read below reached the disk as ~16k 4095-byte reads under
         // MSVC's `basic_filebuf::xsgetn`, which is what made 675 MiB of drafter experts take minutes.
@@ -318,7 +482,10 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     const char* required[] = {"fc_embedding.weight", "fc_hidden.weight", "self_attn.q_proj.weight", "self_attn.k_proj.weight",
                               "self_attn.v_proj.weight", "self_attn.o_proj.weight", "mlp.shared_expert.gate_proj.weight",
                               "mlp.shared_expert.up_proj.weight", "mlp.shared_expert.down_proj.weight"};
-    for (const char* n : required) if (!q8(n)) { err = std::string("mtp: ") + n + " is missing (q8_0)"; return false; }
+    for (const char* n : required) {
+        int type = 0;
+        if (!wq(n, type)) { err = std::string("mtp: ") + n + " is missing"; return false; }
+    }
 
     // ---- the layer's own K/V (dense attention: no indexer state is read)
     const strata::kernels::QsaShapes s = shapes_of(g);
@@ -390,6 +557,10 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         grp_counts_ = b.take<int32_t>(4);
         hit_xq_ = b.take<uint8_t>(T * (N / 32) * 34); hit_xs_ = b.take<float>(T * (N / 32));
         hit_scratch_ = b.take<uint8_t>(strata::kernels::moe_hit_grouped_scratch_bytes((int64_t) (T * K), g.n_embd, g.n_ff));
+        if (xblob_ > 0) {   // native experts
+            nat_xq_ = b.take<uint8_t>(T * (N / 32) * 36);
+            nat_scratch_ = b.take<uint8_t>(strata::kernels::native_expert_scratch_bytes((int64_t) (T * K), g.n_ff));
+        }
         sh_scratch_ = (float*) b.take<uint8_t>(strata::kernels::shared_expert_scratch_bytes(g.n_ff));
         x_bf16_ = b.take<uint16_t>(N);
         out_ids_ = b.take<int32_t>(T + 4);
@@ -434,11 +605,11 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         std::fprintf(stderr, "strata mtp: shared draft weights, %.0f MiB of private state and buffers\n",
                      (double) vram_ / 1048576.0);
     } else {
-        std::fprintf(stderr, "strata mtp: draft layer loaded, %.0f MiB of VRAM (experts %.0f, dense %.0f), files read in %.2f s (%.0f MiB/s)\n",
-                     (double) vram_ / 1048576.0, (double) g.n_expert * strata::kernels::cpu::BLOB / 1048576.0,
+        const double xbytes = (double) g.n_expert * (double) (xblob_ > 0 ? xblob_ : strata::kernels::cpu::BLOB);
+        std::fprintf(stderr, "strata mtp: draft layer loaded%s, %.0f MiB of VRAM (experts %.0f, dense %.0f), files read in %.2f s (%.0f MiB/s)\n",
+                     gguf_layer ? " from the model file" : "", (double) vram_ / 1048576.0, xbytes / 1048576.0,
                      (double) tensors_.back().off / 1048576.0, files_s,
-                     files_s > 0 ? ((double) g.n_expert * strata::kernels::cpu::BLOB + (double) tensors_.back().off) /
-                                       1048576.0 / files_s : 0.0);
+                     files_s > 0 ? (xbytes + (double) tensors_.back().off) / 1048576.0 / files_s : 0.0);
     }
     return true;
 }
@@ -692,8 +863,10 @@ bool MtpDrafter::record_front(int T, int row0, cudaStream_t cs, std::string& err
             native_mmvq(wt_fc_hidden, wp_fc_hidden, xq_, h2_ + (size_t) c0 * N, (int) N, (int) N, nc, cs);
         }
         add_streams_broadcast(h2_, e2_, R_, N, (int) HC, T, cs);
-        // ---- the attention hyper-connection
-        {
+        // ---- the attention hyper-connection (one stream: the RMSNorm before the attention)
+        if (!g.has_hc()) {
+            native_qsa_rms_norm_weighted(R_, f32("input_layernorm.weight"), mixed_, (int) N, T, EPS, cs);
+        } else {
             FusedGrArgs fa[kFusedGrMaxT];
             for (int t = 0; t < T; ++t) {
                 fa[t].R = R_ + (size_t) t * HC * N; fa[t].R_out = R_ + (size_t) t * HC * N; fa[t].apply = false;
@@ -806,8 +979,12 @@ bool MtpDrafter::record_rest(int step_row, cudaStream_t cs, std::string& err) {
         native_qsa_gate_apply(attn_, qfull_, attn32_, (int) (T * NH), (int) HD, cs);
         native_quantize_q8_1(attn32_, xq_, (int) (NH * HD), T, cs);
         native_mmvq(wt_o_proj, wp_o_proj, xq_, bo_, (int) (NH * HD), (int) N, T, cs);
-        // ---- the MLP hyper-connection (the attention write folded in)
-        {
+        // ---- the MLP hyper-connection (the attention write folded in; one stream: the residual add, then the RMSNorm
+        // before the MoE)
+        if (!g.has_hc()) {
+            add_inplace(R_, bo_, (int64_t) T * N, cs);
+            native_qsa_rms_norm_weighted(R_, f32("post_attention_layernorm.weight"), mixed_, (int) N, T, EPS, cs);
+        } else {
             FusedGrArgs fa[kFusedGrMaxT];
             for (int t = 0; t < T; ++t) {
                 fa[t].R = R_ + (size_t) t * HC * N; fa[t].R_out = R_ + (size_t) t * HC * N; fa[t].apply = true;
@@ -880,15 +1057,24 @@ bool MtpDrafter::record_rest(int step_row, cudaStream_t cs, std::string& err) {
         } else {
         for (int t = 0; t < T; ++t) {
             bf16_gemv_fp32_mmvf(mixed_ + t * N, bf16("mlp.gate.weight"), logits_ + t * g.n_expert, (int) N, (int) g.n_expert, cs);
-            if (native_router_enabled()) native_router_top10(logits_ + t * g.n_expert, ids_ + t * K, w_ + t * K, cs);
+            if (native_router_enabled() && g.n_expert == 512 && K == 10)
+                native_router_top10(logits_ + t * g.n_expert, ids_ + t * K, w_ + t * K, cs);
             else router_top10(logits_ + t * g.n_expert, 1, (int) g.n_expert, (int) K, ids_ + t * K, w_ + t * K, cs);
         }
         }
+        if (xblob_ > 0) {   // the model file's experts in their GGUF form
+            moe_group_resident(ids_, (int) (T * K), (int) K, experts_, (int64_t) xblob_, grp_ptr_, grp_start_, grp_counts_,
+                               hit_dst_, hit_slot_, cs);
+            quantize_q8_1_rows(mixed_, T, N, nat_xq_, cs);
+            native_expert_grouped(native_expert_layout(xgu_, xd_, N, g.n_ff), grp_ptr_, grp_start_, grp_counts_, hit_dst_,
+                                  hit_slot_, (int64_t) T * K, (int64_t) T * K, nat_xq_, nat_scratch_, parts_, cs);
+        } else {
         moe_group_resident(ids_, (int) (T * K), (int) K, experts_, (int64_t) strata::kernels::cpu::BLOB, grp_ptr_,
                            grp_start_, grp_counts_, hit_dst_, hit_slot_, cs);
         quantize_q8_0_scaled(mixed_, hit_xq_, hit_xs_, (int64_t) T * N, cs);
         moe_grouped_s2(grp_ptr_, grp_start_, grp_counts_, hit_dst_, hit_slot_, (int64_t) T * K, (int64_t) T * K, hit_xq_,
                        hit_xs_, hit_scratch_, parts_, cs);
+        }
         if (branch_on) {
             if (cudaStreamWaitEvent(cs, sh_join_, 0) != cudaSuccess) { err = "mtp: the shared expert's join"; return false; }
         } else {
@@ -905,17 +1091,23 @@ bool MtpDrafter::record_rest(int step_row, cudaStream_t cs, std::string& err) {
                 else
                     moe_combine(parts_ + (size_t) t * K * N, w_ + t * K, shared_ + t * N, y_ + t * N, N, K, cs);
             }
-            if (!fuse_head_gr && no_multi_gr)
+            if (!fuse_head_gr && no_multi_gr && g.has_hc())
                 gr_write(R_ + (size_t) t * HC * N, y_ + t * N, inj2_ + t * HC, gs, R_ + (size_t) t * HC * N, cs);
         }
         if (T > 1 && native_moe_combine_enabled())
             native_moe_combine_multi(parts_, w_, shared_, y_, N, K, T, cs);
         // #783 PR-g (stuchapin909): the T residual writes in one launch (each token's R, block output and injection are
         // its own, so doing them after the loop changes nothing)
-        if (!fuse_head_gr && !no_multi_gr)
+        if (!fuse_head_gr && !no_multi_gr && g.has_hc())
             gr_write_multi(R_, y_, inj2_, gs, R_, T, cs);
         // ---- the final mixer and the main model's head
-        if (fuse_head_gr) {
+        if (!g.has_hc()) {
+            // one stream: the MoE output into the residual, then shared_head_norm is the head's input - and the
+            // hidden the next draft step reads (llama.cpp's h_nextn), so it goes back into R_ for mtp_select
+            add_inplace(R_, y_, (int64_t) T * N, cs);
+            native_qsa_rms_norm_weighted(R_, f32("shared_head_norm.weight"), sample_, (int) N, T, EPS, cs);
+            cudaMemcpyAsync(R_, sample_, (size_t) T * N * sizeof(float), cudaMemcpyDeviceToDevice, cs);
+        } else if (fuse_head_gr) {
             FusedGrArgs fa[kFusedGrMaxT];
             for (int t = 0; t < T; ++t) {
                 fa[t].R = R_ + (size_t) t * HC * N; fa[t].R_out = R_ + (size_t) t * HC * N; fa[t].apply = true;

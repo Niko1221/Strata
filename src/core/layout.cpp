@@ -1,6 +1,8 @@
 // src/core/layout.cpp - the shape checks.  See the header for why this exists.
 #include "strata/core/layout.hpp"
 
+#include "strata/artifact/gguf_reader.hpp"
+
 #include <cstdio>
 
 namespace strata::core {
@@ -133,6 +135,114 @@ bool check_one(const WeightTable& t, const ModelGeometry& g, int64_t layer, std:
 }
 
 }  // namespace
+
+const char* arch_name(ModelArch arch) {
+    return arch == ModelArch::kQwen35Moe ? "qwen35moe" : "qwen4exp";
+}
+
+bool geometry_from_gguf(const GgufFile& f, ModelGeometry& g, std::string& err) {
+    const MetaValue* arch = f.get("general.architecture");
+    if (arch == nullptr) {
+        err = "the model file has no general.architecture";
+        return false;
+    }
+    if (arch->s == "qwen4exp") {
+        // Flash-Next: the defaults, with the MoE shape from the file as before (a pruned Coder ships 256 experts)
+        ModelGeometry q;
+        if (const MetaValue* v = f.get("qwen4exp.expert_count")) q.n_expert = (int64_t) v->u;
+        if (const MetaValue* v = f.get("qwen4exp.expert_used_count")) q.n_expert_used = (int64_t) v->u;
+        g = q;
+        return true;
+    }
+    if (arch->s != "qwen35moe") {
+        err = "the model's architecture is '" + arch->s + "'; this engine runs 'qwen4exp' (Qwen3.8-Flash-Next) and "
+              "'qwen35moe' (Qwen3.6-35B-A3B)";
+        return false;
+    }
+    std::string missing;
+    auto key = [&](const char* name, int64_t& out, bool required = true) {
+        const MetaValue* v = f.get(std::string("qwen35moe.") + name);
+        if (v == nullptr || !v->is_num()) {
+            if (required && missing.empty()) missing = std::string("qwen35moe.") + name;
+            return;
+        }
+        out = (int64_t) v->u;
+    };
+    ModelGeometry q;
+    q.arch = ModelArch::kQwen35Moe;
+    int64_t block_count = 0, head_dim = 0, value_len = 0, n_rot = 0, n_ff_shexp = 0;
+    key("block_count", block_count);
+    key("nextn_predict_layers", q.n_mtp_layers, false);
+    key("embedding_length", q.n_embd);
+    key("full_attention_interval", q.qsa_interval);
+    key("attention.head_count", q.n_head);
+    key("attention.head_count_kv", q.n_head_kv);
+    key("attention.key_length", head_dim);
+    key("attention.value_length", value_len);
+    key("rope.dimension_count", n_rot);
+    key("ssm.state_size", q.ssm_state_size);
+    key("ssm.group_count", q.ssm_k_heads);
+    key("ssm.time_step_rank", q.ssm_v_heads);
+    key("ssm.conv_kernel", q.ssm_d_conv);
+    key("ssm.inner_size", q.ssm_value_dim);
+    key("expert_count", q.n_expert);
+    key("expert_used_count", q.n_expert_used);
+    key("expert_feed_forward_length", q.n_ff);
+    key("expert_shared_feed_forward_length", n_ff_shexp);
+    if (!missing.empty()) {
+        err = "the model file has no " + missing;
+        return false;
+    }
+    q.n_layers = block_count - q.n_mtp_layers;
+    q.ssm_conv_channels = 2 * q.ssm_state_size * q.ssm_k_heads + q.ssm_value_dim;
+    q.hc = 1;                       // a plain residual stream
+    q.hc_lr = 0;
+    q.idx_q_heads = 0;              // no indexer: every cached cell is attended
+    q.idx_key_dim = 0;
+    q.has_ple = false;
+    q.has_indexer = false;
+    q.gdn_gate_silu = true;
+
+    // What the kernels support.  The widths must be the ones the kernels are written for (head 256 with 64 rotated
+    // dims, GDN state 128 and conv 4), and every count at most Flash-Next's: buffers sized by its compile-time
+    // numbers then hold the smaller model unchanged.
+    const ModelGeometry cap;
+    char buf[256];
+    auto bad = [&](const char* what, int64_t got, const char* want) {
+        std::snprintf(buf, sizeof buf, "qwen35moe: %s is %lld; this engine supports %s", what, (long long) got, want);
+        err = buf;
+        return false;
+    };
+    if (head_dim != cap.head_dim || value_len != cap.head_dim) return bad("attention.key_length", head_dim, "256");
+    if (n_rot != 64) return bad("rope.dimension_count", n_rot, "64");
+    if (q.ssm_state_size != cap.ssm_state_size) return bad("ssm.state_size", q.ssm_state_size, "128");
+    if (q.ssm_d_conv != cap.ssm_d_conv) return bad("ssm.conv_kernel", q.ssm_d_conv, "4");
+    if (q.ssm_value_dim != q.ssm_state_size * q.ssm_v_heads)
+        return bad("ssm.inner_size", q.ssm_value_dim, "state_size * time_step_rank");
+    if (q.ssm_k_heads <= 0 || q.ssm_v_heads % q.ssm_k_heads != 0)
+        return bad("ssm.time_step_rank", q.ssm_v_heads, "a multiple of ssm.group_count");
+    if (q.n_head_kv <= 0 || q.n_head % q.n_head_kv != 0)
+        return bad("attention.head_count", q.n_head, "a multiple of head_count_kv");
+    if (q.qsa_interval != cap.qsa_interval) return bad("full_attention_interval", q.qsa_interval, "4");
+    if (q.n_layers <= 0 || q.n_layers > cap.n_layers || q.n_layers % q.qsa_interval != 0)
+        return bad("block_count - nextn_predict_layers", q.n_layers, "a multiple of 4, at most 48");
+    if (q.n_mtp_layers < 0 || q.n_mtp_layers > 1) return bad("nextn_predict_layers", q.n_mtp_layers, "0 or 1");
+    if (q.n_embd <= 0 || q.n_embd > cap.n_embd || q.n_embd % 256 != 0)
+        return bad("embedding_length", q.n_embd, "a multiple of 256, at most 2560");
+    if (q.n_head > cap.n_head) return bad("attention.head_count", q.n_head, "at most 24");
+    if (q.n_head_kv != cap.n_head_kv) return bad("attention.head_count_kv", q.n_head_kv, "2");
+    if (q.ssm_k_heads > cap.ssm_k_heads) return bad("ssm.group_count", q.ssm_k_heads, "at most 16");
+    if (q.ssm_v_heads > cap.ssm_v_heads) return bad("ssm.time_step_rank", q.ssm_v_heads, "at most 48");
+    if (q.n_expert <= 0 || q.n_expert > cap.n_expert) return bad("expert_count", q.n_expert, "at most 512");
+    if (q.n_expert_used <= 0 || q.n_expert_used > cap.n_expert_used)
+        return bad("expert_used_count", q.n_expert_used, "at most 10");
+    if (q.n_ff <= 0 || q.n_ff > cap.n_ff || q.n_ff % 256 != 0)
+        return bad("expert_feed_forward_length", q.n_ff, "a multiple of 256, at most 640");
+    if (n_ff_shexp != q.n_ff)
+        return bad("expert_shared_feed_forward_length", n_ff_shexp, "expert_feed_forward_length");
+    g = q;
+    return true;
+}
 
 std::string LayerView::name(const char* suffix) const {
     return "blk." + std::to_string(layer_) + "." + suffix;

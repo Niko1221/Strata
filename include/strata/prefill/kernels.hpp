@@ -23,6 +23,9 @@ void gr_norm_rs(const float* R, const float* w_norm, float eps, float* rs, uint1
 /// gr_mix with xn recomputed from R, rs and w_norm exactly as gr_norm computes it (the same bits).
 void gr_mix_r(const float* R, const float* rs, const float* w_norm, const float* gated, float* mixed, uint16_t* mixed16,
               int64_t T, void* stream, uint16_t* mixed_h = nullptr, uint16_t* mixed16_lo = nullptr);
+/// One residual stream (qwen35moe): mixed = RMSNorm(R row) * w over T rows of n, with gr_mix_r's other outputs.
+void rms_mix(const float* R, const float* w, float eps, int64_t n, float* mixed, uint16_t* mixed16, int64_t T, void* stream,
+             uint16_t* mixed_h = nullptr, uint16_t* mixed16_lo = nullptr);
 /// F-2: gr_write, then gr_norm_rs of the next half (its norm weights) over the rows just written - the same bits as
 /// the two calls, without reading R back.
 /// S23 (opt-in STRATA_HC_UPMIX=1): the up projection (lo16 x w_up^T, BF16, FP32 accumulate) with gr_mix_r as its
@@ -52,31 +55,35 @@ void gr_broadcast(const float* e, float* R, int64_t T, void* stream);
 
 // ---- GDN (state 128, 16 k heads, 48 v heads, 10240 conv channels, 4 taps)
 /// gate[t,h] = softplus(ab[t,h] + dt[h]) * ssm_a[h];  beta[t,h] = sigmoid(ab[t, 48 + h])  (ab: [T, 96])
-void gdn_gates(const float* ab, const float* dt, const float* ssm_a, float* gate, float* beta, int64_t T, void* stream);
+/// hv: the model's value heads (48 Flash-Next, 32 Qwen3.6; each has its own kernel instances); silu: the output gate.
+void gdn_gates(const float* ab, const float* dt, const float* ssm_a, float* gate, float* beta, int64_t T, void* stream,
+               int64_t hv = 48);
 /// The 4-tap causal conv + SiLU over the chunk (history [C][3] in, updated to the chunk's last three inputs), then
 /// the L2 norm of the q and k heads of every token.  h: [T, C].
-void gdn_conv(float* history, const float* qkv, const float* conv_w, float* h, int64_t T, float eps, void* stream);
+void gdn_conv(float* history, const float* qkv, const float* conv_w, float* h, int64_t T, float eps, void* stream,
+              int64_t hv = 48);
 /// The recurrence over the chunk, state in registers; y16[t] = rmsnorm(o) * gamma * sigmoid(z) in FP16 (what the
 /// out projection reads); y is FP32 scratch.
 void gdn_recurrence(float* state, const float* h, const float* gate, const float* beta, const float* z,
                     const float* gamma, float eps, float* y, uint16_t* y16, int64_t T, void* stream,
-                    int64_t ld16 = 0);   // ld16: y16's row stride (0 = 6144; S23 STRATA_PF_PAD pads it)
+                    int64_t ld16 = 0,    // ld16: y16's row stride (0 = hv x 128; S23 STRATA_PF_PAD pads it)
+                    int64_t hv = 48, bool silu = false);
 /// The kernels behind gdn_recurrence, for the parity test: 0 = the column-split kernels + the norm kernel (or the
 /// one-block-per-head kernel under STRATA_GDN_REC_HEADS), 1 = four lanes per column (no barrier per token) + the grid-stride norm, 2 = the
 /// one-block-per-head kernel (its fused norm rounds differently).  0 and 1 give the same bits.
 void gdn_recurrence_variant(int variant, float* state, const float* h, const float* gate, const float* beta,
                             const float* z, const float* gamma, float eps, float* y, uint16_t* y16, int64_t T,
-                            void* stream, int64_t ld16 = 0);
+                            void* stream, int64_t ld16 = 0, int64_t hv = 48, bool silu = false);
 
 // ---- MoE
 /// softmax over 512, top-10 (ties to the lower id), weights renormalised over the ten (the native router).
-void route(const float* logits, int32_t* ids, float* weights, int64_t T, int64_t n_expert, void* stream);
+void route(const float* logits, int32_t* ids, float* weights, int64_t T, int64_t n_expert, void* stream, int64_t k = 10);
 /// Expert blob (Strata pack layout, Q2_0) -> BF16 matrices: gate/up interleaved [1280, 2560], down [2560, 640].
 void blob_dequant(const uint8_t* blob, uint16_t* gu16, uint16_t* down16, void* stream);
 /// h16[n, r] = fp16(silu(gu[n, 2r]) * gu[n, 2r + 1])   (the interleaved expert gate/up)
-void swiglu_interleaved(const float* gu, uint16_t* h16, int64_t n, void* stream);
+void swiglu_interleaved(const float* gu, uint16_t* h16, int64_t n, void* stream, int64_t n_ff = 640);
 /// h16[n, r] = fp16(silu(g[n, r]) * u[n, r])   (the shared expert, gate and up separate, width 640)
-void swiglu_pair(const float* g, const float* u, uint16_t* h16, int64_t n, void* stream);
+void swiglu_pair(const float* g, const float* u, uint16_t* h16, int64_t n, void* stream, int64_t n_ff = 640);
 /// dst[i] = src[i] for n int32s, as a kernel: either side may be mapped host memory, and the copy never waits
 /// behind the copy engine's queue (the prompt path's grouping tables, while the expert stream fills it).
 void copy_i32(int32_t* dst, const int32_t* src, int64_t n, void* stream);
@@ -87,7 +94,7 @@ void copy_f32_wide(float* dst, const float* src, int64_t n, void* stream);
 void gather_rows16(const uint16_t* x16, const int32_t* src, uint16_t* dst16, int64_t n, int64_t width, void* stream);
 /// bo[t, :] = shared[t, :] * sigmoid(sg[t]) + sum_k w[t, k] * D[slot[t, k], :]
 void moe_combine(const float* D, const int32_t* slot, const float* w, const float* shared, const float* sg, float* bo,
-                 int64_t T, void* stream);
+                 int64_t T, void* stream, int64_t n_embd = 2560, int64_t k = 10);   // 2560 x 10 or 2048 x 8
 
 // ---- QSA helpers
 /// In place: x[r, :] = x[r, :] * rsqrt(mean x^2 + eps) * w  over rows of `cols` (row stride `ld`).
@@ -96,10 +103,11 @@ void rms_rows(float* x, const float* w, int64_t rows, int64_t cols, int64_t ld, 
 /// scaling (rope_scaling.hpp) rides in as the process config - none is today's arithmetic exactly.
 void rope(float* x, int64_t T, int64_t heads, int64_t dim, int64_t ld, int64_t pos0,
           const strata::kernels::RopeScaling& scaling, void* stream);
-/// q_full [T, 24, 512] (q | gate per head) -> q [T, 24, 256]
-void split_q(const float* q_full, float* q, int64_t T, void* stream);
+/// q_full [T, n_head, 512] (q | gate per head) -> q [T, n_head, 256]; n_head 24 (Flash-Next) or 16 (Qwen3.6)
+void split_q(const float* q_full, float* q, int64_t T, void* stream, int64_t n_head = 24);
 /// attn[t, h, d] *= sigmoid(q_full[t, h, 256 + d]) -> out16 (fp16 bits: the o-projection is quantized)
-void gate_attn(const float* attn, const float* q_full, uint16_t* out16, int64_t T, void* stream, int64_t ld16 = 0);
+void gate_attn(const float* attn, const float* q_full, uint16_t* out16, int64_t T, void* stream, int64_t ld16 = 0,
+               int64_t n_head = 24);
 
 /// K and V of T consecutive cells (positions pos0..pos0+T-1; K normed and rotated) into the paged pools: FP16
 /// (`k_pool`/`v_pool`) or INT8 codes + FP16 scale per 64 (`k_q`...), the decode append's arithmetic.

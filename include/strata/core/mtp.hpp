@@ -225,6 +225,14 @@ private:
     std::vector<Tensor> tensors_;
     uint8_t* dense_ = nullptr;
     uint8_t* experts_ = nullptr;
+    /// A model without hyper-connections (qwen35moe): the draft layer is the model file's own nextn layer
+    /// (blk.<n_layers>), read in place - its tensors under the names the rt files use, the eh_proj split into its
+    /// embedding and hidden halves - and its experts kept in their GGUF form (types xgu_ / xd_, xblob_ bytes each).
+    bool load_gguf_layer(const std::string& gguf, const ModelGeometry& g, std::vector<uint8_t>& dense, std::string& err);
+    int xgu_ = -1, xd_ = -1;
+    uint64_t xblob_ = 0;
+    uint8_t* nat_xq_ = nullptr;      ///< the routed experts' q8_1 input (native experts)
+    uint8_t* nat_scratch_ = nullptr;
     // Slot drafters borrow immutable weights and head; each still owns its state and scratch.
     bool owns_weights_ = true;
     bool owns_draft_head_ = true;

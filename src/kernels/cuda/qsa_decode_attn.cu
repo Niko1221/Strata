@@ -14,7 +14,8 @@ namespace strata::kernels {
 namespace {
 
 constexpr int HD = 256;          // head_dim
-constexpr int G = 12;            // query heads per KV head (24 / 2)
+constexpr int G_FLASH = 12;      // query heads per KV head: Flash-Next 24 / 2 (the kernels' G; Qwen3.6's 16 / 2 = 8 is
+                                 // their other instance)
 constexpr int CHUNK = 64;        // cells per block
 constexpr int THREADS = 256;
 constexpr int WARPS = THREADS / 32;
@@ -80,7 +81,7 @@ __device__ __forceinline__ void load8(const QsaAttnPools& p, bool value, long lo
     } else load8_q4(p, value, row, d0, out);
 }
 
-template <int KV_MODE, bool LANE_CELL = false>
+template <int KV_MODE, bool LANE_CELL = false, int G = G_FLASH>
 __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __restrict__ q, QsaAttnPools p,
                                                              const int32_t* __restrict__ ids,
                                                              const int32_t* __restrict__ step, int n_kv_heads,
@@ -272,7 +273,7 @@ __device__ __forceinline__ float load_v1(const QsaAttnPools& p, long long row, i
     }
 }
 
-template <int KV_MODE>
+template <int KV_MODE, int G = G_FLASH>
 __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* __restrict__ q, QsaAttnPools p,
                                                              const int32_t* __restrict__ ids,
                                                              const int32_t* __restrict__ step, int n_kv_heads,
@@ -427,6 +428,7 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* 
 }
 #endif  // STRATA_EXPERIMENTAL_SM60
 
+template <int G = G_FLASH>
 __global__ void __launch_bounds__(HD) attn_merge_kernel(const float* __restrict__ part_acc,
                                                         const float* __restrict__ part_m,
                                                         const float* __restrict__ part_l, int n_chunks,
@@ -475,17 +477,16 @@ bool pre75_attn() {
     }
     return cc[dev] < 75;
 }
-#define STRATA_ATTN_CHUNK(M) (pre75_attn() ? attn_chunk_kernel_pre75<M> : attn_chunk_kernel<M>)
+#define STRATA_ATTN_CHUNK(M) (pre75_attn() ? attn_chunk_kernel_pre75<M, GG> : attn_chunk_kernel<M, false, GG>)
 #else
-#define STRATA_ATTN_CHUNK(M) attn_chunk_kernel<M>
+#define STRATA_ATTN_CHUNK(M) attn_chunk_kernel<M, false, GG>
 #endif
 
-}  // namespace
-
-void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
-                           int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream) {
+template <int GG>
+void decode_attn_batch_g(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
+                         int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream) {
     if (n_q <= 0) return;
-    if (s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !scratch || !ids || !steps ||
+    if (s.head_dim != HD || s.n_head != (int64_t) GG * s.n_head_kv || cap <= 0 || !scratch || !ids || !steps ||
         !pools.page_table || n_q > 65535) {
         std::fprintf(stderr, "qsa_decode_attn_batch: unsupported geometry or missing buffers\n");
         std::exit(1);
@@ -503,7 +504,7 @@ void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int3
     cudaStream_t st = (cudaStream_t) stream;
     // S25: STRATA_ATTN_LANECELL=1 - the score phase one cell per thread (bit-identical scores, no shuffle reductions)
     static const bool lane_cell = [] { const char* v = std::getenv("STRATA_ATTN_LANECELL"); return v && v[0] == '1'; }();
-#define STRATA_ATTN_LC(M) attn_chunk_kernel<M, true><<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv, (int) s.page_size, scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride)
+#define STRATA_ATTN_LC(M) attn_chunk_kernel<M, true, GG><<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv, (int) s.page_size, scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride)
     if (lane_cell) {
         if (kv_mode == 3) STRATA_ATTN_LC(3);
         else if (kv_mode == 2) STRATA_ATTN_LC(2);
@@ -523,7 +524,7 @@ void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int3
     else
         STRATA_ATTN_CHUNK(0)<<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv, (int) s.page_size,
                                                         scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride);
-    attn_merge_kernel<<<dim3((unsigned) s.n_head, (unsigned) n_q), HD, 0, st>>>(part_acc, part_m, part_l, n_chunks,
+    attn_merge_kernel<GG><<<dim3((unsigned) s.n_head, (unsigned) n_q), HD, 0, st>>>(part_acc, part_m, part_l, n_chunks,
                                                                                   attn, stride);
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
@@ -532,14 +533,39 @@ void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int3
     }
 }
 
+template <int GG>
+void decode_attn_step_g(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* step,
+                        int64_t cap, const QsaShapes& s, float* scratch, float* attn, void* stream);
+
+}  // namespace
+
+// query heads per KV head: 12 (Flash-Next) or 8 (Qwen3.6); anything else is refused by the body's geometry check
+void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
+                           int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream) {
+    if (s.n_head_kv > 0 && s.n_head == 8 * s.n_head_kv)
+        decode_attn_batch_g<8>(q, pools, ids, steps, cap, s, scratch, attn, n_q, stream);
+    else
+        decode_attn_batch_g<G_FLASH>(q, pools, ids, steps, cap, s, scratch, attn, n_q, stream);
+}
+
+void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* step,
+                          int64_t cap, const QsaShapes& s, float* scratch, float* attn, void* stream) {
+    if (s.n_head_kv > 0 && s.n_head == 8 * s.n_head_kv)
+        decode_attn_step_g<8>(q, pools, ids, step, cap, s, scratch, attn, stream);
+    else
+        decode_attn_step_g<G_FLASH>(q, pools, ids, step, cap, s, scratch, attn, stream);
+}
+
 uint64_t qsa_decode_attn_scratch_floats(int64_t cap, const QsaShapes& s) {
     const int64_t chunks = (cap + CHUNK - 1) / CHUNK;
     return (uint64_t) chunks * (uint64_t) s.n_head * (HD + 2) + 64;
 }
 
-void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* step,
-                          int64_t cap, const QsaShapes& s, float* scratch, float* attn, void* stream) {
-    if (s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !scratch || !ids || !step ||
+namespace {
+template <int GG>
+void decode_attn_step_g(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* step,
+                        int64_t cap, const QsaShapes& s, float* scratch, float* attn, void* stream) {
+    if (s.head_dim != HD || s.n_head != (int64_t) GG * s.n_head_kv || cap <= 0 || !scratch || !ids || !step ||
         !pools.page_table) {
         std::fprintf(stderr, "qsa_decode_attn: unsupported geometry or missing buffers\n");
         std::exit(1);
@@ -571,12 +597,13 @@ void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32
     else
         STRATA_ATTN_CHUNK(0)<<<grid, THREADS, 0, st>>>(q, pools, ids, step, (int) s.n_head_kv, (int) s.page_size,
                                                         scale, part_acc, part_m, part_l, n_chunks, 0, 0);
-    attn_merge_kernel<<<(unsigned) s.n_head, HD, 0, st>>>(part_acc, part_m, part_l, n_chunks, attn);
+    attn_merge_kernel<GG><<<(unsigned) s.n_head, HD, 0, st>>>(part_acc, part_m, part_l, n_chunks, attn);
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
         std::fprintf(stderr, "qsa_decode_attn: %s\n", cudaGetErrorString(e));
         std::exit(1);
     }
 }
+}  // namespace
 
 }  // namespace strata::kernels

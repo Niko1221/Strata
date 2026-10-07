@@ -116,6 +116,7 @@ sizes are faster. Larger sizes are a bit smarter.
 
 | Your RAM | Take | Why |
 | --- | --- | --- |
+| **16-24 GB** | **[Qwen3.6-35B-A3B](docs/QWEN36.md)** | a smaller model of the same family; runs on 8-12 GB cards (NVIDIA) |
 | **32 GB** | **Coder** | it fits 32 GB, and it is made for code (with a 24 GB card, Q2_0 and IQ2_XS run too) |
 | **48 GB** | **IQ2_XS** (or Q2_0, the fastest) | the larger sizes do not fit |
 | **64 GB** | **IQ2_XS** (recommended), or IQ3_XXS / IQ3_S | every size fits; IQ3_S is the best and the slowest |
@@ -133,6 +134,10 @@ sizes are faster. Larger sizes are a bit smarter.
   model. But Strata reads most of it from the SSD while it answers, so it writes only 7-8.5 tokens/s on a 64 GB PC.
 - **[OrcaRouter's Uncensored IQ3_XXS](docs/MODELS.md#orcarouter-uncensored-iq3_xxs):** you set it up by hand. It is
   not in the installer's menu.
+- **[Qwen3.6-35B-A3B](docs/QWEN36.md):** a second, smaller model (35B, 3B active) whose experts take 12-14 GB of RAM:
+  105-127 tokens/s on a 12 GB card, 75-89 with an 8 GB card's VRAM (emulated). NVIDIA, one GPU, no images yet.
+  Its coding-agent fine-tune [Ornith-1.5-35B-A3B](docs/QWEN36.md#ornith-15-35b-a3b) installs the same way
+  (`--family ornith`).
 
 Sizes, downloads and what fits where: [docs/MODELS.md](docs/MODELS.md). To add another model later, run
 `SETUP.bat` (Linux: `./setup.sh --setup`).
