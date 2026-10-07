@@ -20,6 +20,7 @@
 #include "strata/kernels/cpu/pool.hpp"
 #include "strata/kernels/native_qsa_indexer.hpp"
 #include "strata/kernels/ngram.hpp"
+#include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/ple.hpp"
 #include "strata/kernels/native_ple_postops.hpp"
 #include "strata/kernels/iq_kernels.hpp"
@@ -862,6 +863,9 @@ struct Prefill::Impl {
     const core::ExpertCache* cache = nullptr;
     const int32_t* host_res = nullptr;
     int64_t T = 0, T_max = 0;
+    int tap_layers_[8] = {};
+    int n_taps_ = 0;
+    uint16_t* taps = nullptr;  ///< n_taps_ x T_max x n_embd BF16
     bool borrowed = false, borrow_spill = false;
     cudaStream_t cs = nullptr, copy = nullptr;
     Gemm gemm;
@@ -1419,9 +1423,11 @@ bool Prefill::carve(size_t T, void* alloc) {
     m.xn16 = o.take<uint16_t>(T * (D + (hc_pad() ? XN_PAD : 0)), ok); m.lo = o.take<float>(T * LR, ok); m.lo16 = o.take<uint16_t>(T * LR, ok);
     m.gated = o.take<float>(T * D, ok); m.inj = o.take<float>(T * HC, ok);
     m.mixed = o.take<float>(T * N, ok); m.mixed_bf = o.take<uint16_t>(T * N, ok);
+    if (m.n_taps_ > 0) m.taps = o.take<uint16_t>((size_t) m.n_taps_ * (size_t) T * (size_t) N, ok);
     m.mixed_h = o.take<uint16_t>(T * N, ok);
     // Embedding rows are dead after gr_broadcast on m.cs; subsequent half outputs use the same stream.
     m.bo = m.emb;
+
     if (bf16x2_hc(m.f16_io)) { m.xn16_lo = o.take<uint16_t>(T * D, ok); m.lo16_lo = o.take<uint16_t>(T * LR, ok); }
     if (bf16x2(m.f16_io)) m.mixed_bf_lo = o.take<uint16_t>(T * N, ok);
     m.steps_dev = o.take<int32_t>(T * strata::kernels::kStepCount, ok);
@@ -1851,6 +1857,14 @@ bool Prefill::bind_stage_helper(int64_t T) {
     const core::OnDevice on(P.dev);
     mmq::iota(P.ident, T * K, P.s);           // the helper's row table: a refill may have overwritten its slots
     return true;
+}
+
+int64_t Prefill::tap_stride_rows() const { return impl_->T_max; }
+
+void Prefill::set_tap_layers(const int* layers, int n) {
+    Impl& m = *impl_;
+    m.n_taps_ = n > 8 ? 8 : n;
+    for (int i = 0; i < m.n_taps_; ++i) m.tap_layers_[i] = layers[i];
 }
 
 bool Prefill::set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& err) {
@@ -3007,6 +3021,15 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 } else {
                     gr_mix_r(m.R, m.grs, (const float*) wn->data, m.gated, m.mixed, m.mixed_bf, T, m.cs, m.mixed_h,
                              m.mixed_bf_lo);
+                }
+                if (half == 0 && m.n_taps_ > 0) {   // DFlash tap: the attn-half read's contracted residual
+                    const int64_t TN = g.n_embd;
+                    for (int ti = 0; ti < m.n_taps_; ++ti)
+                        if (l == m.tap_layers_[ti]) {
+                            strata::kernels::f32_to_bf16_bulk(
+                                m.mixed, m.taps + ((size_t) ti * (size_t) m.T_max) * (size_t) TN,
+                                (int64_t) T * TN, m.cs);
+                        }
                 }
 
                 if (wd_q8.data) {   // the HC GEMMs that read the scratch are enqueued: the next user waits for them
@@ -4663,7 +4686,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 std::fclose(f);
             }
         }
-        if (on_chunk || on_stage_chunk) {
+        if (on_chunk || on_stage_chunk || on_taps) {
             const auto toc = Clock::now();
             if (cudaStreamSynchronize(m.cs) != cudaSuccess) {
                 err = std::string("prefill: ") + cudaGetErrorString(cudaGetLastError());
@@ -4672,6 +4695,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             const auto toc2 = Clock::now();
             if (on_stage_chunk && !on_stage_chunk(p0 + T, err)) return false;
             if (on_chunk && !on_chunk(m.R, T, p0, err)) return false;
+            if (on_taps && m.n_taps_ > 0 && !on_taps(m.taps, m.n_taps_, T, p0, err)) return false;
             host_sync_ms += std::chrono::duration<double, std::milli>(toc2 - toc).count();
             host_chunk_ms += ms_since(toc2);
         }

@@ -127,11 +127,16 @@ KV 20 KiB per position per... (f32 K/V pools, `--dflash-window` cells, default 3
 cache is sized and reports the same way `MtpDrafter` does, so the cache auto-sizing
 reserves the drafter's footprint.
 
-Reference fixtures: the PixelML/DeepSpec runtime exports (taps, fused features, logits per
-block position) under `bench/dflash-fixture/`; the alignment unit test
-(`src/core/dflash_align_test.cpp`) pins the query→target-position mapping with synthetic
-weights; the draft-forward parity harness compares against the exported reference tensors
-(max/mean abs error, cosine per stage, exact token IDs).
+Feature-capture gate (commit 2): `STRATA_DFLASH_TAPS=<file>` makes a target-only run append one
+record per prompt chunk and per verify window with the five boundaries' contracted residuals
+(prompt path in BF16 - the fusion's input precision; window path in f32), and
+`tools/dflash_taps.py` compares the two kernel paths' capture of the same position.  On the
+IQ3_XXS target, 400-token prompts: per-tap cos 0.9966-0.9999, rel mean 1.2e-2 to 8.5e-2 - the
+prompt path's batched BF16 GEMMs and the window's per-token kernels (multi-row AVX2 CPU experts)
+agree to engine-path tolerance, while any wiring bug (wrong layer, the other HC half, the raw
+10240-wide stream, a token offset, reordered taps) measures cos <= 0.7.  The reference-forward
+comparison against the PixelML exporter's own tensors needs the vLLM stack and is not runnable
+here; the exporter's tap definition was transcribed from its published adapter patch instead.
 
 Known limitations of the first implementation are listed at the end of this file after the
 measurements.
