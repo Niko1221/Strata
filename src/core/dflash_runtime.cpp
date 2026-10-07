@@ -180,46 +180,41 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
     }
     pool_g_.n_layers = dg.layers * target_g.qsa_interval;
     const int64_t max_cells = ss.qsa_states[ss.qsa_primary()].max_cells;
-    int64_t ring = (window > 0 && window < max_cells) ? window + 4 * dg.layers + 64 : 0;
-    const bool kv_int8_was = strata::core::qsa_kv_int8();
-    const bool kv_hybrid_was = strata::core::qsa_kv_hybrid();
-    strata::core::qsa_set_kv_hybrid(false);
-    if (kv_hybrid_was) strata::core::qsa_set_kv_int8(true);   // K8V4 targets run their drafter INT8
-    const uint64_t sb = strata::core::qsa_state_bytes(pool_g_, max_cells, false, ring);
     // ONE STATE PER DRAFT LAYER: a QsaState is a single layer's pools, and the five draft layers
     // must not share them (a shared pool made every layer attend layer 0's K/V).
     if (pool_g_.n_qsa_layers() != dg.layers) {
         err = "dflash: the pool geometry does not give one state per draft layer";
         return false;
     }
+    // The allocation policy is EXPLICIT, not the session's: whole-resident FP16 pools carved from
+    // this drafter's own arena, no ring, no streaming host copy, no elastic VMM.  qsa_state_bytes
+    // and qsa_state_init consume the same options, so the arena holds every logical page the
+    // identity page table names (n_slots == n_pages) - the runtime never repairs a state that a
+    // different policy has already carved.  `window` caps only the attention's capacity below; the
+    // pools always hold the session's full max_cells.
+    strata::core::QsaStateInitOptions kv_opts;
+    kv_opts.force_owned_kv = true;
+    kv_opts.force_f16_kv = true;
+    kv_opts.disable_streaming = true;
+    kv_opts.disable_elastic = true;
+    const int64_t ring = 0;
+    const auto pool_shapes = strata::core::shapes_of(pool_g_);
+    const uint64_t sb = strata::core::qsa_state_bytes(pool_g_, max_cells, false, ring, kv_opts);
     st_.assign((size_t) dg.layers, QsaState{});
     arenas_.assign((size_t) dg.layers, nullptr);
     for (int l = 0; l < (int) dg.layers; ++l) {
         if (cudaMalloc(&arenas_[(size_t) l], sb) != cudaSuccess) {
-            strata::core::qsa_set_kv_int8(kv_int8_was);
-            strata::core::qsa_set_kv_hybrid(kv_hybrid_was);
             err = "dflash: the draft K/V states do not fit in VRAM";
             return false;
         }
         if (strata::core::qsa_state_init(pool_g_, max_cells, arenas_[(size_t) l], st_[(size_t) l],
-                                         &ss.qsa_states[ss.qsa_primary()], ring) == 0) {
-            strata::core::qsa_set_kv_int8(kv_int8_was);
-            strata::core::qsa_set_kv_hybrid(kv_hybrid_was);
+                                         &ss.qsa_states[ss.qsa_primary()], ring, kv_opts) == 0) {
             err = "dflash: the draft K/V state init failed";
             return false;
         }
-        // The init COPIES the session reference's streaming/elastic plumbing: the page table's -1
-        // residency entries, the host-copy pointers, the stream map, and (worst) `kv_elastic` - an
-        // INDEX INTO THE SESSION'S elastic-pool registry.  With it copied, the drafter's k_pool
-        // pointed at the session's VMM range, which kvg_start/kvg_ensure re-map and zero while the
-        // prompt is read: context cells vanished in irregular holes.  The drafter streams nothing
-        // and owns its plain cudaMalloc arena: identity page table, no host copy, no map, no
-        // elastic registration.
-        st_[(size_t) l].kv_elastic = -1;
-        st_[(size_t) l].host = strata::kernels::KvHostPools{};
-        st_[(size_t) l].map = strata::kernels::KvStreamMap{};
-        st_[(size_t) l].kv_mode = 0;
         {
+            // the page table starts as the identity, uploaded on the drafter's own stream (the init
+            // wrote it on the default stream)
             std::vector<int32_t> ident_page((size_t) st_[(size_t) l].n_pages);
             for (int64_t pg = 0; pg < st_[(size_t) l].n_pages; ++pg) ident_page[(size_t) pg] = (int32_t) pg;
             if (cudaMemcpyAsync(st_[(size_t) l].page_table, ident_page.data(),
@@ -231,27 +226,33 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
         }
         strata::core::qsa_state_zero(st_[(size_t) l], pool_g_, nullptr);
         vram_ += sb;
-        // OWNERSHIP INVARIANT (docs/DFLASH.md): the pools must live in THIS state's arena - not in
-        // an elastic VMM range, a streaming host copy or another layer's slab.  Checked as pointers,
-        // not metadata: qsa_state_bytes/init skip the arena's K/V storage when the process elastic
-        // K/V is on, and a metadata reset cannot repair that.
+        // OWNERSHIP INVARIANT (docs/DFLASH.md): the state must be the owned whole-resident FP16 one
+        // the policy asked for - checked as metadata AND as the full physical byte ranges: a pointer
+        // inside the arena does not prove every logical page has backing (a ring or streamed state
+        // addresses pages this arena never carved).
         {
+            const QsaState& s = st_[(size_t) l];
             const uintptr_t a0 = reinterpret_cast<uintptr_t>(arenas_[(size_t) l]);
             const uintptr_t a1 = a0 + sb;
-            const auto inside = [&](const void* p) {
+            const int64_t pool_bytes = (int64_t) s.n_slots * pool_shapes.n_head_kv * pool_shapes.page_size *
+                                       dg.head_dim * 2;
+            const auto inside = [&](const void* p, int64_t bytes) {
                 const uintptr_t x = reinterpret_cast<uintptr_t>(p);
-                return x >= a0 && x < a1;
+                return bytes >= 0 && x >= a0 && x + (uint64_t) bytes <= a1;
             };
-            const QsaState& s = st_[(size_t) l];
-            if (!inside(s.k_pool) || !inside(s.v_pool) || s.kv_elastic != -1 || s.kv_mode != 0 ||
-                s.kv_int8 || s.kv_q4 || s.kv_hybrid || s.host.k_pool != nullptr || s.map.slot_block != nullptr) {
-                err = "dflash: draft K/V pools are not owned by the DFlash state arena "
-                      "(the elastic K/V (--kv-grow) must be off for the DFlash drafter)";
+            if (s.kv_elastic != -1 || s.kv_mode != 0 || s.kv_int8 || s.kv_q4 || s.kv_hybrid ||
+                s.host.k_pool != nullptr || s.map.slot_block != nullptr || s.n_slots < s.n_pages ||
+                !inside(s.k_pool, pool_bytes) || !inside(s.v_pool, pool_bytes)) {
+                err = "dflash: the draft K/V state is not the owned whole-resident FP16 allocation "
+                      "the drafter requires (n_slots " + std::to_string((long long) s.n_slots) + ", n_pages " +
+                      std::to_string((long long) s.n_pages) + ", mode " + std::to_string(s.kv_mode) + ")";
                 return false;
             }
             if (std::getenv("STRATA_DF_DBG"))
-                std::fprintf(stderr, "dflash dbg: layer %d owned: k_pool=%p v_pool=%p arena=[%p,%p) elastic=%d mode=%d\n",
-                             l, (void*) s.k_pool, (void*) s.v_pool, (void*) a0, (void*) a1, s.kv_elastic, s.kv_mode);
+                std::fprintf(stderr, "dflash dbg: layer %d owned: k_pool=%p v_pool=%p arena=[%p,%p) "
+                             "slots=%lld pages=%lld mode=%d\n",
+                             l, (void*) s.k_pool, (void*) s.v_pool, (void*) a0, (void*) a1,
+                             (long long) s.n_slots, (long long) s.n_pages, s.kv_mode);
         }
     }
     cudaDeviceSynchronize();
