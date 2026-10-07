@@ -157,8 +157,9 @@ tard, lancez `SETUP.bat` (Linux : `./setup.sh --setup`).
 - **Images :** répondez oui à « Images? » pendant l'installation. Ensuite cliquez sur **Picture** dans le chat, ou
   joignez des images dans votre application. Les cartes AMD lisent les images sous Linux via le processeur ; sous
   Windows, pas encore.
-- **Depuis votre téléphone ou un autre PC :** `START-HERE.bat --setup --host 0.0.0.0 --api-key <secret>`. Définissez
-  toujours une clé.
+- **Depuis votre téléphone ou un autre PC :** `START-HERE.bat --setup --host 0.0.0.0 --api-key <secret>` pour IPv4,
+  ou utilisez `--host ::` pour IPv6. Définissez toujours une clé. Une URL IPv6 met l'adresse entre crochets :
+  `http://[2001:db8::7]:8080/v1`.
 - **Une requête à la fois :** par défaut, Strata répond à une requête et les autres attendent. Pour répondre à
   plusieurs en même temps, mettez `"parallel": 2` ([BATCHING.md](docs/BATCHING.md)). Sur une carte de 12 Go, chaque
   réponse devient alors plus lente.

@@ -154,7 +154,8 @@ Sizes, downloads and what fits where: [docs/MODELS.md](docs/MODELS.md). To add a
   fastest. High is best for hard questions.
 - **Pictures:** say yes to "Images?" in setup. Then click **Picture** in the chat, or attach pictures in your app.
   AMD cards read pictures on Linux through the processor; on Windows they can't yet.
-- **From your phone or another PC:** `START-HERE.bat --setup --host 0.0.0.0 --api-key <secret>`. Always set a key.
+- **From your phone or another PC:** `START-HERE.bat --setup --host 0.0.0.0 --api-key <secret>` for IPv4, or use
+  `--host ::` for IPv6. Always set a key. IPv6 URLs put the address in brackets: `http://[2001:db8::7]:8080/v1`.
 - **One request at a time:** by default Strata answers one request, and the others wait. To answer several at once,
   set `"parallel": 2` ([BATCHING.md](docs/BATCHING.md)). On a 12 GB card this makes each answer slower.
 - **Long prompts:** Strata reads the first message of a chat in full, about 1 minute per 30,000 tokens. Follow-up
