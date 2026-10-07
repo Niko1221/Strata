@@ -11,6 +11,7 @@
 #include "strata/kernels/native_qsa.hpp"
 #include "strata/kernels/cpu/native_expert.hpp"
 #include "strata/kernels/cpu/pool.hpp"
+#include "strata/kernels/quantize_act.hpp"
 #include "strata/kernels/native_qsa_indexer.hpp"
 #include "strata/kernels/ngram.hpp"
 #include "strata/kernels/ple.hpp"
@@ -661,6 +662,15 @@ struct Prefill::Impl {
     std::vector<uint8_t> cpu_nact;
     std::vector<kernels::cpu::ActQ> cpu_actq;   // a Q2_0 layer's activations (the pool's Q2_0 kernels read ActQ)
     std::vector<kernels::cpu::ExpertJobMulti> cpu_jobs;
+    // The layer's activations quantized on the GPU in the CPU's own format (gate/up taking Q8_K or Q8_0 activations):
+    // cpu_qdev, copied down to cpu_qhost on cpu_cs - a quarter of the floats' bytes, and beside the routing sync instead
+    // of before it.  A Q2_0 layer (ActQ activations), or a chunk these cannot be had for, copies the floats as before.
+    uint8_t *cpu_qdev = nullptr, *cpu_qhost = nullptr;
+    size_t cpu_q_n = 0;
+    cudaStream_t cpu_cs = nullptr;
+    cudaEvent_t cpu_qready = nullptr, cpu_qdown = nullptr;
+    bool cpu_q_pending = false;   // a copy down was issued: the next quantization into cpu_qdev waits for it
+    bool cpu_q_off = false;       // they could not be had: the float path from then on
     // the measured share: running means of the CPU's ms per expert and the GPU's per streamed expert, and the share
     // they balance at (cpu_share_env)
     double cpu_c_ms = 0, cpu_g_ms = 0, cpu_share_now = 0.5;
@@ -788,6 +798,12 @@ void Prefill::release() {
         if (p) cudaFreeHost(p);
     for (cudaEvent_t e : impl_->cpu_ev)
         if (e) cudaEventDestroy(e);
+    if (impl_->cpu_cs) cudaStreamSynchronize(impl_->cpu_cs);
+    if (impl_->cpu_qdev) cudaFree(impl_->cpu_qdev);
+    if (impl_->cpu_qhost) cudaFreeHost(impl_->cpu_qhost);
+    for (cudaEvent_t e : {impl_->cpu_qready, impl_->cpu_qdown})
+        if (e) cudaEventDestroy(e);
+    if (impl_->cpu_cs) cudaStreamDestroy(impl_->cpu_cs);
     for (void* p : impl_->owned) cudaFree(p);
 }
 
@@ -2726,7 +2742,50 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         else cudaMemcpyAsync(m.ids_host.data(), m.ids, (size_t) T * K * 4, cudaMemcpyDeviceToHost, m.cs);
                         const bool cpu_maybe = pool_hold.held && !stream_all && m.src != nullptr &&
                                                lay.native && !m.pp && !lay.fmt.empty();
-                        if (cpu_maybe) {
+                        // the activations in the CPU's format, quantized on the GPU (null: the floats, as before)
+                        const strata::kernels::cpu::NativeFmt* cpu_qf = nullptr;
+                        if (cpu_maybe && !m.cpu_q_off) {
+                            constexpr int kGgmlQ8_0 = 8, kGgmlQ8_K = 15;   // ggml's type ids
+                            const strata::kernels::cpu::NativeFmt& f = lay.fmt[(size_t) l];
+                            if (!strata::kernels::cpu::q2_native_kernels(f.gu_type) && f.n_embd == N && f.act_bytes > 0 &&
+                                f.act_bytes <= strata::kernels::cpu::kNativeActBytes &&
+                                (f.gu_act == kGgmlQ8_K || f.gu_act == kGgmlQ8_0)) {
+                                const size_t want = (size_t) T * strata::kernels::cpu::kNativeActBytes;
+                                bool ok = true;
+                                if (!m.cpu_cs) ok = cudaStreamCreateWithFlags(&m.cpu_cs, cudaStreamNonBlocking) == cudaSuccess;
+                                if (ok && !m.cpu_qready) ok = cudaEventCreateWithFlags(&m.cpu_qready, cudaEventDisableTiming) == cudaSuccess;
+                                if (ok && !m.cpu_qdown) ok = cudaEventCreateWithFlags(&m.cpu_qdown, cudaEventDisableTiming) == cudaSuccess;
+                                if (ok && m.cpu_q_n < want) {
+                                    if (m.cpu_q_pending) cudaEventSynchronize(m.cpu_qdown);
+                                    m.cpu_q_pending = false;
+                                    if (m.cpu_qdev) cudaFree(m.cpu_qdev);
+                                    if (m.cpu_qhost) cudaFreeHost(m.cpu_qhost);
+                                    m.cpu_qdev = m.cpu_qhost = nullptr;
+                                    m.cpu_q_n = 0;
+                                    ok = cudaMalloc((void**) &m.cpu_qdev, want) == cudaSuccess &&
+                                         cudaHostAlloc((void**) &m.cpu_qhost, want, cudaHostAllocDefault) == cudaSuccess;
+                                    if (ok) m.cpu_q_n = want;
+                                }
+                                if (ok) {
+                                    // the previous layer's copy down reads cpu_qdev: this quantization waits for it
+                                    if (m.cpu_q_pending) cudaStreamWaitEvent(m.cs, m.cpu_qdown, 0);
+                                    if (f.gu_act == kGgmlQ8_K) strata::kernels::quantize_q8_K(m.mixed, m.cpu_qdev, T * N, m.cs);
+                                    else strata::kernels::quantize_q8_0(m.mixed, m.cpu_qdev, T * N, m.cs);
+                                    cudaEventRecord(m.cpu_qready, m.cs);
+                                    cudaStreamWaitEvent(m.cpu_cs, m.cpu_qready, 0);
+                                    cudaMemcpyAsync(m.cpu_qhost, m.cpu_qdev, (size_t) T * f.act_bytes, cudaMemcpyDeviceToHost, m.cpu_cs);
+                                    cudaEventRecord(m.cpu_qdown, m.cpu_cs);
+                                    m.cpu_q_pending = true;
+                                    cpu_qf = &f;
+                                } else {
+                                    (void) cudaGetLastError();
+                                    m.cpu_q_off = true;   // said once; the float path from here on
+                                    std::fprintf(stderr, "strata: the CPU share's GPU-quantized activations could not be "
+                                                         "allocated - it copies the floats\n");
+                                }
+                            }
+                        }
+                        if (cpu_maybe && cpu_qf == nullptr) {
                             const size_t want = (size_t) T * N;
                             if (m.cpu_x_n < want) {
                                 if (m.cpu_x) cudaFreeHost(m.cpu_x);
@@ -2896,24 +2955,33 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 if (m.cpu_ev[0] == nullptr) { cudaEventCreate(&m.cpu_ev[0]); cudaEventCreate(&m.cpu_ev[1]); }
                                 cudaEventRecord(m.cpu_ev[0], m.cs);
                             }
-                            cpu_fut = std::async(std::launch::async, [&m, &on_cpu, &cpu_blob, &cf, &cpu_ms, src_h, l, T, r0c, this]() -> bool {
+                            const bool gq = cpu_qf != nullptr;
+                            cpu_fut = std::async(std::launch::async, [&m, &on_cpu, &cpu_blob, &cf, &cpu_ms, src_h, l, T, r0c, gq, this]() -> bool {
                                 const auto t0 = std::chrono::steady_clock::now();
-                                constexpr size_t AB = strata::kernels::cpu::kNativeActBytes;
+                                // the activations quantized on the GPU: cf.act_bytes a token in cpu_qhost, once copied;
+                                // else this thread quantizes the floats of the tokens the CPU's experts read
+                                const size_t AB = gq ? cf.act_bytes : strata::kernels::cpu::kNativeActBytes;
+                                const uint8_t* nact = gq ? m.cpu_qhost : nullptr;
                                 // a Q2_0 layer (gate/up on the pool's Q2_0 kernels): ActQ activations, as decode's
                                 const bool q2 = strata::kernels::cpu::q2_native_kernels(cf.gu_type);
-                                if (q2 && m.cpu_actq.size() < (size_t) T) m.cpu_actq.resize((size_t) T);
-                                if (!q2 && m.cpu_nact.size() < (size_t) T * AB) m.cpu_nact.resize((size_t) T * AB);
-                                std::vector<char> need((size_t) T, 0);
-                                for (int32_t e = 0; e < m.g->n_expert; ++e)   // the tokens the CPU's experts read
-                                    if (on_cpu[(size_t) e])
-                                        for (int32_t r = 0; r < m.cnt[(size_t) e]; ++r)
-                                            need[(size_t) src_h[(size_t) m.off[(size_t) e] + (size_t) r]] = 1;
-                                for (int64_t t = 0; t < T; ++t)
-                                    if (need[(size_t) t] && q2)
-                                        strata::kernels::cpu::act_quant_any(m.cpu_x + (size_t) t * N, (int) N, m.cpu_actq[(size_t) t]);
-                                    else if (need[(size_t) t])
-                                        strata::kernels::cpu::native_quant_act(cf, m.cpu_x + (size_t) t * N,
-                                                                               m.cpu_nact.data() + (size_t) t * AB);
+                                if (gq) {
+                                    cudaEventSynchronize(m.cpu_qdown);
+                                } else {
+                                    if (q2 && m.cpu_actq.size() < (size_t) T) m.cpu_actq.resize((size_t) T);
+                                    if (!q2 && m.cpu_nact.size() < (size_t) T * AB) m.cpu_nact.resize((size_t) T * AB);
+                                    std::vector<char> need((size_t) T, 0);
+                                    for (int32_t e = 0; e < m.g->n_expert; ++e)   // the tokens the CPU's experts read
+                                        if (on_cpu[(size_t) e])
+                                            for (int32_t r = 0; r < m.cnt[(size_t) e]; ++r)
+                                                need[(size_t) src_h[(size_t) m.off[(size_t) e] + (size_t) r]] = 1;
+                                    for (int64_t t = 0; t < T; ++t)
+                                        if (need[(size_t) t] && q2)
+                                            strata::kernels::cpu::act_quant_any(m.cpu_x + (size_t) t * N, (int) N, m.cpu_actq[(size_t) t]);
+                                        else if (need[(size_t) t])
+                                            strata::kernels::cpu::native_quant_act(cf, m.cpu_x + (size_t) t * N,
+                                                                                   m.cpu_nact.data() + (size_t) t * AB);
+                                    nact = m.cpu_nact.data();
+                                }
                                 m.cpu_jobs.clear();
                                 for (int32_t e = 0; e < m.g->n_expert; ++e) {
                                     if (!on_cpu[(size_t) e]) continue;
@@ -2923,7 +2991,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                     for (int r = 0; r < j.nt; ++r) {
                                         const int64_t p = (int64_t) m.off[(size_t) e] + r;
                                         if (q2) j.act[r] = &m.cpu_actq[(size_t) src_h[(size_t) p]];
-                                        else j.nact[r] = m.cpu_nact.data() + (size_t) src_h[(size_t) p] * AB;
+                                        else j.nact[r] = nact + (size_t) src_h[(size_t) p] * AB;
                                         j.out[r] = m.cpu_rows + (size_t) (p - r0c) * N;
                                     }
                                     m.cpu_jobs.push_back(j);
