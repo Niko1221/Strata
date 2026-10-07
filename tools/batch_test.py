@@ -102,13 +102,15 @@ def next_line(out):
         raise ProtocolError("the engine ended before every request completed") from None
 
 
-def run_batch(eng, out, prompts, max_new, keys, stagger_after=(), promote_after=0):
+def run_batch(eng, out, prompts, max_new, keys, stagger_after=(), promote_after=0, engine_slots=None):
     """Admit at measured anchor-token counts; keep tokens emitted during every admission."""
     got = {i: [] for i in range(len(prompts))}
     done, admitted, admissions = {}, set(), []
     started = time.monotonic()
     first_bt = None
     promotion = None
+    engine_slots = list(range(len(prompts))) if engine_slots is None else engine_slots
+    logical_slot = {slot: i for i, slot in enumerate(engine_slots)}
 
     def consume(line, pending=None):
         nonlocal first_bt
@@ -120,7 +122,10 @@ def run_batch(eng, out, prompts, max_new, keys, stagger_after=(), promote_after=
                 raise ProtocolError(f"unrouted admission token: {line}")
             got[pending].append(int(fields[1]))
         elif line.startswith(("BT ", "BDONE ")):
-            slot = int(fields[1])
+            actual_slot = int(fields[1])
+            if actual_slot not in logical_slot:
+                raise ProtocolError(f"token/completion for an unrequested slot: {line}")
+            slot = logical_slot[actual_slot]
             if slot not in admitted or slot in done:
                 raise ProtocolError(f"token/completion for a slot that is not active: {line}")
             if fields[0] == "BT":
@@ -129,7 +134,7 @@ def run_batch(eng, out, prompts, max_new, keys, stagger_after=(), promote_after=
             else:
                 done[slot] = line
         elif line.startswith("BADM "):
-            if pending is None or len(fields) != 3 or int(fields[1]) != pending or fields[2] not in ("0", "1"):
+            if pending is None or len(fields) != 3 or int(fields[1]) != engine_slots[pending] or fields[2] not in ("0", "1"):
                 raise ProtocolError(f"unexpected admission completion: {line}")
             admitted.add(pending)
             if fields[2] == "0":
@@ -166,15 +171,16 @@ def run_batch(eng, out, prompts, max_new, keys, stagger_after=(), promote_after=
             if 0 in done:
                 raise ProtocolError(f"anchor already finished at admission {i}; staggered overlap was not exercised")
         active = sorted(admitted - done.keys())
-        event = {"slot": i, "anchor_tokens": len(got[0]), "active_slots": active}
+        event = {"slot": engine_slots[i], "anchor_tokens": len(got[0]),
+                 "active_slots": [engine_slots[s] for s in active]}
         before = sum(len(got[s]) for s in active)
         prefix = got[0] if i == 0 and promotion else []
-        eng.send(" ".join(x for x in ("BGEN", str(i), str(max_new - len(prefix)), keys,
+        eng.send(" ".join(x for x in ("BGEN", str(engine_slots[i]), str(max_new - len(prefix)), keys,
                                     ",".join(map(str, [*ids, *prefix]))) if x))
         while not consume(next_line(out), i):
             pass
         event["tokens_during_admission"] = sum(len(got[s]) for s in active) - before
-        event["active_slots_after_admission"] = sorted(admitted - done.keys())
+        event["active_slots_after_admission"] = [engine_slots[s] for s in sorted(admitted - done.keys())]
         admissions.append(event)
         if i and stagger_after and 0 in done:
             raise ProtocolError(f"anchor finished during admission {i}; increase --max-new so the new and anchor "
@@ -209,13 +215,19 @@ def main():
     ap.add_argument("--promote-after", type=int, default=0,
                     help="start the anchor with GEN, STOP after this many tokens, then resume with BGEN(prompt + "
                          "emitted tokens), as the HTTP server does when another request arrives; use with --stagger-after")
+    ap.add_argument("--slots", default="", metavar="N,N,...",
+                    help="engine slot IDs in prompt order; e.g. 0,2,4,6 spreads four requests across four groups "
+                         "with --batch 8 --batch-groups 4 (default: consecutive slots)")
     a = ap.parse_args()
     if not 1 <= a.n <= min(a.batch, len(QUESTIONS)) or a.max_new < 1 or a.long_tokens < 0:
         ap.error("require 1 <= --n <= min(--batch, 8), positive --max-new and nonnegative --long-tokens")
     try:
         stagger_after = [int(n) for n in a.stagger_after.split(",")] if a.stagger_after else []
+        engine_slots = [int(n) for n in a.slots.split(",")] if a.slots else list(range(a.n))
     except ValueError:
-        ap.error("--stagger-after must contain comma-separated integer token counts")
+        ap.error("--stagger-after and --slots must contain comma-separated integers")
+    if len(engine_slots) != a.n or len(set(engine_slots)) != a.n or any(n < 0 or n >= a.batch for n in engine_slots):
+        ap.error("--slots must contain --n unique IDs from 0 through --batch minus 1")
     if stagger_after and (len(stagger_after) != a.n - 1 or
                           any(n < 1 or n >= a.max_new for n in stagger_after) or
                           any(b <= c for c, b in zip(stagger_after, stagger_after[1:]))):
@@ -257,7 +269,7 @@ def main():
                     raise ProtocolError(f"the engine ended before solo {i} completed")
                 solo.append(got)
 
-        got, stats = run_batch(eng, out, prompts, a.max_new, a.keys, stagger_after, a.promote_after)
+        got, stats = run_batch(eng, out, prompts, a.max_new, a.keys, stagger_after, a.promote_after, engine_slots)
         total = sum(len(v) for v in got.values())
         print(f"batch: {len(prompts)} slots, {total} tokens; admissions {stats['admission_seconds']:.1f}s; "
               f"aggregate {total / max(stats['total_seconds'], 1e-9):.1f} tok/s overall, "
@@ -280,6 +292,7 @@ def main():
             Path(a.dump).write_text(json.dumps({"solo": solo, "batch": [got[i] for i in range(len(prompts))],
                                               "stats": stats, "stagger_after": stagger_after,
                                               "promote_after": a.promote_after,
+                                              "slots": engine_slots,
                                               "mt_min": a.mt_min, "extra": shlex.split(a.extra)}), encoding="utf-8")
         return 0 if ok else 2
     except ProtocolError as exc:
