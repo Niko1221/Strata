@@ -138,5 +138,45 @@ agree to engine-path tolerance, while any wiring bug (wrong layer, the other HC 
 comparison against the PixelML exporter's own tensors needs the vLLM stack and is not runnable
 here; the exporter's tap definition was transcribed from its published adapter patch instead.
 
+### Stage parity (STRATA_DF_PARITY, per row, all five layers)
+
+`STRATA_DF_PARITY=<dir> [STRATA_DF_PARITY_CYCLE=c] ./build/strata ... --dflash DFLASH.gguf` dumps
+one draft cycle's stages — the fused context, and per draft layer `xn`, `qraw`, `qnormed`, `q`,
+`k`, `v`, the pool pages the attention reads (`kpool`/`vpool`, with `pt` and the per-row
+attention `steps`), `attn`, `h_attn`, `h_mlp` — plus `emb` and `meta.bin`
+`[anchor pos, K, anchor token, mask token, page_size]`.  `tools/dflash_stage_parity.py` recomputes
+every stage independently from the same GGUF and judges EACH ROW (cos / max-abs / rel-L2 per row;
+an aggregate cosine hides one bad anchor row among six exact mask rows), recompute the attention
+cell by cell from the dumped pools (failing hard on an out-of-range cell instead of emitting NaN),
+roll the reference through all five layers, and verify the context cells' K/V values AND rope
+positions.  Measured on the IQ3_XXS target, RTX 4070 Ti SUPER: at the first propose after an
+8-token and a 119-token prompt, every stage of every row passes (attention max|d| ~2-4e-6 against
+the oracle; the block at bf16-GEMV rounding), and the artifact's safetensors match the GGUF
+bit-for-bit.
+
+Three bugs this fixture caught, all fixed:
+
+1. `parity_dump_u16_as_f32` widened the fp16 pools with the BF16 bit shift (no exponent
+   re-bias), so every dumped pool decoded as plausible-looking nonsense.  A readback compared
+   against such a dump made a correct append look like it wrote garbage.
+2. The query rows' and the KV rows' rope positions shared one pinned staging buffer with the
+   copies that read it still in flight; a late DMA read the KV-layout bytes and roped query
+   row 0's first heads at the wrong positions - the row-0-only, run-to-run-flaky layer-1 Q
+   divergence.  The two regions are now disjoint, and the fusion's per-chunk position/step
+   stagings (whose values do change) sync after the copy.
+3. The decode loop filled the verify window's draft slots from `--spec-oracle`'s fixture list
+   (token 0 past its end) whenever `--mtp` was absent - a `--dflash` run verified
+   `[anchor, 0, 0, ...]` and accepted nothing, whatever the drafter produced.  DFlash drafts
+   now ride the MTP slot.
+
+Measured acceptance after the fixes (greedy, IQ3_XXS target, K=6, RTX 4070 Ti SUPER): the
+119-token fixture above accepts 10 of 78 drafts (0.128, 1.71 tokens per round) over 24 new
+tokens; a 69-token natural-language prompt accepts 68 of 413 (0.165, 2.13 tokens per round) over
+128 new tokens, against 0 of 30 and 0 of 161 before.  With the expert cache pinned to the same
+slot count (4283), the temperature-0 output of a `--dflash` run is token-for-token identical to
+target-only at 24 and 128 tokens (the drafter's ~1 GiB changes the expert-cache auto-sizing, and
+CPU-computed experts round differently from resident GPU ones - pin `--expert-cache` when
+comparing).
+
 Known limitations of the first implementation are listed at the end of this file after the
 measurements.
