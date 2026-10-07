@@ -109,21 +109,28 @@ public:
     const DFlashArtifact& artifact() const { return artifact_; }
     /// Maximum candidates this artifact may propose per pass (its trained query count).
     int max_block() const { return (int) artifact_.geom().block_size; }
-    /// VRAM the drafter's weights take (exact once uploaded, the GGUF payload size before that).
-    uint64_t vram_bytes() const { return vram_ + artifact_.weight_bytes(); }
-    /// VRAM the later bind() will add (draft logits + head scratch) so the expert cache can be
-    /// sized with it reserved; the weights are already counted in vram_bytes().
-    uint64_t bind_bytes(int64_t n_vocab, int max_t) const;
+    /// The device bytes this drafter holds right now: the BF16 weights, the widened norm vectors,
+    /// the K/V arenas and every scratch buffer - each counted once, at allocation.  The target's
+    /// embedding table and native head are the target's and are not in here.  0 before upload().
+    uint64_t vram_bytes() const { return vram_; }
 
     /// Uploads the BF16 weights and carves the drafter's own K/V pools and scratch.  Call BEFORE
     /// the expert cache is sized, like MtpDrafter::load.  `target_g` is the target's geometry (its
     /// QSA pool shapes); the pools hold the artifact's `layers` draft layers.  `window` caps the
     /// cells the drafter's attention sees (the reference attends to every cell; 0 = every cell the
     /// session's cache could hold).
-    bool upload(const ModelGeometry& target_g, SessionState& ss, int device, int64_t window, std::string& err);
-    /// Binds the target's LM head and gathers the mask token's embedding row from the target's
-    /// (quantized) table.  The anchor token's rows are gathered per cycle from the same table.
+    /// `mask_override`: the CLI's --dflash-mask-token (-1 = the artifact's metadata decides; the
+    /// effective id is the override when given, else the metadata, and must sit inside the target's
+    /// vocabulary - generate.cpp validates it against n_vocab).
+    bool upload(const ModelGeometry& target_g, SessionState& ss, int device, int64_t window,
+                int64_t mask_override, std::string& err);
+    /// Binds the target's LM head.  The query rows' embeddings are gathered per cycle from the
+    /// target's table - nothing is cached here.
     bool bind(const WeightTable& wt, const NativeHead* head, std::string& err);
+    /// Frees every resource this drafter holds (device buffers, the five K/V states' arenas and
+    /// their pinned staging, the stream) and leaves it unloaded.  Safe on a partially-uploaded
+    /// drafter; called by the destructor and on upload()'s failure paths.
+    void release();
 
     /// Context cells for committed positions [pos0, pos0 + rows): `taps` is the prompt path's
     /// capture, BF16 rows [n_taps x stride_rows x n_embd], `stride_rows` the per-tap row stride.
@@ -162,12 +169,16 @@ private:
     uint64_t vram_ = 0;
     int64_t mask_ = -1;
     int device_ = -1;
+
+public:
+    ~DFlashDrafter() { release(); }   // deterministic cleanup; release() is also safe on a partial upload
+
+private:
     cudaStream_t cs_ = nullptr;
 
     // the target's shared modules
     const NativeHead* head_ = nullptr;
     const WeightRef* emb_ref_ = nullptr;
-    float* mask_row_ = nullptr;      ///< n_embd f32: the mask token's embedding row
 
     // weights (device BF16, the GGUF layout) and the rms_norm gammas widened to F32
     uint16_t* w_ = nullptr;

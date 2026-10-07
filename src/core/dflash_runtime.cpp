@@ -107,39 +107,81 @@ bool dflash_mapped(int64_t n, void** host, void** dev) {
 
 }  // namespace
 
-uint64_t DFlashDrafter::bind_bytes(int64_t n_vocab, int max_t) const {
-    // The draft logits (max_t rows over the full vocabulary) plus the block's scratch (a few MiB
-    // of q/k/v, attention and MLP intermediates for at most 8 rows).
-    return (uint64_t) max_t * (uint64_t) n_vocab * 4 + ((uint64_t) 24 << 20);
+void DFlashDrafter::release() {
+    if (device_ >= 0) cudaSetDevice(device_);
+    if (cs_) cudaStreamSynchronize(cs_);
+    auto free_dev = [](void* p) { if (p) cudaFree(p); };
+    free_dev(w_);
+    for (auto& [name, p] : wf_) free_dev((void*) p);
+    for (const auto& st : st_) {
+        if (st.host_step) cudaFreeHost(st.host_step);   // qsa_state_init allocates one pair per state
+        if (st.host_pos) cudaFreeHost(st.host_pos);
+        if (st.owns_rope) {                             // defensive: the drafter borrows the session's tables
+            if (st.cos_tab) cudaFree(st.cos_tab);
+            if (st.sin_tab) cudaFree(st.sin_tab);
+        }
+    }
+    for (void* a : arenas_) free_dev(a);
+    free_dev(tok_); free_dev(step_); free_dev(pos_); free_dev(ident_);
+    free_dev(tapin_); free_dev(xn16_); free_dev(attn16_);
+    free_dev(tapf_); free_dev(emb_); free_dev(h_); free_dev(xn_); free_dev(ctx_);
+    free_dev(q_); free_dev(kc_); free_dev(vc_); free_dev(attn_); free_dev(bo_);
+    free_dev(gate_); free_dev(up_); free_dev(logits_);
+    free_dev(xq_); free_dev(attn_scratch_);
+    if (h_out_) cudaFreeHost(h_out_);
+    if (h_tok_) cudaFreeHost(h_tok_);
+    if (h_step_) cudaFreeHost(h_step_);
+    if (h_pos_) cudaFreeHost(h_pos_);
+    if (cs_) cudaStreamDestroy(cs_);
+    w_ = nullptr; wf_.clear(); wt_.clear();
+    st_.clear(); arenas_.clear();
+    tok_ = step_ = pos_ = ident_ = nullptr;
+    tapin_ = xn16_ = attn16_ = nullptr;
+    tapf_ = emb_ = h_ = xn_ = ctx_ = nullptr;
+    q_ = kc_ = vc_ = attn_ = bo_ = nullptr;
+    gate_ = up_ = logits_ = nullptr;
+    xq_ = nullptr;
+    attn_scratch_ = nullptr;
+    arg_scratch_ = nullptr;
+    out_ = h_out_ = nullptr; h_tok_ = h_step_ = h_pos_ = nullptr;
+    cs_ = nullptr;
+    vram_ = 0;
+    device_ = -1;
+    emb_ref_ = nullptr;
+    head_ = nullptr;
+    window_ = cap_ = attn_scratch_floats_ = 0;
+    parity_dir_[0] = 0;
 }
 
 bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int device, int64_t window,
-                           std::string& err) {
+                           int64_t mask_override, std::string& err) {
     const DFlashGeometry& dg = artifact_.geom();
     device_ = device;
-    mask_ = dg.mask_token_id;
+    // the effective mask token, resolved once: the CLI override wins over the artifact's metadata
+    // (generate.cpp has validated it against the target's vocabulary)
+    mask_ = mask_override >= 0 ? mask_override : dg.mask_token_id;
     if (cudaSetDevice(device_) != cudaSuccess) { err = "dflash: no such device"; return false; }
     if (cudaStreamCreateWithFlags(&cs_, cudaStreamNonBlocking) != cudaSuccess) {
         err = "dflash: cannot create its stream";
         return false;
     }
 
+    // any failure past this point leaves a partially-built drafter: release() takes it back
+    auto bail = [&](const std::string& why) { release(); err = why; return false; };
+
     // ---- the weights: one device block, the GGUF layout preserved (row-major rows of bf16).
     // Earlier phases may have left a sticky error in the per-thread state: start clean.
     cudaGetLastError();
-    if (cudaMalloc(&w_, artifact_.weight_bytes()) != cudaSuccess) {
-        err = "dflash: the BF16 weights do not fit in VRAM";
-        return false;
-    }
+    if (cudaMalloc(&w_, artifact_.weight_bytes()) != cudaSuccess)
+        return bail("dflash: the BF16 weights do not fit in VRAM");
     vram_ += artifact_.weight_bytes();
     size_t at = 0;
     for (const auto& t : artifact_.tensors()) {
         wt_.push_back({t.name, w_ + at / 2});
         if (cudaMemcpyAsync(w_ + at / 2, artifact_.host_data(t), (size_t) t.rows * t.cols * 2,
                             cudaMemcpyHostToDevice, cs_) != cudaSuccess) {
-            err = std::string("dflash: the weight upload of '") + t.name + "' failed: " +
-                  cudaGetErrorString(cudaGetLastError());
-            return false;
+            return bail(std::string("dflash: the weight upload of '") + t.name + "' failed: " +
+                        cudaGetErrorString(cudaGetLastError()));
         }
         at += (size_t) t.rows * t.cols * 2;
     }
@@ -152,10 +194,8 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
     for (const auto& t : artifact_.tensors()) {
         if (!is_norm(t.name)) continue;
         float* f32d = nullptr;
-        if (cudaMalloc(&f32d, (size_t) t.rows * t.cols * 4) != cudaSuccess) {
-            err = "dflash: the norm weights do not fit";
-            return false;
-        }
+        if (cudaMalloc(&f32d, (size_t) t.rows * t.cols * 4) != cudaSuccess)
+            return bail("dflash: the norm weights do not fit");
         vram_ += (size_t) t.rows * t.cols * 4;
         const uint16_t* host = (const uint16_t*) artifact_.host_data(t);
         std::vector<float> wide((size_t) t.rows * t.cols);
@@ -163,10 +203,8 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
             uint32_t bits = (uint32_t) host[i] << 16;
             std::memcpy(&wide[(size_t) i], &bits, 4);
         }
-        if (cudaMemcpyAsync(f32d, wide.data(), wide.size() * 4, cudaMemcpyHostToDevice, cs_) != cudaSuccess) {
-            err = "dflash: the norm weight upload failed";
-            return false;
-        }
+        if (cudaMemcpyAsync(f32d, wide.data(), wide.size() * 4, cudaMemcpyHostToDevice, cs_) != cudaSuccess)
+            return bail("dflash: the norm weight upload failed");
         wf_.push_back({t.name, f32d});
     }
 
@@ -174,18 +212,14 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
     // geometry is the target's with n_layers shrunk so is_qsa_layer counts exactly 5 pools
     // (layers 3, 7, 11, ... under the interval-4 layout).
     pool_g_ = target_g;
-    if (target_g.qsa_interval <= 0 || dg.layers * target_g.qsa_interval > target_g.n_layers) {
-        err = "dflash: cannot size the draft K/V pools from the target geometry";
-        return false;
-    }
+    if (target_g.qsa_interval <= 0 || dg.layers * target_g.qsa_interval > target_g.n_layers)
+        return bail("dflash: cannot size the draft K/V pools from the target geometry");
     pool_g_.n_layers = dg.layers * target_g.qsa_interval;
     const int64_t max_cells = ss.qsa_states[ss.qsa_primary()].max_cells;
     // ONE STATE PER DRAFT LAYER: a QsaState is a single layer's pools, and the five draft layers
     // must not share them (a shared pool made every layer attend layer 0's K/V).
-    if (pool_g_.n_qsa_layers() != dg.layers) {
-        err = "dflash: the pool geometry does not give one state per draft layer";
-        return false;
-    }
+    if (pool_g_.n_qsa_layers() != dg.layers)
+        return bail("dflash: the pool geometry does not give one state per draft layer");
     // The allocation policy is EXPLICIT, not the session's: whole-resident FP16 pools carved from
     // this drafter's own arena, no ring, no streaming host copy, no elastic VMM.  qsa_state_bytes
     // and qsa_state_init consume the same options, so the arena holds every logical page the
@@ -203,15 +237,11 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
     st_.assign((size_t) dg.layers, QsaState{});
     arenas_.assign((size_t) dg.layers, nullptr);
     for (int l = 0; l < (int) dg.layers; ++l) {
-        if (cudaMalloc(&arenas_[(size_t) l], sb) != cudaSuccess) {
-            err = "dflash: the draft K/V states do not fit in VRAM";
-            return false;
-        }
+        if (cudaMalloc(&arenas_[(size_t) l], sb) != cudaSuccess)
+            return bail("dflash: the draft K/V states do not fit in VRAM");
         if (strata::core::qsa_state_init(pool_g_, max_cells, arenas_[(size_t) l], st_[(size_t) l],
-                                         &ss.qsa_states[ss.qsa_primary()], ring, kv_opts) == 0) {
-            err = "dflash: the draft K/V state init failed";
-            return false;
-        }
+                                         &ss.qsa_states[ss.qsa_primary()], ring, kv_opts) == 0)
+            return bail("dflash: the draft K/V state init failed");
         {
             // the page table starts as the identity, uploaded on the drafter's own stream (the init
             // wrote it on the default stream)
@@ -219,10 +249,8 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
             for (int64_t pg = 0; pg < st_[(size_t) l].n_pages; ++pg) ident_page[(size_t) pg] = (int32_t) pg;
             if (cudaMemcpyAsync(st_[(size_t) l].page_table, ident_page.data(),
                                 (size_t) st_[(size_t) l].n_pages * 4, cudaMemcpyHostToDevice,
-                                cs_) != cudaSuccess) {
-                err = "dflash: the draft page table init failed";
-                return false;
-            }
+                                cs_) != cudaSuccess)
+                return bail("dflash: the draft page table init failed");
         }
         strata::core::qsa_state_zero(st_[(size_t) l], pool_g_, nullptr);
         vram_ += sb;
@@ -243,10 +271,10 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
             if (s.kv_elastic != -1 || s.kv_mode != 0 || s.kv_int8 || s.kv_q4 || s.kv_hybrid ||
                 s.host.k_pool != nullptr || s.map.slot_block != nullptr || s.n_slots < s.n_pages ||
                 !inside(s.k_pool, pool_bytes) || !inside(s.v_pool, pool_bytes)) {
-                err = "dflash: the draft K/V state is not the owned whole-resident FP16 allocation "
-                      "the drafter requires (n_slots " + std::to_string((long long) s.n_slots) + ", n_pages " +
-                      std::to_string((long long) s.n_pages) + ", mode " + std::to_string(s.kv_mode) + ")";
-                return false;
+                return bail("dflash: the draft K/V state is not the owned whole-resident FP16 allocation "
+                            "the drafter requires (n_slots " + std::to_string((long long) s.n_slots) +
+                            ", n_pages " + std::to_string((long long) s.n_pages) + ", mode " +
+                            std::to_string(s.kv_mode) + ")");
             }
             if (std::getenv("STRATA_DF_DBG"))
                 std::fprintf(stderr, "dflash dbg: layer %d owned: k_pool=%p v_pool=%p arena=[%p,%p) "
@@ -284,8 +312,7 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
         cudaHostAlloc(&h_tok_, (size_t)(R + 4) * 4, cudaHostAllocDefault) != cudaSuccess ||
         cudaHostAlloc(&h_step_, (size_t) R * 16, cudaHostAllocDefault) != cudaSuccess ||
         cudaHostAlloc(&h_pos_, (size_t)(R * (dg.n_head + dg.n_head_kv)) * 4, cudaHostAllocDefault) != cudaSuccess) {
-        err = "dflash: mapped staging failed";
-        return false;
+        return bail("dflash: mapped staging failed");
     }
     auto take = [&](size_t n, void** p) -> bool {
         if (cudaMalloc(p, n) != cudaSuccess) {
@@ -306,11 +333,11 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
               take(R * KVW * 4, (void**) &kc_) && take(R * KVW * 4, (void**) &vc_) &&
               take(R * Q * 4, (void**) &attn_) && take(R * N * 4, (void**) &bo_) &&
               take(R * I * 4, (void**) &gate_) && take(R * I * 4, (void**) &up_) &&
-              take(R * dg.vocab * 4, (void**) &logits_) && take(N * 4, (void**) &mask_row_) &&
+              take(R * dg.vocab * 4, (void**) &logits_) &&
               take(strata::kernels::argmax_rows_scratch_bytes((int) R), (void**) &arg_scratch_) &&
               take((size_t) strata::kernels::native_q8_1_bytes((int) N, (int) R), (void**) &xq_) &&
               take((size_t) max_rows_ * (size_t) attn_scratch_floats_ * 4, (void**) &attn_scratch_);
-    if (!ok) return false;
+    if (!ok) return bail(err);
     // the identity cell selection, once, for EVERY query row: the batch attention offsets the
     // table by row * cap (ids += blockIdx.z * cap), so rows 1..K-1 read garbage when only row 0
     // is initialized - the constant-mask-row symptom.  [r][i] = i, duplicated per row on purpose
@@ -318,52 +345,38 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
     {
         std::vector<int32_t> id_host((size_t) max_rows_ * (size_t) cap_);
         dflash_identity_fill(id_host.data(), (int) max_rows_, cap_);
-        if (cudaMemcpy(ident_, id_host.data(), id_host.size() * 4, cudaMemcpyHostToDevice) != cudaSuccess) {
-            err = "dflash: the identity selection upload failed";
-            return false;
-        }
+        if (cudaMemcpy(ident_, id_host.data(), id_host.size() * 4, cudaMemcpyHostToDevice) != cudaSuccess)
+            return bail("dflash: the identity selection upload failed");
     }
     if (cudaMemset(arg_scratch_, 0, strata::kernels::argmax_rows_scratch_bytes((int) R)) != cudaSuccess ||
-        cudaStreamSynchronize(cs_) != cudaSuccess) {
-        err = "dflash: the upload did not land";
-        return false;
-    }
+        cudaStreamSynchronize(cs_) != cudaSuccess)
+        return bail("dflash: the upload did not land");
     if (const char* pd = std::getenv("STRATA_DF_PARITY"))
         std::snprintf(parity_dir_, sizeof parity_dir_, "%s", pd);
     return true;
 }
 
 bool DFlashDrafter::bind(const WeightTable& wt, const NativeHead* head, std::string& err) {
+    const DFlashGeometry& dg = artifact_.geom();
     head_ = head;
     if (head_ == nullptr || !head_->loaded()) {
         err = "dflash: the target's native head is required (the full-vocabulary draft head)";
         return false;
     }
-    if (mask_ < 0) { err = "dflash: no mask token id (metadata or --dflash-mask-token)"; return false; }
-    if (const strata::core::NativeEmbed* ne = strata::core::native_embed()) {
-        ne->gather_one(mask_, mask_row_, cs_);
-        if (cudaStreamSynchronize(cs_) != cudaSuccess) { err = "dflash: the mask row gather failed"; return false; }
-        return true;
+    // the mask id must sit inside the vocabulary the artifact declares (the target's; the embedding
+    // gather would read past the table otherwise - propose() re-checks every row it stages)
+    if (mask_ < 0 || mask_ >= dg.vocab) {
+        err = "dflash: the mask token id " + std::to_string(mask_) + " is outside the artifact's vocabulary (" +
+              std::to_string(dg.vocab) + ")";
+        return false;
     }
     emb_ref_ = wt.find("token_embd.weight");
     if (emb_ref_ == nullptr) { err = "dflash: the target's token_embd.weight is missing"; return false; }
-    int32_t* id_dev = nullptr;
-    if (cudaMalloc(&id_dev, 4) != cudaSuccess) { err = "dflash: the mask row staging failed"; return false; }
-    const int32_t one = (int32_t) mask_;
-    const auto* codes = (const uint8_t*) emb_ref_->data;
-    const auto* scales = (const float*) (codes + emb_ref_->codes_bytes);
-    const auto* offsets = emb_ref_->has_offset ? (const float*) (codes + emb_ref_->codes_bytes + emb_ref_->scales_bytes)
-                                               : nullptr;
-    strata::kernels::embedding_gather_dev(codes, scales, offsets, id_dev, 1, emb_ref_->ne0, emb_ref_->code_bits,
-                                          emb_ref_->code_bias, emb_ref_->group_elems,
-                                          (uint64_t) (emb_ref_->ne0 / (8 / emb_ref_->code_bits)),
-                                          (uint64_t) (emb_ref_->ne0 / emb_ref_->group_elems), mask_row_, cs_);
-    if (cudaStreamSynchronize(cs_) != cudaSuccess) {
-        cudaFree(id_dev);
-        err = "dflash: the mask row gather failed";
+    if (emb_ref_->ne0 < (uint64_t) dg.vocab) {
+        err = "dflash: the target's embedding table holds " + std::to_string(emb_ref_->ne0) +
+              " rows, less than the artifact's vocabulary " + std::to_string(dg.vocab);
         return false;
     }
-    cudaFree(id_dev);
     return true;
 }
 
@@ -592,6 +605,10 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
         return nullptr;
     };
     if (block < 1 || block > max_rows_) { err = "dflash: bad block size"; return false; }
+    if (x < 0 || x >= dg.vocab || mask_ < 0 || mask_ >= dg.vocab) {
+        err = "dflash: the anchor or mask token id sits outside the vocabulary";
+        return false;
+    }
     const int K = block;
 
     // ---- the query rows: [x, mask x (K-1)]; row 0 = the anchor's own embedding
