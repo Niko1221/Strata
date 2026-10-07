@@ -18,6 +18,13 @@ bool native_rope_enabled();
 void native_rope_apply(const float* x, float* out, int rows, int head_dim,
                        int n_rot, const RopeScaling& scaling, const int* positions, void* stream);
 
+/// DFlash (docs/DFLASH.md): the DRAFTER'S OWN rotary contract - FULL-head NeoX rotation
+/// (n_rot == head_dim == 256), the artifact's theta (1e7), NO scaling of any kind.  The target's
+/// QSA path above is validated for its partial 64-dim rotation and is not stretched to serve the
+/// drafter.  `positions[row]` per head row, exact x==out alias allowed, partial overlap rejected.
+void dflash_rope_neox_apply(const float* x, float* out, int rows, int head_dim, double theta,
+                            const int* positions, void* stream);
+
 /// (#783 PR-f, stuchapin909) native_qsa_rms_norm_weighted + native_rope_apply in one launch, bit-identical to the pair
 /// (rope_parity check 6): x rows are `in_stride` apart (2 * head_dim reads a q row out of a q|gate row), out rows are
 /// head_dim apart, x may equal out when in_stride == head_dim. head_dim 128 or 256 and n_rot 64 only.
