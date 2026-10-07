@@ -255,6 +255,13 @@ class ParallelService(unittest.TestCase):
         with urllib.request.urlopen(req, timeout=60) as r:
             return json.loads(r.read().decode())
 
+    def chat_messages(self, messages, max_tokens=64):
+        body = {"messages": messages, "max_tokens": max_tokens, "reasoning_effort": "none"}
+        req = urllib.request.Request(self.base + "/v1/chat/completions", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return json.loads(r.read().decode())
+
     def get(self, path):
         with urllib.request.urlopen(self.base + path, timeout=10) as r:
             return json.loads(r.read().decode())
@@ -377,6 +384,41 @@ class ParallelService(unittest.TestCase):
         self.assertEqual(sorted(r[0] for r in res.values()), ["ok, done."] * 2)
         self.assertFalse(any(x.startswith("YIELD ") for x in self.log.read_text().splitlines()))
 
+    def test_a_long_read_gives_way_to_a_follow_up_its_slot_holds(self):
+        """What is left to read decides, not the prompt's length: a follow-up turn whose conversation a slot holds
+        reads a few tokens, though its prompt is about as long as the fresh one being read (an agent's turns all
+        carry a long system prompt).  A rule on prompt lengths never gave way to it."""
+        self.start(3)
+        bg = threading.Thread(target=lambda: self.chat("background LONGREPLY", max_tokens=200))
+        bg.start()
+        time.sleep(0.05)
+        hist = "conversation B " * 170                   # ~2,550 tokens
+        first = self.chat(hist)                         # admitted while the background one decodes: a slot keeps it
+        deadline = time.time() + 10
+        while not any(bytes(x for x in h if x < 256).find(b"conversation B") >= 0 for h in self.engine.slot_held
+                      if h) and time.time() < deadline:
+            time.sleep(0.02)
+        follow_up = [{"role": "user", "content": hist},
+                     {"role": "assistant", "content": first["choices"][0]["message"]["content"]},
+                     {"role": "user", "content": "and now?"}]
+        res = {}
+
+        def go(key, messages):
+            t0 = time.time()
+            r = self.chat_messages(messages)
+            res[key] = (r["choices"][0]["message"]["content"], time.time() - t0)
+        fresh = threading.Thread(target=go, args=("fresh", [{"role": "user", "content": "lung " * 600}]))
+        fresh.start()
+        time.sleep(0.15)
+        go("next", follow_up)
+        fresh.join(30)
+        bg.join(30)
+        self.assertEqual(res["next"][0], "ok, done.")
+        self.assertEqual(res["fresh"][0], "ok, done.")
+        self.assertLess(res["next"][1], res["fresh"][1] - 0.5, res)
+        self.assertTrue(any(x.startswith("YIELD ") for x in self.log.read_text().splitlines()))
+        self.assertFalse(any(self.engine.slot_busy))
+
     def test_left_alone_it_goes_back_to_the_solo_path(self):
         """A request decoding in a slot whose neighbour finished goes back to the solo path (MTP drafts), continued
         from its slot - only with an engine that keeps the slots' conversations (INFO slot_cache=1)."""
@@ -441,6 +483,105 @@ class ParallelService(unittest.TestCase):
         note = self.engine.death_note()
         self.assertIn("exited (code 1)", note)
         self.assertIn("verify batch: layer 34 never rang (graph finished)", note)
+
+
+class GiveWayByWhatIsLeft(unittest.TestCase):
+    """#656's rule counts the tokens left to read - the prompt less the start the engine holds for sure - on both
+    sides, and gives way only while the waiting request gets a slot at once."""
+
+    start, tearDown = ParallelService.start, ParallelService.tearDown
+
+    def test_the_rule(self):
+        from serve.server import pack_ids
+        self.start(3)
+        eng = self.engine
+        system = list(range(1000, 3000))                # 2,000 tokens every prompt starts with
+        running = system + list(range(5000, 6000))      # a fresh 3,000-token prompt being read
+        turn1 = system + list(range(7000, 7150))        # another user's last turn, 2,150 tokens
+        follow = turn1 + list(range(8000, 8050))        # ... and its next one: 2,200 tokens, 50 of them new
+        with eng.slot_cv:
+            eng.progress = None
+            eng.wait_lens.append([len(follow), pack_ids(follow)])
+        self.assertFalse(eng._shorter_waiting(running), "nothing held: 2,200 to read against 3,000")
+        eng.slot_held[1] = turn1 + [9, 9]
+        self.assertFalse(eng._shorter_waiting(running), "a slot that shares only part of it: no checkpoint known there")
+        eng.slot_held[1] = turn1
+        self.assertTrue(eng._shorter_waiting(running), "a slot holds its last turn whole: 50 to read")
+        eng.slot_held[1] = []
+        eng._note_read(turn1)
+        self.assertFalse(eng._shorter_waiting(running), "read to its end, but no slot and no conversation cache keep it")
+        eng.info["conversation_cache_mib"] = 8192
+        self.assertTrue(eng._shorter_waiting(running), "the conversation cache parked it: 50 to read")
+        eng.read_prompts.clear()
+        eng._note_read(system + [1, 2, 3])
+        self.assertFalse(eng._shorter_waiting(running), "only the system prompt in common: no checkpoint known there")
+        eng._note_read(turn1)
+        eng.progress = (2950, 3000)
+        self.assertFalse(eng._shorter_waiting(running), "the read's own progress: 50 left, under twice 50")
+        eng.progress = None
+        eng.slot_busy[0] = eng.slot_busy[1] = True
+        self.assertFalse(eng._shorter_waiting(running), "solo: no free slot for both its part and the waiting one")
+        self.assertTrue(eng._shorter_waiting(running, 0), "an admission has its slot: the waiting one gets the free one")
+        eng.slot_busy[2] = True
+        self.assertFalse(eng._shorter_waiting(running, 0), "no free slot: the waiting one would wait on the control lines")
+        eng.slot_busy = [False] * 3
+
+    def test_a_turn_resumes_at_the_last_turn_token(self):
+        """The engine checkpoints a prompt at its last turn token (<|im_start|>): the next turn renders the history
+        again but not that turn's header, so it starts with the prompt up to there, not with all of it."""
+        from serve.server import TURN_TOKEN, pack_ids
+        self.start(3)
+        eng = self.engine
+        system = [TURN_TOKEN] + list(range(1000, 3000))
+        turn1 = system + [TURN_TOKEN] + list(range(7000, 7150)) + [TURN_TOKEN, 4, 5]   # ... its header last
+        follow = turn1[:-3] + [TURN_TOKEN, 6, 6] + list(range(8000, 8045))               # the reply, rendered
+        running = list(range(20000, 23000))
+        with eng.slot_cv:
+            eng.progress = None
+            eng.wait_lens.append([len(follow), pack_ids(follow)])
+        eng.slot_held[1] = turn1 + [41, 42, 43]                          # the prompt and the reply as generated
+        self.assertTrue(eng._shorter_waiting(running), "the slot's turn checkpoint is the follow-up's start")
+        eng.slot_held[1] = []
+        eng.info["conversation_cache_mib"] = 8192
+        eng._note_read(turn1)
+        self.assertTrue(eng._shorter_waiting(running), "a read noted up to its turn checkpoint: parked")
+        self.assertEqual(eng._known_prefix(pack_ids(follow)), len(turn1) - 3)
+
+    def test_a_read_that_gave_way_holds_only_its_part(self):
+        """A request whose read gave way waits again with its part in a slot: what it has left is the rest only."""
+        from serve.server import pack_ids
+        self.start(3)
+        eng = self.engine
+        long_one = list(range(1, 3001))
+        eng.slot_held[2] = long_one[:500]               # its part read, in the slot it waits in
+        with eng.slot_cv:
+            eng.progress = None
+            eng.wait_lens.append([len(long_one), pack_ids(long_one)])
+        other = list(range(5001, 10001))               # a fresh 5,000-token read
+        self.assertTrue(eng._shorter_waiting(other), "2,500 left against 5,000")
+        eng.slot_held[2] = long_one[:400]
+        self.assertFalse(eng._shorter_waiting(other), "2,600 left: not under half")
+
+    def test_the_rule_is_cheap(self):
+        """8 slots of 50K tokens, 16 waiting prompts and 16 reads: a check (it holds slot_cv) takes milliseconds."""
+        from serve.server import pack_ids
+        self.start(8)
+        eng = self.engine
+        base = list(range(50000))
+        for b in range(8):
+            eng.slot_held[b] = base[:49000] + [b] * 1000
+        with eng.slot_cv:
+            for w in range(16):
+                eng.wait_lens.append([50010, pack_ids(base[:49500] + [w] * 510)])
+        eng.info["conversation_cache_mib"] = 8192
+        for w in range(16):
+            eng._note_read(base[:40000] + [w])
+        prompt = base[:49900] + [99] * 100
+        eng._shorter_waiting(prompt)                    # the slots are packed once
+        t0 = time.perf_counter()
+        for _ in range(10):
+            eng._shorter_waiting(prompt)
+        self.assertLess((time.perf_counter() - t0) / 10, 0.05)
 
 
 if __name__ == "__main__":

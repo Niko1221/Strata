@@ -21,6 +21,7 @@ talks to it over stdin/stdout; `MockEngine` is a scripted stand-in that makes ev
 from __future__ import annotations
 
 import argparse
+import array
 import contextlib
 import collections
 import base64
@@ -530,6 +531,27 @@ FATAL_PREFIXES = ("ERR verify: timed out at layer ", "ERR verify batch: timed ou
                   "ERR verify: an earlier window never finished", "ERR verify batch: an earlier window never finished")
 
 
+def pack_ids(ids) -> bytes:
+    """Token ids as 4-byte ints: a prompt to compare with others by bytes (startswith)."""
+    return array.array("i", (int(t) for t in ids)).tobytes()
+
+
+TURN_TOKEN = 248045   # <|im_start|>: the engine's --turn-token default; it checkpoints a prompt at its last one
+
+
+def turn_prefix(packed: bytes) -> bytes:
+    """A packed prompt up to its last turn token: where the engine checkpoints a prompt it reads, so that the next
+    turn - which renders the history again, but not this turn's header - resumes there.  All of it without one."""
+    pat, end = array.array("i", [TURN_TOKEN]).tobytes(), len(packed)
+    while True:
+        i = packed.rfind(pat, 0, end)
+        if i <= 0:
+            return packed
+        if i % 4 == 0:
+            return packed[:i]
+        end = i + 3                                      # a match across two tokens: look before it
+
+
 class StrataEngine:
     """The resident engine: `strata --serve` reads `GEN <max_new> <ids>` lines and streams `T <id>` lines, then
     `DONE ...`.  Requests are serialized by the service's FIFO, so one pipe is enough.
@@ -655,6 +677,8 @@ class StrataEngine:
         # what each slot's sessions hold (prompt + every token a window fed), so a conversation's next turn goes to
         # the slot that has its start (the engine checks it again); when the slot was last used
         self.slot_held: list[list[int]] = [[] for _ in range(self.batch)]
+        self.held_packed: list[tuple | None] = [None] * self.batch   # (the held list, its pack_ids): _known_prefix
+        self.read_prompts = collections.deque(maxlen=self.READ_PROMPTS)   # packed prompts read to their end
         self.slot_used = [0.0] * self.batch
         self.slot_live: list[dict | None] = [None] * self.batch   # /metrics: the request in each slot
         # #1012: the admission state belongs to the server, not to one engine process.  restart() runs this again
@@ -664,7 +688,7 @@ class StrataEngine:
         if "slot_cv" not in self.__dict__:
             self.slot_cv = threading.Condition()
             self.waiting = 0                            # requests waiting for the control lines (ctl)
-            self.wait_lens: list[list[int]] = []        # ... their prompt lengths (a long read gives way to short ones)
+            self.wait_lens: list[list] = []             # ... [prompt length, packed prompt] (a long read gives way)
             self.ctl_epoch = 0                          # how often the control lines were taken
             self.ctl = threading.Lock()                 # one admission or solo request on the control lines at a time
         self.gen = self.__dict__.get("gen", 0) + 1      # which engine process this is (a request notes its own)
@@ -1012,10 +1036,11 @@ class StrataEngine:
 
     YIELDS_MAX = 2   # #656: how often one request's prompt read gives way to a shorter waiting one
 
-    def _take_control(self, cancel, plen: int, after_epoch: int | None = None):
+    def _take_control(self, cancel, plen: int, after_epoch: int | None = None, prompt=None):
         """Waits for the control lines (one prompt read at a time), yielding None heartbeats; False when cancelled.
-        `after_epoch`: a request whose read gave way lets the requests waiting then go first."""
-        entry = [plen]
+        `after_epoch`: a request whose read gave way lets the requests waiting then go first.  `prompt`: kept with the
+        wait entry, so a read can tell how much this one has left to read (_shorter_waiting)."""
+        entry = [plen, pack_ids(prompt) if prompt is not None else None]
         with self.slot_cv:
             self.waiting += 1
             self.wait_lens.append(entry)
@@ -1065,10 +1090,64 @@ class StrataEngine:
         with self.slot_cv:
             return sum(1 for b in self.slot_busy if b) == 1 and self.waiting == 0
 
-    def _shorter_waiting(self, plen: int) -> bool:
-        """#656: someone waits for the control lines with a prompt under half this one's: worth giving way to."""
+    READ_PROMPTS = 16        # the prompts read to their end, kept for the give-way rule (_known_prefix)
+
+    def _note_read(self, prompt) -> None:
+        """A prompt read to its end: the engine holds it up to its turn checkpoint (in its slot; the conversation cache
+        parks it), and noted so.  A read that gave way or was cancelled is not noted."""
         with self.slot_cv:
-            return any(e[0] * 2 <= plen for e in self.wait_lens)
+            self.read_prompts.append(turn_prefix(pack_ids(prompt)))
+
+    def _held(self, b: int) -> tuple[bytes, bytes]:
+        """(the caller holds slot_cv) Slot b's held tokens packed, and up to their turn checkpoint - once per list (a
+        slot's list is replaced, never changed in place)."""
+        h, c = self.slot_held[b], self.held_packed[b]
+        if c is None or c[0] is not h:
+            packed = pack_ids(h)
+            c = self.held_packed[b] = (h, packed, turn_prefix(packed))
+        return c[1], c[2]
+
+    def _known_prefix(self, packed: bytes) -> int:
+        """(the caller holds slot_cv) How many leading tokens of a packed prompt the engine holds for sure, as far as
+        the server knows: all a slot holds or its turn checkpoint, or an earlier prompt read to its end up to its turn
+        checkpoint that is still held (a slot's start, or - with the engine's conversation cache - parked).  Whole
+        ones only: the engine resumes at those, not at any token two prompts share."""
+        pairs = [self._held(b) for b in range(len(self.slot_held)) if self.slot_held[b]]
+        helds = [whole for whole, _ in pairs]
+        best = max((len(x) for pair in pairs for x in pair if packed.startswith(x)), default=0)
+        mib = (getattr(self, "info", None) or {}).get("conversation_cache_mib")
+        parks = isinstance(mib, int) and mib > 0
+        reads = list(getattr(self, "read_prompts", ()))
+        if parks:                                        # the cache keeps at most its slots' worth: the latest ones
+            n = (getattr(self, "info", None) or {}).get("conversation_cache_slots")
+            reads = reads[-n:] if isinstance(n, int) and n > 0 else reads
+        for r in reads:
+            if len(r) > best and packed.startswith(r) and (parks or any(h.startswith(r) for h in helds)):
+                best = len(r)
+        return best // 4
+
+    def _shorter_waiting(self, prompt, own_slot: int | None = None) -> bool:
+        """#656: someone waits for the control lines with under half as much to read as this read has left: worth
+        giving way to.  To read = the prompt less the start the engine holds (_known_prefix), not its length: an
+        agent's turns all carry a long system prompt, and a follow-up turn's history is held already.  Only while the
+        waiting one gets a slot at once (`own_slot`: the slot this read is admitted into; a solo read reserves one for
+        its part): it must not wait for one on the control lines that the part read needs to go on."""
+        with self.slot_cv:
+            if not self.wait_lens:
+                return False
+            if sum(1 for b in self.slot_busy if not b) < (1 if own_slot is not None else 2):
+                return False
+            prog = self.progress                         # PP <position reached> <prompt tokens>: this read's
+            left = (prog[1] - prog[0] if prog and prog[1] == len(prompt) else
+                    len(prompt) - self._known_prefix(pack_ids(prompt)))
+            for e in self.wait_lens:
+                if len(e) > 1 and e[1] is not None:
+                    need = e[0] - min(self._known_prefix(e[1]), e[0] - 1)
+                else:
+                    need = e[0]
+                if need * 2 <= left:
+                    return True
+            return False
 
     def generate_batched(self, ids, max_new, sampling, cancel, embeddings=None):
         """--batch.  Alone (no slot busy, nobody waiting): the solo path (GEN, with drafts: the fastest stream)
@@ -1081,13 +1160,13 @@ class StrataEngine:
         admission to its BADM, a slot is BSTOPped and freed at its BDONE."""
         if not self.alive():
             raise EngineDied("the engine is unavailable; this request was not sent")
-        self.progress, self.progress_ms, self.reused = None, 0, 0
+        self.progress_ms, self.reused = 0, 0   # progress: reset when this request's read is sent
         born = self.gen                                 # the engine process this request is sent to
         keys = self.sampling_keys(sampling or {})
         out: list[int] = []
         pending: list[int] = []
         prompt, left = list(ids), int(max_new)
-        ok = yield from self._take_control(cancel, len(prompt))
+        ok = yield from self._take_control(cancel, len(prompt), prompt=prompt)
         if not ok:
             return
         holding, born = True, self.gen                  # (the engine it now has the control lines of)
@@ -1099,7 +1178,7 @@ class StrataEngine:
         try:
             while True:   # a request in a slot that is left alone goes back to the solo path
                 if not holding:
-                    ok = yield from self._take_control(cancel, len(prompt))
+                    ok = yield from self._take_control(cancel, len(prompt), prompt=prompt)
                     if not ok:
                         return
                     holding, born = True, self.gen                  # (the engine it now has the control lines of)
@@ -1107,6 +1186,7 @@ class StrataEngine:
                     alone = not any(self.slot_busy) and self.waiting == 0
                 if alone and left > 1:
                     head = f"GENI {left}{keys} {embeddings}" if embeddings else f"GEN {left}{keys}"
+                    self.progress, n_out = None, len(out)   # PP lines from here on are this read's
                     self._send(f"{head} {','.join(str(int(t)) for t in prompt)}")
                     phase = "solo"
                     self._ctl_mode, self._ctl_result, self._yielded = "solo", None, None
@@ -1120,7 +1200,7 @@ class StrataEngine:
                             yield t
                         if x is None:                       # a heartbeat (False: a token, flushed above)
                             if (reserved is None and not out and not embeddings and yields < self.YIELDS_MAX and
-                                    self._shorter_waiting(len(prompt))):
+                                    self._shorter_waiting(prompt)):
                                 with self.slot_cv:          # the slot the part read will wait in
                                     reserved = self.pick_slot(prompt)
                                     if reserved is not None:
@@ -1133,6 +1213,8 @@ class StrataEngine:
                         t = pending.pop(0)
                         out.append(t)
                         yield t
+                    if len(out) > n_out:                    # read to its end (a read that gave way has no token)
+                        self._note_read(prompt)
                     if self._yielded is not None and reserved is not None and self._yielded[0] == reserved:
                         slot, reserved = reserved, None     # gave way: the read goes on in that slot (below)
                     elif reserved is not None:              # it did not give way: the slot is free again
@@ -1167,7 +1249,7 @@ class StrataEngine:
                         holding = False
                         with self.slot_cv:
                             epoch = self.ctl_epoch
-                        ok = yield from self._take_control(cancel, len(prompt), after_epoch=epoch)
+                        ok = yield from self._take_control(cancel, len(prompt), after_epoch=epoch, prompt=prompt)
                         if not ok:
                             return
                         holding, born = True, self.gen                  # (the engine it now has the control lines of)
@@ -1177,6 +1259,7 @@ class StrataEngine:
                     live = {"slot": slot, "state": "reading", "prompt_tokens": len(prompt), "generated": 0,
                             "started": time.time(), "first_token": None}
                     self.slot_live[slot] = live
+                    self.progress, n_out = None, len(out)   # PP lines from here on are this read's
                     self._send(f"{head} {','.join(str(int(t)) for t in prompt)}")
                     self.slot_held[slot] = []               # the admission overwrites what the slot held
                     phase = "admit"
@@ -1189,7 +1272,7 @@ class StrataEngine:
                             yield t
                         if x is None:
                             if (not asked and not embeddings and yields < self.YIELDS_MAX and
-                                    self._shorter_waiting(len(prompt))):
+                                    self._shorter_waiting(prompt, slot)):
                                 self._send(f"BYIELD {slot}")
                                 asked = True
                             yield None
@@ -1199,6 +1282,8 @@ class StrataEngine:
                         t = pending.pop(0)
                         out.append(t)
                         yield t
+                    if len(out) > n_out:                    # read to its end: its first token came
+                        self._note_read(prompt)
                     if not cont and self._yielded is not None and self._yielded[0] == slot and not cancel.is_set():
                         continue                            # gave way: again once the shorter request is in
                     break
