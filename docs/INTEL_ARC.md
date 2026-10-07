@@ -144,6 +144,18 @@ graphics driver with Level Zero (`ze_intel_gpu.dll`, for `level_zero:0`; without
 lists only `opencl:gpu`). WSL2 with an Arc has been used by one tester (the B580 row above),
 but setup cannot detect the card there, because it reads `/sys/class/drm`, which WSL2 does not have.
 
+Measured on Windows (Arc Pro B70 32 GB, driver 32.0.101.8976, i9-9900, 64 GB RAM, conda-forge
+`dpcpp_win-64` 2026.1.1, OpenCL backend, `STRATA_VERIFY_EAGER=1`): the `strata` engine builds with
+0 errors; `quantize_act_parity --selftest` and the sampler checks pass byte-exact; the Coder IQ1_M
+(12,288/12,288 experts resident, `--stream-experts`, 32K context) chats through the OpenAI API at
+31-33 tok/s pure decode and 75.8 tok/s over a 155-token answer with MTP drafts (Linux B70: 78.2).
+Warm prompt re-reads reach 123-128 tok/s; cold first reads go through the plain-SYCL GEMM fallback
+(oneMKL SYCL BLAS has no OpenCL Xe2 backend) at single-digit tok/s. Partly-resident models
+(IQ3_XXS: 17,687/24,576) fall back per missing expert and need a RAM mirror (`STRATA_MIRROR_MIB`)
+or all-resident sizing; eager replay refuses non-device-planned runs loudly instead of running them
+wrong. Needs an admin account for VS Build Tools and the Intel driver; the conda + VS + NuGet/PyPI
+oneMKL pieces install per-user.
+
 ## Reporting a problem
 
 Open an issue with: the card, the driver version, `sycl-ls` output, the oneAPI version, the model and flags, and the

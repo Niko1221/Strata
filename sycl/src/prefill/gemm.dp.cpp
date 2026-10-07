@@ -478,7 +478,8 @@ void fallback_gemm(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, in
         }
         for (int64_t m = 0; m < TM; ++m) {
             const int64_t n = n0 + m;
-            if (n < N) Y[t * ldy + n] = alpha * acc[m] + beta * Y[t * ldy + n];
+            // beta = 0 must not read Y (the caller's buffer is uninitialized there: 0 * NaN is NaN).
+            if (n < N) Y[t * ldy + n] = beta == 0.0f ? alpha * acc[m] : alpha * acc[m] + beta * Y[t * ldy + n];
         }
     }).wait();
 }

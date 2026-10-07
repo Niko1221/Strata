@@ -5,6 +5,11 @@ rem Needs the conda env (or oneAPI) with icx/icpx on PATH plus the VS dev enviro
 rem (vsdevcmd.bat) for link.exe. sycl\tools\build.sh is the Linux equivalent.
 setlocal
 set REPO=%~dp0..\..
+rem The MSVC linker + Windows SDK (link.exe, kernel32.lib): import once per shell, silently when present.
+where link >NUL 2>NUL
+if errorlevel 1 if exist "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\vsdevcmd.bat" call "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\vsdevcmd.bat" -no_logo -arch=x64 >NUL 2>&1
+rem Intel compiler runtime (libircmt.lib) beside icx: on LIB for the link.
+for /f "delims=" %%i in ('where icx 2^>NUL') do if exist "%%~dpi..\lib\libircmt.lib" set "LIB=%%~dpi..\lib;%LIB%"
 if defined BUILD_DIR (set B=%BUILD_DIR%) else (set B=%REPO%\build-sycl)
 if not exist "%B%\build.ninja" (
   rem conda's own activation uses icx for both C and CXX; icpx defaults to GNU-like flags on Windows

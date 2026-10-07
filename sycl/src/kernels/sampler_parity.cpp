@@ -888,10 +888,11 @@ int main(int argc, char** argv) {
             zeros += want[(size_t) t] == 0;
         }
         const double expect = 1.0 / (1.0 + std::exp(1.5 / 0.7)), share = (double) zeros / NT9;
-        const bool near = std::fabs(share - expect) < 0.014;
+        // (named near_enough: windows.h #defines near/far empty for 16-bit compat)
+        const bool near_enough = std::fabs(share - expect) < 0.014;
         std::printf("  %-34s %s (token 0 drawn %.4f of %d, expected %.4f; twice-penalised would be 0.0255)\n",
-                    "one penalties stage (#53)", near ? "yes" : "*** NO ***", share, NT9, expect);
-        if (!near) ++bad;
+                    "one penalties stage (#53)", near_enough ? "yes" : "*** NO ***", share, NT9, expect);
+        if (!near_enough) ++bad;
         bad += run("sampled chain: #53's example", l, NT9, p, want, hist, 1);
     }
 

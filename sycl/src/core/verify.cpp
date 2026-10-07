@@ -1336,6 +1336,15 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
     VDBG("staged; launching\n");
     static Clock::time_point t_prev_end;   // SYCL port timing: where does a round's wall clock go?
     const Clock::time_point t_launch = Clock::now();
+    // SYCL port, STRATA_VERIFY_EAGER=1: eager replay needs the device-planned path (device_plan_): with the
+    // host-served plan the mid-record waits (stamp()) expire before the host publishes anything, and the
+    // window runs on stale plans - silently wrong, not slow. Refuse loudly instead (needs Level Zero graphs
+    // or an all-resident cache with STRATA_VERIFY_DEVICE_PLAN=1).
+    if (std::getenv("STRATA_VERIFY_EAGER") != nullptr && !device_plan_) {
+        err = "verify: eager replay without the device plan (STRATA_VERIFY_DEVICE_PLAN=1 with an all-resident "
+              "expert cache): the host-served waits cannot be met here; use command graphs (Level Zero) instead";
+        return false;
+    }
     const dpct::err0 le = (std::getenv("STRATA_VERIFY_EAGER") != nullptr)
                               ? (record_window(T, cs_, err) ? 0 : 1)   // SYCL port: eager replay of the window body
                               : DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(*exec_[T]));
@@ -1765,7 +1774,8 @@ bool Verifier::commit(int n_keep, std::string &err, bool wait) try {
     for (int t = 0; t < max_t_; ++t) h_commit_[2 + t] = t < n_keep ? (int32_t) (last_pos0_ + t) : -1;
     std::atomic_thread_fence(std::memory_order_seq_cst);
     if (std::getenv("STRATA_VERIFY_EAGER") != nullptr) {
-        // SYCL port: no commit graph on this backend - run the body now, then the same finish path.
+        // SYCL port: no commit graph on this backend - run the body now, then the same finish path. This is
+        // synchronous by nature: the drafter-round/commit overlap of wait=false has nothing to overlap with.
         if (!record_commit(err)) return false;
         pending_commit_ = n_keep;
         pending_commit_t0_ = t0;
