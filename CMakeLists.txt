@@ -250,6 +250,11 @@ if(STRATA_BUILD_TESTS)
   add_executable(tuning_header_arch_family_test tests/prefill/tuning_header_arch_family_test.cpp)
   target_include_directories(tuning_header_arch_family_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/prefill")
   add_test(NAME tuning_header_arch_family_test COMMAND tuning_header_arch_family_test)
+
+  # the decode tuning table's parser and its refusals (plain C++: no GPU)
+  add_executable(decode_tuning_test tests/core/decode_tuning_test.cpp src/kernels/decode_tuning.cpp)
+  target_include_directories(decode_tuning_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  add_test(NAME decode_tuning_test COMMAND decode_tuning_test)
 endif()
 
 # ---- strata_plan ----------------------------------------------------------
@@ -349,6 +354,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
                           src/kernels/cuda/qsa_select.cu
                           src/kernels/cuda/verify_kernels.cu
                           src/kernels/cuda/iq_kernels.cu
+                          src/kernels/decode_tuning.cpp
                           src/kernels/ngram.cpp
                           src/ngram/ple_reader.cpp
                           src/platform/direct_file.cpp)
@@ -528,6 +534,11 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(tune_hipblaslt PRIVATE hip::host roc::hipblas roc::hipblaslt)
   endif()
 
+  if(STRATA_ENABLE_HIP)
+    # on-device tuning of the decode kernels' block shapes (docs/AMD_HIP_AUTOTUNE.md; tools/hip/autotune.py runs it)
+    add_executable(tune_decode tools/hip/tune_decode.cpp)
+    target_link_libraries(tune_decode PRIVATE strata_kernels strata_hip_runtime)
+  endif()
   add_executable(strata src/program/generate.cpp)
   target_include_directories(strata PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(strata PRIVATE strata_engine strata_prefill strata_spec ${_strata_gpu_runtime_target})
