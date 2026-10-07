@@ -1,5 +1,6 @@
 // src/core/expert_cache.cpp - R4's slot storage and residency table.  Read the header first.
 #include "strata/core/expert_cache.hpp"
+#include "strata/platform/memory.hpp"
 
 // #533's segmented cache uses CUDA's virtual memory management (cuMem*): not on HIP, neither the RDNA backend nor
 // the gfx906 compat build (PR #638), which compiles this file as HIP without STRATA_USE_HIP
@@ -19,6 +20,11 @@
 #include <cstdlib>
 #include <utility>
 #include <cstring>
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
 
 namespace strata::core {
 
@@ -28,7 +34,8 @@ namespace strata::core {
 size_t device_free_bytes() {
     size_t free_b = 0, total_b = 0;
     cudaMemGetInfo(&free_b, &total_b);
-#if defined(__linux__) && !defined(STRATA_HIP_GFX906)   // (the gfx906 compat layer has no cudaDevAttrIntegrated; that GPU is discrete)
+#if (defined(__linux__) || defined(_WIN32)) && !defined(STRATA_HIP_GFX906)
+    // The gfx906 compatibility layer has no cudaDevAttrIntegrated; that GPU is discrete.
     // per device: a box can mix an integrated GPU (an APU) with a discrete one, and the answer is the CURRENT device's
     static std::atomic<int> uma_cache[64];   // 0 unknown, 1 integrated (unified memory), 2 discrete
     bool unified_memory = false;
@@ -44,6 +51,7 @@ size_t device_free_bytes() {
         }
     }
     if (unified_memory) {
+#if defined(__linux__)
         if (FILE* m = std::fopen("/proc/meminfo", "r")) {
             char line[256];
             unsigned long long kb = 0;
@@ -64,6 +72,26 @@ size_t device_free_bytes() {
             const unsigned long long avail = kb << 10;
             if (avail > head && avail - head > free_b) free_b = (size_t) (avail - head);
         }
+#elif defined(_WIN32)
+        int dev = 0;
+        cudaDeviceProp prop{};
+        uint64_t budget = 0, usage = 0;
+        std::string why;
+        const uint64_t physical = strata::platform::total_physical_memory();
+        MEMORYSTATUSEX ms{};
+        ms.dwLength = sizeof ms;
+        const uint64_t available = GlobalMemoryStatusEx(&ms) ? (uint64_t) ms.ullAvailPhys : physical;
+        const uint64_t head = 6ull << 30;
+        if (cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&prop, dev) == cudaSuccess &&
+            strata::platform::gpu_local_memory_budget(prop.luid, budget, usage, why) && budget > usage) {
+            // RTX Spark classifies the dedicated carve-out and its GPU-accessible shared segment as LOCAL.  The shared
+            // part still consumes physical RAM, so cap the DXGI allowance by what Windows can give up after headroom,
+            // plus cudaMemGetInfo's already-free dedicated allocation capacity.
+            const uint64_t os_room = available > head ? available - head : 0;
+            const uint64_t dxgi_room = budget - usage;
+            free_b = (size_t) (std::min)(dxgi_room, os_room + (uint64_t) free_b);
+        }
+#endif
     }
 #endif
     return free_b;

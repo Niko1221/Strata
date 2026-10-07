@@ -60,6 +60,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 WIN = os.name == "nt"
+MACHINE = platform.machine().lower()
+ARM64 = MACHINE in ("arm64", "aarch64")
+WIN_ARM64 = WIN and ARM64
 # #214: every Hugging Face file comes from a fixed commit of its repository (the `sha` of
 # https://huggingface.co/api/models/<repo> when this was pinned), so a checkout installs the same files on any
 # day.  A revision the repository no longer has falls back to its current files, with a message (download()).
@@ -708,7 +711,10 @@ def cpu_info():
     """(name, avx2, avx512): avx512 means everything Strata's fast AVX-512 kernels use (F, BW, VL, VNNI, VBMI),
     the same test the engine makes (cpu_avx512_ok), not just AVX-512F."""
     name, avx2, avx512 = platform.processor() or "unknown CPU", False, False
-    if WIN:
+    if WIN_ARM64:
+        n = out(["powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_Processor).Name"]).strip()
+        name = n or name
+    elif WIN:
         pf = ctypes.windll.kernel32.IsProcessorFeaturePresent
         avx2 = bool(pf(40)) or _cpuid_avx2()      # PF_AVX2_INSTRUCTIONS_AVAILABLE, else the CPU itself (#159)
         n = out(["powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_Processor).Name"]).strip()
@@ -767,6 +773,16 @@ def cpu_floor(avx2: bool) -> str:
             flags = set()
         f = "avx" if "avx" in flags else "sse4.2" if {"sse4_2", "popcnt"} <= flags else ""
     return {"avx": "avx", "sse4.2": "none"}.get(f, "unsupported")
+
+
+def cpu_build_floor(avx2: bool) -> str:
+    """The x86 ISA floor for this build; ARM64 uses ggml-cpu's native ARM feature selection instead."""
+    return "" if ARM64 else cpu_floor(avx2)
+
+
+def arm64_model_supported(model: str) -> bool:
+    """Legacy Q2_0 calls Strata's x86 expert kernels; native/IQ packs use ggml-cpu on ARM64."""
+    return not ARM64 or model != "Q2_0"
 
 
 def _cpuid_avx512_full() -> bool:
@@ -831,6 +847,29 @@ def _cpuid_avx2() -> bool:
         return False
 
 
+def nvidia_apply_uma(g: dict, ram: float | None = None) -> dict:
+    """RTX Spark on Windows reports only its dedicated carve-out through nvidia-smi.  The iGPU can also allocate from
+    Windows' shared segment: post-carve-out RAM less 16 GB, clamped to 50-80% of that RAM (NVIDIA's porting guide).
+    That shared memory is the same physical RAM the CPU uses, so `dedicated_gb` is the only part the low-RAM mode may
+    count as memory beside system RAM."""
+    name = str(g.get("name") or "").lower()
+    if not WIN_ARM64 or not any(x in name for x in ("rtx spark", "dgx spark", "gb10")):
+        return g
+    remaining = max(0.0, ram_gb() if ram is None else float(ram))
+    shared = min(max(remaining - 16.0, remaining * 0.5), remaining * 0.8)
+    dedicated = max(0.0, float(g.get("vram_gb") or 0.0))
+    g.update({"uma": True, "dedicated_gb": dedicated, "shared_gb": shared,
+              "vram_gb": dedicated + shared, "spark_uma": True})
+    return g
+
+
+def nvidia_mem_text(g: dict) -> str:
+    if g.get("spark_uma"):
+        return (f"unified memory: {g['dedicated_gb']:.1f} GB dedicated carve-out + {g['shared_gb']:.0f} GB shared "
+                f"with RAM, about {g['vram_gb']:.0f} GB usable by CUDA")
+    return f"{g['vram_gb']:.1f} GB VRAM"
+
+
 def gpus():
     """Every NVIDIA GPU, numbered as nvidia-smi numbers them (by PCI bus, the order the engine is told to use)."""
     s = out(["nvidia-smi", "--query-gpu=index,name,memory.total,compute_cap,driver_version",
@@ -839,8 +878,9 @@ def gpus():
     for line in s.strip().splitlines():
         try:
             idx, name, mem, cc, drv = [x.strip() for x in line.split(",")]
-            found.append({"index": int(idx), "name": name, "vram_gb": float(mem) / 1024.0, "arch": cc.replace(".", ""),
-                          "driver": drv})
+            found.append(nvidia_apply_uma(
+                {"index": int(idx), "name": name, "vram_gb": float(mem) / 1024.0, "arch": cc.replace(".", ""),
+                 "driver": drv}))
         except ValueError:
             continue
     return found
@@ -1380,6 +1420,8 @@ def find_nvcc(below=None):
     best = (None, None)
     for c in dict.fromkeys(cands):                     # every toolkit found; the newest wins
         if c and Path(c).exists():
+            if WIN and c.lower().endswith(".exe"):
+                c = c[:-4] + ".exe"                    # CMake treats extension-only case changes as a new compiler
             v = re.search(r"release (\d+)\.(\d+)", out([c, "--version"]))
             ver = (int(v.group(1)), int(v.group(2))) if v else None
             if ver and (below is None or ver < below) and (best[1] is None or ver > best[1]):
@@ -1409,10 +1451,34 @@ def find_vcvars(cuda_v=None):
     if cuda_v is not None:
         upper = "19.0" if tuple(cuda_v) >= (13, 3) else "18.0"
         args += ["-version", f"[16.0,{upper})"]
-    args += ["-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath"]
+    component = ("Microsoft.VisualStudio.Component.VC.Tools.ARM64" if WIN_ARM64 else
+                 "Microsoft.VisualStudio.Component.VC.Tools.x86.x64")
+    args += ["-requires", component, "-property", "installationPath"]
     p = out(args).strip()
-    v = Path(p) / "VC/Auxiliary/Build/vcvars64.bat" if p else None
+    script = "vcvarsarm64.bat" if WIN_ARM64 else "vcvars64.bat"
+    v = Path(p) / "VC/Auxiliary/Build" / script if p else None
     return v if v and v.exists() else None
+
+
+def find_clang_cl():
+    """A native Windows ARM64 clang-cl, required because pinned GGML does not support MSVC on ARM."""
+    cands = [os.environ.get("STRATA_CLANG"), shutil.which("clang-cl")]
+    for root in (Path(os.environ.get("ProgramFiles", r"C:\Program Files")),
+                 Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"))):
+        cands.append(str(root / "LLVM/bin/clang-cl.exe"))
+    for c in dict.fromkeys(cands):
+        if c and Path(c).exists() and (not WIN_ARM64 or "aarch64" in out([c, "--version"]).lower()):
+            return str(Path(c))
+    return None
+
+
+def find_msvc_arm64_cl(vcvars):
+    """The ARM64 MSVC host compiler used by NVCC while clang-cl builds C/C++ and GGML."""
+    if not vcvars:
+        return None
+    vc = Path(vcvars).parents[2]
+    found = sorted(vc.glob("Tools/MSVC/*/bin/Hostarm64/arm64/cl.exe"), reverse=True)
+    return str(found[0]) if found else None
 
 
 def find_tool(name):
@@ -2640,7 +2706,7 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
     src, vsrc = source_hash(ENGINE_SOURCES), source_hash(VISION_SOURCES)
     archs = sorted(set(gpu.get("archs") or [gpu["arch"]]))
     has_archs = set(archs) <= set(meta.get("archs", []))
-    floor = cpu_floor(cpu_info()[1])                     # "" on an AVX2 CPU: the normal engine
+    floor = cpu_build_floor(cpu_info()[1])
     engine_ok = meta.get("backend") == "hip" and (eng / EXE).exists() and meta.get("src") == src and has_archs and \
         (meta.get("isa_floor") or "") == floor
     vision_ok = vision == "none" or ((eng / VEXE).exists() and meta.get("vision_src") == vsrc)
@@ -3226,18 +3292,27 @@ def install_build_tools(gpu, yes):
              "install CUDA 12.9 (it can sit next to a newer one) from https://developer.nvidia.com/cuda-toolkit-archive "
              "and run it again (STRATA_NVCC=<its nvcc> picks one toolkit)")
     # RTX 50 (sm_120): CUDA 13.0 - an engine built with 12.8 crashed in the prompt path on Linux (#220)
-    need_cuda = need12 if old else (13, 0) if max(archs) >= 120 else (12, 0)
+    win_spark_arm = WIN_ARM64 and bool(gpu.get("spark_uma"))
+    need_cuda = need12 if old else (13, 4) if win_spark_arm else (13, 0) if max(archs) >= 120 else (12, 0)
     vcvars = find_vcvars(cuda_v) if WIN else None
-    have_cc = vcvars is not None if WIN else shutil.which("g++") is not None
+    clang = find_clang_cl() if win_spark_arm else None
+    have_cc = (vcvars is not None and clang is not None) if win_spark_arm else \
+        (vcvars is not None if WIN else shutil.which("g++") is not None)
     missing = []
     if not have_cc:
-        missing.append("Visual Studio 2022 Build Tools (C++)" if WIN else "the C++ compiler (build-essential)")
+        missing.append(("Visual Studio Build Tools (ARM64 C++) and native ARM64 LLVM/Clang" if win_spark_arm else
+                        "Visual Studio 2022 Build Tools (C++)") if WIN else "the C++ compiler (build-essential)")
     if nvcc is None or cuda_v < need_cuda:
-        missing.append("the NVIDIA CUDA Toolkit 13.0")
+        missing.append(f"the NVIDIA CUDA Toolkit {need_cuda[0]}.{need_cuda[1]}")
     if not missing:
         nvcc, cuda_v = sm120_nvcc(nvcc, cuda_v, archs)
         ok(f"build tools present (CUDA {cuda_v[0]}.{cuda_v[1]})")
         return nvcc, vcvars
+    if win_spark_arm:
+        fail("the Windows ARM64 engine needs " + " and ".join(missing),
+             "install a CUDA-compatible Visual Studio with the Windows 11 SDK and MSVC ARM64/ARM64EC components; "
+             "install the native Windows ARM64 LLVM package from github.com/llvm/llvm-project/releases; "
+             "CUDA Toolkit 13.4 is supported, then run setup again")
     say("  The engine has to be compiled for your PC, which needs: " + " and ".join(missing) + ".")
     say("  They can be installed now (about 8-10 GB, 15-40 minutes" + (", Windows will ask for permission" if WIN else
                                                                         ", sudo will ask for your password") + ").")
@@ -3290,7 +3365,11 @@ def cmake_build(src, bdir, target, defs, vcvars, bat_name):
     cmake, ninja = find_tool("cmake"), find_tool("ninja")
     if cmake is None or ninja is None:
         fail("cmake / ninja not found after installing them", "run: .venv python -m pip install cmake ninja")
-    conf = [cmake, "-G", "Ninja", f"-DCMAKE_MAKE_PROGRAM={ninja}", "-S", str(src), "-B", str(bdir),
+    cache = bdir / "CMakeCache.txt"
+    stale_arm_cache = WIN_ARM64 and cache.exists() and "clang-cl" not in cache.read_text(
+        encoding="utf-8", errors="ignore").lower()
+    conf = [cmake, *(["--fresh"] if stale_arm_cache else []), "-G", "Ninja",
+            f"-DCMAKE_MAKE_PROGRAM={ninja}", "-S", str(src), "-B", str(bdir),
             "-DCMAKE_BUILD_TYPE=Release", *defs]
     build = [cmake, "--build", str(bdir), "--target", target, "-j", str(max(2, (os.cpu_count() or 4) // 2))]
     # A failed build is tried once more: CUDA 13.0's ptxas now and then fails to parse a PTX file it just wrote, and
@@ -3298,7 +3377,9 @@ def cmake_build(src, bdir, target, defs, vcvars, bat_name):
     if WIN:
         if vcvars is None:                             # #881: the build needs MSVC's environment
             fail("the Visual Studio C++ build tools were not found",
-                 "install them (Visual Studio 2019 or 2022, workload 'Desktop development with C++') and run setup again")
+                 ("install a CUDA-compatible Visual Studio with MSVC ARM64/ARM64EC and the Windows 11 SDK"
+                  if WIN_ARM64 else
+                  "install Visual Studio 2019 or 2022, workload 'Desktop development with C++'") + " and run setup again")
         bat = ROOT / bat_name
         q = lambda c: " ".join(f'"{x}"' if " " in str(x) else str(x) for x in c)  # noqa: E731
         bat.write_text(f'@echo off\r\ncall "{vcvars}" >nul\r\n{q(conf)} || exit /b 1\r\n{q(build)} && exit /b 0\r\n'
@@ -3398,7 +3479,7 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
     # a card the engine has no code for (a GPU added with --gpus, #128) needs a compile even when the source is the
     # same; the compile keeps the generations it was built for
     new_arch = local and not set(archs) <= built
-    floor = cpu_floor(cpu_info()[1])                     # "" on an AVX2 CPU: the normal engine
+    floor = cpu_build_floor(cpu_info()[1])
     engine_ok = local and (eng / EXE).exists() and meta.get("src") == src and not new_arch and \
         (meta.get("isa_floor") or "") == floor
     vision_ok = not want_vision or ((eng / VEXE).exists() and (not local or meta.get("vision_src") == vsrc))
@@ -3409,7 +3490,17 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
         archs = sorted(built | set(archs))
     nvcc, vcvars = install_build_tools({**gpu, "archs": archs, "toolkit": toolkit}, yes)
     cuda_archs = ";".join(str(x) for x in archs)
-    bdir, vdir = (ROOT / "build-cuda12", ROOT / "build-vision-cuda12") if t12 else (ROOT / "build", ROOT / "build-vision")
+    bdir, vdir = ((ROOT / "build-cuda12", ROOT / "build-vision-cuda12") if t12 else
+                  (ROOT / "build-arm64", ROOT / "build-vision-arm64") if WIN_ARM64 else
+                  (ROOT / "build", ROOT / "build-vision"))
+    arm_defs = []
+    if WIN_ARM64:
+        clang, host_cl = find_clang_cl(), find_msvc_arm64_cl(vcvars)
+        if clang is None or host_cl is None:
+            fail("the Windows ARM64 compiler toolchain is incomplete",
+                 "install native ARM64 LLVM/Clang and Visual Studio ARM64 C++ tools, then run setup again")
+        arm_defs = [f"-DCMAKE_C_COMPILER={clang}", f"-DCMAKE_CXX_COMPILER={clang}",
+                    f"-DCMAKE_CUDA_HOST_COMPILER={host_cl}"]
     if not engine_ok:
         say("  Compiling the engine for " + ", ".join(f"sm_{x}" for x in archs) + " (a card it had no code for; "
             "10-20 minutes, once) ..." if new_arch else
@@ -3419,13 +3510,13 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
                     ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_BUILD_TESTS=OFF", f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}",
                      f"-DCMAKE_CUDA_COMPILER={nvcc}", *toolkit_root_defs(nvcc), f"-DSTRATA_GGML_DIR={llama}",
                      *host_compiler_defs(True), *engine_defs(archs, toolkit),
-                     *isa_floor_defs(floor, bdir, meta)],
+                     *isa_floor_defs(floor, bdir, meta), *arm_defs],
                     vcvars, "build-strata-cuda12.bat" if t12 else "build-strata.bat")
         shutil.copy2(bdir / EXE, eng / EXE)
     if not vision_ok:
         say("  Compiling the image encoder" + (" with CUDA (10-20 minutes, once) ..." if vision == "gpu" else " ..."))
         defs = [f"-DLLAMA_DIR={llama}", f"-DSTRATA_VISION_CUDA={'ON' if vision == 'gpu' else 'OFF'}",
-                "-DSTRATA_PORTABLE=OFF", *host_compiler_defs(vision == "gpu")]   # native, like the engine
+                "-DSTRATA_PORTABLE=OFF", *host_compiler_defs(vision == "gpu"), *arm_defs]   # native, like the engine
         if vision == "gpu":
             defs += [f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}", f"-DCMAKE_CUDA_COMPILER={nvcc}",
                      *toolkit_root_defs(nvcc)]
@@ -3433,7 +3524,7 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
                     "build-vision-cuda12.bat" if t12 else "build-vision.bat")
         shutil.copy2(vdir / "bin" / VEXE, eng / VEXE)
     bindir = Path(nvcc).parent                            # the toolkit's own libraries (bin, bin/x64, lib64)
-    dirs = [str(d) for d in (bindir, bindir / "x64", bindir.parent / "lib64") if d.is_dir()]
+    dirs = [str(d) for d in (bindir, bindir / "arm64", bindir / "x64", bindir.parent / "lib64") if d.is_dir()]
     stamp.write_text(json.dumps({"source": "local", "version": source_version(), "archs": archs,
                                  "vision": vision, **({"toolkit": 12} if t12 else {}),
                                  "cuda_dirs": dirs, "src": src, "vision_src": vsrc if want_vision else None,
@@ -5083,7 +5174,7 @@ def main() -> int:
         gpu["archs"] = sorted({x["arch"] for x in chosen})  # the engine needs code for every one of them
         if multi:
             ok("GPUs: " + " + ".join(gpu_name(x) for x in chosen) + " together (the model's layers are split across them)")
-        ok(f"GPU: {gpu['name']}, {gpu['vram_gb']:.1f} GB VRAM, compute capability {cc(gpu)}, driver {gpu['driver']}")
+        ok(f"GPU: {gpu['name']}, {nvidia_mem_text(gpu)}, compute capability {cc(gpu)}, driver {gpu['driver']}")
         cuda_tk, why = cuda_choice(gpu["archs"], a.cuda)   # one engine per model: its oldest card decides
         if why:
             (warn if cuda_tk == 13 or str(a.cuda) == "12" else ok)(f"CUDA {cuda_tk}: {why}")
@@ -5094,7 +5185,7 @@ def main() -> int:
                  ("" if cuda_tk == 12 else f" (or --cuda 12: the experimental CUDA 12 engine runs with driver "
                                            f"{CUDA12_MIN_DRIVER} or newer, docs/OLDER_GPUS.md)"))
     if gpu["vram_gb"] < 11:
-        warn("less than 12 GB of " + ("GPU memory (this APU's carve-out + shared memory)" if gpu.get("uma") else "VRAM")
+        warn("less than 12 GB of " + ("GPU memory (this device's carve-out + shared memory)" if gpu.get("uma") else "VRAM")
              + ": Strata will run, but most experts stay on the CPU and it will be slow")
     ram = ram_gb()
     cpu, avx2, avx512 = cpu_info()
@@ -5118,17 +5209,22 @@ def main() -> int:
     pf = page_file_gb()
     if pf is not None and pf < 4:
         warn(page_file_advice(pf, page_file_setting()))
-    ok(f"CPU: {cpu} ({'AVX-512' if avx512 else 'AVX2' if avx2 else 'no AVX2'})")
+    ok(f"CPU: {cpu} ({'ARM64' if ARM64 else 'AVX-512' if avx512 else 'AVX2' if avx2 else 'no AVX2'})")
     link = None if hip else pcie_link(int(gpu.get("index", 0)))
     if link is not None:
         line, problem = pcie_lines(link)
         ok(line)
         if problem:
             warn(problem)
-    floor = cpu_floor(avx2)
-    if floor == "unsupported":
+    floor = cpu_build_floor(avx2)
+    if ARM64:
+        warn(f"{'Windows' if WIN else 'Linux'} ARM64 support is EXPERIMENTAL. Setup compiles the CUDA engine on this "
+             "PC and uses ggml-cpu's "
+             "ARM kernels for native/IQ experts; the x86-only Q2_0 model is not supported.")
+        a.build = True
+    elif floor == "unsupported":
         fail("this CPU has neither AVX2 nor SSE4.2; Strata needs at least SSE4.2 (Intel Nehalem, 2008, or newer)")
-    if not avx2:
+    if not ARM64 and not avx2:
         # #394 #595 #623: the ready-made engine is AVX2; an older CPU gets one compiled here, whose CPU experts run on
         # ggml-cpu's kernels for this CPU.  Experimental: measured only on newer CPUs with the older path forced, and by
         # users on a few Xeons.  A warning, not a stop.
@@ -5144,7 +5240,8 @@ def main() -> int:
         say()
         any_fits = False
         for m, d in MODELS.items():
-            verdict = "fits" if ram >= d["ram_gb"] else "tight" if ram >= d["ram_gb"] - 8 else "does not fit"
+            verdict = ("not supported on ARM64" if not arm64_model_supported(m) else
+                       "fits" if ram >= d["ram_gb"] else "tight" if ram >= d["ram_gb"] - 8 else "does not fit")
             if d.get("budget"):
                 verdict = (("EXPERIMENTAL, " if d.get("experimental") else "") +
                            f"fits with {resident_budget_gib(m, ram)} GiB of its experts in RAM, the rest "
@@ -5184,7 +5281,11 @@ def main() -> int:
     if fam.get("license"):
         say(f"  Its license: {fam['license']}")
     say()
-    names = [m for m in MODELS if family in MODELS[m].get("families", ("qwen", "swift"))]
+    if a.model and not arm64_model_supported(a.model):
+        fail("Q2_0 is not supported on ARM64 because its CPU expert kernels are x86-only",
+             "choose IQ2_XS, IQ3_XXS, IQ3_S, or the Coder model")
+    names = [m for m in MODELS if family in MODELS[m].get("families", ("qwen", "swift"))
+             and arm64_model_supported(m)]
     names.sort(key=lambda m: bool(MODELS[m].get("experimental")))   # an experimental size last, never the default
     if a.model and a.model not in names:
         # #444: say which family has that size, and (with --gguf-dir) which files Strata can run at all

@@ -2651,6 +2651,13 @@ int main(int argc, char** argv) {
     // compiled `/arch:AVX512`, so on a CPU without those features it does not fail - it executes an illegal
     // instruction at some unpredictable token.  Refusing at second zero is the whole point of P2.S3's check.
     strata::kernels::cpu::expert_set_oracle_q8_0(o.cpu_oracle_q8_0);
+#if defined(STRATA_CPU_ARM64)
+    if (o.native_preset.empty()) {
+        std::fprintf(stderr, "strata generate: the ARM64 engine supports native/IQ packs only; pass --native "
+                             "(legacy Q2_0 CPU expert kernels require x86 AVX2)\n");
+        return 2;
+    }
+#else
     // ... and nothing runs on a CPU without AVX2: every CPU expert kernel is AVX2 at least (the AVX-512 ones are
     // chosen above it), and so is ggml-cpu in the release build, which the native pack's layout load initializes
     // next.  Refused here, by name, rather than an illegal instruction in the first expert.
@@ -2681,6 +2688,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: this is the older-CPU build (ggml-cpu for %s); this CPU has AVX2, "
                                  "and the normal build is faster on it\n", isa_floor);
     }
+#endif
 
     std::string err;
     if (!o.native_head_gguf.empty() && !o.stream_token) {

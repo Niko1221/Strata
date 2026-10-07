@@ -93,6 +93,8 @@ def install(ram, found, argv, answers=None, extra=(), avx512=False, configs=()):
 
         patches = [
             mock.patch.object(setup, "ROOT", t),
+            mock.patch.object(setup, "ARM64", False),   # these hardware profiles are x86 unless a test overrides it
+            mock.patch.object(setup, "WIN_ARM64", False),
             mock.patch.object(setup, "GPU_PICK", None),
             mock.patch.object(setup, "data_folder", lambda d: (t / "data", [])),
             mock.patch.object(setup, "load_settings", lambda: {}),

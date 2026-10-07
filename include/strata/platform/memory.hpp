@@ -29,6 +29,10 @@ void unlock_resident(void* p, uint64_t bytes);
 /// `why` says so) when the query is not possible - always elsewhere than Windows.
 bool gpu_shared_memory_budget(const void* luid, uint64_t& budget, uint64_t& usage, std::string& why);
 
+/// Windows: the GPU-local budget and use for the CUDA adapter.  On RTX Spark, both the dedicated carve-out and the
+/// GPU-accessible shared segment are classified as local, unlike a discrete GPU's shared system memory.
+bool gpu_local_memory_budget(const void* luid, uint64_t& budget, uint64_t& usage, std::string& why);
+
 /// The machine's physical RAM in bytes (0 when unknown).
 uint64_t total_physical_memory();
 
