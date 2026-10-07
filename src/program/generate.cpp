@@ -10848,10 +10848,6 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata serve: RAM tier LRU elastic: %.2f GiB held now, %lld blobs given back to other "
                                      "programs since the start\n", (double) src.lru_live_bytes() / 1073741824.0,
                              (long long) src.lru_freed());
-            if (srcp == &src && src.lru_offered() > 0)
-                std::fprintf(stderr, "strata serve: RAM tier LRU offered to the OS: %lld buffers; reclaimed %lld intact, "
-                                     "%lld discarded by the OS (read again)\n", (long long) src.lru_offered(),
-                             (long long) src.lru_kept(), (long long) src.lru_lost());
             // STRATA_SPLIT_TIMING: where each verify stage's host time went, cumulative per window since the start
             // (waiting for its GPU to ring a layer, the CPU pool and plan per layer, staging the window)
             if (static const bool st_timing = std::getenv("STRATA_SPLIT_TIMING") != nullptr; st_timing)

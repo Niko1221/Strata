@@ -633,11 +633,6 @@ public:
     /// pool is where they land); STRATA_STAGE_KEEP_MIB sets it without the flag.
     void set_stage_keep(uint64_t bytes);
     uint64_t stage_keep() const { return stage_keep_; }
-    /// STRATA_LRU_OFFER: LRU buffers offered to the OS, and of the offered ones a hit reclaimed, how many still held
-    /// their blob and how many the OS had discarded (read from the drive again).
-    int64_t lru_offered() const { return lru_offered_.load(std::memory_order_relaxed); }
-    int64_t lru_kept() const { return lru_kept_.load(std::memory_order_relaxed); }
-    int64_t lru_lost() const { return lru_lost_.load(std::memory_order_relaxed); }
     /// The elastic LRU (STRATA_LRU_KEEP_FREE_GIB): a watcher keeps at least `keep_free_bytes` of RAM available to the
     /// system - when other programs take it, the LRU frees its coldest buffers (back to the OS at once, never paged);
     /// when RAM is free again it grows back towards set_stage_keep's size.
@@ -725,17 +720,10 @@ private:
     // through the layer it was asked in and the next ones (the pool computes a layer's misses before the next).
     static constexpr uint64_t kStageAge = 3;
     std::mutex stage_mu_;
-    /// The stage buffers are allocated page-aligned (VirtualAlloc on Windows) so the LRU part can be offered to the OS.
+    /// The stage buffers are allocated page-aligned (VirtualAlloc on Windows); the elastic LRU frees them one by one.
     struct StageFree { void operator()(uint8_t* p) const; };
     std::vector<std::unique_ptr<uint8_t[], StageFree>> stage_buf_;
-    /// STRATA_LRU_OFFER=1 (Windows): buffers left unused for a while are offered to the OS (OfferVirtualMemory) - it may
-    /// discard them when other programs need the RAM, never paging them out; a hit reclaims the buffer first and reads
-    /// the drive again when its contents were discarded.
-    std::vector<char> stage_offered_;
     uint64_t stage_alloc_ = 0;                ///< bytes of each stage buffer, whole pages
-    std::atomic<int64_t> lru_offered_{0}, lru_kept_{0}, lru_lost_{0};
-    bool reclaim_stage(size_t v, bool count = true);   ///< stage_mu_ held: whether buffer v still holds its blob
-    void offer_cold_stages();                 ///< stage_mu_ held: offers the buffers unused for a while
     // the elastic LRU (start_elastic_lru): the pool grows to lru_cap_ (at most stage_keep_), a watcher lowers lru_cap_
     // and frees the coldest buffers when the available RAM falls below the floor, and raises it again when RAM is free
     uint64_t lru_cap_ = ~0ull;
