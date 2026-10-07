@@ -57,6 +57,11 @@ the build tools), and the same start: `http://127.0.0.1:8080`. Later runs of `./
 start the model directly; `./setup.sh --setup` installs another model or changes the settings. Other distributions,
 WSL and compiling: [details](DETAILS.md#linux).
 
+For everyday launches after setup, use `make init`, edit `strata.yaml`, then `make run`. This starts the installed
+server directly with your model, context and network settings. `make models` lists installed model names;
+`make check` checks the config and local files without loading the GPU. Make is optional, and the same launcher
+works on Windows. See [running from a config](RUNNING.md).
+
 ## AMD cards
 
 The steps are the same as with NVIDIA: `START-HERE.bat` on Windows, `./setup.sh` on Linux. Setup finds the Radeon
@@ -268,6 +273,32 @@ or the compositor fails ("Failed to pin framebuffer"). `./setup.sh --vram-reserv
 reserve (down to 300 MiB) until it fits, and warns if the card then ends nearly full. If the start stops with "no VRAM
 is left for the expert cache", that log line says how much is short; an 8K context and `--draft-vocab en` at setup
 free the most.
+
+**Existing model files:** setup reuses complete GGUF files, including ones copied in without a `.done` finish mark.
+It checks their tensor directory locally, without asking the download server or rewriting them. An existing
+incomplete GGUF is left unchanged and setup stops; downloads interrupted in a `.part` file still resume when the
+destination GGUF is absent. The same reuse rule applies to the vision encoder. Published SHA-256 checks still
+apply where the model has them.
+
+To replace this model's files explicitly, stop Strata and run:
+
+```bash
+./setup.sh --model IQ2_XS --force-download --yes --no-start
+```
+
+On Windows use `START-HERE.bat` with the same flags. Name `--family` too for Swift, Coder or Unsloth. This downloads
+the selected model's shards and its enabled vision encoder afresh, even when completion marks or matching sizes
+are present, and rebuilds the prepared pack from the new files. Each old file and its finish mark stay until
+the staged replacement passes its GGUF and available published or pinned SHA-256 checks. The pack is invalidated
+before any shard changes. A `.strata-replacement-incomplete` file stays in the model folder until every shard
+and the enabled vision encoder pass their checks. If replacement stops early, normal setup refuses to repack
+that folder: rerun the same command with `--force-download` to replace the entire set. Once the files pass their
+checks, a failed pack build can retry with normal setup. Fresh transfers need room for the peak allocation in
+shard order (a staged shard adds space, then its old file is released), plus pack regeneration. Pinned sizes or
+the source's reported file sizes determine the estimate; if a source reports no size, setup uses a conservative
+estimate. Hard links and symlinks whose targets remain on disk do not count as released space. The flag does not
+replace the shared MTP draft layer or engine. It cannot be combined with `--gguf-dir`, `--check`, `--update` or
+`--rollback-engine`.
 
 **Model files downloaded by hand, or from a mirror (#495):** setup's step 5 prints the folder it expects them in
 (`Strata-data\models\<SIZE>\`, e.g. `Strata-data\models\IQ3_XXS\`): put them there with their original names, or

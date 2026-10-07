@@ -295,6 +295,14 @@ class WhatARefusalDoesToTheCaller(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         (Path(self.tmp.name) / "engine").mkdir(parents=True, exist_ok=True)
+        (Path(self.tmp.name) / "CMakeLists.txt").write_text("project(strata VERSION 0.1.40)\n")
+        root = mock.patch.object(setup, "ROOT", Path(self.tmp.name))
+        root.start()
+        self.addCleanup(root.stop)
+        # Availability HEAD requests are separate from the mocked archive download and digest lookup.
+        head = mock.patch.object(setup.urllib.request, "urlopen", return_value=io.BytesIO())
+        head.start()
+        self.addCleanup(head.stop)
 
     def fake_download(self, url, dst, what=None):
         with zipfile.ZipFile(dst, "w") as z:

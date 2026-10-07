@@ -5325,18 +5325,17 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
     return out
 
 
-def main() -> int:
+def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--engine", choices=["mock", "strata"], default="mock")
-    ap.add_argument("--config", help="strata engine config (JSON: exe, args, cwd, tokenizer, model_name), "
-                                     "written by setup.py")
+    ap.add_argument("--config", help="setup JSON config, or launch YAML file (see docs/RUNNING.md)")
     ap.add_argument("--host", default=None,
                     help="the address to listen on: 127.0.0.1 = this PC only (the default), 0.0.0.0 = also other devices "
                          "on your network (set an API key); also \"host\" in the config")
     ap.add_argument("--script", action="append",
                     help="the mock engine's answer (default: a short greeting); given more than once, requests get "
                          "them in turn and the last one repeats")
-    ap.add_argument("--port", type=int, default=8095)
+    ap.add_argument("--port", type=int, default=None, help="listen port (config's port, otherwise 8095)")
     ap.add_argument("--gpu", help="the GPU to run on, as nvidia-smi numbers them, or several for a layer split "
                                   "(\"0,2\"; also \"gpu\" in the config)")
     ap.add_argument("--tokenizer", default=str(ROOT / "pack/full/tokenizer"),
@@ -5345,7 +5344,7 @@ def main() -> int:
     ap.add_argument("--fit-max-tokens", action="store_true",
                     help="clamp max_tokens to the remaining context instead of rejecting the request "
                          "(default: reject with 400, like llama.cpp; also \"fit_max_tokens\": true in the config)")
-    ap.add_argument("--api-key", default=os.environ.get("STRATA_API_KEY", ""),
+    ap.add_argument("--api-key", default=None,
                     help="require this key on /v1/* (Authorization: Bearer ... or x-api-key); also $STRATA_API_KEY")
     ap.add_argument("--mcp-config", help="a JSON file with MCP servers in Claude Desktop's format ({\"mcpServers\": "
                                          "{...}}); the web app's chat can use their tools (also \"mcp_servers\" in "
@@ -5366,11 +5365,25 @@ def main() -> int:
     ap.add_argument("--slot-save-path", default=None, metavar="DIR",
                     help="enable POST /slots/0?action=save|restore {\"filename\": NAME} (llama-server's API): the "
                          "conversation the engine holds, to or from DIR/NAME (also \"slot_save_path\" in the config)")
-    a = ap.parse_args()
-    cfg = json.loads(Path(a.config).read_text(encoding="utf-8-sig")) if a.config else {}   # Notepad adds a BOM
+    a = ap.parse_args(argv)
+    try:
+        cfg = runconfig.load(a.config) if a.config else {}
+    except (OSError, ValueError) as e:
+        ap.error(str(e))
+    a.port = a.port if a.port is not None else cfg.get("port", 8095)
+    launch_yaml = a.config and Path(a.config).suffix.lower() in (".yaml", ".yml")
+    if a.api_key is None:
+        a.api_key = cfg.get("api_key", "") if launch_yaml else os.environ.get("STRATA_API_KEY") or cfg.get("api_key", "")
     if a.gpu is not None:
         cfg["gpu"] = int(a.gpu) if a.gpu.strip().isdigit() else a.gpu
     a.host = a.host or cfg.get("host") or "127.0.0.1"   # issue #26: the run scripts pass no --host, the config can
+    if launch_yaml:
+        # Check CLI overrides too, before binding a socket or loading the model.
+        from serve.launchconfig import network
+        try:
+            network(a.host, a.api_key)
+        except ValueError as e:
+            ap.error(str(e))
     try:                                                # before the minutes of loading: is the port free?
         Server((a.host, a.port), BaseHTTPRequestHandler).server_close()
     except OSError as e:
@@ -5460,8 +5473,10 @@ def main() -> int:
         raise SystemExit(f"[strata] config {e}")
     if svc.aliases:
         print(f"[strata] model aliases: {', '.join(svc.aliases)}", flush=True)
-    if ("STRATA_API_KEY" in os.environ and not os.environ["STRATA_API_KEY"].strip()) or             any(x == "--api-key" and i + 1 < len(sys.argv) and not sys.argv[i + 1].strip() or x.strip() == "--api-key="
-                for i, x in enumerate(sys.argv)):
+    command_args = sys.argv[1:] if argv is None else argv
+    if (not launch_yaml and "STRATA_API_KEY" in os.environ and not os.environ["STRATA_API_KEY"].strip()) or \
+            any(x == "--api-key" and i + 1 < len(command_args) and not command_args[i + 1].strip() or
+                x.strip() == "--api-key=" for i, x in enumerate(command_args)):
         # #213: an empty key would switch authentication off without a word
         print("[strata] an API key was given but it is empty: set a key, or leave --api-key / STRATA_API_KEY out",
               file=sys.stderr)
@@ -5471,7 +5486,7 @@ def main() -> int:
     except ValueError as e:
         print(f'[strata] {e}: set a key, or leave --api-key / STRATA_API_KEY / "api_key" out', file=sys.stderr)
         return 2
-    if not svc.api_key and "api_key" in cfg:             # #569: written, but empty: the server has none (a warning, not a stop)
+    if not svc.api_key and "api_key" in cfg and not launch_yaml:  # YAML already checks keys and requires one for LAN
         print("[strata] the api_key in the config is empty: this server has no API key (anyone who can reach it can "
               "use it); set one, or leave api_key out", file=sys.stderr, flush=True)
     svc.cors_origins = origins_of(cfg.get("cors_origins"), "cors_origins", wildcard=True)

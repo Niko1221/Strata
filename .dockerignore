@@ -25,3 +25,9 @@ strata-*.json
 strata-*.txt
 run-*.sh
 run-*.bat
+
+# Local launch settings may contain API keys.
+strata.yaml
+strata.yaml.bak
+strata.yaml.tmp
+strata.shared-settings.json

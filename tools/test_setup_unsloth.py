@@ -185,9 +185,10 @@ class Base(unittest.TestCase):
             mock.patch.object(setup, "pip_install", lambda *a, **k: None),
             mock.patch.object(setup, "get_llama_cpp", lambda: self.t / "llama.cpp"),
             mock.patch.object(setup, "get_prebuilt", lambda *a, **k: eng),
+            mock.patch.object(setup, "build_engine_hip", lambda *a, **k: eng),  # AMD tests need no ROCm installation
             mock.patch.object(setup, "download", fake_download),
             mock.patch.object(setup, "check_shards", lambda shards: None),
-            mock.patch.object(setup, "verify_sha256", lambda s, size, sha: self.verified.append((s.name, size, sha))),
+            mock.patch.object(setup, "verify_sha256", lambda s, size, sha, **k: self.verified.append((s.name, size, sha))),
             mock.patch.object(setup, "run", fake_run),
             mock.patch.object(setup, "refresh_draft_vocab", lambda *a, **k: None),
             mock.patch.object(setup, "write_run_script", lambda tag, cfg, port, *_: self.t / f"start-{tag}.bat"),

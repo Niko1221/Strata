@@ -1,4 +1,4 @@
-"""serve/runconfig.py - #564: the web page's Settings view of the run config (strata-<model>.json).
+"""serve/runconfig.py - #564: the web page's Settings view of JSON or YAML run configs.
 
 A short list of documented keys can be read and changed from Strata's own page (GET / POST /config).  Everything
 else in the file - the keys setup writes, the network and security keys (host, api_key, cors_origins,
@@ -10,6 +10,7 @@ used from the next start on.
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 from pathlib import Path
@@ -71,7 +72,8 @@ def view(cfg: dict, path: str | Path) -> dict:
 
 
 def _number(key, v, whole=False, lo=0.0, hi=None, lo_open=False):
-    if isinstance(v, bool) or not isinstance(v, (int, float)) or (whole and v != int(v)) or \
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or (isinstance(v, float) and not math.isfinite(v)) or \
+            (whole and v != int(v)) or \
             (v <= lo if lo_open else v < lo) or (hi is not None and v > hi):
         rng = f"{'more than' if lo_open else 'at least'} {lo:g}" + (f" and at most {hi:g}" if hi is not None else "")
         raise ValueError(f"{key}: expected a {'whole ' if whole else ''}number, {rng}, not {v!r}")
@@ -162,17 +164,27 @@ def apply(cfg: dict, changes: dict) -> tuple[dict, list[str]]:
 
 
 def save(path: str | Path, cfg: dict) -> Path:
-    """The config written whole (a temporary file moved over the old one), the earlier one kept as <name>.bak."""
+    """Write JSON, or the changed Settings in a YAML overlay, with the earlier file kept as <name>.bak."""
     path = Path(path)
+    if path.suffix.lower() in (".yaml", ".yml"):
+        from serve import launchconfig
+        contents = launchconfig.settings_text(path, cfg)
+    else:
+        contents = json.dumps(cfg, indent=1)
     bak = path.with_name(path.name + ".bak")
     shutil.copyfile(path, bak)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
+    tmp.write_text(contents, encoding="utf-8")
     os.replace(tmp, path)
     return bak
 
 
 def load(path: str | Path) -> dict:
+    if Path(path).suffix.lower() in (".yaml", ".yml"):
+        from serve import launchconfig
+        # Reads and web edits do not bind a socket. The launcher/server check the
+        # effective host and key after applying any command-line overrides.
+        return launchconfig.load(path, validate_network=False)
     cfg = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     if not isinstance(cfg, dict):
         raise ValueError(f"{Path(path).name} is not a JSON object")

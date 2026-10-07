@@ -61,3 +61,9 @@ build-vision-cuda12.bat
 
 /.ccache/
 /.rocm-win/
+
+# Local launch settings can contain API keys; keep the example in source.
+/strata.yaml
+/strata.yaml.bak
+/strata.yaml.tmp
+/strata.shared-settings.json

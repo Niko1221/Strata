@@ -27,8 +27,9 @@ at least 1 - an explicit --rope-scaling none is refused for such a context), --v
 answers, no questions), --setup (install another model / change settings instead of starting), --no-start,
 --host 0.0.0.0 --api-key KEY (reach it from other devices on your network), --experimental-speed-projection on|off
 (EXPERIMENTAL, off by default),
---models-dir DIR, --gguf-dir DIR (use GGUF files you already have), --build (compile instead of the ready-made
-engine), --check (only check this PC), --resident-budget-gib N (UD-Q4_K_XL's or UD-IQ4_XS's experts in RAM),
+--models-dir DIR, --gguf-dir DIR (use GGUF files you already have), --force-download (replace this model's GGUFs),
+--build (compile instead of the ready-made engine), --check (only check this PC),
+--resident-budget-gib N (UD-Q4_K_XL's or UD-IQ4_XS's experts in RAM),
 --kv-streaming on|off|auto.
 
 Setup recommends, it never forces: the recommended answers are the defaults (--yes, or Enter), and a bigger choice
@@ -1267,46 +1268,45 @@ def free_gb(path):
 
 
 # ------------------------------------------------------------------------------------------------ downloads
-def drop_archive(z: Path) -> None:
-    """An unpacked or refused engine archive and its .done mark go: a refused one kept them, and every later run
-    reused it ("already downloaded") instead of the published one (PR #324)."""
-    z.unlink(missing_ok=True)
-    z.with_name(z.name + ".done").unlink(missing_ok=True)
+REPLACEMENT_INCOMPLETE = ".strata-replacement-incomplete"
 
 
-def download(url, dst: Path, what=None):
-    """Resumable HTTP(S) download with a progress line; `file://` and plain paths are copied (tests, mirrors).
-    A finished file gets a <name>.done mark, so a later run skips it without asking the server."""
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    if dst.exists() and done(dst):
-        ok(f"{what or dst.name} already downloaded")
-        return
-    if not url.startswith(("http://", "https://")):
-        src = Path(url[7:] if url.startswith("file://") else url)
-        if not src.exists():
-            fail(f"not found: {src}")
-        shutil.copyfile(src, dst)
-        mark(dst)
-        ok(f"{what or dst.name} copied")
-        return
+def replacement_space(shards: list[Path], sizes: list[int]) -> int:
+    """Peak additional bytes in download order: stage a shard, then release its old file."""
+    def released(path):
+        if not path.is_file() or path.is_symlink():
+            return 0
+        stat = path.stat()
+        return stat.st_size if stat.st_nlink == 1 else 0  # another model may still hold a hard link
+
+    used = peak = 0
+    for shard, size in zip(shards, sizes):
+        part = shard.with_name(shard.name + ".part")
+        used -= released(part)                       # force discards this just before its transfer
+        peak = max(peak, used + size)
+        used += size - released(shard)
+    return peak
+
+
+def download_info(url, what=None):
+    """The selected source URL, transfer size and ModelScope identity; no file bytes downloaded."""
     ms = ms_file(url) if model_source() == "modelscope" else None
     if ms is not None:
         if reachable(ms_url(*ms), timeout=30):
             url = ms_url(*ms)
         else:
-            warn(f"{what or dst.name}: ModelScope does not answer; downloading it from {hf_endpoint()}")
+            warn(f"{what or url.rsplit('/', 1)[-1]}: ModelScope does not answer; downloading it from {hf_endpoint()}")
             ms = None
-    part = dst.with_name(dst.name + ".part")
-    total = 0
     for attempt in range(5):
         try:
             req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "strata-setup"})
-            total = int(urllib.request.urlopen(req, timeout=60).headers.get("Content-Length", 0))
-            break
+            with urllib.request.urlopen(req, timeout=60) as r:
+                total = int(r.headers.get("Content-Length", 0))
+            return url, total, ms
         except urllib.error.HTTPError as e:
-            if e.code == 404 and hf_unpinned(url) != url:  # #214: the pinned revision is gone from the repository
-                warn(f"{what or dst.name}: not at the pinned revision any more; downloading the repository's "
-                     "current file")
+            if e.code == 404 and hf_unpinned(url) != url:
+                warn(f"{what or url.rsplit('/', 1)[-1]}: not at the pinned revision any more; downloading the "
+                     "repository's current file")
                 url = hf_unpinned(url)
                 continue
             if attempt == 4:
@@ -1318,7 +1318,64 @@ def download(url, dst: Path, what=None):
                 fail(f"cannot reach {url.split('/')[2]} ({e})",
                      "check your internet connection and run it again" + source_hint(url))
             time.sleep(5)
-    if dst.exists() and total and dst.stat().st_size == total:    # finished by an older setup (no mark yet)
+
+
+def drop_archive(z: Path) -> None:
+    """An unpacked or refused engine archive and its .done mark go: a refused one kept them, and every later run
+    reused it ("already downloaded") instead of the published one (PR #324)."""
+    z.unlink(missing_ok=True)
+    z.with_name(z.name + ".done").unlink(missing_ok=True)
+
+
+def finish_download(part: Path, dst: Path, *, force=False, expected=None, meta=None):
+    """Validate staged bytes before replacing a file or its finish mark."""
+    staged_mark = part.with_name(part.name + ".done")
+    staged_mark.unlink(missing_ok=True)               # never trust a hash cached for an earlier .part
+    if force and dst.suffix.lower() == ".gguf":
+        check_shards([part])                         # all structural rules must pass before the original changes
+    for check in (meta, expected):
+        if check is not None and check[1]:
+            verify_sha256(part, *check)
+    # A stop between these operations must not leave the old hash attached to new bytes.
+    dst.with_name(dst.name + ".done").unlink(missing_ok=True)
+    part.replace(dst)
+    if staged_mark.exists():
+        staged_mark.replace(dst.with_name(dst.name + ".done"))
+    else:
+        mark(dst)
+
+
+def download(url, dst: Path, what=None, *, force=False, expected=None, info=None):
+    """Resumable HTTP(S) download with a progress line; `file://` and plain paths are copied (tests, mirrors).
+    A finished file gets a <name>.done mark. Existing GGUFs without one are checked locally and reused;
+    an incomplete existing GGUF is left alone unless force=True. Forced transfers use .part and replace
+    the old file only after local GGUF checks and any published/pinned hashes pass.
+    expected is an optional (size, SHA-256) pair supplied by the caller."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    part = dst.with_name(dst.name + ".part")
+    if not force and dst.exists():
+        if done(dst):
+            ok(f"{what or dst.name} already downloaded")
+            return
+        if dst.suffix.lower() == ".gguf":
+            if whole_shard(dst):
+                mark(dst, "whole (checked against its own tensor directory)")
+                ok(f"{what or dst.name} already present (checked locally)")
+                return
+            fail(f"{dst.name} already exists but is not a whole GGUF file; left unchanged",
+                 "use --force-download to replace it, or provide a complete file with --gguf-dir")
+    if force:
+        part.unlink(missing_ok=True)                   # an explicit fresh transfer, not an old partial download
+    if not url.startswith(("http://", "https://")):
+        src = Path(url[7:] if url.startswith("file://") else url)
+        if not src.exists():
+            fail(f"not found: {src}")
+        shutil.copyfile(src, part)
+        finish_download(part, dst, force=force, expected=expected)
+        ok(f"{what or dst.name} copied")
+        return
+    url, total, ms = info if info is not None else download_info(url, what or dst.name)
+    if not force and dst.exists() and total and dst.stat().st_size == total:  # older setup, no mark yet
         mark(dst)
         ok(f"{what or dst.name} already downloaded")
         return
@@ -1355,14 +1412,10 @@ def download(url, dst: Path, what=None):
     if total and part.stat().st_size != total:
         fail(f"could not finish downloading {dst.name}: {part.stat().st_size:,} bytes on disk, the server says {total:,}",
              "check your internet connection and run it again (the download resumes where it stopped)")
-    part.replace(dst)
     meta = ms_meta(*ms) if ms is not None else None
-    if meta is not None and meta[1]:
-        verify_sha256(dst, meta[0], meta[1])           # ModelScope's published hash; kept in the finish mark
-    else:
-        if ms is not None:
-            warn(f"{what or dst.name}: ModelScope publishes no SHA-256 for it: the file is not verified")
-        mark(dst)
+    if ms is not None and (meta is None or not meta[1]):
+        warn(f"{what or dst.name}: ModelScope publishes no SHA-256 for it: the file is not verified")
+    finish_download(part, dst, force=force, expected=expected, meta=meta)
     ok(f"{what or dst.name} downloaded")
 
 
@@ -1374,7 +1427,7 @@ def whole_shard(s: Path) -> bool:
         g = GGUFFile(s)
         return s.stat().st_size >= g.data_start + max((t.offset + (t.expected_bytes() or 0) for t in g.tensors),
                                                      default=0)
-    except (OSError, ValueError, struct.error):
+    except (OSError, ValueError, KeyError, struct.error):
         return False
 
 
@@ -1451,15 +1504,18 @@ def gguf_dir_problem(folder: Path, first: Path, fam: dict, model: str) -> tuple 
     return f"{folder} has no {fam['title']} {model} file", hint
 
 
-def verify_sha256(s: Path, size: int, sha: str) -> None:
+def verify_sha256(s: Path, size: int, sha: str, *, remove_bad=True) -> None:
     """A shard's size and SHA-256 against the pinned values (the Unsloth file); the result is kept in its finish mark,
-    so the ~5 minutes of hashing 111 GB happen once.  A wrong file is deleted, so the next run downloads it again."""
+    so the ~5 minutes of hashing 111 GB happen once. New downloads with a wrong hash are deleted; a user's
+    existing file can be left intact with remove_bad=False."""
     m = s.with_name(s.name + ".done")
     if m.exists() and f"sha256 {sha}" in m.read_text(encoding="utf-8", errors="replace"):
         return
     have = s.stat().st_size if s.exists() else -1
     if have != size:
-        fail(f"{s.name} is {have:,} bytes, not {size:,}", "delete it and run setup again (the download restarts)")
+        fail(f"{s.name} is {have:,} bytes, not {size:,}",
+             "use --force-download to replace the existing model files" if not remove_bad else
+             "delete it and run setup again (the download restarts)")
     say(f"  checking {s.name} (SHA-256, {size / 1e9:.1f} GB) ...")
     h = hashlib.sha256()
     with open(s, "rb") as f:
@@ -1469,6 +1525,9 @@ def verify_sha256(s: Path, size: int, sha: str) -> None:
                 break
             h.update(b)
     if h.hexdigest() != sha:
+        if not remove_bad:
+            fail(f"{s.name} has the wrong SHA-256 ({h.hexdigest()}, expected {sha}); left unchanged",
+                 "use --force-download to replace the existing model files")
         s.unlink(missing_ok=True)
         m.unlink(missing_ok=True)
         fail(f"{s.name} has the wrong SHA-256 ({h.hexdigest()}, expected {sha}): deleted",
@@ -1510,7 +1569,7 @@ def check_shards(shards):
             fail(f"missing {s}")
         try:
             g = GGUFFile(s)
-        except (ValueError, struct.error) as e:
+        except (OSError, ValueError, KeyError, struct.error) as e:
             fail(f"{s.name} is not a whole GGUF shard ({e})", "delete it and run setup again")
         need = g.data_start + max((t.offset + (t.expected_bytes() or 0) for t in g.tensors), default=0)
         have = s.stat().st_size
@@ -4558,6 +4617,9 @@ def main() -> int:
     ap.add_argument("--models-dir", help="where the GGUF files go (default: <data folder>/models)")
     ap.add_argument("--gguf-dir", help="use GGUF files you already have (a folder with every shard: "
                                        "<name>-00001-of-0000N.gguf ... -0000N-of-0000N.gguf)")
+    ap.add_argument("--force-download", action="store_true",
+                    help="download this model's GGUFs and enabled vision encoder again, replacing existing files "
+                         "and rebuilding its prepared pack; normal setup reuses complete local GGUFs")
     ap.add_argument("--yes", action="store_true", help="accept the recommended answers")
     ap.add_argument("--setup", action="store_true", help="install another model or change settings")
     ap.add_argument("--no-start", action="store_true", help="install only, do not start the model")
@@ -4611,6 +4673,10 @@ def main() -> int:
                          "sycl = Intel Arc, EXPERIMENTAL: Linux, built from source (docs/INTEL_ARC.md)")
     ap.add_argument("--skip-build", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
+    if a.force_download:
+        if a.gguf_dir or a.update or a.check or a.rollback_engine:
+            ap.error("--force-download cannot be combined with --gguf-dir, --update, --check or --rollback-engine")
+        a.setup = True                                # a replacement must reach setup, not the installed-start path
     if a.source:
         os.environ["STRATA_SOURCE"] = a.source
     if a.inspect:                                      # headers only: nothing is installed
@@ -5114,28 +5180,53 @@ def main() -> int:
     problem = gguf_dir_problem(models_dir, shards[0], fam, model) if a.gguf_dir else None
     if problem:                                        # #444: files Strata cannot run, or another choice's files
         fail(*problem)
-    if not a.gguf_dir and not all(sh.exists() and done(sh) for sh in shards):
+    if not a.force_download and (models_dir / REPLACEMENT_INCOMPLETE).exists():
+        fail(f"model replacement is incomplete in {models_dir}; these shards cannot be repacked",
+             "rerun setup for this model with --force-download to replace the entire shard set")
+    if not a.force_download and not a.gguf_dir and not all(sh.exists() and done(sh) for sh in shards):
         for r in elsewhere:                            # already downloaded in a Strata folder on another drive
             cand = [r / "models" / tag / sh.name for sh in shards]
-            if all(c.exists() and done(c) for c in cand):
+            if not (cand[0].parent / REPLACEMENT_INCOMPLETE).exists() and all(c.exists() and done(c) for c in cand):
                 models_dir, shards = cand[0].parent, cand
                 ok(f"model files found in {models_dir}")
                 break
+    local_shards = {s for s in shards if s.exists()}
+    whole_local = set()
     for s in shards:                                   # #173: a whole file copied in by hand has no finish mark
-        if s.exists() and not done(s) and whole_shard(s):
+        if not a.force_download and s.exists() and not done(s) and whole_shard(s):
+            whole_local.add(s)
             try:
                 mark(s, "whole (checked against its own tensor directory)")
             except OSError as e:                       # a read-only folder (--gguf-dir on a share): the file is still whole
                 warn(f"{s.name} is whole but its finish mark cannot be written ({e})")
-    have_model = all(s.exists() and (done(s) or a.gguf_dir) for s in shards)
+    have_model = all(s.exists() and (done(s) or a.gguf_dir or s in whole_local) for s in shards)
     # #425 (jctaborda): a download that resumes needs room only for what is still missing - the finished shards and
     # the .part files already on the disk count
-    on_disk = sum(f.stat().st_size for s in shards for f in (s, s.with_name(s.name + ".part")) if f.is_file()) / 1e9
+    on_disk = sum(f.stat().st_size for s in shards for f in
+                  ((s,) if a.force_download else (s, s.with_name(s.name + ".part"))) if f.is_file()) / 1e9
     to_fetch = 0 if a.gguf_dir or have_model else max(MODELS[model]["download_gb"] - on_disk, 0)
+    transfers = {}
+    if a.force_download:
+        sizes = []
+        for s in shards:
+            pinned = fam.get("sha256", {}).get(s.name)
+            if pinned:
+                sizes.append(pinned[0])
+            else:
+                info = download_info(fam["hf"].format(q=model) + s.name, s.name)
+                transfers[s] = info
+                size = info[1]
+                if not size and info[2] is not None:
+                    size = (ms_meta(*info[2]) or (0, ""))[0]
+                if not size:
+                    # Without a per-file size, the whole published model size bounds this shard's estimate.
+                    warn(f"{s.name}: the source reports no size; using a conservative disk estimate")
+                sizes.append(size or math.ceil(MODELS[model]["download_gb"] * 1e9))
+        to_fetch = replacement_space(shards, sizes) / 1e9
     # count only what step 6 will still write: a pack whose experts.bin is already there (the AVX-512 Q2_0
     # conversion, or the low-RAM mode's copy) and an existing MTP draft layer need no new room
     pack_now = find_in(roots, f"packs/{tag.lower()}") or data / "packs" / tag.lower()
-    pack_bin = (pack_now / "experts.bin").exists() and (pack_now / "index.txt").exists()
+    pack_bin = not a.force_download and (pack_now / "experts.bin").exists() and (pack_now / "index.txt").exists()
     mtp_have = find_in(roots, "mtp/rt/experts.bin") is not None
     q2_avx = model == "Q2_0" and avx512 and family == "qwen"
     need = to_fetch + (2 if mtp_have else 8) + \
@@ -5187,14 +5278,31 @@ def main() -> int:
              "update Strata (or compile the engine with --build) and run setup again")
     ok(f"engine: {eng / EXE}")
 
+    pack = pack_now
+    replacement = models_dir / REPLACEMENT_INCOMPLETE
+    if a.force_download:
+        # Persist before any shard can change. A normal retry must not repack a mixture of old and new revisions.
+        models_dir.mkdir(parents=True, exist_ok=True)
+        with replacement.open("w", encoding="utf-8") as f:
+            f.write(f"Incomplete replacement of {tag}: rerun setup with --force-download.\n")
+            f.flush()
+            os.fsync(f.fileno())
+        # A pack made before the replacement cannot be reused.
+        for name in ("index.txt", "manifest.json", "native_experts.txt", "experts.bin", "experts.bin.src.json",
+                     "tokenizer/vocab.json", "tokenizer/chat_template.jinja"):
+            (pack / name).unlink(missing_ok=True)
+
     # ---- 5. the model files
-    step(5, f"downloading {fam['title']} {model}")
+    step(5, f"{'replacing' if a.force_download else 'checking'} {fam['title']} {model} model files")
     if not a.gguf_dir:
-        missing = [s.name for s in shards if not (s.exists() and done(s))]
+        missing = [s.name for s in shards if a.force_download or not (s.exists() and (done(s) or s in whole_local))]
         if missing:                                    # #495: files downloaded by hand go here, or --gguf-dir
             say(f"  The model files go in {models_dir}")
-            say(f"  Files you already have: put them here with their original names ({', '.join(missing)}), or use "
-                "--gguf-dir <their folder>.")
+            if a.force_download:
+                say("  --force-download: replacing this model's files, including ones already present.")
+            else:
+                say(f"  Files you already have: put them here with their original names ({', '.join(missing)}), or use "
+                    "--gguf-dir <their folder>.")
             if model_source() == "modelscope":
                 say(f"  Downloading from ModelScope ({ms_endpoint()}); --source huggingface downloads from Hugging Face")
                 warn("ModelScope serves the repositories' current files, not the pinned revisions: each file is checked "
@@ -5203,12 +5311,14 @@ def main() -> int:
             elif hf_endpoint() != HF_DEFAULT:
                 say(f"  Downloading from {hf_endpoint()} (HF_ENDPOINT)")
         for s in shards:
-            if s.exists() and done(s):
+            if not a.force_download and s.exists() and (done(s) or s in whole_local):
                 ok(f"{s.name} already downloaded")
                 continue
             # the original's shard 2 is the same file for all its sizes and the Coder: reuse one that is already here
-            other = [p for p in Path(a.models_dir).glob("*/Qwen3.8-Flash-Next-GSQ-RCO-*-00002-of-00002.gguf") if done(p)]
-            if family in ("qwen", "coder") and s.name.endswith("00002-of-00002.gguf") and other and not s.exists():
+            other = [p for p in Path(a.models_dir).glob("*/Qwen3.8-Flash-Next-GSQ-RCO-*-00002-of-00002.gguf")
+                     if done(p) and not (p.parent / REPLACEMENT_INCOMPLETE).exists()]
+            if not a.force_download and family in ("qwen", "coder") and \
+                    s.name.endswith("00002-of-00002.gguf") and other and not s.exists():
                 try:
                     os.link(other[0], s)
                     mark(s)
@@ -5216,28 +5326,35 @@ def main() -> int:
                     continue
                 except OSError:
                     pass
-            download(fam["hf"].format(q=model) + s.name, s)
+            download(fam["hf"].format(q=model) + s.name, s,
+                     **({"force": True, "expected": fam.get("sha256", {}).get(s.name), "info": transfers.get(s)}
+                        if a.force_download else {}))
     check_shards(shards)
     for s in shards:                                   # the Unsloth files: pinned sizes and SHA-256
         if s.name in fam.get("sha256", {}):
-            verify_sha256(s, *fam["sha256"][s.name])
+            verify_sha256(s, *fam["sha256"][s.name],
+                          **({"remove_bad": False} if s in local_shards and not a.force_download else {}))
     ok("model files present")
     mmproj = Path(a.models_dir) / fam["mmproj"]
-    if not mmproj.exists():
+    if not a.force_download and not mmproj.exists():
         mmproj = find_in(roots, f"models/{fam['mmproj']}") or mmproj
     if vision != "none":
         if not mmproj.exists() and a.gguf_dir and (Path(a.gguf_dir) / fam["mmproj"]).exists():
             mmproj = Path(a.gguf_dir) / fam["mmproj"]
         else:
-            download(fam["mmproj_hf"] + fam["mmproj"], mmproj, "vision encoder")
+            download(fam["mmproj_hf"] + fam["mmproj"], mmproj, "vision encoder",
+                     **({"force": True} if a.force_download else {}))
         ok(f"vision encoder: {mmproj}")
         if vision == "cpu" and "BF16" in mmproj.name:       # a tip only (recommend, never force; #625)
             say("       tip: on the CPU a Q8_0 copy of this encoder is a third smaller and about as exact (embedding "
                 "cosine 0.999 vs BF16); see 'A Q8_0 encoder' in docs/DETAILS.md")
 
+    if a.force_download:
+        # Only the complete, validated shard/encoder set can be repacked. Later pack failures can retry normally.
+        replacement.unlink()
+
     # ---- 6. the pack and the MTP draft layer
     step(6, "preparing the model for Strata")
-    pack = find_in(roots, f"packs/{tag.lower()}") or data / "packs" / tag.lower()
     env = dict(os.environ, STRATA_GGUF_PY=str(llama / "gguf-py"))
     if model == "Q2_0" and avx512 and family == "qwen":
         # the Q2_0 experts repacked for the AVX-512 kernel (the measured speed): a one-time ~40 GB conversion

@@ -109,6 +109,11 @@ download stops, run it again: it continues where it left off. Your browser opens
 its window to stop the model. `UPDATE.bat` (`./update.sh`) updates Strata without starting it. Updating, Docker,
 several cards, where the files go and every option: [docs/INSTALL.md](docs/INSTALL.md).
 
+For everyday launches from a config: `make init`, edit `strata.yaml`, then `make run`. Pick an installed model,
+context size and optional network access with an API key. `make models` lists installed names and `make check`
+validates the launch without loading the GPU. Make is optional: `.venv/bin/python run.py run` starts the same
+config. See [running from YAML](docs/RUNNING.md).
+
 ## Which model should I pick?
 
 The installer recommends one for your RAM. The same model comes in several sizes, compressed more or less. Smaller

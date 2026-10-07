@@ -1,0 +1,28 @@
+# Copy with `make init`, then edit strata.yaml. Models must already be installed.
+# `make models` lists names: iq2_xs, q2_0, coder-q2_0, swift-iq3_s, ...
+model: iq2_xs
+# Or replace model with a setup JSON path (relative to this YAML file):
+# config: strata-coder-q2_0.json
+
+# The full context in tokens, including prompt and answer. Omit to keep setup's size.
+# context: 32768
+# Optional engine settings; omitted settings keep setup's values.
+# kv: int8                    # fp16 | int8 | q4_0 | k8v4
+# vram_reserve_mib: 2048       # leave this much VRAM free for other programs
+
+host: 127.0.0.1               # 0.0.0.0 allows other devices; requires an API key
+port: 8080
+# API keys can come from the environment, so they need not live in this file:
+# export STRATA_API_KEY='your-secret'
+# api_key_env: STRATA_API_KEY  # when set, this variable must contain a key
+# api_key: "your-secret"      # alternative; keep your local file out of git
+
+open_browser: false
+# lazy_load: true             # load on the first request
+# idle_unload_s: 300          # give back VRAM after five minutes without requests
+# fit_max_tokens: true        # shorten replies that would exceed the context
+# reasoning_budget_tokens: 4096
+# sampling:
+#   temperature: 0.7
+#   top_p: 0.95
+#   top_k: 20
