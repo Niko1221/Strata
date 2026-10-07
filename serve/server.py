@@ -2193,6 +2193,45 @@ def gpu_list(cfg: dict) -> list[int]:
     return [int(str(x).strip()) for x in items if str(x).strip() != ""]
 
 
+def head_device_value(cfg: dict) -> int | None:
+    """Delta 3: the config's "head_device" - the card (numbered as nvidia-smi numbers them, the same numbering
+    "gpu" uses) that runs the output head and, with it, the MTP draft layer.  None when the config names none: the
+    engine's default, the last stage as placed.  ValueError for a card that is not one of this model's."""
+    v = cfg.get("head_device")
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return None
+    try:
+        if isinstance(v, bool) or isinstance(v, float):
+            raise ValueError
+        n = int(str(v).strip())
+    except ValueError:
+        raise ValueError(f'"head_device" must be a card number as nvidia-smi numbers them, not {v!r}')
+    cards = gpu_list(cfg)
+    if len(cards) < 2:
+        raise ValueError('"head_device" needs two or more cards in "gpu" (one card runs the whole model)')
+    if n not in cards:
+        raise ValueError(f'"head_device" is {n}, which is not one of this model\'s cards '
+                         f'({", ".join(str(c) for c in cards)})')
+    return n
+
+
+def ordered_gpus(cfg: dict) -> list[int]:
+    """The config's cards with the head's LAST: the engine's device 0 is the first one it sees
+    (CUDA_VISIBLE_DEVICES follows this order) and the head runs on the last stage of a layer split, so listing the
+    head's card last is what puts the head (and the draft layer) on it.  Without "head_device" this is exactly the
+    config's "gpu", in order.  No engine flag is involved: an older engine understands it too."""
+    cards = gpu_list(cfg)
+    try:
+        head = head_device_value(cfg)
+    except ValueError:
+        head = None                                    # said by the caller; the engine runs the config's order
+    # a value that cannot be reached is refused at start by head_device_value's caller; here it only orders what it
+    # was given (and, when the config cannot be read, leaves the engine the config's own order)
+    if head is None or head not in cards:
+        return cards
+    return [c for c in cards if c != head] + [head]
+
+
 def effort_end_args(cfg: dict, exe: str, tok) -> list[str] | None:
     """#458 (opt-in): the engine arguments for "effort_position": "end" - the id of "system" as --tail-role-token, so
     the engine checkpoints in front of the trailing effort turn - or None when the config leaves it at the top (the
@@ -2463,6 +2502,7 @@ def child_env(cfg: dict) -> dict:
         env["HIP_VISIBLE_DEVICES"] = ",".join(str(i) for i in hip_visible(cfg))
     elif gpu_list(cfg):                              # issue #51: the GPU(s) to run on, numbered as nvidia-smi does; CUDA's
         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"      # own default order (fastest first) can number the cards otherwise
+        # delta 3: "head_device" moves that card to the end (the engine's last stage holds the head and the draft)
         env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in ordered_gpus(cfg))
     for k, v in (cfg.get("env") or {}).items():      # engine settings the config carries (AMD: the GEMM tuning table)
         env[str(k)] = str(v)
@@ -5812,6 +5852,13 @@ def main() -> int:
         elif len(gpu_list(cfg)) > 1:
             print(f"[strata] GPUs {gpu_list(cfg)}: the later card(s) serve as the peer expert tier (--peer-device)",
                   flush=True)
+        try:
+            head = head_device_value(cfg)               # delta 3: before the start, like the split (it orders them)
+        except ValueError as e:
+            raise SystemExit(f"[strata] config {e}")
+        if head is not None:
+            print(f"[strata] the head and the draft layer on GPU {head}: the cards are ordered "
+                  f"{ordered_gpus(cfg)}", flush=True)
         # a relative "exe" is the config's cwd's: Windows' CreateProcess resolves "engine/strata.exe" against nothing
         # it is told about (WinError 2), so it is made absolute here
         exe = cfg["exe"] if os.path.isabs(cfg["exe"]) else os.path.abspath(os.path.join(cfg.get("cwd") or ".", cfg["exe"]))

@@ -14,6 +14,7 @@ cache").
 - **`layer/base`** — this tree's base: upstream `v0.1.40.1` plus PR #1271 (the disk tier) and PR #1269.
 - **`layer/delta1`** — this tree's own work on top of that base (the spill tier as overflow).
 - **`layer/delta2`** — the mirror at the park, compaction detection and cancellation (on top of delta 1).
+- **`layer/delta3`** — the batch-MTP slots across a layer split, and the device that runs the head (on top of delta 2).
 - **`engine <version>`** — the flag came from upstream and is unchanged here.
 
 ## Three caches, not one
@@ -69,7 +70,20 @@ removes, by budget and (if enabled) by age, oldest first, with a counter and a l
 | `--system-prompt-cache-max-age-days N` | 0 (off) | Optional age pruning. A positive N removes variants older than N days, oldest first. | `--serve`; inside the system-prompt cache. `0` means no deletion by time at all. | Off by default. Independent of the count/byte GC; each has its own counter. | `layer/delta1` |
 | `--system-prompt-cache-key STR` | empty | An optional declared identity, added to the variant key beside the prefix hash. | `--serve`; inside the system-prompt cache. | It only gives two identical prefixes distinct variants (for example two deployments that must not share one). It does not make a **different** system prompt reusable. | `layer/delta1` |
 
-## C. Upstream flags these are confused with
+## C. Where the head runs, and the batch slots beside a layer split (delta 3)
+
+The output head and the MTP draft layer run on the **last stage** of a layer split, and the split search places the
+layers - never the head. On a two-card machine that means the head lands on whichever card the pipeline ends on,
+which is not necessarily the faster one (`auto` orders by generation, and the head follows). `--head-device` is the
+placement of its own; the card **order** is what puts the head on another card.
+
+| Flag | Default | What it does | Scope (when it applies and when it does NOT) | Limit or non-claim | Since |
+| --- | --- | --- | --- | --- | --- |
+| `--head-device D` (env `STRATA_HEAD_DEVICE`) | `-1` (as placed: the last stage) | The device that runs the output head **and**, with it, the MTP draft layer (the drafter reads the last stage's residual, so the two move together). It names one of the devices the pipeline already uses (`0` is the primary, the rest are `--split-device`): the later stages are reordered so that one is last. | `--serve` with a layer split. With one card it is a no-op (`D` must be `0`). A device that is not one of the pipeline's, or the primary device of a split, is **said and ignored** - the head stays where it was. | It is **not** a layer placement: the split points do not move, only which stage owns the head. It cannot move the head onto the primary device of a split (device 0 runs the first stage and the prompt path; a head-only tail stage is not implemented) - order the cards instead (below). It is **not** a speed claim: nothing measures anything here. | `layer/delta3` |
+| `"head_device": N` (config; the server reads it, not the engine) | absent | The card, numbered as `nvidia-smi` numbers them, that must hold the head. The server lists it **last** in `CUDA_VISIBLE_DEVICES`, so the engine's last stage - the head's - is that card. | The server's config (`strata-*.json`), or `setup --head-device N|auto`. Needs two or more cards in `"gpu"`; a card that is not one of them is refused. | It reorders the cards, so an **explicit** `"layer_split"` keeps its meaning *in the new order* ("24" is still "the second card starts at layer 24", but the second card is a different card). No engine flag is involved: an older engine understands it. | `layer/delta3` |
+| `--batch-mtp` (env `STRATA_BATCH_MTP=1`) | off | With `--batch N` and the MTP drafter (`--mtp`, `--spec T`), each batch slot also verifies **one** MTP proposal per window. | `--serve`, `--batch 2+`, `--mtp`, `--spec T >= 2`. **A layer split works too (delta 3)**: every stage keeps its own session per slot and the slot drafters live on the last stage's device. Not with `--split-device 0` (both stages on one GPU: the batch slots themselves need a card per stage). Anything else the engine says in one line (`WARNING: --batch-mtp is off: ...`) and batches as usual. | The VRAM it costs is per slot: the drafter's K/V and buffers, on the head's card. Upstream measured +31 % to +39 % total throughput on an RTX PRO 5000 with 2-4 clients **on one GPU**; this tree has **not** measured it under a layer split (docs/BATCHING.md says so). One proposal per slot: more drafts accepted per window is not what this does. | `engine 0.1.39` (upstream); the layer split with it is `layer/delta3` |
+
+## D. Upstream flags these are confused with
 
 | Flag | Default | What it does | Scope (when it applies and when it does NOT) | Limit or non-claim | Since |
 | --- | --- | --- | --- | --- | --- |

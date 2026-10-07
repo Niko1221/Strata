@@ -894,6 +894,122 @@ def config_toolkit(cfg: dict) -> int:
     return 12 if cfg.get("cuda") == 12 or Path(str(cfg.get("exe", ""))).parent.name == ENGINE12_DIR else 13
 
 
+# ---- delta 3 (layer): which card runs the output head (and, with it, the MTP draft layer)
+#
+# The head runs on the LAST stage of a layer split, so "which card" is a placement the engine's split search never
+# makes: with two cards the pipeline ends on whichever is listed last (the newest generation first today), which is
+# not necessarily the faster one.  The card's per-layer time is the engine's own model
+# (0.33 * 84 * 2.617 / (SMs x GHz), the fitted constant of its layer-split search), fed by the installed engine's
+# `strata-device --list-devices` - so the ranking is by TIME and not by free VRAM.  It is an estimate, not a
+# measurement: setup says so, and `--head-device N` overrides it with the user's own choice.
+HEAD_MS_FIT = 0.33 * 84.0 * 2.617
+
+
+def gpu_layer_ms(g, toolkit=13) -> float | None:
+    """This card's estimated milliseconds per layer, or None when no installed engine can report it.
+
+    The estimate is only ever used to RANK cards (which one should hold the head); nothing here claims it is a
+    measurement, and nothing is refused when it is missing."""
+    exe = engine_dir(toolkit) / ("strata-device.exe" if WIN else "strata-device")
+    if not exe.exists():
+        return None
+    env = dict(os.environ)
+    env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"        # the same numbering the engine is told to use
+    env["CUDA_VISIBLE_DEVICES"] = str(g.get("index"))
+    try:
+        r = subprocess.run([str(exe), "--list-devices"], capture_output=True, text=True, timeout=180, env=env)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"(\d+)\s+SMs at\s+([0-9.]+)\s*GHz", r.stdout or "")
+    if not m:
+        return None
+    sms, ghz = int(m.group(1)), float(m.group(2))
+    if sms <= 0 or ghz <= 0:
+        return None
+    return HEAD_MS_FIT / (sms * ghz)
+
+
+def head_card_by_time(cards, toolkit=13):
+    """The card the per-layer estimate puts the head on: the lowest ms, ties to the LAST of `cards` (the placement
+    the engine would have made anyway).  None when no card can be timed (setup then keeps the order as it is)."""
+    timed = [(gpu_layer_ms(g, toolkit), i) for i, g in enumerate(cards)]
+    timed = [(ms, i) for ms, i in timed if ms is not None]
+    if not timed:
+        return None
+    best = min(timed, key=lambda t: (t[0], -t[1]))
+    return cards[best[1]]
+
+
+def head_device_note(cards, toolkit=13) -> list[str]:
+    """What setup says about the head's card: the estimate, and how to move the head when it is not where the user
+    wants it.  Information only - setup changes no placement unless --head-device asks for it."""
+    if len(cards) < 2:
+        return []
+    times = [(g, gpu_layer_ms(g, toolkit)) for g in cards]
+    if all(ms is None for _g, ms in times):
+        return ["the per-layer time of these cards could not be estimated (no installed engine to ask): "
+                "the head (and the draft layer) stays on the last card listed"]
+    head = head_card_by_time(cards, toolkit)
+    parts = ", ".join(f"GPU {g['index']} {ms:.2f} ms/layer" for g, ms in times if ms is not None)
+    lines = [f"estimated per-layer time: {parts}",
+             f"the head (and the draft layer) runs on the last card listed; the estimate puts it "
+             f"{(('on GPU ' + str(head['index'])) if head is not None else 'on a card that could not be timed')}, "
+             f"and on GPU {cards[-1]['index']} as listed"]
+    if head is not None and head["index"] != cards[-1]["index"]:
+        lines.append(f"to put it there: setup --setup --head-device {head['index']}, or \"head_device\": "
+                     f"{head['index']} in the config (the card order decides: the last card listed holds the head)")
+    return lines
+
+
+def config_cards(cfg: dict) -> list:
+    """The config's "gpu" as a list of card numbers (one card, or several for a layer split)."""
+    g = cfg.get("gpu")
+    if g is None or g == "":
+        return []
+    items = g if isinstance(g, (list, tuple)) else str(g).split(",")
+    out = []
+    for x in items:
+        try:
+            out.append(int(str(x).strip()))
+        except ValueError:
+            continue
+    return out
+
+
+def apply_head_device(cfg: dict, asked, found=None) -> None:
+    """--head-device N|auto (delta 3): the card that runs the output head (and, with it, the MTP draft layer) is
+    the LAST of the config's cards - the engine's device 0 is the first listed (CUDA_VISIBLE_DEVICES follows this
+    order) and the head runs on the last stage of a split.  auto: the card with the lowest estimated ms per layer
+    (setup's own time estimate, never free VRAM).  Nothing here is asked for unless --head-device is given."""
+    if not asked:
+        return
+    cards = config_cards(cfg)
+    if len(cards) < 2:
+        warn("--head-device: one card runs the whole model, so there is no other card for the head")
+        return
+    if str(asked).strip().lower() == "auto":
+        byid = {g["index"]: g for g in (found or [])}
+        pick = head_card_by_time([byid[i] for i in cards if i in byid]) if byid else None
+        if pick is None:
+            warn("--head-device auto: no installed engine could report the cards' per-layer time; the order (and "
+                 "the head) stays as it is")
+            return
+        n = pick["index"]
+    else:
+        try:
+            n = int(str(asked).strip())
+        except ValueError:
+            fail(f"--head-device takes a card number as nvidia-smi numbers them, or auto, not {asked!r}")
+            return
+        if n not in cards:
+            fail(f"--head-device {n} is not one of this model's cards ({', '.join(str(c) for c in cards)})")
+            return
+    cfg["gpu"] = [c for c in cards if c != n] + [n]
+    cfg["head_device"] = n
+    ok(f"head (and the MTP draft layer) on GPU {n}: the cards are ordered "
+       f"{','.join(str(c) for c in cfg['gpu'])} (the last one holds the head)")
+
+
 def gpu_problem(g, together=False):
     """Why Strata cannot use this card, in plain words (None: it can)."""
     if int(g["arch"]) < 75 and not (sm60_card(g["arch"]) and experimental_sm60()):
@@ -1218,6 +1334,11 @@ def offer_together(cfg_path: Path, cfg: dict, yes: bool) -> dict:
         split_budget(cfg)
         recommend_remote_expert_opt(cfg)
         ok("from now on this model runs on " + " + ".join(gpu_name(g) for g in pair))
+        # delta 3: the head (and the MTP draft layer) runs on the LAST card listed.  The per-layer estimate says
+        # which one is fastest - by time, not by free VRAM - and the line below is where to move it (nothing is
+        # moved here: setup recommends, it never forces).
+        for line in head_device_note(pair):
+            say("  " + line)
     else:
         ok("staying on one GPU (START-HERE.bat --gpus " + ",".join(str(g["index"]) for g in pair) + " switches)")
     write_config(cfg_path, cfg)
@@ -4065,9 +4186,9 @@ def settings_summary(cfg: dict, port=None) -> str:
 
 
 def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_browser=True, yes=False,
-          layer_split=None, keep=None) -> int:
+          layer_split=None, keep=None, head_device=None) -> int:
     """keep: settings given on this start that the model keeps from now on (--host, --api-key, --draft-vocab,
-    --vram-reserve-mib)."""
+    --vram-reserve-mib).  head_device: --head-device N|auto (delta 3), the card that runs the output head."""
     cfg = upgrade_config(cfg_path, json.loads(cfg_path.read_text(encoding="utf-8-sig")))
     missing = [p for p in [cfg["exe"], *[a for a in cfg["args"] if a.endswith(".gguf")]] if not Path(p).exists()]
     if missing:
@@ -4136,6 +4257,7 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
         cfg["layer_split"] = layer_split or cfg.get("layer_split") or "auto"
         split_budget(cfg, yes, True)                   # #498: before it is saved (asks when the RAM is short, #737)
         recommend_remote_expert_opt(cfg)
+        apply_head_device(cfg, head_device, found)     # delta 3: before the config is saved (it is part of "gpu")
         write_config(cfg_path, cfg)
         gpu = None
     elif gpu is not None:                              # --gpu N: this start only, on that card
@@ -4769,6 +4891,10 @@ def main() -> int:
                          "Volta). 12 also runs with an older driver (Windows 528+, Linux 525+). docs/OLDER_GPUS.md")
     ap.add_argument("--prebuilt", default=os.environ.get("STRATA_PREBUILT_URL", PREBUILT_URL),
                     help="where the ready-made engine is (a URL folder or a local folder)")
+    ap.add_argument("--head-device", metavar="N|auto",
+                    help="several GPUs: the card that runs the output head and the MTP draft layer - a card number "
+                         "as nvidia-smi numbers them, or auto (the fastest by the estimated ms per layer, not by free "
+                         "VRAM). The card is listed last, which is what puts the head there. docs/MULTI_GPU.md")
     ap.add_argument("--check", action="store_true", help="only check this PC and exit")
     ap.add_argument("--calibrate", action="store_true",
                     help="tune the engine's settings for this PC (about 15-30 minutes, longer on a slow card), then start the model")
@@ -4913,6 +5039,7 @@ def main() -> int:
             warn("this PC is NOT tuned: the tuning failed (the reason is above); the model "
                  + ("keeps" if a.no_start else "starts with") + " the default settings")
         return 0 if a.no_start else start(pick_cfg, a.port, run_gpu, yes=a.yes, layer_split=a.layer_split,
+                     head_device=a.head_device,
                      keep={"host": a.host, "api_key": a.api_key, "draft_vocab": a.draft_vocab,
                            "vram_reserve_mib": a.vram_reserve_mib, "open_browser": a.browser})
     if have and not (a.setup or a.model or a.family or a.check or a.no_start):
@@ -4920,6 +5047,7 @@ def main() -> int:
             update_installed_engine(a.prebuilt)
         if len(have) == 1:
             return start(have[0], a.port, run_gpu, yes=a.yes, layer_split=a.layer_split,
+                     head_device=a.head_device,
                      keep={"host": a.host, "api_key": a.api_key, "draft_vocab": a.draft_vocab,
                            "vram_reserve_mib": a.vram_reserve_mib, "open_browser": a.browser})
         say()
@@ -4929,6 +5057,7 @@ def main() -> int:
         pick = int(ask("Which one?", [str(i) for i in range(1, len(have) + 2)], "1", a.yes))
         if pick <= len(have):
             return start(have[pick - 1], a.port, run_gpu, yes=a.yes, layer_split=a.layer_split,
+                     head_device=a.head_device,
                      keep={"host": a.host, "api_key": a.api_key, "draft_vocab": a.draft_vocab,
                            "vram_reserve_mib": a.vram_reserve_mib, "open_browser": a.browser})
 
@@ -5642,6 +5771,13 @@ def main() -> int:
         cfg["layer_split"] = a.layer_split or "auto"
         ok(f"layer split across GPUs {multi} ({cfg['layer_split']})")
         recommend_remote_expert_opt(cfg, off=a.no_remote_expert_opt)
+        # delta 3: --head-device N|auto - the head (and the MTP draft layer) runs on the last card listed, and the
+        # estimate says which card is the fastest per layer (time, not free VRAM).  Said even when not asked.
+        _cards_by_id = {g["index"]: g for g in gpus()}
+        apply_head_device(cfg, a.head_device, gpus())
+        if a.head_device is None:                      # information only: setup moves nothing unless asked
+            for line in head_device_note([_cards_by_id[i] for i in config_cards(cfg) if i in _cards_by_id]):
+                say("  " + line)
     if a.host:
         cfg["host"] = a.host
     if a.api_key:

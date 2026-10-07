@@ -88,13 +88,18 @@ bool device_summary(int ordinal, std::string& name, std::string& detail) {
         cudaGetLastError();
         return false;
     }
-    char buf[160];
+    char buf[224];
+    // DELTA 3: the card's SMs and its clock are the engine's own per-layer time model's two inputs
+    // (0.33 * 84 * 2.617 / (SMs * GHz) in the layer-split search), so `strata-device --list-devices` reports them
+    // and setup ranks the cards by that time instead of by free VRAM.  Appended: the fields before them are the
+    // ones anything already parses.
+    const double ghz = p.clockRate > 0 ? (double) p.clockRate / 1.0e6 : 0.0;
 #if defined(STRATA_USE_HIP)
-    std::snprintf(buf, sizeof(buf), "arch %s, %.1f GiB, wave%d", base_arch(p.gcnArchName).c_str(),
-                  (double) p.totalGlobalMem / (1024.0 * 1024 * 1024), p.warpSize);
+    std::snprintf(buf, sizeof(buf), "arch %s, %.1f GiB, wave%d, %d CUs at %.2f GHz", base_arch(p.gcnArchName).c_str(),
+                  (double) p.totalGlobalMem / (1024.0 * 1024 * 1024), p.warpSize, p.multiProcessorCount, ghz);
 #else
-    std::snprintf(buf, sizeof(buf), "compute capability %d.%d, %.1f GiB", p.major, p.minor,
-                  (double) p.totalGlobalMem / (1024.0 * 1024 * 1024));
+    std::snprintf(buf, sizeof(buf), "compute capability %d.%d, %.1f GiB, %d SMs at %.2f GHz", p.major, p.minor,
+                  (double) p.totalGlobalMem / (1024.0 * 1024 * 1024), p.multiProcessorCount, ghz);
 #endif
     name = p.name;
     detail = buf;

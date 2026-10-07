@@ -19,12 +19,24 @@ asked, with a note when it is more than setup would recommend.
 "parallel": 2
 ```
 
-On one GPU with MTP (`--mtp` and `--spec`), `--batch-mtp` (in the config's `args`, or `STRATA_BATCH_MTP=1` in the
-server's environment) lets each batch slot verify one MTP proposal per window. It is opt-in; without it the batch
-behaviour described below is exactly the one without MTP. It needs VRAM per slot for the draft state and buffers, so
-check the engine's free-memory log before using it on a smaller card. If it cannot run (one slot, no `--mtp`, a layer
-split or helper GPU) the engine says so and batches as usual. RTX PRO 5000 owners measured +31% to +39% total
-throughput with 2 to 4 clients (a RX R9700 run too); it has not been validated with a layer split.
+With MTP (`--mtp` and `--spec`), `--batch-mtp` (in the config's `args`, or `STRATA_BATCH_MTP=1` in the server's
+environment) lets each batch slot verify one MTP proposal per window. It is opt-in; without it the batch behaviour
+described below is exactly the one without MTP. It needs VRAM per slot for the draft state and buffers (on the card
+that holds the head), so check the engine's free-memory log before using it on a smaller card. If it cannot run (one
+slot, no `--mtp`, no `--spec T >= 2`, no `--serve`, or both stages of a split on one GPU through `--split-device 0`)
+the engine says so in one line and batches as usual. RTX PRO 5000 owners measured +31% to +39% total throughput with
+2 to 4 clients on one GPU (a RX R9700 run too).
+
+**With a layer split.** `--batch-mtp` runs under a layer split too: every stage keeps its own session per slot (it
+already did, for plain batching) and each slot's **drafter** is built on the stage that runs the head - the last one -
+from that stage's slot session, so the draft's K/V, its buffers and the residual rows it reads all live on that
+card, and the window's residual crosses the hand-off like any other. The PLE session stays the first card's, where
+the PLE table lives. Its VRAM therefore comes out of the **last card's** expert cache: `--batch 4 --batch-mtp` on
+two cards costs that card four draft states (~0.9 GB each on the artifact this tree ships with) beside its four slot
+sessions. **Not measured here**: this tree has run it only up to the point of a started, serving engine; the
+throughput it buys under a split is unmeasured, and the one-GPU numbers above are the only ones there are. Under a
+split, the drafts a window accepts also depend on which card holds the head (`--head-device`, docs/FLAGS.md): the
+head and the drafter move together, and the head's card is the one that pays for both.
 
 With a layer split, the engine options go into the config's `args`:
 
@@ -124,7 +136,8 @@ counter-based draw (Philox(seed, position)).
 
 - By default, batch windows carry no MTP drafts: a conversation in a slot decodes one token per window (the solo
   path keeps its drafts, which is why a request alone is not put in a slot, and goes back to it when left alone).
-- Grouped MTP currently uses one proposal per slot and requires one GPU; it does not support a layer split.
+- Grouped MTP uses one proposal per slot. It runs under a layer split (delta 3), with the slot drafters on the last
+  stage's card; what it buys there is unmeasured (the one-GPU +31 % to +39 % is).
 - Repetition / frequency / presence penalties are not applied in batch windows.
 - A prompt shorter than one chunk is read in one piece (the slots wait for it); a read gives way only at a chunk
   boundary, and not for pictures.
