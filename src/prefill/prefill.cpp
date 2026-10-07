@@ -88,6 +88,7 @@ void quantize_act(const float*, int64_t, int64_t, void*, void*) {}
 void group(const int32_t*, int64_t, int, int, void*, int32_t*, int32_t*, void*) {}
 void experts(const Batch&, int, int64_t, const void*, const void*, const int32_t*, void*, float*, void*) {}
 bool native_supported(int, int) { return false; }
+bool native_enabled() { return false; }
 void quantize_act_native(const float*, int64_t, int64_t, void*, void*) {}
 void experts_native(const Batch&, const NativeGeom&, int, int64_t, const void*, const void*, const int32_t*, void*,
                     float*, void*) {}
@@ -224,9 +225,10 @@ int64_t g_ring_small_max = 0;
 inline bool fused_ring() {
     if (core::peer_portable()) return false;   // multi-GPU: --peer-device keeps the MMQ path and its buffer sizes
     const strata::kernels::cpu::ExpertLayout& lay = strata::kernels::cpu::expert_layout();
-    // the Q2_0 pack: fused::enabled().  A native pack: native_supported() alone - it implies enabled() wherever the Q2_0
-    // kernels exist, and on gfx12 (the native kernels only) enabled() is false while the native layers do run fused.
+    // The SM75 native opt-in applies only to raw-GGUF native packs. In particular it must not make a Strata Q2_0
+    // pack select the compact fused layout: the generic Q2_0 fused kernels still require sm_80+.
     if (!lay.native) return fused::enabled();
+    if (!fused::native_enabled()) return false;
     // EVERY layer: fused_layout() shrinks the MoE buffers to the fused path's needs, so a layer the native kernels do
     // not cover (Unsloth UD-IQ4_XS's Q8_0 down projections) would run MMQ in them at the full chunk and overflow them
     // (garbage, an illegal memory access or a hung prompt on gfx1151).  A pack with such a layer keeps MMQ's buffers;

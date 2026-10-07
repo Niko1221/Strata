@@ -33,6 +33,11 @@ engine using Q4_0 K/V can set `STRATA_PROMPT_ATTN_Q4_TC=1` to run prompt attenti
 The setting affects prompt processing only, is never selected from the GPU name, and leaves the previous kernel in
 place when absent.
 
+**RTX 20 native-IQ prompt experts (manual opt-in):** set both `STRATA_PF_FUSED=1` and
+`STRATA_PF_FUSED_NATIVE_SM75=1` on an sm_75 card. `STRATA_PF_FUSED_NATIVE_SM75_ADAPTIVE=1` additionally lets each
+supported weight format use the qualified smaller work tile when it fits. These switches affect prompt processing
+only; unsupported packs and formats keep their previous expert path.
+
 ### Prompt processing (tokens/s)
 
 | Model | 1K | 4K | 32K | 64K | 128K | 262K |
