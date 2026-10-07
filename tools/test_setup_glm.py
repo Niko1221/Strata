@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 import setup as S
 from glm_synth_gguf import write_gguf, kv_str
+FIND_VCVARS = S.find_vcvars
 
 
 def args(**values):
@@ -38,6 +39,8 @@ class GlmSetup(unittest.TestCase):
         self.stack.enter_context(patch.object(S.platform, "machine", return_value="x86_64"))
         self.stack.enter_context(patch.object(S, "ram_gb", return_value=64))
         self.stack.enter_context(patch.object(S, "find_nvcc", return_value=("nvcc", (12, 8))))
+        self.stack.enter_context(patch.object(S, "find_vcvars", return_value=self.root / "vcvars64.bat"))
+        self.stack.enter_context(patch.object(S, "page_file_gb", return_value=16))
         self.stack.enter_context(patch.object(S.shutil, "which", return_value="g++"))
         self.stack.enter_context(patch.object(S.shutil, "disk_usage", return_value=SimpleNamespace(free=200e9)))
         self.stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
@@ -48,7 +51,9 @@ class GlmSetup(unittest.TestCase):
         self.ask = self.stack.enter_context(patch.object(S, "ask", return_value="n"))
 
     def test_yes_does_not_authorize_model_download(self):
-        self.assertEqual(S.setup_glm(args()), 0)
+        for windows in (False, True):
+            with patch.object(S, "WIN", windows):
+                self.assertEqual(S.setup_glm(args()), 0)
         self.download.assert_not_called()
         self.ask.assert_not_called()
 
@@ -59,17 +64,47 @@ class GlmSetup(unittest.TestCase):
         self.assertEqual(list(self.root.iterdir()), [])
 
     def test_platform_gpu_and_external_host_validation(self):
-        for overrides in (dict(backend="hip"), dict(gpus="0,0"), dict(host="0.0.0.0"),
+        for overrides in (dict(backend="hip"), dict(backend="sycl"), dict(gpus="0,0"), dict(host="0.0.0.0"),
                           dict(host="::", api_key="  ")):
             with self.assertRaises(SystemExit):
                 S.setup_glm(args(**overrides))
-        with patch.object(S, "WIN", True), self.assertRaises(SystemExit):
+        with patch.object(sys, "platform", "darwin"), self.assertRaises(SystemExit):
+            S.setup_glm(args())
+        with patch.object(S, "is_wsl", return_value=True), self.assertRaises(SystemExit):
             S.setup_glm(args())
         with patch.object(S, "gpus", return_value=[]), self.assertRaises(SystemExit):
             S.setup_glm(args())
         with patch.object(S, "cpu_info", return_value=("old CPU", False, False)), self.assertRaises(SystemExit):
             S.setup_glm(args())
+        with patch.object(S.platform, "machine", return_value="arm64"), self.assertRaises(SystemExit):
+            S.setup_glm(args())
         self.download.assert_not_called()
+
+    def test_windows_check_requires_compatible_vs_and_is_read_only(self):
+        with patch.object(S, "WIN", True), patch.object(sys, "platform", "win32"), \
+             patch.object(S.shutil, "which", return_value=None):
+            self.assertEqual(S.setup_glm(args(check=True, download_model=True)), 0)
+            S.find_vcvars.assert_called_with((12, 8))
+            with patch.object(S, "find_vcvars", return_value=None), self.assertRaises(SystemExit):
+                S.setup_glm(args(check=True))
+        S.data_folder.assert_not_called()
+        self.download.assert_not_called()
+        self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_windows_commit_warning(self):
+        with patch.object(S, "WIN", True), patch.object(S, "page_file_gb", return_value=0), \
+             patch.object(S, "warn") as warning:
+            self.assertEqual(S.setup_glm(args(check=True)), 0)
+        self.assertTrue(any("system commit" in call.args[0] for call in warning.call_args_list))
+
+    def test_vs_discovery_excludes_incompatible_versions(self):
+        with patch.object(Path, "exists", return_value=True), patch.object(S, "out", return_value="") as out:
+            self.assertIsNone(FIND_VCVARS((12, 8)))
+            self.assertIn("[16.0,18.0)", out.call_args.args[0])
+            out.return_value = str(self.root / "VS2022")
+            self.assertEqual(FIND_VCVARS((12, 8)), self.root / "VS2022/VC/Auxiliary/Build/vcvars64.bat")
+            self.assertIsNotNone(FIND_VCVARS((13, 3)))
+            self.assertIn("[16.0,19.0)", out.call_args.args[0])
 
     def test_external_config_requires_key(self):
         with self.assertRaises(SystemExit):
@@ -136,10 +171,33 @@ class GlmSetup(unittest.TestCase):
 
     def test_yes_does_not_authorize_vision_download(self):
         folder, _ = self.install_stubs()
-        with self.assertRaises(SystemExit):
-            S.setup_glm(args(gguf_dir=str(folder), no_vision=False))
+        for windows in (False, True):
+            with patch.object(S, "WIN", windows), self.assertRaises(SystemExit):
+                S.setup_glm(args(gguf_dir=str(folder), no_vision=False))
         self.download.assert_not_called()
         self.ask.assert_not_called()
+
+    def test_windows_launcher_and_vision_paths(self):
+        folder, eng = self.install_stubs()
+        vision = self.root / "models" / "glm-maya-s-v2-vision"
+        vision.mkdir(parents=True)
+        for name in S.GLM_VISION_FILES:
+            (vision / name).write_bytes(b"synthetic vision")
+        with patch.object(S, "WIN", True), patch.object(S, "EXE", "strata.exe"), \
+             patch.object(S, "VEXE", "strata-vision.exe"):
+            self.assertEqual(S.setup_glm(args(gguf_dir=str(folder), no_vision=False)), 0)
+        cfg_path = self.root / "strata-glm-maya-s-v2-iq2_xxs.json"
+        cfg = json.loads(cfg_path.read_text())
+        self.assertEqual(cfg["exe"], str(eng / "strata.exe"))
+        self.assertEqual(cfg["vision"]["exe"], str(eng / "strata-vision.exe"))
+        self.assertEqual(cfg["vision"]["model"], str(vision / "GLM-5.3-Flash-vocab.gguf"))
+        launcher = (self.root / "run-glm-maya-s-v2-iq2_xxs.bat").read_text()
+        self.assertIn(f'"{cfg_path}"', launcher)
+        self.assertIn(f'"{self.root / "serve" / "server.py"}"', launcher)
+        self.assertNotIn('--open', launcher)
+        S.build_engine.assert_called_once_with(S.gpus()[0] | {"archs": [86]}, "gpu", True,
+                                               self.root / "llama", toolkit=12, glm=True)
+        self.download.assert_not_called()
 
     def test_explicit_download_and_vision_contract(self):
         folder, eng = self.install_stubs()

@@ -96,6 +96,11 @@ int main(int argc, char** argv) {
     if (const char* pv = getenv("GLM_TEST_PREFILL")) {
         const int k = std::min(std::atoi(pv), getenv("GLM_TEST_DUMP") ? n_tok : n_tok - 1);
         if (k > 0) {
+            if (getenv("GLM_TEST_REQUIRE_PREFILL") && model.prefill_chunk() != 16) {
+                std::fprintf(stderr, "glm_pack_test: expected actual fast prefill with 16-token chunks, got %d\n",
+                             model.prefill_chunk());
+                return 1;
+            }
             std::vector<int32_t> pre((size_t) k);
             for (int t = 0; t < k; ++t) pre[(size_t) t] = !ids.empty() ? ids[(size_t) t % ids.size()] : (int32_t) ((t % 511) + 1);
             const int32_t nxt = k < n_tok ? (!ids.empty() ? ids[(size_t) k % ids.size()] : (int32_t) ((k % 511) + 1)) : -1;

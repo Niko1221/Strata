@@ -53,7 +53,13 @@ def arr_i32(vs): return kv_arr(I32, [struct.pack("<i", v) for v in vs])
 def arr_f32(vs): return kv_arr(F32, [struct.pack("<f", v) for v in vs])
 
 
-def write_gguf(path: Path, metadata: list[tuple[str, bytes]], tensors: list[tuple[str, np.ndarray]]) -> None:
+def write_gguf(path: Path, metadata: list[tuple[str, bytes]], tensors: list[tuple[str, np.ndarray]],
+               q4_native: bool = False) -> None:
+    if q4_native:
+        from _paths import add_gguf_py
+        add_gguf_py()
+        from gguf import GGMLQuantizationType as Q, quants
+        from iq_pack import GLM_NATIVE
     header = b"GGUF" + struct.pack("<IQQ", 3, len(tensors), len(metadata))
     kvs = b"".join(_s(k) + v for k, v in metadata)
     infos, blobs, offset = b"", [], 0
@@ -62,8 +68,10 @@ def write_gguf(path: Path, metadata: list[tuple[str, bytes]], tensors: list[tupl
         dims = list(reversed(arr.shape))                 # ne0 varies fastest
         infos += _s(name) + struct.pack("<I", len(dims))
         infos += b"".join(struct.pack("<Q", d) for d in dims)
-        infos += struct.pack("<I", GGML_F32) + struct.pack("<Q", offset)
-        blob = arr.tobytes()
+        native = name.split(".", 2)[-1] if name.startswith("blk.") else name
+        quantized = q4_native and (native in GLM_NATIVE or "_exps.weight" in native)
+        infos += struct.pack("<I", 2 if quantized else GGML_F32) + struct.pack("<Q", offset)
+        blob = quants.quantize(arr, Q.Q4_0).tobytes() if quantized else arr.tobytes()
         blobs.append(blob)
         offset += len(blob)
         offset = (offset + ALIGN - 1) // ALIGN * ALIGN   # tensors start aligned, like gguf.cpp
@@ -103,6 +111,15 @@ BIG = dict(n_embd=256, n_vocab=512, n_layers=45, n_head=8, kda_head_dim=32, d_co
 
 def build(seed: int, vocab: bool = False) -> tuple[list[tuple[str, bytes]], list[tuple[str, np.ndarray]]]:
     return _build(SMALL, seed, vocab)
+
+
+def build_prefill(seed: int = 1234):
+    # Batched DSA kernels require these widths; gate/up output rows require 2 * FF == E.
+    # 256 experts leave enough slots to lend the prompt arena while still forcing disk misses.
+    geometry = dict(SMALL, n_embd=256, n_head=16, kda_head_dim=128, q_lora=256, kv_lora=512,
+                    mla_k=128, mla_v=128, n_expert=256, n_exp_used=8, n_ff_exp=128,
+                    n_ff_dense=512, idx_heads=8, idx_dim=128, idx_topk=8, kpool=4)
+    return _build(geometry, seed, True)
 
 
 def build_big(seed: int = 777, vocab: bool = False) -> tuple[list[tuple[str, bytes]], list[tuple[str, np.ndarray]]]:

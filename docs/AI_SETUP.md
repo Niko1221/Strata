@@ -6,7 +6,8 @@ system RAM, and serves an OpenAI- and Anthropic-compatible API on `http://127.0.
 version of everything below is [INSTALL.md](INSTALL.md).
 
 These steps and RAM recommendations are for Qwen. If the user asks for GLM-5.3-Flash, follow
-[GLM.md](GLM.md): Linux/NVIDIA only, a source build and explicit permission for its model download.
+[GLM.md](GLM.md): Linux/NVIDIA or experimental native Windows/NVIDIA, a source build and explicit permission for
+its model download.
 
 Work through the steps in order. Tell the user what you are doing in plain words; they may not be technical.
 

@@ -4550,8 +4550,8 @@ def glm_local_host(host: str) -> bool:
 
 def setup_glm(a) -> int:
     """Maya-S v2 installation; its architecture has no Qwen setup defaults."""
-    if WIN or not sys.platform.startswith("linux") or is_wsl():
-        fail("GLM-5.3-Flash setup requires native Linux and NVIDIA CUDA")
+    if (not WIN and not sys.platform.startswith("linux")) or is_wsl():
+        fail("GLM-5.3-Flash setup requires native Windows or Linux and NVIDIA CUDA")
     if a.backend not in (None, "cuda") or a.model not in (None, GLM_MODEL):
         fail(f"--family glm supports CUDA and {GLM_MODEL} only")
     if platform.machine().lower() not in ("x86_64", "amd64") or not cpu_info()[1]:
@@ -4581,14 +4581,25 @@ def setup_glm(a) -> int:
         fail(f"GLM needs CUDA Toolkit {minimum[0]}.{minimum[1]} or newer" +
              (" in the 12.x series for Volta" if min(gpu["archs"]) < 75 else ""),
              "install a compatible toolkit; STRATA_NVCC selects its nvcc")
-    if shutil.which("g++") is None:
+    if WIN and find_vcvars(cuda_v) is None:
+        fail("GLM's Windows source build needs Visual Studio C++ tools compatible with this CUDA Toolkit",
+             "install Visual Studio 2022 with Desktop development with C++; CUDA 12.8 or newer is recommended")
+    if not WIN and shutil.which("g++") is None:
         fail("GLM's source build needs g++", "install your distribution's C++ build tools")
     need_driver = 580 if cuda_v >= (13, 0) else 525
     if any(driver_major(g) < need_driver for g in selected):
         fail(f"GLM with CUDA {cuda_v[0]}.{cuda_v[1]} needs NVIDIA driver {need_driver} or newer")
     say("GLM-5.3-Flash Maya-S v2: " + " + ".join(g["name"] for g in selected))
+    if WIN:
+        warn("GLM on Windows is experimental; CUDA Toolkit 12.8 or newer and Visual Studio 2022 are recommended")
+        pf = page_file_gb()
+        vram = sum(g["vram_gb"] for g in selected)
+        if pf is not None and pf < vram:
+            warn(f"Windows' page file is {pf:.1f} GB: GPU allocations also use system commit, so the engine may "
+                 "have less pinned RAM for experts or fail to start. Set Virtual memory to System managed")
     if a.check:
-        ok("Linux, AVX2, RAM, NVIDIA driver and CUDA build checks passed; no files downloaded or built")
+        ok(f"{'Windows (experimental)' if WIN else 'Linux'}, AVX2, RAM, NVIDIA driver and CUDA build checks passed; "
+           "no files downloaded or built")
         return 0
     ctx = a.context or 32768
     if ctx < 1:

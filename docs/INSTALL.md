@@ -4,7 +4,7 @@ Everything about installing, starting, updating and configuring Strata, on Windo
 AMD graphics card. The short version is in the [README](../README.md#install); an AI coding assistant can do all of
 this for you with [AI_SETUP.md](AI_SETUP.md).
 
-The optional GLM-5.3-Flash family supports Linux with NVIDIA only and is built from source.
+The optional GLM-5.3-Flash family supports Linux/NVIDIA and experimental native Windows/NVIDIA, built from source.
 Its installation and requirements are in [GLM.md](GLM.md).
 
 > **On this page:** [What you need](#what-you-need) · [Windows](#windows) · [Linux](#linux) ·

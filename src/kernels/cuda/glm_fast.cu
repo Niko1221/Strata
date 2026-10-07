@@ -352,8 +352,24 @@ __device__ __forceinline__ float dot_iq4_xs(const void* vbq, const block_q8_1* b
     return d * sumi;
 }
 
+// llama.cpp's vec_dot_q4_0_q8_1, two packed words (16 values) per call.
+__device__ __forceinline__ float dot_q4_0(const void* vbq, const block_q8_1* y, int kbx, int iqs) {
+    const block_q4_0* w = (const block_q4_0*) vbq + kbx;
+    int sumi = 0;
+#pragma unroll
+    for (int i = 0; i < 2; ++i) {
+        const int v = get_int_b2(w->qs, iqs + i);
+        sumi = __dp4a(v & 0x0F0F0F0F, get_int_b4(y->qs, iqs + i), sumi);
+        sumi = __dp4a((v >> 4) & 0x0F0F0F0F, get_int_b4(y->qs, iqs + i + 4), sumi);
+    }
+    const float2 ds = __half22float2(y->ds);
+    return __half2float(w->d) * (sumi * ds.x - 4.0f * ds.y);
+}
+
 // qk = values per block, ipb = dot calls per block, step = iqs stride, bytes = block bytes
 template<int T> struct F;
+template<> struct F<2> { static constexpr int qk = 32, ipb = 2, step = 2, bytes = sizeof(block_q4_0);
+    __device__ static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return dot_q4_0(v, y, kbx, iqs); } };
 template<> struct F<12> { static constexpr int qk = 256, ipb = 16, step = 2, bytes = sizeof(block_q4_K);
     __device__ static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return dot_q4_K(v, y, kbx, iqs); } };
 template<> struct F<13> { static constexpr int qk = 256, ipb = 16, step = 2, bytes = sizeof(block_q5_K);
@@ -491,6 +507,7 @@ __device__ __forceinline__ float dot_iq3_xxs_t(const void* vbq, const block_q8_1
 }
 template<int T> __device__ __forceinline__ float dot_t(const void* v, const block_q8_1* y, int kbx, int iqs,
                                                        const uint32_t* tab);
+template<> __device__ __forceinline__ float dot_t<2>(const void* v, const block_q8_1* y, int kbx, int iqs, const uint32_t*) { return dot_q4_0(v, y, kbx, iqs); }
 template<> __device__ __forceinline__ float dot_t<19>(const void* v, const block_q8_1* y, int kbx, int iqs, const uint32_t* tab) { return dot_iq1_s_t(v, y, kbx, iqs, tab); }
 template<> __device__ __forceinline__ float dot_t<16>(const void* v, const block_q8_1* y, int kbx, int iqs, const uint32_t* tab) { return dot_iq2_xxs_t(v, y, kbx, iqs, tab); }
 template<> __device__ __forceinline__ float dot_t<18>(const void* v, const block_q8_1* y, int kbx, int iqs, const uint32_t* tab) { return dot_iq3_xxs_t(v, y, kbx, iqs, tab); }
@@ -791,9 +808,14 @@ __device__ __forceinline__ void rows_dot(const uint8_t* const* rows, const block
     }
     for (int k = lane; k < nb * Fm::ipb; k += 32) {
         const int kbx = k / Fm::ipb, ki = k % Fm::ipb, iqs = Fm::step * ki;
-        const XV xv = load_xv(x + kbx * (Fm::qk / 32) + ki);
+        if constexpr (T == 2) {
 #pragma unroll
-        for (int r = 0; r < NR; ++r) acc[r] += dw<T>(rows[r], kbx, iqs, xv, tab);
+            for (int r = 0; r < NR; ++r) acc[r] += dot_t<T>(rows[r], x + kbx, kbx, iqs, tab);
+        } else {
+            const XV xv = load_xv(x + kbx * (Fm::qk / 32) + ki);
+#pragma unroll
+            for (int r = 0; r < NR; ++r) acc[r] += dw<T>(rows[r], kbx, iqs, xv, tab);
+        }
     }
 #pragma unroll
     for (int r = 0; r < NR; ++r) s[r] = warp_sum(acc[r]);
@@ -820,7 +842,7 @@ __device__ __forceinline__ float any_row_dot(int type, const void* w, int row, c
         case kTypeBF16: return row_dot_bf16((const uint16_t*) w + (size_t) row * n_in, xf, n_in, lane);
 #define GF_CASE(T) case T: return row_dot<T>((const uint8_t*) w + (size_t) row * rbytes<T>(n_in), (const block_q8_1*) xq, n_in, lane);
         GF_CASE(12) GF_CASE(13) GF_CASE(14) GF_CASE(8) GF_CASE(16) GF_CASE(18) GF_CASE(19) GF_CASE(23) GF_CASE(10) GF_CASE(11)
-        GF_CASE(17) GF_CASE(22) GF_CASE(21) GF_CASE(29)
+        GF_CASE(17) GF_CASE(22) GF_CASE(21) GF_CASE(29) GF_CASE(2)
 #undef GF_CASE
         default: return 0.0f;
     }
@@ -2608,7 +2630,7 @@ __global__ void __launch_bounds__(1024) argmax_kernel(const float* __restrict__ 
 int mv_type_ok(int t) {
     switch (t) {
         case kTypeF32: case kTypeBF16: case 12: case 13: case 14: case 8: case 16: case 18: case 19: case 23: case 10: case 11:
-        case 17: case 22: case 21: case 29: return 1;
+        case 17: case 22: case 21: case 29: case 2: return 1;
         default: return 0;
     }
 }
@@ -2633,6 +2655,7 @@ size_t row_bytes(int type, int64_t n_in) {
     switch (type) {
         case kTypeF32: return (size_t) n_in * 4;
         case kTypeBF16: return (size_t) n_in * 2;
+        case 2: return (size_t) (n_in / 32) * sizeof(block_q4_0);
         case 12: return (size_t) (n_in / 256) * sizeof(block_q4_K);
         case 13: return (size_t) (n_in / 256) * sizeof(block_q5_K);
         case 14: return (size_t) (n_in / 256) * sizeof(block_q6_K);
@@ -2900,7 +2923,7 @@ void moe_gate_up(int gu_type, const MoeDev& d, int k, int n_embd, int n_ff, floa
 #define GLMF_GU(T) \
         case T: moe_gate_up_kernel<T><<<grid, GU_WARPS * 32, 0, s>>>(d, kk, n_embd, n_ff, limit, X, H, SD, sh_type, SH, \
                                                                      n_ff_sh, sh_out); break;
-        GLMF_GU(16) GLMF_GU(18) GLMF_GU(19) GLMF_GU(23) GLMF_GU(10) GLMF_GU(11) GLMF_GU(17) GLMF_GU(22) GLMF_GU(21) GLMF_GU(29)
+        GLMF_GU(16) GLMF_GU(18) GLMF_GU(19) GLMF_GU(23) GLMF_GU(10) GLMF_GU(11) GLMF_GU(17) GLMF_GU(22) GLMF_GU(21) GLMF_GU(29) GLMF_GU(2)
 #undef GLMF_GU
         default: std::fprintf(stderr, "glm_fast moe_gate_up: type %d unsupported\n", gu_type); return;
     }
@@ -2941,7 +2964,7 @@ void moe_down(int d_type, const MoeDev& d, int k, int n_embd, int n_ff, size_t d
     switch (d_type) {
 #define GLMF_DN(T) \
         case T: moe_down_kernel<T><<<blocks, 256, 0, s>>>(d, k, n_embd, n_ff, down_off, H, sh_out, out); break;
-        GLMF_DN(16) GLMF_DN(18) GLMF_DN(19) GLMF_DN(23) GLMF_DN(10) GLMF_DN(11) GLMF_DN(17) GLMF_DN(22) GLMF_DN(21) GLMF_DN(29)
+        GLMF_DN(16) GLMF_DN(18) GLMF_DN(19) GLMF_DN(23) GLMF_DN(10) GLMF_DN(11) GLMF_DN(17) GLMF_DN(22) GLMF_DN(21) GLMF_DN(29) GLMF_DN(2)
 #undef GLMF_DN
         default: std::fprintf(stderr, "glm_fast moe_down: type %d unsupported\n", d_type); return;
     }

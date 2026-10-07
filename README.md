@@ -13,7 +13,8 @@ Strata runs **[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Nex
 large, smart AI model that usually needs a server. It chats, writes code, reads pictures and works with your apps
 and coding agents. Nothing leaves your PC.
 
-An optional [GLM-5.3-Flash path](docs/GLM.md), ported from Project Maya, is also available for Linux with NVIDIA.
+An optional [GLM-5.3-Flash path](docs/GLM.md), ported from Project Maya, is available for Linux with NVIDIA,
+with experimental support for native Windows/NVIDIA.
 It uses Maya-S v2 and a separate source build; see the guide for requirements and validation limits.
 
 ## How fast is it?

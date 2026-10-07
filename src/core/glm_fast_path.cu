@@ -101,10 +101,22 @@ void read_slice(const Glm5Model::Shard& sh, uint64_t off, size_t len, uint8_t* d
         done += (size_t) r;
     }
 #else
-    // Windows: the unbuffered handle the same way (sector-aligned offset, size and buffer), the mapping otherwise
+    // Windows: the unbuffered handle the same way (sector-aligned offset, size and buffer), the mapping otherwise.
+    // The handle is overlapped (reads from many threads run at once): each read waits on this thread's own event
     if (sh.h_direct != nullptr) {
-        static thread_local uint8_t* bounce = nullptr;
-        static thread_local size_t cap = 0;
+        struct ReadBuffer {
+            uint8_t* bounce = nullptr;
+            size_t cap = 0;
+            HANDLE done_ev = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+            ~ReadBuffer() {
+                _aligned_free(bounce);
+                if (done_ev) CloseHandle(done_ev);
+            }
+        };
+        static thread_local ReadBuffer buf;
+        auto& bounce = buf.bounce;
+        auto& cap = buf.cap;
+        const HANDLE done_ev = buf.done_ev;
         const uint64_t a0 = off & ~(uint64_t) 4095, a1 = (off + len + 4095) & ~(uint64_t) 4095;
         const size_t need = (size_t) (a1 - a0);
         if (cap < need) {
@@ -112,16 +124,19 @@ void read_slice(const Glm5Model::Shard& sh, uint64_t off, size_t len, uint8_t* d
             bounce = (uint8_t*) _aligned_malloc(need, 4096);
             cap = bounce ? need : 0;
         }
-        if (bounce != nullptr) {
+        if (bounce != nullptr && done_ev != nullptr) {
             size_t got = 0;
             while (got < need) {
                 OVERLAPPED ov{};
                 const uint64_t at = a0 + got;
                 ov.Offset = (DWORD) at;
                 ov.OffsetHigh = (DWORD) (at >> 32);
+                ov.hEvent = done_ev;
                 const DWORD want = (DWORD) std::min<size_t>(need - got, (size_t) 1 << 30);
                 DWORD r = 0;
-                if (!ReadFile((HANDLE) sh.h_direct, bounce + got, want, &r, &ov) || r == 0) break;   // EOF: short
+                if (!ReadFile((HANDLE) sh.h_direct, bounce + got, want, nullptr, &ov) &&
+                    GetLastError() != ERROR_IO_PENDING) break;   // EOF: the last aligned read is short
+                if (!GetOverlappedResult((HANDLE) sh.h_direct, &ov, &r, TRUE) || r == 0) break;
                 got += (size_t) r;
             }
             if (got >= (size_t) (off - a0) + len) {
@@ -687,7 +702,10 @@ bool Glm5Model::fast_setup(std::string& err) {
 #ifdef _WIN32
                     MEMORYSTATUSEX ms{};
                     ms.dwLength = sizeof ms;
-                    if (GlobalMemoryStatusEx(&ms)) avail_kb = (int64_t) (ms.ullAvailPhys >> 10);
+                    // pinned RAM is charged to the commit (RAM + page file), and under WDDM so is every allocation
+                    // on the card - the pool above already took its share: the smaller of the two is what can pin
+                    if (GlobalMemoryStatusEx(&ms))
+                        avail_kb = (int64_t) (std::min(ms.ullAvailPhys, ms.ullAvailPageFile) >> 10);
 #else
                     if (FILE* mf = std::fopen("/proc/meminfo", "r")) {
                         char line[256];

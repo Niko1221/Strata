@@ -1279,7 +1279,8 @@ static bool pack_shard_mmap(const std::string& path, strata::core::Glm5Model::Sh
                             std::string& err) {
 #ifdef _WIN32
     // the same as below with Windows' calls: a read-only view of the whole shard, and a second, unbuffered handle
-    // (FILE_FLAG_NO_BUFFERING, Windows' O_DIRECT) for the fast path's expert reads
+    // (FILE_FLAG_NO_BUFFERING, Windows' O_DIRECT) for the fast path's expert reads.  That one is OVERLAPPED: Windows
+    // runs the reads of a synchronous handle one at a time, and the fast path reads from many threads at once
     HANDLE h = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_RANDOM_ACCESS, nullptr);
     if (h == INVALID_HANDLE_VALUE) {
@@ -1305,7 +1306,7 @@ static bool pack_shard_mmap(const std::string& path, strata::core::Glm5Model::Sh
     s.path = path;
     s.data_start = data_start;
     HANDLE hd = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-                            FILE_FLAG_NO_BUFFERING | FILE_FLAG_RANDOM_ACCESS, nullptr);
+                            FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED | FILE_FLAG_RANDOM_ACCESS, nullptr);
     s.h_direct = hd == INVALID_HANDLE_VALUE ? nullptr : (void*) hd;
     return true;
 #else
