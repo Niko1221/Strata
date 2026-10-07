@@ -2599,10 +2599,39 @@ bool il_env_on(const char* name) {
 }
 bool il_t1_on() { static const bool on = il_env_on("STRATA_MMVQ_IL_T1"); return on; }
 bool il_q3k_on() { static const bool on = il_env_on("STRATA_MMVQ_IL_Q3K"); return on; }
-struct IlArch { int cc; const IlRows* t; size_t n; };
+// Quadro RTX 8000, CUDA 12.4/GCC 13: two sweeps of seven alternating A/B pairs,
+// cold weights, including the full pack launch; every pair saved >=3%.
+struct IlShapeRows { int type, n_in, n_out; uint8_t r[3]; };
+constexpr IlShapeRows kIlRowsSm75[] = {
+    {23, 2560,    640, {0, 0, 2}},
+    {23, 2560,   6144, {2, 4, 2}},
+    {23, 2560,  10240, {2, 2, 2}},
+    {23, 2560,  12288, {2, 4, 2}},
+    {12, 2560,   6144, {2, 2, 2}},
+    {12, 2560,  10240, {2, 2, 2}},
+    {12, 2560,  12288, {4, 2, 2}},
+    {12, 6144,   2560, {4, 2, 2}},
+    {13, 2560,   6144, {2, 2, 2}},
+    {13, 2560,  10240, {2, 4, 4}},
+    {13, 2560,  12288, {4, 2, 4}},
+    {13, 6144,   2560, {0, 4, 4}},
+    {14, 2560,   6144, {0, 2, 4}},
+    {14, 2560,  10240, {2, 2, 4}},
+    {14, 2560,  12288, {2, 4, 4}},
+    {14, 6144,   2560, {0, 2, 2}},
+    {14, 2560, 248320, {2, 4, 2}},
+};
+struct IlArch {
+    int cc;
+    const IlRows* t;
+    size_t n;
+    const IlShapeRows* shapes = nullptr;
+    size_t n_shapes = 0;
+};
 constexpr IlArch kIlArch[] = {
     {60, kIlRows_60, sizeof(kIlRows_60) / sizeof(IlRows)},   // Pascal GP100: measured on a Tesla P100
     {70, kIlRows_70, sizeof(kIlRows_70) / sizeof(IlRows)},   // Volta: PR 1401, measured on a V100-SXM2
+    {75, nullptr, 0, kIlRowsSm75, sizeof(kIlRowsSm75) / sizeof(IlShapeRows)},
     {86, kIlRows_86, sizeof(kIlRows_86) / sizeof(IlRows)},   // 143-dense: RTX A4000 with the real shapes (Q3_K added)
 };
 // STRATA_MMVQ_IL_ROWS="type:ncols:r0,r1,r2,r3,r4;..." overrides single rows of the table for every card (type = ggml
@@ -2639,8 +2668,17 @@ const std::vector<IlEnvRow>& il_env_rows() {
 }  // namespace
 // The rows a warp for a card of compute capability `cc` (major * 10 + minor); 0: native_mmvq's kernels.  Pure, so a test
 // can check every architecture's table without that card.
-int native_mmvq_il_rows_for(int cc, int type, int ncols, int n_out) {
+int native_mmvq_il_rows_for(int cc, int type, int ncols, int n_out, int n_in) {
     if (ncols < 1 || ncols > 4) return 0;
+    // Exact-shape tables cannot safely use a row-class override or an unspecified reduction.
+    for (const IlArch& a : kIlArch)
+        if (a.cc == cc && a.shapes != nullptr) {
+            if (ncols < 2) return 0;
+            for (size_t i = 0; i < a.n_shapes; ++i)
+                if (a.shapes[i].type == type && a.shapes[i].n_in == n_in && a.shapes[i].n_out == n_out)
+                    return a.shapes[i].r[ncols - 2];
+            return 0;
+        }
     const int cls = n_out < 2048 ? 0 : n_out < 4096 ? 1 : n_out < 8192 ? 2 : n_out < 12288 ? 3 : 4;
     for (const IlEnvRow& e : il_env_rows())
         if (e.type == type && e.ncols == ncols) return e.r[cls];
@@ -2674,14 +2712,20 @@ int il_cc() {
     }
     return cc[dev];
 }
-int il_rows(int type, int ncols, int n_out) { return native_mmvq_il_rows_for(il_cc(), type, ncols, n_out); }
+int il_rows(int type, int ncols, int n_out, int n_in) {
+    return native_mmvq_il_rows_for(il_cc(), type, ncols, n_out, n_in);
+}
 int g_tune_rows = 0;   // native_mmvq_il_tune (tests, benchmarks): rows a warp for every shape (0: the table)
+thread_local int g_last_il_rows = 0;
 }  // namespace
-void native_mmvq_il_tune(int rows) { g_tune_rows = rows; }
+void native_mmvq_il_tune(int rows) {
+    if (rows != 0 && rows != 1 && rows != 2 && rows != 4)
+        throw std::invalid_argument("native_mmvq_il_tune requires rows 0, 1, 2 or 4");
+    g_tune_rows = rows;
+}
+int native_mmvq_il_last_rows() { return g_last_il_rows; }
 
 namespace {
-// sm_80 and newer (measured on sm_86 and sm_120) and Volta (sm_70, its own table above); Pascal/Turing keep
-// native_mmvq's kernels unchanged
 // Volta (PR 1401): opt-in with STRATA_SM70_TABLE=1 until the author confirms on a V100 with the final code
 bool sm70_opt_in() { const char* v = std::getenv("STRATA_SM70_TABLE"); return v != nullptr && std::atoi(v) != 0; }
 // Pascal (sm_60, GP100): the same interleaved kernels (bitwise equal to native_mmvq's, mmvq_il_parity), its own table
@@ -2696,25 +2740,36 @@ bool il_arch_ok() {
         int minor = 0;
         cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
         ok[dev] = (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
-                   (major >= 8 || (major == 7 && minor == 0 && sm70_opt_in()) || (major == 6 && minor == 0 && sm60_table_on()))) ? 1 : -1;
+                   (major >= 8 || (major == 7 && minor == 0 && sm70_opt_in()) ||
+                    (major == 7 && minor == 5) || (major == 6 && minor == 0 && sm60_table_on()))) ? 1 : -1;
     }
     return ok[dev] > 0;
 }
+int il_dispatch_rows(int type, int ncols, int n_out, int n_in) {
+    if (ncols < 1 || ncols > 4 || n_out <= 0 || n_in < 0 || n_in % QK != 0 || !g_multi_exact ||
+        !il_arch_ok() || (type != 23 && type != 12 && type != 13 && type != 14 && type != 11)) return 0;
+    // Tuning must bypass the automatic architecture policy, not silently time the fallback.
+    if (g_tune_rows) return g_tune_rows;
+    if (il_cc() == 75) {
+        const char* opt = std::getenv("STRATA_MMVQ_IL");
+        if (!opt || std::strcmp(opt, "1") != 0) return 0;
+    }
+    return il_rows(type, ncols, n_out, n_in);
+}
 }  // namespace
 
-bool native_mmvq_il_supported(int ggml_type, int ncols, int n_out) {
-    if (ncols < 1 || ncols > 4 || !g_multi_exact || !il_arch_ok()) return false;
-    return (g_tune_rows ? g_tune_rows : il_rows(ggml_type, ncols, n_out)) != 0 &&
-           (ggml_type == 23 || ggml_type == 12 || ggml_type == 13 || ggml_type == 14 || ggml_type == 11);
+bool native_mmvq_il_supported(int ggml_type, int ncols, int n_out, int n_in) {
+    return il_dispatch_rows(ggml_type, ncols, n_out, n_in) != 0;
 }
 
 void native_mmvq_il(int ggml_type, const void* weights, const void* x_q8_1, const void* x_il, float* y, int n_in,
                     int n_out, int ncols, void* stream) {
-    if (!native_mmvq_il_supported(ggml_type, ncols, n_out)) {
+    g_last_il_rows = 0;
+    const int r = il_dispatch_rows(ggml_type, ncols, n_out, n_in);
+    if (!r) {
         native_mmvq(ggml_type, weights, x_q8_1, y, n_in, n_out, ncols, stream);
         return;
     }
-    const int r = g_tune_rows ? g_tune_rows : il_rows(ggml_type, ncols, n_out);
     validate_shape(n_in, ncols, QK);
     validate_pointer(weights);
     if (ncols == 1) x_il = x_q8_1;   // one column: the plain blocks, no interleaved copy
@@ -2730,6 +2785,7 @@ void native_mmvq_il(int ggml_type, const void* weights, const void* x_q8_1, cons
     case 11: launch_il_rows<IlQ3K>(r, weights, x_il, y, n_in, n_out, ncols, s); break;
     }
     launch_check();
+    g_last_il_rows = r;
 }
 
 #else  // HIP: no interleaved path
@@ -2737,13 +2793,14 @@ std::size_t native_q8_1_il_bytes(int n_in, int ncols) { return native_q8_1_bytes
 void native_q8_1_interleave(const void*, void*, int, int, void*) {
     throw std::invalid_argument("native_q8_1_interleave is CUDA only");
 }
-bool native_mmvq_il_supported(int, int, int) { return false; }
-int native_mmvq_il_rows_for(int, int, int, int) { return 0; }
+bool native_mmvq_il_supported(int, int, int, int) { return false; }
+int native_mmvq_il_rows_for(int, int, int, int, int) { return 0; }
 void native_mmvq_il(int ggml_type, const void* weights, const void* x_q8_1, const void*, float* y, int n_in, int n_out,
                     int ncols, void* stream) {
     native_mmvq(ggml_type, weights, x_q8_1, y, n_in, n_out, ncols, stream);
 }
 void native_mmvq_il_tune(int) {}
+int native_mmvq_il_last_rows() { return 0; }
 #endif  // !__HIPCC__
 
 } // namespace strata::kernels
