@@ -372,8 +372,9 @@ bool DFlashDrafter::bind(const WeightTable& wt, const NativeHead* head, std::str
     }
     emb_ref_ = wt.find("token_embd.weight");
     if (emb_ref_ == nullptr) { err = "dflash: the target's token_embd.weight is missing"; return false; }
-    if (emb_ref_->ne0 < (uint64_t) dg.vocab) {
-        err = "dflash: the target's embedding table holds " + std::to_string(emb_ref_->ne0) +
+    // GGUF shape [n_embd, n_vocab]: ne0 is the embedding length, ne1 the table's row count
+    if (emb_ref_->ne1 < (uint64_t) dg.vocab) {
+        err = "dflash: the target's embedding table holds " + std::to_string(emb_ref_->ne1) +
               " rows, less than the artifact's vocabulary " + std::to_string(dg.vocab);
         return false;
     }

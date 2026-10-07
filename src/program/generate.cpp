@@ -11763,14 +11763,6 @@ int main(int argc, char** argv) {
                 return 2;
             }
             window[0] = x;
-            if (use_dflash)   // candidate[i] from the drafter MUST be verify_window[i+1]: the window
-                              // once filled with token 0 here and accepted nothing, silently
-                for (int i = 1; i < T; ++i)
-                    if (window[(size_t) i] != drafts[(size_t) i - 1]) {
-                        std::fprintf(stderr, "strata generate: internal error: DFlash draft %d never reached "
-                                             "the verify window\n", i - 1);
-                        return 2;
-                    }
             for (int i = 1; i < T; ++i) {
                 const size_t at = produced.size() - 1 + (size_t) i;
                 // DFlash drafts ride the same slot as the MTP's: with neither drafter the window
@@ -11782,6 +11774,15 @@ int main(int argc, char** argv) {
                 if (i >= T_mtp) d = cbuf[(size_t) (i - T_mtp)];
                 if (o.spec_corrupt > 0 && (++corrupt_counter % o.spec_corrupt) == 0) d = (d + 1) % (int32_t) n_vocab;
                 window[(size_t) i] = d;
+            }
+            if (use_dflash) {   // candidate[i] from the drafter MUST be verify_window[i+1]: the window
+                                // once filled with token 0 here and accepted nothing, silently
+                for (int i = 1; i < T; ++i)
+                    if (window[(size_t) i] != drafts[(size_t) i - 1]) {
+                        std::fprintf(stderr, "strata generate: internal error: DFlash draft %d never reached "
+                                             "the verify window\n", i - 1);
+                        return 2;
+                    }
             }
             drive.d.layers = 0;
             drive.d.experts = 0;
