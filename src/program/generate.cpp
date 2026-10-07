@@ -6951,12 +6951,21 @@ int main(int argc, char** argv) {
                 const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib * 1024 * 1024;
                 const size_t retained = reuse.bytes() + stage_retained;
                 const size_t additional = estimate > retained ? estimate - retained : 0;
-                if (!strata::core::conversation_memory_admit(strata::core::conversation_available_memory(),
-                        additional, floor)) {
+                // make_room above only balanced the cache's own budget, so a full cache can still leave the host
+                // short of RAM although the parked conversations hold more than the snapshot needs. They leave,
+                // oldest first, until it fits: refusing here would throw away the prompt read that built it (see
+                // ConversationCache::admit_ram).
+                size_t evicted = 0;
+                if (!conversations.admit_ram(strata::core::conversation_available_memory,
+                        strata::core::conversation_release_freed_memory, additional, floor, evicted)) {
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (physical RAM admission; need %zu MiB plus %lld MiB floor, or telemetry unavailable)\n",
                                  additional >> 20, (long long) o.conversation_cache_min_free_mib);
                     return true;
                 }
+                if (evicted)
+                    std::fprintf(stderr, "strata serve: conversation cache: evicted %zu parked conversation%s to admit this snapshot (%zu MiB plus %lld MiB floor)\n",
+                                 evicted, evicted == 1 ? "" : "s", additional >> 20,
+                                 (long long) o.conversation_cache_min_free_mib);
                 strata::core::SavedConversation image;
                 size_t reused_bytes = 0;
                 if (!strata::core::conversation_snapshot_save(image, view, ss, g, draft0, err,

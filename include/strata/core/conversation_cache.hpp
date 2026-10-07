@@ -3,12 +3,14 @@
 #pragma once
 
 #include "strata/core/conversation_buffer.hpp"
+#include "strata/core/conversation_memory.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -261,15 +263,57 @@ public:
         if (!enabled() || held > budget_ || incoming > budget_ - held) return false;
         if (bytes() > budget_ - held - incoming) reuse_ = {};
         while (!entries_.empty() && (entries_.size() >= slots_ || bytes_ > budget_ - held - incoming)) {
-            // the oldest entry that does not hold a pinned shared prefix leaves; with only pinned ones left the new
-            // image does not fit (the caller skips parking it - the pinned prefix is what the queries come back to)
-            auto victim = std::find_if(entries_.begin(), entries_.end(), [](const SavedConversation& e) { return !e.pinned(); });
-            if (victim == entries_.end()) return false;
-            bytes_ -= victim->bytes();
-            entries_.erase(victim);
-            ++evictions_;
+            // with only pinned entries left the new image does not fit (the caller skips parking it - the pinned
+            // prefix is what the queries come back to)
+            if (!evict_oldest()) return false;
         }
         return true;
+    }
+
+    // The oldest parked conversation that does not hold a pinned shared prefix leaves. False when none can
+    // (nothing is parked, or only pinned ones are).
+    bool evict_oldest() {
+        auto victim = std::find_if(entries_.begin(), entries_.end(), [](const SavedConversation& e) { return !e.pinned(); });
+        if (victim == entries_.end()) return false;
+        bytes_ -= victim->bytes();
+        entries_.erase(victim);
+        ++evictions_;
+        return true;
+    }
+
+    // What evict_oldest() could give back in all: the parked conversations that hold no pinned prefix.
+    size_t evictable_bytes() const {
+        size_t n = 0;
+        for (const auto& e : entries_) if (!e.pinned()) n += e.bytes();
+        return n;
+    }
+
+    // The physical-RAM gate of the parking path: may a snapshot of `allocation` bytes be built while the host keeps
+    // `floor` bytes free? `available()` reads the host's free RAM and `release()` hands what the allocator still holds
+    // of freed memory back to the kernel. Where conversation_memory_admit refuses, it releases once (make_room may
+    // have dropped a conversation just before) and reads again. If that is not enough, parked conversations leave,
+    // oldest first and pinned ones stay, each followed by a release and a new reading, until the snapshot fits.
+    // Nothing leaves if there is no figure to measure by or if all the conversations that may leave hold less than
+    // is missing, as the snapshot would be refused anyway. `evicted` counts the ones that left.
+    template<class Available, class Release>
+    bool admit_ram(Available&& available, Release&& release, uint64_t allocation, uint64_t floor, size_t& evicted) {
+        auto have = available();
+        if (conversation_memory_admit(have, allocation, floor)) return true;
+        if (!have) return false;
+        release();
+        have = available();
+        if (conversation_memory_admit(have, allocation, floor)) return true;
+        if (!have) return false;
+        const uint64_t short_by = *have < floor ? floor - *have + allocation : allocation - (*have - floor);
+        if (short_by > evictable_bytes()) return false;
+        while (evict_oldest()) {
+            ++evicted;
+            release();
+            have = available();
+            if (conversation_memory_admit(have, allocation, floor)) return true;
+            if (!have) return false;
+        }
+        return false;
     }
 
     // #342: drop the parked entries an outgoing conversation (its live tokens and checkpoint chain) supersedes:

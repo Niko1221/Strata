@@ -1,7 +1,9 @@
 #include "strata/core/conversation_cache.hpp"
+#include "strata/core/conversation_memory.hpp"
 
 #include <cstdio>
 #include <cstdlib>
+#include <optional>
 #include <vector>
 
 using namespace strata::core;
@@ -12,6 +14,21 @@ void check(bool value, const char* description) {
     ++checks;
     if (!value) { std::fprintf(stderr, "FAIL: %s\n", description); std::exit(1); }
 }
+// A host whose free RAM is `base` plus the share (num/den) of the bytes the cache has dropped that the allocator has
+// handed back so far: release() is what hands them back.
+struct Host {
+    ConversationCache& cache;
+    size_t start;
+    uint64_t base;
+    unsigned num, den;
+    size_t released = 0;
+    uint64_t returned = 0;
+    uint64_t cap = UINT64_MAX;   // the most the allocator will hand back in all
+    uint64_t noise = 0;          // free RAM another process takes from the second release on
+    std::optional<uint64_t> available() const { return base + returned - (released >= 2 ? noise : 0); }
+    auto available_fn() { return [this] { return available(); }; }
+    auto release_fn() { return [this] { ++released; returned = std::min<uint64_t>((start - cache.bytes()) * num / den, cap); }; }
+};
 SavedConversation image(std::initializer_list<int32_t> ids, bool cvec = true) {
     SavedConversation s;
     s.live.ids = ids;
@@ -324,6 +341,113 @@ int main() {
         p2.checkpoints.back().gdn.resize(64, 1);
         check(tiny.put(std::move(p2)), "a pinned one fits an empty cache");
         check(!tiny.put(image({7,8,9})) && tiny.size() == 1, "nothing else fits beside it: parking is refused, the pin stays");
+    }
+    {   // the physical-RAM gate of the parking path: a full cache gives RAM back until the snapshot fits
+        const size_t one = image({1,2,3}).bytes();
+        const uint64_t floor = 1000;
+        ConversationCache cache(one * 8, 8);
+        for (int32_t k = 1; k <= 4; ++k) check(cache.put(image({k,2,3})), "parked");
+        Host host{cache, cache.bytes(), floor + one, 1, 1};   // one conversation's worth of room beside the floor
+        size_t evicted = 0;
+        check(!conversation_memory_admit(host.available(), one * 3, floor), "the plain check refuses a snapshot of three");
+        check(cache.admit_ram(host.available_fn(), host.release_fn(), one, floor, evicted) && evicted == 0 &&
+              host.released == 0 && cache.size() == 4, "a snapshot that fits beside the floor evicts nothing");
+        check(cache.admit_ram(host.available_fn(), host.release_fn(), one * 3, floor, evicted) && evicted == 2 &&
+              host.released == 3 && cache.size() == 2 && cache.evictions() == 2, "two conversations give back what is missing");
+        check(cache.best(std::vector<int32_t>{1,2,3,0}, {}, true).tokens == 0 &&
+              cache.best(std::vector<int32_t>{2,2,3,0}, {}, true).tokens == 0, "the oldest two are the ones gone");
+        check(cache.best(std::vector<int32_t>{3,2,3,0}, {}, true).tokens == 3 &&
+              cache.best(std::vector<int32_t>{4,2,3,0}, {}, true).tokens == 3, "the newest two stay parked");
+        ConversationCache edge(one * 8, 8);
+        for (int32_t k = 1; k <= 4; ++k) check(edge.put(image({k,2,3})), "parked");
+        Host edge_host{edge, edge.bytes(), floor, 1, 1};
+        evicted = 0;
+        check(edge.admit_ram(edge_host.available_fn(), edge_host.release_fn(), one + 1, floor, evicted) && evicted == 2,
+              "one byte past a conversation takes the next one");
+        ConversationCache low(one * 8, 8);
+        for (int32_t k = 1; k <= 4; ++k) check(low.put(image({k,2,3})), "parked");
+        Host low_host{low, low.bytes(), floor - one / 2, 1, 1};   // already under the floor, and the figure is read again
+        evicted = 0;
+        check(low.admit_ram(low_host.available_fn(), low_host.release_fn(), one, floor, evicted) && evicted == 2,
+              "RAM given back can lift a host that is under the floor");
+    }
+    {   // the RAM a conversation held does not all come back at once: the gate goes on until the snapshot fits
+        const size_t one = image({1,2,3}).bytes();
+        const uint64_t floor = 1000;
+        ConversationCache half(one * 8, 8);
+        for (int32_t k = 1; k <= 6; ++k) check(half.put(image({k,2,3})), "parked");
+        Host half_host{half, half.bytes(), floor + one, 1, 2};   // half of each conversation's bytes come back
+        size_t evicted = 0;
+        check(half.admit_ram(half_host.available_fn(), half_host.release_fn(), one * 3, floor, evicted) && evicted == 4 &&
+              half.size() == 2, "conversations whose RAM half comes back take four to cover two");
+        ConversationCache slow(one * 8, 8);
+        for (int32_t k = 1; k <= 7; ++k) check(slow.put(image({k,2,3})), "parked");
+        Host slow_host{slow, slow.bytes(), floor + one, 1, 5};   // a fifth of each conversation's bytes come back
+        evicted = 0;
+        check(slow.admit_ram(slow_host.available_fn(), slow_host.release_fn(), one * 2, floor, evicted) && evicted == 5 &&
+              slow.size() == 2, "a conversation that gives back little is still worth another when it helps");
+        ConversationCache noisy(one * 8, 8);
+        for (int32_t k = 1; k <= 6; ++k) check(noisy.put(image({k,2,3})), "parked");
+        Host noisy_host{noisy, noisy.bytes(), floor + one, 1, 1, 0, 0, UINT64_MAX, one + one / 2};   // another process takes RAM meanwhile
+        evicted = 0;
+        check(!conversation_memory_admit(noisy_host.available(), one * 3, floor), "the plain check refuses a snapshot of three");
+        check(noisy.admit_ram(noisy_host.available_fn(), noisy_host.release_fn(), one * 3, floor, evicted) && evicted == 4 &&
+              noisy.size() == 2, "free RAM that falls after an eviction does not end the loop while more can leave");
+        ConversationCache kept(one * 8, 8);
+        for (int32_t k = 1; k <= 4; ++k) check(kept.put(image({k,2,3})), "parked");
+        Host kept_host{kept, kept.bytes(), floor + one, 0, 1};   // the allocator keeps it all
+        evicted = 0;
+        check(!kept.admit_ram(kept_host.available_fn(), kept_host.release_fn(), one * 3, floor, evicted) && evicted == 4 &&
+              kept.size() == 0, "when no RAM comes back the conversations that may leave are all it can cost");
+    }
+    {   // make_room dropped the last parked conversation just before the gate and the allocator still holds it
+        const size_t one = image({1,2,3}).bytes();
+        const uint64_t floor = 1000;
+        ConversationCache cache(one * 8, 8);
+        check(cache.put(image({1,2,3})), "parked");
+        Host host{cache, cache.bytes(), floor, 1, 1};
+        check(cache.evict_oldest() && cache.size() == 0, "make_room drops it");
+        size_t evicted = 0;
+        check(cache.admit_ram(host.available_fn(), host.release_fn(), one, floor, evicted) && evicted == 0 && host.released == 1,
+              "one release before any further eviction shows the RAM");
+    }
+    {   // when eviction cannot help, nothing is evicted and the snapshot is refused as before
+        const size_t one = image({1,2,3}).bytes();
+        const uint64_t floor = 1000;
+        ConversationCache cache(one * 8, 8);
+        for (int32_t k = 1; k <= 3; ++k) check(cache.put(image({k,2,3})), "parked");
+        Host host{cache, cache.bytes(), floor, 1, 1};
+        size_t evicted = 0;
+        check(!cache.admit_ram(host.available_fn(), host.release_fn(), one * 3 + 1, floor, evicted) && evicted == 0 &&
+              host.released == 1 && cache.size() == 3 && cache.evictions() == 0, "a shortfall beyond what is parked evicts nothing");
+        check(!cache.admit_ram([] { return std::optional<uint64_t>(); }, host.release_fn(), one, floor, evicted) && evicted == 0 &&
+              cache.size() == 3, "no free-RAM figure: nothing is evicted");
+        check(cache.admit_ram(host.available_fn(), host.release_fn(), one * 3, floor, evicted) && evicted == 3 && cache.size() == 0,
+              "a shortfall of everything takes everything");
+        Host empty{cache, cache.bytes(), floor, 1, 1};
+        evicted = 0;
+        check(!cache.admit_ram(empty.available_fn(), empty.release_fn(), one, floor, evicted) && evicted == 0 && !cache.evict_oldest(),
+              "an empty cache has nothing to give");
+    }
+    {   // a pinned shared prefix never leaves for the gate, and does not count toward what could
+        auto pinned = image({1,2,3});
+        pinned.checkpoints.push_back(ConversationCheckpoint{});
+        pinned.checkpoints.back().ids = {1,2};
+        pinned.checkpoints.back().pinned = true;
+        pinned.checkpoints.back().gdn.resize(64, 1);
+        const size_t one = image({7,8,9}).bytes();
+        const uint64_t floor = 1000;
+        ConversationCache cache(pinned.bytes() + one * 4, 4);
+        check(cache.put(std::move(pinned)) && cache.put(image({7,8,9})) && cache.put(image({4,5,6})), "pinned one parked first");
+        check(cache.evictable_bytes() == one * 2, "only the unpinned conversations count");
+        Host host{cache, cache.bytes(), floor, 1, 1};
+        size_t evicted = 0;
+        check(!cache.admit_ram(host.available_fn(), host.release_fn(), one * 2 + 1, floor, evicted) && evicted == 0 && cache.size() == 3,
+              "the pinned bytes are not on offer");
+        check(cache.admit_ram(host.available_fn(), host.release_fn(), one * 2, floor, evicted) && evicted == 2 && cache.size() == 1,
+              "the unpinned conversations leave, oldest first");
+        check(cache.best(std::vector<int32_t>{1,2,9,9}, {}, true).tokens == 2, "the pinned prefix is still found");
+        check(!cache.evict_oldest() && cache.size() == 1, "with only a pinned one left nothing can leave");
     }
     std::printf("conversation_cache_test: %d checks passed\n", checks);
 }
