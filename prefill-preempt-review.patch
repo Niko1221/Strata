@@ -1,0 +1,759 @@
+diff --git a/docs/PREFILL-PREEMPT-REPORT.md b/docs/PREFILL-PREEMPT-REPORT.md
+index 836cd15..b023b12 100644
+--- a/docs/PREFILL-PREEMPT-REPORT.md
++++ b/docs/PREFILL-PREEMPT-REPORT.md
+@@ -1,3 +1,8 @@
++> Review of 82c211f (2026-10-03): the historical "ALL PASS" below is superseded by the
++> open A/B/A state-parity failures in the final section. Tokens matching is not proof of
++> state equality. See PREFILL-PREEMPT-REVIEW.md for findings, candidate fixes and trace steps.
++> GPU results quoted below were supplied by the implementation report, not rerun by this review.
++
+ # PREFILL-PREEMPT-REPORT - cooperative prefill preemption: what was done
+ 
+ Branch `feat/prefill-preempt` (from `feat/rope-scaling` after `git pull`, 2026-10-03).  Design + state audit:
+diff --git a/docs/PREFILL-PREEMPT-REVIEW.md b/docs/PREFILL-PREEMPT-REVIEW.md
+new file mode 100644
+index 0000000..1e4d26e
+--- /dev/null
++++ b/docs/PREFILL-PREEMPT-REVIEW.md
+@@ -0,0 +1,109 @@
++# Review of prefill preemption at 82c211f
++
++Status: two code defects corrected locally; a stricter reproducer and diagnostics added.
++The reported interim-decode drift is NOT yet localized or proven fixed. No CUDA compiler,
++GPU or model weights were available in the review environment. C++ changes are uncompiled.
++
++## Confirmed findings
++
++1. `rec.preempt_count` was saved before `++preempt_count`. RESUME reloaded the old count;
++   repeated displacement could evade `--prefill-preempt-max`. Save count + 1.
++2. A batched segment could resume with a tail <= `--short-read` and switch to verifier
++   windows, unlike the uninterrupted segment. Store its original end and keep its resumed
++   remainder batched. This is a real parity defect, but is NOT evidence explaining the
++   reported 490-token tail with the default short-read threshold of 64.
++3. The harness accepted a failed scenario if a fresh-engine retry passed. Removed that
++   false-pass path. A flaky failure remains a failure.
++4. The harness treated `--prefill-preempt` as a valued flag, swallowing the next argument.
++   Fixed argument normalization; pinned options no longer accumulate duplicates.
++5. Park-only controls ran B even though the candidate did not. Their process histories
++   were different. Park-only controls now omit B. Log files start fresh for each engine.
++6. MTP hash differences were automatically excused. They now fail the strict diagnostic
++   comparison. Stale cells beyond the committed target prefix are reported but do not fail
++   semantic-state parity: they may contain rejected, uncommitted drafts.
++7. The existing state hash interpreted FP16 KV as INT8. The diagnostic now handles FP16
++   and fails on copy/synchronization errors instead of hashing failed reads.
++
++`--spec-min-p 0` fixes offered window size (except the first window); it does NOT fix
++acceptance count or the next position. E-9 permits a different drafting approximation,
++but does not explain away arbitrary differences between identical resumed computations.
++A final hash alone cannot identify where a drift starts or quantify it in ULPs.
++
++Other acceptance gaps still visible in the branch:
++
++- The Python parked request waits for the entire queue to empty. An ongoing stream of
++  arrivals can starve it; the chunk guarantee applies only AFTER it gets resumed.
++- SuspReq allocations are separate vectors, not admission against a configured snapshot
++  byte budget. Catching bad_alloc does not establish bounded RAM use under overcommit.
++- This branch does not contain the conversation_snapshot.hpp / conversation_state.cpp
++  implementation named in the task. Its state copier is local to generate.cpp. Reconcile
++  the base branch and shared snapshot design before calling the requested architecture complete.
++- The supplied performance result is 50K, not the requested controlled 200K workload;
++  no new performance/no-contention measurements were made here.
++- STRATA_IQ_MT_MIN is not referenced in this checkout; do not assume it controls its CPU
++  kernel selection without checking any externally linked implementation.
++
++## What the trace distinguishes
++
++Set `--trace` on the harness. It enables STRATA_PREEMPT_TRACE on both engines:
++
++- `STATE_POINT phase=park|restore|prefill_done|done` introduces a STATE_HASH and STATE_EXTRA.
++  These include target state, draft KV, PLE previous tokens, indexer dead keys and block
++  positions. `residency` hashes the host expert-placement table.
++- `VERIFY_POINT` gives full-width FNV fingerprints of each row's residual and logits.
++- `WINDOW` records position, offered T, accepted/committed count, and input/output token hashes.
++
++These are expensive diagnostics, not timing measurements. They use existing snapshot/hash
++machinery and add no new serialized conversation format. Turning trace off skips them.
++A hash mismatch detects different bytes; it does not measure maximum ULP error. Hash equality
++is a fingerprint check, not a collision-free byte comparison or a substitute for raw dumps.
++
++`GEN 0` is accepted ONLY with STRATA_PREEMPT_TRACE set, for a debug request that reads its
++normal prefill prefix [0, n-1) without running the first decode window. The ordinary protocol
++still rejects max_new=0. The trace's complete-prefix MTP hash is intended for these short
++harness prompts; when testing prompts beyond a configured draft window, compare the live
++MTP range separately, since old cells may intentionally never have been computed.
++
++## GPU reproduction
++
++Build the patched engine using your normal build configuration. From the repository root,
++substitute your actual configuration JSON if it differs:
++
++```bash
++python3 tools/prefill_preempt_test.py --config strata-iq3_xxs.json --quick --trace \
++  --interim-max-new 0 --workdir /tmp/preempt-B-prefill
++python3 tools/prefill_preempt_test.py --config strata-iq3_xxs.json --quick --trace \
++  --interim-max-new 1 --workdir /tmp/preempt-B-one
++python3 tools/prefill_preempt_test.py --config strata-iq3_xxs.json --quick --trace \
++  --interim-max-new 32 --workdir /tmp/preempt-B-decode
++```
++
++Use an otherwise idle GPU. Do not use the original regression runner's blanket
++`pkill -x strata` against other sessions. Each harness engine is closed/waited explicitly.
++Keep failures and their logs; do not rerun until green and discard the failed attempt.
++
++Compare control-boundary-* with preempt-boundary-* at the same absolute positions:
++
++1. `park` vs `restore` within the candidate: do copied state bytes survive B? If not,
++   inspect the missing/copied component first. Residency differences are execution-path
++   evidence, not automatically a snapshot-data error.
++2. Compare `prefill_done` between the arms BEFORE decoding A. Differences here precede
++   A's decode: inspect resumed prefill, buffer layouts and restored state.
++3. If prefill states match, compare the first VERIFY_POINT (same p, T and row) and WINDOW.
++   Different input/window shapes point to drafting/scheduling. Same inputs with differing
++   logits point to target execution or unsnapshotted state/scratch.
++4. If logits agree but final state differs, compare keep counts and commit boundaries.
++   Identical visible output can still leave a different committed length, especially near
++   max_new where the old loop commits the whole accepted window before limiting output.
++5. Repeat park-only tests and a <=64-token resumed-tail case. The latter specifically
++   exercises the segment-path correction; the default 490-token tail does not.
++
++A first mismatching window narrows the next kernel-level trace; it does not by itself
++identify a particular kernel. If tracing makes the failure disappear, retain the untraced
++failure and investigate synchronization/lifetime rather than declaring success.
++
++## Validation here
++
++- 56 Python tests passed: 5 new harness checks, 9 preemption scheduler tests, 42 server tests.
++- Python syntax and git diff whitespace checks passed.
++- No C++ build, model-state parity, CUDA sanitizer or performance claims are made.
+diff --git a/src/core/verify.cpp b/src/core/verify.cpp
+index e461ca5..371ea05 100644
+--- a/src/core/verify.cpp
++++ b/src/core/verify.cpp
+@@ -1108,6 +1108,29 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
+             }
+         }
+     }
++    static const bool preempt_trace = std::getenv("STRATA_PREEMPT_TRACE") != nullptr;
++    if (preempt_trace) {
++        auto hash_device = [&](const float* data, size_t count, uint64_t& hash) {
++            std::vector<float> values(count);
++            if (cudaMemcpy(values.data(), data, count * sizeof(float), cudaMemcpyDeviceToHost) != cudaSuccess)
++                return false;
++            hash = 1469598103934665603ull;
++            const auto* bytes = reinterpret_cast<const uint8_t*>(values.data());
++            for (size_t i = 0; i < count * sizeof(float); ++i) hash = (hash ^ bytes[i]) * 1099511628211ull;
++            return true;
++        };
++        for (int t = 0; t < T; ++t) {
++            uint64_t residual = 0, logits = 0;
++            if (!hash_device(R_ + (size_t) t * g.hc * g.n_embd, (size_t) g.hc * g.n_embd, residual) ||
++                !hash_device(head_logits_ + (size_t) t * n_vocab_, (size_t) n_vocab_, logits)) {
++                err = "verify: trace copy failed";
++                return false;
++            }
++            std::fprintf(stderr, "strata verify: VERIFY_POINT p=%lld T=%d row=%d residual=%016llx logits=%016llx\n",
++                         (long long) pos0, T, t, (unsigned long long) residual, (unsigned long long) logits);
++        }
++        std::fflush(stderr);
++    }
+     VDBG("window done\n");
+     ++windows;
+     progress_at("decode");
+diff --git a/src/program/generate.cpp b/src/program/generate.cpp
+index 947305e..a2783e6 100644
+--- a/src/program/generate.cpp
++++ b/src/program/generate.cpp
+@@ -86,6 +86,7 @@
+ #include <fstream>
+ #include <sstream>
+ #include <string>
++#include <stdexcept>
+ #include <set>
+ #include <vector>
+ 
+@@ -830,6 +831,7 @@ struct SuspReq {
+     std::vector<int64_t> ids;      ///< the whole prompt (the tail is re-read on the resume)
+     int64_t done = 0;              ///< prompt tokens whose state the snapshot holds
+     int64_t max_new = 0;
++    int64_t segment_end = 0;      ///< end of the batched segment interrupted by the park
+     int64_t preempt_count = 0;     ///< how often this request has been parked (the --prefill-preempt-max budget)
+     // the request's sampling keys, parsed once and kept for the resume
+     float temperature = 0.0f, top_p = 1.0f, min_p = 0.0f;
+@@ -3800,6 +3802,118 @@ int main(int argc, char** argv) {
+         long long cur_rid = -1;                  // the running request's id (suffixed onto its output lines)
+         bool cur_can_park = false;               // it is a text request with an id (images never park)
+         auto rid_suffix = [&] { return cur_rid >= 0 ? " id=" + std::to_string(cur_rid) : std::string(); };
++        // Expensive opt-in diagnostics: compare restore, prefill completion, then decode separately.
++        const bool state_trace = std::getenv("STRATA_PREEMPT_TRACE") != nullptr;
++        const bool state_hash = std::getenv("STRATA_STATE_HASH") != nullptr;
++        auto trace_state = [&](const char* phase, int64_t L) -> bool {
++            try {
++                // DEBUG: a fingerprint of every part of the session over the positions it holds ([0, L)), and
++                // separately of what lies past them in the last KV page (stale cells, fine unless something reads them)
++                if (cudaDeviceSynchronize() != cudaSuccess) return false;
++                const strata::kernels::QsaShapes qs = [&] {
++                    strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
++                    s.n_head_kv = g.n_head_kv; s.head_dim = g.head_dim; s.idx_dim = g.idx_key_dim;
++                    return s;
++                }();
++                auto hash_dev = [&](const void* p, size_t bytes, uint64_t h) {
++                    std::vector<uint8_t> b(bytes);
++                    if (bytes && cudaMemcpy(b.data(), p, bytes, cudaMemcpyDefault) != cudaSuccess)
++                        throw std::runtime_error("state trace copy failed");   // VRAM or a streamed host copy
++                    return fnv1a(b.data(), b.size(), h);
++                };
++                const uint64_t rh = fnv1a(host_res.data(), host_res.size() * sizeof(int32_t));
++                std::fprintf(stderr, "strata serve: STATE_POINT phase=%s id=%lld L=%lld residency=%016llx\n",
++                             phase, cur_rid, (long long) L, (unsigned long long) rh);
++                // the cells [c0, c1) of one int8 K or V pool ([page][kv_head][page_size][head_dim]), bytes per value `w`
++                auto hash_cells = [&](const void* pool, int64_t per_cell, int64_t c0, int64_t c1, uint64_t h) {
++                    const int64_t ps = qs.page_size;
++                    for (int64_t pg = c0 / ps; pg * ps < c1; ++pg)
++                        for (int64_t hd = 0; hd < qs.n_head_kv; ++hd) {
++                            const int64_t a = std::max(c0, pg * ps) - pg * ps, e = std::min(c1, (pg + 1) * ps) - pg * ps;
++                            const size_t off = (size_t) (((pg * qs.n_head_kv + hd) * ps + a) * per_cell);
++                            h = hash_dev((const uint8_t*) pool + off, (size_t) ((e - a) * per_cell), h);
++                        }
++                    return h;
++                };
++                const ConvStateSizes z = conv_state_sizes(g);
++                uint64_t h_gdn = hash_dev(ss.gdn_state, z.gdn, 1469598103934665603ull);
++                if (std::getenv("STRATA_STATE_HASH_GDN") != nullptr) {   // per GDN layer: which one differs first
++                    const size_t per = z.gdn / (size_t) g.n_gdn_layers();
++                    std::string s;
++                    char b[8];
++                    for (int64_t i = 0; i < g.n_gdn_layers(); ++i) {
++                        std::snprintf(b, sizeof(b), "%04llx ", (unsigned long long) (hash_dev((const uint8_t*) ss.gdn_state + i * per, per, 1469598103934665603ull) & 0xffff));
++                        s += b;
++                    }
++                    std::fprintf(stderr, "strata serve: STATE_HASH_GDN %s\n", s.c_str());
++                }
++                uint64_t h_ple = hash_dev(ss.ple_hist, ss.ple_hist ? z.ple : 0, 1469598103934665603ull);
++                uint64_t h_tail = 1469598103934665603ull, h_pool = h_tail, h_kv = h_tail, h_stale = h_tail;
++                uint64_t h_dead = h_tail, h_block = h_tail;
++                const int64_t kvb = qs.head_dim, scb = (qs.head_dim / 64) * 2;
++                // a state's K/V arrays and their bytes per (cell, head) row: the host copy when it has one
++                auto kv_arrays = [&](const strata::core::QsaState& st) {
++                    const bool h = st.kv_mode != 0;
++                    std::vector<std::pair<const void*, int64_t>> a;
++                    if (st.kv_q4) {
++                        const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qs.head_dim);
++                        a = {{h ? st.host.k_q4 : st.k_q4, q4b}, {h ? st.host.v_q4 : st.v_q4, q4b}};
++                    } else if (st.kv_hybrid) {
++                        const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qs.head_dim);
++                        a = {{h ? st.host.k_q : st.k_q, kvb}, {h ? st.host.v_q4 : st.v_q4, q4b},
++                             {h ? st.host.k_scale : st.k_scale, scb}};
++                    } else if (!st.kv_int8) {
++                        a = {{h ? st.host.k_pool : st.k_pool, qs.head_dim * 2},
++                             {h ? st.host.v_pool : st.v_pool, qs.head_dim * 2}};
++                    } else {
++                        a = {{h ? st.host.k_q : st.k_q, kvb}, {h ? st.host.v_q : st.v_q, kvb},
++                             {h ? st.host.k_scale : st.k_scale, scb}, {h ? st.host.v_scale : st.v_scale, scb}};
++                    }
++                    return a;
++                };
++                const int64_t end_cell = std::min<int64_t>(((L + qs.page_size - 1) / qs.page_size) * qs.page_size,
++                                                           ss.qsa_states[0].max_cells);
++                for (int64_t i = 0; i < g.n_qsa_layers(); ++i) {
++                    const strata::core::QsaState& st = ss.qsa_states[i];
++                    h_dead = hash_dev(st.idx_dead, (size_t) qs.idx_dim * 4, h_dead);
++                    h_block = hash_dev(st.idx_block_pos, sizeof(int32_t), h_block);
++                    h_tail = hash_dev(st.idx_tail, z.tail, h_tail);
++                    h_pool = hash_dev(st.idx_pooled, (size_t) (L / qs.idx_block) * qs.idx_dim * 4, h_pool);
++                    // KV streaming: the host copy is the identity layout and holds every cell
++                    for (const auto& [pool, w] : kv_arrays(st)) {
++                        h_kv = hash_cells(pool, w, 0, L, h_kv);
++                        h_stale = hash_cells(pool, w, L, end_cell, h_stale);
++                    }
++                }
++                const strata::core::QsaState& ms = mtp.kv_state();
++                uint64_t h_mtp = 1469598103934665603ull;
++                const int64_t mL = std::min<int64_t>(L, ms.max_cells);
++                for (const auto& [pool, w] : kv_arrays(ms))
++                    if (pool != nullptr) h_mtp = hash_cells(pool, w, 0, mL, h_mtp);
++                if (std::getenv("STRATA_STATE_HASH_MTP_BLOCKS") != nullptr) {   // DEBUG: which 256-cell chunk of
++                    const int64_t ps2 = qs.page_size;                           // the drafter's KV diverges first
++                    for (int64_t c0 = 0; c0 < mL; c0 += 256) {
++                        uint64_t hb = 1469598103934665603ull;
++                        for (const auto& [pool, w] : kv_arrays(ms))
++                            if (pool != nullptr) hb = hash_cells(pool, w, c0, std::min(mL, c0 + 256), hb);
++                        std::fprintf(stderr, "strata serve: MTP_BLOCK %lld %016llx\n", (long long) (c0 / ps2),
++                                     (unsigned long long) hb);
++                    }
++                }
++                std::fprintf(stderr, "strata serve: STATE_HASH L=%lld gdn=%016llx ple=%016llx tail=%016llx pooled=%016llx "
++                                     "kv=%016llx mtp=%016llx stale=%016llx ple_prev=%d,%d\n", (long long) L,
++                             (unsigned long long) h_gdn, (unsigned long long) h_ple, (unsigned long long) h_tail,
++                             (unsigned long long) h_pool, (unsigned long long) h_kv, (unsigned long long) h_mtp,
++                             (unsigned long long) h_stale, ss.ple_prev[0], ss.ple_prev[1]);
++                std::fprintf(stderr, "strata serve: STATE_EXTRA dead=%016llx block=%016llx\n",
++                             (unsigned long long) h_dead, (unsigned long long) h_block);
++                std::fflush(stderr);
++                return true;
++            } catch (const std::exception& e) {
++                std::fprintf(stderr, "strata serve: state trace failed: %s\n", e.what());
++                return false;
++            }
++        };
+         sp.should_suspend = [&] {
+             if (!cur_can_park || preempt_declined || preempt_pos < o.preempt_min_tokens ||
+                 preempt_count >= o.preempt_max)
+@@ -4212,7 +4326,7 @@ int main(int argc, char** argv) {
+             }
+             std::string pe;
+             if (!resuming &&
+-                (max_new < 1 || endp == nullptr || (geni && emb_path.empty()) || !parse_i64_list(endp, ids, pe))) {
++                (max_new < (state_trace ? 0 : 1) || endp == nullptr || (geni && emb_path.empty()) || !parse_i64_list(endp, ids, pe))) {
+                 std::printf("ERR bad request: %s\n", pe.empty() ? "max_new" : pe.c_str());
+                 continue;
+             }
+@@ -4373,6 +4487,7 @@ int main(int argc, char** argv) {
+                     std::fflush(stdout);
+                     return 1;
+                 }
++                if (state_trace && !trace_state("restore", resume)) return 1;
+                 const double rms = std::chrono::duration<double, std::milli>(Clock::now() - tr0).count();
+                 std::fprintf(stderr, "strata serve: restored request %lld in %.1f ms; resumed at prompt token %lld\n",
+                              cur_rid, rms, (long long) resume);
+@@ -4606,7 +4721,10 @@ int main(int argc, char** argv) {
+                 if (to <= at) continue;
+                 for (;;) {
+                     err.clear();
+-                    const bool win = windows_ok(at, to);
++                    // Resume the same batched segment even if its remaining tail now fits short_read.
++                    // The uninterrupted arm processes that tail in Prefill::run, not verify windows.
++                    const bool continuing_batch = resuming && at < pr.segment_end;
++                    const bool win = !continuing_batch && windows_ok(at, to);
+                     if (win && !refill(err)) {
+                         std::printf("ERR refilling a lent slot failed%s: %s\n", rid_suffix().c_str(), err.c_str());
+                         return 1;
+@@ -4649,14 +4767,16 @@ int main(int argc, char** argv) {
+                             rec.rid = cur_rid;
+                             rec.ids = ids;
+                             rec.done = at;
++                            rec.segment_end = to;
+                             rec.max_new = max_new;
+-                            rec.preempt_count = preempt_count;
++                            rec.preempt_count = preempt_count + 1;   // persist this successful park across RESUME
+                             rec.temperature = req_temperature; rec.top_p = req_top_p; rec.top_k = req_top_k;
+                             rec.seed = req_seed; rec.min_p = req_min_p; rec.penalty_repeat = req_penalty_repeat;
+                             rec.penalty_freq = req_penalty_freq; rec.penalty_present = req_penalty_present;
+                             rec.penalty_last_n = req_penalty_last_n; rec.cvec = req_cvec;
+                             rec.pcie_frac = req_pcie_frac; rec.spec_min_p = req_spec_min_p;
+                             saved = susp_save(rec, g, ss, mtp);
++                            if (saved && state_trace && !trace_state("park", at)) return 1;
+                             if (saved) {
+                                 parked = std::move(rec);
+                                 parked_rid.store(cur_rid);
+@@ -4723,6 +4843,7 @@ int main(int argc, char** argv) {
+                 return 1;
+             }
+             tr("prompt done (slots refilled)");
++            if (state_trace && !trace_state("prefill_done", n - 1)) return 1;
+             const double prompt_ms = std::chrono::duration<double, std::milli>(Clock::now() - r0).count();
+             std::printf("REUSED %lld%s\n", (long long) resume, rid_suffix().c_str());   // the prompt is read; the
+                                                                                         // first window comes next
+@@ -4811,6 +4932,13 @@ int main(int argc, char** argv) {
+                 }
+                 int a = 0;
+                 while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
++                if (state_trace) {
++                    std::fprintf(stderr, "strata serve: WINDOW id=%lld p=%lld T=%d keep=%d input=%016llx output=%016llx\n",
++                                 cur_rid, (long long) p, T, a + 1,
++                                 (unsigned long long) fnv1a(window.data(), (size_t) T * sizeof(int32_t)),
++                                 (unsigned long long) fnv1a(outv.data(), (size_t) T * sizeof(int32_t)));
++                    std::fflush(stderr);
++                }
+                 if (from_sfx) { ++sfx_windows; sfx_drafts += T - 1; sfx_ok += a; }
+                 const Clock::time_point tw1 = Clock::now();
+                 std::thread adapt_thr;   // the adaptive tier beside the commit and the draft (as in generate)
+@@ -4886,98 +5014,7 @@ int main(int argc, char** argv) {
+                 live_imgs = imgs_below(req_imgs, (int64_t) live.size());
+                 live_ok = o.prompt_cache > 0;
+             }
+-            static const bool state_hash = std::getenv("STRATA_STATE_HASH") != nullptr;
+-            if (state_hash && live_ok) {
+-                // DEBUG: a fingerprint of every part of the session over the positions it holds ([0, L)), and
+-                // separately of what lies past them in the last KV page (stale cells, fine unless something reads them)
+-                cudaDeviceSynchronize();
+-                const int64_t L = (int64_t) live.size();
+-                const strata::kernels::QsaShapes qs = [&] {
+-                    strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
+-                    s.n_head_kv = g.n_head_kv; s.head_dim = g.head_dim; s.idx_dim = g.idx_key_dim;
+-                    return s;
+-                }();
+-                auto hash_dev = [&](const void* p, size_t bytes, uint64_t h) {
+-                    std::vector<uint8_t> b(bytes);
+-                    if (bytes) cudaMemcpy(b.data(), p, bytes, cudaMemcpyDefault);   // VRAM or a streamed host copy
+-                    return fnv1a(b.data(), b.size(), h);
+-                };
+-                // the cells [c0, c1) of one int8 K or V pool ([page][kv_head][page_size][head_dim]), bytes per value `w`
+-                auto hash_cells = [&](const void* pool, int64_t per_cell, int64_t c0, int64_t c1, uint64_t h) {
+-                    const int64_t ps = qs.page_size;
+-                    for (int64_t pg = c0 / ps; pg * ps < c1; ++pg)
+-                        for (int64_t hd = 0; hd < qs.n_head_kv; ++hd) {
+-                            const int64_t a = std::max(c0, pg * ps) - pg * ps, e = std::min(c1, (pg + 1) * ps) - pg * ps;
+-                            const size_t off = (size_t) (((pg * qs.n_head_kv + hd) * ps + a) * per_cell);
+-                            h = hash_dev((const uint8_t*) pool + off, (size_t) ((e - a) * per_cell), h);
+-                        }
+-                    return h;
+-                };
+-                const ConvStateSizes z = conv_state_sizes(g);
+-                uint64_t h_gdn = hash_dev(ss.gdn_state, z.gdn, 1469598103934665603ull);
+-                if (std::getenv("STRATA_STATE_HASH_GDN") != nullptr) {   // per GDN layer: which one differs first
+-                    const size_t per = z.gdn / (size_t) g.n_gdn_layers();
+-                    std::string s;
+-                    char b[8];
+-                    for (int64_t i = 0; i < g.n_gdn_layers(); ++i) {
+-                        std::snprintf(b, sizeof(b), "%04llx ", (unsigned long long) (hash_dev((const uint8_t*) ss.gdn_state + i * per, per, 1469598103934665603ull) & 0xffff));
+-                        s += b;
+-                    }
+-                    std::fprintf(stderr, "strata serve: STATE_HASH_GDN %s\n", s.c_str());
+-                }
+-                uint64_t h_ple = hash_dev(ss.ple_hist, z.ple, 1469598103934665603ull);
+-                uint64_t h_tail = 1469598103934665603ull, h_pool = h_tail, h_kv = h_tail, h_stale = h_tail;
+-                const int64_t kvb = qs.head_dim, scb = (qs.head_dim / 64) * 2;
+-                // a state's K/V arrays and their bytes per (cell, head) row: the host copy when it has one
+-                auto kv_arrays = [&](const strata::core::QsaState& st) {
+-                    const bool h = st.kv_mode != 0;
+-                    std::vector<std::pair<const void*, int64_t>> a;
+-                    if (st.kv_q4) {
+-                        const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qs.head_dim);
+-                        a = {{h ? st.host.k_q4 : st.k_q4, q4b}, {h ? st.host.v_q4 : st.v_q4, q4b}};
+-                    } else if (st.kv_hybrid) {
+-                        const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qs.head_dim);
+-                        a = {{h ? st.host.k_q : st.k_q, kvb}, {h ? st.host.v_q4 : st.v_q4, q4b},
+-                             {h ? st.host.k_scale : st.k_scale, scb}};
+-                    } else {
+-                        a = {{h ? st.host.k_q : st.k_q, kvb}, {h ? st.host.v_q : st.v_q, kvb},
+-                             {h ? st.host.k_scale : st.k_scale, scb}, {h ? st.host.v_scale : st.v_scale, scb}};
+-                    }
+-                    return a;
+-                };
+-                const int64_t end_cell = std::min<int64_t>(((L + qs.page_size - 1) / qs.page_size) * qs.page_size,
+-                                                           ss.qsa_states[0].max_cells);
+-                for (int64_t i = 0; i < g.n_qsa_layers(); ++i) {
+-                    const strata::core::QsaState& st = ss.qsa_states[i];
+-                    h_tail = hash_dev(st.idx_tail, z.tail, h_tail);
+-                    h_pool = hash_dev(st.idx_pooled, (size_t) (L / qs.idx_block) * qs.idx_dim * 4, h_pool);
+-                    // KV streaming: the host copy is the identity layout and holds every cell
+-                    for (const auto& [pool, w] : kv_arrays(st)) {
+-                        h_kv = hash_cells(pool, w, 0, L, h_kv);
+-                        h_stale = hash_cells(pool, w, L, end_cell, h_stale);
+-                    }
+-                }
+-                const strata::core::QsaState& ms = mtp.kv_state();
+-                uint64_t h_mtp = 1469598103934665603ull;
+-                const int64_t mL = std::min<int64_t>(L, ms.max_cells);
+-                for (const auto& [pool, w] : kv_arrays(ms))
+-                    if (pool != nullptr) h_mtp = hash_cells(pool, w, 0, mL, h_mtp);
+-                if (std::getenv("STRATA_STATE_HASH_MTP_BLOCKS") != nullptr) {   // DEBUG: which 256-cell chunk of
+-                    const int64_t ps2 = qs.page_size;                           // the drafter's KV diverges first
+-                    for (int64_t c0 = 0; c0 < mL; c0 += 256) {
+-                        uint64_t hb = 1469598103934665603ull;
+-                        for (const auto& [pool, w] : kv_arrays(ms))
+-                            if (pool != nullptr) hb = hash_cells(pool, w, c0, std::min(mL, c0 + 256), hb);
+-                        std::fprintf(stderr, "strata serve: MTP_BLOCK %lld %016llx\n", (long long) (c0 / ps2),
+-                                     (unsigned long long) hb);
+-                    }
+-                }
+-                std::fprintf(stderr, "strata serve: STATE_HASH L=%lld gdn=%016llx ple=%016llx tail=%016llx pooled=%016llx "
+-                                     "kv=%016llx mtp=%016llx stale=%016llx ple_prev=%d,%d\n", (long long) L,
+-                             (unsigned long long) h_gdn, (unsigned long long) h_ple, (unsigned long long) h_tail,
+-                             (unsigned long long) h_pool, (unsigned long long) h_kv, (unsigned long long) h_mtp,
+-                             (unsigned long long) h_stale, ss.ple_prev[0], ss.ple_prev[1]);
+-            }
++            if (state_hash && live_ok && !trace_state("done", (int64_t) live.size())) return 1;
+             const int64_t req_hits = drive.d.cache_hits - decode_hits0;
+             const int64_t req_look = (drive.d.cache_hits + drive.d.cache_admitted + drive.d.cache_refused) - decode_look0;
+             // DONE <generated> <prompt> <prompt ms> <decode ms> <finish> <drafts accepted> <drafts offered> <reused> [hits] [lookups]
+diff --git a/tools/prefill_preempt_test.py b/tools/prefill_preempt_test.py
+index c1024cf..08ce464 100644
+--- a/tools/prefill_preempt_test.py
++++ b/tools/prefill_preempt_test.py
+@@ -10,7 +10,7 @@ three things the feature must prove:
+   3. MECHANICS: parks land on chunk boundaries; a cancelled parked request releases its snapshot and the next
+      request is healthy; repeated preemptions do not drift; decode is never preempted.
+ 
+-Deterministic configuration: greedy (no temperature key), --adapt-swaps 0 (fixed VRAM expert set), --pcie-frac 0,
++Controlled configuration: greedy, --adapt-every 100000 (no swaps before that round), --pcie-frac 0,
+ no turn token in the prompts (no checkpoint-mount differences between the arms), prompts that share no prefix.
+ STRATA_STATE_HASH=1 makes the engine print the fingerprint after every request that leaves live state behind;
+ the engine needs --prompt-cache > 0 for it (the harness passes 6).
+@@ -57,7 +57,7 @@ class Engine:
+     def __init__(self, exe: str, args: list[str], log_path: Path):
+         env = dict(os.environ)
+         env["STRATA_STATE_HASH"] = "1"
+-        self.log = open(log_path, "ab")
++        self.log = open(log_path, "wb")
+         self.proc = subprocess.Popen([exe, "--serve", *args], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                      stderr=self.log, text=True, encoding="utf-8", bufsize=1, env=env)
+         self.lines: queue.Queue[str | None] = queue.Queue()
+@@ -146,22 +146,39 @@ class Engine:
+             self.proc.wait(timeout=60)
+         except Exception:
+             self.proc.kill()
++            self.proc.wait(timeout=10)
++        finally:
++            self.log.close()
++
++
++def strip_options(args: list[str], valued: set[str], flags: set[str]) -> list[str]:
++    """Remove switches without swallowing the argument following a valueless flag."""
++    out, i = [], 0
++    while i < len(args):
++        if args[i] in valued:
++            if i + 1 >= len(args):
++                raise ValueError(f"missing value for {args[i]}")
++            i += 2
++        elif args[i] in flags:
++            i += 1
++        else:
++            out.append(args[i])
++            i += 1
++    return out
++
++
++def state_differences(ref: dict, got: dict) -> list[str]:
++    # Stale cells lie OUTSIDE the committed prefix; rejected drafts may legitimately differ.
++    # Drafter KV is still gated: differences must be investigated, not silently retried away.
++    return [k for k in ref if k != "stale" and ref[k] != got.get(k)]
+ 
+ 
+ def engine_args(cfg: dict, *, prefill: int, preempt: bool, max_context: int | None = None,
+                 kv_resident: int | None = None, expert_slots: int | None = None) -> list[str]:
+-    drop = {"--max-context", "--kv-resident", "--prefill", "--adapt-swaps", "--pcie-frac", "--prompt-cache",
+-            "--prefill-preempt", "--prefill-preempt-min-tokens", "--prefill-preempt-max", "--expert-cache",
+-            "--spec-min-p"}
+-    out, skip = [], False
+-    for a in cfg["args"]:
+-        if skip:
+-            skip = False
+-            continue
+-        if a in drop:
+-            skip = True        # the flag and its value
+-            continue
+-        out.append(a)
++    valued = {"--max-context", "--kv-resident", "--prefill", "--adapt-swaps", "--adapt-every",
++              "--pcie-frac", "--prompt-cache", "--prefill-preempt-min-tokens", "--prefill-preempt-max",
++              "--expert-cache", "--spec-min-p", "--suffix-draft"}
++    out = strip_options(cfg["args"], valued, {"--prefill-preempt"})
+     # suffix-draft 0: the lookup drafter's policy is learned over the whole process, so the two arms' window
+     # shapes would drift apart and the state hash would differ in ULPs while the tokens still match.
+     # spec-min-p 0 for the same reason one level down: the verify window's T is otherwise gated by the DRAFTER's
+@@ -197,7 +214,17 @@ def main() -> int:
+     ap.add_argument("-k", dest="only", help="run the scenarios whose name contains this")
+     ap.add_argument("--quick", action="store_true", help="a short A, one boundary, mode-0 KV")
+     ap.add_argument("--max-new", type=int, default=32)
++    ap.add_argument("--interim-max-new", type=int, default=None,
++                    help="B decode length: 0 isolates B prefill, 1 adds only its first verify/commit")
++    ap.add_argument("--trace", action="store_true", help="expensive state and verify-window hashes")
+     args = ap.parse_args()
++    if args.max_new < 1 or (args.interim_max_new is not None and args.interim_max_new < 0):
++        ap.error("A needs at least one output token; B must be nonnegative")
++    b_max_new = args.max_new if args.interim_max_new is None else args.interim_max_new
++    if b_max_new == 0 and not args.trace:
++        ap.error("--interim-max-new 0 requires --trace (debug-only engine command)")
++    if args.trace:
++        os.environ["STRATA_PREEMPT_TRACE"] = "1"
+ 
+     cfg = json.loads(Path(args.config).read_text(encoding="utf-8-sig"))
+     workdir = Path(args.workdir)
+@@ -239,32 +266,13 @@ def main() -> int:
+     expert_slots = int(probe.info.get("expert_slots", 0) or 0)
+     probe.close()
+     print(f"[harness] expert-cache pinned to {expert_slots} slots for every engine of this run", flush=True)
+-    print(f"[harness] control engine (references): A={len(a_ids)} tokens, B={len(b_ids)} tokens", flush=True)
+-    t0 = time.time()
+-    control = start_engine("control", args.engine,
+-                           engine_args(cfg, prefill=chunk, preempt=False, expert_slots=expert_slots), workdir)
+-    try:
+-        control.gen(None, warm_ids, 8)                    # the virgin engine's first request decodes differently
+-        control.collect(None)
+-        control.gen(None, b_ids, args.max_new)            # B first: both engines then end with 'A complete, B
+-        ref_b = control.collect(None)                     # somewhere earlier', so the hashes are comparable
+-        control.gen(None, a_ids, args.max_new)
+-        ref_a = control.collect(None)
+-        ref_hash = control.state_hash()
+-    finally:
+-        control.close()
+-    print(f"[harness] references in {time.time() - t0:.0f} s: A {len(ref_a['tokens'])} tokens "
+-          f"({ref_a['finish']}), B {len(ref_b['tokens'])} tokens ({ref_b['finish']})", flush=True)
+-
+     failures: list[str] = []
+     for name, sc in scenarios:
+         print(f"[harness] scenario {name}: trigger after {sc['trigger']} tokens, interim {sc['preempts']}, "
+               f"cancel={sc['cancel']}, ctx={sc.get('max_context')}, kv_resident={sc.get('kv_resident')}", flush=True)
+         t0 = time.time()
+         try:
+-            # every scenario carries a PAIRED control: this machine's arithmetic mode drifts over minutes
+-            # (plain engines land in discrete hash modes), so a control from the run's start is not a reference
+-            # for a scenario that runs minutes later - same args, started right before, every time
++            # Paired controls are useful, but failures are never reclassified as machine noise.
+             sc_ctrl = start_engine(f"control-{name}", args.engine,
+                                    engine_args(cfg, prefill=chunk, preempt=False,
+                                                max_context=sc.get("max_context"),
+@@ -273,34 +281,27 @@ def main() -> int:
+             try:
+                 sc_ctrl.gen(None, warm_ids, 8)
+                 sc_ctrl.collect(None)
+-                sc_ctrl.gen(None, b_ids, args.max_new)
+-                sc_b = sc_ctrl.collect(None)
++                sc_b = {"tokens": [], "finish": "length"}
++                if sc["preempts"]:
++                    sc_ctrl.gen(None, b_ids, b_max_new)
++                    sc_b = sc_ctrl.collect(None)
+                 sc_ctrl.gen(None, a_ids, args.max_new)
+                 sc_a = sc_ctrl.collect(None)
+                 sc_refs = (sc_a, sc_b, sc_ctrl.state_hash())
+             finally:
+                 sc_ctrl.close()
+             fails = []
+-            for attempt in (0, 1):
+-                e = start_engine(f"preempt-{name}", args.engine,
+-                                 engine_args(cfg, prefill=chunk, preempt=True, max_context=sc.get("max_context"),
+-                                             kv_resident=sc.get("kv_resident"), expert_slots=expert_slots),
+-                                 workdir)
+-                try:
+-                    e.gen(None, warm_ids, 8)
+-                    e.collect(None)
+-                    fails = run_scenario(e, name, sc, a_ids, b_ids, sc_refs[0], sc_refs[1], sc_refs[2],
+-                                         args.max_new, chunk)
+-                finally:
+-                    e.close()
+-                if not fails:
+-                    break
+-                if attempt == 0:
+-                    # this engine shows rare ULP-level prefill nondeterminism (identical prompts, different PLE
+-                    # hashes - pre-existing, seen between plain control engines too).  One fresh-engine retry
+-                    # separates machine noise from a real park defect: a defect reproduces, noise does not.
+-                    print(f"[harness] scenario {name}: failed once ({fails}); retrying on fresh engines",
+-                          flush=True)
++            e = start_engine(f"preempt-{name}", args.engine,
++                             engine_args(cfg, prefill=chunk, preempt=True, max_context=sc.get("max_context"),
++                                         kv_resident=sc.get("kv_resident"), expert_slots=expert_slots),
++                             workdir)
++            try:
++                e.gen(None, warm_ids, 8)
++                e.collect(None)
++                fails = run_scenario(e, name, sc, a_ids, b_ids, sc_refs[0], sc_refs[1], sc_refs[2],
++                                     args.max_new, chunk, b_max_new)
++            finally:
++                e.close()
+             failures += fails
+             print(f"[harness] scenario {name}: {'PASS' if not fails else 'FAIL'} ({time.time() - t0:.0f} s)",
+                   flush=True)
+@@ -314,9 +315,10 @@ def main() -> int:
+     return 0 if not failures else 1
+ 
+ 
+-def run_scenario(e: Engine, name: str, sc: dict, a_ids, b_ids, ref_a, ref_b, ref_hash, max_new, chunk) -> list[str]:
++def run_scenario(e: Engine, name: str, sc: dict, a_ids, b_ids, ref_a, ref_b, ref_hash, max_new, chunk, b_max_new=None) -> list[str]:
+     """One preempt engine: A parks at the boundary, the interim request(s) run, A resumes; outputs and the final
+     state hash must match the references.  Returns a list of failure descriptions (empty = pass)."""
++    b_max_new = max_new if b_max_new is None else b_max_new
+     failures: list[str] = []
+     a_tokens: list[int] = []
+     suspensions: list[int] = []
+@@ -327,7 +329,7 @@ def run_scenario(e: Engine, name: str, sc: dict, a_ids, b_ids, ref_a, ref_b, ref
+             if line.startswith("PP ") and sc["trigger"] is not None and not sent["b"]:
+                 if int(line.split()[1]) >= sc["trigger"]:
+                     if sc["preempts"]:
+-                        e.gen(sc["preempts"][0], b_ids, max_new)
++                        e.gen(sc["preempts"][0], b_ids, b_max_new)
+                     e.send("YIELD")            # offer the boundary: the engine cannot see this server's queue
+                     sent["b"] = True
+             if line.startswith("SUSPENDED"):
+@@ -361,9 +363,9 @@ def run_scenario(e: Engine, name: str, sc: dict, a_ids, b_ids, ref_a, ref_b, ref
+                 c = e.collect(1)
+                 if c["finish"] != "cancel":
+                     failures.append(f"{name}: the cancelled parked request finished with {c['finish']!r}")
+-                e.gen(None, b_ids, 8)                     # the engine must be healthy afterwards
++                e.gen(None, b_ids, min(8, b_max_new))                     # the engine must be healthy afterwards
+                 h = e.collect(None)
+-                if h["tokens"] != ref_b["tokens"][:8]:
++                if h["tokens"] != ref_b["tokens"][:min(8, b_max_new)]:
+                     failures.append(f"{name}: the request after a cancel does not match the B reference")
+                 bad = [p for p in suspensions if p % chunk != 0 or p >= len(a_ids)]
+                 if bad:
+@@ -379,7 +381,7 @@ def run_scenario(e: Engine, name: str, sc: dict, a_ids, b_ids, ref_a, ref_b, ref
+                 # wait for the engine's RESUME echo (the restore is done) before offering the next boundary:
+                 # a YIELD that lands while the resume is still being processed would be wiped by it
+                 e._next_line(lambda l: l.startswith("RESUME"), timeout=120)
+-                e.gen(sc["preempts"][i + 1], b_ids, max_new)   # A reads one chunk, parks again for the next one
++                e.gen(sc["preempts"][i + 1], b_ids, b_max_new)   # A reads one chunk, parks again for the next one
+                 e.send("YIELD")
+             if last:
+                 done_a = e.collect(1)
+@@ -396,7 +398,7 @@ def run_scenario(e: Engine, name: str, sc: dict, a_ids, b_ids, ref_a, ref_b, ref
+         # decode-nopark: B is queued once the prompt is read (REUSED) - decode must never yield
+         def on_reused(line: str) -> bool:
+             if line.startswith("REUSED"):
+-                e.gen(sc["preempts"][0], b_ids, max_new)   # no YIELD: decode is never preempted
++                e.gen(sc["preempts"][0], b_ids, b_max_new)   # no YIELD: decode is never preempted
+                 sent["b"] = True
+             return line.startswith("SUSPENDED")
+ 
+@@ -434,19 +436,9 @@ def run_scenario(e: Engine, name: str, sc: dict, a_ids, b_ids, ref_a, ref_b, ref
+                             f"({len(a_tokens)} vs {len(ref_a['tokens'])} tokens)")
+         else:
+             got = e.state_hash()
+-            if got != ref_hash:
+-                diff = [k for k in ref_hash if ref_hash[k] != got.get(k)]
+-                # The drafter's KV (mtp) is draft-quality state: the project's own E-9 contract (prefill.hpp)
+-                # declares the batched draft path "not bit-identical to that pass - the drafts may differ, never
+-                # the target's tokens' logits".  With B in between, isolated 4-cell strides of the drafter's
+-                # prompt cells differ while every target component and every token match; that is reported, not
+-                # failed.  Everything the TARGET model reads must match bit for bit.
+-                hard = [k for k in diff if k != "mtp"]
+-                if hard:
+-                    failures.append(f"{name}: state hash differs ({', '.join(hard)}): ref {ref_hash} got {got}")
+-                elif diff:
+-                    print(f"[harness] {name}: note: the drafter's KV hash differs (draft-quality state, "
+-                          f"see prefill.hpp E-9): ref mtp {ref_hash['mtp']} got {got.get('mtp')}", flush=True)
++            diff = state_differences(ref_hash, got)
++            if diff:
++                failures.append(f"{name}: state hash differs ({', '.join(diff)}): ref {ref_hash} got {got}")
+     return failures
+ 
+ 
+diff --git a/tools/test_preempt_harness.py b/tools/test_preempt_harness.py
+new file mode 100644
+index 0000000..360fe8b
+--- /dev/null
++++ b/tools/test_preempt_harness.py
+@@ -0,0 +1,33 @@
++"""CPU-only guards against false passes and malformed parity-test configuration."""
++import unittest
++from tools.prefill_preempt_test import engine_args, state_differences
++
++
++class HarnessChecks(unittest.TestCase):
++    def test_valueless_preempt_flag_preserves_following_model_option(self):
++        args = engine_args({'args': ['--prefill-preempt', '--pack', '/model', '--spec', '4']},
++                           prefill=2048, preempt=False)
++        self.assertEqual(args[:4], ['--pack', '/model', '--spec', '4'])
++        self.assertNotIn('--prefill-preempt', args)
++
++    def test_controlled_options_are_not_duplicated(self):
++        args = engine_args({'args': ['--adapt-every', '4', '--suffix-draft', '1', '--spec-min-p', '.5']},
++                           prefill=2048, preempt=True)
++        for flag, value in [('--adapt-every', '100000'), ('--suffix-draft', '0'), ('--spec-min-p', '0')]:
++            self.assertEqual(args.count(flag), 1)
++            self.assertEqual(args[args.index(flag) + 1], value)
++        self.assertIn('--prefill-preempt', args)
++
++    def test_mtp_and_target_mismatch_fail(self):
++        self.assertEqual(state_differences({'mtp': 'a', 'gdn': 'a'}, {'mtp': 'b', 'gdn': 'b'}),
++                         ['mtp', 'gdn'])
++
++    def test_uncommitted_stale_cells_are_not_semantic_state(self):
++        self.assertEqual(state_differences({'kv': 'a', 'stale': 'a'}, {'kv': 'a', 'stale': 'b'}), [])
++
++    def test_missing_state_cannot_pass(self):
++        self.assertEqual(state_differences({'gdn': 'a'}, {}), ['gdn'])
++
++
++if __name__ == '__main__':
++    unittest.main()

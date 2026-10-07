@@ -1,0 +1,925 @@
+diff --git a/docs/PREFILL-PREEMPT-REVIEW2.md b/docs/PREFILL-PREEMPT-REVIEW2.md
+new file mode 100644
+index 0000000..3f4be4d
+--- /dev/null
++++ b/docs/PREFILL-PREEMPT-REVIEW2.md
+@@ -0,0 +1,131 @@
++# Review 2 — feat/prefill-preempt, 29ef162
++
++Przegląd kodu z 2026-10-03, po rebase na 99f3dbd. Poprawki są lokalne; nie wykonano push.
++Raport użytkownika opisuje udane przebiegi GPU. Ten przegląd nie odtwarza ich: środowisko
++nie ma kompilatora CUDA, GPU ani modelu. Zgodność tokenów w podanych scenariuszach nie
++pokrywa niżej opisanych interakcji z cache i cyklem życia serwera.
++
++## Znalezione błędy i zakres poprawki
++
++| Priorytet | Miejsce | Błąd / warunek | Zmiana |
++|---|---|---|---|
++| P1 | generate.cpp, RESUME / ConversationCache | Bufory `retain()` po odtworzeniu B nie należą do A. Samo `limit_reuse(resume)` zachowuje prefiks B jako rzekomo niezmienione KV A. Błąd może wyjść dopiero przy następnym zapisie/restore rozmowy. | Parkowanie kończącego się B przed nadpisaniem; `limit_reuse(0)` przy zmianie właściciela; przywrócenie checkpointów zapisanych z A. |
++| P1 | EngineRequest.drain | Bezterminowe `lines.get()` po STOP/CANCEL blokuje właściciela silnika, jeśli silnik nie odpowie. | Deadline oparty na istniejącym `engine_silence_s` i allowance prefillu; istniejąca procedura `_silent`. |
++| P1 | Service.run_preemptable | Heartbeat podczas prefillu nie kończy pracy po cancel; request anulowany w kolejce nadal wysyła GEN. | Sprawdzanie cancel przed GEN i na heartbeat, potem STOP/drain. |
++| P1 | Service.run | Włączenie preemption pomija cały mechanizm reasoning_budget_tokens. | Requesty z aktywnym budżetem myślenia korzystają z istniejącej ścieżki obsługującej budżet. Dla nich preemption pozostaje wyłączone — jawne ograniczenie, nie pełna integracja. |
++| P1 / warunkowy | susp_save/susp_restore | Wektory snapshotu mają `qsa_alloc` elementów, ale były indeksowane globalnym `i=qsa_ord0+j`. Dla niezerowego ord0 grozi wyjście poza bufor. | Stan urządzenia nadal indeksowany `i`, kompaktowy snapshot indeksowany `j`. Domyślny single-GPU/ord0=0 nie wykrywa błędu; layer-split jest nadal wyłączony. |
++| P2 | tools/prefill_preempt_test.py | Przy braku opcjonalnych dead/pooled_full skrócona lista kluczy była zipowana z nieskróconymi grupami regexu. `ple_prev0/1` stawały się None. | Stała mapa grup; pomijanie tylko brakujących wartości. Test pokazuje poprawne 123/456 zamiast None/None. |
++| P2 | trace_state | STATE_EXTRA nie jest porównywane przez harness; bieżący STATE_HASH nie zawierał dead/pooled_full mimo opisu rozszerzonej bramki. | dead/pooled_full/block w głównym STATE_HASH i parserze; iteracja tylko po własnych QSA. |
++| P2 | Service / EngineRequest | History/metrics pobierały współdzielone `engine.last`, więc mogły przypisać DONE od B do anulowanego A; finalizacja A mogła wyczyścić status B. | DONE przechowywane w obiekcie requestu, czas rozpoczęcia lokalny, czyszczenie statusu tylko przez właściciela request_id. |
++| P2 | Service.unload / restart | Zaparkowany request nie blokował unload; ścieżka preempt omijała ensure_loaded i jego hooki/admisję. | parked_requests blokuje unload; wspólne ensure_loaded; powiązanie EngineRequest z konkretnym obiektem procesu. |
++| P2 | prefill segment loop | `sp.suspended()` może być starym wynikiem poprzedniego `sp.run`, gdy teraz wykonano read_windows. Po nieudanej admisji krótką końcówkę można było policzyć inną ścieżką. | Odczyt suspended tylko dla wykonanego batched run; zachowanie ścieżki i layoutu do końca przerwanego segmentu również po odmowie parku. |
++| P2 | lend | Bezwarunkowe lend pełnego chunka zmieniało małe prompty również przy wyłączonej funkcji. | Zapis oryginalnego `segment_chunk`; odtworzenie dokładnego layoutu tylko dla kontynuowanego segmentu. Pozostałe segmenty zachowują upstream request-sized lending. |
++
++Nie zmieniono kerneli modelu ani algorytmu decode. Zmiany C++ wymagają kompilacji i bramek GPU.
++Fingerprint nie jest pomiarem ULP ani dosłownym porównaniem wszystkich bajtów.
++
++## Weryfikacja wykonana tutaj
++
++- 11 nowych testów serwera: 11/11 po zmianie. Na czystym 29ef162 ten sam plik:
++  8 failures, 2 errors, 1 pass. Testy nie wymagają modelu ani HTTP.
++- 7 testów harnessu (w tym dwa nowe przypadki parsera) przechodzi.
++- Istniejący `conversation_cache_test`, kompilacja C++20 na CPU: 4175 checks passed.
++- Pełny zestaw server/preempt/lifecycle/detok/winjob oraz nowe regresje i harness:
++  163 testy w 88,719 s, OK, 7 pominiętych. Wynik po uzupełnieniu zależności regex.
++- Brak testu GPU, kompilacji silnika CUDA/HIP, ASAN snapshotu na CUDA i nowych pomiarów czasu.
++
++## Przygotowanie testów GPU
++
++1. Zapisz SHA, build flags, wersję sterownika, model/kwantyzację, typ KV, wszystkie argumenty
++   i istotne STRATA_*; zanotuj kartę, RAM oraz faktyczny expert_slots.
++2. Zbuduj trzy warianty: upstream 99f3dbd, gałąź z poprawką bez flagi i gałąź z flagą.
++   Dwie ostatnie muszą używać tej samej binarki. Dla porównań liczbowych identyczne ustawienia.
++3. Maszyna bez innych silników podczas pomiaru. Nie używaj blanket `pkill -x strata`.
++   Zabijaj tylko PID-y procesów uruchomionych przez swój test.
++4. Zachowaj pierwsze niepowodzenie i cały log. Nie zaliczaj testu po późniejszym udanym retry.
++5. Do ścisłej parzystości: greedy, stała geometria cache, brak migracji ekspertów przez cały
++   przebieg, suffix-draft off i spec-min-p 0. Ostatnia opcja NIE stabilizuje acceptance count.
++6. Hashuj przy tych samych pozycjach i liczbie commitowanych tokenów. MTP poza aktywnym oknem
++   oraz target stale cells nie są dowodem uszkodzenia aktywnego stanu. Loguj je osobno.
++7. Ścieżkę produkcyjną z adaptacją i suffix drafterem przetestuj osobno: pełny wynik nie musi
++   być bitowo taki sam jak w zamrożonym rozmieszczeniu CPU/GPU ekspertów.
++
++## Szybkie komendy
++
++Dopasuj plik JSON i ścieżkę silnika. Z repo:
++
++```bash
++python3 -m unittest serve.test_preempt_regressions tools.test_preempt_harness
++python3 -m unittest serve.test_preempt serve.test_server serve.test_lifecycle serve.test_detok serve.test_winjob
++
++python3 tools/prefill_preempt_test.py --config strata-iq3_xxs.json --trace --quick \
++  --interim-max-new 0 --workdir /tmp/preempt2-B0
++python3 tools/prefill_preempt_test.py --config strata-iq3_xxs.json --trace --quick \
++  --interim-max-new 1 --workdir /tmp/preempt2-B1
++python3 tools/prefill_preempt_test.py --config strata-iq3_xxs.json --trace --quick \
++  --interim-max-new 32 --workdir /tmp/preempt2-B32
++python3 tools/prefill_preempt_test.py --config strata-iq3_xxs.json --trace \
++  --tail-tokens 33 -k park-only-last --workdir /tmp/preempt2-short-tail
++python3 tools/prefill_preempt_test.py --config strata-iq3_xxs.json \
++  --max-new 128 --workdir /tmp/preempt2-full
++```
++
++`--tail-tokens 33` jest nowym parametrem: ostatni token promptu rozpoczyna decode,
++więc zostaje 32-tokenowy batched ogon. Zweryfikuj rzeczywistą pozycję SUSPENDED;
++YIELD wysyłany po PP może zostać zauważony dopiero na następnej granicy.
++
++## Scenariusze regresji — bramki przed merge
++
++Testy T01–T06 mają pierwszeństwo: sprawdzają przypadki niepokryte prostym A→B→A.
++Poniższe to specyfikacja testów modelowych, nie deklaracja ich wykonania przez ten przegląd.
++
++| ID | Przebieg | Co musi zostać sprawdzone |
++|---|---|---|
++| T01 | B1 → C → B2 z rzeczywistym restore B z conversation cache; A1 długi park → B3 ze wspólnym prefiksem B2 → resume A1 → D → A2 | W logu musi wystąpić restore/retain B. A2 ponownie montuje zapis A. Logits i aktywny KV A2 zgodne z kontrolą; bez pomieszania KV B. Testuj różne prefiksy A/B i wspólny system prompt. |
++| T02 | A z cvec on i checkpointami → park → B cvec off → resume A → D → następny turn A; potem odwrotne cvec | Checkpointy i identity należą do A. Nie wystarczy sprawdzić pierwszego outputu A po resume. |
++| T03 | Test layoutu QSA z qsa_ord0>0 i qsa_alloc mniejszym od całkowitej liczby warstw | Kopie obsługują własne ordinals; strażnicy pamięci/ASAN bez naruszeń. To unit/integration snapshot helpera; nie włączaj nieobsługiwanego layer split jako obejścia. |
++| T04 | Wielochunkowy A, pozostały ogon 1/32/64/65/255/256/490 tokenów prefillu; park przed ogonem | Porównaj z uninterrupted A: layout, batched vs windows, stan przed decode, logits. Wymuś granicę w harnessie silnika, jeśli timing YIELD ją przeskakuje. |
++| T05 | Jak T04, ale odmowa snapshotu/alokacji po chunku | A kończy się tą samą ścieżką batched; brak ponownego użycia stale suspended=true, zapętlenia albo podwójnego parkowania. |
++| T06 | Serial: B1→B2→A. Candidate: B1→A park→B2→A resume. Potem C i odtworzenie obu rozmów | Cache B nie znika bez potrzeby, A odzyskuje własne checkpointy; oba późniejsze cache hits poprawne. |
++| T07 | Anuluj B przed zdobyciem silnika, A nadal prefills | Ani jeden GEN dla anulowanego B. Request C działa. Mierz niepotrzebne parki A osobno. |
++| T08 | Anuluj A przy heartbeat prefillu, bez żadnego T | STOP zostaje wysłany; obsłużony po bezpiecznej granicy, a nie dopiero po całym decode. Po DONE anulowania C działa. |
++| T09 | Engine nie odpowiada na STOP/CANCEL, silnik bez stdout, śmierć tuż przed DONE | Konfigurowany timeout zwalnia request i kończy wadliwy proces. Brak deadlocku FIFO. Oddzielny test `engine_silence_s=0` świadomie wyłącza deadline. |
++| T10 | A zaparkowany; B umiera; C zdąży restartować silnik zanim A wróci | A odrzucony przez identity procesu; żaden RESUME/CANCEL A nie trafia do nowego procesu. |
++| T11 | A zaparkowany; POST /unload i idle-unload między okresami własności | busy, proces pozostaje żywy, A wznawia się poprawnie. Wymuszony administracyjny reset ma kończyć A jawnie. |
++| T12 | Thinking budget z config/request; OpenAI stream/nonstream i Anthropic | Identyczne wrap-up i odpowiedź z feature off/on; patch używa dla aktywnego budżetu ścieżki bez preemption. Jawne budget=0 nadal może korzystać z preemption. |
++| T13 | Barrier: A kończy i opuszcza lock; B już aktualizuje status; dopiero potem finalizacja A | /status nadal opisuje B i busy=true. History A nie zawiera timings/tokenów B. Sprawdź też cancel A w czasie B. |
++| T14 | A parkuje wielokrotnie przy --prefill-preempt-max 1/2/16; co najmniej 10 cykli dla wariantu 16 | Nigdy ponad limit; po resume co najmniej jeden chunk; brak narastającego dryfu. Nie ograniczaj się do obecnego repeat-3. |
++| T15 | KV int8/q4_0/FP16; resident i streamed; A przekracza resident window; MTP ring wrap | Weryfikacja aktywnych stron, map residency, idx_dead/tail/pooled/spare/block i PLE. First-token logits po resume zgodne. |
++| T16 | A tekst → park → B obraz → A tekst; osobno B steering | M-RoPE wraca do identity A, brak zapożyczonych embeddings. A obraz nie parkuje w MVP. |
++| T17 | Nieobsługiwane GPU/layer split | Flaga skutecznie wyłączona lub startup refused, INFO zgodne, serwer nie czeka na SUSPENDED. |
++| T18 | Mały limit RAM snapshotów i telemetry admission failure | Wymagane: odmowa przed dużą alokacją, A działa dalej, B czeka. Nadal bramka otwarta — obecny SuspReq nie ma wspólnej admisji/budżetu. |
++| T19 | A długi, B/C/D stale nadchodzą | Wymagany mierzalny limit odwlekania A. Nadal bramka otwarta: obecny wait-until-queue-empty może głodzić A, a threading.Lock nie zapewnia FIFO. |
++| T20 | 100 park/resume, następnie minimum kilkaset losowych requestów/cancel | Każdy request ma terminalny wynik; snapshot bytes i parked_requests wracają do zera; RSS/VRAM nie rosną liniowo. Odróżnij high-water allocatorów. |
++
++## Benchmarki bez diagnostyki
++
++Nie używaj --trace, STATE_HASH ani profilerów do pomiaru czasu.
++
++| Pomiar | Konfiguracja i metryki | Kryterium |
++|---|---|---|
++| P01 feature OFF | upstream vs nowa binarka, bez flagi; 32/64/220/512/2048-tokenowe i długie prompty | Nie zmieniają się kształty/lending ani odpowiedzi; brak systematycznej regresji czasu. |
++| P02 feature ON, brak kolejki | Te same prompty, ta sama binarka, flaga off/on; przeplatane ABBA, >=5 prób | 0 parków; cel <1% regresji prefillu, decode w szumie. Jeżeli szum >1%, wynik nierozstrzygający, nie automatyczny PASS. |
++| P03 200K + 220 tokenów | B po potwierdzonym pierwszym chunku A; max_new A=32, B=32; off/on | Mierz B queue wait/TTFT/total, A total, snapshot/restore, faktyczny chunk. Cel >=80% redukcji B queue wait i <10% narzutu A dla jednego parku. |
++| P04 50K na mniejszym GPU | Identycznie do P03, oznacz rozmiar i sprzęt | Osobny wynik; nie ekstrapoluj liniowo do 200K/1M — rozmiar i koszt snapshotu rosną. |
++| P05 metryki wznowienia | Wymuś 2 parki A; porównaj logi faz i DONE/timings API | Czas i liczba świeżych tokenów obejmują wszystkie segmenty A; tokeny wyliczone wcześniej przez A nie są cache hit z innej rozmowy. Obecne resetowanie zegara/reused wymaga osobnej poprawki. |
++
++## Nadal otwarte, nieprzykryte tym patchem
++
++- Sprawiedliwy scheduler: wait-until-empty i zwykły Lock nie dają gwarancji FIFO/starvation.
++- Wspólny budżet snapshotów/admisja RAM i konsolidacja SuspReq ze SavedConversation.
++  Parkowanie B może mieć dodatkowy koszt i zużycie RAM; należy je zmierzyć.
++- Agregacja prompt_ms/prompt_read/reused przez wiele zawieszeń; obecne engine timings
++  opisują głównie ostatni segment. History w Pythonie nie kradnie już DONE od B, ale to
++  nie naprawia definicji liczników emitowanych przez silnik.
++- Pełna integracja reasoning budget z preemption — aktualnie bezpieczny fallback.
++- Ochrona wariantu z dynamiczną migracją CPU/GPU ekspertów wymaga osobnej definicji
++  numerycznej tolerancji i testów; nie udowadnia jej adapt-every=100000.
++
++Nie oznaczaj zadania jako w pełni zakończonego, dopóki obowiązkowe T18/T19 i wyniki GPU
++nie zostaną rozstrzygnięte. Nowy patch jest kandydatem do lokalnego build/test, nie
++potwierdzonym wydaniem produkcyjnym.
+diff --git a/serve/server.py b/serve/server.py
+index 917dc79..01d4afd 100644
+--- a/serve/server.py
++++ b/serve/server.py
+@@ -757,6 +757,11 @@ class EngineRequest:
+         self.engine, self.rid, self.ids = engine, rid, ids
+         self.parked = False
+         self._closed = False
++        self.last = None
++        self.process = getattr(engine, "proc", None)
++        self.silence = float(getattr(engine, "silence_s", ENGINE_SILENCE_S) or 0)
++        self.allow = self.silence + min(len(ids), PP_CHUNK_MAX) / PP_FLOOR_TOK_S if self.silence else 0
++        self.heard, self.read_to = time.monotonic(), 0
+         keys = engine.sampling_keys(sampling or {})
+         head = f"GENI {int(max_new)}{keys} {embeddings}" if embeddings else f"GEN {int(max_new)}{keys}"
+         engine.write_line(f"{head} id={rid} {','.join(str(int(t)) for t in ids)}")
+@@ -773,28 +778,45 @@ class EngineRequest:
+         if self.parked or self._closed:
+             raise StopIteration
+         while True:
++            wait = min(10.0, self.allow - (time.monotonic() - self.heard)) if self.allow else 10.0
++            if wait <= 0:
++                self._closed = True
++                raise self.engine._silent("the preemptable request exceeded its silence deadline")
+             try:
+-                line = self.engine.lines.get(timeout=10)
++                line = self.engine.lines.get(timeout=wait)
+             except queue.Empty:
+                 return None                       # heartbeat: the consumer checks `cancel` and keeps reading
+             if line is None:
++                self._closed = True
+                 raise EngineDied(f"the engine stopped unexpectedly (exit code {self.engine.exit_code()})")
+             if not self._mine(line, self.rid):
+                 continue                          # not this request's line (see the class comment)
++            self.heard = time.monotonic()
+             if line.startswith("T "):
++                self.allow = self.silence
+                 return int(line[2:].split(" id=")[0])
+             if line.startswith("PP "):
+                 f = line.split()
+                 if len(f) >= 3 and f[1].isdigit() and f[2].isdigit():
+                     self.engine.progress = (int(f[1]), int(f[2]))
+                     self.engine.prefill_tok_s_mean = float(f[4]) if len(f) >= 5 else None
++                    rate, chunk = self.engine.prefill_tok_s_mean or 0, int(f[1]) - self.read_to
++                    self.read_to = int(f[1])
++                    if self.silence and rate > 0 and chunk > 0:
++                        self.allow = max(self.silence, PP_SLACK * chunk / rate)
+                 return None
++            if line.startswith("RESUME "):
++                try:
++                    self.read_to = int(line.split()[1])
++                except (ValueError, IndexError):
++                    pass
+             if line.startswith("SUSPENDED"):
+                 f = line.split(" id=")[0].split()
+                 self.parked = True
+                 return Parked(int(f[1]), int(f[2]))
+             if line.startswith("DONE"):
+                 self.engine._parse_done(line.split(" id=")[0])
++                self.last = dict(self.engine.last or {})
+                 self._closed = True
+                 raise StopIteration
+             if line.startswith("ERR"):
+@@ -804,6 +826,10 @@ class EngineRequest:
+ 
+     def resume(self):
+         """Continue the parked prompt (the caller holds the FIFO again)."""
++        if getattr(self.engine, "proc", None) is not self.process:
++            self.parked, self._closed = False, True
++            raise ValueError("the engine restarted while this request was parked; its snapshot is gone")
++        self.heard = time.monotonic()   # B's execution is not silence from A
+         self.parked = False
+         self.engine.write_line(f"RESUME id={self.rid}")
+ 
+@@ -812,21 +838,38 @@ class EngineRequest:
+         if not self.parked:
+             return
+         self.parked = False
++        if getattr(self.engine, "proc", None) is not self.process:
++            self._closed = True
++            return
+         self.engine.write_line(f"CANCEL id={self.rid}")
+         self.drain()
+ 
+     def drain(self):
+         """Consume lines until this request's DONE (STOP's drain, a cancel's answer).  A dead engine or an ERR
+         ends the drain quietly: the caller is already unwinding with the real error."""
++        heard = time.monotonic()
+         while True:
+-            line = self.engine.lines.get()
+-            if line is None or line.startswith("ERR"):
++            left = self.allow - (time.monotonic() - heard) if self.allow else None
++            try:
++                if left is not None and left <= 0:
++                    raise queue.Empty
++                line = self.engine.lines.get(timeout=left)
++            except queue.Empty:
++                self._closed = True
++                raise self.engine._silent("the engine did not acknowledge STOP/CANCEL before its deadline") from None
++            if line is None:
+                 self._closed = True
+                 return
+             if not self._mine(line, self.rid):
+                 continue
++            if line.startswith("ERR"):
++                self._closed = True
++                return
++            if not self.engine.can_stop:
++                heard = time.monotonic()
+             if line.startswith("DONE"):
+                 self.engine._parse_done(line.split(" id=")[0])
++                self.last = dict(self.engine.last or {})
+                 self._closed = True
+                 return
+ 
+@@ -1330,7 +1373,7 @@ class Service:
+             if not self.engine.alive():
+                 return "not loaded"
+             with self.status_lock:
+-                if self.status.get("busy") or self.status.get("queued"):
++                if self.status.get("busy") or self.status.get("queued") or self.status.get("parked_requests"):
+                     return "busy"
+             if idle_for is not None and time.time() - (self.last_request_at or self.started_at) < idle_for:
+                 return "busy"
+@@ -1635,7 +1678,7 @@ class Service:
+         if defaults:                   # the request's own fields win (explicit 0 stays greedy)
+             req_values = {k: v for k, v in (sampling or {}).items() if v is not None}
+             sampling = {**defaults, **req_values}
+-        if self.preempt and not getattr(self.embeddings, "path", None) and hasattr(self.engine, "open_request"):
++        if self.preempt and not budget and not getattr(self.embeddings, "path", None) and hasattr(self.engine, "open_request"):
+             yield from self.run_preemptable(ids, thinking, tools, max_new, sampling, cancel)
+             return
+         parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True)
+@@ -1661,7 +1704,7 @@ class Service:
+                     # issue #27: it died in an earlier request (or was unloaded) - start it again instead of failing
+                     self.ensure_loaded()
+                     with self.status_lock:
+-                        self.status.update(busy=True, phase="reading the prompt", prompt_tokens=len(ids),
++                        self.status.update(busy=True, request_id=None, phase="reading the prompt", prompt_tokens=len(ids),
+                                            generated=0, started=time.time(), first_token=None, tool=None, tail="",
+                                            max_tokens=max_new)
+                         self.last_request_at = time.time()
+@@ -1814,7 +1857,7 @@ class Service:
+                        "timings": timings}
+ 
+     def _record_done(self, prompt_tokens, n, finish, sampling, raw_ids, before, engine_last0, cancel,
+-                     record=None, parser_state=None):
++                     record=None, parser_state=None, request_last=None, started_at=None, rid=None):
+         """The end-of-request bookkeeping both run paths share: the history entry, the totals, the last timings
+         and the server-window line.  -> this request's timings (None when the engine kept no clock).  `record`
+         gates the history/totals: the plain path keeps its old "only while busy" rule; the preemption path always
+@@ -1825,9 +1868,8 @@ class Service:
+         with self.status_lock:
+             if record:
+                 # only this request's DONE counts: same object means no DONE arrived (death, error, disconnect)
+-                last = dict(getattr(self.engine, "last", {}) or {}) \
+-                    if getattr(self.engine, "last", None) is not engine_last0 else {}
+-                started = self.status.get("started", time.time())
++                last = dict(request_last or {})
++                started = started_at if started_at is not None else time.time()
+                 cvec = (getattr(self.engine, "info", {}) or {}).get("cvec", 0)
+                 loaded = str(cvec) not in ("0", "", "None")
+                 hit_rate = round(last["hits"] / last["lookups"], 3) if last.get("lookups") else None
+@@ -1857,8 +1899,7 @@ class Service:
+                 t["decode_ms"] += last.get("decode_ms") or 0.0
+                 t["drafts_offered"] += last.get("drafts_offered") or 0
+                 t["drafts_accepted"] += last.get("drafts_accepted") or 0
+-                fresh = getattr(self.engine, "last", None)
+-                if fresh is not None and fresh is not before:      # the engine's clock for THIS request
++                if request_last is not None:      # the engine's clock for THIS request
+                     timings = request_timings(seen, n, last)
+                     self.last_timings = dict(timings, at=int(time.time())) if timings else None
+                 self.last_request_at = time.time()
+@@ -1877,10 +1918,11 @@ class Service:
+                           "strata-<model>.json for every request) leaves room to answer", flush=True)
+                 if os.environ.get("STRATA_DEBUG") and raw_ids:
+                     print(f"[strata] raw: {self.tok.decode(raw_ids)!r}", flush=True)
+-            self.status["busy"] = False
+-            self.status.pop("tail", None)            # #212: the answer's end is not kept once it is done
+-            self.status.pop("tool", None)
+-            self.status.pop("parked", None)
++            if self.status.get("request_id") == rid:
++                self.status["busy"] = False
++                self.status.pop("tail", None)
++                self.status.pop("tool", None)
++                self.status.pop("parked", None)
+         return timings
+ 
+     def run_preemptable(self, ids, thinking, tools, max_new, sampling, cancel) -> Iterator[tuple[str, object]]:
+@@ -1896,6 +1938,7 @@ class Service:
+         rid = next(self.preempt_rid)
+         req = None
+         enqueued_at = time.time()
++        started_at = None
+         with self.status_lock:
+             self.status["queued"] += 1
+         first = True
+@@ -1922,31 +1965,32 @@ class Service:
+                             first = False
+                             wait_ms = (time.time() - enqueued_at) * 1000.0
+                             self.totals["max_queue_wait_ms"] = max(self.totals["max_queue_wait_ms"], wait_ms)
+-                    if hasattr(self.engine, "alive") and not self.engine.alive():
+-                        # issue #27: it died in an earlier request - start it again instead of failing every
+-                        # request.  A parked request's snapshot died with the old process: it fails cleanly
+-                        # below (the new engine answers RESUME with ERR no parked request).
+-                        code = self.engine.exit_code() if hasattr(self.engine, "exit_code") else None
+-                        print(f"[strata] the engine had stopped (exit code {code}); starting it again "
+-                              "(a minute or two) ...", flush=True)
+-                        self.engine.restart()
+-                        print("[strata] the engine is running again", flush=True)
++                    if cancel.is_set():
++                        finish = "cancel"
+                         if req is not None and req.parked:
+-                            raise ValueError("the engine died while this request was parked; its prompt "
+-                                             "snapshot is gone and it cannot be resumed")
+-                        req = None
++                            req.cancel_parked()
++                            with self.status_lock:
++                                self.status["parked_requests"] = max(0, self.status.get("parked_requests", 0) - 1)
++                        break
++                    if req is not None and req.parked and hasattr(self.engine, "alive") and not self.engine.alive():
++                        raise ValueError("the engine died while this request was parked; its snapshot is gone")
++                    self.ensure_loaded()
+                     now = time.time()
++                    if started_at is None:
++                        started_at = now
+                     with self.status_lock:
+                         if req is None:
+-                            self.status.update(busy=True, phase="reading the prompt", prompt_tokens=len(ids),
++                            self.status.update(busy=True, request_id=rid, phase="reading the prompt", prompt_tokens=len(ids),
+                                                generated=0, started=now, first_token=None, tool=None, tail="",
+                                                max_tokens=max_new, parked=False)
+                             self.last_request_at = now
+                             self.rate.clear()           # the previous request's samples must not leak into this one
+                         else:
+                             # tail/tool may have been cleaned by the interim request's end (they are per-answer)
+-                            self.status.update(parked=False, phase="reading the prompt (resumed)", tail="",
+-                                               tool=None,
++                            self.status.update(busy=True, request_id=rid, parked=False,
++                                               phase="reading the prompt (resumed)", tail="", tool=None,
++                                               started=started_at, first_token=None, generated=n,
++                                               prompt_tokens=len(ids), max_tokens=max_new,
+                                                parked_requests=max(0, self.status.get("parked_requests", 0) - 1))
+                     if req is None:
+                         before = getattr(self.engine, "last", None)
+@@ -1979,6 +2023,9 @@ class Service:
+                                       "request runs first", flush=True)
+                                 break
+                             if t is None:                   # a heartbeat: PP lines during the prompt read
++                                if cancel.is_set():
++                                    finish = "cancel"
++                                    break
+                                 # the engine cannot see this server's queue: while a request is waiting and we
+                                 # are still reading the prompt, tell the engine to offer its next boundary
+                                 # (YIELD is a flag like STOP; it acts at a chunk end or never)
+@@ -1990,10 +2037,10 @@ class Service:
+                                 last_print = self._progress(last_print)
+                                 yield "ping", None
+                                 continue
+-                            n += 1
+                             if cancel.is_set():
+                                 finish = "cancel"
+                                 break
++                            n += 1
+                             if t in self.stop_ids:
+                                 finish = "stop"
+                                 raw_ids.append(t)
+@@ -2038,6 +2085,9 @@ class Service:
+                         last_ping = time.time()
+                         yield "ping", None
+                     time.sleep(0.02)
++        except (EngineDied, ValueError, GpuBusy):
++            finish = "error"
++            raise
+         except GeneratorExit:                           # the client disconnected mid-stream
+             finish = "disconnect"
+             raise
+@@ -2054,7 +2104,10 @@ class Service:
+                 with self.status_lock:
+                     self.status["parked_requests"] = max(0, self.status.get("parked_requests", 0) - 1)
+             timings = self._record_done(len(ids), n, finish, sampling, raw_ids, before, engine_last0, cancel,
+-                                        record=True, parser_state=parser.state)
++                                        record=True, parser_state=parser.state,
++                                        request_last=(getattr(req, "last", None) if req is not None else
++                                                      {"finish": finish, "prompt_read": 0, "reused": 0}),
++                                        started_at=started_at, rid=rid)
+         for ev in parser.finish():
+             yield "event", ev
+         yield "done", {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),
+diff --git a/serve/test_preempt_regressions.py b/serve/test_preempt_regressions.py
+new file mode 100644
+index 0000000..3ca3369
+--- /dev/null
++++ b/serve/test_preempt_regressions.py
+@@ -0,0 +1,170 @@
++"""Fast CPU regressions for the rebased preemption driver (no GPU or HTTP socket)."""
++import queue
++import threading
++import time
++import unittest
++from unittest.mock import Mock
++from pathlib import Path
++
++from serve.frontend import ChatTemplate
++from serve.server import ByteTokenizer, EngineRequest, EngineSilent, Service
++
++ROOT = Path(__file__).resolve().parents[1]
++
++
++class Pipe:
++    can_stop = True
++    silence_s = .01
++    max_context = 10000
++    can_preempt = True
++    def __init__(self):
++        self.proc = object()
++        self.lines = queue.Queue()
++        self.commands = []
++        self.last = None
++        self.info = {'preempt': 1}
++    def sampling_keys(self, sampling):
++        return ''
++    def write_line(self, line):
++        self.commands.append(line)
++    def _silent(self, reason):
++        return EngineSilent(reason)
++    def _parse_done(self, line):
++        f = line.split()
++        self.last = dict(generated=int(f[1]), prompt_tokens=int(f[2]), prompt_ms=float(f[3]),
++                         decode_ms=float(f[4]), finish=f[5])
++
++
++def service(engine):
++    return Service(engine, ByteTokenizer(), ChatTemplate(ROOT / 'serve/chat_template.jinja'), preempt=True)
++
++
++class ProtocolRegression(unittest.TestCase):
++    def test_silence_deadline_is_enforced(self):
++        eng = Pipe()
++        req = EngineRequest(eng, [1], 5, {}, 1)
++        req.allow = .01
++        req.heard = time.monotonic() - 1
++        eng.lines.put('PP 1 2 10 100 id=1')   # baseline returns a heartbeat instead of enforcing deadline
++        with self.assertRaises(EngineSilent):
++            next(req)
++        self.assertTrue(req._closed)
++
++    def test_stop_drain_is_bounded(self):
++        eng = Pipe()
++        req = EngineRequest(eng, [1], 5, {}, 1)
++        req.allow = .01
++        class TimedQueue:
++            def get(self, timeout=None):
++                if timeout is None:
++                    raise AssertionError('STOP drain used an unlimited wait')
++                raise queue.Empty
++        eng.lines = TimedQueue()
++        with self.assertRaises(EngineSilent):
++            req.close()
++        self.assertEqual(eng.commands[-1], 'STOP')
++
++    def test_resume_rejects_replacement_process(self):
++        eng = Pipe()
++        req = EngineRequest(eng, [1], 5, {}, 1)
++        req.parked = True
++        eng.proc = object()
++        with self.assertRaises(ValueError):
++            req.resume()
++        self.assertFalse(any(x.startswith('RESUME') for x in eng.commands))
++
++    def test_cancel_does_not_talk_to_replacement_process(self):
++        eng = Pipe()
++        req = EngineRequest(eng, [1], 5, {}, 1)
++        req.parked = True
++        eng.proc = object()
++        eng.lines.put('DONE 0 1 0 0 cancel id=1')
++        req.cancel_parked()
++        self.assertFalse(any(x.startswith('CANCEL') for x in eng.commands))
++
++    def test_done_is_owned_by_request(self):
++        eng = Pipe()
++        req = EngineRequest(eng, [1], 5, {}, 1)
++        eng.lines.put('DONE 3 1 4 5 length id=1')
++        self.assertEqual(list(req), [])
++        eng.last = {'generated': 999}
++        self.assertEqual(req.last['generated'], 3)
++
++
++class ServiceRegression(unittest.TestCase):
++    def test_cancelled_queue_never_submits_gen(self):
++        eng = Pipe()
++        eng.open_request = Mock(side_effect=AssertionError('cancelled request was submitted'))
++        svc = service(eng)
++        cancel = threading.Event()
++        cancel.set()
++        done = list(svc.run([1], False, None, 5, {}, cancel))[-1][1]
++        self.assertEqual(done['finish'], 'cancel')
++        eng.open_request.assert_not_called()
++        self.assertEqual(svc.status['queued'], 0)
++
++    def test_cancel_on_prefill_heartbeat_stops_without_reading_token(self):
++        eng = Pipe()
++        cancel = threading.Event()
++        class Request:
++            parked = False
++            last = None
++            calls = 0
++            closed = False
++            def __iter__(self): return self
++            def __next__(self):
++                self.calls += 1
++                if self.calls == 1:
++                    cancel.set()
++                    return None
++                return 42
++            def close(self): self.closed = True
++        req = Request()
++        eng.open_request = lambda *args: req
++        svc = service(eng)
++        done = list(svc.run([1], False, None, 5, {}, cancel))[-1][1]
++        self.assertEqual(req.calls, 1)
++        self.assertTrue(req.closed)
++        self.assertEqual(done['completion_tokens'], 0)
++
++    def test_loading_uses_existing_admission_hooks(self):
++        eng = Pipe()
++        svc = service(eng)
++        class AdmissionBlocked(Exception): pass
++        svc.ensure_loaded = Mock(side_effect=AdmissionBlocked)
++        eng.open_request = Mock(side_effect=AssertionError('bypassed ensure_loaded'))
++        with self.assertRaises(AdmissionBlocked):
++            list(svc.run([1], False, None, 5, {}, threading.Event()))
++        svc.ensure_loaded.assert_called_once()
++        eng.open_request.assert_not_called()
++
++    def test_reasoning_budget_uses_budget_aware_path(self):
++        eng = Pipe()
++        svc = service(eng)
++        svc.reasoning_budget_tokens = 20
++        svc.run_preemptable = Mock(side_effect=AssertionError('budget would be ignored'))
++        eng.generate = Mock(return_value=(x for x in []))
++        list(svc.run([1], True, None, 100, {}, threading.Event()))
++        svc.run_preemptable.assert_not_called()
++        eng.generate.assert_called_once()
++
++    def test_unload_refuses_a_parked_request(self):
++        eng = Pipe()
++        eng.alive = lambda: True
++        eng.unload = Mock()
++        svc = service(eng)
++        svc.status.update(busy=False, queued=0, parked_requests=1)
++        self.assertEqual(svc.unload(), 'busy')
++        eng.unload.assert_not_called()
++
++    def test_late_bookkeeping_does_not_clear_other_request(self):
++        svc = service(Pipe())
++        svc.status.update(busy=True, request_id=2, phase='reading B', tail='B', tool='tool B')
++        svc._record_done(10, 0, 'cancel', {}, [], None, None, threading.Event(),
++                         record=False, rid=1, request_last=None)
++        self.assertTrue(svc.status['busy'])
++        self.assertEqual(svc.status['tail'], 'B')
++
++
++if __name__ == '__main__':
++    unittest.main()
+diff --git a/src/program/generate.cpp b/src/program/generate.cpp
+index 601b229..ef13bd9 100644
+--- a/src/program/generate.cpp
++++ b/src/program/generate.cpp
+@@ -932,6 +932,7 @@ struct SuspReq {
+     std::vector<int64_t> ids;      ///< the whole prompt (the tail is re-read on the resume)
+     int64_t done = 0;              ///< prompt tokens whose state the snapshot holds
+     int64_t max_new = 0;
++    int64_t segment_chunk = 0;   ///< original segment layout, preserved without enlarging unrelated prompts
+     int64_t segment_end = 0;      ///< end of the batched segment interrupted by the park
+     int64_t preempt_count = 0;     ///< how often this request has been parked (the --prefill-preempt-max budget)
+     // the request's sampling keys, parsed once and kept for the resume
+@@ -943,6 +944,7 @@ struct SuspReq {
+     int cvec = 1;
+     double pcie_frac = 0.0, spec_min_p = 0.0;
+ 
++    std::vector<ConvCheckpoint> checkpoints; ///< checkpoint chain owned by the parked prefix
+     ConvCheckpoint run;            ///< the running half (gdn, ple, tails; ids filled for checkpoint_restore)
+     int32_t ple_token = -1;
+     int64_t pooled_rows = 0;       ///< idx_pooled rows copied per layer (completed blocks + the spare row)
+@@ -1036,7 +1038,7 @@ bool susp_save(SuspReq& s, const strata::core::ModelGeometry& g, const strata::c
+         const int64_t i = ss.qsa_ord0 + j;
+         const strata::core::QsaState& st = ss.qsa_states[i];
+         const size_t rows = (size_t) std::min<int64_t>(spare_rows, st.idx_pooled_rows);
+-        if (cudaMemcpy(s.dead.data() + (size_t) i * dead_bytes, st.idx_dead, dead_bytes, cudaMemcpyDeviceToHost) !=
++        if (cudaMemcpy(s.dead.data() + (size_t) j * dead_bytes, st.idx_dead, dead_bytes, cudaMemcpyDeviceToHost) !=
+             cudaSuccess)
+             return false;
+         const size_t before = s.pooled.size();
+@@ -1044,7 +1046,7 @@ bool susp_save(SuspReq& s, const strata::core::ModelGeometry& g, const strata::c
+         if (rows &&
+             cudaMemcpy(s.pooled.data() + before, st.idx_pooled, rows * row_bytes, cudaMemcpyDeviceToHost) != cudaSuccess)
+             return false;
+-        if (cudaMemcpy(&s.block_pos[(size_t) i], st.idx_block_pos, 4, cudaMemcpyDeviceToHost) != cudaSuccess)
++        if (cudaMemcpy(&s.block_pos[(size_t) j], st.idx_block_pos, 4, cudaMemcpyDeviceToHost) != cudaSuccess)
+             return false;
+         const SuspKvRuns r = susp_kv_runs(st, qs);
+         if (!r.complete()) return false;
+@@ -1052,14 +1054,14 @@ bool susp_save(SuspReq& s, const strata::core::ModelGeometry& g, const strata::c
+         uint64_t total = 0;
+         for (int a = 0; a < r.n; ++a) total += (uint64_t) r.len[a];
+         s.kv_bytes = total;
+-        s.kv[(size_t) i].resize((size_t) total * (size_t) blocks);
++        s.kv[(size_t) j].resize((size_t) total * (size_t) blocks);
+         size_t off = 0;
+         for (int a = 0; a < r.n; ++a) {
+             const size_t bytes = (size_t) r.len[a] * (size_t) blocks;
+             if (r.from_host) {
+-                std::memcpy(s.kv[(size_t) i].data() + off, r.src[a], bytes);
++                std::memcpy(s.kv[(size_t) j].data() + off, r.src[a], bytes);
+             } else if (bytes &&
+-                       cudaMemcpy(s.kv[(size_t) i].data() + off, r.src[a], bytes, cudaMemcpyDeviceToHost) != cudaSuccess)
++                       cudaMemcpy(s.kv[(size_t) j].data() + off, r.src[a], bytes, cudaMemcpyDeviceToHost) != cudaSuccess)
+                 return false;
+             off += bytes;
+         }
+@@ -1109,7 +1111,7 @@ bool susp_restore(const SuspReq& s, const strata::core::ModelGeometry& g, strata
+         const int64_t i = ss.qsa_ord0 + j;
+         const strata::core::QsaState& st = ss.qsa_states[i];
+         const size_t rows = (size_t) std::min<int64_t>(s.pooled_rows, st.idx_pooled_rows);
+-        if (cudaMemcpy(st.idx_dead, s.dead.data() + (size_t) i * dead_bytes, dead_bytes, cudaMemcpyHostToDevice) !=
++        if (cudaMemcpy(st.idx_dead, s.dead.data() + (size_t) j * dead_bytes, dead_bytes, cudaMemcpyHostToDevice) !=
+             cudaSuccess)
+             return false;
+         if (rows &&
+@@ -1117,7 +1119,7 @@ bool susp_restore(const SuspReq& s, const strata::core::ModelGeometry& g, strata
+                 cudaSuccess)
+             return false;
+         pooled_off += rows * row_bytes;
+-        if (cudaMemcpy(st.idx_block_pos, &s.block_pos[(size_t) i], 4, cudaMemcpyHostToDevice) != cudaSuccess)
++        if (cudaMemcpy(st.idx_block_pos, &s.block_pos[(size_t) j], 4, cudaMemcpyHostToDevice) != cudaSuccess)
+             return false;
+         const SuspKvRuns r = susp_kv_runs(st, qs);
+         const int64_t blocks = std::min<int64_t>(s.kv_blocks, st.max_cells / qs.page_size);
+@@ -1125,9 +1127,9 @@ bool susp_restore(const SuspReq& s, const strata::core::ModelGeometry& g, strata
+         for (int a = 0; a < r.n; ++a) {
+             const size_t bytes = (size_t) r.len[a] * (size_t) blocks;
+             if (r.from_host) {
+-                if (r.src[a]) std::memcpy((void*) r.src[a], s.kv[(size_t) i].data() + off, bytes);
++                if (r.src[a]) std::memcpy((void*) r.src[a], s.kv[(size_t) j].data() + off, bytes);
+             } else if (bytes &&
+-                       cudaMemcpy(r.dev[a], s.kv[(size_t) i].data() + off, bytes, cudaMemcpyHostToDevice) != cudaSuccess)
++                       cudaMemcpy(r.dev[a], s.kv[(size_t) j].data() + off, bytes, cudaMemcpyHostToDevice) != cudaSuccess)
+                 return false;
+             off += bytes;
+         }
+@@ -4998,11 +5000,11 @@ int main(int argc, char** argv) {
+                 };
+                 const ConvStateSizes z = conv_state_sizes(g, ss);
+                 uint64_t h_gdn = hash_dev(ss.gdn_state, z.gdn, 1469598103934665603ull);
+-                if (std::getenv("STRATA_STATE_HASH_GDN") != nullptr) {   // per GDN layer: which one differs first
++                if (std::getenv("STRATA_STATE_HASH_GDN") != nullptr && ss.gdn_alloc > 0) {   // per GDN layer: which one differs first
+                     const size_t per = z.gdn / (size_t) ss.gdn_alloc;
+                     std::string s;
+                     char b[8];
+-                    for (int64_t i = 0; i < g.n_gdn_layers(); ++i) {
++                    for (int64_t i = 0; i < ss.gdn_alloc; ++i) {
+                         std::snprintf(b, sizeof(b), "%04llx ", (unsigned long long) (hash_dev((const uint8_t*) ss.gdn_state + i * per, per, 1469598103934665603ull) & 0xffff));
+                         s += b;
+                     }
+@@ -5010,7 +5012,7 @@ int main(int argc, char** argv) {
+                 }
+                 uint64_t h_ple = hash_dev(ss.ple_hist, ss.ple_hist ? z.ple : 0, 1469598103934665603ull);
+                 uint64_t h_tail = 1469598103934665603ull, h_pool = h_tail, h_kv = h_tail, h_stale = h_tail;
+-                uint64_t h_dead = h_tail, h_block = h_tail;
++                uint64_t h_dead = h_tail, h_block = h_tail, h_pool_full = h_tail;
+                 const int64_t kvb = qs.head_dim, scb = (qs.head_dim / 64) * 2;
+                 // a state's K/V arrays and their bytes per (cell, head) row: the host copy when it has one
+                 auto kv_arrays = [&](const strata::core::QsaState& st) {
+@@ -5033,13 +5035,16 @@ int main(int argc, char** argv) {
+                     return a;
+                 };
+                 const int64_t end_cell = std::min<int64_t>(((L + qs.page_size - 1) / qs.page_size) * qs.page_size,
+-                                                           ss.qsa_states[0].max_cells);
+-                for (int64_t i = 0; i < g.n_qsa_layers(); ++i) {
++                                                           ss.max_cells);
++                for (int64_t i = ss.qsa_ord0; i < ss.qsa_ord0 + ss.qsa_alloc; ++i) {
+                     const strata::core::QsaState& st = ss.qsa_states[i];
+                     h_dead = hash_dev(st.idx_dead, (size_t) qs.idx_dim * 4, h_dead);
+                     h_block = hash_dev(st.idx_block_pos, sizeof(int32_t), h_block);
+                     h_tail = hash_dev(st.idx_tail, z.tail, h_tail);
+                     h_pool = hash_dev(st.idx_pooled, (size_t) (L / qs.idx_block) * qs.idx_dim * 4, h_pool);
++                    const int64_t full_rows = std::min<int64_t>((L > 0 ? (L - 1) / qs.idx_block + 2 : 0),
++                                                                 st.idx_pooled_rows);
++                    h_pool_full = hash_dev(st.idx_pooled, (size_t) full_rows * qs.idx_dim * 4, h_pool_full);
+                     // KV streaming: the host copy is the identity layout and holds every cell
+                     for (const auto& [pool, w] : kv_arrays(st)) {
+                         h_kv = hash_cells(pool, w, 0, L, h_kv);
+@@ -5062,10 +5067,11 @@ int main(int argc, char** argv) {
+                     }
+                 }
+                 std::fprintf(stderr, "strata serve: STATE_HASH L=%lld gdn=%016llx ple=%016llx tail=%016llx pooled=%016llx "
+-                                     "kv=%016llx mtp=%016llx stale=%016llx ple_prev=%d,%d\n", (long long) L,
++                                     "kv=%016llx mtp=%016llx stale=%016llx dead=%016llx pooled_full=%016llx block=%016llx ple_prev=%d,%d\n", (long long) L,
+                              (unsigned long long) h_gdn, (unsigned long long) h_ple, (unsigned long long) h_tail,
+                              (unsigned long long) h_pool, (unsigned long long) h_kv, (unsigned long long) h_mtp,
+-                             (unsigned long long) h_stale, ss.ple_prev[0], ss.ple_prev[1]);
++                             (unsigned long long) h_stale, (unsigned long long) h_dead,
++                             (unsigned long long) h_pool_full, (unsigned long long) h_block, ss.ple_prev[0], ss.ple_prev[1]);
+                 std::fprintf(stderr, "strata serve: STATE_EXTRA dead=%016llx block=%016llx\n",
+                              (unsigned long long) h_dead, (unsigned long long) h_block);
+                 std::fflush(stderr);
+@@ -5721,16 +5727,17 @@ int main(int argc, char** argv) {
+                              }), checks.end());
+             };
+             if (resuming) {
+-                // the park's own snapshot is this request's mount: the whole state through `pr.done` comes back
+-                // (docs/PREFILL-PREEMPT.md).  Checkpoints that prefix this prompt AND survived the interim request
+-                // stay (their cells hold their tokens - it mounted through them); the rest it already dropped.
+-                resume = pr.done;
+-                drop_invalid_checks(resume);
+-                // the cvec the request opened with comes back with it (the interim request may have flipped it)
+-                if (strata::kernels::cvec().loaded() && pr.cvec != cvec_cached) {
+-                    strata::kernels::cvec_set_enabled(pr.cvec != 0);
+-                    cvec_cached = pr.cvec;
++                // Preserve B before A overwrites the live positional state. A's checkpoint chain
++                // and retained KV identity cannot be inherited from B, even for shared token prefixes.
++                if (!park_current(0)) {
++                    std::printf("ERR parking interim conversation failed%s: %s\n", rid_suffix().c_str(), err.c_str());
++                    return 1;
+                 }
++                conversations.limit_reuse(0);
++                resume = pr.done;
++                checks = std::move(pr.checkpoints);
++                cvec_cached = pr.cvec != 0;
++                if (strata::kernels::cvec().loaded()) strata::kernels::cvec_set_enabled(cvec_cached);
+                 const Clock::time_point tr0 = Clock::now();
+                 cudaDeviceSynchronize();
+                 if (!susp_restore(pr, g, ss, mtp, main_cs)) {
+@@ -6102,6 +6109,8 @@ if (o.prompt_cache > 0 && want_cvec == cvec_cached) {
+                         break;
+                     }
+             int64_t at = read_from;
++            int64_t batched_until = resuming ? pr.segment_end : -1;
++            int64_t batched_chunk = resuming ? pr.segment_chunk : 0;
+             bool parked_now = false;
+             for (const int64_t to : {reread_to, root_at, turn_at, n - 1}) {
+                 if (to <= at) continue;
+@@ -6109,23 +6118,21 @@ if (o.prompt_cache > 0 && want_cvec == cvec_cached) {
+                     err.clear();
+                     // Resume the same batched segment even if its remaining tail now fits short_read.
+                     // The uninterrupted arm processes that tail in Prefill::run, not verify windows.
+-                    const bool continuing_batch = resuming && at < pr.segment_end;
++                    const bool continuing_batch = at < batched_until;
+                     const bool win = !continuing_batch && windows_ok(at, to);
+                     if (win && !refill(err)) {
+                         std::printf("ERR refilling a lent slot failed%s: %s\n", rid_suffix().c_str(), err.c_str());
+                         return 1;
+                     }
+-                    // Lend the CHUNK size, not the segment size: a resumed request's tail segment would
+-                    // otherwise run its draft-KV batched path on a smaller relayout than an uninterrupted
+-                    // request's same cells do, and that path is E-9 non-bit-identical across layouts
+-                    // (different scratch tiling) - the drafts would differ and with them the decode's shape.
+-                    // Buffers are sized >= needed, so running a short segment on a chunk-sized carve is fine;
+-                    // it only lends a few more cache slots for that one segment.
+-                    if (!win && !lend(std::max<int64_t>(to - at, o.prefill_chunk), err)) {
++                    // Preserve the interrupted segment's exact layout. Uninterrupted segments retain
++                    // upstream request-sized lending, including when the feature is disabled.
++                    const int64_t lend_tokens = continuing_batch ? batched_chunk : to - at;
++                    if (!win && !lend(lend_tokens, err)) {
+                         std::printf("ERR lending the prompt path its slots failed%s: %s\n", rid_suffix().c_str(),
+                                     err.c_str());
+                         return 1;
+                     }
++                    if (!win) { batched_until = to; batched_chunk = sp.chunk(); }
+                     const auto tsp = Clock::now();
+                     const bool sp_ok = win ? read_windows(at, to, err) : sp.run(ids.data() + at, to - at, at, err);
+                     if (trace) {
+@@ -6134,7 +6141,7 @@ if (o.prompt_cache > 0 && want_cvec == cvec_cached) {
+                                      std::chrono::duration<double, std::milli>(Clock::now() - tsp).count());
+                         std::fflush(stderr);
+                     }
+-                    if (sp_ok && sp.suspended()) {
++                    if (!win && sp_ok && sp.suspended()) {
+                         // ---- the park: a queued request wants the engine (docs/PREFILL-PREEMPT.md).  The chunk
+                         // boundary is committed; first give the lent slots back (as the cancelled path does), then
+                         // copy the state out - the copies are pure reads, so a failed park leaves A intact and
+@@ -6154,6 +6161,8 @@ if (o.prompt_cache > 0 && want_cvec == cvec_cached) {
+                             rec.ids = ids;
+                             rec.done = at;
+                             rec.segment_end = to;
++                            rec.segment_chunk = batched_chunk;
++                            rec.checkpoints = checks;
+                             rec.max_new = max_new;
+                             rec.preempt_count = preempt_count + 1;   // persist this successful park across RESUME
+                             rec.temperature = req_temperature; rec.top_p = req_top_p; rec.top_k = req_top_k;
+diff --git a/tools/prefill_preempt_test.py b/tools/prefill_preempt_test.py
+index b522e32..1393be3 100644
+--- a/tools/prefill_preempt_test.py
++++ b/tools/prefill_preempt_test.py
+@@ -41,7 +41,14 @@ CONFIG = ROOT / "strata-iq3_xxs.json"
+ # each optional component joins the dict, so the comparison covers whatever the engine reports
+ HASH_RE = re.compile(r"STATE_HASH L=(\d+) gdn=([0-9a-f]+) ple=([0-9a-f]+) tail=([0-9a-f]+) pooled=([0-9a-f]+) "
+                      r"kv=([0-9a-f]+) mtp=([0-9a-f]+) stale=([0-9a-f]+)(?: dead=([0-9a-f]+))?"
+-                     r"(?: pooled_full=([0-9a-f]+))? ple_prev=(-?\d+),(-?\d+)")
++                     r"(?: pooled_full=([0-9a-f]+))?(?: block=([0-9a-f]+))? ple_prev=(-?\d+),(-?\d+)")
++
++
++def parse_state_match(match) -> dict:
++    keys = ["L", "gdn", "ple", "tail", "pooled", "kv", "mtp", "stale", "dead", "pooled_full",
++            "block", "ple_prev0", "ple_prev1"]
++    # Optional regex groups still occupy positions. Never shorten keys before zipping!
++    return {k: v for k, v in zip(keys, match.groups()) if v is not None}
+ 
+ 
+ def deterministic_tokens(n: int, seed: int, lo=1000, hi=30000) -> list[int]:
+@@ -140,12 +147,7 @@ class Engine:
+             pass
+         if m is None:
+             raise RuntimeError("no STATE_HASH in the engine log (STRATA_STATE_HASH=1 and --prompt-cache > 0?)")
+-        groups = m.groups()
+-        keys = ["L", "gdn", "ple", "tail", "pooled", "kv", "mtp", "stale"]
+-        if groups[8] is not None:                       # the newer engine reports the spare key and the full
+-            keys += ["dead", "pooled_full"]             # pooled row alongside the classic components
+-        keys += ["ple_prev0", "ple_prev1"]
+-        return dict(zip(keys, groups))
++        return parse_state_match(m)
+ 
+     def close(self):
+         try:
+@@ -177,7 +179,7 @@ def strip_options(args: list[str], valued: set[str], flags: set[str]) -> list[st
+ def state_differences(ref: dict, got: dict) -> list[str]:
+     # Stale cells lie OUTSIDE the committed prefix; rejected drafts may legitimately differ.
+     # Drafter KV is still gated: differences must be investigated, not silently retried away.
+-    return [k for k in ref if k != "stale" and ref[k] != got.get(k)]
++    return [k for k in dict.fromkeys([*ref, *got]) if k != "stale" and ref.get(k) != got.get(k)]
+ 
+ 
+ def engine_args(cfg: dict, *, prefill: int, preempt: bool, max_context: int | None = None,
+@@ -224,7 +226,11 @@ def main() -> int:
+     ap.add_argument("--interim-max-new", type=int, default=None,
+                     help="B decode length: 0 isolates B prefill, 1 adds only its first verify/commit")
+     ap.add_argument("--trace", action="store_true", help="expensive state and verify-window hashes")
++    ap.add_argument("--tail-tokens", type=int, default=491,
++                    help="prompt length after its full chunks; 33 tests a resumed 32-token batched tail")
+     args = ap.parse_args()
++    if not 2 <= args.tail_tokens < 2048:
++        ap.error("--tail-tokens must be between 2 and 2047")
+     if args.max_new < 1 or (args.interim_max_new is not None and args.interim_max_new < 0):
+         ap.error("A needs at least one output token; B must be nonnegative")
+     b_max_new = args.max_new if args.interim_max_new is None else args.interim_max_new
+@@ -238,7 +244,7 @@ def main() -> int:
+     workdir.mkdir(parents=True, exist_ok=True)
+ 
+     chunk = 2048
+-    n_a = (3 if args.quick else 6) * chunk + 491          # a final partial chunk, like the plan's 10,731 example
++    n_a = (3 if args.quick else 6) * chunk + args.tail_tokens          # a final partial chunk, like the plan's 10,731 example
+     a_ids = deterministic_tokens(n_a, seed=7)
+     b_ids = deterministic_tokens(220, seed=99)
+     warm_ids = deterministic_tokens(120, seed=5)          # the first request on a virgin engine drafts (and so
+diff --git a/tools/test_preempt_harness.py b/tools/test_preempt_harness.py
+index 360fe8b..7560a10 100644
+--- a/tools/test_preempt_harness.py
++++ b/tools/test_preempt_harness.py
+@@ -1,6 +1,6 @@
+ """CPU-only guards against false passes and malformed parity-test configuration."""
+ import unittest
+-from tools.prefill_preempt_test import engine_args, state_differences
++from tools.prefill_preempt_test import engine_args, state_differences, HASH_RE, parse_state_match
+ 
+ 
+ class HarnessChecks(unittest.TestCase):
+@@ -25,6 +25,20 @@ class HarnessChecks(unittest.TestCase):
+     def test_uncommitted_stale_cells_are_not_semantic_state(self):
+         self.assertEqual(state_differences({'kv': 'a', 'stale': 'a'}, {'kv': 'a', 'stale': 'b'}), [])
+ 
++    def test_legacy_hash_keeps_ple_previous_tokens(self):
++        line = "STATE_HASH L=8 gdn=a ple=b tail=c pooled=d kv=e mtp=f stale=0 ple_prev=123,456"
++        state = parse_state_match(HASH_RE.search(line))
++        self.assertEqual(state["ple_prev0"], "123")
++        self.assertEqual(state["ple_prev1"], "456")
++        self.assertNotIn("dead", state)
++
++    def test_extended_hash_keeps_all_components(self):
++        line = ("STATE_HASH L=8 gdn=a ple=b tail=c pooled=d kv=e mtp=f stale=0 "
++                "dead=11 pooled_full=22 block=33 ple_prev=-1,456")
++        state = parse_state_match(HASH_RE.search(line))
++        self.assertEqual([state[k] for k in ("dead", "pooled_full", "block", "ple_prev0")],
++                         ["11", "22", "33", "-1"])
++
+     def test_missing_state_cannot_pass(self):
+         self.assertEqual(state_differences({'gdn': 'a'}, {}), ['gdn'])
+ 
