@@ -446,19 +446,17 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
                      std::sqrt(s2 / probe.size()));
     }
     f32_to_bf16_bulk(ctx_, xn16_, (int64_t) rows * N, cs_);
-    if (cycle_ == 0 && parity_dir_[0] && pos0 == 112) parity_dump_u16_as_f32(parity_dir_, "xn16_112", xn16_, rows * N, cs_);
+
     for (int64_t l = 0; l < dg.layers; ++l) {
         const std::string pre = "layers." + std::to_string(l);
         for (int r = 0; r < rows; ++r) {
             bf16_gemv(xn16_ + (size_t) r * N, wp((pre + ".self_attn.k_proj").c_str()), kc_ + (size_t) r * KVW, N, KVW, cs_);
-        if (cycle_ == 0 && parity_dir_[0] && pos0 == 112 && l == 0 && r == 0)
-            parity_dump(parity_dir_, "kraw_112", kc_, KVW, cs_);
+
             bf16_gemv(xn16_ + (size_t) r * N, wp((pre + ".self_attn.v_proj").c_str()), vc_ + (size_t) r * KVW, N, KVW, cs_);
         }
         native_qsa_rms_norm_weighted(kc_, wf((pre + ".self_attn.k_norm").c_str()), kc_, (int) dg.head_dim,
                                      (int) (rows * dg.n_head_kv), kEps, cs_);
-        if (cycle_ == 0 && parity_dir_[0] && pos0 == 112 && l == 0)
-            parity_dump(parity_dir_, "knorm_112", kc_, rows * KVW, cs_);
+
         // rope at each row's own position (k rows of one row sit NKV apart: [row r][head][hd]);
         // the rope reads DEVICE positions
         for (int r = 0; r < rows; ++r)
@@ -468,8 +466,7 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
             return false;
         }
         dflash_rope_neox_apply(kc_, kc_, (int) (rows * dg.n_head_kv), (int) dg.head_dim, dg.rope_theta, pos_, cs_);
-        if (cycle_ == 0 && parity_dir_[0] && pos0 == 112 && l == 0)
-            parity_dump(parity_dir_, "krope_112", kc_, rows * KVW, cs_);
+
         // append at the true cells
         for (int r = 0; r < rows; ++r) {
             const int64_t cell = pos0 + r;
@@ -487,10 +484,7 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
                          (long long) pos0, rows, (long long) pos0, (long long) (pos0 + rows));
         const QsaState& stl = st_[(size_t) l];
         const QsaAttnPools pools = qsa_attn_pools(stl);
-        if (cycle_ == 0 && parity_dir_[0] && pos0 == 112 && l == 0) {
-            if (cudaStreamSynchronize(cs_) != cudaSuccess) { err = "dflash: sync failed"; return false; }
-            parity_dump(parity_dir_, "ctx_k0", kc_, rows * KVW, cs_);   // post-norm post-rope (final)
-        }
+
         if (stl.kv_q4)
             kv_append_q4_steps(stl.k_q4, stl.v_q4, stl.page_table, step_, 4, rows, kc_, vc_, shapes_, cs_, &stl.host);
         else if (stl.kv_int8)
