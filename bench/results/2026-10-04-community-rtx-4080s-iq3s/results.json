@@ -1,0 +1,1241 @@
+{
+    "report":  "2026-10-04-community-rtx-4080s-iq3s",
+    "units":  "tok/s = engine-reported tokens per second; ms = milliseconds. Prompt throughput uses freshly read tokens only.",
+    "pool_workers_0.1.39_abba":  {
+                                     "r35A1_pool4":  {
+                                                         "engine":  "0.1.39",
+                                                         "pool_workers":  4,
+                                                         "config":  "strata-iq3_s.json",
+                                                         "result":  {
+                                                                        "arms":  [
+                                                                                     {
+                                                                                         "workload":  "work",
+                                                                                         "runs":  [
+                                                                                                      {
+                                                                                                          "run":  1,
+                                                                                                          "prompt_tokens":  6845,
+                                                                                                          "cold_prefill_tps":  2626.9,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  83.4,
+                                                                                                          "acceptance":  0.7186,
+                                                                                                          "cache_hit":  "95.6%",
+                                                                                                          "sha":  "17cfc2d6db1ae46f",
+                                                                                                          "dropped":  true
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "run":  2,
+                                                                                                          "prompt_tokens":  6845,
+                                                                                                          "cold_prefill_tps":  null,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  98.3,
+                                                                                                          "acceptance":  0.7559,
+                                                                                                          "cache_hit":  "97.4%",
+                                                                                                          "sha":  "3f7e0512c09175e1",
+                                                                                                          "dropped":  false
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "run":  3,
+                                                                                                          "prompt_tokens":  6845,
+                                                                                                          "cold_prefill_tps":  null,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  93.1,
+                                                                                                          "acceptance":  0.6893,
+                                                                                                          "cache_hit":  "96.5%",
+                                                                                                          "sha":  "ff4c072cad518eed",
+                                                                                                          "dropped":  false
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "run":  4,
+                                                                                                          "prompt_tokens":  6845,
+                                                                                                          "cold_prefill_tps":  null,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  97.1,
+                                                                                                          "acceptance":  0.7452,
+                                                                                                          "cache_hit":  "97.2%",
+                                                                                                          "sha":  "e537aac466644d9a",
+                                                                                                          "dropped":  false
+                                                                                                      }
+                                                                                                  ],
+                                                                                         "kept_median_decode_tps":  97.1,
+                                                                                         "cold_prefill_tps":  2626.9,
+                                                                                         "acceptance":  0.7452,
+                                                                                         "cache_hit":  "97.2%",
+                                                                                         "prompt_tokens":  6845
+                                                                                     },
+                                                                                     {
+                                                                                         "workload":  "prose-zh",
+                                                                                         "runs":  [
+                                                                                                      {
+                                                                                                          "run":  1,
+                                                                                                          "prompt_tokens":  6867,
+                                                                                                          "cold_prefill_tps":  2681.6,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  89.3,
+                                                                                                          "acceptance":  0.771,
+                                                                                                          "cache_hit":  "93.1%",
+                                                                                                          "sha":  "43e9955a8166173c",
+                                                                                                          "dropped":  true
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "run":  2,
+                                                                                                          "prompt_tokens":  6867,
+                                                                                                          "cold_prefill_tps":  null,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  94,
+                                                                                                          "acceptance":  0.7326,
+                                                                                                          "cache_hit":  "95.1%",
+                                                                                                          "sha":  "7c10d83a9eec6496",
+                                                                                                          "dropped":  false
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "run":  3,
+                                                                                                          "prompt_tokens":  6867,
+                                                                                                          "cold_prefill_tps":  null,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  95.4,
+                                                                                                          "acceptance":  0.751,
+                                                                                                          "cache_hit":  "95.8%",
+                                                                                                          "sha":  "655d8d97ff75402b",
+                                                                                                          "dropped":  false
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "run":  4,
+                                                                                                          "prompt_tokens":  6867,
+                                                                                                          "cold_prefill_tps":  null,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  96.1,
+                                                                                                          "acceptance":  0.7222,
+                                                                                                          "cache_hit":  "95.0%",
+                                                                                                          "sha":  "334a3fa66160d118",
+                                                                                                          "dropped":  false
+                                                                                                      }
+                                                                                                  ],
+                                                                                         "kept_median_decode_tps":  95.4,
+                                                                                         "cold_prefill_tps":  2681.6,
+                                                                                         "acceptance":  0.7326,
+                                                                                         "cache_hit":  "95.1%",
+                                                                                         "prompt_tokens":  6867
+                                                                                     },
+                                                                                     {
+                                                                                         "workload":  "prose-en",
+                                                                                         "runs":  [
+                                                                                                      {
+                                                                                                          "run":  1,
+                                                                                                          "prompt_tokens":  5121,
+                                                                                                          "cold_prefill_tps":  2728.2,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  87.1,
+                                                                                                          "acceptance":  0.7004,
+                                                                                                          "cache_hit":  "94.3%",
+                                                                                                          "sha":  "5885d4b0f4214287",
+                                                                                                          "dropped":  true
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "run":  2,
+                                                                                                          "prompt_tokens":  5121,
+                                                                                                          "cold_prefill_tps":  null,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  93.8,
+                                                                                                          "acceptance":  0.7055,
+                                                                                                          "cache_hit":  "96.3%",
+                                                                                                          "sha":  "b12380a7e2857ab2",
+                                                                                                          "dropped":  false
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "run":  3,
+                                                                                                          "prompt_tokens":  5121,
+                                                                                                          "cold_prefill_tps":  null,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  97.4,
+                                                                                                          "acceptance":  0.7413,
+                                                                                                          "cache_hit":  "96.1%",
+                                                                                                          "sha":  "15bdb496a3ecf684",
+                                                                                                          "dropped":  false
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "run":  4,
+                                                                                                          "prompt_tokens":  5121,
+                                                                                                          "cold_prefill_tps":  null,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  93.3,
+                                                                                                          "acceptance":  0.7437,
+                                                                                                          "cache_hit":  "96.1%",
+                                                                                                          "sha":  "38bc80d25f9daa10",
+                                                                                                          "dropped":  false
+                                                                                                      }
+                                                                                                  ],
+                                                                                         "kept_median_decode_tps":  93.8,
+                                                                                         "cold_prefill_tps":  2728.2,
+                                                                                         "acceptance":  0.7413,
+                                                                                         "cache_hit":  "96.1%",
+                                                                                         "prompt_tokens":  5121
+                                                                                     },
+                                                                                     {
+                                                                                         "workload":  "code-engine",
+                                                                                         "runs":  [
+                                                                                                      {
+                                                                                                          "run":  1,
+                                                                                                          "prompt_tokens":  4170,
+                                                                                                          "cold_prefill_tps":  2351.9,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  82.7,
+                                                                                                          "acceptance":  0.7496,
+                                                                                                          "cache_hit":  "94.9%",
+                                                                                                          "sha":  "1d263424229d8ced",
+                                                                                                          "dropped":  true
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "run":  2,
+                                                                                                          "prompt_tokens":  4170,
+                                                                                                          "cold_prefill_tps":  null,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  93.5,
+                                                                                                          "acceptance":  0.7215,
+                                                                                                          "cache_hit":  "97.5%",
+                                                                                                          "sha":  "d9ffc1465c6954bf",
+                                                                                                          "dropped":  false
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "run":  3,
+                                                                                                          "prompt_tokens":  4170,
+                                                                                                          "cold_prefill_tps":  null,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  96.8,
+                                                                                                          "acceptance":  0.7299,
+                                                                                                          "cache_hit":  "97.7%",
+                                                                                                          "sha":  "f4d1cc2d41011569",
+                                                                                                          "dropped":  false
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "run":  4,
+                                                                                                          "prompt_tokens":  4170,
+                                                                                                          "cold_prefill_tps":  null,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  90.5,
+                                                                                                          "acceptance":  0.692,
+                                                                                                          "cache_hit":  "97.3%",
+                                                                                                          "sha":  "a98ce7c8649431e2",
+                                                                                                          "dropped":  false
+                                                                                                      }
+                                                                                                  ],
+                                                                                         "kept_median_decode_tps":  93.5,
+                                                                                         "cold_prefill_tps":  2351.9,
+                                                                                         "acceptance":  0.7215,
+                                                                                         "cache_hit":  "97.5%",
+                                                                                         "prompt_tokens":  4170
+                                                                                     }
+                                                                                 ],
+                                                                        "mean_of_workload_medians_decode_tps":  94.95,
+                                                                        "mean_of_workload_cold_prefill_tps":  2597.2
+                                                                    }
+                                                     },
+                                     "r35B1_pool15":  {
+                                                          "engine":  "0.1.39",
+                                                          "pool_workers":  15,
+                                                          "config":  "strata-iq3_s-pool15.json",
+                                                          "result":  {
+                                                                         "arms":  [
+                                                                                      {
+                                                                                          "workload":  "work",
+                                                                                          "runs":  [
+                                                                                                       {
+                                                                                                           "run":  1,
+                                                                                                           "prompt_tokens":  6845,
+                                                                                                           "cold_prefill_tps":  2774.4,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  82.6,
+                                                                                                           "acceptance":  0.7599,
+                                                                                                           "cache_hit":  "95.6%",
+                                                                                                           "sha":  "99e0b823a03a9bdb",
+                                                                                                           "dropped":  true
+                                                                                                       },
+                                                                                                       {
+                                                                                                           "run":  2,
+                                                                                                           "prompt_tokens":  6845,
+                                                                                                           "cold_prefill_tps":  null,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  71.8,
+                                                                                                           "acceptance":  0.7519,
+                                                                                                           "cache_hit":  "97.0%",
+                                                                                                           "sha":  "429ea3e9f9cc1b1f",
+                                                                                                           "dropped":  false
+                                                                                                       },
+                                                                                                       {
+                                                                                                           "run":  3,
+                                                                                                           "prompt_tokens":  6845,
+                                                                                                           "cold_prefill_tps":  null,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  81.6,
+                                                                                                           "acceptance":  0.7566,
+                                                                                                           "cache_hit":  "97.2%",
+                                                                                                           "sha":  "869fcf9e600ccdcc",
+                                                                                                           "dropped":  false
+                                                                                                       },
+                                                                                                       {
+                                                                                                           "run":  4,
+                                                                                                           "prompt_tokens":  6845,
+                                                                                                           "cold_prefill_tps":  null,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  81.1,
+                                                                                                           "acceptance":  0.7394,
+                                                                                                           "cache_hit":  "96.9%",
+                                                                                                           "sha":  "23359528660100e7",
+                                                                                                           "dropped":  false
+                                                                                                       }
+                                                                                                   ],
+                                                                                          "kept_median_decode_tps":  81.1,
+                                                                                          "cold_prefill_tps":  2774.4,
+                                                                                          "acceptance":  0.7519,
+                                                                                          "cache_hit":  "97.0%",
+                                                                                          "prompt_tokens":  6845
+                                                                                      },
+                                                                                      {
+                                                                                          "workload":  "prose-zh",
+                                                                                          "runs":  [
+                                                                                                       {
+                                                                                                           "run":  1,
+                                                                                                           "prompt_tokens":  6867,
+                                                                                                           "cold_prefill_tps":  2485.7,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  72.9,
+                                                                                                           "acceptance":  0.6878,
+                                                                                                           "cache_hit":  "94.0%",
+                                                                                                           "sha":  "4300b99a7a544caa",
+                                                                                                           "dropped":  true
+                                                                                                       },
+                                                                                                       {
+                                                                                                           "run":  2,
+                                                                                                           "prompt_tokens":  6867,
+                                                                                                           "cold_prefill_tps":  null,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  81.6,
+                                                                                                           "acceptance":  0.7494,
+                                                                                                           "cache_hit":  "95.7%",
+                                                                                                           "sha":  "a9496a52c1bfeb55",
+                                                                                                           "dropped":  false
+                                                                                                       },
+                                                                                                       {
+                                                                                                           "run":  3,
+                                                                                                           "prompt_tokens":  6867,
+                                                                                                           "cold_prefill_tps":  null,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  86.1,
+                                                                                                           "acceptance":  0.8124,
+                                                                                                           "cache_hit":  "94.7%",
+                                                                                                           "sha":  "2718186b42eab79c",
+                                                                                                           "dropped":  false
+                                                                                                       },
+                                                                                                       {
+                                                                                                           "run":  4,
+                                                                                                           "prompt_tokens":  6867,
+                                                                                                           "cold_prefill_tps":  null,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  75.6,
+                                                                                                           "acceptance":  0.702,
+                                                                                                           "cache_hit":  "95.0%",
+                                                                                                           "sha":  "ff25e5335b82070b",
+                                                                                                           "dropped":  false
+                                                                                                       }
+                                                                                                   ],
+                                                                                          "kept_median_decode_tps":  81.6,
+                                                                                          "cold_prefill_tps":  2485.7,
+                                                                                          "acceptance":  0.7494,
+                                                                                          "cache_hit":  "95.0%",
+                                                                                          "prompt_tokens":  6867
+                                                                                      },
+                                                                                      {
+                                                                                          "workload":  "prose-en",
+                                                                                          "runs":  [
+                                                                                                       {
+                                                                                                           "run":  1,
+                                                                                                           "prompt_tokens":  5121,
+                                                                                                           "cold_prefill_tps":  2753.8,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  67.8,
+                                                                                                           "acceptance":  0.7183,
+                                                                                                           "cache_hit":  "95.2%",
+                                                                                                           "sha":  "58f88103db717af6",
+                                                                                                           "dropped":  true
+                                                                                                       },
+                                                                                                       {
+                                                                                                           "run":  2,
+                                                                                                           "prompt_tokens":  5121,
+                                                                                                           "cold_prefill_tps":  null,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  57,
+                                                                                                           "acceptance":  0.7552,
+                                                                                                           "cache_hit":  "96.0%",
+                                                                                                           "sha":  "024849e542041a42",
+                                                                                                           "dropped":  false
+                                                                                                       },
+                                                                                                       {
+                                                                                                           "run":  3,
+                                                                                                           "prompt_tokens":  5121,
+                                                                                                           "cold_prefill_tps":  null,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  50.4,
+                                                                                                           "acceptance":  0.7104,
+                                                                                                           "cache_hit":  "95.4%",
+                                                                                                           "sha":  "a822a65181623ec2",
+                                                                                                           "dropped":  false
+                                                                                                       },
+                                                                                                       {
+                                                                                                           "run":  4,
+                                                                                                           "prompt_tokens":  5121,
+                                                                                                           "cold_prefill_tps":  null,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  58.8,
+                                                                                                           "acceptance":  0.7037,
+                                                                                                           "cache_hit":  "96.5%",
+                                                                                                           "sha":  "b4e5a23c59432a2e",
+                                                                                                           "dropped":  false
+                                                                                                       }
+                                                                                                   ],
+                                                                                          "kept_median_decode_tps":  57,
+                                                                                          "cold_prefill_tps":  2753.8,
+                                                                                          "acceptance":  0.7104,
+                                                                                          "cache_hit":  "96.0%",
+                                                                                          "prompt_tokens":  5121
+                                                                                      },
+                                                                                      {
+                                                                                          "workload":  "code-engine",
+                                                                                          "runs":  [
+                                                                                                       {
+                                                                                                           "run":  1,
+                                                                                                           "prompt_tokens":  4170,
+                                                                                                           "cold_prefill_tps":  1771.1,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  52.8,
+                                                                                                           "acceptance":  0.7088,
+                                                                                                           "cache_hit":  "95.7%",
+                                                                                                           "sha":  "c430d2ecc0ff1e76",
+                                                                                                           "dropped":  true
+                                                                                                       },
+                                                                                                       {
+                                                                                                           "run":  2,
+                                                                                                           "prompt_tokens":  4170,
+                                                                                                           "cold_prefill_tps":  null,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  58.4,
+                                                                                                           "acceptance":  0.7482,
+                                                                                                           "cache_hit":  "97.6%",
+                                                                                                           "sha":  "e1b6630ce60b05e4",
+                                                                                                           "dropped":  false
+                                                                                                       },
+                                                                                                       {
+                                                                                                           "run":  3,
+                                                                                                           "prompt_tokens":  4170,
+                                                                                                           "cold_prefill_tps":  null,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  58.1,
+                                                                                                           "acceptance":  0.7061,
+                                                                                                           "cache_hit":  "97.8%",
+                                                                                                           "sha":  "229ade127cd6a54d",
+                                                                                                           "dropped":  false
+                                                                                                       },
+                                                                                                       {
+                                                                                                           "run":  4,
+                                                                                                           "prompt_tokens":  4170,
+                                                                                                           "cold_prefill_tps":  null,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  57.1,
+                                                                                                           "acceptance":  0.7329,
+                                                                                                           "cache_hit":  "97.2%",
+                                                                                                           "sha":  "26f459b70acd91c4",
+                                                                                                           "dropped":  false
+                                                                                                       }
+                                                                                                   ],
+                                                                                          "kept_median_decode_tps":  58.1,
+                                                                                          "cold_prefill_tps":  1771.1,
+                                                                                          "acceptance":  0.7329,
+                                                                                          "cache_hit":  "97.6%",
+                                                                                          "prompt_tokens":  4170
+                                                                                      }
+                                                                                  ],
+                                                                         "mean_of_workload_medians_decode_tps":  69.45,
+                                                                         "mean_of_workload_cold_prefill_tps":  2446.2
+                                                                     }
+                                                      },
+                                     "r35B2_pool15":  {
+                                                          "engine":  "0.1.39",
+                                                          "pool_workers":  15,
+                                                          "config":  "strata-iq3_s-pool15.json",
+                                                          "result":  {
+                                                                         "arms":  [
+                                                                                      {
+                                                                                          "workload":  "work",
+                                                                                          "runs":  [
+                                                                                                       {
+                                                                                                           "run":  1,
+                                                                                                           "prompt_tokens":  6845,
+                                                                                                           "cold_prefill_tps":  2679.7,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  71,
+                                                                                                           "acceptance":  0.7591,
+                                                                                                           "cache_hit":  "95.8%",
+                                                                                                           "sha":  "960ed0c69922ed07",
+                                                                                                           "dropped":  true
+                                                                                                       },
+                                                                                                       {
+                                                                                                           "run":  2,
+                                                                                                           "prompt_tokens":  6845,
+                                                                                                           "cold_prefill_tps":  null,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  67.1,
+                                                                                                           "acceptance":  0.8308,
+                                                                                                           "cache_hit":  "94.0%",
+                                                                                                           "sha":  "94912894a58219ff",
+                                                                                                           "dropped":  false
+                                                                                                       },
+                                                                                                       {
+                                                                                                           "run":  3,
+                                                                                                           "prompt_tokens":  6845,
+                                                                                                           "cold_prefill_tps":  null,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  66.5,
+                                                                                                           "acceptance":  0.7027,
+                                                                                                           "cache_hit":  "96.7%",
+                                                                                                           "sha":  "ada8ae1a40835007",
+                                                                                                           "dropped":  false
+                                                                                                       },
+                                                                                                       {
+                                                                                                           "run":  4,
+                                                                                                           "prompt_tokens":  6845,
+                                                                                                           "cold_prefill_tps":  null,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  70.8,
+                                                                                                           "acceptance":  0.792,
+                                                                                                           "cache_hit":  "96.0%",
+                                                                                                           "sha":  "af25b0adc2e82a9e",
+                                                                                                           "dropped":  false
+                                                                                                       }
+                                                                                                   ],
+                                                                                          "kept_median_decode_tps":  67.1,
+                                                                                          "cold_prefill_tps":  2679.7,
+                                                                                          "acceptance":  0.792,
+                                                                                          "cache_hit":  "96.0%",
+                                                                                          "prompt_tokens":  6845
+                                                                                      },
+                                                                                      {
+                                                                                          "workload":  "prose-zh",
+                                                                                          "runs":  [
+                                                                                                       {
+                                                                                                           "run":  1,
+                                                                                                           "prompt_tokens":  6867,
+                                                                                                           "cold_prefill_tps":  2560.9,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  67.1,
+                                                                                                           "acceptance":  0.68,
+                                                                                                           "cache_hit":  "94.6%",
+                                                                                                           "sha":  "6aa29ba747fc18a5",
+                                                                                                           "dropped":  true
+                                                                                                       },
+                                                                                                       {
+                                                                                                           "run":  2,
+                                                                                                           "prompt_tokens":  6867,
+                                                                                                           "cold_prefill_tps":  null,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  82.4,
+                                                                                                           "acceptance":  0.7779,
+                                                                                                           "cache_hit":  "95.6%",
+                                                                                                           "sha":  "da5853befcf8272e",
+                                                                                                           "dropped":  false
+                                                                                                       },
+                                                                                                       {
+                                                                                                           "run":  3,
+                                                                                                           "prompt_tokens":  6867,
+                                                                                                           "cold_prefill_tps":  null,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  89.1,
+                                                                                                           "acceptance":  0.801,
+                                                                                                           "cache_hit":  "94.8%",
+                                                                                                           "sha":  "37b1226743f0bc63",
+                                                                                                           "dropped":  false
+                                                                                                       },
+                                                                                                       {
+                                                                                                           "run":  4,
+                                                                                                           "prompt_tokens":  6867,
+                                                                                                           "cold_prefill_tps":  null,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  83.4,
+                                                                                                           "acceptance":  0.7448,
+                                                                                                           "cache_hit":  "95.0%",
+                                                                                                           "sha":  "5938988160f7a2b7",
+                                                                                                           "dropped":  false
+                                                                                                       }
+                                                                                                   ],
+                                                                                          "kept_median_decode_tps":  83.4,
+                                                                                          "cold_prefill_tps":  2560.9,
+                                                                                          "acceptance":  0.7779,
+                                                                                          "cache_hit":  "95.0%",
+                                                                                          "prompt_tokens":  6867
+                                                                                      },
+                                                                                      {
+                                                                                          "workload":  "prose-en",
+                                                                                          "runs":  [
+                                                                                                       {
+                                                                                                           "run":  1,
+                                                                                                           "prompt_tokens":  5121,
+                                                                                                           "cold_prefill_tps":  2670.2,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  81.5,
+                                                                                                           "acceptance":  0.7113,
+                                                                                                           "cache_hit":  "94.8%",
+                                                                                                           "sha":  "f487fbac71b7b9e5",
+                                                                                                           "dropped":  true
+                                                                                                       },
+                                                                                                       {
+                                                                                                           "run":  2,
+                                                                                                           "prompt_tokens":  5121,
+                                                                                                           "cold_prefill_tps":  null,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  86.1,
+                                                                                                           "acceptance":  0.7078,
+                                                                                                           "cache_hit":  "96.3%",
+                                                                                                           "sha":  "ad2899e01ba0ecea",
+                                                                                                           "dropped":  false
+                                                                                                       },
+                                                                                                       {
+                                                                                                           "run":  3,
+                                                                                                           "prompt_tokens":  5121,
+                                                                                                           "cold_prefill_tps":  null,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  75.1,
+                                                                                                           "acceptance":  0.7211,
+                                                                                                           "cache_hit":  "96.5%",
+                                                                                                           "sha":  "bc73b33e71abfde4",
+                                                                                                           "dropped":  false
+                                                                                                       },
+                                                                                                       {
+                                                                                                           "run":  4,
+                                                                                                           "prompt_tokens":  5121,
+                                                                                                           "cold_prefill_tps":  null,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  89.2,
+                                                                                                           "acceptance":  0.762,
+                                                                                                           "cache_hit":  "96.3%",
+                                                                                                           "sha":  "70b46c4c827a3cf2",
+                                                                                                           "dropped":  false
+                                                                                                       }
+                                                                                                   ],
+                                                                                          "kept_median_decode_tps":  86.1,
+                                                                                          "cold_prefill_tps":  2670.2,
+                                                                                          "acceptance":  0.7211,
+                                                                                          "cache_hit":  "96.3%",
+                                                                                          "prompt_tokens":  5121
+                                                                                      },
+                                                                                      {
+                                                                                          "workload":  "code-engine",
+                                                                                          "runs":  [
+                                                                                                       {
+                                                                                                           "run":  1,
+                                                                                                           "prompt_tokens":  4170,
+                                                                                                           "cold_prefill_tps":  2194.7,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  71,
+                                                                                                           "acceptance":  0.7245,
+                                                                                                           "cache_hit":  "94.5%",
+                                                                                                           "sha":  "a00ea1081dc4abb9",
+                                                                                                           "dropped":  true
+                                                                                                       },
+                                                                                                       {
+                                                                                                           "run":  2,
+                                                                                                           "prompt_tokens":  4170,
+                                                                                                           "cold_prefill_tps":  null,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  82,
+                                                                                                           "acceptance":  0.7393,
+                                                                                                           "cache_hit":  "97.1%",
+                                                                                                           "sha":  "81fa0ffc48d487ab",
+                                                                                                           "dropped":  false
+                                                                                                       },
+                                                                                                       {
+                                                                                                           "run":  3,
+                                                                                                           "prompt_tokens":  4170,
+                                                                                                           "cold_prefill_tps":  null,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  71.1,
+                                                                                                           "acceptance":  0.7121,
+                                                                                                           "cache_hit":  "97.3%",
+                                                                                                           "sha":  "a8e5746e76892c0e",
+                                                                                                           "dropped":  false
+                                                                                                       },
+                                                                                                       {
+                                                                                                           "run":  4,
+                                                                                                           "prompt_tokens":  4170,
+                                                                                                           "cold_prefill_tps":  null,
+                                                                                                           "decode_tokens":  1000,
+                                                                                                           "decode_tps":  76.3,
+                                                                                                           "acceptance":  0.7399,
+                                                                                                           "cache_hit":  "97.2%",
+                                                                                                           "sha":  "1690154d77c1a4de",
+                                                                                                           "dropped":  false
+                                                                                                       }
+                                                                                                   ],
+                                                                                          "kept_median_decode_tps":  76.3,
+                                                                                          "cold_prefill_tps":  2194.7,
+                                                                                          "acceptance":  0.7393,
+                                                                                          "cache_hit":  "97.2%",
+                                                                                          "prompt_tokens":  4170
+                                                                                      }
+                                                                                  ],
+                                                                         "mean_of_workload_medians_decode_tps":  78.22,
+                                                                         "mean_of_workload_cold_prefill_tps":  2526.4
+                                                                     }
+                                                      },
+                                     "r35A2_pool4":  {
+                                                         "engine":  "0.1.39",
+                                                         "pool_workers":  4,
+                                                         "config":  "strata-iq3_s.json",
+                                                         "result":  {
+                                                                        "arms":  [
+                                                                                     {
+                                                                                         "workload":  "work",
+                                                                                         "runs":  [
+                                                                                                      {
+                                                                                                          "run":  1,
+                                                                                                          "prompt_tokens":  6845,
+                                                                                                          "cold_prefill_tps":  2491.2,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  88.4,
+                                                                                                          "acceptance":  0.7806,
+                                                                                                          "cache_hit":  "95.6%",
+                                                                                                          "sha":  "da6dbced77546748",
+                                                                                                          "dropped":  true
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "run":  2,
+                                                                                                          "prompt_tokens":  6845,
+                                                                                                          "cold_prefill_tps":  null,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  92.2,
+                                                                                                          "acceptance":  0.7431,
+                                                                                                          "cache_hit":  "96.5%",
+                                                                                                          "sha":  "37773ae0fd8184ee",
+                                                                                                          "dropped":  false
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "run":  3,
+                                                                                                          "prompt_tokens":  6845,
+                                                                                                          "cold_prefill_tps":  null,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  94.5,
+                                                                                                          "acceptance":  0.7783,
+                                                                                                          "cache_hit":  "96.6%",
+                                                                                                          "sha":  "fccaaa095859c73f",
+                                                                                                          "dropped":  false
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "run":  4,
+                                                                                                          "prompt_tokens":  6845,
+                                                                                                          "cold_prefill_tps":  null,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  97.2,
+                                                                                                          "acceptance":  0.7994,
+                                                                                                          "cache_hit":  "97.2%",
+                                                                                                          "sha":  "91dada4ee65b44c9",
+                                                                                                          "dropped":  false
+                                                                                                      }
+                                                                                                  ],
+                                                                                         "kept_median_decode_tps":  94.5,
+                                                                                         "cold_prefill_tps":  2491.2,
+                                                                                         "acceptance":  0.7783,
+                                                                                         "cache_hit":  "96.6%",
+                                                                                         "prompt_tokens":  6845
+                                                                                     },
+                                                                                     {
+                                                                                         "workload":  "prose-zh",
+                                                                                         "runs":  [
+                                                                                                      {
+                                                                                                          "run":  1,
+                                                                                                          "prompt_tokens":  6867,
+                                                                                                          "cold_prefill_tps":  2387.5,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  89.2,
+                                                                                                          "acceptance":  0.7756,
+                                                                                                          "cache_hit":  "93.4%",
+                                                                                                          "sha":  "064aa7094b9ce02f",
+                                                                                                          "dropped":  true
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "run":  2,
+                                                                                                          "prompt_tokens":  6867,
+                                                                                                          "cold_prefill_tps":  null,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  95.5,
+                                                                                                          "acceptance":  0.7665,
+                                                                                                          "cache_hit":  "95.1%",
+                                                                                                          "sha":  "524ac2029844aba6",
+                                                                                                          "dropped":  false
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "run":  3,
+                                                                                                          "prompt_tokens":  6867,
+                                                                                                          "cold_prefill_tps":  null,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  101.2,
+                                                                                                          "acceptance":  0.7689,
+                                                                                                          "cache_hit":  "95.3%",
+                                                                                                          "sha":  "050c08f554318d21",
+                                                                                                          "dropped":  false
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "run":  4,
+                                                                                                          "prompt_tokens":  6867,
+                                                                                                          "cold_prefill_tps":  null,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  91.9,
+                                                                                                          "acceptance":  0.7096,
+                                                                                                          "cache_hit":  "95.4%",
+                                                                                                          "sha":  "37cd4cf24d7d9a63",
+                                                                                                          "dropped":  false
+                                                                                                      }
+                                                                                                  ],
+                                                                                         "kept_median_decode_tps":  95.5,
+                                                                                         "cold_prefill_tps":  2387.5,
+                                                                                         "acceptance":  0.7665,
+                                                                                         "cache_hit":  "95.3%",
+                                                                                         "prompt_tokens":  6867
+                                                                                     },
+                                                                                     {
+                                                                                         "workload":  "prose-en",
+                                                                                         "runs":  [
+                                                                                                      {
+                                                                                                          "run":  1,
+                                                                                                          "prompt_tokens":  5121,
+                                                                                                          "cold_prefill_tps":  2631.3,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  86.1,
+                                                                                                          "acceptance":  0.673,
+                                                                                                          "cache_hit":  "95.5%",
+                                                                                                          "sha":  "e9c78fae79f4827d",
+                                                                                                          "dropped":  true
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "run":  2,
+                                                                                                          "prompt_tokens":  5121,
+                                                                                                          "cold_prefill_tps":  null,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  90.6,
+                                                                                                          "acceptance":  0.6865,
+                                                                                                          "cache_hit":  "96.4%",
+                                                                                                          "sha":  "8541680958edddda",
+                                                                                                          "dropped":  false
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "run":  3,
+                                                                                                          "prompt_tokens":  5121,
+                                                                                                          "cold_prefill_tps":  null,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  99,
+                                                                                                          "acceptance":  0.7086,
+                                                                                                          "cache_hit":  "96.8%",
+                                                                                                          "sha":  "a51b02dda32ee094",
+                                                                                                          "dropped":  false
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "run":  4,
+                                                                                                          "prompt_tokens":  5121,
+                                                                                                          "cold_prefill_tps":  null,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  92.2,
+                                                                                                          "acceptance":  0.7128,
+                                                                                                          "cache_hit":  "95.9%",
+                                                                                                          "sha":  "865b3022f6761a1b",
+                                                                                                          "dropped":  false
+                                                                                                      }
+                                                                                                  ],
+                                                                                         "kept_median_decode_tps":  92.2,
+                                                                                         "cold_prefill_tps":  2631.3,
+                                                                                         "acceptance":  0.7086,
+                                                                                         "cache_hit":  "96.4%",
+                                                                                         "prompt_tokens":  5121
+                                                                                     },
+                                                                                     {
+                                                                                         "workload":  "code-engine",
+                                                                                         "runs":  [
+                                                                                                      {
+                                                                                                          "run":  1,
+                                                                                                          "prompt_tokens":  4170,
+                                                                                                          "cold_prefill_tps":  2382.1,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  89,
+                                                                                                          "acceptance":  0.7659,
+                                                                                                          "cache_hit":  "95.2%",
+                                                                                                          "sha":  "4acd118c1301ff7f",
+                                                                                                          "dropped":  true
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "run":  2,
+                                                                                                          "prompt_tokens":  4170,
+                                                                                                          "cold_prefill_tps":  null,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  99.4,
+                                                                                                          "acceptance":  0.7851,
+                                                                                                          "cache_hit":  "97.1%",
+                                                                                                          "sha":  "a7b21a64372526e2",
+                                                                                                          "dropped":  false
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "run":  3,
+                                                                                                          "prompt_tokens":  4170,
+                                                                                                          "cold_prefill_tps":  null,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  98.4,
+                                                                                                          "acceptance":  0.7519,
+                                                                                                          "cache_hit":  "97.7%",
+                                                                                                          "sha":  "f335e00f1a6638ab",
+                                                                                                          "dropped":  false
+                                                                                                      },
+                                                                                                      {
+                                                                                                          "run":  4,
+                                                                                                          "prompt_tokens":  4170,
+                                                                                                          "cold_prefill_tps":  null,
+                                                                                                          "decode_tokens":  1000,
+                                                                                                          "decode_tps":  93.8,
+                                                                                                          "acceptance":  0.754,
+                                                                                                          "cache_hit":  "97.3%",
+                                                                                                          "sha":  "0393b9f5f6dc30f0",
+                                                                                                          "dropped":  false
+                                                                                                      }
+                                                                                                  ],
+                                                                                         "kept_median_decode_tps":  98.4,
+                                                                                         "cold_prefill_tps":  2382.1,
+                                                                                         "acceptance":  0.754,
+                                                                                         "cache_hit":  "97.3%",
+                                                                                         "prompt_tokens":  4170
+                                                                                     }
+                                                                                 ],
+                                                                        "mean_of_workload_medians_decode_tps":  95.15,
+                                                                        "mean_of_workload_cold_prefill_tps":  2473
+                                                                    }
+                                                     }
+                                 },
+    "context_tiers_0.1.39":  [
+                                 {
+                                     "probe":  "probe-r34-A-0139-256k.json",
+                                     "max_context":  "262144",
+                                     "rope":  "none",
+                                     "wall_ms":  15437.7,
+                                     "prompt_tokens":  43969,
+                                     "generated_tokens":  200,
+                                     "note":  "single fresh process per arm, one cold read, n=1",
+                                     "reused_tokens":  0,
+                                     "read_ms":  13074,
+                                     "prompt_tps":  3363.2,
+                                     "decode_ms":  2190,
+                                     "decode_tps":  91.3,
+                                     "expert_cache_hit_pct":  90.9,
+                                     "engine_lines":  [
+                                                          "strata serve: prompt 43969 tokens = 0 reused + 43969 read in 13074 ms (3363.2 tok/s), 200 generated in 2190 ms (91.3 tok/s), drafts accepted 129 of 159, 3 checkpoints",
+                                                          "strata serve: decode expert cache hit rate: 90.9% (98446 hits / 108250 lookups); 2630 more read by the GPU over PCIe or from another GPU (2.4% of all 110880 routed)",
+                                                          "strata serve: KV streaming: 95.90% of 1448052 block reads hit VRAM, 239.2 MiB read from RAM",
+                                                          "strata serve: suffix drafts: 24 windows, 75 of 75 drafts accepted"
+                                                      ]
+                                 },
+                                 {
+                                     "probe":  "probe-r34-B-0139-512k-ring0.json",
+                                     "max_context":  "524288",
+                                     "rope":  "yarn factor 2, STRATA_RING_BYTES=0",
+                                     "wall_ms":  15706.4,
+                                     "prompt_tokens":  43969,
+                                     "generated_tokens":  200,
+                                     "note":  "single fresh process per arm, one cold read, n=1",
+                                     "reused_tokens":  0,
+                                     "read_ms":  13186,
+                                     "prompt_tps":  3334.5,
+                                     "decode_ms":  2346,
+                                     "decode_tps":  85.3,
+                                     "expert_cache_hit_pct":  90.6,
+                                     "engine_lines":  [
+                                                          "strata serve: prompt 43969 tokens = 0 reused + 43969 read in 13186 ms (3334.5 tok/s), 200 generated in 2346 ms (85.3 tok/s), drafts accepted 129 of 156, 3 checkpoints",
+                                                          "strata serve: decode expert cache hit rate: 90.6% (97239 hits / 107272 lookups); 2648 more read by the GPU over PCIe or from another GPU (2.4% of all 109920 routed)",
+                                                          "strata serve: KV streaming: 95.80% of 1435716 block reads hit VRAM, 242.8 MiB read from RAM",
+                                                          "strata serve: suffix drafts: 27 windows, 76 of 84 drafts accepted"
+                                                      ]
+                                 },
+                                 {
+                                     "probe":  "probe-r34-C-0139-512k-again.json",
+                                     "max_context":  "524288",
+                                     "rope":  "yarn factor 2, ring on (default)",
+                                     "wall_ms":  16266.3,
+                                     "prompt_tokens":  43969,
+                                     "generated_tokens":  200,
+                                     "note":  "single fresh process per arm, one cold read, n=1",
+                                     "reused_tokens":  0,
+                                     "read_ms":  13896,
+                                     "prompt_tps":  3164.1,
+                                     "decode_ms":  2203,
+                                     "decode_tps":  90.8,
+                                     "expert_cache_hit_pct":  90.6,
+                                     "engine_lines":  [
+                                                          "strata serve: prompt 43969 tokens = 0 reused + 43969 read in 13896 ms (3164.1 tok/s), 200 generated in 2203 ms (90.8 tok/s), drafts accepted 132 of 160, 3 checkpoints",
+                                                          "strata serve: decode expert cache hit rate: 90.6% (97523 hits / 107673 lookups); 2727 more read by the GPU over PCIe or from another GPU (2.5% of all 110400 routed)",
+                                                          "strata serve: KV streaming: 95.80% of 1441884 block reads hit VRAM, 244.0 MiB read from RAM",
+                                                          "strata serve: suffix drafts: 28 windows, 79 of 86 drafts accepted"
+                                                      ]
+                                 }
+                             ],
+    "context_tiers_0.1.38_200tok":  [
+                                        {
+                                            "probe":  "probe-r31b-live200.json",
+                                            "max_context":  "262144",
+                                            "rope":  "none",
+                                            "wall_ms":  4554.3,
+                                            "prompt_tokens":  6845,
+                                            "generated_tokens":  200,
+                                            "note":  "single fresh process per arm, one cold read, n=1",
+                                            "reused_tokens":  0,
+                                            "read_ms":  2581,
+                                            "prompt_tps":  2652.2,
+                                            "decode_ms":  1924,
+                                            "decode_tps":  103.9,
+                                            "expert_cache_hit_pct":  94.8,
+                                            "engine_lines":  [
+                                                                 "strata serve: prompt 6845 tokens = 0 reused + 6845 read in 2581 ms (2652.2 tok/s), 200 generated in 1924 ms (103.9 tok/s), drafts accepted 115 of 144, 1 checkpoints",
+                                                                 "strata serve: decode expert cache hit rate: 94.8% (103038 hits / 108733 lookups)",
+                                                                 "strata serve: KV streaming: 98.73% of 1435728 block reads hit VRAM, 73.5 MiB read from RAM",
+                                                                 "strata serve: suffix drafts: 3 windows, 15 of 15 drafts accepted"
+                                                             ]
+                                        },
+                                        {
+                                            "probe":  "probe-r31b-512k200.json",
+                                            "max_context":  "524288",
+                                            "rope":  "yarn factor 2",
+                                            "wall_ms":  4828.4,
+                                            "prompt_tokens":  6845,
+                                            "generated_tokens":  200,
+                                            "note":  "single fresh process per arm, one cold read, n=1",
+                                            "reused_tokens":  0,
+                                            "read_ms":  2655,
+                                            "prompt_tps":  2578,
+                                            "decode_ms":  2119,
+                                            "decode_tps":  94.4,
+                                            "expert_cache_hit_pct":  94,
+                                            "engine_lines":  [
+                                                                 "strata serve: prompt 6845 tokens = 0 reused + 6845 read in 2655 ms (2578.0 tok/s), 200 generated in 2119 ms (94.4 tok/s), drafts accepted 107 of 139, 1 checkpoints",
+                                                                 "strata serve: decode expert cache hit rate: 94.0% (103298 hits / 109930 lookups)",
+                                                                 "strata serve: KV streaming: 98.72% of 1454208 block reads hit VRAM, 74.7 MiB read from RAM",
+                                                                 "strata serve: suffix drafts: 3 windows, 15 of 15 drafts accepted"
+                                                             ]
+                                        },
+                                        {
+                                            "probe":  "probe-r31b-1m200.json",
+                                            "max_context":  "1048576",
+                                            "rope":  "yarn factor 4",
+                                            "wall_ms":  8409.7,
+                                            "prompt_tokens":  6845,
+                                            "generated_tokens":  200,
+                                            "note":  "single fresh process per arm, one cold read, n=1",
+                                            "reused_tokens":  0,
+                                            "read_ms":  4065,
+                                            "prompt_tps":  1683.8,
+                                            "decode_ms":  4310,
+                                            "decode_tps":  46.4,
+                                            "expert_cache_hit_pct":  95,
+                                            "engine_lines":  [
+                                                                 "strata serve: prompt 6845 tokens = 0 reused + 6845 read in 4065 ms (1683.8 tok/s), 200 generated in 4310 ms (46.4 tok/s), drafts accepted 114 of 144, 1 checkpoints",
+                                                                 "strata serve: decode expert cache hit rate: 95.0% (104270 hits / 109740 lookups)",
+                                                                 "strata serve: KV streaming: 98.73% of 1448064 block reads hit VRAM, 74.2 MiB read from RAM",
+                                                                 "strata serve: suffix drafts: 5 windows, 18 of 21 drafts accepted"
+                                                             ]
+                                        },
+                                        {
+                                            "probe":  "probe-r31b-1mny200.json",
+                                            "max_context":  "1048576",
+                                            "rope":  "none",
+                                            "wall_ms":  10429.1,
+                                            "prompt_tokens":  6845,
+                                            "generated_tokens":  200,
+                                            "note":  "single fresh process per arm, one cold read, n=1",
+                                            "reused_tokens":  0,
+                                            "read_ms":  5303,
+                                            "prompt_tps":  1290.9,
+                                            "decode_ms":  5083,
+                                            "decode_tps":  39.3,
+                                            "expert_cache_hit_pct":  94.8,
+                                            "engine_lines":  [
+                                                                 "strata serve: prompt 6845 tokens = 0 reused + 6845 read in 5303 ms (1290.9 tok/s), 200 generated in 5083 ms (39.3 tok/s), drafts accepted 115 of 146, 1 checkpoints",
+                                                                 "strata serve: decode expert cache hit rate: 94.8% (103987 hits / 109697 lookups)",
+                                                                 "strata serve: KV streaming: 98.74% of 1448052 block reads hit VRAM, 73.5 MiB read from RAM",
+                                                                 "strata serve: suffix drafts: 3 windows, 15 of 15 drafts accepted"
+                                                             ]
+                                        }
+                                    ],
+    "context_tiers_0.1.38_64tok":  [
+                                       {
+                                           "probe":  "probe-r31-LIVE_262144.json",
+                                           "max_context":  "262144",
+                                           "rope":  "none",
+                                           "wall_ms":  3349.8,
+                                           "prompt_tokens":  6845,
+                                           "generated_tokens":  64,
+                                           "note":  "single fresh process per arm, one cold read, n=1",
+                                           "reused_tokens":  0,
+                                           "read_ms":  2598,
+                                           "prompt_tps":  2634.9,
+                                           "decode_ms":  717,
+                                           "decode_tps":  89.3,
+                                           "expert_cache_hit_pct":  91.4,
+                                           "engine_lines":  [
+                                                                "strata serve: prompt 6845 tokens = 0 reused + 6845 read in 2598 ms (2634.9 tok/s), 64 generated in 717 ms (89.3 tok/s), drafts accepted 48 of 49, 1 checkpoints",
+                                                                "strata serve: decode expert cache hit rate: 91.4% (28721 hits / 31414 lookups)",
+                                                                "strata serve: KV streaming: 96.16% of 437508 block reads hit VRAM, 67.7 MiB read from RAM",
+                                                                "strata serve: suffix drafts: 3 windows, 15 of 15 drafts accepted"
+                                                            ]
+                                       },
+                                       {
+                                           "probe":  "probe-r31-512K_YARN2.json",
+                                           "max_context":  "524288",
+                                           "rope":  "yarn factor 2",
+                                           "wall_ms":  3481.6,
+                                           "prompt_tokens":  6845,
+                                           "generated_tokens":  64,
+                                           "note":  "single fresh process per arm, one cold read, n=1",
+                                           "reused_tokens":  0,
+                                           "read_ms":  2855,
+                                           "prompt_tps":  2397.2,
+                                           "decode_ms":  590,
+                                           "decode_tps":  108.5,
+                                           "expert_cache_hit_pct":  91.3,
+                                           "engine_lines":  [
+                                                                "strata serve: prompt 6845 tokens = 0 reused + 6845 read in 2855 ms (2397.2 tok/s), 64 generated in 590 ms (108.5 tok/s), drafts accepted 48 of 51, 1 checkpoints",
+                                                                "strata serve: decode expert cache hit rate: 91.3% (29563 hits / 32366 lookups)",
+                                                                "strata serve: KV streaming: 96.24% of 449832 block reads hit VRAM, 68.1 MiB read from RAM",
+                                                                "strata serve: suffix drafts: 3 windows, 15 of 15 drafts accepted"
+                                                            ]
+                                       },
+                                       {
+                                           "probe":  "probe-r31-1M_YARN4.json",
+                                           "max_context":  "1048576",
+                                           "rope":  "yarn factor 4",
+                                           "wall_ms":  6325.1,
+                                           "prompt_tokens":  6845,
+                                           "generated_tokens":  64,
+                                           "note":  "single fresh process per arm, one cold read, n=1",
+                                           "reused_tokens":  0,
+                                           "read_ms":  4849,
+                                           "prompt_tps":  1411.8,
+                                           "decode_ms":  1447,
+                                           "decode_tps":  44.2,
+                                           "expert_cache_hit_pct":  91.4,
+                                           "engine_lines":  [
+                                                                "strata serve: prompt 6845 tokens = 0 reused + 6845 read in 4849 ms (1411.8 tok/s), 64 generated in 1447 ms (44.2 tok/s), drafts accepted 47 of 50, 1 checkpoints",
+                                                                "strata serve: decode expert cache hit rate: 91.4% (29150 hits / 31893 lookups)",
+                                                                "strata serve: KV streaming: 96.18% of 443664 block reads hit VRAM, 68.3 MiB read from RAM",
+                                                                "strata serve: suffix drafts: 4 windows, 18 of 18 drafts accepted"
+                                                            ]
+                                       },
+                                       {
+                                           "probe":  "probe-r31-1M_NOYARN.json",
+                                           "max_context":  "1048576",
+                                           "rope":  "none",
+                                           "wall_ms":  6773.0,
+                                           "prompt_tokens":  6845,
+                                           "generated_tokens":  64,
+                                           "note":  "single fresh process per arm, one cold read, n=1",
+                                           "reused_tokens":  0,
+                                           "read_ms":  5195,
+                                           "prompt_tps":  1317.6,
+                                           "decode_ms":  1545,
+                                           "decode_tps":  41.4,
+                                           "expert_cache_hit_pct":  91.4,
+                                           "engine_lines":  [
+                                                                "strata serve: prompt 6845 tokens = 0 reused + 6845 read in 5195 ms (1317.6 tok/s), 64 generated in 1545 ms (41.4 tok/s), drafts accepted 48 of 49, 1 checkpoints",
+                                                                "strata serve: decode expert cache hit rate: 91.4% (28721 hits / 31414 lookups)",
+                                                                "strata serve: KV streaming: 96.16% of 437508 block reads hit VRAM, 67.7 MiB read from RAM",
+                                                                "strata serve: suffix drafts: 3 windows, 15 of 15 drafts accepted"
+                                                            ]
+                                       }
+                                   ],
+    "pool_sweep_0.1.36":  {
+                              "source":  "local run ledger, engine 0.1.36, single-arm screens, corpus-long44k (43,918-token prompt, 256 generated); raw logs retained locally and not attached",
+                              "arms":  [
+                                           {
+                                               "pool_workers":  4,
+                                               "decode_tps":  98.33,
+                                               "pool_ms_per_round":  6.382,
+                                               "rings_ms_per_round":  14.228,
+                                               "cold_prefill_tps":  3098.3
+                                           },
+                                           {
+                                               "pool_workers":  6,
+                                               "decode_tps":  90.56,
+                                               "pool_ms_per_round":  7.787,
+                                               "rings_ms_per_round":  16.111,
+                                               "cold_prefill_tps":  3057.6
+                                           },
+                                           {
+                                               "pool_workers":  8,
+                                               "decode_tps":  89.18,
+                                               "pool_ms_per_round":  8.845,
+                                               "rings_ms_per_round":  15.705,
+                                               "cold_prefill_tps":  3078.2
+                                           },
+                                           {
+                                               "pool_workers":  10,
+                                               "decode_tps":  84.88,
+                                               "pool_ms_per_round":  9.962,
+                                               "rings_ms_per_round":  16.459,
+                                               "cold_prefill_tps":  3099.1
+                                           },
+                                           {
+                                               "pool_workers":  12,
+                                               "decode_tps":  87.89,
+                                               "pool_ms_per_round":  9.437,
+                                               "rings_ms_per_round":  16.8,
+                                               "cold_prefill_tps":  2938.6
+                                           },
+                                           {
+                                               "pool_workers":  15,
+                                               "decode_tps":  56.11,
+                                               "pool_ms_per_round":  17.868,
+                                               "rings_ms_per_round":  27.513,
+                                               "cold_prefill_tps":  3091.1
+                                           }
+                                       ]
+                          },
+    "pool_abba_0.1.36":  {
+                             "source":  "local run ledger, engine 0.1.36; four-workload ruler and a 43,969-token prompt, 3 kept runs per arm, median",
+                             "ruler_6k":  {
+                                              "A1_pool4":  102.4,
+                                              "A2_pool4":  101.8,
+                                              "B1_pool8":  89.7,
+                                              "B2_pool8":  90.65,
+                                              "pair1_pct":  14.16,
+                                              "pair2_pct":  12.3,
+                                              "per_workload_signs":  "work +7.7/+10.8, prose-zh +16.3/+11.9, prose-en +17.8/+16.8, code-engine +14.9/+9.8 (8/8 positive)"
+                                          },
+                             "long_43969":  {
+                                                "A1_pool4":  101.05,
+                                                "A2_pool4":  100.35,
+                                                "B1_pool8":  87.95,
+                                                "B2_pool8":  95.4,
+                                                "pair1_pct":  14.89,
+                                                "pair2_pct":  5.19
+                                            },
+                             "bit_identical":  "changing only --pool-workers 8 -\u003e 4 gave byte-identical output hashes on all four workloads, 3 runs each"
+                         },
+    "pf_fused_0.1.38":  {
+                            "source":  "local run ledger, engine 0.1.38, four-workload ruler ABBA, cold prefill from the dropped warm-up run of each workload",
+                            "cold_prefill_tps":  {
+                                                     "warmup_pf1":  2232.1,
+                                                     "A1_pf1":  2226.8,
+                                                     "B1_pf0":  2005,
+                                                     "B2_pf0":  2024.7,
+                                                     "A2_pf1":  2163.6,
+                                                     "mean_pf1":  2195.2,
+                                                     "mean_pf0":  2014.9,
+                                                     "delta_pct":  8.9,
+                                                     "pair1_pct":  11.1,
+                                                     "pair2_pct":  6.9,
+                                                     "per_workload_signs":  "work +9.0/+10.3, prose-zh +11.7/+13.0, prose-en +9.1/+1.5, code-engine +14.5/+2.8 (8/8 positive)",
+                                                     "same_config_spread_pct":  "PF=1 2.9, PF=0 1.0"
+                                                 },
+                            "decode_tps":  {
+                                               "mean_pf1":  93,
+                                               "mean_pf0":  95.8,
+                                               "note":  "not distinguishable; 6.6% spread on the PF=1 side"
+                                           }
+                        }
+}

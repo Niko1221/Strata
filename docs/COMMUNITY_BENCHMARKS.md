@@ -21,6 +21,10 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-04: 2x Intel Arc Pro B60 24 GB, Ryzen 5 5600, 64 GB RAM](../bench/results/2026-10-04-community-2x-arc-pro-b60/README.md):
   the SYCL port at `6f32ec0` with two fixes, Coder IQ1_M and Flash-Next IQ2_XS, 8,192-token context, layer split across both cards;
   short prompts and 2K-token prompts, plus one run on a single B60. Intel's SYCL engine, no 4,096/32,768/128,000-token sweep.
+- [2026-10-04: RTX 4080 SUPER (32 GB), Core i7-13790F (8P+16E), 96 GB RAM](../bench/results/2026-10-04-community-rtx-4080s-iq3s/README.md):
+  Strata 0.1.39, Flash-Next IQ3_S on Windows, 524,288-token context; expert-pool worker count (4 against the
+  engine's 15), `STRATA_PF_FUSED=1` cold prefill on IQ3_S, and what the 524,288 and 1,048,576 context tiers cost -
+  including a 7x collapse at 1,048,576 when an explicit `--expert-cache` left the card with no free VRAM.
 
 ## What to record
 
