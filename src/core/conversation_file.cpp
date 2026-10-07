@@ -936,8 +936,10 @@ uint64_t session_config_fingerprint(const SessionConfig& c) {
     b.str("engine", c.engine_version);
     b.str("backend", c.backend);
     b.str("kv", c.kv);
+    // --kv-resident is deliberately absent: it decides where the K/V bytes live (the VRAM slots or the host pool),
+    // not what they mean.  The state's bytes are the same either way, and the residency is rebuilt at restore
+    // (kv_stream_reset / kv_ring_restore), so a session saved under one residency must load under another.
     b.i64("max_context", c.max_context);
-    b.i64("kv_resident", c.kv_resident);
     b.i64("mtp_window", c.mtp_window);
     b.i64("kv_rot", c.kv_rot ? 1 : 0);
     b.i64("rope.type", c.rope.type);

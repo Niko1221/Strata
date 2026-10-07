@@ -7125,7 +7125,8 @@ int main(int argc, char** argv) {
 #endif
                 c.kv = o.kv;
                 c.max_context = o.max_context;
-                c.kv_resident = o.kv_resident;
+                // --kv-resident is NOT part of the identity: it only says where the K/V lives, and the residency is
+                // re-armed at restore.  A file saved with one residency restores under another.
                 c.mtp_window = o.mtp.empty() ? -1 : o.mtp_window;
                 const char* rot = std::getenv("STRATA_KV_ROT");
                 c.kv_rot = rot != nullptr && rot[0] == '1';

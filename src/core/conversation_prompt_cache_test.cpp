@@ -377,6 +377,65 @@ int main() {
         fs::remove_all(sdir);
     }
 
+    // ============ the identity ignores --kv-resident, and only --kv-resident ============
+    // The engine maps its runtime options to a SessionConfig.  --kv-resident is one of those options but it is NOT a
+    // field of SessionConfig (conversation_file.hpp): it decides WHERE the K/V lives (VRAM slots vs the host pool),
+    // never what its bytes mean, and the residency is re-armed at restore.  So a variant saved under one residency
+    // must load under another; a different --kv or --kv-rot still changes the identity and is refused as foreign.
+    {
+        struct EngineOptions {
+            std::string kv;
+            int64_t max_context = 0, mtp_window = 0, kv_resident = 0;
+            bool kv_rot = false;
+        };
+        auto config_for = [](const EngineOptions& o) {
+            SessionConfig c;
+            c.engine_version = "0.1.40"; c.backend = "cuda"; c.kv = o.kv; c.max_context = o.max_context;
+            c.mtp_window = o.mtp_window; c.kv_rot = o.kv_rot;
+            c.rope.type = 0; c.rope.freq_base = 1e7; c.rope.factor = 1.0; c.rope.freq_scale = 1.0;
+            c.rope.orig_ctx = 262144; c.rope.attn_factor = 1.0; c.rope.beta_fast = 32; c.rope.beta_slow = 1;
+            // o.kv_resident is deliberately NOT copied: it is a placement choice, not a config field.
+            return c;
+        };
+        const EngineOptions base{"int8", 196608, 32768, 98304, false};
+        EngineOptions vram = base; vram.kv_resident = 0;         // the same bytes, all in VRAM
+        EngineOptions other = base; other.kv = "q4_0";           // another K/V format: another meaning
+        EngineOptions rotated = base; rotated.kv_rot = true;     // another rotation: the K bytes mean something else
+        const uint64_t fp_base = session_config_fingerprint(config_for(base));
+        const SessionFileIdentity idA{0x1234abcdefull, fp_base};
+        const SessionFileIdentity idB{0x1234abcdefull, session_config_fingerprint(config_for(vram))};
+        const SessionFileIdentity idC{0x1234abcdefull, session_config_fingerprint(config_for(other))};
+        check(idA.config == idB.config, "the identity ignores --kv-resident");
+        check(session_config_fingerprint(config_for(rotated)) != fp_base, "the identity keeps --kv-rot");
+        check(idA.config != idC.config, "the identity keeps --kv");
+
+        const fs::path rdir = dir.string() + "-resident";
+        fs::remove_all(rdir);
+        ConversationPromptCache ca;
+        check(ca.open(rdir, idA, 1ull << 30, 8, 0, error), "resident: open with --kv-resident A");
+        SavedConversation rs = sample(1000);
+        std::vector<int64_t> rpre(rs.live.ids.begin(), rs.live.ids.end());
+        const uint64_t rk = ca.key_for(rpre.data(), rpre.size(), "");
+        check(ca.store(rk, rs, error), "resident: store under --kv-resident A");
+        // load under --kv-resident B: the same identity, so the variant is indexed and the state is valid
+        ConversationPromptCache cb;
+        check(cb.open(rdir, idB, 1ull << 30, 8, 0, error), "resident: reopen with --kv-resident B");
+        check(cb.variants() == 1 && cb.foreign_files_kept() == 0,
+              "resident: the variant is indexed, not foreign, under another residency");
+        ConversationPromptMatch rmatch;
+        check(cb.lookup(rk, rmatch), "resident: the variant is a hit under another residency");
+        SavedConversation rback;
+        check(cb.load(rmatch.path, rback, {}, error) && rback.live.ids == rs.live.ids &&
+                  rback.kv.size() == rs.kv.size(),
+              "resident: the saved state loads and is valid under a different --kv-resident");
+        // the reciprocal: another K/V format (or the rotation) is a foreign identity, refused
+        ConversationPromptCache cc;
+        check(cc.open(rdir, idC, 1ull << 30, 8, 0, error), "resident: open with another --kv");
+        check(cc.variants() == 0 && cc.foreign_files_kept() >= 1, "resident: another --kv is a foreign identity");
+        check(!cc.lookup(rk, rmatch), "resident: no hit under another --kv");
+        fs::remove_all(rdir);
+    }
+
     fs::remove_all(dir);
     fs::remove_all(tiny_dir);
     std::printf("conversation_prompt_cache_test: %d checks passed\n", checks);

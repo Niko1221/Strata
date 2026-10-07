@@ -362,7 +362,7 @@ int main() {
     // the configuration fingerprint: every field counts, doubles by their exact bits
     {
         SessionConfig c;
-        c.engine_version = "0.1.38"; c.backend = "cuda"; c.kv = "int8"; c.max_context = 65536; c.kv_resident = 0;
+        c.engine_version = "0.1.38"; c.backend = "cuda"; c.kv = "int8"; c.max_context = 65536;
         c.mtp_window = 4; c.rope.type = 0; c.rope.freq_base = 1e7; c.rope.factor = 1.0; c.rope.freq_scale = 1.0;
         c.rope.orig_ctx = 262144; c.rope.attn_factor = 1.0; c.rope.beta_fast = 32; c.rope.beta_slow = 1;
         c.switches = {{"STRATA_FAST_GDN", 0}};
@@ -373,7 +373,9 @@ int main() {
         check(differs([](SessionConfig& d) { d.backend = "hip"; }), "backend enters the config");
         check(differs([](SessionConfig& d) { d.kv = "fp16"; }), "kv enters the config");
         check(differs([](SessionConfig& d) { d.max_context = 65537; }), "max context enters the config");
-        check(differs([](SessionConfig& d) { d.kv_resident = 1; }), "kv residency enters the config");
+        // --kv-resident is NOT a SessionConfig field at all (conversation_file.hpp): it says where the K/V lives,
+        // not what its bytes mean, so no edit here can make it enter the identity.  The end-to-end proof (a variant
+        // saved under one residency loads under another) lives in conversation_prompt_cache_test.
         check(differs([](SessionConfig& d) { d.mtp_window = 0; }), "mtp window enters the config");
         check(differs([](SessionConfig& d) { d.kv_rot = true; }), "kv rotation enters the config");
         check(differs([](SessionConfig& d) { d.rope.factor = std::nextafter(1.0, 2.0); }),

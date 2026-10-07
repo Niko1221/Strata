@@ -68,11 +68,15 @@ struct SessionRope {
 
 // Every engine setting that changes what the saved state means.  Sampling, seeds, draft tuning, the expert tier and
 // the prompt-reading chunk are not here: they change what is computed next, not what the saved cells hold.
+// --kv-resident is NOT here either: it only says WHERE the same K/V bytes live (the VRAM slots or the host pool),
+// never what they mean.  The residency is re-armed when a file is restored (kv_stream_reset / kv_ring_restore), so a
+// session saved with one --kv-resident restores under whatever --kv-resident the engine is configured with now.
 struct SessionConfig {
     std::string engine_version;     // a file is bound to one engine version
     std::string backend;            // "cuda" or "hip": no cross-backend restore
     std::string kv;                 // --kv
-    int64_t max_context = 0, kv_resident = 0, mtp_window = 0;
+    // the state's shape/capacity, which a file must fit: --max-context (cells) and the draft's --mtp-window
+    int64_t max_context = 0, mtp_window = 0;
     bool kv_rot = false;            // STRATA_KV_ROT
     SessionRope rope;
     // the control vectors as loaded: a digest of the tables the engine uploaded (every file's content x its exact
