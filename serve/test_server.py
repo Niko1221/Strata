@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import contextlib
+import http.client
 import io
 import json
 import os
@@ -2146,6 +2147,28 @@ class WebApp(unittest.TestCase):
         except urllib.error.HTTPError as e:
             return e.code, e.headers.get("Content-Type", ""), e.read()
 
+    def moved(self, path):
+        """(status, Location) of a request that is not followed: urllib follows a 301 by itself, so the answer
+        below is asked for over a plain connection that stops there."""
+        conn = http.client.HTTPConnection("127.0.0.1", self.httpd.server_address[1], timeout=10)
+        try:
+            conn.request("GET", path)
+            r = conn.getresponse()
+            location = r.getheader("Location", "")
+            r.read()
+            return r.status, location
+        finally:
+            conn.close()
+
+    def post(self, path, obj):
+        req = urllib.request.Request(self.base + path, data=json.dumps(obj).encode(),
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.getcode()
+        except urllib.error.HTTPError as e:
+            return e.code
+
     def test_page_and_files(self):
         code, ctype, body = self.get("/")
         self.assertEqual(code, 200)
@@ -2169,11 +2192,15 @@ class WebApp(unittest.TestCase):
             self.assertIn("text/html", ctype)
             self.assertIn(b"\"web/app.js\"", body)
             self.assertEqual(self.get("/ui")[0], 200)             # /ui is moved to /ui/, then served
+            # the addresses the page left point at it now: / is where the page used to be, and a ?q= moves with it
+            for path, to in (("/", "/ui/"), ("/?q=hi", "/ui/?q=hi"), ("/ui", "/ui/")):
+                with self.subTest(path=path):
+                    self.assertEqual(self.moved(path), (301, to))
             for path in ("/ui/web/app.js", "/ui/web/app.css", "/ui/web/tokens.css", "/ui/web/sprite.svg",
                          "/ui/health", "/ui/metrics", "/ui/status", "/ui/v1/models"):
                 with self.subTest(path=path):
                     self.assertEqual(self.get(path)[0], 200)
-            for path in ("/", "/web/app.js", "/web/tokens.css"):    # the page's own things moved with it
+            for path in ("/web/app.js", "/web/tokens.css"):       # the page's own files are not at / any more
                 with self.subTest(path=path):
                     self.assertEqual(self.get(path)[0], 404)
             # the API does not move: /v1 and the rest answer where they always have, and the page's own calls
@@ -2181,13 +2208,13 @@ class WebApp(unittest.TestCase):
             for path in ("/health", "/v1/models", "/metrics", "/ui/health", "/ui/v1/models"):
                 with self.subTest(path=path):
                     self.assertEqual(self.get(path)[0], 200)
-            data = json.dumps({"model": "m", "messages": [{"role": "user", "content": "hi"}],
-                               "max_tokens": 5}).encode()
+            chat = {"model": "m", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 5}
             for path in ("/v1/chat/completions", "/ui/v1/chat/completions"):
-                req = urllib.request.Request(self.base + path, data=data,
-                                            headers={"Content-Type": "application/json"})
                 with self.subTest(path=path):
-                    self.assertEqual(urllib.request.urlopen(req, timeout=10).getcode(), 200)
+                    self.assertEqual(self.post(path, chat), 200)
+            for path in ("/", "/web/app.js"):                     # a POST there is aimed at the API, so it is not
+                with self.subTest(path=path):                     # turned into a GET of the page
+                    self.assertEqual(self.post(path, chat), 404)
         finally:
             self.svc.dashboard = ""
 

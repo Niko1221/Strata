@@ -542,13 +542,16 @@ The server listens on `http://127.0.0.1:8080` (change with `--port` in setup, or
 
 `"dashboard": "/ui"` in the run config (or `serve/server.py --dashboard /ui`) serves the web page at `/ui/` instead
 of `/`, along with the styles, script, icon file and font the page loads for itself (`/ui/web/*`, `/ui/fonts/*`).
-`/` then answers 404, so your own page or a reverse proxy can hold the root. **The API is not in scope**:
+`/` then redirects (301) to `/ui/`, keeping a `?q=` that came with it, so a bookmark or an old link still reaches the
+page; a page or a reverse proxy of your own that holds the root answers it first and never sends that request on.
+**The API is not in scope**:
 `/v1/chat/completions`, `/v1/messages`, `/health`, `/metrics` and the rest answer where they always have, so no
 client of Strata's API changes anything - and neither does the page, which asks for its files and for the API by
 relative URL ([#82](https://github.com/Niko1221/Strata/issues/82)) and reaches both under either spelling. Ask for
-`/ui` without the trailing slash and it redirects to `/ui/`, because a browser would otherwise resolve those relative
-URLs against `/`. A path that is not one of the server's own (not `/web`, `/v1`, `/health`, ...) is refused before
-the model loads.
+`/ui` without the trailing slash and it redirects to `/ui/` the same way, because a browser would otherwise resolve
+those relative URLs against `/`. Anything else that is not answered here - a POST to `/`, or one of the page's files
+asked for at its old address - stays a 404. A path that is not one of the server's own (not `/web`, `/v1`,
+`/health`, ...) is refused before the model loads.
 
 `/models` and `/v1/models` list only the loaded model, with its context limit and input modalities. `/props` exposes the original chat template, context limit, configured generation defaults (shared settings take precedence), model path and engine version when available. Context means the full engine context, not the resident KV window. `n_predict: -1` means no fixed output cap. Unconfigured sampling fields are omitted. `autoload` has no effect; an unknown `model` returns 404. These metadata endpoints and `/slots` require the API key when one is configured. They do not load, unload or restart models.
 

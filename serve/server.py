@@ -3809,11 +3809,14 @@ def make_handler(svc: Service):
             return raw.rstrip("/")
 
         def _not_our_app(self):
-            """The answer for a request under / that has moved under the app's path: /ui is the same page as /ui/ -
-            and a browser needs the slash or it would resolve the page's relative URLs against / again - so it is
-            moved, keeping a ?q= that came with it; the page's own files simply are not here any more."""
+            """The answer for a request under / once the app has moved under its own path.  Two of them are only a
+            spelling away from the page: /ui is the page at /ui/ - a browser needs the slash, or it would resolve
+            the page's relative URLs against / again - and / is where the page used to be, so a bookmark or an old
+            link to it is moved with a 301 to the app's path, keeping the ?q= that came with it.  A POST to / stays
+            as it was: it is aimed at the API, and only /v1 and the rest answer there.  Neither are the page's own
+            files asked for at their old address - those are under the app's path now."""
             raw, _, query = self.path.partition("?")
-            if raw == svc.dashboard:
+            if self.command == "GET" and (raw == svc.dashboard or not raw.strip("/")):
                 self.send_response(301)
                 self.send_header("Location", svc.dashboard + "/" + ("?" + query if query else ""))
                 self.send_header("Content-Length", "0")
