@@ -91,7 +91,7 @@ they change speed, not answers. Nothing here applies to CUDA or to another AMD a
 | `STRATA_HCD_EXACT` | the hyper-connection down projection (N 320, K 10240) in a WMMA kernel that reproduces hipBLASLt solution 1176 / 1177's summation order (`hip_prefill_hcd_exact_parity` checks it bit for bit); it runs only where the table makes hipBLASLt pick one of those two, and says once if it cannot |
 | `STRATA_CVEC_FUSE`, `STRATA_PF_PAD` | a steered layer's write, control vector and next norm in one pass; padded GEMM row strides |
 | `STRATA_Q8_PACKED`, `STRATA_Q6_PACKED`, `STRATA_MMVF_ROWS`, `STRATA_ATTN_LANECELL` | decode layouts and kernels (packed Q8_0 / Q6_K weights, 4-row BF16 GEMV, one-cell-per-thread attention scores) |
-| `STRATA_EXPERT_V2`, `STRATA_TSUM`, `STRATA_LFUSE` | the grouped decode experts (IQ3_S / IQ4_NL), single-butterfly warp sums, fewer launches around the shared expert and the KV append |
+| `STRATA_EXPERT_V2`, `STRATA_EXPERT_V2K`, `STRATA_TSUM`, `STRATA_LFUSE` | the grouped decode experts (IQ3_S / IQ4_NL, and UD-Q4_K_XL's Q4_K / Q5_K gate/up with Q5_1 / Q8_0 down), single-butterfly warp sums, fewer launches around the shared expert and the KV append |
 | `STRATA_GDN_SPLIT`, `STRATA_QFUSE`, `STRATA_PLE_BATCH` | the GDN step over four blocks per head, activation images written by their producers, the PLE key / value projections of a verify window at once |
 | `STRATA_SH_STREAM=1` | the shared expert on a second stream beside the routed experts. It is off by default on other AMD cards (#816), but it pays on gfx1151: decode +1.8% (UD-IQ4_XS) and +6.7% (UD-Q4_K_XL) at 8K |
 
