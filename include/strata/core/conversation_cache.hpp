@@ -198,6 +198,29 @@ int64_t conversation_prefix(const ConversationCheckpoint& c, const std::vector<T
     return (int64_t) n;
 }
 
+/// The leading cells two conversations provably share: equal token ids, and equal image keys wherever either
+/// carries one below that length (an image changes the K/V of every cell from its start on). The K/V bytes of
+/// the cells below the result are the same in both conversations of one model - what neither rewrote stays
+/// interchangeable storage. Both image lists are in `start` order, as the engine keeps them.
+inline int64_t conversation_shared_prefix(const std::vector<int32_t>& a, const std::vector<ConversationImageKey>& a_imgs,
+                                          const std::vector<int32_t>& b, const std::vector<ConversationImageKey>& b_imgs) {
+    int64_t n = (int64_t) std::min(a.size(), b.size());
+    int64_t i = 0;
+    while (i < n && a[(size_t) i] == b[(size_t) i]) ++i;
+    n = i;
+    // the images below the token bound must agree; the first disagreement cuts the prefix at its start
+    size_t ja = 0, jb = 0;
+    while (ja < a_imgs.size() || jb < b_imgs.size()) {
+        const bool below_a = ja < a_imgs.size() && a_imgs[ja].start < n;
+        const bool below_b = jb < b_imgs.size() && b_imgs[jb].start < n;
+        if (!below_a && !below_b) break;
+        if (below_a && below_b && a_imgs[ja] == b_imgs[jb]) { ++ja; ++jb; continue; }
+        if (below_a) n = std::min(n, a_imgs[ja].start);
+        if (below_b) n = std::min(n, b_imgs[jb].start);
+    }
+    return n;
+}
+
 class ConversationCache {
 public:
     struct Match {
@@ -215,7 +238,7 @@ public:
     /// with one long conversation spends the cache on the side requests and evicts the long one (oldest first) -
     /// exactly the reuse it wanted.  0 parks every conversation, whatever its size.
     bool wants(int64_t tokens) const { return min_tokens_ <= 0 || tokens >= min_tokens_; }
-    size_t bytes() const { return bytes_ + reuse_.bytes(); }
+    size_t bytes() const { return bytes_ + reuse_.bytes() + reuse_identity_bytes(); }
     size_t size() const { return entries_.size(); }
     size_t evictions() const { return evictions_; }
     // the longest parked conversation, in tokens (--kv-grow keeps the K/V that long while it could be restored)
@@ -228,19 +251,44 @@ public:
     // Retain only the restored K/V buffers, not duplicate running checkpoints.
     // This optimization never evicts a parked conversation to make itself fit.
     // `stage_kv`: with a layer split, the later stages' restored K/V (one per stage), retained with the first's.
+    // `ids`/`imgs`: the conversation these bytes belong to (the session's live tokens and image keys at the
+    // restore).  take_reuse() then only ever hands the buffers back for a conversation sharing their prefix, so
+    // the bytes of a DIFFERENT conversation can never be parked as this one's, whatever the caller's own
+    // bookkeeping did to the session in between.  Retained without an identity, the caller owns that instead.
     void retain(std::vector<ConversationKv>&& kv, int64_t tokens,
-                std::vector<std::vector<ConversationKv>>&& stage_kv = {}) {
-        reuse_ = {};
+                std::vector<std::vector<ConversationKv>>&& stage_kv = {},
+                std::vector<int32_t> ids = {}, std::vector<ConversationImageKey> imgs = {}) {
+        drop_reuse();
         ConversationKvReuse candidate{std::move(kv), tokens, tokens, {}};
         for (auto& k : stage_kv) candidate.stages.push_back(ConversationKvReuse{std::move(k), tokens, tokens, {}});
-        if (enabled() && candidate.bytes() <= budget_ - bytes_) reuse_ = std::move(candidate);
+        if (enabled() && candidate.bytes() <= budget_ - bytes_) {
+            reuse_ = std::move(candidate);
+            reuse_ids_ = std::move(ids);
+            reuse_imgs_ = std::move(imgs);
+        }
     }
     void limit_reuse(int64_t first_dirty) {
         reuse_.unchanged_tokens = std::min(reuse_.unchanged_tokens, first_dirty);
         for (auto& s : reuse_.stages) s.unchanged_tokens = std::min(s.unchanged_tokens, first_dirty);
-        if (reuse_.unchanged_tokens <= 0) reuse_ = {};
+        if (reuse_.unchanged_tokens <= 0) drop_reuse();
     }
-    ConversationKvReuse take_reuse() { return std::exchange(reuse_, {}); }
+    // The retained K/V, bounded by the first rewrite (limit_reuse) AND - when it was retained with the identity
+    // of the conversation it was restored from - by the prefix that conversation and `ids`/`imgs` actually
+    // share: equal ids and equal image keys below it are what make those cells' bytes interchangeable.  Called
+    // with no conversation, it only drops the reuse (an image of one conversation is no image of another).
+    ConversationKvReuse take_reuse(const std::vector<int32_t>& ids = {},
+                                   const std::vector<ConversationImageKey>& imgs = {}) {
+        ConversationKvReuse out = std::exchange(reuse_, {});
+        const std::vector<int32_t> were = std::exchange(reuse_ids_, {});
+        const std::vector<ConversationImageKey> were_imgs = std::exchange(reuse_imgs_, {});
+        if (!were.empty()) {
+            const int64_t shared = conversation_shared_prefix(were, were_imgs, ids, imgs);
+            out.unchanged_tokens = std::min(out.unchanged_tokens, shared);
+            for (auto& s : out.stages) s.unchanged_tokens = std::min(s.unchanged_tokens, shared);
+            if (out.unchanged_tokens <= 0) out = {};
+        }
+        return out;
+    }
     size_t retained_bytes() const { return reuse_.bytes(); }
     bool can_fit(size_t incoming, size_t held = 0) const {
         return enabled() && held <= budget_ && incoming <= budget_ - held &&
@@ -323,7 +371,7 @@ public:
                 if (stays(i)) { ++kept; kept_bytes += entries_[i].bytes(); }
             if (kept >= slots_ || kept_bytes > budget_ - held - incoming) { guard_blocked_ = true; return false; }
         }
-        if (bytes() > budget_ - held - incoming) reuse_ = {};
+        if (bytes() > budget_ - held - incoming) drop_reuse();
         while (!entries_.empty() && (entries_.size() >= slots_ || bytes_ > budget_ - held - incoming)) {
             // the oldest entry that does not hold a pinned shared prefix leaves; with only pinned ones left the new
             // image does not fit (the caller skips parking it - the pinned prefix is what the queries come back to)
@@ -357,7 +405,7 @@ public:
         entries_.clear();
         serials_.clear();
         bytes_ = 0;
-        reuse_ = {};
+        drop_reuse();
         return n;
     }
 
@@ -435,6 +483,11 @@ private:
         entries_.erase(entries_.begin() + (std::ptrdiff_t) index);
         serials_.erase(serials_.begin() + (std::ptrdiff_t) index);
     }
+    void drop_reuse() { reuse_ = {}; reuse_ids_ = {}; reuse_imgs_ = {}; }
+    size_t reuse_identity_bytes() const {
+        return reuse_ids_.capacity() * sizeof(int32_t) + reuse_imgs_.capacity() * sizeof(ConversationImageKey);
+    }
+
     size_t budget_ = 0, slots_ = 0, bytes_ = 0, evictions_ = 0, superseded_ = 0, borrowed_ = 0;
     int64_t min_tokens_ = 0;   // --conversation-cache-min-tokens: 0 parks every conversation, whatever its size
     std::deque<SavedConversation> entries_; // least recently active first
@@ -442,6 +495,8 @@ private:
     uint64_t next_serial_ = 1, guarded_ = 0;
     bool guard_blocked_ = false;
     ConversationKvReuse reuse_;
+    std::vector<int32_t> reuse_ids_;                        ///< the conversation `reuse_`'s bytes belong to
+    std::vector<ConversationImageKey> reuse_imgs_;          ///< (empty: retained without an identity)
 };
 
 } // namespace strata::core
