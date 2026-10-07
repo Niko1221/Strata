@@ -27,7 +27,7 @@ import json
 import time
 import uuid
 
-from serve.frontend import Event, _late_system_to_user, _parts_of, effort_kwargs
+from serve.frontend import Event, _check_video_content, _late_system_to_user, _parts_of, effort_kwargs
 
 ENCRYPTED_PREFIX = "strata.r1:"                   # our own reasoning replay strings; others' are ignored
 HOSTED_TOOLS = ("web_search", "web_search_preview", "file_search", "computer_use_preview", "computer_use",
@@ -79,10 +79,17 @@ def _content(content, param):
                 raise ResponsesError("only images given as image_url (a data: or http(s) URL) are supported; "
                                      "this server keeps no files", f"{param}[{j}]", "unsupported_parameter")
             parts.append({"type": "input_image", "image_url": part["image_url"]})
+        elif kind == "input_video":
+            if not part.get("video_url"):
+                raise ResponsesError("input_video requires video_url (a Strata extension)", f"{param}[{j}]")
+            parts.append(part)
         else:
             raise ResponsesError(f"content parts of type {kind!r} are not supported (text and images are)",
                                  f"{param}[{j}].type", "unsupported_parameter")
-    return _parts_of(parts)
+    try:
+        return _parts_of(parts)
+    except ValueError as e:
+        raise ResponsesError(str(e), param) from None
 
 
 def _reasoning_text(item, param) -> str:
@@ -161,6 +168,10 @@ def input_messages(req: dict) -> list[dict]:
             if role not in ("user", "assistant", "system", "developer"):
                 raise ResponsesError(f"unknown message role {role!r}", param + ".role")
             content = _content(item.get("content"), param + ".content")
+            try:
+                _check_video_content(content, role)
+            except ValueError as e:
+                raise ResponsesError(str(e), param + ".content", "unsupported_parameter") from None
             if role == "assistant":
                 turn(content if isinstance(content, str) else "".join(
                     p.get("text", "") for p in content if p.get("type") == "text"))
@@ -207,6 +218,11 @@ def input_messages(req: dict) -> list[dict]:
         lead += 1
     if lead > 1:
         messages[:lead] = [{"role": "system", "content": "\n\n".join(m["content"] for m in messages[:lead])}]
+    for message in messages:
+        try:
+            _check_video_content(message.get("content"), message.get("role"))
+        except ValueError as e:
+            raise ResponsesError(str(e), "input", "unsupported_parameter") from None
     return _late_system_to_user(messages)
 
 
