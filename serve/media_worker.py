@@ -122,12 +122,13 @@ def decode(source, output, budget, info=None):
                 im = im.convert("RGB")
                 if im.size != (info.resized_width, info.resized_height):
                     im = im.resize((info.resized_width, info.resized_height), Image.Resampling.BICUBIC)
-                out.write(FRAME_TIME.pack(info.indices[written] / info.source_fps))
+                out.write(FRAME_TIME.pack(info.times[written]))
                 out.write(im.tobytes())
                 written += 1
         if pending or written != len(info.indices):
             raise VideoError("video decoder returned a short RGB frame stream")
-    return {"bytes": info.packet_bytes, "info": {**info.__dict__, "indices": list(info.indices)}}
+    return {"bytes": info.packet_bytes,
+            "info": {**info.__dict__, "indices": list(info.indices), "times": list(info.times)}}
 
 
 def main():
@@ -157,7 +158,7 @@ def main():
     elif args.mode == "decode":
         from serve.video import ClipInfo
         info = json.loads(args.info) if args.info else None
-        info = ClipInfo(**{**info, "indices": tuple(info["indices"])}) if info else None
+        info = ClipInfo(**{**info, "indices": tuple(info["indices"]), "times": tuple(info["times"])}) if info else None
         result = decode(args.source, args.output, budget, info)
     elif args.mode == "image":
         from PIL import Image

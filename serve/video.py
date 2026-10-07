@@ -1,11 +1,14 @@
 """Finite-video policy and the Qwen 16x2x2 frame contract (no model imports).
 
-Sampling follows the pinned Qwen3VL processor. Resolution is an explicit serving
-policy, not a claim that mtmd's image defaults are the checkpoint's video defaults.
+Frames are chosen on a fixed time grid by actual PTS (sample_times); the pinned Qwen3VL
+processor's index-linspace rule is kept as sample_indices for the trace fixtures. Resolution is
+an explicit serving policy, not a claim that mtmd's image defaults are the checkpoint's video
+defaults.
 """
 from __future__ import annotations
 
 import math
+import statistics
 import struct
 import time
 from dataclasses import asdict, dataclass, fields
@@ -28,7 +31,7 @@ class VideoLimitError(VideoError):
 FRAME_HEADER = struct.Struct("<4sIIIIdQ")
 FRAME_TIME = struct.Struct("<d")
 VIDEO_PROFILE = "qwen4_exp_16x2x2_2560_v1"
-PREPROCESS_VERSION = 1
+PREPROCESS_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -125,9 +128,11 @@ class VideoRequestBudget:
 
 
 def sample_indices(total_frames: int, source_fps: float, target_fps: float = 2.0) -> tuple[int, ...]:
-    """The pinned sample_frames method: linspace, ties-to-even, min 4/max 768.
+    """The pinned HF processor sample_frames method: index linspace, ties-to-even, min 4/max 768.
 
-    Serving limits reject a too-large result; they never silently change sampling.
+    Kept as the reference the trace fixtures were produced with. Serving samples by PTS with
+    sample_times() instead, which agrees with this on the frame count for constant-rate input
+    but chooses frames by time, so it stays correct when the frame spacing is not constant.
     """
     if isinstance(total_frames, bool) or not isinstance(total_frames, int) or total_frames < 1:
         raise VideoError("video has no finite frame count")
@@ -139,6 +144,47 @@ def sample_indices(total_frames: int, source_fps: float, target_fps: float = 2.0
         return (0,)
     step = (total_frames - 1) / (count - 1)
     return tuple(round(i * step) if i < count - 1 else total_frames - 1 for i in range(count))
+
+
+def sample_times(times: list, target_fps: float, max_frames: int) -> tuple[tuple, tuple]:
+    """Sample on a fixed time grid, choosing each frame by its actual PTS.
+
+    Grid points are 0, 1/target_fps, 2/target_fps ... seconds from the first frame. For each
+    point the source frame with the nearest PTS is used (the earlier frame wins an exact tie),
+    so constant- and variable-frame-rate clips take the same path and no choice depends on a
+    reported frame rate. A grid point that would repeat the previous frame is dropped rather
+    than decoded twice. Returns (source_indices, seconds_of_each_emitted_frame), measured from
+    the first frame, so a label never claims a time the frame does not show.
+    """
+    if isinstance(target_fps, bool) or not isinstance(target_fps, (int, float)) or \
+            not math.isfinite(target_fps) or target_fps <= 0:
+        raise VideoError("video has no finite positive FPS")
+    if not times or any(b <= a for a, b in zip(times, times[1:])):
+        raise VideoError("video frame timestamps must be strictly increasing")
+    start, span = times[0], times[-1] - times[0]
+    count = int(span * target_fps) + 1
+    if count < 1:
+        raise VideoError("video sampling produced no frames")
+    if count > max_frames:
+        raise VideoError("video sampling exceeds the frame budget; no frames were silently dropped")
+    if count == 1:
+        step = 0.0
+    elif count > len(times):
+        # Fewer source frames than grid points: spread the points over the span instead of
+        # emitting the same frame several times.
+        step = span / (count - 1)
+    else:
+        step = 1 / target_fps
+    indices, seconds, chosen = [], [], 0
+    for i in range(count):
+        t = start + i * step
+        while chosen + 1 < len(times) and abs(times[chosen + 1] - t) < abs(times[chosen] - t):
+            chosen += 1
+        if indices and indices[-1] == chosen:
+            continue
+        indices.append(chosen)
+        seconds.append(round(times[chosen] - start, 6))
+    return tuple(indices), tuple(seconds)
 
 
 def resize_shape(height: int, width: int, frames: int, policy: VideoPolicy) -> tuple[int, int]:
@@ -181,6 +227,7 @@ class ClipInfo:
     height: int
     duration_s: float
     indices: tuple[int, ...]
+    times: tuple[float, ...]
     resized_width: int
     resized_height: int
     rotation: int = 0
@@ -202,10 +249,11 @@ class ClipInfo:
 
 
 def probe_info(data: dict, policy: VideoPolicy) -> ClipInfo:
-    """Untrusted ffprobe JSON. First implementation accepts constant-rate video.
+    """Validate untrusted ffprobe JSON and choose frames by PTS on a fixed time grid.
 
-    Every decoded frame's PTS/dimensions is checked, not only the format's claims.
-    Audio is ignored. Playlists, variable rates and changing resolution are refused.
+    Every frame's PTS and dimensions are checked, not only the stream's claims, and the
+    sample grid is wall-clock time, so variable-frame-rate sources need no special case and no
+    transcode. Audio is ignored; playlists and changing resolution are refused.
     """
     try:
         streams = data["streams"]
@@ -219,27 +267,42 @@ def probe_info(data: dict, policy: VideoPolicy) -> ClipInfo:
             raise VideoError("video source pixels exceed the configured limit")
         if max(w, h) / min(w, h) > 200:
             raise VideoError("video source aspect ratio exceeds 200")
-        a, b = s["avg_frame_rate"].split("/")
-        fps = int(a) / int(b)
-        if not math.isfinite(fps) or not 0.1 <= fps <= 240:
-            raise VideoError("video source FPS must be finite (0.1..240)")
+        declared_fps = None
+        try:
+            a, b = s["avg_frame_rate"].split("/")
+            candidate = int(a) / int(b)
+            if math.isfinite(candidate) and 0.1 <= candidate <= 240:
+                declared_fps = candidate
+        except (KeyError, TypeError, ValueError, ZeroDivisionError, OverflowError):
+            pass
         records = data["frames"]
         if not isinstance(records, list) or not 1 <= len(records) <= policy.max_source_frames:
             raise VideoError("video source frame count exceeds the configured limit")
-        times = []
+        times, durations = [], []
         for frame in records:
             if frame.get("width") != w or frame.get("height") != h:
                 raise VideoError("videos with changing resolution are not supported")
             t = float(frame["best_effort_timestamp_time"])
             if not math.isfinite(t):
-                raise VideoError("video frame timestamps must be finite")
+                raise VideoError("video frame timestamp must be finite")
             times.append(t)
-        # ffprobe prints microseconds. Permit that quantization, not VFR or guessed timestamps.
-        if any(abs((t - times[0]) - i / fps) > 3e-6 for i, t in enumerate(times)):
-            raise VideoError("variable-frame-rate videos are not supported; use a constant-frame-rate clip")
-        duration = len(times) / fps
-        if duration > policy.max_duration_s:
+            try:
+                d = float(frame.get("pkt_duration_time", "nan"))
+            except (TypeError, ValueError, OverflowError):
+                d = math.nan
+            durations.append(d)
+        if any(b <= a for a, b in zip(times, times[1:])):
+            raise VideoError("video frame timestamps must be strictly increasing")
+        span = times[-1] - times[0]
+        intervals = [b - a for a, b in zip(times, times[1:])]
+        median = statistics.median(intervals) if intervals else \
+            (1 / declared_fps if declared_fps else 0.0)
+        end = durations[-1] if math.isfinite(durations[-1]) and durations[-1] > 0 else median
+        duration = span + end
+        if not math.isfinite(duration) or duration <= 0 or duration > policy.max_duration_s:
             raise VideoError("video duration exceeds the configured limit")
+        # Reported only; sampling never uses it. Fall back to the observed PTS spacing.
+        fps = declared_fps or (1 / median if median > 0 else 0)
         rotation = 0
         for side in s.get("side_data_list", []):
             if "rotation" in side:
@@ -249,11 +312,9 @@ def probe_info(data: dict, policy: VideoPolicy) -> ClipInfo:
                 rotation = int(r) % 360
         if rotation % 180:
             w, h = h, w
-        indices = sample_indices(len(times), fps, policy.fps)
-        if len(indices) > policy.max_frames:
-            raise VideoError("video sampling exceeds the frame budget; no frames were silently dropped")
+        indices, seconds = sample_times(times, policy.fps, policy.max_frames)
         rh, rw = resize_shape(h, w, len(indices), policy)
-        info = ClipInfo(len(times), fps, w, h, duration, indices, rw, rh, rotation)
+        info = ClipInfo(len(times), fps, w, h, duration, indices, seconds, rw, rh, rotation)
         if info.rows > policy.max_tokens or info.rgb_bytes > policy.max_rgb_bytes:
             raise VideoError("video exceeds its visual token/RGB budget")
         return info

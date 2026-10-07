@@ -6,7 +6,7 @@ import time
 import unittest
 
 from serve.video import (VideoCancelled, VideoError, VideoLimitError, VideoPolicy, VideoRequestBudget,
-                         probe_info, resize_shape, sample_indices)
+                         probe_info, resize_shape, sample_indices, sample_times)
 
 
 def policy(**options):
@@ -57,18 +57,52 @@ class VideoPolicyTests(unittest.TestCase):
         raw["streams"][0]["duration"] = "999999"
         info = probe_info(raw, policy())
         self.assertEqual((info.duration_s, info.indices, info.rows), (2.5, (0,1,2,3,4), 24))
+        self.assertEqual(info.times, (0.0, 0.5, 1.0, 1.5, 2.0))
         raw["streams"][0]["side_data_list"] = [{"rotation": 90}]
         info = probe_info(raw,policy())
         self.assertEqual((info.width,info.height,info.rotation), (64,128,90))
-        for change in ("vfr", "resolution", "fps", "nan", "rotation"):
+        # A variable frame spacing is sampled by PTS, not rejected, and a missing
+        # reported rate does not matter because sampling never uses it.
+        vfr = copy.deepcopy(probe_data())
+        vfr["frames"][3]["best_effort_timestamp_time"] = "1.6"
+        info = probe_info(vfr, policy())
+        self.assertEqual((info.indices, info.times), ((0, 1, 2, 3, 4), (0.0, 0.5, 1.0, 1.6, 2.0)))
+        vfr["streams"][0]["avg_frame_rate"] = "0/0"
+        self.assertEqual(probe_info(vfr, policy()).indices, (0, 1, 2, 3, 4))
+        for change in ("resolution", "nan", "rotation", "nonmonotonic", "equal"):
             bad = copy.deepcopy(probe_data())
-            if change == "vfr": bad["frames"][3]["best_effort_timestamp_time"] = "1.6"
             if change == "resolution": bad["frames"][3]["width"] = 64
-            if change == "fps": bad["streams"][0]["avg_frame_rate"] = "0/0"
             if change == "nan": bad["frames"][3]["best_effort_timestamp_time"] = "nan"
             if change == "rotation": bad["streams"][0]["side_data_list"] = [{"rotation": 45}]
+            if change == "nonmonotonic": bad["frames"][3]["best_effort_timestamp_time"] = "0.4"
+            if change == "equal": bad["frames"][3]["best_effort_timestamp_time"] = "1.0"
             with self.subTest(change=change), self.assertRaises(VideoError):
                 probe_info(bad,policy())
+
+    def test_sample_times_picks_the_frame_nearest_each_grid_point(self):
+        # An irregular spacing is read as its real times: a 0.65 s clip has two 2 FPS grid
+        # points, and the one at 0.5 s takes the frame nearest 0.5 s (0.650 is nearer than 0.319).
+        pts = [0.000, 0.034, 0.068, 0.101, 0.285, 0.319, 0.650]
+        self.assertEqual(sample_times(pts, 2.0, 128), ((0, 6), (0.0, 0.65)))
+        # A long irregular clip: every 0.5 s point takes the nearest frame, and a point that
+        # would repeat the previous frame is dropped rather than decoded twice.
+        # A long irregular clip on the fixed 2 FPS grid: each point takes the nearest frame, and
+        # points inside the 2.3 s -> 5.0 s gap collapse to one frame instead of repeating it.
+        pts = [0.0, 0.1, 0.2, 0.3, 0.4, 0.45, 1.6, 2.0, 2.05, 2.1, 2.15, 2.2, 2.25, 2.3,
+                   5.0, 5.05, 5.1, 5.15, 5.2, 5.25]
+        self.assertEqual(sample_times(pts, 2.0, 128), ((0, 5, 6, 7, 13, 14), (0.0, 0.45, 1.6, 2.0, 2.3, 5.0)))
+        # Constant-rate input keeps the pinned count and lands on every other frame.
+        self.assertEqual(sample_times([i / 30 for i in range(300)], 2.0, 128)[0],
+                         (0, 15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165, 180, 195, 210, 225, 240, 255, 270, 285))
+        # Fewer frames than grid points spreads the grid instead of repeating a frame.
+        self.assertEqual(sample_times([0.0, 1.0, 2.0], 2.0, 128), ((0, 1, 2), (0.0, 1.0, 2.0)))
+        self.assertEqual(sample_times([0.0], 2.0, 128), ((0,), (0.0,)))
+        with self.assertRaises(VideoError):
+            sample_times([i / 2 for i in range(300)], 2.0, 128)   # 300 points over the 128-frame cap
+        with self.assertRaises(VideoError):
+            sample_times([0.0, 0.5, 0.5], 2.0, 128)
+        with self.assertRaises(VideoError):
+            sample_times([0.0, 0.5], 0, 128)
 
     def test_cumulative_budget_repeat_costs_cancel_and_deadline(self):
         b = VideoRequestBudget(policy(max_frames=6, max_duration_s=4))

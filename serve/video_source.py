@@ -199,14 +199,17 @@ def decode_video(source, root, quota, budget):
     if not isinstance(info, dict):
         raise VideoError("video decoder returned invalid clip metadata")
     try:
-        info = ClipInfo(**{**info, "indices": tuple(info["indices"])})
+        info = ClipInfo(**{**info, "indices": tuple(info["indices"]), "times": tuple(info["times"])})
     except (TypeError, KeyError):
         raise VideoError("video decoder returned invalid clip metadata") from None
     p = budget.policy
     if not (1 <= info.frames <= p.max_source_frames and 1 <= len(info.indices) <= p.max_frames and
             all(isinstance(i, int) and not isinstance(i, bool) and 0 <= i < info.frames for i in info.indices) and
-            info.indices[0] == 0 and info.indices[-1] == info.frames - 1 and
+            info.indices[0] == 0 and
             all(a < b for a, b in zip(info.indices, info.indices[1:])) and
+            len(info.times) == len(info.indices) and info.times[0] == 0 and
+            all(0 <= t <= info.duration_s for t in info.times) and
+            all(a <= b for a, b in zip(info.times, info.times[1:])) and
             0 < info.duration_s <= p.max_duration_s and 0 < info.source_fps <= 240 and
             0 < info.width <= p.max_source_side and 0 < info.height <= p.max_source_side and
             info.width * info.height <= p.max_source_pixels and
@@ -221,7 +224,7 @@ def decode_video(source, root, quota, budget):
         info = result.get("info")
         if not isinstance(info, dict):
             raise VideoError("video decoder returned invalid clip metadata")
-        info = ClipInfo(**{**info, "indices": tuple(info["indices"])})
+        info = ClipInfo(**{**info, "indices": tuple(info["indices"]), "times": tuple(info["times"])})
         # The worker is owned/trusted; nevertheless validate its result against
         # policy before cache accounting or native encoder submission.
         p = budget.policy

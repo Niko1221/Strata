@@ -116,9 +116,9 @@ class VideoEncoder:
             return
         rows = info.resized_width // 32 * (info.resized_height // 32)
         text = []
-        for i in range(0, len(info.indices), 2):
-            a, b = info.indices[i], info.indices[min(i + 1, len(info.indices) - 1)]
-            seconds = (a / info.source_fps + b / info.source_fps) / 2
+        for i in range(0, len(info.times), 2):
+            a, b = info.times[i], info.times[min(i + 1, len(info.times) - 1)]
+            seconds = (a + b) / 2
             text.append(f"<{seconds:.1f} seconds><|vision_start|>" + "<|video_pad|>" * rows + "<|vision_end|>")
         if tuple(tokenizer.encode("".join(text), parse_special=True)) != bundle.tokens:
             raise VideoError("video encoder/tokenizer disagree on the processor's timestamp/control/pad tokens")

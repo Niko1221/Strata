@@ -6,6 +6,23 @@ it only with explicit video opt-in and matching capabilities; native inference r
 Implementations: `serve/media.py` and `include/strata/program/media_embeddings.hpp`, with the C++ definitions in
 `src/program/media_embeddings.cpp`. Neither implementation requires a model, decoder, server or GPU.
 
+## Frame sampling
+
+Frames are chosen on a fixed time grid: 0, 1/fps, 2/fps ... seconds from the first frame, and for each point the
+source frame whose presentation timestamp is nearest is decoded (the earlier frame wins an exact tie, and a point
+that would repeat the previous frame is dropped). Nothing in the choice uses a reported frame rate, so a
+variable-frame-rate clip - a phone recording, a screen capture - is sampled by the time its frames actually show.
+No transcode to constant frame rate is done or required.
+
+Each emitted frame keeps the timestamp of the frame that was chosen, and a temporal group is labelled with the mean
+of its two frames' times, as the pinned processor does. On constant-rate input the grid reproduces the pinned
+processor's frame count; which frame it lands on can differ by one where the two rules disagree, because the grid
+follows time rather than frame index. `sample_indices()` keeps the pinned index-linspace rule for the trace fixtures
+and is no longer the serving path.
+
+The grid is bounded by `max_frames`: a clip whose grid would need more frames is rejected rather than silently
+sampled more thinly, so duration at the configured fps is capped by that budget (128 frames at 2 fps is 64 s).
+
 ## Compatibility
 
 Existing image requests still use their existing `ENC` / `SVE1` / `GENI` path. Nothing in that path has been

@@ -23,7 +23,7 @@ class Tokenizer:
 
 
 def clip_info():
-    return ClipInfo(5,2.,128,64,2.5,(0,1,2,3,4),128,64)
+    return ClipInfo(5,2.,128,64,2.5,(0,1,2,3,4),(0.,0.5,1.0,1.5,2.0),128,64)
 
 
 def synthetic_video(info, tok):
@@ -31,9 +31,9 @@ def synthetic_video(info, tok):
     rows=info.resized_width//32*(info.resized_height//32)
     nx=info.resized_width//32
     tokens,spans=[],[]
-    for i in range(0,len(info.indices),2):
-        a,b=info.indices[i],info.indices[min(i+1,len(info.indices)-1)]
-        seconds=(a/info.source_fps+b/info.source_fps)/2
+    for i in range(0,len(info.times),2):
+        a,b=info.times[i],info.times[min(i+1,len(info.times)-1)]
+        seconds=(a+b)/2
         tokens+=tok.encode(f"<{seconds:.1f} seconds><|vision_start|>",parse_special=True)
         spans.append(VisualSpan(len(tokens),VIDEO,MediaKind.VIDEO,max(nx,info.resized_height//32),
                                tuple((0,j//nx,j%nx) for j in range(rows)),bytes(rows*2560*4)))

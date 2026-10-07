@@ -86,13 +86,47 @@ class DecoderTests(unittest.TestCase):
                 magic,flags,n,w,h,duration,rgb=FRAME_HEADER.unpack_from(raw)
                 self.assertEqual((magic,flags,n,w,h,duration,rgb),(b"SVF1",0,5,128,64,2.5,122880))
                 per=w*h*3;offset=FRAME_HEADER.size
-                for index in info.indices:
-                    self.assertEqual(FRAME_TIME.unpack_from(raw,offset)[0],index/2)
+                for index, when in zip(info.indices, info.times):
+                    self.assertEqual(FRAME_TIME.unpack_from(raw,offset)[0],when)
                     offset+=FRAME_TIME.size+per
                 self.assertEqual(offset,len(raw))
                 self.assertEqual((b.frames,b.duration_s,b.rgb_bytes),(5,2.5,122880))
         self.assertEqual(self.q.used,0)
         self.assertEqual(list(self.root.iterdir()),[self.source])
+
+    def test_vfr_samples_by_pts_and_labels_with_real_frame_times(self):
+        """Frames come from the time grid, not from index/reported-FPS arithmetic."""
+        source = self.root / "gap.mkv"
+        # 12 frames: 0.25 s apart up to 2.0 s, then a 1 s gap to 3.0 s. Reported rate stays 4/1,
+        # so index sampling would pick frames 4,5,7 where the grid picks 4,6,8 and drops 2.5 s.
+        subprocess.run([self.p.ffmpeg, "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=128x64:rate=4",
+                        "-frames:v", "12",
+                        "-vf", "setpts='if(lt(N,9),N*0.25,3.0+(N-9)*0.25)/TB'", "-fps_mode", "vfr",
+                        "-c:v", "ffv1", "-y", str(source)], check=True, timeout=15,
+                       env={**os.environ, "CUDA_VISIBLE_DEVICES": "", "HIP_VISIBLE_DEVICES": ""})
+        b = VideoRequestBudget(self.p)
+        with stage_video(str(source), self.root, self.q, b)[0] as staged:
+            packet, info = decode_video(staged.path, self.root, self.q, b)
+            with packet:
+                self.assertEqual(info.indices, (0, 2, 4, 6, 8, 9, 11))
+                self.assertEqual(info.times, (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 3.5))
+                raw = packet.path.read_bytes()
+                per = info.resized_width * info.resized_height * 3
+                for slot, (index, when) in enumerate(zip(info.indices, info.times)):
+                    offset = FRAME_HEADER.size + slot * (FRAME_TIME.size + per)
+                    self.assertEqual(FRAME_TIME.unpack_from(raw, offset)[0], when)
+                    offset += FRAME_TIME.size
+                    self.assertEqual(self.source_frame(source, index), raw[offset:offset + per])
+        self.assertEqual(self.q.used, 0)
+
+    def source_frame(self, path, index):
+        """One source frame through the same RGBA-to-RGB path the decoder worker uses."""
+        from PIL import Image
+        rgba = subprocess.run([self.p.ffmpeg, "-v", "error", "-i", str(path), "-vf", f"select=eq(n\\,{index})",
+                               "-fps_mode", "passthrough", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba",
+                               "-"], capture_output=True, check=True, timeout=15,
+                              env={**os.environ, "CUDA_VISIBLE_DEVICES": "", "HIP_VISIBLE_DEVICES": ""}).stdout
+        return Image.frombytes("RGBA", (128, 64), rgba).convert("RGB").tobytes()
 
     def test_corrupt_clip_is_error_not_empty_success(self):
         self.source.write_bytes(b"not a video")
