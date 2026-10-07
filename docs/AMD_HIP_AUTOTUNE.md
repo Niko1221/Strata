@@ -82,6 +82,12 @@ stale and the tuner is run again). It is also refused when a dispatch rerouting 
 default dispatch, and a knob that reroutes it makes those measurements meaningless. CUDA builds compile only the
 default shapes and ignore the variable.
 
+A note on the staging knobs, measured on the RX 7900 XTX: the defaults stage the i-quant codebook grids into
+shared memory, which upstream chose on an RTX 5070. On this card the codebook already sits in the 96 MB Infinity
+Cache, so staging is a wash for the IQ3-class formats (within 0.2% on every shape measured) and a small win when
+OFF for IQ2_S gate/up (~2-5% with `STRATA_IQ_STAGE_GRID=0`); mmvq staging is a wash. Measured by the same tool,
+byte-checked; if you run an IQ2_S-class model it is worth one paired run on your machine.
+
 ## What to expect
 
 Honestly: unknown until it runs on your card. The tunable kernels are a slice of each token's time. In the

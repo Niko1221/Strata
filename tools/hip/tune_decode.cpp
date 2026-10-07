@@ -5,11 +5,12 @@
 // warp, lanes and order, so it is bitwise equal to the default - and this tool checks that on the machine before a
 // candidate may win (a candidate that differs by one bit is reported and never written).
 //
-// The workload is the verify pass's: windows of 1, 3 and 5 tokens (the MTP and lookup windows; weighted 0.2 / 0.3 /
-// 0.5), `--hit-frac` of each token's 10 experts on the GPU, experts drawn from a pool larger than the 7900 XTX's
-// 96 MB Infinity Cache (decode streams ~1 GB of experts per token, so a cache-warm benchmark would lie), every
-// candidate measured in every round, interleaved, and a winner kept only when its weighted median beats the
-// default by more than --min-gain AND a second interleaved confirmation agrees.
+// The workload is the verify pass's: windows of 1, 3 and 5 tokens (the 0.1.27-era MTP and lookup mix; weighted
+// 0.2 / 0.3 / 0.5 - override both with --windows / --weights when the running policy drafts wider, and the report
+// line names what was measured), `--hit-frac` of each token's 10 experts on the GPU, experts drawn from a pool
+// larger than the 7900 XTX's 96 MB Infinity Cache (decode streams ~1 GB of experts per token, so a cache-warm
+// benchmark would lie), every candidate measured in every round, interleaved, and a winner kept only when its
+// weighted median beats the default by more than --min-gain AND a second interleaved confirmation agrees.
 //
 // Run it with the Strata server STOPPED (it needs ~1 GB of free VRAM, and a busy GPU makes timings meaningless):
 //
@@ -67,12 +68,18 @@ struct Options {
     int pool_mib = 768;
     int rounds = 9, reps = 40;
     double min_gain = 0.03;
+    // the verify-window workload the timings blend: window widths (tokens) and their weights.
+    // The defaults are the 0.1.27-era MTP proxy {1,3,5} x {0.2,0.3,0.5}; a build running a wider
+    // speculative policy should measure its own mix (--windows / --weights), and the report line
+    // names what was used.
+    int windows[3] = {1, 3, 5};
+    double weights[3] = {0.2, 0.3, 0.5};
     std::string out;
     bool quiet = false;
 };
 
-const int kWindows[] = {1, 3, 5};
-const double kWeights[] = {0.2, 0.3, 0.5};
+// the parsed options, for the free functions below (the tool is single-run; set once in main)
+const Options* g_opt = nullptr;
 
 int block_elems(int type) {
     switch (type) {
@@ -142,7 +149,7 @@ void make_expert_bench(ExpertBench& b, const Options& o, std::mt19937& rng) {
     }
     const int kPlans = 16;
     for (int w = 0; w < 3; ++w) {
-        const int T = kWindows[w];
+        const int T = g_opt->windows[w];
         const int cap = T * o.k_used;
         b.cap[w] = cap;
         // activations: T tokens of n_embd, quantized by the engine's own q8_1 kernel
@@ -275,7 +282,7 @@ void make_mmvq_bench(MmvqBench& b, std::mt19937& rng) {
     }
     std::normal_distribution<float> nd(0.0f, 1.0f);
     for (int wi = 0; wi < 3; ++wi) {
-        const int T = kWindows[wi];
+        const int T = g_opt->windows[wi];
         std::vector<float> xh((size_t) T * (size_t) b.n_in);
         for (float& v : xh) v = nd(rng);
         Dev xf(xh.size() * sizeof(float));
@@ -289,7 +296,7 @@ void make_mmvq_bench(MmvqBench& b, std::mt19937& rng) {
 
 void run_mmvq(MmvqBench& b, int wi, int copy, int rows, hipStream_t s) {
     K::iq_mmvq_rows(b.type, b.w.as<uint8_t>() + (size_t) copy * b.wbytes, b.xq[wi]->p, b.y[wi]->as<float>(), b.n_in,
-                    b.n_out, kWindows[wi], rows, s);
+                    b.n_out, g_opt->windows[wi], rows, s);
 }
 
 std::vector<uint8_t> mmvq_output(MmvqBench& b, int wi, int rows, hipStream_t s) {
@@ -328,7 +335,7 @@ std::map<Cand, double> measure(const std::vector<Cand>& cands, int rounds, TimeF
     std::map<Cand, double> score;
     for (const Cand& c : cands) {
         double s = 0.0;
-        for (int w = 0; w < 3; ++w) s += kWeights[w] * median(per[w][c]);
+        for (int w = 0; w < 3; ++w) s += g_opt->weights[w] * median(per[w][c]);
         score[c] = s;
     }
     return score;
@@ -359,15 +366,23 @@ Cand choose(const std::vector<Cand>& cands, const Cand& dflt, const Options& o, 
 
 bool parse_pair(const char* s, int& a, int& b) { return std::sscanf(s, "%d:%d", &a, &b) == 2; }
 
+// comma-separated lists for --windows / --weights: exactly three values each
+bool parse_list3(const char* s, double* out) {
+    return std::sscanf(s, "%lf,%lf,%lf", &out[0], &out[1], &out[2]) == 3;
+}
+
 void usage() {
     std::fprintf(stderr,
                  "usage: tune_decode [--expert GU:DOWN]... [--mmvq TYPE:N_IN:N_OUT]... [--n-embd N] [--n-ff N]\n"
                  "                   [--k K] [--hit-frac F] [--pool-mib M] [--rounds R] [--reps N] [--min-gain F]\n"
-                 "                   [--out FILE] [--quiet]\n"
+                 "                   [--windows T,T,T] [--weights W,W,W] [--out FILE] [--quiet]\n"
                  "  --expert   ggml types of the experts' gate/up and down (default 18:20 = IQ3_XXS:IQ4_NL); repeatable\n"
                  "  --mmvq     an i-quant dense matrix iq_mmvq runs in decode; repeatable (none by default)\n"
                  "  --hit-frac share of a token's K experts served from VRAM (default 0.6)\n"
                  "  --pool-mib distinct weights the timings cycle through (default 768; keep it well above 96 MB)\n"
+                 "  --windows  verify-window widths blended in the timings (default 1,3,5 - the 0.1.27-era MTP mix;\n"
+                 "             a wider speculative policy should measure its own, e.g. 2,4,6 for --spec 5)\n"
+                 "  --weights  the windows' weights, normalized (default 0.2,0.3,0.5)\n"
                  "  --out      write the table (only shapes whose winner differs from the default are listed)\n");
 }
 }  // namespace
@@ -396,6 +411,14 @@ int main(int argc, char** argv) {
         else if (a == "--rounds") o.rounds = std::max(3, std::atoi(next()));
         else if (a == "--reps") o.reps = std::max(5, std::atoi(next()));
         else if (a == "--min-gain") o.min_gain = std::atof(next());
+        else if (a == "--windows") {
+            double w[3];
+            if (!parse_list3(next(), w)) { usage(); return 2; }
+            for (int j = 0; j < 3; ++j) o.windows[j] = (int) w[j];
+        }
+        else if (a == "--weights") {
+            if (!parse_list3(next(), o.weights)) { usage(); return 2; }
+        }
         else if (a == "--out") o.out = next();
         else if (a == "--quiet") o.quiet = true;
         else { usage(); return a == "--help" || a == "-h" ? 0 : 2; }
@@ -405,9 +428,21 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "tune_decode: bad shape or --hit-frac\n");
         return 2;
     }
+    for (int j = 0; j < 3; ++j)
+        if (o.windows[j] < 1 || o.windows[j] > 64 || o.weights[j] <= 0.0) {
+            std::fprintf(stderr, "tune_decode: bad --windows/--weights (widths 1..64, weights > 0)\n");
+            return 2;
+        }
+    {
+        const double sum = o.weights[0] + o.weights[1] + o.weights[2];
+        for (int j = 0; j < 3; ++j) o.weights[j] /= sum;
+    }
+    g_opt = &o;
     const K::DecodeIdentity id = K::decode_identity();
     std::fprintf(stderr, "tune_decode: %s, HIP runtime %lld, toolchain %s\n", id.arch.c_str(), id.runtime,
                  id.toolchain.c_str());
+    std::fprintf(stderr, "tune_decode: workload windows %d/%d/%d, weights %.2f/%.2f/%.2f\n", o.windows[0],
+                 o.windows[1], o.windows[2], o.weights[0], o.weights[1], o.weights[2]);
     if (id.arch != "gfx1100")
         std::fprintf(stderr, "tune_decode: note - Strata's HIP backend is validated on gfx1100 only; measuring anyway\n");
     const double need = o.pool_mib * (1.0 + (double) o.mmvq.size()) + 256.0;
