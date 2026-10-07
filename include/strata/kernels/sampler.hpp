@@ -25,6 +25,7 @@ struct SamplerParams {
     uint64_t seed = 0;           // drives Philox, which is counter-based on (seed, token index)
     uint64_t counter = 0;        // absolute draw index of row 0; advance across decode calls
     bool greedy = false;
+    bool gumbel = false;         // STRATA_SPEC_GUMBEL=1: Gumbel-max pick keyed by (seed, counter, token id) - see sampler.cu
 };
 
 // logits (n_tokens, n_vocab) -> one sampled token id per row in `out`.
@@ -64,6 +65,23 @@ void coupled_draft_stage(const SamplerParams* mapped_params, const int32_t* mapp
 void coupled_draft_sample(float* logits, int nv, const int32_t* sub_to_id, const int32_t* id_to_sub, int id_vocab,
                           const SamplerParams* params, int32_t* ring, int cap, int j, const int32_t* step_rec,
                           void* scratch, int32_t* out_id, float* out_prob, void* stream);
+
+// ---- PROBABILISTIC DRAFT ACCEPTANCE (include/strata/core/spec_prob.hpp, STRATA_SPEC_PROB=1).  Device pointers.
+// The drafter's last step in this mode: as coupled_draft_sample, but the draft is drawn from the chain's distribution
+// q with the drafter's own Philox stream, and q's (id, probability) list goes to qrows + j * kSpecQStride (the
+// drafter's mapped host memory; host-readable once the stream has synced).  *out_prob is q's top probability, or the
+// drawn token's own when gate_pick (what --spec-min-p gates a further draft on).
+void spec_draft_sample(float* logits, int nv, const int32_t* sub_to_id, const int32_t* id_to_sub, int id_vocab,
+                       const SamplerParams* params, int32_t* ring, int cap, int j, const int32_t* step_rec,
+                       void* scratch, int32_t* out_id, float* out_prob, int32_t* qrows, int gate_pick, float tscale, void* stream);
+// The verify window's head under rejection sampling: row t (< n_tokens - 1) judges the draft dtok[t] (n_tokens - 1
+// ids, device); rows < n_q have the drafter's list at qbuf + t * kSpecQStride (device), the others are point masses.
+// out[t] = the draft when kept, the residual sample when not, a plain sample on the last row; `p.counter` is the
+// window's first position, as sample_tokens.  False (nothing launched) where the split sampler cannot run - the
+// caller then calls sample_tokens (exact match).
+bool sample_tokens_spec(const float* logits, int n_tokens, int n_vocab, const int* history, int history_len,
+                        const SamplerParams& p, const int32_t* dtok, const int32_t* qbuf, int n_q, int* out,
+                        void* stream);
 
 // The penalty-history rows of a verify window, on the host: row t of `out` (T rows of `h` slots) is the last `h`
 // tokens of `tail[0..n_tail)` followed by `window[0..t]`, most recent LAST, -1 in the unused front slots.

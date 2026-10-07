@@ -23,7 +23,7 @@ for f in changed:
         print("NOT-MIGRATED (original used)" if not os.path.exists(pf) else "PORT-HAS-NO-DPCT?", rel); continue
     nt = open(nf).read()
     if not os.path.exists(pf):
-        shutil.copy(nf, pf); print("NEWCOPY", rel); continue
+        os.makedirs(os.path.dirname(pf), exist_ok=True); os.makedirs(os.path.dirname(pf), exist_ok=True); shutil.copy(nf, pf); print("NEWCOPY", rel); continue
     if not os.path.exists(bf):
         print("NO-BASE (new to dpct output)", rel); continue
     bt = open(bf).read()

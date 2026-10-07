@@ -41,8 +41,13 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
 /// Spin until *flag >= value (a mapped host flag).  The value is fixed at capture, so several rings can be
 /// outstanding at once (the split verify window keeps two).
 void wait_flag_ge(const uint32_t* flag, uint32_t value, void* stream);
-/// the GPU's %globaltimer (ns) into buf[i] (a one-thread kernel: the verify window's stage profiler).
+/// the GPU's %globaltimer (ns) into buf[i] (a one-thread kernel: the verify window's stage profiler).  Inside a PDL
+/// stretch (pdl.hpp) the stamp passes the early launch on, so a profiled window keeps the chain it measures.
 void gpu_stamp(unsigned long long* buf, int i, void* stream);
+/// dst[r][0, w) = src[r][0, w) for `rows` rows of source stride `src_w` floats (the query half of each q/gate head
+/// pair): the strided device-to-device cudaMemcpy2DAsync as a kernel, so the window's chain stays kernel to kernel.
+/// w and src_w multiples of 4 floats, both pointers 16-byte aligned.
+void copy_rows_strided(float* dst, const float* src, int64_t rows, int64_t w, int64_t src_w, void* stream);
 
 // ---- perf-review E-6: a layer whose routed experts are all in VRAM needs nothing from the host
 /// One group's plan, built on the device when every routed expert of its n*k entries is resident: the host pool's

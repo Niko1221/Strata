@@ -33,31 +33,82 @@ tokens) on engine 0.1.31-sycl (2026-10-01; 0.1.32-0.1.38-sycl reproduce them exa
 
 ## Setup
 
-Build the engine and its runtime image first ("How to build it" below), then:
+On Ubuntu 24.04 or newer, from nothing. The Intel GPU driver (the `xe` or `i915` kernel driver and the compute runtime;
+[INTEL_ARC.md](INTEL_ARC.md), "What you need") is assumed: `ls /dev/dri` shows a `renderD128`.
 
-    python3 sycl/setup_intel.py [setup.py's options, e.g. --model IQ2_XS --context 32768 --port 8085]
+1. **Docker, once.** The engine runs in a container, so the PC needs Docker and no oneAPI:
 
-This is upstream's `setup.py`, run with the Intel steps swapped in (it imports setup.py and replaces those steps;
+        sudo apt install docker.io git
+        sudo usermod -aG docker,render $USER
+
+   Log out and in again (or reboot) so the groups apply. `docker ps` must work without `sudo`; the `render` group lets
+   the container open the GPU.
+2. **Get Strata and build the engine** ("How to build it" below, about 10 minutes the first time).
+3. **Run setup:**
+
+        ./setup.sh --backend sycl [setup.py's options, e.g. --model IQ3_S --context 32768 --port 8085]
+
+   `setup.sh` makes its own Python environment in `.venv`, so Ubuntu's "externally managed" system Python is not
+   touched. **Do not run `python3 sycl/setup_intel.py` yourself:** it installs setup's packages into whichever Python runs
+   it, and Ubuntu's refuses (`externally-managed-environment`). `./setup.sh --backend sycl` is the one command, for the
+   first install and every later start.
+
+Setup is upstream's `setup.py` with the Intel steps swapped in (`sycl/setup_intel.py` imports it and replaces those steps;
 setup.py itself is unchanged). The model choice, download, pack, tokenizer, MTP draft layer and the context and KV
 questions are setup's own. What changes:
 
 - **GPU check:** the Arc is found in sysfs (vendor 8086 under `xe` or `i915`) and offered through setup's AMD
   path. That is the path that builds locally and has no images.
-- **Engine step:** it uses the SYCL build (`build-sycl-aot/strata`, run in the `strata-sycl-dev` image by
-  `sycl/serve/strata-sycl.sh`) instead of compiling CUDA or HIP.
-- **RAM rule:** this does not apply. The CUDA engine keeps every expert in RAM; the port streams them from the
-  GGUF into VRAM (`--stream-experts`), so RAM only decides the KV streaming. `--check` lists what fits by VRAM.
+- **Engine step:** it uses the SYCL build (`build-sycl-aot/strata` or `build-sycl/strata`, run in the `strata-sycl-dev`
+  image by `sycl/serve/strata-sycl.sh`) instead of compiling CUDA or HIP.
+- **RAM rule:** this does not apply on an `xe` card. The CUDA engine keeps every expert in RAM; the port streams them from
+  the GGUF into VRAM (`--stream-experts`), so RAM only decides the KV streaming. `--check` lists what fits by VRAM.
 - **The config:** it uses the container's paths and `"backend": "sycl"`. The VRAM reserve is 1,024 MiB up to
-  32K and 2,048 MiB with 4,096-token prompt chunks above that. KV streaming (`--kv-resident 32768`) is on from
+  32K and 2,048 MiB with 4,096-token prompt chunks above that, 300 MiB on a card under 12 GB; a
+  `--vram-reserve-mib N` you give is kept as given. KV streaming (`--kv-resident 32768`) is on from
   64K up when the RAM holds the KV. A `model_switcher` or `sampling` block from an earlier config is kept.
   `run-<model>.sh` starts `sycl/serve/server_intel.py`.
+- **Arc A-series (`i915`, e.g. the A750 with 8 GB):** a different config, see "Arc A750 and the other Alchemist cards" below.
+- **Engine settings:** the config's `"env"` block reaches the engine. `strata-sycl.sh` forwards every variable starting with
+  `STRATA_`, `ONEAPI_`, `UR_`, `IGC_`, `SYCL_` or `ZES_` into the container and sets `STRATA_VERIFY_DEVICE_PLAN=1`,
+  `STRATA_VERIFY_NO_HOST=1` and `STRATA_STAGER_THREADS=12` unless the environment says otherwise (for example
+  `"env": {"STRATA_VERIFY_NO_HOST": "0"}`).
 
 If a future `setup.py` drops a step this relies on, it stops with a message instead of writing a wrong config.
 The models, packs and checkout must sit under the folder `strata-sycl.sh` mounts at `/work` (the one above the
-checkout, or `STRATA_SYCL_ROOT`).
+checkout, or `STRATA_SYCL_ROOT`). An earlier Strata install on the same PC keeps its data folder in
+`~/.config/strata/settings.json`; pass `--data-dir <folder above the checkout>/Strata-data` to put this one under the
+mount. A symlink to a folder outside the mount does not work in the container; a hard link does.
 
-Then `run-<model>.sh` (or `sycl/setup_intel.py` again) starts the model. The first start of a 30 GB model
+Then `run-<model>.sh` (or `./setup.sh --backend sycl` again) starts the model. The first start of a 30 GB model
 takes about two minutes. `--port N` and `--host 0.0.0.0` work as in upstream's setup.
+
+## How to build it
+
+The engine is built in Docker, in the `strata-sycl-dev` image (oneAPI 2026.1 compiler, oneMKL and Level Zero, from a
+community llama.cpp SYCL image), so the PC needs no oneAPI. From the checkout (its folder is called `Strata` here; the
+folder above it is what the container mounts at `/work`):
+
+    cd Strata
+    docker build -t strata-sycl-dev sycl/tools          # once: about 6 minutes, a 13 GB image
+    H=$(basename "$PWD")
+
+**Arc B-series** (Pro B70: `bmg-g31`; B580, B570 and Pro B60: `bmg-g21`; `ocloc ids bmg-g21` in the image lists the
+device ids). Ahead-of-time code, no compile at the first start:
+
+    docker run --rm -u $(id -u):$(id -g) -v "$PWD/..:/work" -e AOT=bmg-g31 -e REPO=/work/$H \
+        -e BUILD_DIR=/work/$H/build-sycl-aot strata-sycl-dev "cd /work/$H && bash sycl/tools/build.sh strata"
+
+**Arc A-series** (Alchemist: A750, A770, A580, A380): no `AOT=`. The code is compiled from SPIR-V at the first start
+(JIT, about a minute). Nobody has run an AOT build for these cards.
+
+    docker run --rm -u $(id -u):$(id -g) -v "$PWD/..:/work" -e REPO=/work/$H \
+        -e BUILD_DIR=/work/$H/build-sycl strata-sycl-dev "cd /work/$H && bash sycl/tools/build.sh strata"
+
+The build takes about 3 minutes and ends with `BUILD EXIT 0` and `errors: 0`. The binary is `build-sycl-aot/strata`
+(B-series) or `build-sycl/strata` (A-series); setup finds either one. Run the `docker build` again after pulling a
+Strata update that changes `sycl/tools/Dockerfile`, and the `docker run` after every update of the engine (setup
+says when the engine is older than it needs).
 
 ## Things that matter on this GPU
 
@@ -624,12 +675,122 @@ test an SM-holding NVIDIA bench (not built). Outputs identical to 0.1.33 (Coder 
 - AOT device code is what runs: `AOT=bmg-g31 BUILD_DIR=.../build-sycl-aot` (the JIT build costs ~47 s of
   compiling on the first window).
 
+## Arc A750 and the other Alchemist cards (`i915`, 2026-10-07)
+
+Measured on an Arc A750 (8 GB, `i915`, PCIe 4.0) with the Flash-Next IQ3_XXS in a PC with 64 GB of RAM, a Ryzen 5 5600X
+(AVX2, no AVX-512). `./setup.sh --backend sycl` writes a different config for an `i915` card (and a 300 MiB VRAM reserve and
+`--draft-vocab en` for any card under 12 GB):
+
+| | Arc Pro B70 (`xe`, 32 GB) | Arc A750 (`i915`, 8 GB) |
+|---|---|---|
+| experts | `--stream-experts`: from the GGUF into VRAM, the rest in a pinned RAM mirror | no `--stream-experts`: all of them in a RAM arena (39.97 GiB for IQ3_XXS), 406 of 24,576 in VRAM, the CPU computes the others |
+| `STRATA_VERIFY_NO_HOST` | 1 (the wrapper's default) | 0, written to the config's `"env"` |
+| `--vram-reserve-mib` | 1024 / 2048 | 300 |
+| `--ple-io` | `ram` (rotational-disk rule of setup) | `ram` |
+| FP64 | native | emulated: `IGC_EnableDPEmulation=1`, `OverrideDefaultFP64Settings=1`, `NEOReadDebugKeys=1` in `"env"` |
+| build | AOT `bmg-g31` | JIT (no `AOT=`) |
+
+- **Why no `--stream-experts`.** The mirror is one pinned host allocation for everything the card does not hold (40 GB here). A
+  single `sycl::malloc_host` above a few GB fails on the A750 (`STRATA_MIRROR_MIB` 3,000 worked, 8,192 and 24,000 did not, also
+  with `memlock` unlimited and the relaxed-allocation-limit variables), and the engine then refuses to start with
+  `24170 experts are neither in VRAM nor mirrored`. Without the flag the engine loads the GGUF's experts into an ordinary RAM
+  arena and the CPU computes the experts that are not in the 0.67 GiB cache. That needs the RAM: about 43 GB for IQ3_XXS plus
+  the 29 GB n-gram table with `--ple-io ram` (the table is not locked in the container, so it is reclaimable; do not give the
+  container `--ulimit memlock=-1`, the locked table and the arena then do not fit in 64 GB and the PC swaps). Setup warns when the RAM is less than the model's.
+- **Why `STRATA_VERIFY_NO_HOST=0`.** With it set the GPU plans each layer itself and the CPU's experts are never asked for:
+  the window hangs (the i915 log says `Fence expiration time out`) or, if the pool is refused, the engine says
+  `REFUSED: ... neither in VRAM nor mirrored`. It is the switch of the B70's case, where every expert the card lacks is in the mirror.
+  The engine takes a value of `0` (or empty) as "off", and `strata-sycl.sh` does not pass such a value on.
+- **FP64.** An Alchemist has no FP64 hardware. One kernel on the sampled path declares `double`, and the SYCL runtime refuses it at
+  its first launch (`'double' is not supported in 'Intel(R) Arc(TM) A750 Graphics' device`, the engine dies on the first request
+  that has a temperature). With the three variables above the driver emulates it; the cost is the sampler's tail
+  (see "FP64." in the B70 section).
+- **The first request after a start used to return `!!!!!` (token 0) or crash the engine.** The GPU waits for the CPU's experts at
+  every layer in a spin that is bounded (`strata::kSpinMax`, `sycl/include/strata/sycl_doorbell.hpp`): a spin that never ends
+  hangs the driver. The bound was 20,000 reads, a few tens of milliseconds, which is enough when nothing is waited for (the B70)
+  and is not for a CPU layer in the first request (cold pages, 13 s for a 26-token prompt). The GPU gave up, went on with the
+  experts' outputs missing, the next layers' routing was garbage (one expert chosen ten times for a token: `nt=10`) and the
+  CPU pool wrote past its token arrays and died with a segmentation fault (exit code 139); when it did not die the logits were NaN
+  and the sampler's answer was token 0. Later requests ran with warm pages and were right. The bound is now a build option,
+  `STRATA_SYCL_SPIN_MAX` (CMake; `SPIN_MAX=` for `sycl/tools/build.sh`): 2,000,000 reads (a few seconds) unless the build is an
+  AOT build for a `bmg` card, which keeps 20,000. Before the change 11 of 16 runs of the engine (three requests each, a 26-token prompt) died or gave
+  token 0 in the first request; with 2,000,000 reads 4 of 4 were right in all three requests.
+- **Speed.** About 10 to 15 tok/s decode (76 to 92% of the drafts accepted), a 26-token first prompt in 13 s and later short prompts in 0.2 to
+  1.3 s; the A750's PCIe link probes at 10.6 GB/s.
+- **A750 and the xe error counters.** The engine segfaults in a worker thread of the CPU pool when it exits (dmesg only, the server
+  has already printed "stopped"); it is not a GPU event.
+
 ## Not done
 
 - Images, on both Intel engines. Strata's vision path encodes with `strata-vision` into embeddings the CUDA
   engine reads; neither the SYCL port nor the llama.cpp config wires it yet.
 - Speculative decoding on the llama.cpp path (the GGUF carries no draft layer llama.cpp can use). The SYCL
   port has it (MTP draft layer, `--mtp`).
+
+## Arc Pro B70 with a model that does not fit: Flash-Next IQ3_S (2026-10-07, branch f-141-intel)
+
+The earlier B70 rows are for models whose experts all fit in VRAM. IQ3_S has 24,576 experts of 1.97 MB (46 GB): the 32 GB
+card holds 11.5k of them (22 GiB of cache) and the rest sit in a pinned host mirror that the GPU reads over PCIe. Tested on
+the B70 VM (xe driver, kernel 7.0, oneAPI 2026.1, PCIe measured at 13.3 GB/s host to device), engine 0.1.40-sycl.
+
+**Two things made it produce garbage, both fixed or documented here.**
+
+- **Aliased pages in big allocations (fixed in the engine).** The xe driver returned the 22 GiB expert-cache arena with two
+  of its 2 MiB pages mapped onto the same memory: a write at +2 MiB showed at +1022 MiB. Cache slots there held other
+  experts' bytes, and the prompt came out NaN at the first layer that routed to one (layer 4, expert 249); the same run
+  with another `--max-context`, or with an MTP window of 4 instead of 6, was clean. `STRATA_VERIFY_ALL_SLOTS=1`
+  (`STRATA_VERIFY_FIND=1`, `STRATA_VERIFY_DUMP=dir`) reads every filled slot back and compares it with the GGUF; that is how
+  the aliasing was found (the wrong bytes were slot 0's blob). Every allocation of 32 MiB or more now goes through
+  `strata::malloc_device_guarded`: it tags every 64 KiB, reads the tags back in a second kernel, and allocates again behind a
+  growing spacer until the range is clean (a warning names each retry; the check costs under 0.5 s at startup;
+  `STRATA_ARENA_ALIAS_CHECK=0` skips it). `sycl/probe/arena_rw.cpp` and `alias_scan.cpp` do not reproduce it on their own: it
+  needs the engine's allocation history.
+- **`STRATA_VERIFY_NO_HOST=1` is required whenever part of the experts is not in VRAM.** `sycl/serve/strata-sycl.sh` sets
+  it; a by-hand run must too. Without it the per-layer host/GPU handshake is not visible across the bus on xe and the logits
+  turn NaN a few tokens into the answer, differently on every run. With it (and the mirror covering every miss) the run is
+  deterministic: two runs gave identical tokens.
+
+**Numbers** (greedy, `--spec 4 --spec-min-p 0.5 --mtp`, INT8 KV, 32K context, `--stream-experts --vram-reserve-mib 1024
+--ple-io ram`, 11.5k experts resident; the 10-prompt `mg_norepeat` gate passes 10 of 10, the xe error counters did not move):
+
+| | before | after |
+|---|---|---|
+| 4,095-token prompt, `--prefill auto` (2,048-token chunks) | 618 tok/s | 730 |
+| 4,095-token prompt, `--prefill 4096` | 784 | **980-1,002** |
+| 8,169-token prompt: auto / 4096 / 8192 lending cache slots / 8192 own buffers | 676 | 953 / 1,037 / 1,117 (9.4k slots) |
+| decode, 200-token story (66% of drafts accepted, 1.98 tokens per round) | 31.4 tok/s | 30.5 with 4096-token chunks (700 fewer cache slots) |
+| decode, 200-token code answer (90% accepted, 3.65 tokens per round) | not measured | 40.8 with 4096-token chunks |
+
+(Interleaved A/B pairs, medians of 3-5. "Before" is the same build with the old short first chunk; the decode figures are
+the old default and `--prefill 4096`.)
+
+**Why the prompt is slow here, and the two changes.** Every prompt chunk streams the experts the cache does not hold over
+PCIe, and a 4K prompt touches nearly all 512 experts of every layer: 13.5k missing experts x 1.97 MB = 26 GB, 2 s of the
+bus per chunk. So the prompt reads faster in fewer, bigger chunks, and the short first chunk (`STRATA_PREFILL_FIRST`, 256
+tokens, there to start the GPU while the PLE rows are read) cost a whole extra pass of that stream. It is now 256 only when
+the cache holds every expert, else 0. `setup_intel.py` writes `--prefill 4096` for a card with 24 GB or more (the chunk's
+buffers take ~700 cache slots; `--prefill 8192 --prefill-borrow` lends cache slots instead and keeps all of them for decode,
+at ~1 s of refill per prompt). Where the 4K prompt's GPU time goes now (GPU timeline, timing on): expert dequant 20%, the two
+expert GEMMs 34%, QSA attention 14%, host grouping 6.5%, GDN 9%, hyper-connection reads 4.6%.
+
+**Draft length** (200 tokens, medians of 5 interleaved pairs, `--spec-min-p 0.5`): `--spec 6` against `--spec 4` is +6.5% on
+code (43.4 against 40.8 tok/s, 84% accepted against 90%) and -1.5% on prose (29.9 against 30.4). A 2-run sweep of the rest
+(`--spec 2/3/5`, min-p 0.3/0.7) was within the run-to-run noise of ~1 tok/s; the setup default (4, 0.5) stays.
+
+**FP64.** Arc Alchemist emulates it (`IGC_EnableDPEmulation=1`); on the A750 one row of the sampler's top_p/temperature tail
+costs 451 us in double and 20 us in float (`sycl/probe/fp64_cost.cpp`), and a sampled decode ran at 7.6 tok/s against 12 for
+a greedy one. On the B70 the same kernels cost 3.4 against 2.1 us, so FP64 is not a B70 problem. Of the kernels that use
+double, the native-pack path (the packs setup builds) runs only the sampler (a 16-token greedy run created 173 kernels, the
+double ones among them: `sample_tokens` only; the native router, combine, gate and norm kernels are float). The sampler's tail
+now accumulates in `strata::samp_acc_t`, float by default (`-DSTRATA_SYCL_SAMPLER_FP64=1` keeps double): A750 sampled decode
+7.62 -> 8.10 tok/s (medians of 5 interleaved pairs, runs 7.1-9.2), `sampler_parity` 0 failures on both cards, and the B70 gate's
+sampled cases picked the same tokens.
+
+**XMX.** oneMKL's FP16 GEMMs already run on the matrix engines; per expert the dequant (42 us for a gate/up matrix) costs
+twice the GEMM (20 us), and the fused dequant+XMX kernel (`xmx_gemm_bench`) is 0.22x of the pair on this card. The speed left
+on this card for this model is the dequant kernels (at ~200 GB/s against a 600 GB/s card), the host grouping, and the QSA
+prompt attention (14%); the multi-column int8 DPAS decode kernels of llama.cpp PR 29864 target K-quant and Q8_0 weights, not
+the IQ-quant experts, and were not ported.
 
 ## Measured, 2026-10-01, Arc Pro B70, Coder IQ1_M, 32K context, INT8 KV: the SYCL port (engine 0.1.31-sycl)
 

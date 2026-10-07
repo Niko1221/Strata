@@ -23,6 +23,7 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
+#include "strata/sycl_math.hpp"
 #include "strata/kernels/sampler.hpp"
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/emulate.hpp"
@@ -583,16 +584,16 @@ __dpct_inline__ void sampler_kernel(const float *__restrict__ logits,
 #pragma unroll
     for (int i = 1; i < k; ++i) mx = sycl::fmax(mx, sel_logit[i]);
     if (p.top_p < 1.0f) {
-        double sum = 0.0;
+        strata::samp_acc_t sum = 0.0;
 #pragma unroll
         for (int i = 0; i < k; ++i) sum +=
-            sycl::exp((double)sel_logit[i] - (double)mx);
-        double cum = 0.0;
+            sycl::exp((strata::samp_acc_t)sel_logit[i] - (strata::samp_acc_t)mx);
+        strata::samp_acc_t cum = 0.0;
         int cut = k;
 #pragma unroll
         for (int i = 0; i < k; ++i) {
-            cum += sycl::exp((double)sel_logit[i] - (double)mx) / sum;
-            if (cum >= (double) p.top_p) { cut = i + 1; break; }
+            cum += sycl::exp((strata::samp_acc_t)sel_logit[i] - (strata::samp_acc_t)mx) / sum;
+            if (cum >= (strata::samp_acc_t) p.top_p) { cut = i + 1; break; }
         }
         if (cut < p.min_keep) cut = p.min_keep < k ? p.min_keep : k;
         n_keep = cut;
@@ -613,17 +614,17 @@ __dpct_inline__ void sampler_kernel(const float *__restrict__ logits,
     float smx = scaled(0);
 #pragma unroll
     for (int i = 1; i < n_keep; ++i) smx = sycl::fmax(smx, scaled(i));
-    double sum = 0.0;
+    strata::samp_acc_t sum = 0.0;
 #pragma unroll
     for (int i = 0; i < n_keep; ++i) sum +=
-        sycl::exp((double)scaled(i) - (double)smx);
+        sycl::exp((strata::samp_acc_t)scaled(i) - (strata::samp_acc_t)smx);
     const float u = philox_uniform(p.seed, p.counter + (uint64_t) t);
-    double cum = 0.0;
+    strata::samp_acc_t cum = 0.0;
     int pick = sel_ids[n_keep - 1];
 #pragma unroll
     for (int i = 0; i < n_keep; ++i) {
-        cum += sycl::exp((double)scaled(i) - (double)smx) / sum;
-        if ((double) u < cum) { pick = sel_ids[i]; break; }
+        cum += sycl::exp((strata::samp_acc_t)scaled(i) - (strata::samp_acc_t)smx) / sum;
+        if ((strata::samp_acc_t) u < cum) { pick = sel_ids[i]; break; }
     }
     if (item_ct1.get_local_id(2) == 0) out[t] = pick;
 }
@@ -689,7 +690,7 @@ __dpct_inline__ void warp_first(float &bv, int &bi) {
 template <bool kProb = false>
 inline void sampled_tail_warp(const int *sel_ids, const float *sel_logit, int k,
                               const SamplerParams &p, int t,
-                              int *__restrict__ out, double *ex,
+                              int *__restrict__ out, strata::samp_acc_t *ex,
                               float *prob_out = nullptr) {
     const int lane =
         (int)(sycl::ext::oneapi::this_work_item::get_nd_item<3>().get_local_id(
@@ -703,9 +704,9 @@ inline void sampled_tail_warp(const int *sel_ids, const float *sel_logit, int k,
     if (p.top_p < 1.0f) {
 #pragma unroll
         for (int i = lane; i < k; i += 32)
-            ex[i] = sycl::exp((double)sel_logit[i] - (double)mx);
+            ex[i] = sycl::exp((strata::samp_acc_t)sel_logit[i] - (strata::samp_acc_t)mx);
         sycl::group_barrier(sycl::ext::oneapi::this_work_item::get_sub_group());
-        double sum = 0.0;
+        strata::samp_acc_t sum = 0.0;
         if (lane == 0)
 #pragma unroll
             for (int i = 0; i < k; ++i) sum += ex[i];
@@ -725,11 +726,11 @@ inline void sampled_tail_warp(const int *sel_ids, const float *sel_logit, int k,
         sycl::group_barrier(sycl::ext::oneapi::this_work_item::get_sub_group());
         int cut = k;
         if (lane == 0) {
-            double cum = 0.0;
+            strata::samp_acc_t cum = 0.0;
 #pragma unroll
             for (int i = 0; i < k; ++i) {
                 cum += ex[i];
-                if (cum >= (double) p.top_p) { cut = i + 1; break; }
+                if (cum >= (strata::samp_acc_t) p.top_p) { cut = i + 1; break; }
             }
         }
         /*
@@ -759,9 +760,9 @@ inline void sampled_tail_warp(const int *sel_ids, const float *sel_logit, int k,
         smx = sycl::fmax(smx, sel_logit[i] * inv_t);
 #pragma unroll
     for (int i = lane; i < n_keep; i += 32)
-        ex[i] = sycl::exp((double)(sel_logit[i] * inv_t) - (double)smx);
+        ex[i] = sycl::exp((strata::samp_acc_t)(sel_logit[i] * inv_t) - (strata::samp_acc_t)smx);
     sycl::group_barrier(sycl::ext::oneapi::this_work_item::get_sub_group());
-    double sum = 0.0;
+    strata::samp_acc_t sum = 0.0;
     if (lane == 0)
 #pragma unroll
         for (int i = 0; i < n_keep; ++i) sum += ex[i];
@@ -778,13 +779,13 @@ inline void sampled_tail_warp(const int *sel_ids, const float *sel_logit, int k,
     sycl::group_barrier(sycl::ext::oneapi::this_work_item::get_sub_group());
     if (lane == 0) {
         const float u = philox_uniform(p.seed, p.counter + (uint64_t) t);
-        double cum = 0.0;
+        strata::samp_acc_t cum = 0.0;
         int pi = n_keep > 0 ? n_keep - 1 : 0;
         int pick = sel_ids[pi];
 #pragma unroll
         for (int i = 0; i < n_keep; ++i) {
             cum += ex[i];
-            if ((double) u < cum) { pick = sel_ids[i]; pi = i; break; }
+            if ((strata::samp_acc_t) u < cum) { pick = sel_ids[i]; pi = i; break; }
         }
         out[t] = pick;
         if constexpr (kProb) *prob_out = n_keep > 0 ? (float) ex[pi] : 1.0f;
@@ -859,7 +860,7 @@ sampler_one_block_kernel(const float *__restrict__ logits, int n_vocab,
         *sycl::ext::oneapi::group_local_memory_for_overwrite<float[kSelMax]>(
             sycl::ext::oneapi::this_work_item::get_work_group<3>());
     auto &ex =
-        *sycl::ext::oneapi::group_local_memory_for_overwrite<double[kSelMax]>(
+        *sycl::ext::oneapi::group_local_memory_for_overwrite<strata::samp_acc_t[kSelMax]>(
             sycl::ext::oneapi::this_work_item::get_work_group<3>());
     auto &sv = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
         sycl::ext::oneapi::this_work_item::get_work_group<3>());
@@ -1146,7 +1147,7 @@ sampler_split_merge_kernel(const sycl::int2 *__restrict__ cand, int n_blocks,
         *sycl::ext::oneapi::group_local_memory_for_overwrite<float[kSelMax]>(
             sycl::ext::oneapi::this_work_item::get_work_group<3>());
     auto &ex =
-        *sycl::ext::oneapi::group_local_memory_for_overwrite<double[kSelMax]>(
+        *sycl::ext::oneapi::group_local_memory_for_overwrite<strata::samp_acc_t[kSelMax]>(
             sycl::ext::oneapi::this_work_item::get_work_group<3>());
     const sycl::int2 *src = cand + (size_t)t * n_blocks * k;
 #pragma unroll
@@ -1247,7 +1248,7 @@ __dpct_inline__ void coupled_merge_kernel(
         *sycl::ext::oneapi::group_local_memory_for_overwrite<float[kSelMax]>(
             sycl::ext::oneapi::this_work_item::get_work_group<3>());
     auto &ex =
-        *sycl::ext::oneapi::group_local_memory_for_overwrite<double[kSelMax]>(
+        *sycl::ext::oneapi::group_local_memory_for_overwrite<strata::samp_acc_t[kSelMax]>(
             sycl::ext::oneapi::this_work_item::get_work_group<3>());
     auto &pick = *sycl::ext::oneapi::group_local_memory_for_overwrite<int[1]>(
         sycl::ext::oneapi::this_work_item::get_work_group<3>());

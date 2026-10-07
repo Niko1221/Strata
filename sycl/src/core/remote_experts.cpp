@@ -160,7 +160,7 @@ void RemoteExperts::close() {
 bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
                          const std::vector<std::pair<int32_t, int32_t>> &ranked,
                          const ExpertCache &primary, ExpertSource &source,
-                         std::vector<uint8_t> &claimed, std::string &err) try {
+                         std::vector<uint8_t> &claimed, std::string &err, bool /*auto_size*/) try {
     close();
     int count = 0;
     if (!check(DPCT_CHECK_ERROR(count = dpct::device_count()),

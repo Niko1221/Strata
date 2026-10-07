@@ -9,7 +9,9 @@
 #include <cstring>
 #else
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -167,5 +169,30 @@ void advise_willneed(int fd, uint64_t offset, uint64_t bytes) {
         (void) posix_fadvise(fd, (off_t) (offset + at), (off_t) std::min(kAdviseStep, bytes - at), POSIX_FADV_WILLNEED);
 }
 #endif
+
+ProcIo proc_io_sample() {
+    ProcIo r;
+#if defined(__linux__)
+    if (std::FILE* f = std::fopen("/proc/self/io", "r")) {
+        char key[64];
+        unsigned long long v;
+        while (std::fscanf(f, "%63[^:]: %llu\n", key, &v) == 2)
+            if (std::strcmp(key, "read_bytes") == 0) { r.read_bytes = v; r.valid = true; }
+        std::fclose(f);
+    }
+    if (std::FILE* f = std::fopen("/proc/self/stat", "r")) {
+        char buf[1024];
+        const size_t n = std::fread(buf, 1, sizeof buf - 1, f);
+        buf[n] = 0;
+        std::fclose(f);
+        if (const char* p = std::strrchr(buf, ')')) {   // fields after the command: state ppid ... minflt cminflt majflt
+            unsigned long long minflt = 0, cminflt = 0, majflt = 0;
+            if (std::sscanf(p + 2, "%*c %*d %*d %*d %*d %*d %*u %llu %llu %llu", &minflt, &cminflt, &majflt) == 3)
+                r.major_faults = majflt;
+        }
+    }
+#endif
+    return r;
+}
 
 }  // namespace strata::platform

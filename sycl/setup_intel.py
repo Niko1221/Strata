@@ -1,6 +1,6 @@
 """setup.py for an Intel Arc: upstream's installer, steered onto the SYCL port from outside.
 
-    python sycl/setup_intel.py [setup.py's options]
+    ./setup.sh --backend sycl [setup.py's options]       (this file, run through setup.sh's virtual environment)
 
 The SYCL port keeps out of the shared files (upstream merges stay clean), so this does not edit setup.py: it imports
 it and replaces the few steps that are NVIDIA/AMD-specific, then runs setup's own main().  Everything else - the
@@ -75,7 +75,7 @@ def intel_gpus():
                 vram = (int(end, 16) - int(start, 16) + 1) / 2**30
             except (OSError, IndexError, ValueError):
                 vram = 0.0
-        found.append({"index": len(found), "name": f"Intel {name}", "vram_gb": vram, "arch": "xe", "driver": driver})
+        found.append({"index": len(found), "name": f"Intel {name}", "vram_gb": vram, "arch": driver, "driver": driver})
     return found
 
 
@@ -85,11 +85,7 @@ def sycl_engine():
         return None, "the SYCL port runs on Linux only"
     exe = next((b for b in (ROOT / "build-sycl-aot" / "strata", ROOT / "build-sycl" / "strata") if b.exists()), None)
     if exe is None:
-        return None, "it is not built (sycl/tools/build.sh; docs/INTEL.md)"
-    if not shutil.which("docker"):
-        return None, "docker is not installed (the engine runs in the oneAPI image)"
-    if subprocess.run(["docker", "image", "inspect", SYCL_IMAGE], capture_output=True).returncode != 0:
-        return None, f"the runtime image {SYCL_IMAGE} is missing (sycl/tools/Dockerfile)"
+        return None, "it is not built (docs/INTEL.md, \"How to build it\": Docker, then sycl/tools/build.sh in the image)"
     return exe, None
 
 
@@ -119,11 +115,24 @@ def drop(args, name, value=False):
         del args[i:i + 1 + int(value)]
 
 
-def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict) -> dict:
+SMALL_CARD_GB = 12.0       # under this the engine's own advice is --vram-reserve-mib 300 (a 1024 MiB reserve leaves an
+                           # 8 GB card no room for even one expert slot) and the English draft vocabulary
+SMALL_RESERVE_MIB = 300
+
+
+def small_card(vram_gb: float, driver: str) -> bool:
+    return 0 < vram_gb < SMALL_CARD_GB or driver == "i915"
+
+
+def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, driver: str = "xe") -> dict:
     """setup's config (written for its HIP path) -> the SYCL port's: the container's paths, experts streamed from the
-    GGUF into VRAM (every expert must fit, so the VRAM reserve is the smallest that leaves the KV and the prompt
-    buffers room - docs/INTEL.md), KV streaming from 64K up when the RAM holds the KV (the B70 at 256K decodes at
-    40+ tok/s with it, 4-9 without)."""
+    GGUF into VRAM (--stream-experts: the engine reads them from the GGUF and keeps what does not fit in a pinned RAM
+    mirror; the VRAM reserve is the smallest that leaves the KV and the prompt buffers room - docs/INTEL.md), KV
+    streaming from 64K up when the RAM holds the KV (the B70 at 256K decodes at 40+ tok/s with it, 4-9 without).
+    A reserve the user asked for (--vram-reserve-mib) is kept.  An i915 card (Alchemist, the A-series) cannot do that:
+    a single pinned host allocation above a few GB fails there, so the mirror cannot hold what the card does not, and
+    the config loads the experts into a RAM arena instead (no --stream-experts, --ple-io ram, and the device-built
+    verify plan's NO_HOST switch off - docs/INTEL.md, "Arc A750")."""
     args = list(cfg["args"])
     for f in ("--resident-experts", "--mmap-experts"):  # setup's low-RAM mode is the CUDA engine's
         drop(args, f)
@@ -138,17 +147,33 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict) -> dict:
     kv_ram = ctx * (13 * (576 if kv == "q4_0" else 1056)) / 1e9
     if kv != "k8v4" and ctx >= 65536 and ram >= kv_ram + 6:
         args += ["--kv-resident", "32768"]
-        S.ok(f"KV streaming on: the context's KV cache lives in RAM ({kv_ram:.1f} GB), every expert stays in VRAM")
+    asked_reserve = flag(args, "--vram-reserve-mib")    # setup writes it only when the user gave it
     drop(args, "--vram-reserve-mib", True)
-    args += ["--stream-experts", "--vram-reserve-mib", "1024" if ctx <= 32768 else "2048"]
-    if ctx > 32768:                                     # long contexts: 4096-token chunks keep the prompt buffers small
-        drop(args, "--prefill", True)
-        args += ["--prefill", "4096"]
+    reserve = asked_reserve or (str(SMALL_RESERVE_MIB) if small_card(vram_gb, driver) else
+                                "1024" if ctx <= 32768 else "2048")
+    host_arena = driver == "i915"
+    if host_arena:
+        if "--ple-io" not in args:
+            args += ["--ple-io", "ram"]
+        args += ["--vram-reserve-mib", reserve]
+    else:
+        args += ["--stream-experts", "--vram-reserve-mib", reserve]
+    if ctx > 32768 or vram_gb >= 24:                    # long contexts: 4096-token chunks keep the prompt buffers small; a
+        drop(args, "--prefill", True)                   # 24 GB+ card with part of the experts in the RAM mirror streams those
+        args += ["--prefill", "4096"]                   # over PCIe once per chunk, so fewer, bigger chunks read the prompt
+                                                        # faster (Arc Pro B70, IQ3_S, a 4,095-token prompt: 2,048-token
+                                                        # chunks 618 tok/s, 4,096: 1,002; docs/INTEL.md); it costs ~700 cache slots
     out = {k: v for k, v in cfg.items() if k not in ("lib_dirs", "env", "vision", "gpus")}
     out.update({"backend": "sycl", "exe": str(SYCL_WRAPPER), "args": args, "sycl_root": str(MOUNT)})
     env = {}
+    if host_arena:
+        env["STRATA_VERIFY_NO_HOST"] = "0"              # strata-sycl.sh sets 1 unless told otherwise (xe, every expert in VRAM)
+        # an Alchemist has no FP64 hardware: a kernel that declares double (one is on the sampled path) is refused at its
+        # first launch - "'double' is not supported in ... device", the engine dies on the first request with a
+        # temperature - unless the driver emulates it (docs/INTEL.md)
+        env.update({"IGC_EnableDPEmulation": "1", "OverrideDefaultFP64Settings": "1", "NEOReadDebugKeys": "1"})
     if exe != ROOT / "build-sycl-aot" / "strata":
-        env["STRATA_SYCL_BIN"] = str(exe.relative_to(ROOT))
+        env["STRATA_SYCL_BIN"] = exe.relative_to(ROOT).as_posix()
     if MOUNT.resolve() != ROOT.parent.resolve():
         env["STRATA_SYCL_ROOT"] = str(MOUNT)
     if env:
@@ -187,8 +212,11 @@ def install(argv) -> None:
     def say_intel(msg=""):
         """setup's words for its AMD path and its RAM rule, said for the Intel card."""
         msg = str(msg).replace("(AMD, experimental: docs/AMD_HIP.md)", "(Intel Arc: the SYCL port, docs/INTEL.md)")
-        msg = msg.replace("Your AMD GPUs:", "Your Intel GPUs:").replace("just run ./setup.sh", "just run sycl/setup_intel.py")
-        msg = msg.replace(f"RAM: {fake_ram:.0f} GB", f"RAM: {real_ram:.0f} GB (the experts are streamed into VRAM)")
+        msg = msg.replace("Your AMD GPUs:", "Your Intel GPUs:").replace("just run ./setup.sh", "just run ./setup.sh --backend sycl")
+        msg = re.sub(r"\b(xe|i915) \(AMD: docs/AMD_HIP\.md\)", r"\1 driver (Intel Arc: docs/INTEL.md)", msg)
+        where = ("the experts are loaded into RAM, the card computes the ones it holds" if intel[0]["driver"] == "i915"
+                 else "the experts are streamed into VRAM")
+        msg = msg.replace(f"RAM: {fake_ram:.0f} GB", f"RAM: {real_ram:.0f} GB ({where})")
         if re.match(r"\s+\S+\s+needs ~\d+ GB RAM:", msg):   # --check's CUDA verdicts: replaced by the Intel one
             m = msg.split()[0]
             d = S.MODELS.get(m, {})
@@ -207,11 +235,23 @@ def install(argv) -> None:
     S.hipblaslt_table = lambda *a, **k: None
     S.ram_gb = lambda: fake_ram                         # the experts are in VRAM: setup's RAM rule does not apply
 
+    bench_tips = S.bench_tips
+
+    def bench_tips_intel(args, env, ram, *a, **k):
+        """The tips as written for the CUDA engine, said with the real RAM (the 1024 GB above is only for the RAM rule);
+        the --prefill auto:32768 one was measured on the CUDA engine and is left out."""
+        return [t for t in bench_tips(args, env, real_ram, *a, **k) if "auto:32768" not in t]
+    S.bench_tips = bench_tips_intel
+
     write = S.write_run_script
 
     def write_run_script(model, cfg_path, port, open_browser=True):   # setup.write_run_script's signature (#870)
         cfg = json.loads(Path(cfg_path).read_text(encoding="utf-8"))
-        cfg = to_sycl(cfg, exe, real_ram, keep.get(Path(cfg_path).name, {}))
+        cfg = to_sycl(cfg, exe, real_ram, keep.get(Path(cfg_path).name, {}), intel[0]["vram_gb"], intel[0]["driver"])
+        need = S.MODELS.get(model, {}).get("ram_gb", 0)
+        if intel[0]["driver"] == "i915" and need and real_ram < need:
+            S.warn(f"{model} on this Arc loads its experts into RAM (about {need} GB; this PC has {real_ram:.0f} GB): "
+                   "the start will be slow or fail - a smaller model (--model) fits better (docs/INTEL.md)")
         Path(cfg_path).write_text(json.dumps(cfg, indent=1), encoding="utf-8")
         script = write(model, cfg_path, port, open_browser)
         script.write_text(script.read_text().replace(str(ROOT / "serve" / "server.py"), str(SERVER)))
@@ -229,6 +269,12 @@ def install(argv) -> None:
         os.execv("/bin/sh", ["/bin/sh", str(script)])
     S.start = start_sycl
 
+    argv = list(argv)
+    if small_card(intel[0]["vram_gb"], intel[0]["driver"]):   # the engine's own advice for a card this size
+        if "--draft-vocab" not in argv:
+            argv += ["--draft-vocab", "en"]             # ~110 MiB less VRAM than the default CJK subset
+        if "--vram-reserve-mib" not in argv:
+            argv += ["--vram-reserve-mib", str(SMALL_RESERVE_MIB)]
     sys.argv = [str(ROOT / "setup.py"), *argv]
     if "--backend" not in argv:
         sys.argv += ["--backend", "hip"]

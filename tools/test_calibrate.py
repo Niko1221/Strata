@@ -22,8 +22,9 @@ import calibrate as CAL  # noqa: E402
 class FakeEngine:
     """Speed = f(pcie_frac, spec_min_p, workers): the GEN line's tune keys arrive as `strata_tune`."""
 
-    def __init__(self, args, speed, info_workers=6, starts=None):
+    def __init__(self, args, speed, info_workers=6, starts=None, adapt=None):
         self.args = list(args)
+        self.adapt_bonus = (adapt or {}).get(CAL.arg_value(args, "--adapt-swaps"), 1.0)
         w = CAL.arg_value(args, "--pool-workers")
         self.workers = int(w) if w else info_workers
         self.info = {"pool_workers": info_workers, "pcie_frac": 0.55, "spec_min_p": float(CAL.arg_value(args, "--spec-min-p") or 0)}
@@ -36,6 +37,7 @@ class FakeEngine:
     def generate(self, ids, max_new, sampling, cancel):
         tune = sampling.get("strata_tune") or {}
         rate = self.speed(tune.get("pcie_frac", 0.55), tune.get("spec_min_p", self.info["spec_min_p"]), self.workers)
+        rate *= self.adapt_bonus
         for _ in range(max_new):
             yield 1
         self.last = {"generated": max_new, "decode_ms": max_new / rate * 1000.0}
@@ -45,9 +47,10 @@ BASE = ["--pack", "p", "--spec", "4", "--spec-min-p", "0.5", "--max-context", "8
 
 
 class Calibrate(unittest.TestCase):
-    def run_with(self, speed, workers=6, base=BASE):
+    def run_with(self, speed, workers=6, base=BASE, adapt=None):
         starts = []
-        res = CAL.measure(base, [[1, 2, 3]] * 3, lambda a: FakeEngine(a, speed, workers, starts), say=lambda *_: None)
+        res = CAL.measure(base, [[1, 2, 3]] * 3, lambda a: FakeEngine(a, speed, workers, starts, adapt),
+                          say=lambda *_: None)
         return res, starts
 
     def test_defaults_kept_when_flat(self):
@@ -71,8 +74,23 @@ class Calibrate(unittest.TestCase):
         # a hybrid CPU: half the workers is 20% faster
         res, starts = self.run_with(lambda f, p, w: 60.0 if w == 3 else 50.0, workers=6)
         self.assertEqual(res["settings"].get("--pool-workers"), "3")
-        self.assertEqual(len(starts), 1 + len(CAL.worker_candidates(6)))   # one start per worker count, plus the sweep
+        # one start per worker count and per expert-tier candidate, plus the sweep
+        self.assertEqual(len(starts), 1 + len(CAL.worker_candidates(6)) + len(CAL.ADAPT_CANDIDATES))
         self.assertEqual(CAL.arg_value(starts[0], "--spec-min-p"), "0.5")   # measured against the product default
+
+    def test_adaptive_tier(self):
+        # a slow-RAM PC: swapping 160 experts per round is 10% faster, 80 is 2% (noise)
+        res, starts = self.run_with(lambda f, p, w: 50.0, adapt={"160": 1.10, "80": 1.02})
+        self.assertEqual([res["settings"].get(f) for f in CAL.ADAPT_FLAGS], ["1", "160", "0.97"])
+        flat, _ = self.run_with(lambda f, p, w: 50.0, adapt={"160": 1.02})
+        self.assertFalse(any(f in flat["settings"] for f in CAL.ADAPT_FLAGS))
+        # the candidates are measured with the worker count chosen before
+        res, starts = self.run_with(lambda f, p, w: 60.0 if w == 3 else 50.0, workers=6, adapt={"160": 1.10})
+        self.assertEqual(res["settings"].get("--pool-workers"), "3")
+        self.assertTrue(all(CAL.arg_value(a, "--pool-workers") == "3" for a in starts[-len(CAL.ADAPT_CANDIDATES):]))
+        a = CAL.apply(BASE, res["settings"])
+        self.assertEqual(CAL.arg_value(a, "--adapt-swaps"), "160")
+        self.assertIsNone(CAL.arg_value(CAL.apply(a, {}), "--adapt-swaps"))   # an old calibration's tier goes
 
     def test_old_calibration_is_the_baseline_reset(self):
         # a config tuned earlier: the measurement starts from the product defaults, not from those values
