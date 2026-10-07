@@ -1991,8 +1991,6 @@ void launch_mmvq_multi_nc(dim3 grid, dim3 block, cudaStream_t s, const uint8_t* 
     }
 }
 
-template<int TY>
-
 // The multi kernels and the old kernels are 4-rows-to-a-block shapes (mmvq_multi_kernel hardcodes it), so they run
 // only in the default instantiation; an explicit-rows call (iq_mmvq_rows, the tuning table) takes the plain kernel.
 template<int TY, int ROWS = 4>
@@ -2762,11 +2760,11 @@ namespace {
 
 template<typename F> bool with_mmvq_rows(int rows, F&& f) {
     switch (rows) {
-        case 4: f(std::integral_constant<int, 4>{}); return true;
+        case kDefaultMmvqRows: f(std::integral_constant<int, kDefaultMmvqRows>{}); return true;
 #if STRATA_DECODE_VARIANTS
-        case 1: f(std::integral_constant<int, 1>{}); return true;
-        case 2: f(std::integral_constant<int, 2>{}); return true;
-        case 8: f(std::integral_constant<int, 8>{}); return true;
+#define STRATA_ROWS_CASE(v) case v: f(std::integral_constant<int, v>{}); return true;
+        STRATA_MMVQ_ROWS_VARIANTS(STRATA_ROWS_CASE)
+#undef STRATA_ROWS_CASE
 #endif
         default: return false;
     }
@@ -2774,11 +2772,11 @@ template<typename F> bool with_mmvq_rows(int rows, F&& f) {
 
 template<typename F> bool with_expert_rows(int rows, F&& f) {
     switch (rows) {
-        case 8: f(std::integral_constant<int, 8>{}); return true;
+        case kDefaultExpertRows: f(std::integral_constant<int, kDefaultExpertRows>{}); return true;
 #if STRATA_DECODE_VARIANTS
-        case 2: f(std::integral_constant<int, 2>{}); return true;
-        case 4: f(std::integral_constant<int, 4>{}); return true;
-        case 16: f(std::integral_constant<int, 16>{}); return true;
+#define STRATA_ROWS_CASE(v) case v: f(std::integral_constant<int, v>{}); return true;
+        STRATA_EXPERT_ROWS_VARIANTS(STRATA_ROWS_CASE)
+#undef STRATA_ROWS_CASE
 #endif
         default: return false;
     }
@@ -3659,6 +3657,7 @@ void native_expert_grouped_rows(const NativeExpertLayout& L, const unsigned long
 // ---------------------------------------------------------------- the decode tuning table (decode_tuning.hpp)
 DecodeIdentity decode_identity() {
     DecodeIdentity id;
+    id.space = kDecodeTuningSpace;
 #if defined(STRATA_USE_HIP)
     int dev = 0;
     hipDeviceProp_t p{};
@@ -3696,6 +3695,23 @@ const ActiveTuning& active_tuning() {
         const char* path = std::getenv("STRATA_DECODE_TUNING");
         if (path == nullptr || *path == '\0') return t;
 #if STRATA_DECODE_VARIANTS
+        // The table was measured against the default dispatch.  A knob that reroutes the decode kernels (the old
+        // per-column kernels, sub16 off, staging off/on, the experimental expert paths) makes those measurements -
+        // and the bitwise checks behind them - describe a different build; refuse rather than mis-apply them.
+        const char* knob = nullptr;
+        if (g_old_kernels) knob = "STRATA_OLD_IQ_MMVQ";
+        else if (g_no_sub16_gu) knob = "STRATA_NO_SUB16_GU";
+        else if (!g_stage_grid) knob = "STRATA_IQ_STAGE_GRID";
+        else if (g_stage_grid_mmvq) knob = "STRATA_IQ_STAGE_GRID_MMVQ";
+        else if (env_on("STRATA_EXPERT_V2")) knob = "STRATA_EXPERT_V2";
+        else if (env_on("STRATA_EXPERT_V2K")) knob = "STRATA_EXPERT_V2K";
+        else if (env_on("STRATA_TSUM")) knob = "STRATA_TSUM";
+        else if (env_on("STRATA_GROUPED_V1")) knob = "STRATA_GROUPED_V1";
+        if (knob) {
+            std::fprintf(stderr, "decode tuning: %s refused (%s reroutes the decode dispatch away from what the table "
+                                 "measured); the default kernel shapes stay\n", path, knob);
+            return t;
+        }
         const DecodeIdentity id = decode_identity();
         std::string err;
         if (!t.table.load(path, id, err)) {

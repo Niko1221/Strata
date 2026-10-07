@@ -16,7 +16,7 @@ void expect(bool ok, const char* what, const std::string& detail = {}) {
     }
 }
 
-DecodeIdentity me() { return DecodeIdentity{"gfx1100", 70253211, "0123456789abcdef"}; }
+DecodeIdentity me() { return DecodeIdentity{"gfx1100", 70253211, "0123456789abcdef", kDecodeTuningSpace}; }
 
 bool parse(const std::string& text, DecodeTuningTable& t, std::string& err) {
     std::istringstream in(text);
@@ -52,9 +52,11 @@ int main() {
     const Bad bad[] = {
         {"no header", "gu 18 2560 640 8\n", "header"},
         {"empty file", "", "empty"},
-        {"other arch", "STRATA_DECODE_TUNING_V1 gfx1101 70253211 0123456789abcdef\n", "gfx1101"},
-        {"other runtime", "STRATA_DECODE_TUNING_V1 gfx1100 60000000 0123456789abcdef\n", "runtime"},
-        {"other compiler", "STRATA_DECODE_TUNING_V1 gfx1100 70253211 fedcba9876543210\n", "compiler"},
+        {"other arch", "STRATA_DECODE_TUNING_V1 gfx1101 70253211 0123456789abcdef 2\n", "gfx1101"},
+        {"other runtime", "STRATA_DECODE_TUNING_V1 gfx1100 60000000 0123456789abcdef 2\n", "runtime"},
+        {"other compiler", "STRATA_DECODE_TUNING_V1 gfx1100 70253211 fedcba9876543210 2\n", "compiler"},
+        {"older table, no space", "STRATA_DECODE_TUNING_V1 gfx1100 70253211 0123456789abcdef\n", "run the tuner again"},
+        {"other selection space", "STRATA_DECODE_TUNING_V1 gfx1100 70253211 0123456789abcdef 1\n", "selection space 1"},
         {"short header", "STRATA_DECODE_TUNING_V1 gfx1100\n", "header needs"},
         {"unknown kernel", head + "attn 18 2560 640 8\n", "expected"},
         {"missing field", head + "gu 18 2560 640\n", "expected"},

@@ -10,8 +10,10 @@
 namespace strata::kernels {
 
 namespace {
-const int kExpertRows[] = {8, 4, 16, 2};   // default first
-const int kMmvqRows[] = {4, 2, 8, 1};
+#define ROW(v) v,
+const int kExpertRows[] = {8, STRATA_EXPERT_ROWS_VARIANTS(ROW)};   // default first
+const int kMmvqRows[] = {4, STRATA_MMVQ_ROWS_VARIANTS(ROW)};
+#undef ROW
 
 bool kernel_from_name(const std::string& s, DecodeKernel& k) {
     if (s == "gu") { k = DecodeKernel::GateUp; return true; }
@@ -61,7 +63,7 @@ std::string decode_toolchain_hash(const std::string& s) {
 
 std::string DecodeTuningTable::header(const DecodeIdentity& id) {
     std::ostringstream o;
-    o << "STRATA_DECODE_TUNING_V1 " << id.arch << ' ' << id.runtime << ' ' << id.toolchain;
+    o << "STRATA_DECODE_TUNING_V1 " << id.arch << ' ' << id.runtime << ' ' << id.toolchain << ' ' << id.space;
     return o.str();
 }
 
@@ -91,7 +93,12 @@ bool DecodeTuningTable::parse(std::istream& in, const DecodeIdentity& want, std:
             }
             DecodeIdentity got;
             if (!(ls >> got.arch >> got.runtime >> got.toolchain)) {
-                err = "line " + std::to_string(lineno) + ": the header needs <arch> <runtime> <toolchain>";
+                err = "line " + std::to_string(lineno) + ": the header needs <arch> <runtime> <toolchain> <space>";
+                return false;
+            }
+            if (!(ls >> got.space)) {
+                err = "line " + std::to_string(lineno) + ": made before the kernel selection space was tracked - "
+                      "the kernels have changed since; run the tuner again";
                 return false;
             }
             if (got.arch != want.arch) {
@@ -105,6 +112,11 @@ bool DecodeTuningTable::parse(std::istream& in, const DecodeIdentity& want, std:
             if (got.toolchain != want.toolchain) {
                 err = "made for an engine built by another compiler (" + got.toolchain + ", this build is " +
                       want.toolchain + "): run the tuner again";
+                return false;
+            }
+            if (got.space != want.space) {
+                err = "made for kernel selection space " + std::to_string(got.space) + ", this build is " +
+                      std::to_string(want.space) + " (the kernels changed): run the tuner again";
                 return false;
             }
             have_header = true;

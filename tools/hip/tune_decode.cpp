@@ -199,9 +199,28 @@ void run_grouped(ExpertBench& b, int w, int plan, int gu, int dn, hipStream_t s)
                                   b.scratch[w]->p, b.out[w]->as<float>(), gu, dn, s);
 }
 
+// The engine's own default: the real entry point, no table active in this process.  The default candidate and the
+// bitwise reference are THIS call (its heuristics may pick the multi sub-warp kernels), not an explicit-rows pair -
+// so the tuner's numbers describe the launch the engine actually makes without a table.
+void run_default(ExpertBench& b, int w, int plan, hipStream_t s) {
+    const Plan& p = *b.plans[w][(size_t) plan];
+    K::native_expert_grouped(b.L, p.ptr.as<unsigned long long>(), p.start.as<int32_t>(), p.count.as<int32_t>(),
+                             p.dst.as<int32_t>(), p.tok.as<int32_t>(), b.cap[w], b.cap[w], b.xq[w]->p,
+                             b.scratch[w]->p, b.out[w]->as<float>(), s, 0);
+}
+
 std::vector<uint8_t> grouped_output(ExpertBench& b, int w, int gu, int dn, hipStream_t s) {
     HIP_CHECK(hipMemsetAsync(b.out[w]->p, 0, b.out[w]->n, s));
     run_grouped(b, w, 0, gu, dn, s);
+    HIP_CHECK(hipStreamSynchronize(s));
+    std::vector<uint8_t> h(b.out[w]->n);
+    HIP_CHECK(hipMemcpy(h.data(), b.out[w]->p, h.size(), hipMemcpyDeviceToHost));
+    return h;
+}
+
+std::vector<uint8_t> default_output(ExpertBench& b, int w, hipStream_t s) {
+    HIP_CHECK(hipMemsetAsync(b.out[w]->p, 0, b.out[w]->n, s));
+    run_default(b, w, 0, s);
     HIP_CHECK(hipStreamSynchronize(s));
     std::vector<uint8_t> h(b.out[w]->n);
     HIP_CHECK(hipMemcpy(h.data(), b.out[w]->p, h.size(), hipMemcpyDeviceToHost));
@@ -214,6 +233,18 @@ double time_grouped(ExpertBench& b, int w, int gu, int dn, int reps, hipStream_t
     for (int i = 0; i < 2; ++i) run_grouped(b, w, i % np, gu, dn, s);
     HIP_CHECK(hipEventRecord(e0, s));
     for (int i = 0; i < reps; ++i) run_grouped(b, w, i % np, gu, dn, s);
+    HIP_CHECK(hipEventRecord(e1, s));
+    HIP_CHECK(hipEventSynchronize(e1));
+    float ms = 0.0f;
+    HIP_CHECK(hipEventElapsedTime(&ms, e0, e1));
+    return 1000.0 * ms / reps;
+}
+
+double time_default(ExpertBench& b, int w, int reps, hipStream_t s, hipEvent_t e0, hipEvent_t e1) {
+    const int np = (int) b.plans[w].size();
+    for (int i = 0; i < 2; ++i) run_default(b, w, i % np, s);
+    HIP_CHECK(hipEventRecord(e0, s));
+    for (int i = 0; i < reps; ++i) run_default(b, w, i % np, s);
     HIP_CHECK(hipEventRecord(e1, s));
     HIP_CHECK(hipEventSynchronize(e1));
     float ms = 0.0f;
@@ -402,15 +433,17 @@ int main(int argc, char** argv) {
         }
         ExpertBench b(K::native_expert_layout(gu_t, dn_t, o.n_embd, o.n_ff), o.pool_mib);
         make_expert_bench(b, o, rng);
-        // every candidate pair, checked bitwise against the default before it may be timed
+        // every candidate pair, checked bitwise against the engine's true default before it may be timed
         const std::vector<int> gc = K::decode_rows_candidates(K::DecodeKernel::GateUp);
         const std::vector<int> dc = K::decode_rows_candidates(K::DecodeKernel::Down);
         const int d0 = K::kDefaultExpertRows;
         std::vector<std::pair<int, int>> cands;
         std::vector<std::vector<uint8_t>> ref(3);
-        for (int w = 0; w < 3; ++w) ref[w] = grouped_output(b, w, d0, d0, s);
+        for (int w = 0; w < 3; ++w) ref[w] = default_output(b, w, s);
         for (int g : gc)
             for (int d : dc) {
+                if (g == d0 && d == d0) { cands.push_back({g, d}); continue; }   // the default pair IS the default
+                // path (timed as such below); comparing it bitwise to itself decides nothing
                 bool same = true;
                 for (int w = 0; w < 3 && same; ++w) same = grouped_output(b, w, g, d, s) == ref[w];
                 if (same) cands.push_back({g, d});
@@ -423,12 +456,14 @@ int main(int argc, char** argv) {
         Choice ch;
         const std::pair<int, int> best = choose(cands, {d0, d0}, o,
                                                 [&](const std::pair<int, int>& c, int w) {
+                                                    if (c.first == d0 && c.second == d0)
+                                                        return time_default(b, w, o.reps, s, e0, e1);
                                                     return time_grouped(b, w, c.first, c.second, o.reps, s, e0, e1);
                                                 }, ch);
         char line[256];
         std::snprintf(line, sizeof(line),
-                      "experts %d:%d (n_embd %lld, n_ff %lld): default 8/8 %.1f us, best %d/%d %.1f us%s\n", gu_t, dn_t,
-                      (long long) o.n_embd, (long long) o.n_ff, ch.default_us, best.first, best.second,
+                      "experts %d:%d (n_embd %lld, n_ff %lld): default chain %.1f us, best %d/%d %.1f us%s\n", gu_t,
+                      dn_t, (long long) o.n_embd, (long long) o.n_ff, ch.default_us, best.first, best.second,
                       ch.changed ? ch.confirm_best_us : ch.best_us,
                       ch.changed ? " (confirmed)" : " (kept the default)");
         report << line;

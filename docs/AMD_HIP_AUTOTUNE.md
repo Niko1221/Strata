@@ -48,8 +48,9 @@ paths (mmap, resident CPU experts, the staging buffer) were measured with that s
 How many rows share a block changes occupancy and scheduling but never the arithmetic: each row is still reduced
 by one warp, over the same lanes, in the same order. `tune_decode` checks this anyway:
 
-1. Every candidate's output is compared **byte for byte** with the default's before it may be timed. A
-   difference excludes the candidate, fails the run (exit 4), and nothing is written.
+1. Every candidate's output is compared **byte for byte** with the engine default's - the real `native_expert_grouped`
+   / `iq_mmvq` call, no table, with its own launch heuristics - before it may be timed. A difference excludes the
+   candidate, fails the run (exit 4), and nothing is written.
 2. The workload is the verify pass's: windows of 1, 3 and 5 tokens (weighted 0.2/0.3/0.5), `--hit-frac` of each
    token's 10 experts on the GPU, and experts drawn from a 768 MB pool. The pool is far larger than the 96 MB
    Infinity Cache, because decode streams around a gigabyte of experts per token and a cache-warm benchmark would lie.
@@ -59,9 +60,27 @@ by one warp, over the same lanes, in the same order. `tune_decode` checks this a
    only if the generated tokens are identical and decode is not slower. If two runs *without* the table already
    differ (an adaptive expert tier, for example), the token check is reported as not checkable and speed decides.
 
+## What a table row means
+
+A row names the rows per block of the **plain one-warp-per-row kernels** (`native_gu_kernel`, `native_down_kernel`,
+`mmvq_kernel`). The no-table default for split formats instead runs the multi decode-once kernels, whose rows per
+block is their own - so `16` in a table and `16` in the default's launch geometry are different mechanisms, and the
+tuner compares whole launches against the engine's default entry, not numbers against numbers. Two consequences:
+
+- A table row replaces the whole call. Kernels the table leaves at their default (no row, or the default value) run
+  the default dispatch chain, at the grid the parameter sizes - not necessarily the grid the no-table path would
+  have chosen. Outputs stay bitwise equal; only the block count can differ.
+- The `mmvq` key is `(type, n_in, n_out)` with no token-count axis: the winner is a blend over the 1/3/5-token
+  verify windows, which is the decode workload.
+
 The table is refused at engine start, with a message, unless its header matches the running engine: the GPU
-architecture, the HIP runtime version and a hash of the compiler that built the kernels. A rebuild with another
-ROCm needs a new run. CUDA builds compile only the default shapes and ignore the variable.
+architecture, the HIP runtime version, a hash of the compiler that built the kernels, and the kernel selection
+space (a version that bumps when the kernel set or the default dispatch changes - a table from an older engine is
+stale and the tuner is run again). It is also refused when a dispatch rerouting variable is set
+(`STRATA_OLD_IQ_MMVQ`, `STRATA_NO_SUB16_GU`, `STRATA_IQ_STAGE_GRID=0`, `STRATA_IQ_STAGE_GRID_MMVQ=1`,
+`STRATA_EXPERT_V2`, `STRATA_EXPERT_V2K`, `STRATA_TSUM`, `STRATA_GROUPED_V1`): the table was measured against the
+default dispatch, and a knob that reroutes it makes those measurements meaningless. CUDA builds compile only the
+default shapes and ignore the variable.
 
 ## What to expect
 
