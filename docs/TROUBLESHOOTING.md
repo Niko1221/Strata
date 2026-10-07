@@ -151,6 +151,35 @@ and a `TEMP`/`TMP` folder the engine cannot create files in (AMD's runtime compi
 files). If you start `strata.exe` by hand, fix them yourself: `set HIP_PATH=`, and point `TEMP` and `TMP` at a normal
 folder such as `C:\Temp`.
 
+**Windows AMD: the driver resets (VIDEO_ENGINE_TIMEOUT_DETECTED / screen flicker / the engine dies mid-answer).**
+Windows gives a GPU about 2 seconds to answer; when a graphics card does not, it resets the driver (a TDR): the screen
+flickers, the engine dies, and the Event Viewer shows `VIDEO_ENGINE_TIMEOUT_DETECTED` (#613, with #579 and #541 on
+Linux). Strata 0.1.39 and newer say "the GPU stopped responding" in the log. It was seen with KV streaming on
+(`--kv-resident 32768`, which setup turns on from 64K context) while reading a long prompt on a gfx1201 card. Try these
+in order, one at a time, and tell us what changed:
+1. **Send us the evidence.** The last ~80 lines of `strata-<model>.log` in the Strata folder (the server window shows
+   the same lines), your AMD driver version (AMD Software > System), your card and Windows version, the Strata
+   version, and the exact steps (context size, how long the prompt was, which app sent it). If Windows wrote a
+   dump, the newest `.dmp` in `C:\Windows\LiveKernelReports\WATCHDOG` (or `C:\Windows\Minidump`) helps; it holds no
+   chats, only the driver state.
+2. **Find the step that hangs:** add `"STRATA_PF_STEP_SYNC": "1"` to the `"env"` block of `strata-<model>.json`
+   and restart. The prompt path then waits for the GPU after each step and logs any step over 250 ms, so the log names
+   the step. It is slower; use it to diagnose, then take it out.
+3. **`"STRATA_KV_HOST_DMA": "1"`** in the same `"env"` block: no GPU kernel writes the RAM copy of the K/V during a
+   prompt, it is copied by DMA instead. Same answers.
+4. **No KV streaming:** run setup again and pick 32K context (or remove `--kv-resident` and its number from
+   `"args"` in the JSON, with a context that fits the VRAM).
+5. **A smaller prompt chunk:** change `--prefill` in `"args"` (for example `--prefill 512`): each GPU launch then does
+   less work between two checks by Windows. Prompts are read more slowly.
+6. **Optional, your decision: give Windows more time (`TdrDelay`).** The default is 2 seconds. In the registry,
+   `HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\GraphicsDrivers`, a DWORD `TdrDelay` of `10` (seconds)
+   lets a long GPU job finish before Windows resets the driver; restart the PC. It hides the symptom and does not fix
+   a GPU that has really hung, and a hung GPU then freezes the screen for those 10 seconds. Strata changes no Windows
+   setting itself; to undo it, delete the value.
+7. **Driver:** use the newest AMD Software release for your card (Adrenalin, not a Windows Update driver) and restart
+   after installing. If it started after a driver update, tell us both versions; going back one version is a fair
+   test.
+
 **Large pinned host allocations fail on ROCm although RAM is free.**
 See [AMD_HIP.md](AMD_HIP.md#model-and-serving-configuration): the mapped expert mode avoids the full pinned arena.
 

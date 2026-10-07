@@ -473,5 +473,46 @@ class LowRamUsesTheCarveOutOnly(unittest.TestCase):
         self.assertTrue(setup.low_ram_fits("IQ1_M", 24.0, 40.0))                            # a 40 GB dedicated card does
 
 
+class IgpuTextIsArchExact(unittest.TestCase):
+    """The owner's rule: setup never takes one AMD iGPU for another.  gfx1103 (Radeon 780M / 760M) gets its own text,
+    never the Strix Halo (gfx1151) lines; gfx1151 keeps its."""
+
+    def gpu(self, arch, name):
+        return {"arch": arch, "name": name, "uma": True, "dedicated_gb": 2.0, "shared_gb": 30.0, "vram_gb": 32.0}
+
+    def test_gfx1103_never_gets_strix_halo_text(self):
+        for win in (False, True):
+            with mock.patch.object(setup, "WIN", win):
+                text = chr(10).join(setup.igpu_notes(self.gpu("gfx1103", "AMD Radeon 780M Graphics"), 61.0))
+            self.assertIn("gfx1103", text)
+            self.assertIn("STRATA_EXPERIMENTAL_GFX1103=1", text)
+            for bad in ("gfx1151", "Ryzen AI Max", "STRIX_HALO", "Recommended model"):
+                self.assertNotIn(bad, text)
+            self.assertNotIn("Strix Halo (gfx1151", text)
+            self.assertNotIn("compiled here for gfx1151", text)
+
+    def test_gfx1151_keeps_strix_halo_text(self):
+        with mock.patch.object(setup, "WIN", False):
+            text = chr(10).join(setup.igpu_notes(self.gpu("gfx1151", "AMD Radeon 8060S"), 121.0))
+        self.assertIn("Strix Halo (gfx1151, Ryzen AI Max)", text)
+        self.assertIn("compiled here for gfx1151", text)
+        self.assertIn("docs/STRIX_HALO.md", text)
+        self.assertNotIn("gfx1103", text)
+
+    def test_other_chips_get_nothing(self):
+        for a in ("gfx1150", "gfx1152", "gfx1100", "gfx1201"):
+            self.assertEqual(setup.igpu_notes(self.gpu(a, "x"), 64.0), [])
+
+    def test_no_strix_halo_model_recommendation_for_gfx1103(self):
+        g = self.gpu("gfx1103", "AMD Radeon 780M Graphics")
+        self.assertFalse(setup.strix_halo_recommends(g, 128.0))
+        self.assertTrue(setup.strix_halo_recommends(self.gpu("gfx1151", "x"), 128.0))
+
+    def test_setup_prints_notes_through_the_exact_helper(self):
+        src = Path(setup.__file__).read_text(encoding="utf-8")
+        self.assertIn("igpu_notes(gpu, ram_gb())", src)
+        self.assertNotIn("strix_halo_notes(gpu, ram_gb())", src)
+
+
 if __name__ == "__main__":
     unittest.main()

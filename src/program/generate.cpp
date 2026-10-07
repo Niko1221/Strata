@@ -2615,6 +2615,22 @@ int main(int argc, char** argv) {
         // #486: the arena is the first large allocation and its size does not depend on the context, so what is
         // missing is held by something else: say how much was free
         cudaGetLastError();
+#if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)) && !defined(_WIN32)
+        // HIP sees no device at all and /dev/kfd exists but this user cannot open it: the missing render / video group,
+        // not another program holding the memory (0 MiB of 0 MiB would blame the wrong thing)
+        {
+            int n_hip = 0;
+            if ((cudaGetDeviceCount(&n_hip) != cudaSuccess || n_hip < 1) && ::access("/dev/kfd", F_OK) == 0 &&
+                ::access("/dev/kfd", R_OK | W_OK) != 0) {
+                cudaGetLastError();
+                std::fprintf(stderr, "strata generate: no GPU is visible (%s) and this user cannot open /dev/kfd "
+                                     "(permission denied): it is not another program holding the GPU. Add your user to "
+                                     "the render and video groups - sudo usermod -aG render,video $USER - then log out "
+                                     "and in again\n", cudaGetErrorString(ce));
+                return 1;
+            }
+        }
+#endif
         size_t free_b = 0, total_b = 0;
         cudaMemGetInfo(&free_b, &total_b);
         std::fprintf(stderr, "strata generate: cudaMalloc(%llu) for the weight arena failed (%s): %llu MiB of %llu "
@@ -3972,11 +3988,25 @@ int main(int argc, char** argv) {
                     const size_t cut = beside.find_last_of("\\/");
                     beside = (cut == std::string::npos ? std::string() : beside.substr(0, cut + 1)) + "amdhip64_7.dll";
                     if (GetFileAttributesA(beside.c_str()) != INVALID_FILE_ATTRIBUTES &&
-                        _stricmp(beside.c_str(), path) != 0)
+                        _stricmp(beside.c_str(), path) != 0) {
                         std::fprintf(stderr, "strata generate: WARNING: the HIP runtime in use is not the bundled one beside "
                                              "the engine (%s): if prompts fail with hipErrorInvalidDeviceFunction, tell the "
                                              "maintainers with this log (#1261)\n",
                                      beside.c_str());
+                        // #461: why the bundled one lost.  Its imports (rocm_kpack.dll and the C++ runtime) must be beside the
+                        // exe too; LoadLibraryEx on it with the search limited to its own folder says what is missing (126 =
+                        // a dependency).  A diagnostic only: the copy it loads is released at once and nothing is forced.
+                        SetLastError(0);
+                        HMODULE probe = LoadLibraryExA(beside.c_str(), nullptr,
+                                                       LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+                        const DWORD le = probe != nullptr ? 0 : GetLastError();
+                        if (probe != nullptr) FreeLibrary(probe);
+                        std::fprintf(stderr, "strata generate: the bundled runtime beside the engine %s (GetLastError %lu)%s\n",
+                                     probe != nullptr ? "loads on its own" : "does NOT load", (unsigned long) le,
+                                     le == 126 ? ": a DLL it imports is missing from the engine's folder (rocm_kpack.dll, "
+                                                 "msvcp140.dll, vcruntime140.dll, vcruntime140_1.dll); run START-HERE.bat "
+                                                 "again (0.1.40.3 and later copy them)" : "");
+                    }
                 }
             }
         }
@@ -4174,6 +4204,27 @@ int main(int argc, char** argv) {
         // under WDDM an over-subscribed allocation does not fail, it pages to system memory and crawls.
         // (with borrowing - the default with a profile - the prompt path lends cache slots instead; `pf_borrow` is
         // the predicate a local `borrow` was here, hoisted above so both cache-size branches read the same one)
+        // #1376: under WDDM the free figure read here runs high, and what is allocated after the cache (the verify
+        // windows, the prompt path) comes out of the reserve.  0.1.40 ended a 20 GB RX 7900 XT with 2,170 MiB free
+        // (its write-back check cut the cache); 0.1.40.2 passed that check with the default 700 MiB and ended with
+        // 323 MiB, where Windows paged and decode fell from 52 to 21-25 tok/s.  --vram-reserve-mib 2600 fixed it.  So on
+        // Windows HIP an auto cache on a card of 16 GiB or more keeps a floor of kWddmAutoReserveMib.  CUDA on Windows is
+        // left as it was: the same 0.1.40 / 0.1.40.2 pair on an RTX 5070 ended with the same slots and free VRAM, and a
+        // floor there would only cost 16 GB+ NVIDIA cards ~1.8 GiB of cache.  A reserve given on the command line is
+        // kept as it is; a smaller card keeps its own sizing (#496 lowers the reserve further when the cache would not
+        // fit); and this is said, never silent.  The cache size changes no output bit.
+        constexpr int kWddmAutoReserveMib = 2560;
+        if (!o.vram_reserve_given && o.vram_reserve_mib < kWddmAutoReserveMib) {
+#if defined(_WIN32) && defined(STRATA_USE_HIP)
+            size_t fb_now = 0, tb_now = 0;
+            if (cudaMemGetInfo(&fb_now, &tb_now) == cudaSuccess && tb_now >= (16ull << 30)) {
+                std::fprintf(stderr, "strata generate: expert cache auto: Windows keeps %d MiB free after the cache on a card "
+                                     "this size (the default %d MiB left 323 MiB on a 20 GB card and Windows paged, #1376); "
+                                     "--vram-reserve-mib N sets it\n", kWddmAutoReserveMib, o.vram_reserve_mib);
+                o.vram_reserve_mib = kWddmAutoReserveMib;
+            }
+#endif
+        }
         const int64_t prefill_mib = owned_prefill_mib();
         // the draft layer's head and logits are allocated when it binds, after this: 0.1.27's CJK subset made them
         // ~110-180 MiB larger, and out of the reserve they left 16 GB cards below the stall line (#199)

@@ -10,7 +10,15 @@
 #
 # Device code is JIT-compiled from SPIR-V unless STRATA_SYCL_AOT names a device (bmg-g31 for the Arc Pro B70).
 cmake_minimum_required(VERSION 3.24)
-project(strata_sycl VERSION 0.1.40 LANGUAGES C CXX)   # the upstream engine version this port tracks
+# the engine's version is the project's (../CMakeLists.txt): the log line and BUILD.json say 0.1.40.2, not a number of the port's own
+file(STRINGS ${CMAKE_CURRENT_SOURCE_DIR}/../CMakeLists.txt _strata_proj REGEX "^project\\(strata VERSION [0-9.]+")
+string(REGEX MATCH "VERSION ([0-9.]+)" _m "${_strata_proj}")
+if(CMAKE_MATCH_1)
+  set(STRATA_SYCL_VERSION ${CMAKE_MATCH_1})
+else()
+  set(STRATA_SYCL_VERSION 0.1.40.2)
+endif()
+project(strata_sycl VERSION ${STRATA_SYCL_VERSION} LANGUAGES C CXX)
 set(STRATA_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -18,9 +26,20 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
-add_compile_definitions(STRATA_VERSION="${PROJECT_VERSION}-sycl")
+add_compile_definitions(STRATA_VERSION="${PROJECT_VERSION}")
 
 set(STRATA_SYCL_AOT "" CACHE STRING "AOT device for the GPU code, e.g. bmg-g31 (empty: SPIR-V, JIT at run time)")
+# The device spins on host flags are bounded (include/strata/sycl_doorbell.hpp). The B-series keeps 20,000 reads; any
+# other build - the A-series JIT build - waits up to 2,000,000, which the host's per-layer CPU expert work needs there.
+set(STRATA_SYCL_SPIN_MAX "" CACHE STRING "bound of the device's spins on host flags, in reads (empty: 20000 for a bmg AOT build, else 2000000)")
+if(NOT STRATA_SYCL_SPIN_MAX)
+  if(STRATA_SYCL_AOT MATCHES "^bmg")
+    set(STRATA_SYCL_SPIN_MAX 20000)
+  else()
+    set(STRATA_SYCL_SPIN_MAX 2000000)
+  endif()
+endif()
+add_compile_definitions(STRATA_SYCL_SPIN_MAX=${STRATA_SYCL_SPIN_MAX}u)
 set(_sycl_flags -fsycl)
 if(STRATA_SYCL_AOT)
   list(APPEND _sycl_flags -fsycl-targets=spir64_gen)

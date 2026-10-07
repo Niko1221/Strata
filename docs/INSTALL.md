@@ -109,6 +109,12 @@ The same idea, in a container (NVIDIA cards).
    volume needs no setup pass: `-e MODEL=Q2_0 -e FAMILY=coder` picks that model's config. Add
    `-e REINSTALL=1` only to change settings for a model already set up (context, vision, KV, host,
    api_key, LOW_RAM), since those are recorded in its config.
+   `MODEL` (with `FAMILY`) selects `/data/config/strata-<model>.json` (the model name in lowercase), so
+   `-e MODEL=IQ3_S.1X4-BATCH9` starts `/data/config/strata-iq3_s.1x4-batch9.json`: that is the way to keep
+   several configs of one model on one volume. `-e CONFIG=/data/config/my.json` overrides it with any
+   config file. A link `/opt/strata/strata-<model>.json` that already points into `/data/config/` (made by
+   a pod command before the entrypoint runs) is kept. The entrypoint prints one `Config:` line naming the
+   file the server starts with.
    Strata loads 32-62 GB into RAM. `--gpus all` on a host with two usable cards takes both: the
    layer split is setup's recommended default ([MULTI_GPU.md](MULTI_GPU.md)), and a volume
    set up for one card switches to the pair on its first start there. Pin one card with `-e GPU=0`,

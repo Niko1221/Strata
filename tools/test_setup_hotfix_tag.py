@@ -20,8 +20,9 @@ import setup  # noqa: E402
 
 class HotfixTag(unittest.TestCase):
     def test_a_four_part_version_compares_all_four_numbers(self):
-        ver = tuple(int(x) for x in "0.1.40.2".split(".")[:4] if x.isdigit())
-        self.assertEqual(ver, (0, 1, 40, 2))
+        ver = tuple(int(x) for x in ".".join(map(str, setup.MIN_ENGINE)).split(".")[:4] if x.isdigit())
+        self.assertEqual(ver, setup.MIN_ENGINE)
+        self.assertEqual(len(ver), 4)
         self.assertGreaterEqual(ver, setup.MIN_ENGINE)
         self.assertLess((0, 1, 40), setup.MIN_ENGINE)       # an installed 0.1.40 engine is replaced
 
