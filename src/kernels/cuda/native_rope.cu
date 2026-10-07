@@ -217,6 +217,43 @@ void native_rope_apply(const float* x, float* out, int rows, int head_dim,
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
 }
 
+// ---- DFlash full-head NeoX rotation (docs/DFLASH.md).  One thread per PAIR of one head row:
+// angle = pos * theta^(-2*pair/head_dim), out1 = a*c - b*s, out2 = b*c + a*s - the ggml NeoX
+// reading with EVERY dimension rotated (n_rot == head_dim), unscaled.
+__global__ void dflash_rope_kernel(const float* x, float* out, int head_dim, float theta_scale,
+                                   const int* positions) {
+    const int row = blockIdx.y;
+    const int pair = blockIdx.x * blockDim.x + threadIdx.x;
+    if (pair >= head_dim / 2) return;
+    const float inv = powf(theta_scale, (float) pair);
+    const float ang = (float) positions[row] * inv;
+    const float c = cosf(ang), s = sinf(ang);
+    const float a = x[row * head_dim + pair], b = x[row * head_dim + pair + head_dim / 2];
+    out[row * head_dim + pair] = a * c - b * s;
+    out[row * head_dim + pair + head_dim / 2] = b * c + a * s;
+}
+
+void dflash_rope_neox_apply(const float* x, float* out, int rows, int head_dim, double theta,
+                            const int* positions, void* stream) {
+    if (!x || !out || !positions || !stream || rows < 1 || rows > 65535 || head_dim == 0 ||
+        head_dim % 2 || head_dim > 1024 || !(theta > 0.0) ||
+        reinterpret_cast<uintptr_t>(x) % 4 || reinterpret_cast<uintptr_t>(out) % 4 ||
+        reinterpret_cast<uintptr_t>(positions) % 4) {
+        throw std::invalid_argument("dflash RoPE requires aligned F32 rows, a positive theta and an explicit stream");
+    }
+    const size_t bytes = size_t(rows) * head_dim * sizeof(float);
+    if ((x != out && overlaps(x, bytes, out, bytes)) ||
+        overlaps(positions, size_t(rows) * sizeof(int), out, bytes) ||
+        overlaps(positions, size_t(rows) * sizeof(int), x, bytes)) {
+        throw std::invalid_argument("dflash RoPE buffers partially overlap");
+    }
+    const float theta_scale = powf((float) theta, -2.0f / (float) head_dim);
+    const dim3 grid((unsigned) ((head_dim / 2 + 127) / 128), (unsigned) rows);
+    dflash_rope_kernel<<<grid, 128, 0, static_cast<cudaStream_t>(stream)>>>(x, out, head_dim, theta_scale, positions);
+    const auto error = cudaGetLastError();
+    if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
+}
+
 void native_qsa_rms_norm_rope(const float* x, int in_stride, const float* gamma, float* out,
                               int rows, int head_dim, int n_rot, float epsilon,
                               const RopeScaling& scaling, const int* positions, void* stream) {
