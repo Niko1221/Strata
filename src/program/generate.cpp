@@ -5450,6 +5450,12 @@ int main(int argc, char** argv) {
                         : nullptr;
         if (why != nullptr) adapt_async_off(why);
     }
+    if (const char* seed = std::getenv("STRATA_EXCHANGE_SEED_PROFILE_TAIL"); seed && std::strcmp(seed,"0")) {
+        if (std::strcmp(seed,"1") || !o.resident_cpu_experts || o.adapt_every <= 0 || o.adapt_swaps <= 0 || !o.adapt_async || !o.serve || o.batch > 1 || o.pipeline_windows || multi_gpu || peer.valid() || remote_opt || !o.no_prefill_borrow) {
+            std::fprintf(stderr,"strata: STRATA_EXCHANGE_SEED_PROFILE_TAIL must be 0/1 and requires resident RAM with adaptive exchanges\n");
+            return 1;
+        }
+    }
     if (o.resident_cpu_experts) {
         int64_t lend_from = -1;
         if (o.prefill_chunk > 0 && !o.no_prefill_borrow && d_res != nullptr && xcache.slots() > 0) {
@@ -5497,6 +5503,19 @@ int main(int argc, char** argv) {
                 !src.reserve_exchanges(std::min<int64_t>(o.adapt_swaps, 96), err)) {
                 std::fprintf(stderr, "strata generate: CPU expert residency: %s\n", err.c_str());
                 return 1;
+            }
+            if (src.retained_exchange_capacity() && (!o.serve || !o.adapt_async || multi_gpu || peer.valid() || adapt_nowait() || !o.no_prefill_borrow || o.batch > 1 || o.pipeline_windows || remote_opt)) {
+                std::fprintf(stderr, "strata: retained-copy experiment requires single-GPU serving and ADAPT_NOWAIT=0\n");
+                return 1;
+            }
+            if (src.retained_exchange_capacity() && (!std::getenv("STRATA_EXCHANGE_SEED_PROFILE_TAIL") || std::strcmp(std::getenv("STRATA_EXCHANGE_SEED_PROFILE_TAIL"),"1"))) {
+                std::fprintf(stderr,"strata: retained originals require fixed profile-tail seeds\n"); return 1;
+            }
+            if (const char* seed = std::getenv("STRATA_EXCHANGE_SEED_PROFILE_TAIL"); seed && std::strcmp(seed,"0")) {
+                if (std::strcmp(seed,"1") || !src.seed_exchange_profile_tail(xcache, profile, err)) {
+                    std::fprintf(stderr, "strata: profile-tail RAM seeding failed: %s\n", err.c_str());
+                    return 1;
+                }
             }
             std::fprintf(stderr, "strata generate: resident RAM mode: %.2f GiB of experts in RAM (%s), %lld in the GPU "
                                  "cache; adaptive swaps %s\n",
@@ -6928,12 +6947,12 @@ int main(int argc, char** argv) {
                 if (slot < 0) continue;
                 // an exchange (as resident_stage_swaps): `in` from the RAM copy, `out` held by its slot alone takes its
                 // place there; otherwise `out` is in the copy already (the lend region) or `in` is not (a RAM budget)
-                const bool x = src.has_resident(c.layer, c.in) && !src.has_resident(c.layer, c.out);
+                const bool x = src.has_resident(c.layer, c.in) && (src.retained_exchange_capacity() || !src.has_resident(c.layer, c.out));
                 aswaps.push_back({c.layer, c.in, c.out, slot, multi_gpu ? stage_of(c.layer) : 0, (int64_t) aswaps.size(), x});
             }
             for (AHome& h : ahomes) h.used = false;
             for (const ASwap& w : aswaps) {
-                if (!w.exchange) continue;
+                if (!w.exchange || (src.retained_exchange_capacity() && src.has_resident(w.layer,w.out))) continue;
                 AHome& h = ahomes[(size_t) w.home];
                 const strata::core::OnDevice on(h.dev);
                 if (const cudaError_t e = cudaMemcpyAsync(src.exchange_buffer(w.j), h.cache->device_slot(w.slot),
@@ -9785,6 +9804,10 @@ int main(int argc, char** argv) {
                 std::printf("ERR %s\n", err.c_str());
                 return 1;
             }
+            if (src.retained_exchange_capacity())
+                std::fprintf(stderr, "strata retained copies: %zu/%zu experts, avoided_D2H_bytes=%llu (cumulative payload)\n",
+                             src.retained_exchange_count(), src.retained_exchange_capacity(),
+                             (unsigned long long)src.avoided_eviction_bytes());
             if (dec_timing && dec_windows > 0) {
                 const DecSnap d1 = dec_snap();
                 const double w = (double) dec_windows, L = (double) g.n_layers;

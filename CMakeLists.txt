@@ -1,6 +1,6 @@
-﻿# Strata Engine - top-level build (P1.S1).
+# Strata Engine - top-level build (P1.S1).
 #
-# Targets (phase-1 Ă‚Â§P1.S1): `strata_artifact` (no CUDA dependency), `tests`.  `strata_plan` and the C++
+# Targets (phase-1 Ä‚â€šÃ‚Â§P1.S1): `strata_artifact` (no CUDA dependency), `tests`.  `strata_plan` and the C++
 # `strata-pack` are added when their sources exist - a target with no sources would make the build graph
 # claim something the tree does not have, which is worse than an absent target.
 #
@@ -1440,4 +1440,12 @@ if(STRATA_HIP_GFX906)
     target_compile_definitions(strata_mmq PRIVATE GGML_USE_HIP)
   endif()
   set_source_files_properties(${_strata_cu} PROPERTIES LANGUAGE HIP)
+endif()
+
+if(STRATA_BUILD_TESTS)
+  add_executable(retained_exchange_storage_test tests/core/retained_exchange_storage_test.cpp)
+  target_include_directories(retained_exchange_storage_test PRIVATE include)
+  target_link_libraries(retained_exchange_storage_test PRIVATE Threads::Threads)
+  add_test(NAME retained_exchange_storage_test COMMAND retained_exchange_storage_test)
+  set_tests_properties(retained_exchange_storage_test PROPERTIES TIMEOUT 60)
 endif()
