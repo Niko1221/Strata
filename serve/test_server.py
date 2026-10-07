@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import socket
+import platform
 import sys
 import tempfile
 import threading
@@ -4087,8 +4088,99 @@ class AppleTelemetry(unittest.TestCase):
             g = telemetry.gpu_reader(0)
             self.assertIsInstance(g, telemetry._Apple)
             self.assertTrue(g.ok())
-            self.assertEqual(g.read(), {"util": 37, "mem_used": 477233152, "mem_total": 64 << 30})
+            fake = mock.Mock(read=mock.Mock(return_value={"power": 6.5, "temp": 58.9}))
+            with mock.patch.object(telemetry._MacSensors, "get", return_value=fake):
+                self.assertEqual(g.read(), {"util": 37, "mem_used": 477233152, "mem_total": 64 << 30,
+                                            "unified": True, "power": 6.5, "temp": 58.9})
+            fake.read.assert_called_once_with(37)                     # the load decides a stuck power counter
             self.assertIsInstance(telemetry.gpu_reader(0, amd=True), telemetry._Amd)   # an explicit AMD path stays
+
+    def test_chip_temp_is_the_hottest_die_sensor(self):
+        from serve import telemetry
+        readings = [("PMU tdie1", 57.2), ("PMU tdie3", 59.3), ("PMU tdev3", -9201.1),   # tdev: an idle sensor
+                    ("PMU tcal", 70.0), ("NAND CH0 temp", 61.0), ("PMU tdie9", float("nan"))]
+        self.assertEqual(telemetry.chip_temp(readings), 59.3)        # die sensors only: not tcal, the SSD or NaN
+        self.assertIsNone(telemetry.chip_temp([("PMU tdev1", -9202.9)]))
+        self.assertIsNone(telemetry.chip_temp([("PMU tdieBogus", 60.0), ("PMU tdie", 61.0), ("PMU tdie3x", 99.0)]))   # exactly tdie<number>
+        self.assertIsNone(telemetry.chip_temp([]))
+
+    def test_energy_watts(self):
+        from serve import telemetry
+        self.assertAlmostEqual(telemetry.energy_watts(5_678_467_559, "nJ", 1.0), 5.678467559)
+        self.assertAlmostEqual(telemetry.energy_watts(4270, "mJ", 2.0), 2.135)
+        self.assertIsNone(telemetry.energy_watts(10, "furlongs", 1.0))
+        self.assertIsNone(telemetry.energy_watts(10, "mJ", 0))
+        self.assertIsNone(telemetry.energy_watts(-1, "mJ", 1.0))      # a counter that went backwards
+        self.assertIsNone(telemetry.energy_watts(10, "mJ", float("inf")))   # not a believable 0 W
+        self.assertIsNone(telemetry.energy_watts(float("nan"), "mJ", 1.0))
+
+    def sensors(self, watts, temps):
+        from serve import telemetry
+        m = object.__new__(telemetry._MacSensors)                     # no IOKit: the read rules only
+        m.lock, m.power_ok, m.temp_ok, m.zero_streak = threading.Lock(), True, True, 0
+        m.gpu_watts = mock.Mock(side_effect=watts) if isinstance(watts, (Exception, list)) else mock.Mock(return_value=watts)
+        m.temps = mock.Mock(side_effect=temps) if isinstance(temps, Exception) else mock.Mock(return_value=temps)
+        return m
+
+    def test_mac_sensor_read_rules(self):
+        self.assertEqual(self.sensors(6.8, [("PMU tdie1", 59.0)]).read(40), {"power": 6.8, "temp": 59.0})
+        self.assertEqual(self.sensors(0.0, []).read(0), {"power": 0.0, "temp": None})          # an idle GPU: 0 W
+        self.assertIsNone(self.sensors(float("inf"), []).read(1)["power"])     # JSON (RFC 8259): finite only
+
+    def test_a_stopped_counter_reads_none_only_after_a_streak(self):
+        m = self.sensors([0.0, 0.0, 0.0, 0.0, 5.0, 0.0], [])
+        got = [m.read(55)["power"] for _ in range(6)]
+        self.assertEqual(got, [0.0, 0.0, None, None, 5.0, 0.0])      # 3 busy zeros in a row: stale; a reading resets
+        self.assertEqual(self.sensors([0.0] * 5, []).read(5)["power"], 0.0)   # a nearly idle GPU: zero is real
+
+    def test_power_and_temperature_fail_separately(self):
+        m = self.sensors(OSError("IOReport gone"), [("PMU tdie2", 57.0)])
+        self.assertEqual(m.read(10), {"power": None, "temp": 57.0})
+        self.assertEqual(m.read(10), {"power": None, "temp": 57.0})
+        m.gpu_watts.assert_called_once()                              # off from then on; the temperature keeps reading
+        t = self.sensors(4.0, OSError("HID gone"))
+        self.assertEqual((t.read(10), t.read(10)), ({"power": 4.0, "temp": None}, {"power": 4.0, "temp": None}))
+        t.temps.assert_called_once()
+
+    def test_the_off_switch_is_checked_under_the_lock(self):
+        inside = threading.Event()
+
+        def fail():                                                   # thread A fails while holding the lock
+            inside.set()
+            time.sleep(0.2)
+            raise OSError("IOReport gone")
+        m = self.sensors(OSError("unused"), [])
+        m.gpu_watts = mock.Mock(side_effect=fail)
+        a = threading.Thread(target=m.read, args=(50,))
+        a.start()
+        inside.wait(5)
+        b = threading.Thread(target=m.read, args=(50,))               # B arrives while A still has it on
+        b.start()
+        a.join(5)
+        b.join(5)
+        m.gpu_watts.assert_called_once()                              # B saw A's "off" once it got the lock
+
+    def test_free_vram_does_not_touch_the_power_counter(self):
+        from serve import telemetry
+        with mock.patch.object(telemetry, "metal_working_set_bytes", return_value=64 << 30), \
+                mock.patch.object(telemetry.sys, "platform", "darwin"), \
+                mock.patch("subprocess.run", return_value=mock.Mock(stdout=self.LINE)), \
+                mock.patch.object(telemetry._MacSensors, "get") as get:
+            self.assertEqual(telemetry.free_vram_mib(0), ((64 << 30) - 477233152) >> 20)
+        get.assert_not_called()                                       # the sampler's interval stays its own
+
+    @unittest.skipUnless(sys.platform == "darwin" and platform.machine() == "arm64", "an Apple Silicon Mac")
+    def test_live_mac_sensors(self):
+        from serve import telemetry
+        m = telemetry._MacSensors()                                   # a fresh one: its first read has no baseline
+        self.assertTrue(m.power_ok and m.temp_ok)
+        first = m.read(None)
+        self.assertIsNone(first["power"])                             # no earlier sample to compare with
+        time.sleep(0.3)
+        second = m.read(None)
+        self.assertIsInstance(second["power"], float)
+        self.assertGreaterEqual(second["power"], 0.0)
+        self.assertTrue(second["temp"] is None or 0.0 < second["temp"] < 130.0, second["temp"])
 
 
 class AmdTelemetry(unittest.TestCase):

@@ -1,5 +1,7 @@
 """Request inspection through HTTP; no native model or GPU is required."""
 import json
+import shutil
+import subprocess
 import threading
 import time
 import unittest
@@ -255,6 +257,47 @@ class ConversationCacheCard(unittest.TestCase):
         for el in ("cc-card", "cc-slots-text", "cc-mem-text", "cc-facts", "cc-note"):
             self.assertIn(f'id="{el}"', html)
             self.assertIn(f'"{el}"', js)
+
+
+@unittest.skipUnless(shutil.which("node"), "node is not installed")
+class MonitorTiles(unittest.TestCase):
+    """The Monitor's GPU temp / Power / PCIe tiles, rendered by app.js itself (node, fixtures/monitor_tiles.js)."""
+
+    def tiles(self, hw):
+        here = Path(__file__).parent
+        out = subprocess.run(["node", str(here / "fixtures" / "monitor_tiles.js"), str(here / "web" / "app.js"),
+                              json.dumps(hw)], capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout.strip().splitlines()[-1])
+
+    def test_a_mac_gpu(self):
+        t = self.tiles({"gpu_unified": True, "gpu_temp": 59.1, "gpu_power": 6.8})
+        self.assertEqual(t["temp"]["value"], "59<small>°C</small>")
+        self.assertIn("not a GPU-only", t["temp"]["sub"])            # a die sensor, and it says so
+        self.assertEqual(t["power"]["value"], "6.8<small>W</small>")  # under 10 W: one decimal
+        self.assertEqual(t["pcie"]["value"], "n/a")                  # no PCIe link to report, not a dash
+        self.assertIn("integrated", t["pcie"]["sub"])
+
+    def test_a_mac_gpu_without_sensors_shows_dashes(self):
+        t = self.tiles({"gpu_unified": True, "gpu_temp": None, "gpu_power": None})
+        self.assertEqual((t["temp"]["value"], t["temp"]["sub"], t["power"]["value"]), ("–", "", "–"))
+        self.assertEqual(t["pcie"]["value"], "n/a")
+
+    def test_small_and_zero_power(self):
+        t = self.tiles([{"gpu_unified": True, "gpu_power": 0.4}, {"gpu_unified": True, "gpu_power": 0}])
+        self.assertEqual([x["power"]["value"] for x in t], ["0.4<small>W</small>", "0.0<small>W</small>"])  # not "–"
+
+    def test_switching_from_a_mac_reading_leaves_no_mac_labels(self):
+        mac, card = {"gpu_unified": True, "gpu_temp": 59.1, "gpu_power": 6.8}, \
+            {"gpu_temp": 61, "gpu_power": 120, "gpu_pcie_gen": 4, "gpu_pcie_width": 16}
+        t = self.tiles([mac, card])[1]
+        self.assertEqual((t["temp"]["sub"], t["pcie"]["value"]), ("", "Gen4<small>x16</small>"))
+
+    def test_a_pcie_card_is_unchanged(self):
+        t = self.tiles({"gpu_temp": 61, "gpu_power": 120, "gpu_power_limit": 250, "gpu_pcie_gen": 4,
+                        "gpu_pcie_gen_max": 5, "gpu_pcie_width": 16, "gpu_pcie_rx_mb": 420})
+        self.assertEqual((t["temp"]["sub"], t["power"]["sub"]), ("", "of 250 W limit"))
+        self.assertEqual((t["pcie"]["value"], t["pcie"]["sub"]), ("Gen5<small>x16</small>", "to GPU 420 MB/s · idle Gen4"))
 
 
 if __name__ == "__main__":

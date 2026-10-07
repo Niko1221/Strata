@@ -14,10 +14,12 @@ PORT        ?= 8080
 HOST        ?= 127.0.0.1
 API_KEY     ?=
 MODEL       ?=
+CONTEXT     ?=
 SETUP_ARGS  ?=
 PROMPT      ?= Say hello in one short sentence.
 EFFORT      ?= none
 MAX_TOKENS  ?= 200
+REASONING_BUDGET ?=
 WAIT_S      ?= 600
 PY          := $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
 CMAKE       := $(if $(wildcard .venv/bin/cmake),.venv/bin/cmake,cmake)
@@ -34,8 +36,11 @@ PORT_FREE   = @who=$$(lsof -nP -iTCP:$(PORT) -sTCP:LISTEN 2> /dev/null | awk 'NR
 	  exit 1; \
 	fi
 
+# make run CONTEXT=131072: sets --max-context in the installed config first (tools/set_context.py; it stays set)
+SET_CONTEXT = $(if $(CONTEXT),$(PY) tools/set_context.py $(CONTEXT),@true)
+
 # the prompt reaches `make chat` through the environment, so quotes and apostrophes in it need no shell quoting
-export PROMPT MAX_TOKENS EFFORT
+export PROMPT MAX_TOKENS EFFORT REASONING_BUDGET
 
 # A/B of two engine builds: with and without metal/patches/ (docs/MACOS.md, "For developers")
 AB_A        ?= build-metal-a/metal/strata-metal
@@ -57,11 +62,14 @@ help:
 	@echo "                     (from Hugging Face into ../Strata-data, resumable: run it again if it stops)"
 	@echo "  make check         only check what this computer can run"
 	@echo "  make update        update the engine and settings without starting"
-	@echo "  make run           start the model here, in the foreground (Ctrl-C stops it)"
+	@echo "  make run           start the model here, in the foreground (Ctrl-C stops it); CONTEXT=131072 sets the"
+	@echo "                     context window first (4096-262144 tokens, it stays set; a bigger one needs more memory)"
 	@echo "  make start         start it in the background (log: strata-run.log) and wait until it answers"
 	@echo "  make status        is it up?  (GET /health)"
 	@echo "  make stop          stop the background server"
 	@echo "  make chat          one chat request: make chat PROMPT=\"Write a haiku\" [MAX_TOKENS=100 EFFORT=none|low|medium|high]"
+	@echo "                     REASONING_BUDGET=N: at most N tokens of thinking, then it answers (0: no cap; it counts"
+	@echo "                     toward MAX_TOKENS, so keep it 64+ below; EFFORT=none turns thinking off)"
 	@echo "  make models        GET /v1/models"
 	@echo "  make build         compile the engine here (macOS: the Metal engine; elsewhere setup builds it)"
 	@echo "  make test          the tests that need no GPU and no model"
@@ -85,10 +93,12 @@ update:
 
 run:
 	$(PORT_FREE)
+	$(SET_CONTEXT)
 	./setup.sh $(RUN_ARGS) $(SETUP_ARGS)
 
 start:
 	$(PORT_FREE)
+	$(SET_CONTEXT)
 	@echo "starting Strata on $(URL) (log: strata-run.log) ..."
 	@nohup ./setup.sh $(RUN_ARGS) --no-browser $(SETUP_ARGS) > strata-run.log 2>&1 &
 	@$(MAKE) --no-print-directory wait
@@ -123,10 +133,11 @@ stop:
 	if kill -0 $$pids 2> /dev/null; then echo "still running: $$pids"; exit 1; fi; \
 	echo "stopped"
 
+# One request (tools/chat.py: it checks MAX_TOKENS and REASONING_BUDGET before sending, and exits 1 without an
+# answer).  REASONING_BUDGET=N: at most N tokens of thinking (the server's reasoning_budget_tokens), then it answers;
+# 0 = no cap (EFFORT=none turns thinking off).  The answer is on stdout, the token count on stderr.
 chat:
-	@$(PY) -c 'import json,os; print(json.dumps({"model": "strata", "max_tokens": int(os.environ["MAX_TOKENS"]), "reasoning_effort": os.environ["EFFORT"], "messages": [{"role": "user", "content": os.environ["PROMPT"]}]}))' \
-	| curl -sS -m 3600 $(AUTH) -H 'Content-Type: application/json' --data-binary @- $(URL)/v1/chat/completions \
-	| $(PY) -c 'import json,sys; r=json.load(sys.stdin); m=(r.get("choices") or [{}])[0].get("message") or {}; print(m.get("content") or m.get("reasoning_content") or json.dumps(r, indent=1)); t=r.get("timings") or {}; print("[%s tokens, %.1f tok/s]" % (t.get("predicted_n", "?"), t.get("predicted_per_second") or 0))'
+	@URL="$(URL)" API_KEY="$(API_KEY)" $(PY) tools/chat.py
 
 models:
 	@curl -sS -m 10 $(AUTH) $(URL)/v1/models; echo

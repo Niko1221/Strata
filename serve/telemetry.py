@@ -4,7 +4,8 @@ A background thread samples once a second and keeps the last 60 readings of each
 - GPU: NVIDIA's own NVML library (nvml.dll / libnvidia-ml.so.1, installed with every driver) through ctypes, so no
   pip package is needed: load, VRAM, temperature, power, PCIe link and throughput.  With the AMD backend (#301): the
   amdgpu driver's Linux sysfs files - load, VRAM, temperature and power.  On a Mac: the GPU's load and memory from
-  `ioreg` (IOAccelerator PerformanceStatistics) and Metal's working-set limit.
+  `ioreg` (IOAccelerator PerformanceStatistics) and Metal's working-set limit, its power from IOReport's energy
+  counters and the chip's temperature from its die sensors (both without root); no PCIe (the GPU is on the chip).
 - CPU, RAM, disk: `psutil` when it is installed (setup installs it); without it the CPU and RAM readings fall back to
   the OS (Windows GlobalMemoryStatusEx / GetSystemTimes, Linux /proc) and the disk rate is absent.
 Anything that cannot be read is None; nothing here can stop the server.
@@ -13,6 +14,7 @@ from __future__ import annotations
 
 import collections
 import ctypes
+import math
 import os
 import platform
 import sys
@@ -263,10 +265,201 @@ def metal_working_set_bytes() -> int:
         return 0
 
 
+_ENERGY_SCALE = {"mJ": 1e-3, "uJ": 1e-6, "µJ": 1e-6, "nJ": 1e-9}    # IOReport's unit labels -> joules
+
+
+_DIE_SENSOR = None
+
+
+def chip_temp(readings):
+    """The highest of the chip's die sensors ("PMU tdie<n>"), from (name, °C) pairs; None without a valid one.  Only
+    die sensors count: the PMU's "tdev<n>" read about -9200 when idle and "tcal" is a calibration value."""
+    global _DIE_SENSOR
+    if _DIE_SENSOR is None:
+        import re
+        _DIE_SENSOR = re.compile(r"PMU tdie\d+")
+    vals = [v for n, v in readings if _DIE_SENSOR.fullmatch(n) and math.isfinite(v) and -20.0 < v < 150.0]
+    return max(vals) if vals else None
+
+
+def energy_watts(delta, unit, seconds):
+    """An IOReport energy counter's change over `seconds` -> watts; None for an unknown unit, a counter that went
+    backwards (a reset) or an interval that is not a finite positive number."""
+    scale = _ENERGY_SCALE.get(unit)
+    if scale is None or not (math.isfinite(delta) and math.isfinite(seconds)) or seconds <= 0 or delta < 0:
+        return None
+    return delta * scale / seconds
+
+
+class _MacSensors:
+    """GPU power and the chip's temperature on Apple Silicon without root, through two of macOS's private interfaces
+    (the way sudo-free monitors such as macmon read them): IOReport's "Energy Model" group, whose "GPU Energy" counter
+    gives the GPU's energy (watts = its change over time), and the IOHID temperature sensors of the PMU.  The GPU has
+    no sensor of its own there; it shares the die, so the reading is the highest die sensor, not a GPU-only one.
+    macOS 27 stops updating some Energy Model counters: one that stays at zero for STALE_SAMPLES readings while the GPU
+    is busy reads None.  One instance per process, read only by the Monitor's sampler (power needs the previous
+    sample: another caller would shorten its interval); a failure turns that reading off, never raises."""
+
+    STALE_SAMPLES = 3
+    BUSY_PCT = 10
+    _get_lock = threading.Lock()
+    _inst = None
+
+    @classmethod
+    def get(cls):
+        with cls._get_lock:
+            if cls._inst is None:
+                cls._inst = cls()
+            return cls._inst
+
+    def __init__(self):
+        self.lock = threading.Lock()                  # every native call and the state below
+        self.power_ok = self.temp_ok = sys.platform == "darwin"
+        self.prev = None                              # (IOReport sample, monotonic time)
+        self.zero_streak = 0
+        self.sub = self.sub_ch = self.client = None
+        if not self.power_ok:
+            return
+        try:
+            V = ctypes.c_void_p
+            cf = self.cf = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+            io = self.io = ctypes.CDLL("/System/Library/Frameworks/IOKit.framework/IOKit")
+            ior = self.ior = ctypes.CDLL("/usr/lib/libIOReport.dylib")
+            sig = [(cf, "CFStringCreateWithCString", V, [V, ctypes.c_char_p, ctypes.c_uint32]),
+                   (cf, "CFStringGetCString", ctypes.c_bool, [V, ctypes.c_char_p, ctypes.c_long, ctypes.c_uint32]),
+                   (cf, "CFDictionaryGetValue", V, [V, V]),
+                   (cf, "CFArrayGetCount", ctypes.c_long, [V]),
+                   (cf, "CFArrayGetValueAtIndex", V, [V, ctypes.c_long]),
+                   (cf, "CFNumberCreate", V, [V, ctypes.c_long, V]),
+                   (cf, "CFDictionaryCreate", V, [V, ctypes.POINTER(V), ctypes.POINTER(V), ctypes.c_long, V, V]),
+                   (cf, "CFRelease", None, [V]),
+                   (ior, "IOReportCopyChannelsInGroup", V, [V, V, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64]),
+                   (ior, "IOReportCreateSubscription", V, [V, V, ctypes.POINTER(V), ctypes.c_uint64, V]),
+                   (ior, "IOReportCreateSamples", V, [V, V, V]),
+                   (ior, "IOReportCreateSamplesDelta", V, [V, V, V]),
+                   (ior, "IOReportChannelGetChannelName", V, [V]),
+                   (ior, "IOReportChannelGetUnitLabel", V, [V]),
+                   (ior, "IOReportSimpleGetIntegerValue", ctypes.c_int64, [V, ctypes.c_int32]),
+                   (io, "IOHIDEventSystemClientCreate", V, [V]),
+                   (io, "IOHIDEventSystemClientSetMatching", ctypes.c_int, [V, V]),
+                   (io, "IOHIDEventSystemClientCopyServices", V, [V]),
+                   (io, "IOHIDServiceClientCopyProperty", V, [V, V]),
+                   (io, "IOHIDServiceClientCopyEvent", V, [V, ctypes.c_int64, ctypes.c_int32, ctypes.c_int64]),
+                   (io, "IOHIDEventGetFloatValue", ctypes.c_double, [V, ctypes.c_int32])]
+            for lib, fn, res, args in sig:
+                getattr(lib, fn).restype, getattr(lib, fn).argtypes = res, args
+            self.k_channels, self.k_product = self._s("IOReportChannels"), self._s("Product")
+            group = self._s("Energy Model")
+            chans = ior.IOReportCopyChannelsInGroup(group, None, 0, 0, 0)    # kept: the subscription's channels
+            self.sub_ch = V()
+            if chans:
+                self.sub = ior.IOReportCreateSubscription(None, chans, ctypes.byref(self.sub_ch), 0, None)
+            # the PMU's temperature sensors: HID usage page 0xff00 (Apple vendor), usage 5 (temperature)
+            def num(x):
+                v = ctypes.c_int32(x)
+                return cf.CFNumberCreate(None, 3, ctypes.byref(v))     # kCFNumberSInt32Type
+            keys = (V * 2)(self._s("PrimaryUsagePage"), self._s("PrimaryUsage"))
+            vals = (V * 2)(num(0xff00), num(5))
+            kcb = V.in_dll(cf, "kCFTypeDictionaryKeyCallBacks")
+            vcb = V.in_dll(cf, "kCFTypeDictionaryValueCallBacks")
+            match = cf.CFDictionaryCreate(None, keys, vals, 2, ctypes.addressof(kcb), ctypes.addressof(vcb))
+            for ref in (*keys, *vals):                # the dictionary retains its own references (kCFType callbacks)
+                if ref:
+                    cf.CFRelease(ref)
+            self.client = io.IOHIDEventSystemClientCreate(None)
+            if self.client and match:
+                io.IOHIDEventSystemClientSetMatching(self.client, match)   # match is kept for the client's lifetime
+            self.power_ok, self.temp_ok = bool(self.sub and self.sub_ch), bool(self.client and match)
+        except (OSError, AttributeError, ValueError):
+            self.power_ok = self.temp_ok = False
+
+    def _s(self, text):
+        return self.cf.CFStringCreateWithCString(None, text.encode(), 0x08000100)     # kCFStringEncodingUTF8
+
+    def _str(self, ref):
+        if not ref:
+            return ""
+        buf = ctypes.create_string_buffer(128)
+        return buf.value.decode(errors="replace") if self.cf.CFStringGetCString(ref, buf, 128, 0x08000100) else ""
+
+    def gpu_watts(self):
+        """The GPU's power over the time since the last call: None on the first call or without the counter."""
+        cf, ior = self.cf, self.ior
+        sample = ior.IOReportCreateSamples(self.sub, self.sub_ch, None)
+        now = time.monotonic()                        # after the sample: its own collection time is not in the interval
+        if not sample:
+            return None
+        prev, self.prev = self.prev, (sample, now)
+        if prev is None:
+            return None
+        delta = ior.IOReportCreateSamplesDelta(prev[0], sample, None)
+        cf.CFRelease(prev[0])
+        if not delta:
+            return None
+        try:
+            chans = cf.CFDictionaryGetValue(delta, self.k_channels)
+            for i in range(cf.CFArrayGetCount(chans) if chans else 0):
+                ch = cf.CFArrayGetValueAtIndex(chans, i)
+                if self._str(ior.IOReportChannelGetChannelName(ch)) == "GPU Energy":
+                    return energy_watts(ior.IOReportSimpleGetIntegerValue(ch, 0),
+                                        self._str(ior.IOReportChannelGetUnitLabel(ch)), now - prev[1])
+            return None
+        finally:
+            cf.CFRelease(delta)
+
+    def temps(self):
+        """(sensor name, °C) for each PMU temperature sensor."""
+        cf, io = self.cf, self.io
+        svcs = io.IOHIDEventSystemClientCopyServices(self.client)
+        if not svcs:
+            return []
+        out = []
+        try:
+            for i in range(cf.CFArrayGetCount(svcs)):
+                s = cf.CFArrayGetValueAtIndex(svcs, i)
+                name_ref = io.IOHIDServiceClientCopyProperty(s, self.k_product)
+                name = self._str(name_ref)
+                if name_ref:
+                    cf.CFRelease(name_ref)
+                ev = io.IOHIDServiceClientCopyEvent(s, 15, 0, 0)        # kIOHIDEventTypeTemperature
+                if ev:
+                    out.append((name, io.IOHIDEventGetFloatValue(ev, 15 << 16)))   # its level field
+                    cf.CFRelease(ev)
+        finally:
+            cf.CFRelease(svcs)
+        return out
+
+    def read(self, util=None):
+        """{"power": W, "temp": °C}, each None when it cannot be read; finite numbers only (JSON, RFC 8259).  Power and
+        temperature fail separately: one broken interface leaves the other reading."""
+        watts = temp = None
+        with self.lock:                               # the on/off flags are checked under the same lock
+            if self.power_ok:
+                try:
+                    watts = self.gpu_watts()
+                except (OSError, ValueError, ctypes.ArgumentError):
+                    self.power_ok, watts = False, None
+            if self.temp_ok:
+                try:
+                    temp = chip_temp(self.temps())
+                except (OSError, ValueError, ctypes.ArgumentError):
+                    self.temp_ok, temp = False, None
+            busy = isinstance(util, (int, float)) and util >= self.BUSY_PCT
+            if watts == 0 and busy:                   # a counter that stopped (macOS 27), or a short quiet moment
+                self.zero_streak += 1
+                if self.zero_streak >= self.STALE_SAMPLES:
+                    watts = None
+            elif watts is not None:
+                self.zero_streak = 0
+        fin = lambda v: v if isinstance(v, (int, float)) and math.isfinite(v) else None   # noqa: E731
+        return {"power": fin(watts), "temp": fin(temp)}
+
+
 class _Apple:
     """An Apple Silicon GPU's readings, with _Nvml's interface: load ("Device Utilization %") and the memory the GPU
     driver has in use ("In use system memory") from the IOAccelerator's PerformanceStatistics, which `ioreg` prints
-    without root; the memory's total is Metal's working-set limit.  No temperature or power (those need root)."""
+    without root; the memory's total is Metal's working-set limit.  Power and the chip's temperature: _MacSensors.
+    "unified": the GPU is on the chip and shares its memory, so there is no PCIe link to report."""
 
     def __init__(self):
         self.total = metal_working_set_bytes() if sys.platform == "darwin" else 0
@@ -291,7 +484,9 @@ class _Apple:
         used = re.search(r'"In use system memory"=(\d+)', text)
         return (int(util.group(1)) if util else None), (int(used.group(1)) if used else None)
 
-    def read(self):
+    def read(self, sensors=True):
+        """sensors=False: load and memory only, without touching _MacSensors (free_vram_mib: its read would shorten
+        the Monitor sampler's power interval)."""
         try:
             import subprocess
             text = subprocess.run(["ioreg", "-r", "-d", "1", "-c", "IOAccelerator"], capture_output=True, text=True,
@@ -299,7 +494,10 @@ class _Apple:
         except (OSError, subprocess.TimeoutExpired):
             text = ""
         util, used = self.parse(text)
-        return {"util": util, "mem_used": used, "mem_total": self.total or None}
+        out = {"util": util, "mem_used": used, "mem_total": self.total or None, "unified": True}
+        if sensors:
+            out.update(_MacSensors.get().read(util))
+        return out
 
 
 def gpu_reader(index=0, amd=False):
@@ -314,7 +512,7 @@ def free_vram_mib(index=0, amd=False):
     g = gpu_reader(index, amd)
     if not g.ok():
         return None
-    r = g.read()
+    r = g.read(sensors=False) if isinstance(g, _Apple) else g.read()
     if r.get("mem_total") is None or r.get("mem_used") is None:
         return None
     return int((r["mem_total"] - r["mem_used"]) >> 20)

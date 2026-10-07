@@ -48,7 +48,9 @@ run the same command again: it continues where it stopped. Q2_0 is the only size
 |---|---|
 | run in the background | `make start`, then `make status` / `make stop` (log: `strata-run.log`) |
 | send one test message | `make chat PROMPT="Write a haiku"` |
+| cap the thinking | `make chat PROMPT="..." EFFORT=high MAX_TOKENS=32768 REASONING_BUDGET=4096` (then it must answer) |
 | use another port | `make run PORT=8090`, or put `PORT := 8090` in a file named `Makefile.local` |
+| use a bigger context window | `make run CONTEXT=131072` (up to 262,144; it stays set, and needs more memory) |
 | download without questions | `make pull MODEL=Q2_0 SETUP_ARGS="--yes"` |
 | try another size (untested on a Mac) | `make pull MODEL=IQ2_XS`, then `make run` |
 | turn on the MTP draft layer | `./setup.sh --setup --mtp on` (see below) |
@@ -102,7 +104,7 @@ thumb: 8-16 GB): set too high, the whole Mac can slow down or stop responding un
 | Pictures | yes: `strata-vision` runs on Metal |
 | MTP draft layer | opt-in: `--mtp on` |
 | Several requests at once (`"parallel"`) | opt-in, the same as on a PC |
-| Monitor tab | GPU load and memory, CPU, RAM |
+| Monitor tab | GPU load, memory and power, the chip's temperature (its die sensors), CPU, RAM; PCIe shows "n/a" (an integrated GPU has no PCIe link) |
 | Expert cache, CPU experts, rope scaling, Intel Macs | no |
 
 ### The MTP draft layer (`--mtp on`)
@@ -172,7 +174,9 @@ turn, on the same prompts: greedy, thinking off, MTP off, through its OpenAI API
   - Pictures get the CUDA engine's M-RoPE positions.
 - `metal/setup_mac.py`: setup's Mac steps. `setup.py` runs it by itself on macOS; it changes none of setup's other steps.
 - `metal/mtp_gguf.py`: the MTP head for llama.cpp, from the checkpoint, checked by its SHA-256.
-- `serve/telemetry.py`: the Monitor's GPU readings come from `ioreg`, and the GPU's memory from Metal.
+- `serve/telemetry.py`: the Monitor's GPU load comes from `ioreg`, its memory limit from Metal, its power from
+  IOReport's energy counters and the temperature from the chip's die sensors, all without root. These are private
+  macOS interfaces: if a macOS update changes them, the tiles show "–" instead of a wrong number.
 
 ## For developers
 
