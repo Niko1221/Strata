@@ -462,6 +462,10 @@ struct Options {
     /// the prompt path's rows per layer the peer computes: -1 = half of chunk x top-k, 0 = the prompt path stays on
     /// the primary
     int64_t peer_prefill_rows = -1;
+    /// Multi-GPU, opt-in: two engine processes, one card each, as each other's peer tier ("mutual help", see
+    /// peer_link.hpp): the shared link file and this engine's role (0 creates the file, 1 joins it).  Empty = off.
+    std::string peer_link;
+    int peer_link_role = -1;
     /// The PLE gather's prefetch, as an A/B arm.  The gather measured 2.10-2.61 ms/token because its sixteen
     /// row reads are sixteen SEPARATE page faults into a 26.8 GB mapping; see `ple_prefetch_enable`.
     bool no_ple_prefetch = false;
@@ -828,6 +832,10 @@ void usage() {
                  "  --peer-adapt-swaps N  peer cache swaps per adaptation step (default: --adapt-swaps)\n"
                  "  --peer-prefill-rows N  prompt rows per layer the peer computes (default half of chunk x top-k;\n"
                  "                       0 = the prompt path stays on the primary)\n"
+                 "  --peer-link FILE     two engines (two processes, one GPU each) as each other's expert tier:\n"
+                 "                       each computes the other's rows for the experts its card holds (\"mutual\n"
+                 "                       help\").  Linux, --serve, one GPU per engine; with --peer-link-role 0|1\n"
+                 "                       (0 creates FILE, 1 joins it).  Default output unchanged without it.\n"
                  "  --expert-cache-per-layer  R4.2g: give each layer its OWN slots instead of letting the first\n"
                  "                       position take all of them.  The default policy fills in arrival order\n"
                  "                       from one shared counter, so 256 slots went to ~26 layers of position 0\n"
@@ -1835,6 +1843,8 @@ int main(int argc, char** argv) {
         else if (a == "--expert-cache-cpu-order") o.expert_cache_cpu_order = true;
         else if (a == "--expert-cache-per-layer") o.expert_cache_per_layer = true;
         else if (a == "--peer-device") o.peer_device = std::atoi(next("--peer-device"));
+        else if (a == "--peer-link") o.peer_link = next("--peer-link");
+        else if (a == "--peer-link-role") o.peer_link_role = std::atoi(next("--peer-link-role"));
         else if (a == "--peer-reserve-mib") o.peer_reserve_mib = std::atoi(next("--peer-reserve-mib"));
         else if (a == "--peer-slots") o.peer_slots = std::atoll(next("--peer-slots"));
         else if (a == "--peer-adapt-swaps") o.peer_adapt_swaps = std::atoi(next("--peer-adapt-swaps"));
@@ -2266,6 +2276,21 @@ int main(int argc, char** argv) {
     }
     // the peer tier is the second card's only user: a layer split or a remote expert cache would put a second engine
     // part (and a second copy of the same experts) on it
+    // --peer-link: one card per engine, the other engine is the tier
+    if (!o.peer_link.empty()) {
+        const char* why = !o.serve ? "it needs --serve"
+                        : o.peer_link_role != 0 && o.peer_link_role != 1 ? "it needs --peer-link-role 0 or 1"
+                        : !o.layer_split.empty() ? "not with --layer-split (one GPU per engine)"
+                        : o.expert_cache_remote[0] > 0 ? "not with --expert-cache-device1..3"
+                        : o.remote_expert_opt ? "not with --remote-expert-opt"
+                        : o.batch > 0 ? "not with --batch slots"
+                        : o.adapt_async ? "not with --adapt-async 1"
+                        : nullptr;
+        if (why != nullptr) {
+            std::fprintf(stderr, "strata generate: --peer-link: %s\n", why);
+            return 2;
+        }
+    }
     if (o.peer_device >= 1 && (!o.layer_split.empty() || o.expert_cache_remote[0] > 0)) {
         std::fprintf(stderr, "strata generate: --peer-device cannot be combined with %s\n",
                      !o.layer_split.empty() ? "--layer-split (use one or the other)"
@@ -3082,7 +3107,7 @@ int main(int argc, char** argv) {
         // STRATA_PEER_HOT_AT (default 8700, ~ the primary's slots) ranks, every pair with floor((r+1)f) > floor(rf)
         // moves to just after that point: the primary fills past them, the peer (which takes what the primary does
         // not hold, in order) gets them first.
-        if (o.peer_device >= 1) {   // default 0.45 (measured: 0.3-0.6 all better than 0; 0 = off, e.g. for the gate)
+        if (o.peer_device >= 1 && o.peer_link.empty()) {   // default 0.45 (measured: 0.3-0.6 all better than 0; 0 = off, e.g. for the gate)
             const char* ph = std::getenv("STRATA_PEER_HOT");
             const double f = ph ? std::atof(ph) : 0.45;
             const char* pa = std::getenv("STRATA_PEER_HOT_AT");
@@ -3106,6 +3131,17 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata generate: STRATA_PEER_HOT %.2f: %zu of the first %zu ranked pairs moved "
                                      "behind rank %zu (the peer's)\n", f, n_moved, at, fill);
             }
+        }
+        // --peer-link: the two engines' caches hold DIFFERENT experts - role r fills from the ranks r, r+2, r+4, ...
+        // first (the other engine takes the others), so the two cards together hold about the hottest 2N pairs and
+        // each engine's hits are spread over both cards
+        if (!o.peer_link.empty()) {
+            std::vector<std::pair<int32_t, int32_t>> mine, theirs;
+            for (size_t r = 0; r < profile.size(); ++r) ((int) (r & 1) == o.peer_link_role ? mine : theirs).push_back(profile[r]);
+            mine.insert(mine.end(), theirs.begin(), theirs.end());
+            profile.swap(mine);
+            std::fprintf(stderr, "strata generate: --peer-link role %d: the cache fills from every second rank\n",
+                         o.peer_link_role);
         }
         std::fprintf(stderr, "strata generate: profile %s: %zu ranked pairs, built for %lld slots\n",
                      o.expert_profile.c_str(), profile.size(), (long long) pslots);
@@ -4827,6 +4863,22 @@ int main(int argc, char** argv) {
                      (long long) (peer.resident() + xcache.slots()), (long long) (g.n_layers * g.n_expert));
     }
 
+    // ---- --peer-link: the other engine's card as this one's peer tier (and this card as the other's; served below)
+    strata::core::PeerLink plink;
+    if (!o.peer_link.empty()) {
+        if (profile.empty() || srcp == nullptr || o.expert_cache <= 0) {
+            std::fprintf(stderr, "strata generate: --peer-link needs --expert-profile and the expert cache\n");
+            return 1;
+        }
+        if (!plink.open(o.peer_link, o.peer_link_role, g.n_layers, g.n_expert, 600.0, err)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        if (!peer.valid()) peer.open_link(&plink);   // with --peer-device too: the link takes over at PEER_DETACH
+        std::fprintf(stderr, "strata generate: --peer-link %s: role %d, %s\n", o.peer_link.c_str(), o.peer_link_role,
+                     peer.linked() ? "the other engine's card is this one's peer tier"
+                                   : "the peer GPU is this engine's tier until PEER_DETACH, the other engine's card after");
+    }
     if (remote_opt && !remote_opt->init(err)) { std::fprintf(stderr, "strata generate: %s\n", err.c_str()); return 1; }
     Drive drive;
     // #731 (opt-in, STRATA_DISJOINT_ADAPT=1): the adaptive tiers leave an expert a helper GPU holds out of the primary's
@@ -5517,6 +5569,18 @@ int main(int argc, char** argv) {
         thits.scratch = drive.d.hit_scratch;
         thits.hit_out = drive.d.hit_out;
         drive.d.host_res = host_res.data();
+        if (plink.valid()) {   // --peer-link: from now on this card computes the other engine's rows too
+            if (src.complement_ready()) {
+                std::fprintf(stderr, "strata generate: --peer-link: not with the resident low-RAM mode\n");
+                return 1;
+            }
+            if (!plink.serve(xcache, *srcp, host_res, err)) {
+                std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                return 1;
+            }
+            std::fprintf(stderr, "strata generate: --peer-link: serving this card's %lld experts to the other engine\n",
+                         (long long) xcache.slots());
+        }
         std::fprintf(stderr, "strata generate: token graph hit path: %lld resident experts, decided on the device\n",
                      (long long) resident);
     }
@@ -6463,7 +6527,7 @@ int main(int argc, char** argv) {
                                      "context, or read prompts in smaller chunks (--prefill 512)\n");
             return 1;
         }
-        if (peer.valid() && o.peer_prefill_rows != 0) {
+        if (peer.valid() && !peer.linked() && o.peer_prefill_rows != 0) {
             const int64_t rows = o.peer_prefill_rows > 0 ? o.peer_prefill_rows : o.prefill_chunk * K / 2;
             if (!sp.set_peer(&peer, rows, err)) {
                 std::fprintf(stderr, "strata serve: %s - the prompt path stays on the primary GPU\n", err.c_str());
@@ -7240,7 +7304,12 @@ int main(int argc, char** argv) {
         cudaEvent_t adapt_ev = nullptr;
         cudaEventCreateWithFlags(&adapt_ev, cudaEventDisableTiming);
         // a layer split's later stages keep a copy of the residency table on their devices, and swap on their own
+        if (plink.valid() && host_res.empty()) {
+            std::fprintf(stderr, "strata generate: --peer-link needs the profile-filled cache with the token graph\n");
+            return 1;
+        }
         auto res_upload = [&]() {
+            if (plink.valid()) plink.publish(host_res);   // --peer-link: what the other engine may plan with now
             if (d_res != nullptr)
                 res_put(d_res);
             for (auto& st : stages) {
@@ -7283,9 +7352,11 @@ int main(int argc, char** argv) {
                 vict.clear();
                 const float* u = drive.d.usage.data() + l * g.n_expert;
                 const int32_t* r = host_res.data() + l * g.n_expert;
+                // --peer-link: an expert this card computes for the other engine is used here too
+                const float* su = plink.served_usage() ? plink.served_usage() + l * g.n_expert : nullptr;
                 for (int32_t e = 0; e < (int32_t) g.n_expert; ++e) {
                     if (r[e] < 0) { if (u[e] >= 2.0f && !(peer.valid() && peer.has(l, e)) && !(remote_opt && remote_opt->owns(l, e)) && !helper_holds(l, e)) cand.emplace_back(u[e], e); }
-                    else vict.emplace_back(u[e], e);
+                    else vict.emplace_back(su ? u[e] + su[e] : u[e], e);
                 }
                 if (cand.empty() || vict.empty()) continue;
                 std::sort(cand.begin(), cand.end(), [](auto& a, auto& b) { return a.first > b.first; });
@@ -7308,6 +7379,14 @@ int main(int argc, char** argv) {
                 }
                 return {&xcache, adapt_stream, -1};
             };
+            // --peer-link: the service launches nothing while the victims' slots are rewritten, and it stops using them
+            // before the first copy (publish below, under the hold)
+            struct LinkHold {
+                strata::core::PeerLink* l;
+                std::vector<int32_t>* res;
+                ~LinkHold() { if (l) { l->publish(*res); l->unhold(); } }
+            } link_hold{plink.valid() && !swaps.empty() ? &plink : nullptr, &host_res};
+            if (link_hold.l) link_hold.l->hold();
             if (!resident_stage_swaps(src, host_res, g.n_expert, swaps, home_of)) return false;
             if (pin_blobs_on()) {   // lock the batch's source pages (a file-backed arena on AMD; see pin_blobs)
                 std::vector<std::pair<uintptr_t, uintptr_t>> spans;
@@ -7397,6 +7476,7 @@ int main(int argc, char** argv) {
                 }
             }
             for (float& v : drive.d.usage) v *= o.adapt_decay;
+            if (plink.valid()) plink.decay_served(o.adapt_decay);
             return true;
         };
         // ---- --adapt-async 1: the asynchronous adaptive tier (opt-in; the resident RAM mode, see the checks where
@@ -7760,6 +7840,13 @@ int main(int argc, char** argv) {
         // stdin is read on its own thread, so a STOP line reaches a request that is still running (the client went
         // away, or pressed Esc): the flag is checked between prompt chunks and between verify windows.
         std::atomic<bool> stop_req{false};
+        // --peer-link elastic pair (serve/elastic.py): control lines the server may send at any time.  The reader thread
+        // flags them (a running request serves them between verify windows) and queues them (an idle engine serves
+        // them at once).  PEER_DETACH: give the peer GPU back (its tier and prompt buffers are freed; with --peer-link
+        // the other engine's card becomes the tier); PEER_ATTACH: take it again (between requests only);
+        // POOL_HOLD n: the last n CPU workers sit out (the other engine's cores).
+        std::atomic<bool> ctl_detach{false}, ctl_attach{false};
+        std::atomic<int> ctl_hold{0};
         std::mutex in_mu;
         std::condition_variable in_cv;
         std::deque<std::string> in_lines;
@@ -7796,6 +7883,9 @@ int main(int argc, char** argv) {
             while (getline_fd(l)) {
                 if (!l.empty() && l.back() == '\r') l.pop_back();
                 if (l == "STOP") { stop_req.store(true); continue; }
+                if (l == "PEER_DETACH") { ctl_attach.store(false); ctl_detach.store(true); }   // cancels a pending attach
+                else if (l == "PEER_ATTACH") ctl_attach.store(true);
+                else if (l.rfind("POOL_HOLD ", 0) == 0) ctl_hold.store(std::max(0, std::atoi(l.c_str() + 10)) + 1);
                 std::lock_guard<std::mutex> lk(in_mu);
                 in_lines.push_back(l);
                 in_cv.notify_one();
@@ -7983,7 +8073,14 @@ int main(int argc, char** argv) {
                 e = "VRAM: not with the resident low-RAM mode (the cache holds experts RAM does not)";
                 return false;
             }
-            if (peer.valid()) { e = "VRAM: not with --peer-device"; return false; }
+            if (peer.valid() && !peer.linked()) { e = "VRAM: not with --peer-device"; return false; }
+            // --peer-link: the other engine's requests wait while the slots are unmapped / refilled
+            struct LinkHold {
+                strata::core::PeerLink* l;
+                std::vector<int32_t>* res;
+                ~LinkHold() { if (l) { l->publish(*res); l->unhold(); } }
+            } link_hold{plink.valid() ? &plink : nullptr, &host_res};
+            if (link_hold.l) link_hold.l->hold();
             for (const PfPart& p : pf_parts)
                 if (!p.lent.empty()) { e = "VRAM: a prompt's loan is still out"; return false; }
             if (!ver.wait_commit(e)) return false;
@@ -8438,6 +8535,69 @@ int main(int argc, char** argv) {
                 if (!pump(false)) return false;
             return true;
         };
+        // the control lines (see ctl_detach): `idle` = between requests (PEER_ATTACH waits for that)
+        auto ctl_pending = [&] {
+            return ctl_detach.load(std::memory_order_relaxed) || ctl_hold.load(std::memory_order_relaxed) != 0;
+        };
+        auto service_ctl = [&](bool idle) {
+            if (const int h = ctl_hold.exchange(0); h > 0) {
+                const auto t0 = Clock::now();
+                const int n = pool.set_hold(h - 1);
+                std::printf("CTL HOLD %d %d %.1f\n", n, pool.workers(),
+                            std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
+                std::fflush(stdout);
+                std::fprintf(stderr, "strata serve: elastic: %d of %d CPU workers held\n", n, pool.workers());
+            }
+            if (ctl_detach.exchange(false)) {
+                const auto t0 = Clock::now();
+                const bool had = peer.valid() && !peer.linked();
+                const double gib = had ? peer.gib() : 0.0;
+                if (had) {
+                    apply_pending(true);        // the adaptive swaps in flight land first (both tiers)
+                    std::string e;
+                    sp.set_peer(nullptr, 0, e); // the prompt path's peer buffers go
+                    peer.close();               // the tier itself: every slot not resident, VRAM freed
+                    if (plink.valid()) peer.open_link(&plink);   // --peer-link: the other engine's card from now on
+                    drive.d.peer = peer.valid() ? &peer : nullptr;
+                }
+                const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+                std::printf("CTL PEER OFF %d %.0f\n", had ? 1 : 0, ms);
+                std::fflush(stdout);
+                if (had)
+                    std::fprintf(stderr, "strata serve: elastic: peer GPU detached (%.2f GiB freed) in %.0f ms%s\n", gib,
+                                 ms, peer.linked() ? "; the other engine's card is the tier now" : "");
+            }
+            if (idle && ctl_attach.exchange(false)) {
+                const auto t0 = Clock::now();
+                std::string e;
+                if (o.peer_device < 1) e = "this engine was started without --peer-device";
+                else if (!peer.valid() || peer.linked()) {
+                    drive.d.peer = nullptr;
+                    if (!peer.open(o.peer_device, profile, xcache, *srcp, g.n_layers, g.n_expert, o.peer_reserve_mib,
+                                   o.peer_slots, e)) {
+                        peer.close();
+                        if (plink.valid()) peer.open_link(&plink);
+                    } else if (o.peer_prefill_rows != 0) {
+                        const int64_t rows = o.peer_prefill_rows > 0 ? o.peer_prefill_rows : o.prefill_chunk * K / 2;
+                        std::string pe;
+                        if (!sp.set_peer(&peer, rows, pe))
+                            std::fprintf(stderr, "strata serve: elastic: %s - the prompt path stays on the primary GPU\n",
+                                         pe.c_str());
+                    }
+                    drive.d.peer = peer.valid() ? &peer : nullptr;
+                }
+                const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+                if (!e.empty()) {
+                    std::printf("CTL PEER ERR %s\n", e.c_str());
+                    std::fprintf(stderr, "strata serve: elastic: peer attach failed: %s\n", e.c_str());
+                } else {
+                    std::printf("CTL PEER ON %lld %.0f\n", (long long) peer.resident(), ms);
+                    std::fprintf(stderr, "strata serve: elastic: peer GPU %d attached: %lld experts, %.2f GiB in %.0f ms\n",
+                                 o.peer_device, (long long) peer.resident(), peer.gib(), ms);
+                }
+                std::fflush(stdout);
+            }
+        };
         for (;;) {
             if (batch_on() || (piped && pipe_inflight())) {
                 if (!try_next_line(line)) {
@@ -8486,6 +8646,19 @@ int main(int argc, char** argv) {
                 Clock::now() - profile_saved_at >= std::chrono::duration<double>(o.expert_profile_save_min * 60.0))
                 save_profile("periodic");
             if (line == "QUIT") break;
+            if (line == "PEER_DETACH" || line == "PEER_ATTACH" || line.rfind("POOL_HOLD ", 0) == 0) {
+                service_ctl(true);
+                continue;
+            }
+            // LINK_SERVE 0|1: whether the other engine may use this card's cache (the server turns it off before this
+            // engine sleeps and on once it is awake again)
+            if (line.rfind("LINK_SERVE ", 0) == 0) {
+                const bool on = std::atoi(line.c_str() + 11) != 0;
+                if (plink.valid()) plink.set_serving(on);
+                std::printf("CTL LINK %d\n", plink.valid() ? (on ? 1 : 0) : -1);
+                std::fflush(stdout);
+                continue;
+            }
             // the watchdog watches a request from here until this iteration ends, whichever way it ends
             struct BusyScope {
                 BusyScope() {
@@ -9441,6 +9614,13 @@ int main(int argc, char** argv) {
             // participant's own cache, and marking only that participant's own layers
             auto lend = [&](int64_t tokens, std::string& e) -> bool {
                 if (pf_parts.empty()) return true;                     // its own buffers: nothing to lend
+                // --peer-link: the lent slots become prompt buffers - the service stops using them first
+                struct LinkHold {
+                    strata::core::PeerLink* l;
+                    std::vector<int32_t>* res;
+                    ~LinkHold() { if (l) { l->publish(*res); l->unhold(); } }
+                } link_hold{plink.valid() ? &plink : nullptr, &host_res};
+                if (link_hold.l) link_hold.l->hold();
                 const auto t_ln = Clock::now();
                 // what this segment needs, capped by the configured chunk: a request lends only what its own
                 // prompt needs, so a large chunk costs a short prompt nothing
@@ -10557,6 +10737,7 @@ int main(int argc, char** argv) {
                                          std::chrono::duration<double, std::milli>(Clock::now() - round0).count());
                 if (eos) { finish = "stop"; break; }
                 if (stop_req.load()) { finish = "cancel"; break; }
+                if (ctl_pending()) service_ctl(false);   // elastic: between two verify windows
                 x = outv[(size_t) a];
                 p += a + 1;
             }
@@ -10897,6 +11078,22 @@ int main(int argc, char** argv) {
                                      "of %lld windows\n", (long long) t2_rej[0], (long long) t2_hit[0], (long long) t2_rej[1],
                              (long long) t2_hit[1], (long long) t2_rej[2], (long long) t2_hit[2], (long long) t2_rej[3],
                              (long long) t2_hit[3], (long long) dec_windows);
+            if (plink.valid()) {   // --peer-link: this request's traffic both ways
+                static int64_t l_ent = 0, l_srv = 0, l_fb = 0;
+                static double l_wait = 0;
+                std::fprintf(stderr, "strata serve: peer link: %lld entries on the other card, %.0f ms waiting for them; "
+                                     "%lld entries computed for the other engine (%lld from RAM)\n",
+                             (long long) (plink.entries() - l_ent), plink.ms_wait - l_wait,
+                             (long long) (plink.served_entries() - l_srv), (long long) (plink.served_fallbacks() - l_fb));
+                l_ent = plink.entries(); l_wait = plink.ms_wait; l_srv = plink.served_entries(); l_fb = plink.served_fallbacks();
+                static int64_t l_n = 0;
+                static double l_r = 0, l_q = 0, l_h = 0;
+                const double n = (double) std::max<int64_t>(1, plink.n_handled() - l_n);
+                std::fprintf(stderr, "strata serve: peer link service: %lld requests, per request %.3f ms to pick up, "
+                                     "%.3f ms to enqueue, %.3f ms handled\n", (long long) (plink.n_handled() - l_n),
+                             (plink.t_recv_ms() - l_r) / n, (plink.t_enqueue_ms() - l_q) / n, (plink.t_handle_ms() - l_h) / n);
+                l_n = plink.n_handled(); l_r = plink.t_recv_ms(); l_q = plink.t_enqueue_ms(); l_h = plink.t_handle_ms();
+            }
             for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0)
                 std::fprintf(stderr, "strata serve: CUDA%d: %lld expert entries, %lld active layer launches, %.1f MiB returned "
                                      "(%.1f MiB with full rows) in this request; host %.0f ms staging+launching, %.0f ms "

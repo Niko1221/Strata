@@ -449,6 +449,8 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
     scratch_.resize((size_t) n_);
     wstate_.reset(new std::atomic<int32_t>[(size_t) n_]);
     for (int i = 0; i < n_; ++i) wstate_[(size_t) i].store(kParked);
+    hold_.reset(new std::atomic<bool>[(size_t) n_]);
+    for (int i = 0; i < n_; ++i) hold_[(size_t) i].store(false);
     hstate_ms_.store(now_ms());
     g_diag_pool.store(this);
     strata::core::diag_pool_fn().store(&diag_active_pool);
@@ -470,7 +472,20 @@ ExpertPool::~ExpertPool() {
     stop_.store(true, std::memory_order_release);
     // Bump the epoch so a PARKED worker notices the stop flag rather than sleeping through it.
     publish();
+    {   // and a HELD one (set_hold)
+        std::lock_guard<std::mutex> lk(hold_mu_);
+        hold_cv_.notify_all();
+    }
     for (auto& t : threads_) t.join();
+}
+
+int ExpertPool::set_hold(int n) {
+    n = (std::max)(0, (std::min)(n, n_ - 1));   // one worker always stays (and the host drains too)
+    std::lock_guard<std::mutex> lk(hold_mu_);
+    for (int i = 0; i < n_; ++i) hold_[(size_t) i].store(i >= n_ - n, std::memory_order_release);
+    held_ = n;
+    hold_cv_.notify_all();
+    return n;
 }
 
 void ExpertPool::publish() {
@@ -524,6 +539,19 @@ void ExpertPool::worker(int id) {
         if (stop_.load(std::memory_order_acquire)) return;
         // acquire: the batch this epoch published (`head`, and the description before it) is visible from here
         seen = epoch_.load(std::memory_order_acquire);
+        if (hold_[(size_t) id].load(std::memory_order_acquire)) {
+            // set_hold: sit this batch (and every next one) out, asleep and still counted as parked, so the batch's
+            // other claimants finish it and wait_parked() sees n_; woken by set_hold(0) or the destructor
+            std::unique_lock<std::mutex> lk(hold_mu_);
+            wstate_[(size_t) id].store(kSleeping, std::memory_order_relaxed);
+            hold_cv_.wait(lk, [&] {
+                return !hold_[(size_t) id].load(std::memory_order_acquire) || stop_.load(std::memory_order_relaxed);
+            });
+            wstate_[(size_t) id].store(kParked, std::memory_order_relaxed);
+            if (stop_.load(std::memory_order_acquire)) return;
+            seen = epoch_.load(std::memory_order_acquire);   // what was published meanwhile is the others' batch
+            continue;
+        }
         parked_.fetch_sub(1, std::memory_order_acq_rel);   // leaving the park
 
         // Drain: one claim per iteration, so a slow worker takes fewer experts and a fast one takes more.
