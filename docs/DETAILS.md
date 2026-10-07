@@ -498,6 +498,15 @@ the same worker count and workload. This does not change kernels, phase barriers
 does not affect the legacy single-token/oracle fallback. Setup's `--calibrate` does not tune it yet.
 For the server, add `"--pool-tasks", "192"` to the existing `args` list in its configuration, then restart it.
 
+**The PCIe share measures itself (native packs, `--serve`).** The link probe can only tell the engine how wide the
+link is; the best share also depends on the CPU and the GPU. On a Ryzen 7 3800X + Radeon PRO W7800 (x16, 28 GB/s) the
+GPU taking *every* miss measured 39-40 tok/s against the probed 0.55's 26 (a slower CPU wants the GPU to take more),
+while in the RDNA2 x8 bench `--pcie-frac 0` beat the probed 0.39. So a `--serve` sweeps a few shares over its first
+verify windows - the probed one first, then 0 and 1.0 - keeps the one with the lowest (CPU pool + GPU wait) per routed
+expert, and holds it for the rest of the process (a later request does not re-measure). `--pcie-frac <value>` pins a
+share and skips the sweep; `--pcie-frac auto` asks a CLI run for the same (a one-shot pays for the sweep, so it is not
+the CLI default). `STRATA_PCIE_AUTO_DEBUG=1` logs each point's cost.
+
 ### Running it at startup (Task Scheduler)
 
 To have the model up at logon, people start the serve from **Task Scheduler** (or a service). Beware: Windows

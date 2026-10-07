@@ -550,6 +550,12 @@ struct Options {
     /// Plan v0.3 P6: the share (0..1) of each layer's distinct missed experts the GPU reads over PCIe from the
     /// pinned arena while the CPU computes the rest (verify windows).
     double pcie_frac = -1.0;   ///< < 0: the model's default (0.2 direct for the Q2_0 pack, 0.55 DMA for native packs)
+    /// `--pcie-frac auto`: pick the share by measurement instead of the link-only default.  The best share is
+    /// machine-specific and runs both ways (#485; the RDNA2 x8 bench has pcie-frac 0 beating the probed 0.39):
+    /// a slow CPU and an x16 link want the GPU to take (almost) every miss, a fast CPU and a narrow link want
+    /// the CPU to keep them.  A short sweep over the first request's verify windows finds it, then it holds.
+    bool pcie_auto = false;
+    bool pcie_frac_given = false;  ///< a numeric `--pcie-frac` was given: it wins, no sweep
     std::string pcie_mode = "auto";   ///< auto | dma | kernel | direct
     /// Plan v0.3 P6: every `adapt_every` rounds, swap up to `adapt_swaps` of the most-routed missing experts into
     /// the VRAM tier in place of the least-routed resident ones (decayed counts).  0 = static residency.
@@ -1511,6 +1517,75 @@ double pcie_frac_for_gbps(double gbps, double base) {
     return gbps <= 0.0 ? base : base * std::min(1.0, gbps / 20.0);
 }
 
+// ---- `--pcie-frac auto`: the sweep.  The share of the misses the GPU should read over PCIe is machine-specific
+// and runs both ways: a slow CPU and a wide link want the GPU to take (almost) every miss, a fast CPU and a wide
+// link want 0.55 or less, and an x8 link wanted 0 in the RDNA2 bench.  The link probe alone cannot tell them
+// apart, so the first request measures.  Each point holds `kPcieAutoPerPoint` verify windows; the cost is
+// (pool + GPU wait) per routed expert entry (the entries the CPU and the PCIe share served), so a window that
+// accepted more drafts - and served proportionally more experts - does not read as slower.  Then it holds.
+constexpr int kPcieAutoPerPoint = 2;
+constexpr int kPcieAutoMaxPoints = 4;
+
+// The sweep's state lives for the process, not the request: a server serves many requests and a short first
+// one must not restart the sweep.  `left` > 0 while tuning; `done` marks it settled.  The first point is the
+// probed default, so a request too short to finish the sweep is no worse than the link-only share was.
+int g_pcie_auto_left = 0;
+int g_pcie_auto_num = -1;
+int g_pcie_auto_n = 0;
+int g_pcie_auto_best = -1;
+bool g_pcie_auto_done = false;
+double g_pcie_auto_cost = 1e30;
+double g_pcie_auto_acc = 0.0;
+int g_pcie_auto_pts[kPcieAutoMaxPoints] = {};
+int g_pcie_auto_npts = 0;
+
+void pcie_auto_begin(strata::core::ExpertDispatch& d) {
+    if (g_pcie_auto_done) {   // settled on an earlier request this process
+        d.pcie_num = g_pcie_auto_best;
+        return;
+    }
+    if (g_pcie_auto_left <= 0) {   // start the sweep (or resume it after a request ended mid-sweep)
+        g_pcie_auto_npts = 0;
+        g_pcie_auto_pts[g_pcie_auto_npts++] = d.pcie_num;   // the probed link-only share: never a regression
+        if (d.pcie_num != 0) g_pcie_auto_pts[g_pcie_auto_npts++] = 0;
+        if (d.pcie_num != 256) g_pcie_auto_pts[g_pcie_auto_npts++] = 256;
+        g_pcie_auto_left = g_pcie_auto_npts;
+        g_pcie_auto_num = -1;
+        g_pcie_auto_n = 0;
+        g_pcie_auto_cost = 1e30;
+        g_pcie_auto_acc = 0.0;
+    }
+    if (g_pcie_auto_num < 0) g_pcie_auto_num = g_pcie_auto_pts[g_pcie_auto_npts - g_pcie_auto_left];
+    d.pcie_num = g_pcie_auto_num;
+}
+
+// One verify window's result: the pool and GPU-wait milliseconds it cost and the routed entries it served.
+void pcie_auto_observe(strata::core::ExpertDispatch& d, double pool_ms, double wait_ms, int64_t entries) {
+    if (g_pcie_auto_done || g_pcie_auto_left <= 0) return;
+    // The cost of a point is the best (lowest) window it showed: a single window can be disturbed (a driver
+    // hiccup, another job) and must not set the point's price.  Per routed entry, so a window that accepted
+    // more drafts is comparable.
+    const double cost = (pool_ms + wait_ms) / (double) std::max<int64_t>(1, entries);
+    if (g_pcie_auto_n == 0 || cost < g_pcie_auto_acc) g_pcie_auto_acc = cost;
+    if (++g_pcie_auto_n < kPcieAutoPerPoint) return;
+    const double avg = g_pcie_auto_acc;
+    if (std::getenv("STRATA_PCIE_AUTO_DEBUG"))
+        std::fprintf(stderr, "pcie-auto: point %d cost %.4f ms/entry\n", g_pcie_auto_num, avg);
+    if (avg < g_pcie_auto_cost) { g_pcie_auto_cost = avg; g_pcie_auto_best = g_pcie_auto_num; }
+    g_pcie_auto_acc = 0.0;
+    g_pcie_auto_n = 0;
+    if (--g_pcie_auto_left <= 0) {
+        if (g_pcie_auto_best < 0) g_pcie_auto_best = g_pcie_auto_pts[0];
+        g_pcie_auto_done = true;
+        if (std::getenv("STRATA_PCIE_AUTO_DEBUG"))
+            std::fprintf(stderr, "pcie-auto: settled at %d (share %d/256)\n", g_pcie_auto_best, g_pcie_auto_best);
+        d.pcie_num = g_pcie_auto_best;
+        return;
+    }
+    g_pcie_auto_num = g_pcie_auto_pts[g_pcie_auto_npts - g_pcie_auto_left];
+    d.pcie_num = g_pcie_auto_num;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1737,7 +1812,11 @@ int main(int argc, char** argv) {
         else if (a == "--window-hashes") o.window_hashes = next("--window-hashes");
         else if (a == "--mtp") o.mtp = next("--mtp");
         else if (a == "--mtp-window") o.mtp_window = std::atoll(next("--mtp-window"));
-        else if (a == "--pcie-frac") o.pcie_frac = std::atof(next("--pcie-frac"));
+        else if (a == "--pcie-frac") {
+            const std::string v = next("--pcie-frac");
+            if (v == "auto") o.pcie_auto = true;   // measured at runtime; see Options::pcie_auto
+            else { o.pcie_frac = std::atof(v.c_str()); o.pcie_frac_given = true; }
+        }
         else if (a == "--adapt-every") o.adapt_every = std::atoi(next("--adapt-every"));
         else if (a == "--adapt-decay") o.adapt_decay = (float) std::atof(next("--adapt-decay"));
         else if (a == "--adapt-async") o.adapt_async = std::atoi(next("--adapt-async")) != 0 ? 1 : 0;
@@ -2408,6 +2487,11 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: PCIe probe failed -> pcie_frac default %.2f\n", base);
         }
     }
+    // The link-only share is a starting point; the best share also depends on the CPU and the GPU (#485; the
+    // RDNA2 x8 bench: pcie-frac 0 beat the probed 0.39), so a serve measures it over its first requests and
+    // keeps the winner (a CLI one-shot would pay the measurement for its whole answer, so it opts in with
+    // `--pcie-frac auto`).  A pinned numeric `--pcie-frac` always wins.
+    if (native_pack && !o.pcie_frac_given && o.serve) o.pcie_auto = true;
     // the canonical Q2_0 pack's CPU kernels are AVX-512 only; a native pack runs on AVX2 CPUs as well
     if (!native_pack) strata::kernels::cpu::cpu_require_expert_support();
     else if (!strata::kernels::cpu::cpu_avx512_ok())
@@ -9559,6 +9643,7 @@ int main(int argc, char** argv) {
                 split_drive.pcie_num[st] = (st == 0 || split_same || req_pcie_frac != o.pcie_frac)
                                                ? drive.d.pcie_num : pcie_num_of(stages[(size_t) st - 1]->pcie_frac);
             if (pipe) for (int st = 0; st < split_drive.n; ++st) split_drive_b.pcie_num[st] = split_drive.pcie_num[st];
+            if (o.pcie_auto) pcie_auto_begin(drive.d);
             const int hist_n = std::min(req_sp.penalty_last_n, kPenaltyWindowCap);
             ver.set_history(hist_n > 0 ? d_hist : nullptr, hist_n);
             if (pipe) ver_b.set_history(hist_n > 0 ? d_hist : nullptr, hist_n);
@@ -10435,6 +10520,8 @@ int main(int argc, char** argv) {
                 // STRATA_SPEC_PROB: the MTP drafts' distributions q, judged by rejection sampling (core/spec_prob.hpp);
                 // a suffix window and the lookup chain's tail are point masses and keep the exact-match rule
                 if (use_mtp && mtp.prob() && !from_sfx && T_mtp > 1) ver.set_spec_q(mtp.spec_q(), T_mtp - 1);
+                const double pg_pool0 = ver.ms_pool, pg_wait0 = ver.ms_wait;
+                const int64_t pg_ent0 = drive.d.multi_entries + drive.d.offload_entries;
                 if (!ver.run(T, window.data(), p, win_pool_fn, win_pool_user, outv.data(), err) || drive.d.failed) {
                     std::printf("ERR %s\n", drive.d.failed && drive.d.fail ? drive.d.fail : err.c_str());
                     return 1;
@@ -10477,6 +10564,9 @@ int main(int argc, char** argv) {
                 std::fflush(stdout);
                 ++rounds;
                 const Clock::time_point tw2 = Clock::now();
+                if (o.pcie_auto)
+                    pcie_auto_observe(drive.d, ver.ms_pool - pg_pool0, ver.ms_wait - pg_wait0,
+                                      (drive.d.multi_entries + drive.d.offload_entries) - pg_ent0);
                 // coupled drafts with penalties: the next window's row-0 history (`consumed` holds this window's
                 // commit, outv[a] is its row 0) - the drafts extend it on the device as the verify rows will
                 if (use_mtp && hist_n > 0 && mtp.coupled() && !eos && produced_n < max_new)
@@ -11457,8 +11547,11 @@ int main(int argc, char** argv) {
         }
         const double pool_ms0 = drive.cpu_ms;
         const int64_t misses0 = drive.d.multi_misses, entries0 = drive.d.multi_entries;
+        if (o.pcie_auto) pcie_auto_begin(drive.d);
         while ((int64_t) produced.size() < max_new) {
             const Clock::time_point t0 = Clock::now();
+            const double pg_pool0 = ver.ms_pool, pg_wait0 = ver.ms_wait;
+            const int64_t pg_ent0 = drive.d.multi_entries + drive.d.offload_entries;
             int T = S_mtp;
             if (use_mtp && o.spec_min_p > 0.0) {
                 T = 1;
@@ -11603,6 +11696,9 @@ int main(int argc, char** argv) {
             total_ms += round_ms;
             if (timed_round && chain_n == 0) policy.observe(from_sfx, T, a, sfx_match, round_ms);
             else if (timed_round) policy.observe_chain(T_mtp, chain_n, a, cm, round_ms);
+            if (o.pcie_auto)
+                pcie_auto_observe(drive.d, ver.ms_pool - pg_pool0, ver.ms_wait - pg_wait0,
+                                  (drive.d.multi_entries + drive.d.offload_entries) - pg_ent0);
             if (rounds % 64 == 0)
                 std::fprintf(stderr, "strata generate: position %lld, %lld tokens, %lld rounds\n", (long long) p,
                              (long long) produced.size(), (long long) rounds);
