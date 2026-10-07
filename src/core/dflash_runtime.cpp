@@ -284,11 +284,12 @@ bool DFlashDrafter::add_context_f32(const float* taps, int n_taps, int64_t strid
     const int64_t N = dg.hidden, F = dg.fusion_in();
     if (n_taps * N != F) { err = "dflash: the tap count does not match the fusion input"; return false; }
     if (rows > max_rows_) { err = "dflash: more context rows than the forward's width"; return false; }
-    // f32 source: each tap's rows go into tapf_ ([rows][F]) row by row, one conversion.  (Rows of
-    // one tap are consecutive; a 2-D copy here trips the driver's pitch rules for no gain.)
+    // f32 source: the fusion input is [row][tap][hidden] (rows x F) - tap t's hidden goes at
+    // r * F + t * N, NOT [tap][row][hidden].  (Rows of one tap are consecutive in the window's
+    // buffer; a 2-D copy here trips the driver's pitch rules for no gain.)
     for (int t = 0; t < n_taps; ++t) {
         for (int r = 0; r < rows; ++r) {
-            if (cudaMemcpyAsync(tapf_ + (size_t) ((int64_t) t * rows + r) * N,
+            if (cudaMemcpyAsync(tapf_ + (size_t) ((int64_t) r * F + (int64_t) t * N),
                                 taps + (size_t) ((int64_t) t * stride_floats + r * N), (size_t) N * 4,
                                 cudaMemcpyDeviceToDevice, cs_) != cudaSuccess) {
                 err = std::string("dflash: the tap gather failed: ") + cudaGetErrorString(cudaGetLastError()) +
