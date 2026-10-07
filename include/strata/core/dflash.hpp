@@ -193,7 +193,15 @@ private:
     int32_t* h_out_ = nullptr;       ///< ... and its mapped host memory
     int32_t* h_tok_ = nullptr;       ///< host-side token ids staged to tok_
     int32_t* h_step_ = nullptr;      ///< host-side step records staged to step_
-    int32_t* h_pos_ = nullptr;       ///< host-side per-head positions staged to pos_
+    int32_t* h_pos_ = nullptr;       ///< host-side per-head positions staged to pos_;
+                                     ///< [0, max_rows*n_head) = the query rows' positions (the same
+                                     ///< values every layer), [pos_kv_off_, +n_head_kv per row) =
+                                     ///< the KV rows' positions - TWO DISJOINT regions, because a
+                                     ///< pinned buffer rewritten while an earlier enqueued copy of
+                                     ///  it is still pending hands the copy the NEW bytes (the
+                                     ///  row-0-only rope corruption); within one region every
+                                     ///  rewrite writes the same values, so a race is harmless
+    int64_t pos_kv_off_ = 0;         ///< the KV region's first index (int32) inside h_pos_
     void* attn_scratch_ = nullptr;
     int64_t max_rows_ = 0;
     int64_t cycle_ = 0;              ///< proposes so far (the parity fixture's cycle selector)
