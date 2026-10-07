@@ -73,6 +73,29 @@ bool NativeHead::load(const std::vector<std::string>& shards, int64_t n_in, int6
     }
 }
 
+bool NativeHead::served_bytes(const std::vector<std::string>& shards, int64_t n_in, int64_t n_out, uint64_t& out,
+                              std::string& err) {
+    out = 0;
+    try {
+        const strata::GgufModel model(shards);
+        err = strata::check_architecture(model.meta());
+        if (!err.empty()) return false;
+        size_t at = 0;
+        const strata::TensorInfo* tensor = model.find("output.weight", &at);
+        // the same predicate `load` applies, so the two can never disagree about what would be uploaded
+        if (!tensor || !strata::kernels::native_mmvq_supported((int) tensor->type) || tensor->shape.size() != 2 ||
+            tensor->shape[0] != (uint64_t) n_in || tensor->shape[1] != (uint64_t) n_out) {
+            err = "native head: expected a natively supported output.weight with the canonical head dimensions";
+            return false;
+        }
+        out = strata::kernels::native_mmvq_weight_bytes((int) tensor->type, (int) n_in, (int) n_out);
+        return true;
+    } catch (const std::exception& error) {
+        err = std::string("native head: ") + error.what();
+        return false;
+    }
+}
+
 bool NativeHead::run(const float* mixed, float* logits, void* stream, std::string& err) const {
     if (!loaded() || !mixed || !logits || !stream) {
         err = "native head requires loaded weights, device buffers and an explicit stream";

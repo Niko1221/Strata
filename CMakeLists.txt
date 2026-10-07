@@ -349,6 +349,11 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
                           src/kernels/cuda/qsa_select.cu
                           src/kernels/cuda/verify_kernels.cu
                           src/kernels/cuda/iq_kernels.cu
+                          src/kernels/cuda/glm_mhc.cu
+                          src/kernels/cuda/glm_kda.cu
+                          src/kernels/cuda/glm_delta.cu
+                          src/kernels/cuda/glm_attn.cu
+                          src/kernels/cuda/glm_elt.cu
                           src/kernels/ngram.cpp
                           src/ngram/ple_reader.cpp
                           src/platform/direct_file.cpp)
@@ -433,11 +438,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # already links `strata_core` - putting `gdn_layer` in core would make the two mutually dependent.  A third
   # library is the honest shape of the dependency graph: core knows about devices and weights, kernels know
   # about arithmetic, and this one knows the ORDER the arithmetic happens in.
-  add_library(strata_engine STATIC src/core/layer.cpp src/core/session.cpp src/core/expert_source.cpp src/core/remote_experts.cpp
+  add_library(strata_engine STATIC src/core/layer.cpp src/core/gemv_util.cpp src/core/session.cpp src/core/expert_source.cpp src/core/remote_experts.cpp
     src/core/remote_expert_opt.cu
     src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp
     src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp
-    src/core/arch_defaults.cpp src/core/vmm.cpp src/core/conversation_file.cpp)
+    src/core/arch_defaults.cpp src/core/model_arch.cpp src/core/vmm.cpp src/core/conversation_file.cpp
+    src/core/glm_layer.cpp src/core/glm_experts.cpp)
   target_include_directories(strata_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_kernels_cpu ${_strata_gpu_runtime_target})
   if(STRATA_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/exchange_storage_test.cpp")
@@ -760,6 +766,15 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(gdn_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(gdn_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME gdn_parity COMMAND gdn_parity --selftest)
+
+  # glm5-next's own arithmetic: mHC against ggml_hc_pre/ggml_hc_post, KDA against the ssm_conv / l2_norm /
+  # delta-net references.  Each case also computes a RIVAL reading and requires it to be told apart, because
+  # every one of these choices (the 2 on `post`, the Sinkhorn loop's end, the L2 floor, the decay's placement)
+  # produces well-formed output when wrong.
+  add_executable(glm_parity src/kernels/glm_parity.cpp)
+  target_include_directories(glm_parity PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(glm_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME glm_parity COMMAND glm_parity --selftest)
 
   add_executable(s2_gemv_q8_parity src/kernels/s2_gemv_q8_parity.cpp)
   target_include_directories(s2_gemv_q8_parity PRIVATE ${_strata_gpu_include_directories})

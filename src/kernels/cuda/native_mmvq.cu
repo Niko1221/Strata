@@ -816,7 +816,7 @@ __global__ void native_small_mmvq_kernel(const Weight* __restrict__ w,
 // row) value is accumulated over kbx in the same order, summed across warps in the same order and reduced with
 // the same warp tree as the ncols = 1 kernel, so every column is BITWISE equal to a single-column call on that
 // column (checked by bench/micro/native_mmvq_multi.cpp). The ncols = 1 kernels are untouched.
-constexpr int MAX_NCOLS = 8;
+constexpr int MAX_NCOLS = NATIVE_MMVQ_MAX_NCOLS;
 
 // Each format splits its dot product into `load` (everything that depends only on the weight block: codes,
 // unpacked scales, block scale) and `apply` (the activation loads and the original *_impl expression). `load` runs

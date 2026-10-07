@@ -61,6 +61,14 @@ struct ExpertJobMulti {
     float* out[MAXT] = {};
     /// Plan v0.3 P6: a native pack's activations (the layer's `vec_dot_type`), one per token.
     const void* nact[MAXT] = {};
+    /// The same expert's three roles as the separate runs a GGUF-in-place pack holds them in
+    /// (`ExpertSource::slices`).  When `gate` is set the job carries slices and the pool reads them directly -
+    /// rows 5 and 6 above would need an assembled `blob`, and building one costs a memcpy of the whole expert.
+    /// The caller must have checked `native_rows_sliceable` for the group size first: the multi-token kernels
+    /// address the assembled offsets and are not reachable from slices.
+    const uint8_t* gate = nullptr;
+    const uint8_t* up = nullptr;
+    const uint8_t* down = nullptr;
 };
 
 /// How worker threads are allocated across physical/logical CPU cores (#272).  `All` is the layout the pool has
@@ -286,7 +294,7 @@ private:
     int64_t mrows_ = 0;     // rows of the current multi phase across all its experts (n * FF, then n * H)
     int mtasks_ = 1;        // equal row ranges the phase is cut into
     struct SplitBufMulti {
-        alignas(64) float ff[MAXT][FF];
+        alignas(64) float ff[MAXT][kMaxExpertFF];
         ActQ a2[MAXT];
         alignas(64) uint8_t hq[MAXT][kNativeHBytes];   // plan v0.3 P6: native down activations
     };

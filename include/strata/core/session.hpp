@@ -14,6 +14,8 @@
 // lets the CPU expert pool start while the GPU is still working on the next layer.
 #pragma once
 
+#include "strata/core/glm_experts.hpp"
+#include "strata/core/glm_layer.hpp"
 #include "strata/core/hit_hook.hpp"
 #include "strata/core/layer.hpp"
 #include "strata/kernels/cpu/pool.hpp"
@@ -43,6 +45,28 @@ struct SessionState {
     void* moe_arena = nullptr;
     BlockBuffers block;
     void* block_arena = nullptr;
+
+    // ================================ glm5-next ================================
+    //
+    // THE SECOND FAMILY'S STATE, AND IT SHARES NOTHING WITH THE FIRST'S.  A glm5-next layer has no GDN
+    // recurrence and no QSA cache: its linear layers keep a per-head delta state plus a conv history, and its
+    // full-attention layers keep ONE fp16 latent per token rather than a K/V pair.  Zero-sized and null on
+    // qwen4exp, where none of it is allocated - an arch check at the carve is cheaper to read than two
+    // families' worth of deliberately empty regions.
+    GlmBuffers glm;                 ///< scratch, shared by every trunk layer (they never run concurrently)
+    void* glm_arena = nullptr;
+    /// The few fields a CHUNKED pass cannot share, one row per token of the chunk - see `GlmChunkBuffers`.
+    /// Zero-sized and null unless the session was carved with a chunk greater than one, which is every session
+    /// on a decode-only run.  `glm` above is still the scratch every token of the chunk borrows.
+    GlmChunkBuffers glm_chunk;
+    void* glm_chunk_arena = nullptr;
+    int64_t glm_chunk_tokens = 1;   ///< the `T` it was carved for (1 = the field above is empty)
+    /// ONE ENTRY PER TRUNK LAYER, INDEXED BY THE GLOBAL LAYER NUMBER - not packed, because a KDA layer and an
+    /// MLA layer want different things and a packed array would need a second index to tell them apart.
+    /// Entries outside [layer_lo, layer_hi) stay value-initialised nulls.
+    GlmLayerState* glm_states = nullptr;
+    void* glm_state_arena = nullptr;
+    uint64_t glm_state_bytes = 0;   ///< the whole carve above, so sequence start clears it with one memset
 
     float* R = nullptr;             ///< alias of `block.R`, named for what it means at this level
     int64_t k = 10;                 ///< experts per token
@@ -95,11 +119,15 @@ struct SessionState {
 /// [layer_lo, layer_hi) carves only that range's per-layer state (a split stage runs a slice of the model);
 /// the default full range is byte-identical to the old whole-model carve.  Pure arithmetic - safe to call for
 /// a candidate range before anything is allocated, which is how the layer-split search prices a placement.
+/// `glm_chunk` is the CHUNKED-PREFILL width: the session carves the per-token rows a chunk needs (see
+/// `GlmChunkBuffers`), which is zero bytes at the default of 1.  It flows through the carve so that a caller
+/// which prices a placement before allocating (`--prefill`, the layer-split search) gets the same answer the
+/// allocation will.
 uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int64_t layer_lo = 0,
-                       int64_t layer_hi = -1);
+                       int64_t layer_hi = -1, int64_t glm_chunk = 1);
 /// Carves `base` (DEVICE memory) into `s`.  Returns the bytes used.  Same range convention as `session_bytes`.
 uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void* base, SessionState& s,
-                      int64_t layer_lo = 0, int64_t layer_hi = -1);
+                      int64_t layer_lo = 0, int64_t layer_hi = -1, int64_t glm_chunk = 1);
 /// Before the memory `session_init` carved is freed: forgets what points into it from outside the session (the
 /// rope kernels' registered angle table, #280), so a later session never rotates by freed memory.
 void session_release(SessionState& s);
@@ -118,9 +146,41 @@ void session_zero(SessionState& s, const ModelGeometry& g, const float* R_init, 
 /// `--sync-every-layer` debug mode, and it is deliberately a parameter rather than a compile-time choice: the
 /// errors it catches (a kernel reading a buffer that a later layer writes) are invisible otherwise, and the
 /// synchronisation it costs is exactly what P2.X3 forbids in the fast path.
+///
+/// **`glm_pool` IS THE glm5-next EXPERT HOOK, AND IT IS NOT `PoolFn`.**  The first family's pool is called by
+/// the captured host loop between two recorded graphs, so it can be handed device-mapped host pointers and a
+/// failure flag it latches; this loop runs the layers directly, so the pool is handed HOST copies, returns a
+/// bool, and the copies are the caller's - see `GlmPoolFn`.  A null `glm_pool` on a glm5-next MoE layer is
+/// refused rather than run: `parts` is a zeroed device buffer, so the combine would produce a finite, fluent
+/// token that is missing every routed expert.
 bool session_token(const WeightTable& tables, const ModelGeometry& g, int64_t pos, int32_t pos_base,
                    SessionState& s, const float* parts, void* stream, bool sync_every_layer,
-                   std::string& err);
+                   GlmPoolFn glm_pool, void* glm_pool_user, std::string& err);
+
+/// `T` TOKENS OF A glm5-next PREFILL, IN ONE LAYER-MAJOR PASS.
+///
+/// The tokens are `pos .. pos + T - 1`, and `pos_base` is the position of the sequence's first token as the MLA
+/// kernels need it (`glm_mla_attn` is causal over `0 .. pos_base + t`).  Layer `l` runs `pre` for every token of
+/// the chunk, then the CPU pool ONCE for the whole chunk - which is the entire point: one token reads 8 experts
+/// a layer, and a chunk reads only the DISTINCT experts it routed to, so the 3.82 GiB a token costs falls by
+/// the amortization table in `glm_experts.cpp`'s chunk comment.  Then `post` for every token.
+///
+/// Layer-major is what makes this correct with no new mathematics: token `t` at layer `l` needs token `t` at
+/// layer `l-1`, and this order finishes every token at `l-1` before starting `l`.  The KDA recurrence is then
+/// still a sequential walk over the chunk (`kda_delta_kernel` loops `t < T` with the state updated in place)
+/// and the MLA cache is still one row per absolute position.
+///
+/// **`T == 1` IS `session_token`, BIT FOR BIT** - the same kernels with the same arguments, only reached
+/// through the chunk's views.  `T > 1` is the same kernels called the same number of times; this is a
+/// restructure of the host loop, not a change to any arithmetic, which is why `--prefill 1` and `--prefill 128`
+/// must emit identical greedy ids.
+///
+/// `s.glm_chunk` must have been carved for at least `T` tokens, and a layer-split session is refused: the
+/// inter-stage hand-off carries ONE token's residual, and widening it is Phase 1a's follow-up rather than
+/// something to get subtly wrong here.
+bool session_token_chunk(const WeightTable& tables, const ModelGeometry& g, int64_t pos, int32_t pos_base,
+                         int64_t T, SessionState& s, void* stream, GlmPoolFn glm_pool, void* glm_pool_user,
+                         std::string& err);
 
 // ================================ the captured form ================================
 

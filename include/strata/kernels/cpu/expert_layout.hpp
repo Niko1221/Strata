@@ -90,7 +90,13 @@ void act_quant_any(const float* x, int n, ActQ& a);
 const ExpertLayout& expert_layout();
 /// Reads `<pack_dir>/native_experts.txt` when it exists (a native pack), else sets the canonical layout.
 /// Versions up to kExpertLayoutVersion are read; a newer one is refused (a newer packer wrote it).
-bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err);
+///
+/// `n_embd` / `n_ff` are the MODEL's hidden width and expert intermediate width, and they are what a native
+/// blob's row sizes are computed from.  They are arguments and not the `H` / `FF` constants because a second
+/// family (glm5-next: 4096 / 2048) is not a multiple of the first's, and a blob sized from the wrong width is
+/// a wrong answer, not a crash.
+bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, int64_t n_embd,
+                        int64_t n_ff, std::string& err);
 /// The newest native_experts.txt this engine reads.  v4 = v3 plus the per-role shard column `gate,up,down`,
 /// written only when some layer's roles are in different shards (every other pack stays v3, byte for byte).
 inline constexpr int kExpertLayoutVersion = 4;

@@ -612,7 +612,14 @@ template<> struct Fmt<8> { static constexpr int qk = 32, ipb = QI8_0 / VDR_Q8_0,
 #else
 #define STRATA_GU_FMTS(X) X(16) X(17) X(18) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(6) X(2) X(3) X(8)
 #endif
+#ifdef STRATA_Q6K_EXPERTS
+// Q6_K as a DOWN type too, not just gate/up.  No Qwen4Exp pack has one - its down types are IQ4_NL, IQ4_XS,
+// Q2_0, Q8_0, Q5_0, F16, Q4_0 and Q8_1 - but Unsloth's GLM-5.3-Flash UD-IQ4_XS mixes a Q6_K down into 3 of its
+// 42 MoE layers (11, 35, 44), so without this the model is refused at the pre-flight rather than run.
+#define STRATA_D_FMTS(X) X(20) X(23) X(42) X(7) X(6) X(2) X(3) X(8) X(14)
+#else
 #define STRATA_D_FMTS(X) X(20) X(23) X(42) X(7) X(6) X(2) X(3) X(8)
+#endif
 #define STRATA_MMVQ_FMTS(X) X(16) X(17) X(18) X(20) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(7) X(6) X(2) X(3) X(8)
 
 __device__ __forceinline__ float warp_sum(float v) {

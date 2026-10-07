@@ -306,9 +306,13 @@ void native_quant_h(const NativeFmt&, const float*, void*) { std::abort(); }
 int native_gu_mt_min(int) { return 2; }
 void native_gu_rows(const NativeFmt&, const uint8_t*, const void* const*, int, float* const*, int, int) { std::abort(); }
 void native_down_rows(const NativeFmt&, const uint8_t*, const void* const*, int, float* const*, int, int) { std::abort(); }
+bool native_rows_sliceable(int, int, int) { return false; }
+void native_gu_rows_ptrs(const NativeFmt&, const uint8_t*, const uint8_t*, const void* const*, int, float* const*, int, int) { std::abort(); }
+void native_down_rows_ptr(const NativeFmt&, const uint8_t*, const void* const*, int, float* const*, int, int) { std::abort(); }
 #endif
 
-bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err) {
+bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, int64_t n_embd,
+                        int64_t n_ff, std::string& err) {
     ExpertLayout L;
     L.n_layers = n_layers;
     L.n_expert = n_expert;
@@ -359,13 +363,21 @@ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n
             return false;
         }
         NativeFmt f;
-        if (!native_fmt((int) gt, (int) dt, H, FF, f, err)) return false;
-        if (f.bytes != blob) {
-            err = "native_experts.txt: layer " + std::to_string(l) + " blob is " + std::to_string(blob) +
-                  " B but its formats make " + std::to_string(f.bytes);
-            return false;
+        // A blob of 0 bytes is a layer with NO routed experts: glm5-next runs a dense SwiGLU on its first
+        // `leading_dense_block_count` blocks, which carry no ffn_{gate,up,down}_exps.weight at all.  The line is
+        // kept - with the types and the GGUF offsets left at 0 - so that a layer index in this table is a block
+        // index, and the contiguity walk below advances by nothing over it.  Every other layer is checked as
+        // before, and a caller that reaches a dense-lead layer's experts is a bug in the layer dispatch, not
+        // something this file can catch.
+        if (blob != 0) {
+            if (!native_fmt((int) gt, (int) dt, n_embd, n_ff, f, err)) return false;
+            if (f.bytes != blob) {
+                err = "native_experts.txt: layer " + std::to_string(l) + " blob is " + std::to_string(blob) +
+                      " B but its formats make " + std::to_string(f.bytes);
+                return false;
+            }
         }
-        if (ss >> go >> uo >> dox) {   // v2 lines: the GGUF offsets
+        if (blob != 0 && (ss >> go >> uo >> dox)) {   // v2 lines: the GGUF offsets
             if (L.gguf_off.empty()) L.gguf_off.assign((size_t) (3 * n_layers), 0);
             L.gguf_off[(size_t) (3 * l)] = go;
             L.gguf_off[(size_t) (3 * l + 1)] = uo;

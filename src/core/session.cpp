@@ -3,6 +3,8 @@
 #include "strata/kernels/mrope.hpp"
 #include "strata/core/progress.hpp"
 
+#include "strata/core/glm_layer.hpp"
+
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/quantize_act.hpp"
@@ -14,7 +16,6 @@
 
 #include <atomic>
 #include <chrono>
-#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
@@ -51,7 +52,8 @@ static uint64_t ple_hist_bytes() {
     return (uint64_t) strata::kernels::NG_HIST * strata::kernels::NG_HC_DIM * sizeof(float);
 }
 
-uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int64_t layer_lo, int64_t layer_hi) {
+uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int64_t layer_lo, int64_t layer_hi,
+                       int64_t glm_chunk) {
     if (layer_hi < 0 || layer_hi > g.n_layers) layer_hi = g.n_layers;
     if (layer_lo < 0) layer_lo = 0;
     // QSA layers are `l % interval == interval-1`, so exactly `bound / interval` of them live below `bound`
@@ -69,11 +71,24 @@ uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int
     n += moe_buffers_bytes(g, k);
     n += block_buffers_bytes(g);
     n += ple_hist_bytes();                       // the PLE's NG_HIST normalized history rows
+    // ---- glm5-next ----
+    // A second family's state, added rather than substituted: the first family's terms above are all
+    // zero-sized on a GLM geometry (no GDN channels, no QSA layers, no PLE), so one expression sizes both and
+    // there is no arch branch to forget at one of the three carve sites.
+    if (g.arch == Arch::Glm5Next) {
+        n += glm_buffers_bytes(g);
+        // The chunked-prefill rows, ZERO at the default `glm_chunk == 1`.  The single-token path reads none of
+        // them, so a decode run's session stays byte-for-byte the size it was - which is what makes the
+        // `--prefill 1` arm of the verification a genuine control rather than "the same code with a 240 KiB
+        // tail".  `glm_chunk_bytes` itself is happy with any T >= 1; the guard is the caller's.
+        if (glm_chunk > 1) n += glm_chunk_bytes(g, k, glm_chunk);
+        for (int64_t l = layer_lo; l < layer_hi; ++l) n += glm_layer_state_bytes(g, max_cells, l);
+    }
     return align_up(n, SESSION_STATE_ALIGN) + 4096;
 }
 
 uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void* base, SessionState& s,
-                      int64_t layer_lo, int64_t layer_hi) {
+                      int64_t layer_lo, int64_t layer_hi, int64_t glm_chunk) {
     if (layer_hi < 0 || layer_hi > g.n_layers) layer_hi = g.n_layers;
     if (layer_lo < 0) layer_lo = 0;
     uint8_t* p = (uint8_t*) base;
@@ -90,7 +105,16 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
     s.layer_hi = layer_hi;
     const int64_t I = std::max<int64_t>(g.qsa_interval, 1);
     const int64_t q_n_range = layer_hi / I - layer_lo / I;
-    s.qsa_ord0 = layer_lo / I;
+    // **THE ORDINAL IS CLAMPED, AND ON glm5-next THAT IS NOT COSMETIC.**  `qsa_alloc` keeps the at-least-one
+    // rule below, so a range holding no `l % I == I-1` layer still allocates one state and initializes
+    // `qsa_states[qsa_ord0]` - but `q_lo` is `layer_lo / I`, and a range can start past the last QSA ordinal.
+    // That needs `n_layers` not to be a multiple of `I`: glm5-next (GLM-5.3-Flash) has 45 layers and 11 full
+    // attention ones, so its LAST stage is `[44, 45)`, whose `qsa_ord0` is 11 on an 11-entry `new QsaState[11]`
+    // - one struct written past the end, which is a heap corruption (`malloc(): unsorted double linked list
+    // corrupted`) several allocations later, not a bad token.  The first family's `n_layers` is a multiple of
+    // its interval, where `layer_lo <= n_layers - 1` already implies `layer_lo / I <= n_qsa - 1`: this clamp
+    // never fires there, and the entry it picks for GLM is a state no layer of that stage reads.
+    s.qsa_ord0 = std::min<int64_t>(layer_lo / I, std::max<int64_t>(g.n_qsa_layers() - 1, 0));
     s.qsa_alloc = std::max<int64_t>(q_n_range, g.n_qsa_layers() > 0 ? 1 : 0);
     s.gdn_ord0 = layer_lo - layer_lo / I;
     s.gdn_alloc = std::max<int64_t>((layer_hi - layer_lo) - q_n_range, 0);
@@ -124,11 +148,46 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
     // THE PLE HISTORY: NG_HIST rows of hc_dim floats, row-fastest.  Sequence state, carved here and zeroed by
     // `session_zero`; it survives every token, which is the whole point of a conv history.
     s.ple_hist = (float*) take(ple_hist_bytes());
+
+    // ---- glm5-next ----
+    // The scratch is one carve for the whole trunk: the layers run one after another, never concurrently, so
+    // there is nothing to keep apart.  The STATE is per layer and is one carve too, walked in order - a
+    // per-layer `take` would round each layer up to 256 B and the MLA rows are 1 MiB at a 1024-token context,
+    // so the waste would be invisible, but the single walk is also what lets `session_zero` clear it in one
+    // memset without knowing which layers are which.
+    s.glm_arena = nullptr;
+    s.glm_chunk_arena = nullptr;
+    s.glm_chunk_tokens = 1;
+    s.glm_states = nullptr;
+    s.glm_state_arena = nullptr;
+    s.glm_state_bytes = 0;
+    if (g.arch == Arch::Glm5Next) {
+        s.glm_arena = take(glm_buffers_bytes(g));
+        glm_buffers_init(g, 1, s.glm_arena, s.glm);
+        // The chunked-prefill rows.  `glm_chunk_tokens` is what `session_token_chunk` checks a request against,
+        // so it stays 1 - "no chunk is carved" - when chunking was not asked for.
+        if (glm_chunk > 1) {
+            s.glm_chunk_arena = take(glm_chunk_bytes(g, k, glm_chunk));
+            glm_chunk_init(g, k, glm_chunk, s.glm_chunk_arena, s.glm_chunk);
+            s.glm_chunk_tokens = glm_chunk;
+        }
+        s.glm_states = new GlmLayerState[(size_t) g.n_layers]();   // entries outside the range stay null
+        uint64_t total = 0;
+        for (int64_t l = layer_lo; l < layer_hi; ++l) total += glm_layer_state_bytes(g, max_cells, l);
+        s.glm_state_bytes = total;
+        s.glm_state_arena = take(total);
+        uint8_t* gp = (uint8_t*) s.glm_state_arena;
+        for (int64_t l = layer_lo; l < layer_hi; ++l)
+            gp += glm_state_init(g, max_cells, l, gp, s.glm_states[l]);
+    }
+
     s.R = s.block.R;
     return used;
 }
 
 void session_release(SessionState& s) {
+    delete[] s.glm_states;
+    s.glm_states = nullptr;
     for (int64_t j = 0; s.qsa_states != nullptr && j < s.qsa_alloc; ++j)
         if (s.qsa_states[j].owns_rope) {
             strata::kernels::rope_table_release(s.qsa_states[j].cos_tab);
@@ -157,6 +216,11 @@ void session_zero(SessionState& s, const ModelGeometry& g, const float* R_init, 
     // for the same reason: `ngram_rows` treats a missing predecessor as the EOS cut, which is what a sequence
     // boundary IS.
     cudaMemsetAsync(s.ple_hist, 0, (size_t) ple_hist_bytes(), cs);
+    // glm5-next: the KDA delta state and conv history, and the MLA latent cache, are the whole of a sequence's
+    // carried context - a stale delta state is a different model, not a rounding difference.  One memset over
+    // the single carve, which is why the carve is contiguous.
+    if (s.glm_state_arena != nullptr)
+        cudaMemsetAsync(s.glm_state_arena, 0, (size_t) s.glm_state_bytes, cs);
     s.ple_prev[0] = -1;
     s.ple_prev[1] = -1;
     s.ple_token = -1;
@@ -787,10 +851,114 @@ bool session_loop(const ModelGeometry& g, int64_t pos, int32_t pos_base, Session
 
 bool session_token(const WeightTable& tables, const ModelGeometry& g, int64_t pos, int32_t pos_base,
                    SessionState& s, const float* parts, void* stream, bool sync_every_layer,
-                   std::string& err) {
+                   GlmPoolFn glm_pool, void* glm_pool_user, std::string& err) {
     cudaStream_t cs = (cudaStream_t) stream;
     int64_t qsa_index = 0;
     int64_t gdn_index = 0;
+
+    // THE DEBUG MODE, and its cost is the point: it is a real synchronisation after every layer, which P2.X3
+    // forbids in the fast path.  It exists to turn an ASYNCHRONOUS error - a kernel reading a buffer a later
+    // layer wrote, or an out-of-range launch - into a failure AT THE LAYER THAT CAUSED IT, instead of a wrong
+    // number 40 layers later or at the end of the token.
+    auto sync_layer = [&](int64_t l) -> bool {
+        if (!sync_every_layer) return true;
+        const cudaError_t e = cudaStreamSynchronize(cs);
+        if (e != cudaSuccess) {
+            err = "layer " + std::to_string(l) + ": " + cudaGetErrorString(e);
+            return false;
+        }
+        return true;
+    };
+
+    // ---- glm5-next ----
+    // A SECOND LOOP, NOT A BRANCH INSIDE THE FIRST ONE'S BODY.  The two families share the loop variable and
+    // nothing else: no GDN slice to point at, no QSA ordinal, no PLE, and a persistent state that lives per
+    // layer in the session rather than in the shared `gdn`/`qsa` scratch.  Eight conditionals threaded through
+    // the loop below would be one long function that is neither family's.
+    if (g.arch == Arch::Glm5Next) {
+        if (s.glm_states == nullptr) { err = "session_token: the glm5-next state was never carved"; return false; }
+        // **THE EXPERT HANDOFF HERE IS A ROUND TRIP, AND THAT IS THE HONEST SHAPE OF THIS LOOP.**  The first
+        // family hands the pool a pointer into mapped pinned memory the ring already wrote, and reads the
+        // experts back through the doorbell, because its layers are CAPTURED and a capture bakes in addresses.
+        // Nothing here is captured - `--no-capture` is the only mode that reaches `session_token` - so the same
+        // handoff is three explicit copies on this stream, in this order:
+        //
+        //     pre[l]  ... router -> ids, weights, and the normed FFN input in `b.cur`
+        //     D2H     b.cur and the k ids            (ordered after the router by the stream)
+        //     sync    the host pool cannot read a copy that has not landed
+        //     pool    k unweighted expert outputs, on the CPU
+        //     H2D     those k rows into `parts`      (ordered before post[l]'s combine by the stream)
+        //     post[l] combine with THIS layer's weights, the shared expert, hc_write
+        //
+        // 144 KB a layer over PCIe, against 11.67 MB of expert bytes the CPU is about to read: the copies are
+        // not the cost and pretending otherwise would buy a mapped ring for 43 x 2 copies a token.
+        const int64_t n = g.n_embd;
+        const int64_t k = s.k;
+        // Sized once.  `k` and `n_embd` cannot change under a session, so these are reused for every layer of
+        // every token - a per-layer allocation of 128 KB x 43 x N tokens is a malloc storm for nothing.
+        std::vector<float> glm_x_host, glm_out_host;
+        std::vector<int32_t> glm_ids_host;
+        if (glm_pool != nullptr) {
+            glm_x_host.resize((size_t) n);
+            glm_ids_host.resize((size_t) k);
+            glm_out_host.resize((size_t) (k * n));
+        }
+        // THIS SESSION'S OWN LAYERS, not the model's.  On one card `[layer_lo, layer_hi)` is `[0, n_layers)` and
+        // this is the loop that was always here; on a layer split's stage it is that stage's range, and the
+        // range is what the session's `glm_state_arena` and `glm_states` were carved for.  `l` stays the GLOBAL
+        // ordinal, which is what the weight table, `glm_states[l]` and the CPU pool all index by: a stage's
+        // weights were loaded for its own range (`NativeDense::set_layer_range` + `add_foreign`) and the pool
+        // serves every stage, so neither can be handed a re-based index.
+        for (int64_t l = s.layer_lo; l < s.layer_hi; ++l) {
+            const bool moe = !g.is_dense_ffn_layer(l);
+            if (moe && glm_pool == nullptr) {
+                err = "glm5-next: layer " + std::to_string(l) + " is a MoE layer and `session_token` has no CPU "
+                      "expert pool; the routed experts would contribute nothing";
+                return false;
+            }
+            err.clear();
+            if (!glm_block_layer_pre(tables, g, l, pos, pos_base, s.glm, s.glm_states[l], s.moe, k, s.block,
+                                     stream, err, nullptr)) {
+                err = "layer " + std::to_string(l) + ": " + err;
+                return false;
+            }
+            if (moe) {
+                if (cudaMemcpyAsync(glm_x_host.data(), s.glm.cur, (size_t) n * sizeof(float),
+                                    cudaMemcpyDeviceToHost, cs) != cudaSuccess ||
+                    cudaMemcpyAsync(glm_ids_host.data(), s.moe.ids, (size_t) k * sizeof(int32_t),
+                                    cudaMemcpyDeviceToHost, cs) != cudaSuccess) {
+                    err = "layer " + std::to_string(l) + ": staging the expert handoff: " +
+                          cudaGetErrorString(cudaGetLastError());
+                    return false;
+                }
+                // The pool reads ordinary host memory; it cannot start before the copy lands.  A sync and not
+                // an event: the host thread has nothing else to do, and the alternative is a second stream.
+                if (cudaStreamSynchronize(cs) != cudaSuccess) {
+                    err = "layer " + std::to_string(l) + ": waiting for the expert handoff";
+                    return false;
+                }
+                if (!glm_pool(glm_pool_user, l, glm_x_host.data(), glm_ids_host.data(), 1, k, glm_out_host.data(),
+                              err)) {
+                    err = "layer " + std::to_string(l) + ": " + err;
+                    return false;
+                }
+                // `parts` is device memory the caller owns and this is the only writer of it.  The cast drops a
+                // const that is about the CALLER's contract (the loop only reads it), not about the buffer.
+                if (cudaMemcpyAsync(const_cast<float*>(parts), glm_out_host.data(), (size_t) (k * n) * sizeof(float),
+                                    cudaMemcpyHostToDevice, cs) != cudaSuccess) {
+                    err = "layer " + std::to_string(l) + ": staging the expert results: " +
+                          cudaGetErrorString(cudaGetLastError());
+                    return false;
+                }
+            }
+            if (!glm_block_layer_post(tables, g, l, k, s.glm, s.moe, s.block, parts, stream, err)) {
+                err = "layer " + std::to_string(l) + ": " + err;
+                return false;
+            }
+            if (!sync_layer(l)) return false;
+        }
+        return true;
+    }
 
     for (int64_t l = 0; l < g.n_layers; ++l) {
         // THE GDN LAYERS EACH GET THEIR OWN STATE, and `GdnBuffers` carries it - so the session points the
@@ -814,17 +982,126 @@ bool session_token(const WeightTable& tables, const ModelGeometry& g, int64_t po
         }
         if (is_qsa_layer(g, l)) ++qsa_index;
 
-        if (sync_every_layer) {
-            // THE DEBUG MODE, and its cost is the point: it is a real synchronisation after every layer, which
-            // P2.X3 forbids in the fast path.  It exists to turn an ASYNCHRONOUS error - a kernel reading a
-            // buffer a later layer wrote, or an out-of-range launch - into a failure AT THE LAYER THAT CAUSED
-            // IT, instead of a wrong number 40 layers later or at the end of the token.
-            const cudaError_t e = cudaStreamSynchronize(cs);
-            if (e != cudaSuccess) {
-                err = "layer " + std::to_string(l) + ": " + cudaGetErrorString(e);
+        if (!sync_layer(l)) return false;
+    }
+    return true;
+}
+
+bool session_token_chunk(const WeightTable& tables, const ModelGeometry& g, int64_t pos, int32_t pos_base,
+                         int64_t T, SessionState& s, void* stream, GlmPoolFn glm_pool, void* glm_pool_user,
+                         std::string& err) {
+    cudaStream_t cs = (cudaStream_t) stream;
+    if (g.arch != Arch::Glm5Next) { err = "session_token_chunk: only glm5-next reads a prompt in chunks"; return false; }
+    if (s.glm_states == nullptr) { err = "session_token_chunk: the glm5-next state was never carved"; return false; }
+    if (T < 1) { err = "session_token_chunk: an empty chunk"; return false; }
+    if (T > s.glm_chunk_tokens || s.glm_chunk.R == nullptr) {
+        err = "session_token_chunk: this session carved a chunk of " + std::to_string(s.glm_chunk_tokens) +
+              " tokens and was asked for " + std::to_string(T) + " (see the glm_chunk argument of `session_init`)";
+        return false;
+    }
+    // **A STAGE OF A LAYER SPLIT CARVES LIKE ANY OTHER RANGE.**  This function used to refuse one outright,
+    // because the inter-stage hand-off carried a single token's residual and a chunk would have to carry `T` of
+    // them.  It does now: `c.R` is already `T` rows of (hc, n_embd) - it is the same buffer the single-card
+    // chunk has always used - so a stage's input is its predecessor's `c.R` and its output is its own.  The one
+    // thing this function does NOT do is move them: the caller owns `hand[]`, exactly as it does at `T == 1`.
+    //
+    // The range is also why `s.layer_lo`/`layer_hi` appear below at all.  Everything else here is unchanged,
+    // which is the point: the loop was already range-aware, so what was a refusal becomes a hand-off.
+
+    GlmChunkBuffers& c = s.glm_chunk;
+    const int64_t n = g.n_embd, k = s.k, hc = g.hc;
+
+    // **THE HOST STAGING, SIZED ONCE AND NEVER AT T=1.**  The decode path allocates its three vectors per call
+    // (they are 144 KiB there); a chunk's are `T x` that - 16 MiB of `out_host` at T=128 - and a malloc/free of
+    // that per chunk is the one allocation this function would make.  A `thread_local` grows to the largest
+    // chunk seen and then stops, which is the same guarantee `GlmExpertPool::grow_to` gives its own scratch.
+    static thread_local std::vector<float> x_host, out_host;
+    static thread_local std::vector<int32_t> ids_host;
+    if (glm_pool != nullptr) {
+        if (x_host.size() < (size_t) (T * n)) x_host.resize((size_t) (T * n));
+        if (ids_host.size() < (size_t) (T * k)) ids_host.resize((size_t) (T * k));
+        if (out_host.size() < (size_t) (T * k * n)) out_host.resize((size_t) (T * k * n));
+    }
+
+    for (int64_t l = s.layer_lo; l < s.layer_hi; ++l) {
+        const bool moe = !g.is_dense_ffn_layer(l);
+        if (moe && glm_pool == nullptr) {
+            err = "glm5-next: layer " + std::to_string(l) + " is a MoE layer and `session_token_chunk` has no CPU "
+                  "expert pool; the routed experts would contribute nothing";
+            return false;
+        }
+
+        // ---- ALL T TOKENS' `pre`, in order.  The order is not a preference: a KDA layer's state is updated in
+        // place and token `t` has to see token `t-1`'s, and an MLA layer writes its cache row at `pos_base + pos +
+        // t` and token `t` attends over everything below it.  Layer-major makes both true with no new maths:
+        // every token finishes layer `l-1` before any token starts layer `l`.
+        err.clear();
+        for (int64_t t = 0; t < T; ++t) {
+            GlmBuffers vb;
+            MoEBuffers vmb;
+            BlockBuffers vbb;
+            glm_chunk_view(c, s.glm, s.moe, s.block, t, vb, vmb, vbb);
+            if (!glm_block_layer_pre(tables, g, l, pos + t, pos_base, vb, s.glm_states[l], vmb, k, vbb, stream, err,
+                                     nullptr)) {
+                err = "layer " + std::to_string(l) + " token " + std::to_string(t) + ": " + err;
                 return false;
             }
         }
+
+        if (moe) {
+            // **ONE COPY FOR THE WHOLE CHUNK, WHERE THE DECODE PATH MAKES ONE PER TOKEN.**  `c.cur` and `c.ids`
+            // are `T` rows laid out back to back, so the chunk's hand-off is two memcpys rather than 2T - and the
+            // pool that follows is the entire point of this function: it reads each DISTINCT expert once for
+            // every token of the chunk that routed to it.
+            if (cudaMemcpyAsync(x_host.data(), c.cur, (size_t) (T * n) * sizeof(float), cudaMemcpyDeviceToHost,
+                                cs) != cudaSuccess ||
+                cudaMemcpyAsync(ids_host.data(), c.ids, (size_t) (T * k) * sizeof(int32_t), cudaMemcpyDeviceToHost,
+                                cs) != cudaSuccess) {
+                err = "layer " + std::to_string(l) + ": staging the chunk's expert handoff: " +
+                      cudaGetErrorString(cudaGetLastError());
+                return false;
+            }
+            if (cudaStreamSynchronize(cs) != cudaSuccess) {
+                err = "layer " + std::to_string(l) + ": waiting for the chunk's expert handoff";
+                return false;
+            }
+            if (!glm_pool(glm_pool_user, l, x_host.data(), ids_host.data(), T, k, out_host.data(), err)) {
+                err = "layer " + std::to_string(l) + ": " + err;
+                return false;
+            }
+            // `c.parts` is this session's own carve, so nothing outside can be holding the old contents.
+            if (cudaMemcpyAsync(c.parts, out_host.data(), (size_t) (T * k * n) * sizeof(float),
+                                cudaMemcpyHostToDevice, cs) != cudaSuccess) {
+                err = "layer " + std::to_string(l) + ": staging the chunk's expert results: " +
+                      cudaGetErrorString(cudaGetLastError());
+                return false;
+            }
+        }
+
+        // ---- AND ALL T TOKENS' `post`.  Each token's `post` reads ITS OWN row of the fields `pre` left live:
+        // `cur`/`post`/`comb`/`shared`/`weights`/`ids` on `GlmBuffers`/`MoEBuffers` and `R`/`block_out` on the
+        // block - which is why those are the only fields a chunk has to keep per token (see `GlmChunkBuffers`).
+        for (int64_t t = 0; t < T; ++t) {
+            GlmBuffers vb;
+            MoEBuffers vmb;
+            BlockBuffers vbb;
+            glm_chunk_view(c, s.glm, s.moe, s.block, t, vb, vmb, vbb);
+            if (!glm_block_layer_post(tables, g, l, k, vb, vmb, vbb, c.parts + (size_t) t * (size_t) k * (size_t) n,
+                                      stream, err)) {
+                err = "layer " + std::to_string(l) + " token " + std::to_string(t) + ": " + err;
+                return false;
+            }
+        }
+    }
+
+    // **THE CHUNK LEAVES ONE RESIDUAL BEHIND, NOT T.**  Every token's stack is in its own row and only the LAST
+    // token's is the sequence's current state - it is what the head reads for the next token and what the next
+    // decode step (or the next chunk) reads as its input.  `s.block.R` is that slot, and this is the one place
+    // the chunk's rows meet it.
+    if (cudaMemcpyAsync(s.block.R, c.R + (size_t) (T - 1) * (size_t) hc * (size_t) n,
+                        (size_t) hc * (size_t) n * sizeof(float), cudaMemcpyDeviceToDevice, cs) != cudaSuccess) {
+        err = "the chunk's final residual could not be moved into the session's";
+        return false;
     }
     return true;
 }

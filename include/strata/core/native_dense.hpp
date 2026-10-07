@@ -27,6 +27,17 @@ public:
     /// supported type, 2-D), read from the GGUF headers only - so the canonical arena can skip them.
     static bool served_names(const std::vector<std::string>& shards, bool include_ple_key,
                              std::set<std::string>& out, std::string& err);
+    /// What `load` would upload for EACH LAYER, in bytes, from the GGUF headers only - the same
+    /// eligible/type/shape rules and the same `native_mmvq_weight_bytes` the upload uses, so it prices the
+    /// native half of a layer split's stage without allocating anything.  `out` is `n_layers` long and indexed
+    /// by the GLOBAL layer ordinal (a layer the model has none of, such as a trunk's MTP block, is 0).  The
+    /// whole curve in one pass, because a placement search wants every range and one pass over the shard
+    /// headers is what keeps it cheap enough to run at every start.
+    ///
+    /// It is the ONLY way to price that half: these matrices are not in the canonical arena at all, so
+    /// `WeightTable::pool_bytes` cannot see them, and on glm5-next they are the whole of a stage's weights.
+    static bool served_bytes_per_layer(const std::vector<std::string>& shards, bool include_ple_key,
+                                       int64_t n_layers, std::vector<uint64_t>& out, std::string& err);
     /// Layer split: load only blocks [lb, le) (every other `blk.N.` projection belongs to another GPU's stage; the
     /// PLE tensors are loaded everywhere).  Process-wide, read by the next `load`; (-1, -1) = all layers.
     static void set_layer_range(int lb, int le);

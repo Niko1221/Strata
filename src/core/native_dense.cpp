@@ -75,9 +75,36 @@ std::vector<uint8_t> q8_0_of(const float* x, uint64_t n) {
     }
     return out;
 }
-bool eligible(const strata::TensorInfo& tensor, bool include_ple_key) {
+// Which family a shard is, and how deep its trunk runs.  glm5-next carries a next-token-prediction block PAST
+// the trunk (`nextn_predict_layers` = 1, block 45 of 46) which v1 does not run, so the pack does not hold it and
+// the engine must not expect the canonical table to either.  Read from the shard's own metadata, so the file
+// stays the authority; `n_trunk` < 0 means "no block past the last one", which is the qwen4exp case.
+Arch family_of(const strata::GgufFile& gguf, int64_t& n_trunk) {
+    n_trunk = -1;
+    Arch a = Arch::Unknown;
+    const auto* g = gguf.get("general.architecture");
+    if (!g || !arch_from_string(g->s, a)) return Arch::Unknown;
+    if (a != Arch::Glm5Next) return a;
+    const auto* bc = gguf.get(std::string(arch_meta_prefix(a)) + ".block_count");
+    const auto* nn = gguf.get(std::string(arch_meta_prefix(a)) + ".nextn_predict_layers");
+    if (bc && nn && bc->u > nn->u) n_trunk = (int64_t) (bc->u - nn->u);
+    return a;
+}
+
+/// The index holds TWO dimensions and a tensor with more is written with its trailing ones folded into ne1 -
+/// which is what they are: ggml makes ne0 the row length and everything after it the row count.  The packer
+/// folds them (iq_pack.py) and the engine has to fold them the same way or it refuses a tensor the pack holds,
+/// which is what glm5-next's MLA weights need (attn_k_b is [256, 512, 64]).
+uint64_t folded_ne1(const strata::TensorInfo& t) {
+    uint64_t n = 1;
+    for (size_t i = 1; i < t.shape.size(); ++i) n *= t.shape[i];
+    return n;
+}
+
+bool eligible(const strata::TensorInfo& tensor, bool include_ple_key, Arch arch, int64_t n_trunk) {
     const auto& name = tensor.name;
     if (name.rfind("blk.", 0) != 0) return false;
+    if (n_trunk >= 0 && std::strtol(name.c_str() + 4, nullptr, 10) >= n_trunk) return false;
     // Match the native PLE kernel: Q2_0, IQ3_XXS, IQ4_XS and Q8_0 (UD-Q4_K_XL). Other keys retain the packed BF16
     // fallback.
     if (name == "blk.1.ple_key.weight")
@@ -85,6 +112,13 @@ bool eligible(const strata::TensorInfo& tensor, bool include_ple_key) {
     static const char* suffixes[] = {".attn_qkv.weight", ".attn_gate.weight", ".ssm_out.weight",
         ".attn_q.weight", ".attn_k.weight", ".attn_v.weight", ".attn_output.weight",
         ".ffn_gate_shexp.weight", ".ffn_up_shexp.weight", ".ffn_down_shexp.weight"};
+    static const char* glm_suffixes[] = {".attn_q_a.weight", ".attn_q_b.weight", ".attn_kv_a_mqa.weight",
+        ".attn_k_b.weight", ".attn_v_b.weight", ".ssm_f_a.weight", ".ssm_f_b.weight", ".ssm_g_a.weight",
+        ".ssm_g_b.weight", ".ssm_beta.weight", ".ffn_gate.weight", ".ffn_up.weight", ".ffn_down.weight",
+        ".indexer.attn_q_b.weight", ".indexer.attn_k.weight", ".indexer_compressor_gate.weight"};
+    if (arch == Arch::Glm5Next) {
+        for (const char* suffix : glm_suffixes) if (name.ends_with(suffix)) return true;
+    }
     for (const char* suffix : suffixes) if (name.ends_with(suffix)) return true;
     return false;
 }
@@ -102,12 +136,68 @@ struct Pending {
 bool NativeDense::served_names(const std::vector<std::string>& shards, bool include_ple_key,
                                std::set<std::string>& out, std::string& err) {
     try {
+        Arch arch = Arch::Unknown;
+        int64_t n_trunk = -1;
         for (const auto& path : shards) {
             strata::GgufFile gguf(path);
+            int64_t trunk = -1;
+            const Arch a = family_of(gguf, trunk);
+            // First non-empty wins, and the two are read separately: a later shard of a split may still name its
+            // family while carrying none of the model's keys (the GLM-5.3-Flash split names `glm5next` on shards
+            // 2-5), so the trunk depth found on shard 1 must survive a shard that cannot restate it.
+            if (arch == Arch::Unknown && a != Arch::Unknown) arch = a;
+            if (trunk >= 0) n_trunk = trunk;
             for (const auto& tensor : gguf.tensors())
-                if (eligible(tensor, include_ple_key) && strata::kernels::native_mmvq_supported(tensor.type) &&
-                    tensor.shape.size() == 2)
+                if (eligible(tensor, include_ple_key, arch, n_trunk) &&
+                    strata::kernels::native_mmvq_supported(tensor.type) && tensor.shape.size() >= 2)
                     out.insert(tensor.name);
+        }
+        return true;
+    } catch (const std::exception& error) {
+        err = std::string("native dense: ") + error.what();
+        return false;
+    }
+}
+
+bool NativeDense::served_bytes_per_layer(const std::vector<std::string>& shards, bool include_ple_key,
+                                         int64_t n_layers, std::vector<uint64_t>& out, std::string& err) {
+    if (n_layers < 0) { err = "native dense: served_bytes_per_layer: negative layer count"; return false; }
+    out.assign((size_t) n_layers, 0);
+    try {
+        Arch arch = Arch::Unknown;
+        int64_t n_trunk = -1;
+        std::set<std::string> seen;
+        uint64_t non_blk = 0;   // eligible names that are not `blk.` - none today, but not silently dropped
+        for (const auto& path : shards) {
+            strata::GgufFile gguf(path);
+            int64_t trunk = -1;
+            const Arch a = family_of(gguf, trunk);
+            if (arch == Arch::Unknown && a != Arch::Unknown) arch = a;
+            if (trunk >= 0) n_trunk = trunk;
+            for (const auto& tensor : gguf.tensors()) {
+                if (!eligible(tensor, include_ple_key, arch, n_trunk)) continue;
+                if (!seen.insert(tensor.name).second) continue;
+                if (!strata::kernels::native_mmvq_supported(tensor.type) || tensor.shape.size() < 2) continue;
+                // `load` compares the GGUF shape against the canonical row and REFUSES a tensor where they
+                // disagree, so the shape read here is the one the upload would use - and `folded_ne1` is the
+                // packer's own rule for a matrix with more than two dimensions (glm5-next's `attn_k_b`).
+                const uint64_t ne1 = folded_ne1(tensor);
+                if (tensor.shape[0] == 0 || ne1 == 0 || tensor.shape[0] > (uint64_t) INT_MAX ||
+                    ne1 > (uint64_t) INT_MAX)
+                    continue;
+                const uint64_t bytes =
+                    strata::kernels::native_mmvq_weight_bytes(tensor.type, (int) tensor.shape[0], (int) ne1);
+                // `eligible` admits only `blk.<l>.` names, so this is belt and braces - but a name that got
+                // through would otherwise be priced at zero, which is the one error a placement cannot see.
+                const long l = std::strtol(tensor.name.c_str() + 4, nullptr, 10);
+                if (l < 0 || l >= n_layers) { non_blk += bytes; continue; }
+                out[(size_t) l] += bytes;
+            }
+        }
+        if (non_blk != 0) {
+            err = "native dense: served_bytes_per_layer: " + std::to_string(non_blk) +
+                  " B of eligible weights outside every layer";
+            return false;
         }
         return true;
     } catch (const std::exception& error) {
@@ -150,24 +240,52 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
         uint64_t split_count = 0, split_tensors = 0;
         std::set<uint64_t> split_numbers;
         bool have_architecture = false;
+        Arch arch = Arch::Unknown;
+        int64_t n_trunk = -1;
         for (const auto& path : shards) {
             strata::GgufFile gguf(path);
+            int64_t trunk = -1;
+            const Arch a = family_of(gguf, trunk);
+            if (arch == Arch::Unknown && a != Arch::Unknown) arch = a;
+            if (trunk >= 0) n_trunk = trunk;
             const auto* count = gguf.get("split.count");
             const auto* number = gguf.get("split.no");
             const auto* tensors = gguf.get("split.tensors.count");
-            if (gguf.get("general.architecture")) {
-                err = strata::check_architecture(gguf);
-                if (!err.empty()) return false;
-                have_architecture = true;
-                if (count && number && tensors && number->u == 0 && count->u > 1) {
-                    split_count = count->u;
-                    split_tensors = tensors->u;
+            const auto* family = gguf.get("general.architecture");
+            // The shard that CARRIES the model's keys is the one the counts are checked on.  llama.cpp's splitter
+            // writes them into shard 1 alone, and a later shard is allowed to name its family without restating
+            // them - the GLM-5.3-Flash split does exactly that (`glm5next` on shards 2-5, block_count nowhere but
+            // shard 1).  Asking such a shard for `block_count` reported a missing key of the MODEL as if the shard
+            // were malformed, and refused a file the engine can read.
+            const bool meta_shard = number && number->u != 0 ? false : true;   // shard 1 of a split, or a whole model
+            if (meta_shard) {
+                if (family) {
+                    err = strata::check_architecture(gguf);
+                    if (!err.empty()) return false;
+                    have_architecture = true;
+                    if (count && number && tensors && number->u == 0 && count->u > 1) {
+                        split_count = count->u;
+                        split_tensors = tensors->u;
+                    }
                 }
-            } else if (!have_architecture || !split_count || !count || !number || !tensors ||
-                       count->u != split_count || number->u == 0 || number->u >= split_count ||
-                       tensors->u != split_tensors) {
-                err = "native dense: additional shard must match the architecture-validated first shard's split metadata";
-                return false;
+            } else {
+                // A later shard that names a family still has to name THIS model's family: two files mixed into
+                // one shard list is the failure the guard exists for.
+                if (family) {
+                    Arch said = Arch::Unknown;
+                    if (!arch_from_string(family->s, said) || (arch != Arch::Unknown && said != arch)) {
+                        err = "native dense: shard " + std::to_string(number->u + 1) + " is '" + family->s +
+                              "', not this model's family";
+                        return false;
+                    }
+                }
+                if (!have_architecture || !split_count || !count || !number || !tensors ||
+                    count->u != split_count || number->u == 0 || number->u >= split_count ||
+                    tensors->u != split_tensors) {
+                    err = "native dense: additional shard must match the architecture-validated first shard's "
+                          "split metadata";
+                    return false;
+                }
             }
             if (number && !split_numbers.insert(number->u).second) {
                 err = "native dense: duplicate split shard number"; return false;
@@ -207,12 +325,12 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                     err = "native dense: overlapping payload " + tensor.name; return false;
                 }
                 // the uploads below read these: ask for them now so the reads overlap
-                if (eligible(tensor, include_ple_key) && !outside(tensor.name) &&
+                if (eligible(tensor, include_ple_key, arch, n_trunk) && !outside(tensor.name) &&
                     strata::kernels::native_mmvq_supported(tensor.type))
                     strata::platform::advise_willneed(gguf.tensor_data(tensor), bytes);
             }
             for (const auto& tensor : gguf.tensors()) {
-                if (!eligible(tensor, include_ple_key) || outside(tensor.name)) continue;
+                if (!eligible(tensor, include_ple_key, arch, n_trunk) || outside(tensor.name)) continue;
                 if (!in_range(tensor.name) && tensor.name.find("ple") == std::string::npos) continue;
                 if (!seen.insert(tensor.name).second) {
                     err = "native dense: duplicate tensor " + tensor.name; return false;
@@ -226,9 +344,12 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                 if (!strata::kernels::native_mmvq_supported(tensor.type)) continue;
                 // #326: the pack keeps an unquantized (--compat-bf16) key, which the PLE reads from the arena
                 if (tensor.name == "blk.1.ple_key.weight" && !ref.quantized()) continue;
-                if (!ref.quantized() || tensor.shape.size() != 2 ||
+                // `folded_ne1` is the packer's own rule, not a second opinion: a [256, 512, 64] weight is 256-wide
+                // rows and the index calls that 32768 of them.  Demanding exactly two GGUF dimensions, as this
+                // did, refused glm5-next's MLA weights - which the pack holds and the engine has to read.
+                if (!ref.quantized() || tensor.shape.size() < 2 ||
                     ref.ne0 <= 0 || ref.ne0 > INT_MAX || ref.ne1 <= 0 || ref.ne1 > INT_MAX ||
-                    tensor.shape[0] != (uint64_t) ref.ne0 || tensor.shape[1] != (uint64_t) ref.ne1) {
+                    tensor.shape[0] != (uint64_t) ref.ne0 || folded_ne1(tensor) != (uint64_t) ref.ne1) {
                     err = "native dense: incompatible matrix " + tensor.name; return false;
                 }
                 const auto bytes = strata::kernels::native_mmvq_weight_bytes(
@@ -239,7 +360,15 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                 if (status == cudaSuccess)
                     status = cudaMemcpy(data.get(), gguf.tensor_data(tensor), bytes, cudaMemcpyHostToDevice);
                 if (status != cudaSuccess) {
-                    err = "native dense upload " + tensor.name + ": " + cudaGetErrorString(status); return false;
+                    // The count so far and the card's own numbers: without them a failed upload says only which
+                    // tensor it stopped on, and the two questions that follow ("how much does this model want",
+                    // "how much did the card have") both need a second run to answer.
+                    size_t free_b = 0, total_b = 0;
+                    (void) cudaMemGetInfo(&free_b, &total_b);
+                    err = "native dense upload " + tensor.name + ": " + cudaGetErrorString(status) +
+                          " (this tensor " + std::to_string(bytes) + " B, " + std::to_string(total) +
+                          " B resident, " + std::to_string(free_b) + " B free of " + std::to_string(total_b) + ")";
+                    return false;
                 }
                 max_in = (std::max)(max_in, (int) ref.ne0);
                 total += bytes;
@@ -293,7 +422,11 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
         }
         if (pending.empty()) { err = "native dense: no supported GDN/QSA matrices in supplied shards"; return false; }
         void* allocation = nullptr;
-        const auto status = cudaMalloc(&allocation, strata::kernels::native_q8_1_bytes(max_in));
+        // THE SCRATCH IS WIDE ENOUGH FOR A WHOLE BATCH, NOT ONE TOKEN.  Every native projection shares this one
+        // buffer, and a batched prefill quantizes `ncols` activation columns into it before a single `native_mmvq`
+        // -- so it has to hold the widest input at the widest column count, or the 8-column call writes past it.
+        const auto status =
+            cudaMalloc(&allocation, strata::kernels::native_q8_1_bytes(max_in, strata::kernels::NATIVE_MMVQ_MAX_NCOLS));
         DevicePtr scratch(allocation);
         if (status != cudaSuccess) { err = std::string("native dense scratch: ") + cudaGetErrorString(status); return false; }
         // All checks and allocations finish before publishing any reference.

@@ -149,7 +149,7 @@ void test_canonical_layout() {
     TempDirectory dir;
 
     std::string err;
-    const bool layout_ok = expert_layout_load(dir.path.string(), layers, experts, err);
+    const bool layout_ok = expert_layout_load(dir.path.string(), layers, experts, H, FF, err);
     require(layout_ok, "could not load canonical layout: " + err);
     create_pack(dir.path, total, {{0, 'a'}, {(uint64_t) BLOB, 'b'}, {layer_bytes, 'c'},
                                   {layer_bytes + (uint64_t) BLOB, 'd'}});
@@ -218,7 +218,7 @@ void test_native_variable_layout() {
     create_pack(dir.path, total, {{0, 'a'}, {(uint64_t) first_fmt.bytes, 'b'},
                                   {layer0_bytes, 'c'}, {layer0_bytes + (uint64_t) second_fmt.bytes, 'd'}});
 
-    const bool layout_ok = expert_layout_load(dir.path.string(), layers, experts, err);
+    const bool layout_ok = expert_layout_load(dir.path.string(), layers, experts, H, FF, err);
     require(layout_ok, "could not load synthetic native layout: " + err);
     FileExpertSource source;
     bool opened = source.open(dir.path.string(), layers, experts, err);
@@ -408,7 +408,7 @@ void test_unbuffered_reads() {
     const uint64_t total = (uint64_t) layers * layer_bytes;
     TempDirectory dir(fs::current_path());
     std::string err;
-    require(expert_layout_load(dir.path.string(), layers, experts, err), "could not load canonical layout: " + err);
+    require(expert_layout_load(dir.path.string(), layers, experts, H, FF, err), "could not load canonical layout: " + err);
     std::vector<uint8_t> bytes((size_t) total);
     uint64_t x = 0x9E3779B97F4A7C15ull;
     for (uint8_t& b : bytes) {
@@ -524,7 +524,7 @@ void test_rotating_source(bool rotate, bool pin) {
 #endif
     TempDirectory dir;
     std::string err;
-    require(expert_layout_load(dir.path.string(), 1, 5, err), err);
+    require(expert_layout_load(dir.path.string(), 1, 5, H, FF, err), err);
     const size_t bytes = (size_t)BLOB;
     std::vector<std::vector<uint8_t>> truth(5, std::vector<uint8_t>(bytes));
     {

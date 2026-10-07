@@ -63,6 +63,39 @@ QWEN35_PATTERN = (
     r"|\s+"
 )
 
+# The `glm4` pre-tokenizer, transcribed the same way: `.ref/llama.cpp/src/llama-vocab.cpp` L408, `case
+# LLAMA_VOCAB_PRE_TYPE_CHATGLM4` (the `tokenizer.ggml.pre` values `glm4` and `chatglm-bpe` both land there).
+#
+# IT DIFFERS FROM QWEN35 IN THREE PLACES AND ALL THREE CHANGE THE IDS:
+#   * `\p{N}{1,3}` against `\p{N}` - DIGITS GROUP IN THREES, so `12345` is `123|45` and not `1|2|3|4|5`.
+#   * `\p{L}+` against `[\p{L}\p{M}]+` - a combining mark is NOT part of the letter run here.
+#   * `[^\s\p{L}\p{N}]+` against `[^\s\p{L}\p{M}\p{N}]+` - the punctuation run may swallow a mark.
+# A GLM pack tokenized with the QWEN35 pattern round-trips perfectly and produces the WRONG ids for the same
+# text - which is why the choice is made from the model's own `tokenizer.ggml.pre` and not from the family the
+# code happened to be written for.
+CHATGLM4_PATTERN = (
+    r"(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])"
+    r"|[^\r\n\p{L}\p{N}]?\p{L}+"
+    r"|\p{N}{1,3}"
+    r"| ?[^\s\p{L}\p{N}]+[\r\n]*"
+    r"|\s*[\r\n]+"
+    r"|\s+(?!\S)"
+    r"|\s+"
+)
+
+# `tokenizer.ggml.pre` -> the pattern llama.cpp compiles for it.  Only the two that ship with a Strata model
+# are here; anything else keeps the default below and says so, rather than being silently mistokenized.
+PRE_PATTERNS = {
+    "qwen35": QWEN35_PATTERN,
+    "glm4": CHATGLM4_PATTERN,
+    "chatglm-bpe": CHATGLM4_PATTERN,
+}
+PRE_SOURCES = {
+    "qwen35": ".ref/llama.cpp src/llama-vocab.cpp L396 (LLAMA_VOCAB_PRE_TYPE_QWEN35)",
+    "glm4": ".ref/llama.cpp src/llama-vocab.cpp L408 (LLAMA_VOCAB_PRE_TYPE_CHATGLM4)",
+    "chatglm-bpe": ".ref/llama.cpp src/llama-vocab.cpp L408 (LLAMA_VOCAB_PRE_TYPE_CHATGLM4)",
+}
+
 
 class Tokenizer:
     def __init__(self, tokens: list[str], merges: list[str], token_types: list[int] | None = None,
@@ -86,7 +119,16 @@ class Tokenizer:
             if parts[0] not in self.ids or parts[1] not in self.ids:
                 raise ValueError("merge %d names a token outside the vocabulary: %r" % (i, m))
             self.ranks[(parts[0], parts[1])] = i
-        self._re = regex.compile(QWEN35_PATTERN)
+        # The pattern is chosen by the MODEL'S OWN declared pre-tokenizer, not by the family this file was
+        # written for.  A pack that names one we have not transcribed keeps the default and says so on stderr:
+        # a warning that names the value is something an operator can act on, where a silent wrong segmentation
+        # is not.
+        pattern = PRE_PATTERNS.get(pre)
+        if pattern is None:
+            pattern = QWEN35_PATTERN
+            print("strata tokenizer: pre-tokenizer %r is not transcribed; using qwen35 (this may segment text "
+                  "differently than the model was trained on)" % pre, file=sys.stderr)
+        self._re = regex.compile(pattern)
 
         # The literals matched directly instead of being run through BPE.  GGUF token types: 3 = CONTROL,
         # 4 = USER_DEFINED.  The two classes behave DIFFERENTLY and llama.cpp's own tokenizer settled which:
@@ -282,8 +324,10 @@ def extract(gguf_path, out_dir) -> dict:
         "add_bos_token": False,
         # The pattern is SHIPPED, not recomputed by the reader: it is transcribed from llama.cpp for the
         # declared `pre` type, and a C++ port that re-derived it would be free to get `\p{M}` wrong again.
-        "pre_pattern": QWEN35_PATTERN,
-        "pre_pattern_source": ".ref/llama.cpp src/llama-vocab.cpp L396 (LLAMA_VOCAB_PRE_TYPE_QWEN35)",
+        # **IT IS THE PATTERN FOR THIS MODEL'S `pre`, WHICH IS NOT ALWAYS qwen35** - a glm4 pack shipped with
+        # the qwen35 pattern would round-trip perfectly and tokenize numbers wrong (see CHATGLM4_PATTERN).
+        "pre_pattern": PRE_PATTERNS.get(tk.pre, QWEN35_PATTERN),
+        "pre_pattern_source": PRE_SOURCES.get(tk.pre, PRE_SOURCES["qwen35"]),
     }
     (out / "vocab.json").write_text(json.dumps(tk.ids, ensure_ascii=False), encoding="utf-8")
     (out / "merges.txt").write_text("\n".join("%s %s" % k for k, _ in

@@ -56,7 +56,8 @@ void write_text(const fs::path& p, const std::string& s) { std::ofstream(p, std:
 
 bool load(const fs::path& dir, int64_t n_layers, int64_t n_expert, std::string& err) {
     err.clear();
-    return strata::kernels::cpu::expert_layout_load(dir.string(), n_layers, n_expert, err);
+    return strata::kernels::cpu::expert_layout_load(dir.string(), n_layers, n_expert,
+                                                     strata::kernels::cpu::H, strata::kernels::cpu::FF, err);
 }
 
 // ---- 1. the real packs' files
