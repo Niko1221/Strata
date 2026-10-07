@@ -51,6 +51,37 @@ inline const char* batch_mtp_reason(int batch, bool has_mtp, int spec, bool serv
 /// The stage that owns the output head and the MTP draft layer: the last of the pipeline.
 inline int head_stage_of(std::size_t n_stages) { return n_stages == 0 ? 0 : (int) n_stages - 1; }
 
+// ── The draft head's GGML type, and the reason --batch-mtp stays off when the drafters cannot run ──────────────
+//
+// A batch slot's drafter does not build the draft head's token subset: it COPIES the main drafter's (`dhead_`,
+// `dvocab_`, `n_dvocab_`) and must copy its FORMAT with it.  The main drafter is the authority: it made the subset
+// from the native head (`head->type()`), or as Q4_0 under `--mtp-q4`, or in the Q6_K packed layout under
+// STRATA_Q6_PACKED.  `draft_head_type` is that resolution; bind() uses it.
+//
+// Why it is a named function and not a one-line field copy: leaving the type at its -1 initial value in a shared
+// drafter reached `native_mmvq(-1, ...)` and threw "unsupported native MMVQ GGML type" on the FIRST slot draft of
+// an admission - the engine then exited (exit 1) and the server restarted it on every request that admitted a slot.
+// `draft_head_type` never answers -1 when it can answer anything else, and `slot_mtp_reason` says out loud when the
+// answer cannot run, so the engine can leave --batch-mtp off at start (recommend, never force).
+
+/// The ggml type of the draft head's row set.  `shares_subset`: this drafter copies the main one's subset (the case
+/// of every batch slot's drafter).  `has_own_subset`: it built the subset itself.  `head_type`: the whole native
+/// head's type, the fallback whenever the drafter has no subset of its own.
+inline int draft_head_type(bool shares_subset, int shared_type, bool has_own_subset, int own_type, int head_type) {
+    if (shares_subset) return shared_type >= 0 ? shared_type : head_type;
+    if (has_own_subset) return own_type >= 0 ? own_type : head_type;
+    return head_type;
+}
+
+/// Why --batch-mtp must stay off because the drafters it needs cannot run, or nullptr when they can.
+/// `draft_head_type`: the type the drafters resolved (see above).  `supported`: the engine's
+/// `native_mmvq_supported(type)` for it - a boolean here, so this stays CUDA-free and host-testable.
+inline const char* slot_mtp_reason(int draft_head_type, bool supported) {
+    if (draft_head_type < 0) return "a slot's draft head has no GGML type resolved";
+    if (!supported) return "the draft head's GGML type has no native MMVQ path on this card";
+    return nullptr;
+}
+
 /// The pipeline's devices, in order, with the one that must own the head LAST.
 ///
 /// `devices`: the devices as the pipeline runs them (devices[0] is the primary context's, the rest are the

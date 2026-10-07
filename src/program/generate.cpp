@@ -57,6 +57,7 @@
 #include "strata/kernels/kv_q4.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/core/native_head.hpp"
+#include "strata/kernels/native_mmvq.hpp"   // delta 3: the draft head's type must have a native MMVQ path
 #include "strata/core/verify.hpp"
 #include "strata/core/mtp.hpp"
 #include "strata/prefill/prefill.hpp"
@@ -4186,16 +4187,25 @@ int main(int argc, char** argv) {
             // later stage).  The PLE session stays CUDA0's slot session, where the PLE table lives, exactly as
             // the main drafter's does.  With one GPU `bslot_ss.size() == 1` and this is the line it always ran.
             const size_t head_slot = bslot_ss.size() - 1;
-            for (int b = 0; b < o.batch; ++b) {
+            // RECOMMEND, NEVER FORCE: a slot drafter the engine cannot build turns the flag OFF (with the reason)
+            // instead of ending the process.  Plain batching starts either way, and one request at a time is what
+            // a server that dies on every admission would leave the user with.
+            bool slot_mtp_ok = true;
+            for (int b = 0; b < o.batch && slot_mtp_ok; ++b) {
                 auto d = std::make_unique<strata::core::MtpDrafter>();
                 if (!d->load(o.mtp, draft_geometry, *bslot_ss[head_slot][(size_t) b], o.spec, err, o.mtp_window, &mtp)) {
-                    std::fprintf(stderr, "strata generate: batch MTP slot %d: %s%s\n", b, err.c_str(),
-                                 vram_free_note().c_str());
-                    return 1;
+                    std::fprintf(stderr, "strata generate: WARNING: --batch-mtp is off: batch MTP slot %d: %s%s\n",
+                                 b, err.c_str(), vram_free_note().c_str());
+                    slot_mtp_ok = false;
+                    break;
                 }
                 d->set_max_drafts(1);   // the first candidate verifies one proposal per slot
                 d->set_ple_session(bslot_ss[0][(size_t) b].get());
                 slot_mtp.push_back(std::move(d));
+            }
+            if (!slot_mtp_ok) {
+                batch_mtp = false;
+                slot_mtp.clear();       // the drafters that did load take their VRAM with them
             }
         }
     }
@@ -7028,24 +7038,45 @@ int main(int argc, char** argv) {
             }
         };
         std::vector<std::unique_ptr<float, SlotRowFree>> slot_mtp_rows;
+        // Turning the flag off has to give back what it took: the drafters and their residual buffers.
+        auto disable_batch_mtp = [&](const std::string& why) {
+            std::fprintf(stderr, "strata serve: WARNING: --batch-mtp is off: %s; the batch slots decode without "
+                                 "drafts\n", why.c_str());
+            batch_mtp = false;
+            slot_mtp_rows.clear();
+            slot_mtp.clear();
+        };
         if (batch_mtp) {
             const strata::core::OnDevice on_draft(draft_dev);
-            for (int b = 0; b < o.batch; ++b) {
+            for (int b = 0; b < o.batch && batch_mtp; ++b) {
                 float* r = nullptr;
                 const size_t bytes = (size_t) o.spec * (size_t) g.hc * (size_t) g.n_embd * sizeof(float);
                 if (cudaMalloc((void**) &r, bytes) != cudaSuccess) {
-                    std::fprintf(stderr, "strata serve: batch MTP slot %d residual buffer does not fit%s\n",
-                                 b, vram_free_note().c_str());
-                    return 1;
+                    disable_batch_mtp("slot " + std::to_string(b) + "'s residual buffer does not fit" +
+                                      vram_free_note());
+                    break;
                 }
+                slot_mtp_rows.emplace_back(r, SlotRowFree{draft_dev});
                 // the slot drafter binds the head's stage's weights and head, exactly as the main one does above
                 if (!slot_mtp[(size_t) b]->bind(last_st ? last_st->wt : wt,
                                                 last_st ? &last_st->head : &native_head, r, err, &mtp)) {
-                    std::fprintf(stderr, "strata serve: batch MTP slot %d: %s%s\n", b, err.c_str(),
-                                 vram_free_note().c_str());
-                    return 1;
+                    disable_batch_mtp("slot " + std::to_string(b) + ": " + err + vram_free_note());
+                    break;
                 }
-                slot_mtp_rows.emplace_back(r, SlotRowFree{draft_dev});
+            }
+            // DELTA 3: the dispatch type is checked HERE, at start-up, not in the middle of an admission.  A -1 (a
+            // slot drafter that never resolved the shared subset's format) or a type with no native MMVQ path is
+            // what made an admission throw and the engine exit; now it keeps the slots and drops the drafts.
+            if (batch_mtp) {
+                const int dht = slot_mtp[0]->draft_head_type();
+                if (const char* why = strata::core::slot_mtp_reason(dht, strata::kernels::native_mmvq_supported(dht));
+                    why != nullptr) {
+                    disable_batch_mtp(why);
+                } else {
+                    // The line the next live test reads: the slots' drafters have a type the kernels dispatch on.
+                    std::fprintf(stderr, "strata mtp: the %d batch slots' draft head resolves to GGML type %d (a "
+                                         "native MMVQ type); --batch-mtp on\n", o.batch, dht);
+                }
             }
         }
         // each stage's verifier gets its stage's slot sessions
@@ -8741,6 +8772,18 @@ int main(int argc, char** argv) {
             int64_t pos[strata::kernels::kVerifyMaxT] = {};
             int first[strata::kernels::kVerifyMaxT] = {}, active[strata::kernels::kVerifyMaxT] = {};
             static size_t next_slot = 0;
+            // DELTA 3 (recommend, never force): a live slot without a draft must not end the engine either.  The
+            // window is built plainly instead and the flag goes off, said once - this is the path a slot takes
+            // after a draft failed, and an engine that exits here leaves the server restarting on every request.
+            if (batch_mtp) {
+                for (const BSlot& sb : bs)
+                    if (sb.active && !sb.draft_ready) {
+                        std::fprintf(stderr, "strata batch: WARNING: --batch-mtp is off: slot %d is live without a "
+                                             "draft; the slots decode without drafts\n", (int) (&sb - &bs[0]));
+                        batch_mtp = false;
+                        break;
+                    }
+            }
             // Each MTP slot uses two rows; rotate slots when more than four are active.
             int A = 0;
             for (size_t offset = 0; offset < bs.size() && S + (batch_mtp ? 2 : 1) <= strata::kernels::kVerifyMaxT; ++offset) {
@@ -8754,10 +8797,6 @@ int main(int argc, char** argv) {
                     ++S;
                     if (batch_mtp) {
                         rows[S] = b;
-                        if (!bs[(size_t) b].draft_ready) {
-                            err = "batch MTP: a live slot has no draft";
-                            return false;
-                        }
                         tok[S] = bs[(size_t) b].draft[0];
                         pos[S] = bs[(size_t) b].p + 1;
                         ++S;
@@ -8834,8 +8873,14 @@ int main(int argc, char** argv) {
                                    2 * stride * sizeof(float), cudaMemcpyDeviceToDevice) != cudaSuccess ||
                         !slot_mtp[(size_t) b]->draft(2, outb + first[t], pos[first[t]], keep[b] - 1,
                                                     sl.draft.data(), err)) {
-                        std::printf("ERR batch MTP slot %d: %s\n", b, err.c_str());
-                        return false;
+                        // DELTA 3: the window is already committed (the slots' tokens are on the wire); a draft
+                        // that fails here costs the drafts of this run, never the engine.  The slot goes on
+                        // decoding one token per window.
+                        std::fprintf(stderr, "strata batch: WARNING: --batch-mtp is off: slot %d's draft failed: "
+                                             "%s\n", b, err.c_str());
+                        sl.draft_ready = false;
+                        batch_mtp = false;
+                        continue;
                     }
                     sl.draft_ready = true;
                 }
@@ -11642,13 +11687,18 @@ int main(int argc, char** argv) {
                     sl.t0 = Clock::now();
                     sl.ids = live;
                     if (batch_mtp) {
+                        // DELTA 3: this used to `return 1`.  A draft that cannot be made is not a reason to end the
+                        // engine (the server would restart it on every request that admits a slot): the admission
+                        // stands, the slot decodes without drafts from its next window, and the flag goes off.
                         if (!slot_mtp[(size_t) admit_slot]->draft_first(1, ver.final_R_all(), sl.x,
                                                                         sl.p - 1, sl.draft.data(), err)) {
-                            std::fprintf(stderr, "strata batch: MTP admission for slot %d failed: %s\n",
-                                         admit_slot, err.c_str());
-                            return 1;
+                            std::fprintf(stderr, "strata batch: WARNING: --batch-mtp is off: MTP admission for slot "
+                                                 "%d failed: %s\n", admit_slot, err.c_str());
+                            batch_mtp = false;
+                            sl.draft_ready = false;
+                        } else {
+                            sl.draft_ready = true;
                         }
-                        sl.draft_ready = true;
                     }
                     sl.cvec = cvec_cached;
                     sl.img = !live_imgs.empty();   // pictures: not matched again by tokens alone, so not cached

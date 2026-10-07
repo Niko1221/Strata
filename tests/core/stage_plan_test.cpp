@@ -19,8 +19,10 @@
 #include <vector>
 
 using strata::core::batch_mtp_reason;
+using strata::core::draft_head_type;
 using strata::core::head_stage_of;
 using strata::core::order_with_head_device;
+using strata::core::slot_mtp_reason;
 
 namespace {
 
@@ -145,6 +147,43 @@ int main() {
     (void) order_with_head_device({0, 1}, 0, ok, why);
     check(!ok && why.find("primary") != std::string::npos && why.find("order the cards") != std::string::npos,
           "the primary refusal says why and names the card order as the way to move the head");
+
+    // ── The draft head's type: the defect that took the server down (2026-10-07) ──────────────────────────────
+    //
+    // A batch slot's drafter copies the main drafter's draft head (`dhead_`/`dvocab_`) but, in the base tag, NOT
+    // its format: `dhead_type_` stayed at its -1 initial value, `native_mmvq(-1, ...)` threw "unsupported native
+    // MMVQ GGML type" on the first slot draft of an admission, and the engine exited (exit 1) - the server
+    // restarted it on every request that admitted a slot.  The native types the head can have (the engine's own
+    // `native_mmvq_supported`): Q4_0=2, Q5_0=6, Q8_0=8, Q3_K=11, Q4_K=12, Q5_K=13, Q6_K=14, Q8_K=15?, IQ4_NL=20,
+    // IQ4_XS=23, Q2_0=42, and the IQ family 16/17/18/21/22/29.
+    std::printf("stage_plan: the draft head's type (the 2026-10-07 defect)\n");
+    const int native_types[] = {2, 6, 7, 8, 11, 12, 13, 14, 16, 17, 18, 20, 21, 22, 23, 29, 42};
+    for (const int t : native_types) {
+        const int got = draft_head_type(/*shares=*/true, /*shared_type=*/t, /*has_own=*/false, /*own=*/-1,
+                                        /*head_type=*/14);
+        check(got == t, "a slot drafter takes the main drafter's type " + std::to_string(t) +
+                        " (got " + std::to_string(got) + ")");
+    }
+    check(draft_head_type(true, 8, false, -1, 14) != -1,
+          "the shared answer is never -1 (the value that threw in native_mmvq)");
+    // the main drafter had no subset of its own (no rt/draft_vocab.bin): the whole native head is the answer
+    check(draft_head_type(true, -1, false, -1, 14) == 14,
+          "a shared drafter with no subset falls back to the native head's type");
+    // this drafter built the subset itself: head->type() (or Q4_0 under --mtp-q4)
+    check(draft_head_type(false, -1, true, 14, 14) == 14, "its own subset: head->type()");
+    check(draft_head_type(false, -1, true, 2, 14) == 2, "its own subset under --mtp-q4: Q4_0");
+    check(draft_head_type(false, -1, false, -1, 14) == 14, "no subset at all: the native head's type");
+    check(draft_head_type(false, -1, true, -1, 14) == 14, "an unresolved own subset falls back to the head");
+
+    std::printf("stage_plan: the reason --batch-mtp stays off (the drafters' path)\n");
+    check(slot_mtp_reason(14, true) == nullptr, "a supported type: the slots may draft");
+    check(slot_mtp_reason(-1, true) != nullptr, "-1 (never resolved): refused");
+    check(std::string(slot_mtp_reason(-1, true)).find("no GGML type resolved") != std::string::npos,
+          "-1's reason says the type was never resolved");
+    check(slot_mtp_reason(14, false) != nullptr, "a type with no native MMVQ path: refused");
+    check(std::string(slot_mtp_reason(14, false)).find("native MMVQ") != std::string::npos,
+          "that reason names the native MMVQ path");
+    check(slot_mtp_reason(-1, false) != nullptr, "-1 and unsupported: still refused");
 
     std::printf("stage_plan: %d checks, %d failed\n", g_checks, g_fail);
     return g_fail == 0 ? 0 : 1;

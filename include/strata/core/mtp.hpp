@@ -64,6 +64,10 @@ public:
     int32_t top2(int j) const { return j >= 0 && j < (int) top2_.size() ? top2_[(size_t) j] : -1; }
     int max_t() const { return max_t_; }
     uint64_t vram_bytes() const { return vram_; }
+    /// The draft head's row set's ggml type (-1 until bind resolved it; a batch slot's drafter shares the main
+    /// one's, so this must be its type and never -1 - see core/stage_plan.hpp, `draft_head_type`).
+    int draft_head_type() const { return dhead_type_; }
+    bool has_draft_head() const { return dhead_ != nullptr; }
     /// The draft layer's K/V state (read-only: --serve's STRATA_STATE_HASH check hashes it)
     const QsaState& kv_state() const { return st_; }
     /// KV streaming: refill the ring of the drafter's window from its host copy for a sequence that continues at
