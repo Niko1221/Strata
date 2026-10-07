@@ -4756,6 +4756,23 @@ int main(int argc, char **argv) try {
         }
     }
 
+    const bool verify_no_host = std::getenv("STRATA_VERIFY_NO_HOST") != nullptr;
+    auto swap_victim_eligible = [&](int64_t layer, int64_t expert) {
+        return !verify_no_host || (srcp->pinned(layer, expert) && srcp->device_alias(layer, expert) != nullptr);
+    };
+    if (verify_no_host && o.adapt_every > 0 && o.adapt_swaps > 0) {
+        int64_t mirrored = 0;
+        for (int64_t l = 0; l < g.n_layers; ++l)
+            for (int64_t e = 0; e < g.n_expert; ++e)
+                if (swap_victim_eligible(l, e)) ++mirrored;
+        if (mirrored != g.n_layers * g.n_expert) {
+            std::fprintf(stderr, "strata generate: STRATA_VERIFY_NO_HOST: only %lld of %lld experts have GPU-readable "
+                                 "host mirrors; disabling adaptive swaps to keep evicted experts readable\n",
+                         (long long) mirrored, (long long) (g.n_layers * g.n_expert));
+            o.adapt_swaps = 0;
+        }
+    }
+
     for (auto& stp : stages) {
         GpuStage& st = *stp;
         const auto& lay = strata::kernels::cpu::expert_layout();
@@ -6849,6 +6866,25 @@ int main(int argc, char **argv) try {
         vh.d_res = thits.d_res;
         if (mirror_table_d) strata::kernels::resident_plan_set_mirror(thits.d_res, mirror_table_d);
         vh.h_res = host_res.empty() ? nullptr : host_res.data();
+        // GPU-only runs (STRATA_VERIFY_NO_HOST) have no host pool to see the routing, so the adaptive tier would never
+        // have anything to rank: the plan kernel counts the routed experts on the device instead
+        uint32_t* usage_d = nullptr;
+        const size_t usage_n = (size_t) (g.n_layers * g.n_expert);
+        if (mirror_table_d && o.adapt_every > 0 && o.adapt_swaps > 0 && std::getenv("STRATA_VERIFY_NO_HOST") != nullptr &&
+            std::getenv("STRATA_VERIFY_DEVICE_PLAN") != nullptr) {
+            usage_d = sycl::malloc_device<uint32_t>(usage_n, dpct::get_in_order_queue());
+            if (usage_d != nullptr) {
+                dpct::get_in_order_queue().memset(usage_d, 0, usage_n * 4).wait();
+                strata::kernels::resident_plan_set_usage(usage_d);
+            }
+        }
+        auto fold_device_usage = [&]() {   // the counters since the last call, into the adaptive tier's usage
+            if (usage_d == nullptr || drive.d.usage.size() != usage_n) return;
+            std::vector<uint32_t> cnt(usage_n);
+            dpct::get_in_order_queue().memcpy(cnt.data(), usage_d, usage_n * 4).wait();
+            dpct::get_in_order_queue().memset(usage_d, 0, usage_n * 4).wait();
+            for (size_t i = 0; i < usage_n; ++i) drive.d.usage[i] += (float) cnt[i];
+        };
         vh.cache_base = thits.cache_base;
         vh.blob = thits.blob;
         vh.slot_off = xcache.slot_offsets();   // E-6: the device plan's pointers
@@ -7717,7 +7753,7 @@ int main(int argc, char **argv) try {
                 const int32_t* r = host_res.data() + l * g.n_expert;
                 for (int32_t e = 0; e < (int32_t) g.n_expert; ++e) {
                     if (r[e] < 0) { if (u[e] >= 2.0f && !(peer.valid() && peer.has(l, e)) && !(remote_opt && remote_opt->owns(l, e)) && !helper_holds(l, e)) cand.emplace_back(u[e], e); }
-                    else vict.emplace_back(u[e], e);
+                    else if (swap_victim_eligible(l, e)) vict.emplace_back(u[e], e);
                 }
                 if (cand.empty() || vict.empty()) continue;
                 std::sort(cand.begin(), cand.end(), [](auto& a, auto& b) { return a.first > b.first; });
@@ -11084,8 +11120,10 @@ int main(int argc, char **argv) try {
                 std::thread adapt_thr;   // the adaptive tier beside the commit and the draft (as in generate)
                 bool adapt_ok = true;
                 // (--adapt-async 1: the asynchronous tier above instead, ticked before the window)
-                if (!drive.d.usage.empty() && !ajob && ((rounds + 1) % o.adapt_every) == 0)
+                if (!drive.d.usage.empty() && !ajob && ((rounds + 1) % o.adapt_every) == 0) {
+                    fold_device_usage();
                     adapt_thr = std::thread([&] { adapt_ok = adapt(); });
+                }
                 if (!ver.commit(a + 1, err)) {
                     if (adapt_thr.joinable()) adapt_thr.join();
                     std::printf("ERR %s\n", err.c_str());
@@ -11946,6 +11984,25 @@ int main(int argc, char **argv) try {
         vh.d_res = thits.d_res;
         if (mirror_table_d) strata::kernels::resident_plan_set_mirror(thits.d_res, mirror_table_d);
         vh.h_res = host_res.empty() ? nullptr : host_res.data();
+        // GPU-only runs (STRATA_VERIFY_NO_HOST) have no host pool to see the routing, so the adaptive tier would never
+        // have anything to rank: the plan kernel counts the routed experts on the device instead
+        uint32_t* usage_d = nullptr;
+        const size_t usage_n = (size_t) (g.n_layers * g.n_expert);
+        if (mirror_table_d && o.adapt_every > 0 && o.adapt_swaps > 0 && std::getenv("STRATA_VERIFY_NO_HOST") != nullptr &&
+            std::getenv("STRATA_VERIFY_DEVICE_PLAN") != nullptr) {
+            usage_d = sycl::malloc_device<uint32_t>(usage_n, dpct::get_in_order_queue());
+            if (usage_d != nullptr) {
+                dpct::get_in_order_queue().memset(usage_d, 0, usage_n * 4).wait();
+                strata::kernels::resident_plan_set_usage(usage_d);
+            }
+        }
+        auto fold_device_usage = [&]() {   // the counters since the last call, into the adaptive tier's usage
+            if (usage_d == nullptr || drive.d.usage.size() != usage_n) return;
+            std::vector<uint32_t> cnt(usage_n);
+            dpct::get_in_order_queue().memcpy(cnt.data(), usage_d, usage_n * 4).wait();
+            dpct::get_in_order_queue().memset(usage_d, 0, usage_n * 4).wait();
+            for (size_t i = 0; i < usage_n; ++i) drive.d.usage[i] += (float) cnt[i];
+        };
         vh.cache_base = thits.cache_base;
         vh.blob = thits.blob;
         vh.slot_off = xcache.slot_offsets();   // E-6: the device plan's pointers
@@ -12059,7 +12116,7 @@ int main(int argc, char **argv) try {
                 const int32_t* r = host_res.data() + l * g.n_expert;
                 for (int32_t e = 0; e < (int32_t) g.n_expert; ++e) {
                     if (r[e] < 0) { if (u[e] >= 2.0f && !helper_holds(l, e)) cand.emplace_back(u[e], e); }
-                    else vict.emplace_back(u[e], e);
+                    else if (swap_victim_eligible(l, e)) vict.emplace_back(u[e], e);
                 }
                 if (cand.empty() || vict.empty()) continue;
                 std::sort(cand.begin(), cand.end(), [](auto& a, auto& b) { return a.first > b.first; });
@@ -12302,8 +12359,10 @@ int main(int argc, char **argv) try {
             // GPU commits and drafts; it touches only the residency tables, which nothing reads until the next window
             std::thread adapt_thr;
             bool adapt_ok = true;
-            if (!drive.d.usage.empty() && ((rounds + 1) % o.adapt_every) == 0)
+            if (!drive.d.usage.empty() && ((rounds + 1) % o.adapt_every) == 0) {
+                fold_device_usage();
                 adapt_thr = std::thread([&] { adapt_ok = adapt(); });
+            }
             if (!ver.commit(a + 1, err)) {
                 if (adapt_thr.joinable()) adapt_thr.join();
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
