@@ -966,6 +966,12 @@ class StrataEngine:
                 v = tune.get(k)
                 if isinstance(v, (int, float)) and not isinstance(v, bool) and 0.0 <= float(v) <= 1.0:
                     keys += f" {k}={float(v)!r}"
+            # --aux-cpus for this request: 1 puts the engine's threads that are neither pool workers nor the host on the
+            # spare CPUs, 0 leaves them where they were created (true/false or 1/0; the engine started without a spare CPU
+            # ignores a 1).  Anything else is not sent.
+            ac = tune.get("aux_cpus")
+            if isinstance(ac, bool) or (isinstance(ac, (int, float)) and ac in (0, 1)):
+                keys += f" aux_cpus={int(ac)}"
         # "strata_checkpoint": false - a one-shot call (a classification, a probe) whose turn no later request
         # extends: no conversation checkpoint for it (#830).  It still reuses a cached prefix.  Absent = as before.
         if sampling.get("strata_checkpoint") is False:

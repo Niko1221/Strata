@@ -1454,6 +1454,37 @@ the pairs in which the switched arm won). They are here so you can try them on y
 - **`STRATA_ADAPT_LAG=2`: the adaptive tier's copies are waited for one window later** (#764). Decode, 6 pairs: Tesla P100
   (PCIe 3.0 x16) +3.5% (6/6 pairs faster), RTX 5070 +0.2% (4/6), RTX 3060 -1.3% (0/6), so it stays opt-in.
 
+## Thread placement: `--aux-cpus` (Linux, off by default)
+
+The CPU pool pins its workers (one logical CPU per physical core) and the host thread pins itself to the pool's reserved
+core. A thread the engine starts after that inherits the host's one CPU: the adaptive tier's job thread, the prefill
+helpers, the router look-ahead. The threads the CUDA driver starts are free to run on any CPU, the workers' included.
+`--aux-cpus` puts every thread that is neither a pool worker nor the host thread on spare CPUs. It moves threads only and
+never changes a result.
+
+- **Which CPUs.** `--aux-cpus auto` (or `STRATA_AUX_CPUS=auto`): the SMT siblings of the host's core first, then the CPUs of
+  physical cores that have no pool worker. A CPU that shares a core with a worker is never taken; when no CPU is spare
+  the feature does nothing and the start-up line says so. A list (`--aux-cpus 24,26` or `24-27`) is used as given, minus
+  the host's CPU and the workers' CPUs, and only CPUs the process may run on. `--aux-cpus off` is the default.
+- **How.** Threads the engine starts pin themselves first thing: the adaptive tier's job thread and its per-round
+  threads, the prefill copy threads and helpers, the router look-ahead, the PLE reader, the file readers, the stdin reader
+  and the watchdog. The threads someone else started (the CUDA driver's) are moved by a sweep over `/proc/self/task`
+  once the pool exists and again at the start of every request. The pool's workers and the host thread are never moved,
+  and neither is a thread somebody pinned to one CPU. An explicit `STRATA_ADAPT_JOB_CPU` still wins for the adaptive tier's
+  job thread. `STRATA_AUX_STAGER=0` leaves the prefill copy threads where they were started: with a one-CPU spare set up
+  to 32 of them (`STRATA_STAGER_THREADS`) would share that CPU, which can slow the read of a long prompt.
+- **Per request.** `"strata_tune": {"aux_cpus": 1}` (`serve/server.py` forwards `1`, `0`, `true` and `false`) moves the
+  threads to the set; `0` puts every moved thread back to the placement it had. A request without the key goes back to the
+  start-up setting. With `--batch` the most recently admitted request's value holds, as for the other `strata_tune` keys.
+  An engine started without `--aux-cpus` plans the set anyway, so `1` takes `auto`.
+- **What it prints.** At start: `strata aux cpus: threads that are neither pool workers nor the host go to CPUs 24 (on;
+  N threads placed so far)`, or `(off at start; a request's aux_cpus=1 turns it on)`. A request that changes the state
+  prints `strata serve: aux cpus ON/off for this request`.
+- **Not covered.** Other processes (the Python launcher, a container runtime) and the engine's host thread.
+- **Measured.** TODO-EVIDENCE (PREvidence: the machine and CPU, `--aux-cpus` off against `auto` in interleaved pairs of
+  whole engine runs, the number of pairs and the A/A control, the host thread's involuntary context switches and
+  decode and prompt tok/s, cold rounds and warm rounds separately).
+
 ---
 
 ## Experimental speed projection (EXPERIMENTAL, off by default)
