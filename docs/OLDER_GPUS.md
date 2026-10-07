@@ -11,7 +11,7 @@ and their output stay exactly as they were. Numbers are the reporters' own, on o
 
 | Cards | Compute capability | How it runs | What is different on it | Reported |
 | --- | --- | --- | --- | --- |
-| Tesla P100 | 6.0 | the CUDA 12 engine | `__dp4a` emulated (bit-exact); BF16 projections through fp32 | 2x P100, IQ3_S, engine 0.1.39: prompt 526-532 tok/s, decode 28-32 tok/s at 128K prompt tokens, 3 of 3 needle checks at 122K ([report](../bench/results/2026-10-06-community-2x-p100/README.md), #1157) |
+| Tesla P100 | 6.0 | the CUDA 12 engine | `__dp4a` emulated (bit-exact); BF16 projections through fp32; opt-in: `STRATA_Q8_SM60=1` runs the Q8_0 dense projections and head on a GP100 kernel ([below](#pascal-gp100-a-q8_0-decode-kernel-opt-in)) | 2x P100, IQ3_S, engine 0.1.39: prompt 526-532 tok/s, decode 28-32 tok/s at 128K prompt tokens, 3 of 3 needle checks at 122K ([report](../bench/results/2026-10-06-community-2x-p100/README.md), #1157); PH402 (4 GP100 dies), IQ3_XXS: decode 28.3 -> 38.9 tok/s with `STRATA_Q8_SM60=1` and a Q8_0 dense shard |
 | Tesla P40 / P4, GTX 10 series | 6.1 | the CUDA 12 engine | BF16 projections through fp32 (cuBLAS has no BF16 GEMM there, #395) | P40, IQ3_S, engine 0.1.30: prompt 217-374 tok/s, decode 30-33 tok/s (#395) |
 | Tesla V100, Titan V | 7.0 | the CUDA 12 engine | BF16 projections on the FP16 tensor cores (#655, #540); the prompt attention on `mma.m8n8k4` (#600); a leaner attention kernel (#540) | V100-PCIE-32GB, UD-IQ4_XS: prompt 1,123-1,251 tok/s (#600); V100 32GB, IQ2_XS: prompt +22% from #540 |
 | RTX 20 (Turing) | 7.5 | **supported**, the ready-made engine | opt-in: `STRATA_BF16_TC=1` runs the BF16 projections on the FP16 tensor cores | RTX 2080 Ti, Q2_0: prompt +15-18% (#655) |
@@ -94,6 +94,48 @@ FP16 path for BF16 projections is in every build but runs by default only below 
 sums round differently): #540 measured a mean KL of 8.4e-3 on the next-token distribution of 24 code prompts on a V100
 (the same top-1 in 23), the size of other summation-order changes; #655 a worst relative difference of 3.5e-5 per
 product on an RTX 2080 Ti.
+
+### Pascal GP100: a Q8_0 decode kernel (opt-in)
+
+GP100 (P100, PH402) is the one Pascal chip without `__dp4a`, and the decode kernels are written for the cards that have
+it: on a GP100 die the dense projections of a verify window read their weights at 40-80 GB/s of its ~730, decoding K-
+and i-quant blocks (Q6_K, IQ4_XS, Q4_K, IQ3_S, ...) one int at a time. Two changes, both measured on a PH402 only:
+
+- **`STRATA_Q8_SM60=1`** packs every Q8_0 dense matrix and the head into the planes of `STRATA_Q8_PACKED` (any shape)
+  and runs them on `src/kernels/cuda/q8_sm60.cuh`: a warp (half or quarter warp for narrow rows) per row, 16-byte
+  weight loads, the window's q8_1 activations copied once per workgroup into shared memory as an int8 plane, the dot
+  on `STRATA_DP4A` (vmad), a shuffle sum - no barrier per row. Shapes it declines (a 6144-wide row with 7-8 columns)
+  keep the usual kernel. Not bitwise the exact kernels (the per-32 products are added in another order). The packed
+  copies cost their size in VRAM beside the GGUF layout the prompt path reads (Flash-Next: 2.9 GiB of dense
+  projections over the stages and 0.6 GiB for the head).
+- The GSQ-RCO packs have no Q8_0 dense matrices, so the kernel needs a shard whose dense projections and head are
+  Q8_0: `python tools/q8_dense_gguf.py <model>-00001-of-00002.gguf <new folder>` writes one (+3.5 GiB; the experts keep
+  their offsets, so the native pack is reused; the other shards are hard-linked beside it). Point `--native` and
+  `--ple-gguf` at the new folder. Requantizing costs at most 0.4% of a tensor's |w|max (Q8_0 is finer than the
+  sources).
+- IQ3_XXS's codebook and sign-mask tables are staged in shared memory by the grouped expert kernels on compute
+  capability 6.x (ported from shinbunbun/llama-cpp-p100-patches 29 and 30; bitwise the same output;
+  `STRATA_IQ_STAGE_GRID18=0|1` forces it off or on, on any card). Within noise on the PH402 (+0-4%).
+
+Measured on a PH402 SKU 200 (two boards, four GP100 dies of 48 SMs and 32 GB HBM2), application clocks locked at
+1050 MHz, Windows 11, driver 581.80 (TCC), CUDA 12.9, engine 0.1.40.2; Flash-Next IQ3_XXS, 32K, `--layer-split 12,24,36
+--prefill 2048`; greedy, 256 tokens, medians of 2-3 interleaved starts, decode tok/s:
+
+| | ~10.7K-token document | the same, cached | short reasoning | code | mean |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| GSQ-RCO shard, exact kernels | 28.8 | 29.4 | 28.4 | 26.8 | 28.3 |
+| Q8_0 dense shard, `STRATA_Q8_PACKED=1` | 27.5 | 31.0 | 34.4 | 31.8 | 31.1 |
+| Q8_0 dense shard, `STRATA_Q8_SM60=1` | 37.5 | 38.4 | 41.2 | 38.5 | 38.9 |
+
+GPU time per verify window (`STRATA_VERIFY_PROFILE`): dense projections 19.2 -> 11.2 ms, head 4.25 -> 2.1 ms; the
+draft policy then picks longer windows (2.10 -> 2.31 tokens per window). Prompt reads are unchanged (437-438 tok/s at
+10.7K). `tools/q8_sm60_check.cu` checks the kernel against a CPU reference on these shapes (1-8 columns) and times it.
+
+Two things that mattered as much on this card: its default application clock is 759 MHz, and a layer split leaves
+each die idle most of a window, so the dies decode below 1050 MHz unless the clocks are locked
+(`nvidia-smi -i <dies> -ac 715,1050` as administrator; 25.0 -> 29.1 tok/s at 10.7K context). And a second engine on
+the same PC that pins its threads to the same logical CPUs halves this one's decode while it runs (the host thread
+is time-sliced); keeping the two on different logical CPUs (SMT siblings) avoided it.
 
 A/B switches: `STRATA_BF16_TC=0|1`, `STRATA_PROMPT_ATTN_OLD=1` (the decode kernel for prompts), `STRATA_ATTN_PRE75=0`
 (#540's kernel off; on gfx103x with HIP that kernel is the default, see the AMD table above, and `=1` turns it on for
