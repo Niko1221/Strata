@@ -1618,6 +1618,21 @@ def dashboard_of(value, what: str) -> str:
     return "/" + "/".join(parts)
 
 
+def landing_of(value, what: str) -> str:
+    """The run config's "landing" (or --landing): which tab the web page opens on - "chat" (the default),
+    "monitor" or "about", with or without the # the page puts in its own address.  Nothing is served
+    differently for it - the page reads the # itself (#viewTab) - only the address Strata prints and opens, and
+    the one it redirects to, carries it.  "" (or "chat") is the page opening where it always opened."""
+    if value is None:
+        return ""
+    name = value.strip().lstrip("#").strip().lower() if isinstance(value, str) else ""
+    if name in ("", "chat"):
+        return ""                                              # the default, as it has always been
+    if name not in ("monitor", "about"):
+        raise ValueError(f'{what}: expected "chat", "monitor" or "about", not {value!r}')
+    return "#" + name
+
+
 class Vision:
     """The resident image encoder: `strata-vision` (llama.cpp mtmd + the mmproj file) reads `ENC <image> <out>`
     lines and writes each image's embeddings; results are cached by the image's hash, so a conversation that
@@ -2205,8 +2220,10 @@ class Service:
         # "parallel" (the engine's batch slots): every running request's own status and rate window; self.status
         # then says busy while any runs and shows the newest one
         self.live_reqs: dict[int, tuple[dict, collections.deque]] = {}
-        # the path the web app is served under: "" for / as always, "/ui" for the run config's "dashboard"
+        # the path the web app is served under: "" for / as always, "/ui" for the run config's "dashboard"; and
+        # which tab the page opens on: "" for chat as always, "#monitor" for the config's "landing"
         self.dashboard = ""
+        self.landing = ""
         # #332: the API request monitor (/api-monitor) keeps the last 100 requests' prompts and answers in memory,
         # so it is off unless the config's "api_monitor" (or --api-monitor) turns it on
         self.api_monitor = False
@@ -3812,13 +3829,14 @@ def make_handler(svc: Service):
             """The answer for a request under / once the app has moved under its own path.  Two of them are only a
             spelling away from the page: /ui is the page at /ui/ - a browser needs the slash, or it would resolve
             the page's relative URLs against / again - and / is where the page used to be, so a bookmark or an old
-            link to it is moved with a 301 to the app's path, keeping the ?q= that came with it.  A POST to / stays
-            as it was: it is aimed at the API, and only /v1 and the rest answer there.  Neither are the page's own
-            files asked for at their old address - those are under the app's path now."""
+            link to it is moved with a 301 to the app's path, keeping the ?q= that came with it, and adding the
+            # tab the config asks the page to open on (its "landing").  A POST to / stays as it was: it is aimed
+            at the API, and only /v1 and the rest answer there.  Neither are the page's own files asked for at
+            their old address - those are under the app's path now."""
             raw, _, query = self.path.partition("?")
             if self.command == "GET" and (raw == svc.dashboard or not raw.strip("/")):
                 self.send_response(301)
-                self.send_header("Location", svc.dashboard + "/" + ("?" + query if query else ""))
+                self.send_header("Location", svc.dashboard + "/" + ("?" + query if query else "") + svc.landing)
                 self.send_header("Content-Length", "0")
                 self.end_headers()
             else:
@@ -4852,7 +4870,10 @@ def main() -> int:
     ap.add_argument("--dashboard", metavar="PATH", default=None,
                     help="serve the web page and its own files under this path instead of /, e.g. --dashboard /ui "
                          "puts them at /ui/ and /ui/web/* and leaves / for your own pages; the API stays at /v1 "
-                         "either way (also \"dashboard\" in the config; default: /)")
+                                                  "either way (also \"dashboard\" in the config; default: /)")
+    ap.add_argument("--landing", default=None, metavar="TAB",
+                    help="open the web page on this tab: chat (the default), monitor or about - the page's own "
+                         "address at /ui/#monitor rather than /ui/ (also \"landing\" in the config)")
     ap.add_argument("--idle-unload", type=float, default=None, metavar="SECONDS",
                     help="unload the model after this many seconds without requests, so other programs (games, other "
                          "model servers) can use the VRAM; the next request loads it again (also \"idle_unload_s\" "
@@ -4869,6 +4890,8 @@ def main() -> int:
     cfg = json.loads(Path(a.config).read_text(encoding="utf-8-sig")) if a.config else {}   # Notepad adds a BOM
     try:
         dashboard = dashboard_of(a.dashboard or cfg.get("dashboard"), '--dashboard / the config\'s "dashboard"')
+        landing = landing_of(a.landing if a.landing is not None else cfg.get("landing"),
+                             '--landing / the config\'s "landing"')
     except ValueError as e:
         ap.error(str(e))
     if a.gpu is not None:
@@ -5043,10 +5066,11 @@ def main() -> int:
         hub.start()
         atexit.register(hub.close)                      # the servers Strata started end with it
     svc.dashboard = dashboard                          # where the web page is: "" = /, "/ui" = the run config's
+    svc.landing = landing                              # which tab it opens on: "" = chat, "#monitor", "#about"
     httpd = serve(svc, host=a.host, port=a.port)
     svc.start_idle_unload()
     here = "127.0.0.1" if a.host in ("0.0.0.0", "", "::") else a.host
-    page = f"http://{here}:{a.port}{dashboard or ''}/"
+    page = f"http://{here}:{a.port}{dashboard or ''}/{landing}"
     print(f"ready: http://{here}:{a.port}/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, "
           f"context {engine.max_context} tokens{', images on' if vision else ''}"
           f"{', API key required' if svc.api_key else ''})", flush=True)
@@ -5055,11 +5079,11 @@ def main() -> int:
         # issue #26: reachable from other devices - say at which address, and what can still block it
         ips = lan_addresses()
         for ip in ips:
-            print(f"       from other devices: http://{ip}:{a.port}{dashboard or ''}/   "
+            print(f"       from other devices: http://{ip}:{a.port}{dashboard or ''}/{landing}   "
                   f"(API: http://{ip}:{a.port}/v1)", flush=True)
         if not ips:
             print("       from other devices: http://<this PC's IP address>:" + str(a.port) +
-                  f"{dashboard or ''}/ (API: /v1)", flush=True)
+                  f"{dashboard or ''}/{landing} (API: /v1)", flush=True)
         if not svc.api_key:
             print("       WARNING: no API key - anyone on your network can use this model. Add \"api_key\": \"...\" "
                   "to the config (clients send it as their API key; the web page asks for it)", flush=True)

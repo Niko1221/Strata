@@ -553,6 +553,11 @@ those relative URLs against `/`. Anything else that is not answered here - a POS
 asked for at its old address - stays a 404. A path that is not one of the server's own (not `/web`, `/v1`,
 `/health`, ...) is refused before the model loads.
 
+`"landing": "#monitor"` in the run config (or `serve/server.py --landing monitor`) opens the page on the Monitor tab
+instead of Chat - `about` is the other one; the address Strata prints at startup, the one it opens in a browser and
+the one it redirects to all carry it (`/ui/#monitor`). Nothing is served differently for it: the page already reads a
+`#` in its own address, so `chat` - or leaving it out - is exactly what the page has always done.
+
 `/models` and `/v1/models` list only the loaded model, with its context limit and input modalities. `/props` exposes the original chat template, context limit, configured generation defaults (shared settings take precedence), model path and engine version when available. Context means the full engine context, not the resident KV window. `n_predict: -1` means no fixed output cap. Unconfigured sampling fields are omitted. `autoload` has no effect; an unknown `model` returns 404. These metadata endpoints and `/slots` require the API key when one is configured. They do not load, unload or restart models.
 
 ```bash

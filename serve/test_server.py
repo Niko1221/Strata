@@ -2196,6 +2196,13 @@ class WebApp(unittest.TestCase):
             for path, to in (("/", "/ui/"), ("/?q=hi", "/ui/?q=hi"), ("/ui", "/ui/")):
                 with self.subTest(path=path):
                     self.assertEqual(self.moved(path), (301, to))
+            self.svc.landing = "#monitor"                 # the config's "landing": which tab the page opens on.
+            for path, to in (("/", "/ui/#monitor"),        # Nothing about serving changes for it - the page reads
+                             ("/?q=hi", "/ui/?q=hi#monitor"),  # a # itself - only the address moved with it needs
+                             ("/ui", "/ui/#monitor")):      # to carry it
+                with self.subTest(path=path):
+                    self.assertEqual(self.moved(path), (301, to))
+            self.svc.landing = ""
             for path in ("/ui/web/app.js", "/ui/web/app.css", "/ui/web/tokens.css", "/ui/web/sprite.svg",
                          "/ui/health", "/ui/metrics", "/ui/status", "/ui/v1/models"):
                 with self.subTest(path=path):
