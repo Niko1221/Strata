@@ -58,6 +58,12 @@ COPY . .
 # refuses anything below 75. BUILD_VISION=0 skips the image encoder build.
 ARG CUDA_ARCHITECTURES=75;80;86;89;120
 ARG BUILD_VISION=1
+# PORTABLE=1 builds ggml's CPU backend for any AVX2 PC instead of this machine's
+# (CMakeLists.txt's STRATA_PORTABLE, the floor the release zips use). A published
+# image has to set it: it is not built on the PC it runs on, and a native build
+# stops with an illegal instruction on a lesser CPU (#411 #412 #419). The default
+# stays native, so `docker build -t strata .` is unchanged.
+ARG PORTABLE=0
 
 RUN python3 -m venv .venv \
     && .venv/bin/pip install --no-cache-dir --upgrade pip \
@@ -77,14 +83,16 @@ llama = setup.get_llama_cpp()
 nvcc, _ = setup.find_nvcc()
 arch = os.environ.get("CUDA_ARCHITECTURES", "75;80;86;89;120").strip().strip('"').replace(",", ";")
 vision = "gpu" if os.environ.get("BUILD_VISION", "1") == "1" else "none"
+portable = "ON" if os.environ.get("PORTABLE", "0") == "1" else "OFF"
 
 setup.cmake_build(setup.ROOT, setup.ROOT / "build", "strata",
     ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_BUILD_TESTS=OFF",
+     f"-DSTRATA_PORTABLE={portable}",
      f"-DCMAKE_CUDA_ARCHITECTURES={arch}", f"-DCMAKE_CUDA_COMPILER={nvcc}",
      f"-DSTRATA_GGML_DIR={llama}"], None, "build-strata.bat")
 if vision != "none":
     setup.cmake_build(setup.ROOT / "tools" / "vision", setup.ROOT / "build-vision", "strata-vision",
-        [f"-DLLAMA_DIR={llama}", "-DSTRATA_VISION_CUDA=ON", "-DSTRATA_PORTABLE=OFF",
+        [f"-DLLAMA_DIR={llama}", "-DSTRATA_VISION_CUDA=ON", f"-DSTRATA_PORTABLE={portable}",
          f"-DCMAKE_CUDA_ARCHITECTURES={arch}", f"-DCMAKE_CUDA_COMPILER={nvcc}"], None, "build-vision.bat")
 
 eng = setup.ROOT / "engine"
