@@ -765,6 +765,25 @@ class OutputParser:
         self.ss = "done"
         return out
 
+    # ---- the call format: Qwen3.8's `<function=NAME><parameter=P>V</parameter></function>`.  GlmOutputParser below
+    # overrides these four for GLM-5's `NAME<arg_key>K</arg_key><arg_value>V</arg_value>`.
+    def _call_end(self, text: str) -> int:
+        """Where the call body in `text` (after `<tool_call>`) ends at its `</tool_call>`; -1: not complete yet."""
+        return call_end(text)
+
+    def _call_name(self, body: str) -> str:
+        return body.strip()[len(FUNC_START):].split(">", 1)[0]
+
+    def _parse_call(self, body: str, schema: dict | None) -> ToolCall:
+        return parse_tool_call(body, schema)
+
+    def _opens_call(self, after: str) -> bool | None:
+        """The text after a `<tool_call>` in the answer: True = a call, False = prose naming the tag, None = not
+        known until more arrives."""
+        if after.startswith(FUNC_START):
+            return True
+        return None if not after or FUNC_START.startswith(after) else False
+
     def _hold(self, text: str, tags: tuple[str, ...]) -> int:
         """Length of the longest suffix of `text` that is a proper prefix of one of `tags`."""
         best = 0
@@ -782,13 +801,13 @@ class OutputParser:
                 # #804: a `<tool_call>` inside the reasoning, with tools declared.  It is held whole (never streamed
                 # as a call) until it ends: a declared name is then a tool call, anything else stays reasoning text.
                 body = self.buf[len(CALL_START):]
-                end, think = call_end(body), body.find(THINK_END)
+                end, think = self._call_end(body), body.find(THINK_END)
                 if end >= 0 and (think < 0 or think >= end):
                     call = None
                     try:
-                        name = body[:end].strip()[len("<function="):].split(">", 1)[0]
+                        name = self._call_name(body[:end])
                         if name in self.schemas:
-                            call = parse_tool_call(body[:end], self.schemas.get(name))
+                            call = self._parse_call(body[:end], self.schemas.get(name))
                     except ValueError:
                         pass
                     raw = self.buf[:len(CALL_START) + end + len(CALL_END)]
@@ -884,11 +903,12 @@ class OutputParser:
                 # it is prose that names the format ("I'll use a <tool_call> block") - content, not a malformed call
                 # that ends the request.  Until its follower has arrived it is held, like a partial tag.
                 after = self.buf[i + len(CALL_START):].lstrip()
-                if after and not after.startswith(FUNC_START) and not FUNC_START.startswith(after):
+                opens = self._opens_call(after)
+                if opens is False:
                     out.append(Event("content", self._track(self.buf[:i + len(CALL_START)])))
                     self.buf = self.buf[i + len(CALL_START):]
                     continue
-                if not after.startswith(FUNC_START):
+                if opens is None:
                     j = i
                     while j > 0 and self.buf[j - 1] == "\n":
                         j -= 1
@@ -901,7 +921,7 @@ class OutputParser:
                 self.buf = self.buf[i + len(CALL_START):]
                 self.state = "call"
             else:
-                i = call_end(self.buf)
+                i = self._call_end(self.buf)
                 if self.stream_tools:
                     if i >= 0:
                         whole, self.buf = self.buf, self.buf[:i]     # scan only the body
@@ -914,8 +934,7 @@ class OutputParser:
                     return out
                 body = self.buf[:i]
                 self.buf = self.buf[i + len(CALL_END):]
-                name = body.strip()[len("<function="):].split(">", 1)[0]
-                call = parse_tool_call(body, self.schemas.get(name))
+                call = self._parse_call(body, self.schemas.get(self._call_name(body)))
                 if self.scall is not None:
                     call.id = self.scall.id
                 out.append(Event("tool_call", call=call))
@@ -943,4 +962,201 @@ class OutputParser:
             text = self.buf if self.state != "call" else CALL_START + self.buf
             out.append(Event(kind, text))
             self.buf = ""
+        return out
+
+
+# ------------------------------------------------------------------------------------------------ GLM-5 (glm_moe_dsa)
+# GLM-5.2 / GLM-5.3 write a tool call as `<tool_call>NAME<arg_key>K</arg_key><arg_value>V</arg_value>...</tool_call>`
+# (serve/glm/chat_template.jinja declares that format to the model and renders past calls in it).  A value is the
+# raw text for a string parameter and JSON for any other, as the template writes them.  Whitespace between the
+# parts is allowed: GLM-4.5 put newlines there, GLM-5 does not.
+ARG_KEY, ARG_KEY_END = "<arg_key>", "</arg_key>"
+ARG_VAL, ARG_VAL_END = "<arg_value>", "</arg_value>"
+GLM_NAME = re.compile(r"\s*([A-Za-z0-9_.:\-]+)")
+
+
+def glm_value_end(text: str, final: bool = False) -> int:
+    """Where an argument value in `text` ends: the first `</arg_value>` followed (after whitespace) by the next
+    `<arg_key>` or `</tool_call>` - the same tag inside a value (a file that documents the format) is part of it.
+    -1: none yet; -2: a candidate whose follower has not arrived (`final` accepts it)."""
+    at = text.find(ARG_VAL_END)
+    while at >= 0:
+        after = text[at + len(ARG_VAL_END):].lstrip()
+        if after.startswith((ARG_KEY, CALL_END)):
+            return at
+        if not after or ARG_KEY.startswith(after) or CALL_END.startswith(after):
+            return at if final else -2
+        at = text.find(ARG_VAL_END, at + 1)
+    return -1
+
+
+def glm_call_end(text: str) -> int:
+    """Where a GLM call body ends: the `</tool_call>` after its last argument.  -1: not complete yet."""
+    m = GLM_NAME.match(text)
+    if not m:
+        return -1 if not text.strip() else text.find(CALL_END)
+    pos = m.end()
+    while True:
+        rest = text[pos:]
+        s = rest.lstrip()
+        pos += len(rest) - len(s)
+        if s.startswith(CALL_END):
+            return pos
+        if s.startswith(ARG_KEY):
+            k = text.find(ARG_KEY_END, pos)
+            if k < 0:
+                return -1
+            rest = text[k + len(ARG_KEY_END):]
+            s = rest.lstrip()
+            vpos = k + len(ARG_KEY_END) + len(rest) - len(s)
+            if not s.startswith(ARG_VAL):
+                return -1 if ARG_VAL.startswith(s) else text.find(CALL_END, vpos)
+            vpos += len(ARG_VAL)
+            end = glm_value_end(text[vpos:])
+            if end < 0:
+                return -1
+            pos = vpos + end + len(ARG_VAL_END)
+        elif not s or ARG_KEY.startswith(s) or CALL_END.startswith(s):
+            return -1
+        else:
+            return text.find(CALL_END, pos)
+
+
+def _glm_value(raw: str, declared) -> object:
+    if declared == "string":
+        return raw
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return raw
+
+
+def parse_glm_tool_call(body: str, schema: dict | None = None) -> ToolCall:
+    """`NAME<arg_key>K</arg_key><arg_value>V</arg_value>...` -> ToolCall.  Values are JSON-decoded unless the tool's
+    schema says the parameter is a string (or they do not parse)."""
+    m = GLM_NAME.match(body)
+    if not m:
+        raise ValueError("malformed tool call: " + body[:80])
+    props = ((schema or {}).get("parameters") or {}).get("properties") or {}
+    args = {}
+    rest = body[m.end():]
+    while ARG_KEY in rest:
+        rest = rest[rest.index(ARG_KEY) + len(ARG_KEY):]
+        if ARG_KEY_END not in rest:
+            break
+        key = rest[:rest.index(ARG_KEY_END)].strip()
+        rest = rest[rest.index(ARG_KEY_END) + len(ARG_KEY_END):]
+        if ARG_VAL not in rest:
+            break
+        rest = rest[rest.index(ARG_VAL) + len(ARG_VAL):]
+        end = glm_value_end(rest, final=True)
+        value = rest[:end] if end >= 0 else rest
+        rest = rest[end + len(ARG_VAL_END):] if end >= 0 else ""
+        args[key] = _glm_value(value, (props.get(key) or {}).get("type"))
+    return ToolCall(name=m.group(1), arguments=args)
+
+
+def glm_forced_call(tool_choice, tools: list[dict] | None) -> str | None:
+    """forced_call for GLM: the opening the reply must continue - `<tool_call>` (any tool) or `<tool_call>NAME`."""
+    kind, name = tool_choice_of(tool_choice)
+    names = {t.get("name") for t in tools or [] if isinstance(t, dict)}
+    if kind in ("auto", "none"):
+        return None
+    if kind == "required" and len(names) == 1:
+        kind, name = "named", next(iter(names))
+    if kind == "required" and names:
+        return CALL_START
+    if kind == "named" and name in names:
+        return CALL_START + name
+    print(f"[strata] tool_choice {json.dumps(tool_choice)[:200]} is not supported here (or names no tool of the "
+          "request): the model decides, as with \"auto\"", flush=True)
+    return None
+
+
+class GlmOutputParser(OutputParser):
+    """OutputParser for GLM-5's call format.  The reasoning, the content and the rules for a call inside the reasoning
+    are the base class's; only the call body is read differently."""
+
+    _body_done = False   # set while _close_scan reads a body that is known to be complete
+
+    def _call_end(self, text: str) -> int:
+        return glm_call_end(text)
+
+    def _call_name(self, body: str) -> str:
+        m = GLM_NAME.match(body)
+        return m.group(1) if m else ""
+
+    def _parse_call(self, body: str, schema: dict | None) -> ToolCall:
+        return parse_glm_tool_call(body, schema)
+
+    def _opens_call(self, after: str) -> bool | None:
+        """A name, then `<arg_key>` or `</tool_call>`: a call.  Prose ("a <tool_call> block") is not."""
+        m = GLM_NAME.match(after)
+        if not m:
+            return None if not after.strip() else False
+        tail = after[m.end():].lstrip()
+        if tail.startswith((ARG_KEY, CALL_END)):
+            return True
+        if not tail or ARG_KEY.startswith(tail) or CALL_END.startswith(tail):
+            return None
+        return False
+
+    def _scan(self) -> list[Event]:
+        """The streaming view of a GLM call body: "tool_start" once the name is complete, then each argument as a
+        JSON piece once its value is complete, and "}" at `</tool_call>`."""
+        out = []
+
+        def args(s):
+            if s:
+                out.append(Event("tool_args", s, call=self.scall))
+        while True:
+            rest = self.buf[self.sp:]
+            if self.ss == "name":
+                m = GLM_NAME.match(rest)
+                if not m or m.end() == len(rest):
+                    return out                  # the name may still be growing
+                self.scall = ToolCall(name=m.group(1), arguments={})
+                props = ((self.schemas.get(m.group(1)) or {}).get("parameters") or {}).get("properties") or {}
+                self.sdeclared = {k: (v or {}).get("type") for k, v in props.items()}
+                out.append(Event("tool_start", call=self.scall))
+                args("{")
+                self.sp += m.end()
+                self.ss = "between"
+            elif self.ss == "between":
+                stripped = rest.lstrip()
+                self.sp += len(rest) - len(stripped)
+                if stripped.startswith(ARG_KEY):
+                    k = stripped.find(ARG_KEY_END)
+                    v = stripped.find(ARG_VAL, k + 1) if k >= 0 else -1
+                    if v < 0:
+                        return out
+                    start = v + len(ARG_VAL)
+                    end = glm_value_end(stripped[start:], final=self._body_done)
+                    if end < 0:
+                        return out
+                    key = stripped[len(ARG_KEY):k].strip()
+                    value = _glm_value(stripped[start:start + end], self.sdeclared.get(key))
+                    args(("" if self.sfirst else ",") + json.dumps(key) + ":" + json.dumps(value, ensure_ascii=False))
+                    self.sfirst = False
+                    self.sp += start + end + len(ARG_VAL_END)
+                elif stripped.startswith(CALL_END):
+                    args("}")
+                    self.ss = "done"
+                else:
+                    return out
+            else:
+                return out
+
+    def _close_scan(self) -> list[Event]:
+        """The body ended (the base class calls this at `</tool_call>`, with only the body in the buffer): close the
+        arguments the scan has not closed yet."""
+        out = []
+        if self.scall is None or self.ss == "done":
+            return out
+        self._body_done = True          # the last value's </arg_value> has no follower in the body: it ends there
+        out += self._scan()
+        self._body_done = False
+        if self.ss != "done":
+            out.append(Event("tool_args", "}", call=self.scall))
+            self.ss = "done"
         return out

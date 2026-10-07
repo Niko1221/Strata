@@ -64,6 +64,24 @@ QWEN35_PATTERN = (
 )
 
 
+# The GLM-4.5 / GLM-5 pre-tokenizer, copied from the `Split` regex of GLM-5.3's own tokenizer.json (a Hugging Face
+# `tokenizers` file, not a GGUF: there is no llama.cpp transcription to follow).  Two differences from qwen35 that
+# change ids: digits group in runs of up to three (`\p{N}{1,3}`, Qwen splits every digit), and there is no `\p{M}`
+# class (a combining mark is not a letter here).  Checked against `tokenizers` itself over a corpus
+# (tests/glm/test_glm_tokenizer.py).
+GLM_PATTERN = (
+    r"(?i:'s|'t|'re|'ve|'m|'ll|'d)"
+    r"|[^\r\n\p{L}\p{N}]?\p{L}+"
+    r"|\p{N}{1,3}"
+    r"| ?[^\s\p{L}\p{N}]+[\r\n]*"
+    r"|\s*[\r\n]+"
+    r"|\s+(?!\S)"
+    r"|\s+"
+)
+
+PRE_PATTERNS = {"qwen35": QWEN35_PATTERN, "glm": GLM_PATTERN}
+
+
 class Tokenizer:
     def __init__(self, tokens: list[str], merges: list[str], token_types: list[int] | None = None,
                  pre: str = "qwen35", special_ids: dict[str, int] | None = None):
@@ -86,7 +104,9 @@ class Tokenizer:
             if parts[0] not in self.ids or parts[1] not in self.ids:
                 raise ValueError("merge %d names a token outside the vocabulary: %r" % (i, m))
             self.ranks[(parts[0], parts[1])] = i
-        self._re = regex.compile(QWEN35_PATTERN)
+        if pre not in PRE_PATTERNS:
+            raise ValueError("unknown pre-tokenizer %r (known: %s)" % (pre, ", ".join(PRE_PATTERNS)))
+        self._re = regex.compile(PRE_PATTERNS[pre])
 
         # The literals matched directly instead of being run through BPE.  GGUF token types: 3 = CONTROL,
         # 4 = USER_DEFINED.  The two classes behave DIFFERENTLY and llama.cpp's own tokenizer settled which:
@@ -136,6 +156,30 @@ class Tokenizer:
         return cls(list(md["tokenizer.ggml.tokens"]), list(md["tokenizer.ggml.merges"]),
                    list(md.get("tokenizer.ggml.token_type") or []) or None,
                    md.get("tokenizer.ggml.pre", "qwen35"), special)
+
+    @classmethod
+    def from_hf_json(cls, path, pre: str) -> "Tokenizer":
+        """A Hugging Face `tokenizer.json` (byte-level BPE): the vocabulary, the merges, and the added tokens as the
+        two literal classes above - `special: true` ones as CONTROL (type 3), the others (`<think>`, `<tool_call>`,
+        `<arg_key>` ...) as USER_DEFINED (type 4)."""
+        tj = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+        model = tj.get("model") or {}
+        if model.get("type") != "BPE":
+            raise ValueError("expected a BPE tokenizer.json, got %r" % model.get("type"))
+        vocab = dict(model["vocab"])
+        for a in tj.get("added_tokens") or []:
+            vocab[a["content"]] = a["id"]
+        n = max(vocab.values()) + 1
+        tokens: list = [None] * n
+        for t, i in vocab.items():
+            tokens[i] = t
+        if any(t is None for t in tokens):
+            raise ValueError("the vocabulary has gaps: ids without a token")
+        types = [1] * n
+        for a in tj.get("added_tokens") or []:
+            types[a["id"]] = 3 if a.get("special") else 4
+        merges = [m if isinstance(m, str) else "%s %s" % (m[0], m[1]) for m in model["merges"]]
+        return cls(tokens, merges, types, pre)
 
     # -------------------------------------------------------------- the algorithm
     def _bpe(self, word: str) -> list[str]:
@@ -296,6 +340,33 @@ def extract(gguf_path, out_dir) -> dict:
     tpl = GGUFFile(pathlib.Path(gguf_path)).metadata.get("tokenizer.chat_template")
     if tpl:
         (out / "chat_template.jinja").write_text(tpl, encoding="utf-8", newline="\n")
+    return cfg
+
+
+def extract_hf(tokenizer_json, out_dir, pre: str, chat_template=None) -> dict:
+    """The same `tokenizer/` directory as `extract`, from a Hugging Face tokenizer.json (GLM-5.3 ships no GGUF).
+    `chat_template`: a template file to copy beside it (the GLM container carries none)."""
+    out = pathlib.Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    tk = Tokenizer.from_hf_json(tokenizer_json, pre)
+    cfg = {
+        "model": "gpt2",
+        "pre": tk.pre,
+        "vocab_size": len(tk.tokens),
+        "n_merges": len(tk.ranks),
+        "special_ids": tk.special_ids,
+        "add_bos_token": False,
+        "pre_pattern": PRE_PATTERNS[pre],
+        "pre_pattern_source": str(tokenizer_json),
+    }
+    (out / "vocab.json").write_text(json.dumps(tk.ids, ensure_ascii=False), encoding="utf-8")
+    (out / "merges.txt").write_text("\n".join("%s %s" % k for k, _ in
+                                              sorted(tk.ranks.items(), key=lambda kv: kv[1])), encoding="utf-8")
+    (out / "token_type.json").write_text(json.dumps(tk.token_types), encoding="utf-8")
+    (out / "tokenizer.json").write_text(json.dumps(cfg, ensure_ascii=False, indent=1), encoding="utf-8")
+    if chat_template:
+        (out / "chat_template.jinja").write_text(pathlib.Path(chat_template).read_text(encoding="utf-8"),
+                                                 encoding="utf-8", newline="\n")
     return cfg
 
 

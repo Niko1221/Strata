@@ -53,7 +53,8 @@ class SyclBackend(unittest.TestCase):
 
     def test_the_parser_accepts_sycl(self):
         src = (ROOT / "setup.py").read_text(encoding="utf-8")
-        self.assertRegex(src, r'"--backend", choices=\["cuda", "hip", "sycl"\]')
+        # "cpu" follows it for GLM-5.3's CPU-only engine (--family glm --backend cpu)
+        self.assertRegex(src, r'"--backend", choices=\["cuda", "hip", "sycl"(, "cpu")?\]')
 
     def test_setup_intel_finds_the_setup_functions_it_replaces(self):
         """sycl/setup_intel.py swaps these steps; setup.py must still have them (it stops with a message otherwise)."""

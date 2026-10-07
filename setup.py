@@ -3439,6 +3439,8 @@ def upgrade_config(cfg_path: Path, cfg: dict) -> dict:
     """Configs written before v0.1.13 read prompts in fixed 2048-token chunks; the engine now picks the chunk
     itself (`--prefill auto`: up to 8192, as the free VRAM allows - about 2x faster on long prompts).  Under WSL,
     KV streaming is dropped: its RAM copy must be pinned, and the driver pins only about 1 GB there."""
+    if cfg.get("family") == "glm":
+        return cfg
     a = cfg.get("args", [])
     changed = False
     ver = engine_version(cfg["exe"]) if "--prefill" in a else (0, 0, 0)
@@ -3473,10 +3475,14 @@ def update_install(have: list, a) -> int:
         return 0
     pip_install(requirement_lines() if REQUIREMENTS.exists() else PY_PACKAGES,
                 "numpy, jinja2, regex, pyyaml, tqdm, requests, cmake, ninja, pillow, psutil")
-    if not a.build:
+    if not a.build and any(json.loads(p.read_text(encoding="utf-8-sig")).get("family") != "glm" for p in have):
         update_installed_engine(a.prebuilt)
     for cfg_path in have:
         cfg = upgrade_config(cfg_path, json.loads(cfg_path.read_text(encoding="utf-8-sig")))
+        if cfg.get("family") == "glm":
+            from tools.glm_install import build_engine as build_glm
+            cfg["exe"] = str(build_glm(sys.modules[__name__], "--gpu" in cfg["args"], force=True))
+            write_config(cfg_path, cfg)
         if "--mtp" in cfg["args"][:-1]:
             refresh_draft_vocab(Path(cfg["args"][cfg["args"].index("--mtp") + 1]), cfg.get("draft_vocab", "cjk"))
         if cfg.get("backend") == "hip" and WIN:
@@ -3518,7 +3524,20 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
           layer_split=None, keep=None) -> int:
     """keep: settings given on this start that the model keeps from now on (--host, --api-key, --draft-vocab,
     --vram-reserve-mib)."""
-    cfg = upgrade_config(cfg_path, json.loads(cfg_path.read_text(encoding="utf-8-sig")))
+    raw = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
+    if raw.get("family") == "glm":
+        from tools.glm_setup import start_config
+        if isinstance(gpu, list) or layer_split:
+            fail("GLM-5.3 supports one GPU", "use --family glm --setup --gpu N")
+        if gpu is not None:
+            args = raw["args"]
+            if "--gpu" in args:
+                args[args.index("--gpu") + 1] = str(gpu)
+            else:
+                args += ["--gpu", str(gpu)]
+            write_config(cfg_path, raw)
+        return start_config(cfg_path, port=port, keep=keep)
+    cfg = upgrade_config(cfg_path, raw)
     missing = [p for p in [cfg["exe"], *[a for a in cfg["args"] if a.endswith(".gguf")]] if not Path(p).exists()]
     if missing:
         fail(f"{cfg_path.name} refers to missing files: {missing[0]}", "run it again with --setup to repair")
@@ -4029,8 +4048,10 @@ def sycl_setup(argv) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--family", choices=list(FAMILIES), help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5")
-    ap.add_argument("--model", choices=list(MODELS))
+    ap.add_argument("--family", choices=[*FAMILIES, "glm"], help="qwen, swift, or glm (advanced GLM-5.3, 419 GB)")
+    ap.add_argument("--model", choices=[*MODELS, "GLM-5.3"])
+    ap.add_argument("--glm-model-dir", help="reuse a GLM-5.3 colibri int4-g64 model folder")
+    ap.add_argument("--glm-kv", choices=["f32", "bf16", "fp8"], default="f32", help="GLM's KV cache format")
     ap.add_argument("--context", type=int)
     ap.add_argument("--rope-scaling", choices=["none", "linear", "yarn"],
                     help="the RoPE extension for a context past the model's trained 262144: linear (position "
@@ -4115,12 +4136,22 @@ def main() -> int:
     ap.add_argument("--kv-streaming", choices=["auto", "on", "off"], default="auto",
                     help="from a 64K context: keep the KV cache in RAM and only the attention's window in VRAM (more "
                          "experts fit on the GPU); auto: when the RAM has room for it")
-    ap.add_argument("--backend", choices=["cuda", "hip", "sycl"],
+    ap.add_argument("--backend", choices=["cuda", "hip", "sycl", "cpu"],
                     help="cuda = NVIDIA (default), hip = AMD RX 7900 / 7800 / 7700 XT, RX 9060 XT / 9070 / AI PRO R9700 on "
                          "Linux or Windows (chosen by itself when the PC has no NVIDIA card Strata can use), "
                          "sycl = Intel Arc, EXPERIMENTAL: Linux, built from source (docs/INTEL_ARC.md)")
     ap.add_argument("--skip-build", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
+    if a.family == "glm" or a.model == "GLM-5.3" or a.glm_model_dir:
+        if a.family not in (None, "glm") or a.model not in (None, "GLM-5.3"):
+            ap.error("GLM-5.3 uses --family glm --model GLM-5.3")
+        from tools.glm_install import install
+        try:
+            return install(a, sys.modules[__name__])
+        except (ValueError, OSError) as e:
+            ap.error(str(e))
+    if a.backend == "cpu":
+        ap.error("--backend cpu is available with --family glm")
     if a.backend == "sycl":                            # Intel Arc: the SYCL port's own setup (sycl/setup_intel.py)
         return sycl_setup(sys.argv[1:])
     if a.resident_budget_gib is not None and not a.resident_budget_gib > 0:
@@ -4198,7 +4229,7 @@ def main() -> int:
                      keep={"host": a.host, "api_key": a.api_key, "draft_vocab": a.draft_vocab,
                            "vram_reserve_mib": a.vram_reserve_mib, "open_browser": a.browser})
     if have and not (a.setup or a.model or a.family or a.check or a.no_start):
-        if not a.build:
+        if not a.build and any(json.loads(p.read_text(encoding="utf-8-sig")).get("family") != "glm" for p in have):
             update_installed_engine(a.prebuilt)
         if len(have) == 1:
             return start(have[0], a.port, run_gpu, yes=a.yes, layer_split=a.layer_split,
@@ -4383,17 +4414,21 @@ def main() -> int:
 
     # ---- 2. the questions
     step(2, "your choices")
-    fams = list(FAMILIES)
+    fams = [*FAMILIES, "glm"]
     if a.family:
         family = a.family
     else:
         rec_fam = STRIX_HALO_FAMILY if strix_halo_recommends(gpu, ram) and STRIX_HALO_FAMILY in fams else fams[0]
         for i, f in enumerate(fams, 1):
-            d = FAMILIES[f]
+            d = FAMILIES[f] if f != "glm" else {"title": "GLM-5.3", "by": "Z.ai",
+                "about": "advanced: 419 GB on an NVMe SSD, 64 GB RAM, CPU / CUDA"}
             say(f"  {i}) {d['title']:20s} {d['by']} - {d['about']}" + ("   [experimental]" if d.get("experimental") else "")
                 + (f"   (recommended for Strix Halo: {STRIX_HALO_MODEL})" if f == rec_fam and rec_fam != fams[0] else ""))
         family = fams[int(ask("Which model?", [str(i) for i in range(1, len(fams) + 1)],
                               str(fams.index(rec_fam) + 1), a.yes)) - 1]
+    if family == "glm":
+        from tools.glm_install import install
+        return install(a, sys.modules[__name__])
     fam = FAMILIES[family]
     ok(f"model: {fam['title']}")
     if fam.get("license"):

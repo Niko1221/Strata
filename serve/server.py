@@ -54,9 +54,9 @@ from urllib.parse import parse_qs, urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a module
-from serve.frontend import (ChatTemplate, Event, OutputParser, anthropic_to_messages,  # noqa: E402
-                            forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages,
-                            tool_choice_of, unmark_think_literals)
+from serve.frontend import (ChatTemplate, Event, GlmOutputParser, OutputParser, anthropic_to_messages,  # noqa: E402
+                            forced_call, glm_forced_call, images_of, literal_tags, mark_think_literals,
+                            openai_to_messages, tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve import runconfig  # noqa: E402
 from serve.winjob import contain  # noqa: E402
@@ -1847,11 +1847,29 @@ def layer_split_value(cfg: dict) -> str:
     return ",".join(str(x) for x in vals)
 
 
+def validate_glm_config(cfg: dict) -> None:
+    if cfg.get("family") != "glm":
+        return
+    if cfg.get("vision"):
+        raise ValueError("GLM-5.3 does not support image input")
+    if cfg.get("parallel", 1) != 1 or any(str(x).startswith("--batch") for x in cfg.get("args", [])):
+        raise ValueError("GLM-5.3 serves one request at a time; remove parallel/batch settings")
+    if len(gpu_list(cfg)) > 1:
+        raise ValueError("GLM-5.3 supports one CUDA GPU; a layer split is not available")
+    if cfg.get("vram_elastic"):
+        raise ValueError("GLM-5.3 cannot resize VRAM while running; use --vram-reserve-mib at startup")
+    if cfg.get("effort_position", "start") != "start":
+        raise ValueError("GLM-5.3 requires effort_position=start")
+
+
 def engine_args(cfg: dict) -> list[str]:
     """The engine's arguments: the config's, and with several GPUs the layer split across them ("layer_split" in the
     config: "auto" by default, or the first layer of each later GPU's share, e.g. "18" or "16,32"; see
-    layer_split_value)."""
+    layer_split_value).  A GLM model's engine (strata-glm) takes the config's arguments as they are."""
     args = list(cfg["args"])
+    if cfg.get("family") == "glm":
+        validate_glm_config(cfg)
+        return args
     if len(gpu_list(cfg)) > 1 and "--layer-split" not in args:
         args += ["--layer-split", layer_split_value(cfg)]
     # opt-in: an auto split runs on the first card alone when it holds every profiled expert and the KV
@@ -2144,8 +2162,13 @@ def slot_save_dir(value, base: str | None = None) -> str:
 class Service:
     def __init__(self, engine: Engine, tokenizer, template: ChatTemplate, model_name: str = "qwen3.8-flash-next",
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
-                 fit_max_tokens: bool = False):
+                 fit_max_tokens: bool = False, family: str = "qwen"):
         self.engine, self.tok, self.template, self.model, self.vision = engine, tokenizer, template, model_name, vision
+        # the model family decides the turn ends and the tool-call format: "qwen" (Qwen3.8-Flash-Next and its
+        # variants, ChatML) or "glm" (GLM-5.2 / GLM-5.3: <|user|>-style turns, <arg_key>/<arg_value> calls)
+        self.family = family
+        self.parser_class = GlmOutputParser if family == "glm" else OutputParser
+        self.forced_call = glm_forced_call if family == "glm" else forced_call
         self.literals = literal_tags(getattr(tokenizer, "control_tokens", ()))   # texts that stay text inside a message
         self.fit_max_tokens = fit_max_tokens          # --fit-max-tokens: clamp the output cap instead of 400
         self.aliases: list[str] = []                  # #297: other names of the model (the config's `aliases`)
@@ -2203,8 +2226,10 @@ class Service:
         self.reasoning_budget_tokens = 0                 # #123: the config's default thinking budget (0: none)
         self.repeat_stop_tokens = REPEAT_STOP_TOKENS     # #606: one token this many times in a row ends a reply (0: off)
         self.anthropic_think_unasked = True               # #278: "anthropic_thinking": "on_request" -> False
-        self.stop_ids = set(tokenizer.encode(IM_END, parse_special=True) +
-                            tokenizer.encode("<|endoftext|>", parse_special=True))
+        # GLM has no turn terminator: the next role token ends a turn, so the ones a reply must stop at are the
+        # user's and the tool result's (its generation_config's eos_token_id: <|endoftext|> <|user|> <|observation|>)
+        ends = ("<|endoftext|>", "<|user|>", "<|observation|>") if family == "glm" else (IM_END, "<|endoftext|>")
+        self.stop_ids = set(t for e in ends for t in tokenizer.encode(e, parse_special=True))
 
     def loaded(self) -> bool:
         return not hasattr(self.engine, "alive") or self.engine.alive()
@@ -2215,6 +2240,8 @@ class Service:
         def error(code, message):
             return code, {"error": {"code": code, "message": message,
                                     "type": "invalid_request_error" if code < 500 else "server_error"}}
+        if self.family == "glm":
+            return error(501, "GLM-5.3 does not support slot save/restore")
         if not self.slot_save_path or not hasattr(self.engine, "session_file"):
             return error(501, "slot save/restore is disabled (start the server with --slot-save-path DIR)")
         if getattr(self.engine, "batch", 0):
@@ -2378,6 +2405,8 @@ class Service:
         started with), applied between requests - a request that is running finishes first (up to wait_s).  Only an
         engine started with --vram-elastic (the config's "vram_elastic": true) can do it; it never resizes on its own.
         An unloaded engine applies it when it loads.  -> {"status": ..., and the engine's figures}."""
+        if self.family == "glm":
+            raise ValueError("GLM-5.3 cannot resize VRAM while running; restart with --vram-reserve-mib")
         if not hasattr(self.engine, "vram"):
             raise ValueError("this engine cannot resize its VRAM use")
         if not self.fifo.acquire(timeout=self.vram_wait_s):
@@ -2862,7 +2891,7 @@ class Service:
         if defaults:                   # the request's own fields win (explicit 0 stays greedy)
             req_values = {k: v for k, v in (sampling or {}).items() if v is not None}
             sampling = {**defaults, **req_values}
-        parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True)
+        parser = self.parser_class(thinking=thinking, tools=tools, stream_tools=True)
         detok, n, finish = Detokenizer(self.tok), 0, "length"
         run_tok, run_len, repeated = None, 0, False     # #606: the current run of one repeated token
         thinking_n = 0                                  # tokens written while thinking (Responses' reasoning_tokens)
@@ -4194,7 +4223,7 @@ def make_handler(svc: Service):
             self._no_local_images(messages)
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # as the Responses route: no tools are offered
                 tools = None
-            force = forced_call(req.get("tool_choice"), tools)      # a bad value is a 400 before anything is sent
+            force = svc.forced_call(req.get("tool_choice"), tools)  # a bad value is a 400 before anything is sent
             messages, validator = prepare_format(req.get("response_format"), messages)
             if validator is not None and (tools or req.get("strata_mcp")):
                 raise ValueError("structured response_format with tools/MCP is not supported")
@@ -4395,7 +4424,7 @@ def make_handler(svc: Service):
             self._no_local_images(messages)
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # Anthropic's {"type": "none"}: no tools offered
                 tools = None
-            force = forced_call(req.get("tool_choice"), tools)        # "any" / {"type": "tool", "name": N}
+            force = svc.forced_call(req.get("tool_choice"), tools)    # "any" / {"type": "tool", "name": N}
             max_new = int(req.get("max_tokens") or 0)                  # 0/-1: the rest of the context
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
@@ -4810,7 +4839,15 @@ def main() -> int:
             tokens[i] = t
         merges = (tpath / "merges.txt").read_text(encoding="utf-8").split("\n")
         types = json.loads((tpath / "token_type.json").read_text())
-        tok = ST.Tokenizer(tokens, merges, types)
+        # the pre-tokenizer the directory was written for (tokenizer.json beside it; qwen35 when absent: older packs)
+        meta = json.loads((tpath / "tokenizer.json").read_text(encoding="utf-8")) if (tpath / "tokenizer.json").exists() else {}
+        tok = ST.Tokenizer(tokens, merges, types, pre=meta.get("pre", "qwen35"))
+        if meta.get("pre") == "glm":
+            cfg.setdefault("family", "glm")
+    try:
+        validate_glm_config(cfg)
+    except ValueError as e:
+        ap.error(str(e))
     hub = hub_from_config(cfg, a.mcp_config)            # before the minutes of loading: a bad entry stops here
     if a.engine == "strata":
         if not cfg:
@@ -4864,11 +4901,13 @@ def main() -> int:
         engine, vision, sampling_defaults = MockEngine(tok, a.script or [
             "Thinking about it.</think>\n\nHello from the mock engine."]), None, {}
     # the model's own chat template (exported with its tokenizer), else the original model's
+    family = cfg.get("family", "qwen")
     tpl = tpath / "chat_template.jinja"
-    svc = Service(engine, tok, ChatTemplate(tpl if tpl.exists() else ROOT / "serve/chat_template.jinja"),
-                  model_name=cfg.get("model_name", "qwen3.8-flash-next"), vision=vision,
-                  sampling_defaults=sampling_defaults,
-                  fit_max_tokens=a.fit_max_tokens or cfg.get("fit_max_tokens") is True)
+    default_tpl = ROOT / ("serve/glm/chat_template.jinja" if family == "glm" else "serve/chat_template.jinja")
+    svc = Service(engine, tok, ChatTemplate(tpl if tpl.exists() else default_tpl),
+                  model_name=cfg.get("model_name", "glm-5.3" if family == "glm" else "qwen3.8-flash-next"),
+                  vision=vision, sampling_defaults=sampling_defaults,
+                  fit_max_tokens=a.fit_max_tokens or cfg.get("fit_max_tokens") is True, family=family)
     try:
         svc.set_aliases(cfg.get("aliases"))             # #297: other names the model answers to
     except ValueError as e:

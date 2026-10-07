@@ -1,4 +1,4 @@
-// include/strata/plan/plan.hpp - P1.S9 census + memory planner.
+﻿// include/strata/plan/plan.hpp - P1.S9 census + memory planner.
 //
 // This is the component that makes one binary adapt to the GPU it is running on.  The engine has 33.97 GB of
 // expert weights (has to live in DRAM and be streamed) and a fixed VRAM budget that has to hold the dense
@@ -6,7 +6,7 @@
 // Every one of those competes, so the plan is an arithmetic result rather than a configuration choice, and
 // it must REFUSE rather than silently overcommit.
 //
-// DERIVATION POLICY.  `phases/00-README.md` §2 gives three rows of expected values but no formula, so the
+// DERIVATION POLICY.  `phases/00-README.md` Â§2 gives three rows of expected values but no formula, so the
 // arithmetic here is derived from the model's geometry and the table is used as a CHECK.  Where the two
 // disagree the geometry wins and the disagreement is reported - a table transcribed by hand is not a
 // specification, and fitting formulas to it would hide exactly the errors this is supposed to catch.
@@ -19,8 +19,12 @@
 
 namespace strata::plan {
 
-// ---- model geometry (the real Qwen3.8-Flash-Next artifact) ------------------
+// ---- model geometry ---------------------------------------------------------
+// The qwen4exp values are the real Qwen3.8-Flash-Next artifact; the glm-dsa values come from
+// derived_glm_dsa().  rch is what the cost functions branch on, so a geometry built for one family
+// cannot quietly be charged as the other.
 struct Geometry {
+    std::string arch = "qwen4exp";
     int n_layers = 48;
     int n_qsa_layers = 12; // layers 3, 7, ... 47 - the full-attention ones
     int n_kv_heads = 2;
@@ -56,11 +60,58 @@ struct Geometry {
     /// 36 of the 48 layers are GDN; the rest are QSA.  Declared as a derivation rather than a third constant,
     /// because a `n_gdn_layers = 36` alongside `n_layers` and `n_qsa_layers` is a third thing to keep in step.
     int n_gdn_layers() const { return n_layers - n_qsa_layers; }
+
+    /// ---- glm-dsa (GLM-5.3 / GLM-5.2, the 744B family).  Zero for qwen4exp. ----
+    ///
+    /// Every layer is MLA, so there is no GDN term and no QSA term.  The cache holds the 512-wide latent plus
+    /// the 64-wide rope slice, because `kv_b_proj` is absorbed into the two ends - the cache never holds an
+    /// expanded key.  `index_kpool` is a GLM-5.3-Flash feature and does not exist in this checkpoint, so the
+    /// indexer caches one `index_head_dim`-wide key per token with no pooling block.
+    ///
+    /// `n_indexer_layers` is 21 for the checkpoint's `indexer_types` (layers 0, 1, 2 then every 4th), and 0
+    /// for the container at D:\models\GLM-5.3-colibri-int4-g64, which carries no indexer tensors at all.
+    int n_indexer_layers = 0;
+    int kv_lora_rank = 0;
+    int qk_rope_head_dim = 0;
+
+    int ml_cache_elems() const { return kv_lora_rank + qk_rope_head_dim; }
 };
 
+// The glm-dsa geometry, measured on the checkpoint rather than transcribed from a card: 78 layers, hidden
+// 6144, 256 experts with 8 active, 64 heads (MLA has no GQA split, so head_count == head_count_kv),
+// q_lora_rank 2048, kv_lora_rank 512, qk 192 nope + 64 rope, v_head_dim 256, indexer top_k 2048 /
+// key_length 128 / head_count 32.
+inline Geometry derived_glm_dsa(bool indexer_present = false) {
+    Geometry g;
+    g.arch = "glm-dsa";
+    g.n_layers = 78;
+    g.n_qsa_layers = 0;
+    g.n_kv_heads = 64;
+    g.head_dim = 256;
+    g.kv_group = 64;
+    g.qsa_block = 1;              // no pooling block: one key per token
+    g.indexer_q_heads = 32;       // index_n_heads: they multiply the scores and cost no cache
+    g.indexer_key_heads = 1;
+    g.indexer_key_dim = 128;      // index_head_dim
+    g.kv_lora_rank = 512;
+    g.qk_rope_head_dim = 64;
+    g.n_indexer_layers = indexer_present ? 21 : 0;
+    return g;
+}
+
 // ---- byte costs ------------------------------------------------------------
+// int4 group-64 with f32 scales - the format the GLM container is stored in, and the format a GLM pack has to
+// carry.  Codes are 4 bits per element, scales 4 B per 64 elements, three tensors per expert.  Measured on the
+// checkpoint: 6,291,456 + 786,432 per tensor, so 21,233,664 B per expert.  That is 15.4x the 1,382,400 B
+// qwen4exp blob, and `cache_slots` divides by it, so a GLM plan is a different plan, not the same plan with
+// different numbers.
+inline uint64_t int4_g64_blob(uint64_t elems_per_tensor) {
+    return 3ull * (elems_per_tensor / 2 + elems_per_tensor / 64 * 4);
+}
+inline uint64_t glm_expert_blob() { return int4_g64_blob(6144ull * 2048ull); }
+
 struct Costs {
-    uint64_t expert_blob = 1382400; // one expert's gate_up+down, codes and scales (architecture §3.2)
+    uint64_t expert_blob = 1382400; // one expert's gate_up+down, codes and scales (architecture Â§3.2)
     uint64_t dense_bytes = 0;       // from the manifest: every non-expert tensor, canonical form
     uint64_t embd_bytes = 0;        // token embedding
     uint64_t mtp_bytes = 0;         // multi-token-prediction head, when present
@@ -81,6 +132,7 @@ struct Costs {
 // evicted to make room for an expert.  A planner that omits it returns a plan it cannot honour, which is the
 // failure `DoesNotClose` exists to prevent.
 inline uint64_t state_bytes(const Geometry& g) {
+    if (g.arch == "glm-dsa") return 0;   // no GDN: nothing recurrent to hold for a sequence
     const uint64_t per_layer = (uint64_t) g.ssm_state_size * (uint64_t) g.ssm_v_heads *
                                    (uint64_t) g.ssm_state_size * sizeof(float) +
                                (uint64_t) (g.ssm_d_conv - 1) * (uint64_t) g.ssm_conv_channels * sizeof(float);
@@ -89,6 +141,12 @@ inline uint64_t state_bytes(const Geometry& g) {
 
 // INT8 KV + indexer keys, bytes per token.  Both terms come from the geometry above and nothing else.
 inline uint64_t kv_bytes_per_token(const Geometry& g) {
+    if (g.arch == "glm-dsa") {
+        const uint64_t e = (uint64_t) g.ml_cache_elems();              // 512 latent + 64 rope, not an expanded key
+        const uint64_t per_layer = e + (e / (uint64_t) g.kv_group) * 2;
+        return (uint64_t) g.n_layers * per_layer +
+               (uint64_t) g.n_indexer_layers * (uint64_t) g.indexer_key_heads * (uint64_t) g.indexer_key_dim;
+    }
     const uint64_t kv_elems = 2ull * g.n_kv_heads * g.head_dim;       // K and V
     const uint64_t kv_scales = (kv_elems / (uint64_t)g.kv_group) * 2; // fp16 scale per group
     const uint64_t per_layer = kv_elems * 1 + kv_scales;              // INT8: one byte per element
@@ -120,7 +178,7 @@ struct DoesNotClose : std::runtime_error {
 };
 
 // The VRAM budget that the KV cache and the expert cache share.  This is the one number taken from
-// `00-README.md` §2 rather than derived: the table's three rows all leave `KV + cache` constant, and that
+// `00-README.md` Â§2 rather than derived: the table's three rows all leave `KV + cache` constant, and that
 // constant is what the planner is dividing.  Expressed in bytes, decimal, matching how the table rounds.
 inline uint64_t vram_pool_bytes() {
     return 5943000000ull;
@@ -137,6 +195,12 @@ inline Plan make_plan(uint64_t max_context, const Geometry& g, const Costs& c,
 
     const uint64_t fixed = c.dense_bytes + c.embd_bytes + c.mtp_bytes + c.workspace_bytes + c.state_bytes;
     if (p.kv_bytes + fixed > pool) {
+        // The glm-dsa dense weights (11,595,965,440 B measured on the checkpoint) are larger than the whole
+        // pool, so this is not a context to reduce - it is the wrong pool.  Saying so is what keeps the
+        // failure at startup instead of at token 4000.
+        if (c.dense_bytes > pool)
+            throw DoesNotClose("the dense weights alone are " + std::to_string(c.dense_bytes) + " B, more than the " +
+                               std::to_string(pool) + " B VRAM pool - on glm-dsa they are resident in DRAM, so this pool is the wrong pool");
         throw DoesNotClose("max-context " + std::to_string(max_context) + " needs " +
                            std::to_string(p.kv_bytes + fixed) + " B of the " + std::to_string(pool) +
                            " B VRAM pool; reduce --max-context");

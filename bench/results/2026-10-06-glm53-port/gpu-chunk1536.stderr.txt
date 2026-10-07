@@ -1,0 +1,10 @@
+strata-glm: CUDA device 0, 431 expert slots (9.15 GB), prefill GPU
+strata-glm: 78 layers, hidden 6144, 256 experts (top-8), vocab 154880 | dense 11.60 GB resident | KV 1.47 GB (8192 tokens) | expert cache 1315 slots = 28.0 GB | 16 threads, 8 I/O | loaded in 3.9 s
+prompt 256/1536 in 102.9 s
+prompt 512/1536 in 201.3 s
+prompt 768/1536 in 346.9 s
+prompt 1024/1536 in 536.2 s
+prompt 1280/1536 in 919.8 s
+prompt 1536/1536 in 1496.2 s
+prompt 1536 tokens in 1496.2 s | 0 generated in 0.0 s (0.00 tok/s) | expert hits 0 of 82460 (0.0%), read 1751.6 GB | attn 30.2 s, moe 1463.7 s (waiting for reads 1138.5 s), dense 0.7 s, head 0.0 s
+strata-glm: GPU hits 0, prefetch used 0 of 0, KV f32 (1472200704 bytes)

@@ -36,6 +36,8 @@ td.log
 /run-*.sh
 /strata-*.json
 /strata-*.log
+# tools/glm_setup.py: the GLM tokenizer folder
+/data/glm*/
 /build-strata.bat
 /build-strata-cuda12.bat
 /build-cuda12/
@@ -53,6 +55,8 @@ build-vision-cuda12.bat
 /dist/
 *.done
 /third_party/*.zip
+/third_party/glm-cublas/
+/build-glm.bat
 
 # IDEs
 .vscode/
@@ -61,3 +65,5 @@ build-vision-cuda12.bat
 
 /.ccache/
 /.rocm-win/
+# raw logit dumps from strata-glm --logits-out (11 MB each): the results keep the logs and the JSON
+bench/results/**/*.f32

@@ -1,0 +1,62 @@
+[
+  {
+    "name": "baseline-tf",
+    "returncode": 0,
+    "seconds": 36.54308909998508,
+    "command": [
+      "D:\\Strata-GLM\\build-baseline\\strata-glm.exe",
+      "--model",
+      "D:\\models\\GLM-5.3-colibri-int4-g64",
+      "--expert-ram-gb",
+      "28",
+      "--threads",
+      "16",
+      "--tokens"
+    ]
+  },
+  {
+    "name": "baseline-chunk256",
+    "returncode": 0,
+    "seconds": 609.1028426000266,
+    "command": [
+      "D:\\Strata-GLM\\build-baseline\\strata-glm.exe",
+      "--model",
+      "D:\\models\\GLM-5.3-colibri-int4-g64",
+      "--expert-ram-gb",
+      "28",
+      "--threads",
+      "16",
+      "--tokens"
+    ]
+  },
+  {
+    "name": "baseline-chunk1024",
+    "returncode": 0,
+    "seconds": 513.5233618000057,
+    "command": [
+      "D:\\Strata-GLM\\build-baseline\\strata-glm.exe",
+      "--model",
+      "D:\\models\\GLM-5.3-colibri-int4-g64",
+      "--expert-ram-gb",
+      "28",
+      "--threads",
+      "16",
+      "--tokens"
+    ]
+  },
+  {
+    "name": "baseline-chunk2048",
+    "returncode": 0,
+    "seconds": 488.83229140000185,
+    "command": [
+      "D:\\Strata-GLM\\build-baseline\\strata-glm.exe",
+      "--model",
+      "D:\\models\\GLM-5.3-colibri-int4-g64",
+      "--expert-ram-gb",
+      "28",
+      "--threads",
+      "16",
+      "--tokens"
+    ]
+  }
+]

@@ -1,4 +1,4 @@
-// include/strata/artifact/gguf_reader.hpp - generated from src/artifact/gguf_reader.cpp by
+﻿// include/strata/artifact/gguf_reader.hpp - generated from src/artifact/gguf_reader.cpp by
 // scripts/split_artifact.py.  Header-only on purpose: the reader is one translation unit's worth of
 // code with no state to hide, and a header-only split cannot introduce a duplicate-symbol or
 // missing-declaration bug in code that is already validated.
@@ -570,37 +570,99 @@ private:
     std::map<std::string, std::pair<size_t, const TensorInfo*>> index_;
 };
 
-// ---- architecture guard (P1.S2). The engine is specialised to ONE model; anything else must be
-// refused with a precise error rather than silently mis-run.
-struct Qwen4ExpGuard {
-    uint32_t block_count = 48, hidden = 2560, experts = 0, experts_used = 0, head_count = 24,
-             head_count_kv = 2;   // 0 = presence-only: pruned variants (GSQ-RCO Coder) legitimately ship
-                                  // fewer experts than the canonical 512; the graph reads the true value
+// ---- architecture guard (P1.S2). The engine is specialised to ONE model per architecture family; anything
+// else must be refused with a precise error rather than silently mis-run.
+//
+// A guard is the geometry the graph was WRITTEN for, not a description of the file. 0 means presence-only:
+// the graph reads that value out of the metadata instead of asserting it.
+struct GuardField {
+    std::string key;
+    uint64_t want;
 };
 
-inline std::string check_architecture(const GgufFile& g, const Qwen4ExpGuard& want = {}) {
+struct Qwen4ExpGuard {
+    uint32_t block_count = 48, hidden = 2560, experts = 0, experts_used = 0, head_count = 24,
+             head_count_kv = 2, mtp_blocks = 0;   // 0 = presence-only: pruned variants (GSQ-RCO Coder) legitimately ship
+                                  // fewer experts than the canonical 512; the graph reads the true value
+    static const char* arch() { return "qwen4exp"; }
+    std::vector<GuardField> fields() const {
+        return {
+            {"qwen4exp.block_count", block_count},
+            {"qwen4exp.embedding_length", hidden},
+            {"qwen4exp.expert_count", experts},
+            {"qwen4exp.expert_used_count", experts_used},
+            {"qwen4exp.attention.head_count", head_count},
+            {"qwen4exp.attention.head_count_kv", head_count_kv},
+        };
+    }
+};
+
+// GLM-5.3 / GLM-5.2 - the 744B `glm_moe_dsa` family. Every value here is measured on the checkpoint at
+// D:\models\GLM-5.3-colibri-int4-g64 (141 shards, 116,915 tensors), not copied from a model card:
+// 78 main layers of which 75 are sparse, hidden 6144, 256 routed experts with 8 active per token, MLA at
+// q_lora_rank 2048 / kv_lora_rank 512, 64 heads, and an indexer at top_k 2048 / key_length 128 /
+// head_count 32.
+//
+// Only keys llama.cpp's converter actually writes are guarded. `qk_rope_head_dim` (64) and `v_head_dim`
+// (256) have no GGUF key at all - they are read from the tensor shapes - so a guard field for them would
+// be a key the file can never satisfy.
+//
+// llama.cpp writes block_count as the main layers PLUS the appended NextN block, so a file carrying MTP
+// says 79 and a file converted without it says 78. Both are legal here; `mtp_blocks` is what stops the
+// first from reading as a guard failure.
+struct GlmDsaGuard {
+    uint32_t block_count = 78, mtp_blocks = 1, hidden = 6144, experts = 256, experts_used = 8,
+             head_count = 64, head_count_kv = 64, q_lora_rank = 2048, kv_lora_rank = 512,
+             index_topk = 2048, index_head_dim = 128, index_n_heads = 32;
+    static const char* arch() { return "glm-dsa"; }
+    std::vector<GuardField> fields() const {
+        return {
+            {"glm-dsa.block_count", block_count},
+            {"glm-dsa.embedding_length", hidden},
+            {"glm-dsa.expert_count", experts},
+            {"glm-dsa.expert_used_count", experts_used},
+            {"glm-dsa.attention.head_count", head_count},
+            {"glm-dsa.attention.head_count_kv", head_count_kv},
+            {"glm-dsa.attention.q_lora_rank", q_lora_rank},
+            {"glm-dsa.attention.kv_lora_rank", kv_lora_rank},
+            {"glm-dsa.attention.indexer.head_count", index_n_heads},
+            {"glm-dsa.attention.indexer.key_length", index_head_dim},
+            {"glm-dsa.attention.indexer.top_k", index_topk},
+        };
+    }
+};
+
+template <typename Guard>
+inline std::string check_architecture(const GgufFile& g, const Guard& want) {
     const MetaValue* arch = g.get("general.architecture");
     if (!arch) return "missing general.architecture";
-    if (arch->s != "qwen4exp") return "architecture is '" + arch->s + "', this engine requires 'qwen4exp'";
-    struct Req {
-        const char* key;
-        uint64_t want;
-    };
-    const Req reqs[] = {
-        {"qwen4exp.block_count", want.block_count},
-        {"qwen4exp.embedding_length", want.hidden},
-        {"qwen4exp.expert_count", want.experts},
-        {"qwen4exp.expert_used_count", want.experts_used},
-        {"qwen4exp.attention.head_count", want.head_count},
-        {"qwen4exp.attention.head_count_kv", want.head_count_kv},
-    };
-    for (const auto& r : reqs) {
+    if (arch->s != Guard::arch())
+        return "architecture is '" + arch->s + "', this engine requires '" + Guard::arch() + "'";
+    const std::string block_key = std::string(Guard::arch()) + ".block_count";
+    for (const GuardField& r : want.fields()) {
         const MetaValue* v = g.get(r.key);
         if (!v) return std::string("missing ") + r.key;
-        if (r.want && v->u != r.want)
-            return std::string(r.key) + " = " + std::to_string(v->u) + ", expected " + std::to_string(r.want);
+        if (!r.want) continue;                       // presence-only
+        // block_count is the only field with two legal values: the main layers, or the main layers plus the
+        // appended NextN block. Everything else has exactly one.
+        const bool mtp_block = r.key == block_key && want.mtp_blocks && v->u == r.want + want.mtp_blocks;
+        if (v->u != r.want && !mtp_block)
+            return std::string(r.key) + " = " + std::to_string(v->u) + ", expected " + std::to_string(r.want) +
+                   (want.mtp_blocks ? " (or " + std::to_string(r.want + want.mtp_blocks) + " with the NextN block)"
+                                    : "");
     }
     return {}; // empty == ok
+}
+
+// The load path calls this with no guard, so the family comes from the file. Dispatching here rather than
+// at each caller is what keeps "refuse, do not mis-run" true: a glm-dsa file reaching the qwen4exp graph
+// would load, decode, and produce plausible logits from the wrong weights.
+inline std::string check_architecture(const GgufFile& g) {
+    const MetaValue* arch = g.get("general.architecture");
+    if (!arch) return "missing general.architecture";
+    if (arch->s == "qwen4exp") return check_architecture(g, Qwen4ExpGuard{});
+    if (arch->s == "glm-dsa") return check_architecture(g, GlmDsaGuard{});
+    return "architecture is '" + arch->s + "', this engine supports 'qwen4exp' and 'glm-dsa'";
 }
 
 } // namespace strata

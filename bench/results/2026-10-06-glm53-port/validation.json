@@ -1,0 +1,150 @@
+[
+  {
+    "name": "cpu-f32-tf",
+    "returncode": 0,
+    "seconds": 36.79019720002543,
+    "command": [
+      "D:\\Strata-GLM\\build\\strata-glm.exe",
+      "--model",
+      "D:\\models\\GLM-5.3-colibri-int4-g64",
+      "--expert-ram-gb",
+      "28",
+      "--threads",
+      "16",
+      "--tokens",
+      "154822,154824,785,6722,315,9621,374,12089,11,264,3283,3881,369,1181,9077,3840,11,19812,17621",
+      "--tf",
+      "--logits-out",
+      "D:\\Strata-GLM\\bench\\results\\2026-10-06-glm53-port\\cpu-f32-tf.f32"
+    ],
+    "reference_agreement": 12
+  },
+  {
+    "name": "cpu-bf16-tf",
+    "returncode": 0,
+    "seconds": 36.66246969997883,
+    "command": [
+      "D:\\Strata-GLM\\build\\strata-glm.exe",
+      "--model",
+      "D:\\models\\GLM-5.3-colibri-int4-g64",
+      "--expert-ram-gb",
+      "28",
+      "--threads",
+      "16",
+      "--kv",
+      "bf16",
+      "--tokens",
+      "154822,154824,785,6722,315,9621,374,12089,11,264,3283,3881,369,1181,9077,3840,11,19812,17621",
+      "--tf",
+      "--logits-out",
+      "D:\\Strata-GLM\\bench\\results\\2026-10-06-glm53-port\\cpu-bf16-tf.f32"
+    ],
+    "reference_agreement": 11
+  },
+  {
+    "name": "cpu-fp8-tf",
+    "returncode": 0,
+    "seconds": 36.93716289999429,
+    "command": [
+      "D:\\Strata-GLM\\build\\strata-glm.exe",
+      "--model",
+      "D:\\models\\GLM-5.3-colibri-int4-g64",
+      "--expert-ram-gb",
+      "28",
+      "--threads",
+      "16",
+      "--kv",
+      "fp8",
+      "--tokens",
+      "154822,154824,785,6722,315,9621,374,12089,11,264,3283,3881,369,1181,9077,3840,11,19812,17621",
+      "--tf",
+      "--logits-out",
+      "D:\\Strata-GLM\\bench\\results\\2026-10-06-glm53-port\\cpu-fp8-tf.f32"
+    ],
+    "reference_agreement": 11
+  },
+  {
+    "name": "gpu-f32-tf",
+    "returncode": 0,
+    "seconds": 40.01127310004085,
+    "command": [
+      "D:\\Strata-GLM\\build\\strata-glm.exe",
+      "--model",
+      "D:\\models\\GLM-5.3-colibri-int4-g64",
+      "--expert-ram-gb",
+      "28",
+      "--threads",
+      "16",
+      "--gpu",
+      "0",
+      "--tokens",
+      "154822,154824,785,6722,315,9621,374,12089,11,264,3283,3881,369,1181,9077,3840,11,19812,17621",
+      "--tf",
+      "--logits-out",
+      "D:\\Strata-GLM\\bench\\results\\2026-10-06-glm53-port\\gpu-f32-tf.f32"
+    ],
+    "reference_agreement": 12
+  },
+  {
+    "name": "cpu-layer1536",
+    "returncode": 0,
+    "seconds": 422.60419799998635,
+    "command": [
+      "D:\\Strata-GLM\\build\\strata-glm.exe",
+      "--model",
+      "D:\\models\\GLM-5.3-colibri-int4-g64",
+      "--expert-ram-gb",
+      "28",
+      "--threads",
+      "16",
+      "--tokens-file",
+      "D:\\Strata-GLM\\bench\\results\\2026-10-06-glm53-port\\prompt1536.txt",
+      "--logits-out",
+      "D:\\Strata-GLM\\bench\\results\\2026-10-06-glm53-port\\cpu-layer1536.f32"
+    ]
+  },
+  {
+    "name": "gpu-layer1536",
+    "returncode": 0,
+    "seconds": 151.3706564999884,
+    "command": [
+      "D:\\Strata-GLM\\build\\strata-glm.exe",
+      "--model",
+      "D:\\models\\GLM-5.3-colibri-int4-g64",
+      "--expert-ram-gb",
+      "28",
+      "--threads",
+      "16",
+      "--gpu",
+      "0",
+      "--tokens-file",
+      "D:\\Strata-GLM\\bench\\results\\2026-10-06-glm53-port\\prompt1536.txt",
+      "--logits-out",
+      "D:\\Strata-GLM\\bench\\results\\2026-10-06-glm53-port\\gpu-layer1536.f32"
+    ]
+  },
+  {
+    "name": "gpu-chunk1536",
+    "returncode": 0,
+    "seconds": 1501.0699350999785,
+    "command": [
+      "D:\\Strata-GLM\\build\\strata-glm.exe",
+      "--model",
+      "D:\\models\\GLM-5.3-colibri-int4-g64",
+      "--expert-ram-gb",
+      "28",
+      "--threads",
+      "16",
+      "--gpu",
+      "0",
+      "--prefill",
+      "chunk",
+      "--prefill-chunk",
+      "256",
+      "--tokens-file",
+      "D:\\Strata-GLM\\bench\\results\\2026-10-06-glm53-port\\prompt1536.txt",
+      "--logits-out",
+      "D:\\Strata-GLM\\bench\\results\\2026-10-06-glm53-port\\gpu-chunk1536.f32"
+    ]
+  }
+]

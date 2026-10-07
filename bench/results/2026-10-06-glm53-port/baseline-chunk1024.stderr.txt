@@ -1,0 +1,4 @@
+strata-glm: 78 layers, hidden 6144, 256 experts (top-8), vocab 154880 | dense 11.60 GB resident | KV 1.47 GB (8192 tokens) | expert cache 1315 slots = 28.0 GB | 16 threads, 8 I/O | loaded in 3.6 s
+prompt 1024/1536 in 342.8 s
+prompt 1536/1536 in 508.5 s
+prompt 1536 tokens in 508.5 s | 0 generated in 0.0 s (0.00 tok/s) | expert hits 0 of 31095 (0.0%), read 661.8 GB | attn 234.0 s, moe 264.2 s (waiting for reads 6.2 s), dense 8.5 s, head 0.0 s

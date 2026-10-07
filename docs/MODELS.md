@@ -1,8 +1,13 @@
 # Which model? Sizes, versions and what fits
 
-Strata runs one model, [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next), in several **sizes**
+Strata runs [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next), in several **sizes**
 (the same model, compressed more or less) and several **versions** (the original, a coding version, a fine-tune).
 The installer recommends one for your PC; this page explains the choice. Back to the [README](../README.md).
+
+The second model family, **GLM-5.3 (glm-dsa)** (744B, the 419 GB int4-g64 container), runs on its own engine
+`strata-glm` (CPU, optionally with an NVIDIA card) behind the same server: about 0.5 tokens/s on a 64 GB PC with an
+NVMe SSD. The installer offers it as an advanced choice (`--family glm`); how it runs and what was measured:
+[GLM53.md](GLM53.md).
 
 > **On this page:** [Pick by RAM](#pick-by-ram) · [Speed](#how-fast-is-each-size) · [The sizes](#the-sizes) ·
 > [Will it fit?](#will-it-fit) · [The versions](#the-versions) · [Adding another model](#adding-or-switching-models)

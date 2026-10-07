@@ -62,6 +62,8 @@ def view(cfg: dict, path: str | Path) -> dict:
     """GET /config: the editable keys with their values (None: not set, the default applies)."""
     out = []
     for key, kind, help_ in EDITABLE:
+        if cfg.get("family") == "glm" and key == "effort_position":
+            continue
         k = kind[0] if isinstance(kind, tuple) else kind
         out.append({"key": key, "value": value_of(cfg, key), "help": help_,
                     "kind": "number" if k in ("sampling", "arg", "int>=0", "num>=0") else k,
@@ -82,6 +84,8 @@ def check(key: str, v, cfg: dict):
     """The value to store for `key`, or a ValueError naming what is expected.  None removes the key (its default)."""
     if key not in SPEC:
         raise ValueError(f"{key!r} cannot be changed here (only the keys the Settings view lists)")
+    if cfg.get("family") == "glm" and key == "effort_position" and v not in (None, "start"):
+        raise ValueError("GLM-5.3 requires effort_position=start")
     if v is None:
         return None
     kind = SPEC[key]

@@ -1,4 +1,4 @@
-﻿# Strata Engine - top-level build (P1.S1).
+# Strata Engine - top-level build (P1.S1).
 #
 # Targets (phase-1 Ă‚Â§P1.S1): `strata_artifact` (no CUDA dependency), `tests`.  `strata_plan` and the C++
 # `strata-pack` are added when their sources exist - a target with no sources would make the build graph
@@ -244,6 +244,11 @@ if(STRATA_BUILD_TESTS)
   add_executable(gguf_split_test tests/core/gguf_split_test.cpp)
   target_link_libraries(gguf_split_test PRIVATE strata_artifact)
   add_test(NAME gguf_split_test COMMAND gguf_split_test)
+  # the glm-dsa architecture guard: measured geometry passes, a wrong family or a wrong number is refused by
+  # key name, and the NextN block makes block_count 79 legal beside 78 (synthetic metadata: no model, no GPU)
+  add_executable(glm53_guard_test tests/core/glm53_guard_test.cpp)
+  target_link_libraries(glm53_guard_test PRIVATE strata_artifact)
+  add_test(NAME glm53_guard_test COMMAND glm53_guard_test)
 
   # the hipBLASLt tuning header's architecture gate: RDNA4 siblings share solution IDs, RDNA3 siblings share
   # theirs, cross-family pairs and version mismatches stay rejected (synthetic tables: no model, no GPU)
@@ -261,6 +266,53 @@ target_link_libraries(strata_plan INTERFACE strata_warnings)
 
 add_executable(strata-plan src/plan/plan_main.cpp)
 target_link_libraries(strata-plan PRIVATE strata_plan)
+
+if(STRATA_BUILD_TESTS)
+  # the planner's glm-dsa geometry: the MLA cache is the latent + rope slice, the int4-g64 blob is 21,233,664 B,
+  # and the qwen4exp numbers did not move (synthetic costs: no model, no GPU)
+  add_executable(glm53_geometry_test tests/core/glm53_geometry_test.cpp)
+  target_link_libraries(glm53_geometry_test PRIVATE strata_plan)
+  add_test(NAME glm53_geometry_test COMMAND glm53_geometry_test)
+endif()
+
+# ---- strata-glm: the GLM-5.3 (glm_moe_dsa) engine -----------------------------
+# Its own program beside `strata`: it reads the int4-g64 safetensors container in place, keeps the dense weights in
+# RAM and streams the routed experts from the SSD through a RAM cache (docs/GLM53.md).  CPU only, so it builds with
+# or without a GPU backend; serve/server.py starts it instead of `strata` for a GLM model.
+find_package(Threads REQUIRED)
+add_library(strata_glm STATIC src/glm/model.cpp src/glm/kernels.cpp src/glm/experts.cpp src/glm/io.cpp
+                              src/glm/container.cpp)
+target_include_directories(strata_glm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(strata_glm PUBLIC Threads::Threads strata_warnings)
+if(MSVC)
+  target_compile_options(strata_glm PUBLIC $<$<COMPILE_LANGUAGE:CXX>:/arch:AVX2>)
+else()
+  target_compile_options(strata_glm PUBLIC $<$<COMPILE_LANGUAGE:CXX>:-mavx2;-mfma;-mf16c>)
+endif()
+if(STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX906)
+  target_sources(strata_glm PRIVATE src/glm/cuda/expert_gemv.cu)
+  target_compile_definitions(strata_glm PUBLIC STRATA_GLM_CUDA=1)
+  target_link_libraries(strata_glm PUBLIC CUDA::cudart CUDA::cublas)
+  set_target_properties(strata_glm PROPERTIES CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON)
+endif()
+add_executable(strata-glm src/glm/main.cpp)
+target_link_libraries(strata-glm PRIVATE strata_glm)
+if(STRATA_BUILD_TESTS)
+  # the GLM engine's CPU kernels against their scalar definitions: the int4-g64 nibble order and biases, the int8
+  # rows, MLA's transposed product, the interleaved RoPE, the pool (synthetic weights: no model, no GPU)
+  add_executable(glm_kernels_test tests/glm/glm_kernels_test.cpp)
+  target_link_libraries(glm_kernels_test PRIVATE strata_glm)
+  add_test(NAME glm_kernels_test COMMAND glm_kernels_test)
+  add_executable(glm_kv_test tests/glm/glm_kv_test.cpp)
+  target_link_libraries(glm_kv_test PRIVATE strata_glm)
+  add_test(NAME glm_kv_test COMMAND glm_kv_test)
+  if(STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX906)
+    add_executable(glm_cuda_test tests/glm/glm_cuda_test.cpp)
+    target_link_libraries(glm_cuda_test PRIVATE strata_glm)
+    add_test(NAME glm_cuda_test COMMAND glm_cuda_test)
+    set_tests_properties(glm_cuda_test PROPERTIES SKIP_RETURN_CODE 77)
+  endif()
+endif()
 
 # ---- strata_core (GPU runtime) ---------------------------------------------
 # Only built when a GPU backend is on, so the Phase 1 targets keep working without a toolkit.

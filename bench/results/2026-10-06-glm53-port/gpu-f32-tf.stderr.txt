@@ -1,0 +1,3 @@
+strata-glm: CUDA device 0, 431 expert slots (9.15 GB), prefill GPU
+strata-glm: 78 layers, hidden 6144, 256 experts (top-8), vocab 154880 | dense 11.60 GB resident | KV 1.47 GB (8192 tokens) | expert cache 1315 slots = 28.0 GB | 16 threads, 8 I/O | loaded in 3.5 s
+forward of 19 tokens in 35.2 s

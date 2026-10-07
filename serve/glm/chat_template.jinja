@@ -1,0 +1,78 @@
+{#- GLM-5.2 / GLM-5.3 (glm_moe_dsa) chat template for Strata's server.
+
+The GLM-5.3 int4-g64 container ships no chat template, so this one is written from the GLM-5.2 format as colibri's
+gateway renders it (colibri c/openai_server.py render_chat, which its test checks byte for byte against zai-org's
+chat_template.jinja for the thinking-off cases):
+
+  [gMASK]<sop>                                         the prefix every sequence was trained with
+  <|system|>Reasoning Effort: Low|Medium|High           thinking on only
+  <|system|>\n# Tools ... </tools> ...                 the tool declaration block (when tools are given)
+  <|system|>TEXT  <|user|>TEXT                          one per message, no turn terminator (the next role ends it)
+  <|assistant|><think>REASONING</think>TEXT<tool_call>NAME<arg_key>K</arg_key><arg_value>V</arg_value></tool_call>
+  <|observation|><tool_response>TEXT</tool_response>   one <|observation|> per run of tool messages
+  <|assistant|><think>                                  the generation prompt, thinking on
+  <|assistant|><think></think>                          the generation prompt, thinking off
+
+Strata's effort levels (frontend.EFFORT: low, medium, xhigh - a client's "high" arrives as xhigh) map to Low, Medium,
+High; no level means High, as in colibri's default.  "Max" is not used.
+-#}
+{%- macro text(c) -%}
+{%- if c is string -%}{{ c }}
+{%- elif c is mapping -%}{{ c.text if c.text is string else '' }}
+{%- elif c is iterable -%}
+{%- for p in c -%}
+{%- if p is string -%}{{ p }}
+{%- elif p is mapping and p.text is string -%}{{ p.text }}
+{%- endif -%}
+{%- endfor -%}
+{%- endif -%}
+{%- endmacro -%}
+{%- set thinking = enable_thinking is not defined or enable_thinking -%}
+{%- set effort = {'minimal': 'Low', 'low': 'Low', 'medium': 'Medium', 'high': 'High', 'xhigh': 'High', 'max': 'High'} -%}
+[gMASK]<sop>
+{%- if thinking -%}
+<|system|>Reasoning Effort: {{ effort[reasoning_effort] if reasoning_effort is defined and reasoning_effort in effort else 'High' }}
+{%- endif -%}
+{%- if tools -%}
+<|system|>
+# Tools
+
+You may call one or more functions to assist with the user query.
+
+You are provided with function signatures within <tools></tools> XML tags:
+<tools>
+{% for t in tools -%}
+{{ t | tojson }}
+{% endfor -%}
+</tools>
+
+For each function call, output the function name and arguments within the following XML format:
+<tool_call>{function-name}<arg_key>{arg-key-1}</arg_key><arg_value>{arg-value-1}</arg_value><arg_key>{arg-key-2}</arg_key><arg_value>{arg-value-2}</arg_value>...</tool_call>
+{%- endif -%}
+{%- set ns = namespace(prev_tool=false) -%}
+{%- for m in messages -%}
+{%- if m.role == 'system' or m.role == 'developer' -%}
+<|system|>{{ text(m.content) }}
+{%- elif m.role == 'user' -%}
+<|user|>{{ text(m.content) }}
+{%- elif m.role == 'assistant' -%}
+<|assistant|><think>{{ m.reasoning_content if m.reasoning_content is string else '' }}</think>{{ text(m.content) | trim }}
+{%- for tc in (m.tool_calls or []) -%}
+{%- set f = tc.function if tc.function is defined and tc.function else tc -%}
+<tool_call>{{ f.name }}
+{%- if f.arguments is mapping -%}
+{%- for k, v in f.arguments.items() -%}
+<arg_key>{{ k }}</arg_key><arg_value>{{ v if v is string else v | tojson }}</arg_value>
+{%- endfor -%}
+{%- endif -%}
+</tool_call>
+{%- endfor -%}
+{%- elif m.role == 'tool' -%}
+{%- if not ns.prev_tool -%}<|observation|>{%- endif -%}
+<tool_response>{{ text(m.content) }}</tool_response>
+{%- endif -%}
+{%- set ns.prev_tool = (m.role == 'tool') -%}
+{%- endfor -%}
+{%- if add_generation_prompt -%}
+<|assistant|><think>{%- if not thinking -%}</think>{%- endif -%}
+{%- endif -%}
