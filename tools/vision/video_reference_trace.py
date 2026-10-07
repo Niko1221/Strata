@@ -172,6 +172,7 @@ def main():
     parser.add_argument("--checkpoint", type=Path, required=True, help="existing pinned JSON metadata, not weights")
     parser.add_argument("--tokenizer", type=Path, required=True)
     parser.add_argument("--positions", action="store_true", help="require real CPU PyTorch; failure is not a skip")
+    parser.add_argument("--tokenizer-reference", action="store_true", help="compare actual checkpoint tokenizer.json using Rust tokenizers")
     args = parser.parse_args()
     try:
         sources = verified_files(args.sources, SOURCE_HASHES)
@@ -201,10 +202,23 @@ def main():
                  ("odd_three_frames", 3, 2.0, False), ("odd_five_frames", 5, 2.0, False),
                  ("ten_second_clip", 300, 30.0, False), ("mixed_image_video", 5, 2.0, True)]
         traces = [case_trace(*case, processor, video, tok, config, vocab_size, torch) for case in cases]
+        independent = {"status": "NOT_RUN"}
+        if args.tokenizer_reference:
+            from tokenizers import Tokenizer
+            reference_file = args.checkpoint / "tokenizer.json"
+            digest = hashlib.sha256(reference_file.read_bytes()).hexdigest()
+            if digest != "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3":
+                raise ValueError("checkpoint tokenizer.json hash mismatch")
+            reference_tok = Tokenizer.from_file(str(reference_file))
+            for trace in traces:
+                if reference_tok.encode(trace["expanded_text"], add_special_tokens=False).ids != list(trace["token_ids"]):
+                    raise ValueError(trace["name"] + ": independent tokenizer mismatch")
+            independent = {"status": "PASS_RUST_TOKENIZERS", "sha256": digest, "cases": len(traces)}
         result = {"schema": 1, "reference_revision": REFERENCE_REVISION, "checkpoint_revision": CHECKPOINT_REVISION,
                   "source_sha256": SOURCE_HASHES, "metadata_sha256": METADATA_HASHES, "tokenizer_sha256": tok_hashes,
                   "sampling_defaults": {"fps": video.fps, "min_frames": video.min_frames, "max_frames": video.max_frames},
-                  "embedding_reference": "NOT_RUN", "decoder_mtmd_comparison": "NOT_RUN", "cases": traces}
+                  "tokenizer_reference": independent, "embedding_reference": "NOT_RUN",
+                  "decoder_mtmd_comparison": "NOT_RUN", "cases": traces}
         print(json.dumps(result, indent=2, sort_keys=True))
     except (OSError, ValueError, ImportError, StopIteration, KeyError) as error:
         parser.error(str(error))

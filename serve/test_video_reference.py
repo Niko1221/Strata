@@ -38,7 +38,11 @@ class ProcessorTrace(unittest.TestCase):
         self.assertEqual(trace["sampling_defaults"], {"fps": 2, "min_frames": 4, "max_frames": 768})
         self.assertEqual(trace["embedding_reference"], "NOT_RUN")
         self.assertEqual(trace["decoder_mtmd_comparison"], "NOT_RUN")
-        self.assertTrue(all(c["position_reference"] == "NOT_RUN" for c in trace["cases"]))
+        self.assertTrue(all(c["position_reference"] == "PASS_CPU_TORCH" for c in trace["cases"]))
+        self.assertEqual(trace["tokenizer_reference"]["status"], "PASS_RUST_TOKENIZERS")
+        self.assertEqual(trace["tokenizer_reference"]["cases"], 6)
+        self.assertEqual(trace["tokenizer_reference"]["sha256"],
+                         "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3")
 
     def test_reference_frame_groups_and_timestamp_wrappers(self):
         cases = {case["name"]: case for case in self.trace["cases"]}
