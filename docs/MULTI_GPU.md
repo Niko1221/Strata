@@ -151,6 +151,37 @@ Prompts are read in chunks that flow through the cards in turn; while a later ca
 already reads chunk c+1. Conversation checkpoints save and restore every card's state; the adaptive expert swaps copy
 into the card that owns the layer.
 
+## Prompt chunks sized for the pipeline (`STRATA_PREFILL_PIPE=1`, opt-in)
+
+`--prefill auto` takes the largest chunk the buffers allow (up to 8192), which is what one card wants: a chunk costs a
+pass over its layers' experts plus a part per token, so few large chunks are cheapest. On a split that is the wrong
+end of the trade: with a chunk as big as the prompt the later cards wait while the first one reads it, and with a few
+large chunks the pipeline barely fills (a 10.7K-token prompt in a 7680 and a 3011 chunk over four stages: the first
+stage carried 24 of the 36 s). With `STRATA_PREFILL_PIPE=1` the first stage reads each prompt in the chunk that
+minimizes the pipeline's time: about (S - 1 + n/C) stage-chunks of (b + a C), whose minimum is at
+C = sqrt(n (b/a) / (S - 1)) for n tokens and S stages, b the per-chunk pass and a the per-token part of a layer.
+b/a is in tokens, set more by the model (its experts per token) than by the card: ~1000 for Flash-Next on the
+cards below, the default 1024; `STRATA_PREFILL_PIPE=<b/a>` sets another. The chunk is rounded up to the 256-token
+grid, at least 512, at most the buffers' chunk (keep `--prefill auto` so the buffers allow long prompts their larger
+chunks), and evened out over the chunks it takes; a prompt the rule would read in one chunk keeps today's path. The
+chunk geometry changes the rounding, so it is opt-in. One line in the log says what it chose:
+
+    strata prefill: 10041 tokens in 2048-token chunks over 4 stages (STRATA_PREFILL_PIPE)
+
+Measured on four GP100 dies (PH402 SKU 200, `--layer-split 12,24,36`, Flash-Next IQ3_XXS, 64K context), prompt
+tok/s, fresh prompts, two interleaved rounds (each within 0.2%):
+
+| Prompt tokens | `--prefill auto` | `--prefill 2048` | `--prefill auto` + `STRATA_PREFILL_PIPE=1` (chunk) |
+| ---: | ---: | ---: | ---: |
+| 2,013 | 180.9 | 181.4 | 228.0 (1024) |
+| 3,865 | 207.6 | 276.5 | 312.4 (1024) |
+| 10,041 | 261.1 | 433.0 | 432.6 (2048) |
+| 28,998 | 475.7 | 554.1 | 559.7 (3328) |
+
+To measure b and a on another rig: `STRATA_PREFILL_TIMING=1` logs each stage's GPU time per chunk; two prompts read
+at two chunk sizes give a stage-chunk time t = layers x (b + a C) for each, and b/a = (t1 C2 - t2 C1) / (t2 - t1)
+(the layer count cancels). Not measured here on two-card splits, where S - 1 = 1 makes the chosen chunks larger and the gain smaller.
+
 ## Limits (for now)
 
 - **Works across cards** (bench/results/2026-09-29-layer-split-limits):

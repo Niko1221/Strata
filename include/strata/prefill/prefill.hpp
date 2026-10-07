@@ -81,6 +81,10 @@ public:
     static double pinned_share();
     /// The chunk size from which a chunk streams every expert the GPU does not hold (1024; STRATA_PREFILL_STREAM_MIN).
     static int64_t stream_all_min_tokens();
+    /// STRATA_PREFILL_PIPE (opt-in): the chunk a layer split's first stage reads an `n`-token prompt in, for `stages`
+    /// stages and chunks of at most `cap` (the buffers' size): the one that keeps the stages busy at once - see the
+    /// definition. `cap` when it is off, with one stage, or for a prompt the rule would read in one chunk anyway.
+    static int64_t pipeline_chunk(int64_t n, int64_t cap, int stages);
     /// #340: the streamed ring's slot count for chunks that stream every expert, instead of the pinned-share rule
     /// (0 = that rule). Set before any `bytes_needed`/`init` (both count the ring); STRATA_PREFILL_RING still wins.
     static void set_ring_override(int slots);
