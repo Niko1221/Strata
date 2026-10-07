@@ -1058,12 +1058,21 @@ only its own temporary file. Once the rename is done the old file is gone: if th
 fails with `published` set - the new file's bytes are complete and flushed, but its name may not survive a power loss.
 A filesystem that cannot flush a folder (`EINVAL`) is not a failure; the engine logs it. A restore opens `path` without following a symbolic link (or a Windows reparse point) and refuses
 anything but a regular file with one name; it checks the size, the header, both fingerprints (before the payload is
-parsed; the first 16 MiB block, header included, is already read), that the parse's peak (the image, the read buffer, the per-segment overhead) fits in RAM above the parking
+parsed; the first 16 MiB block, header included, is already read), that the read's peak (the running state metadata,
+two 16 MiB block buffers and the small vectors) fits in RAM above the parking
 floor (`--conversation-cache-min-free-mib`), the file's size against the largest this session can restore, the
 geometry and layer range before any state array, and every count against the bytes left and this session's exact
-limits (context and cells, checkpoints, layers, each running-state array, each K/V part) before allocating it, the payload hash
-and then the usual snapshot validation - all before any device write, and a refusal leaves the current session as it
-was. A transfer failure after the device writes began ends the engine (`FATAL`) rather than decode from a partial
+limits (context and cells, checkpoints, layers, each running-state array, each K/V part) before allocating it, and the payload hash
+- all before any device write, and a refusal leaves the current session as it was. The K/V itself is not held in RAM:
+after the running state and the K/V headers were validated against this engine, the engine reads the file again and
+copies the K/V into its pools a 16 MiB block at a time; this is what restores a session larger than RAM. The apply
+pass is bound to the read pass: a file whose K/V layer count or any part size differs from what the read pass saw is
+refused before that layer or part is applied, and the payload hash is recomputed and compared to the file's trailer
+at the end. The first applied block is the gate - everything before it can still be refused cleanly; a divergence
+found after it (a same-size edit, or a torn re-read) ends the engine, since the remaining bytes cannot be told apart.
+A complete atomic replacement that is itself self-consistent and keeps the same sizes is not detected: the file must
+have no writer but this engine. A transfer failure after the device
+writes began ends the engine (`FATAL`) rather than decode from a partial
 state; the server reports `500` and starts it again. A restore does not park the outgoing session. Not supported with
 `--layer-split`, `--peer-device`, `--batch` (the config's `"parallel"`, #465; the server answers `501`) or
 `--prompt-cache 0` (the RAM conversation cache need not be on). On Linux the file
