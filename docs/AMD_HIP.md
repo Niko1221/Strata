@@ -282,7 +282,14 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
     the prompt path's expert ring is 96 slots (as STRATA_PREFILL_RING=96): with the default 384 the 9070 XT's 4K
     prompts fell to 718 tok/s; with 96 they gain (1,017 -> 1,211; 16K 1,518 -> 2,032). PR #329
     (bsorensen110) contributed an equivalent gfx12 WMMA kernel of the same speed (within 1%); this one also masks KV
-    pages that KV streaming has not made resident, as the decode kernel does.
+    pages that KV streaming has not made resident, as the decode kernel does. On my R9700 (engine 0.1.40,
+    IQ3_S at 431072 ctx, `--kv int8`, the gfx1201 hipBLASLt 1.4.1 table below, which names the machine, GPU idle):
+    fresh prompts of 4,210 and 8,830 tokens - the longest prompt I measured there is 8,830 tokens, the 431072 ctx is
+    what the model runs at, not what these prompts reach - three matched trials each, the first fresh prompt after
+    each start left out: 1,571 -> 2,064 and 1,568 -> 2,065 tok/s at 8,830 tokens (+31.4 and +31.7%) and 1,699 ->
+    1,990 at 4,210 (+17.1%), medians 1,571 -> 2,064 and a 1.27x geometric mean over those three. decode
+    89.8 -> 86.9 tok/s, unchanged. `STRATA_SELECT_WMMA=1` on top changed nothing at those lengths (2,026 tok/s);
+    its +1.5% is a 16K/262K-ctx number. `hip_prompt_attn_wmma` passes on that card.
   - The prompt path's QSA top-k picks its kernel by the blocks a query actually has, not the cache's capacity (#337,
     bsorensen110): the same ids, on by default with AMD (NVIDIA keeps its capacity rule: there the 64K prompts read
     1-3% slower with it). `STRATA_SELECT_WMMA=1` (opt-in, gfx12) adds #337's
