@@ -11749,7 +11749,11 @@ int main(int argc, char** argv) {
             window[0] = x;
             for (int i = 1; i < T; ++i) {
                 const size_t at = produced.size() - 1 + (size_t) i;
-                int32_t d = from_sfx ? sbuf[(size_t) i - 1] : use_mtp ? drafts[(size_t) i - 1]
+                // DFlash drafts ride the same slot as the MTP's: with neither drafter the window
+                // is the --spec-oracle fixture (token 0 past its end) - the path a --dflash run
+                // took, silently verifying [x, 0, 0, ...] and accepting nothing
+                int32_t d = from_sfx ? sbuf[(size_t) i - 1]
+                                     : (use_mtp || use_dflash) ? drafts[(size_t) i - 1]
                                                     : at < oracle.size() ? (int32_t) oracle[at] : 0;
                 if (i >= T_mtp) d = cbuf[(size_t) (i - T_mtp)];
                 if (o.spec_corrupt > 0 && (++corrupt_counter % o.spec_corrupt) == 0) d = (d + 1) % (int32_t) n_vocab;
