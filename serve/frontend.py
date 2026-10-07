@@ -923,8 +923,8 @@ class OutputParser:
                 self.state, self.lead = "content", True
 
     def finish(self, reason: str | None = None) -> list[Event]:
-        """End of generation: flush whatever is held (an unterminated tool call is returned as content; one that was
-        already announced stays unfinished: its JSON is not closed and no "tool_call" follows it, #211).  `reason` is
+        """End of generation: an incomplete call in the visible answer is returned as content, even if announced.
+        Its streamed JSON stays incomplete and no "tool_call" follows it (#211). `reason` is
         how the turn ended: calls waiting from the reasoning become real calls only on a natural stop (None = stop);
         a turn cut by max tokens (or cancelled, or failed) keeps them as reasoning text (#1058)."""
         out = []
@@ -934,6 +934,8 @@ class OutputParser:
             out += self._scan()                 # the output ended inside a call that was already announced
             if self.ss == "done":               # only its </tool_call> is missing: the call itself is whole
                 out.append(Event("tool_call", call=self.scall))
+            else:
+                out.append(Event("content", CALL_START + self.buf))
             self.buf = ""
             self._reset_scan()
             return out

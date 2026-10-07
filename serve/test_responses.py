@@ -393,6 +393,49 @@ class ToolRoundTrip(Server):
         self.assertEqual([c["function"]["name"] for c in msgs[1]["tool_calls"]],
                          ["multi_agent_v1.spawn_agent", "apply_patch"])
 
+    def test_truncated_calls_stay_incomplete_when_returned_as_text(self):
+        for custom in (False, True):
+            name, parameter = ("apply_patch", "input") if custom else ("terminal", "command")
+            tool = {"type": "custom", "name": name} if custom else {
+                "type": "function", "name": name,
+                "parameters": {"type": "object", "properties": {parameter: {"type": "string"}}}}
+            partial = f"<tool_call><function={name}><parameter={parameter}>echo ready"
+            for complete in (False, True):
+                text = partial + "</parameter></function></tool_call>" if complete else partial
+                script = "</think>\n\n" + text
+                tokens = len(self.tok.encode(script, parse_special=True))
+                for limited in (False, True):
+                    for stream in (False, True):
+                        with self.subTest(custom=custom, complete=complete, limited=limited, stream=stream):
+                            self.engine.script = self.tok.encode(script + ("extra" if limited else "<|im_end|>"),
+                                                                parse_special=True)
+                            self.engine.scripts = [self.engine.script]
+                            code, result = self.post({"model": "m", "input": "go", "tools": [tool],
+                                                      "max_output_tokens": tokens if limited else 500,
+                                                      "stream": stream})
+                            self.assertEqual(code, 200, result)
+                            response = result[-1]["response"] if stream else result
+                            kind = "custom_tool_call" if custom else "function_call"
+                            call, = [item for item in response["output"] if item["type"] == kind]
+                            status = "completed" if complete else "incomplete"
+                            self.assertEqual(call["status"], status)
+                            self.assertEqual(response["status"], "incomplete" if limited else "completed")
+                            if complete:
+                                value = call["input"] if custom else json.loads(call["arguments"])[parameter]
+                                self.assertEqual(value, "echo ready")
+                            else:
+                                content = "".join(part["text"] for item in response["output"]
+                                                  if item["type"] == "message" for part in item["content"])
+                                self.assertEqual(content, partial)
+                                if not custom:
+                                    with self.assertRaises(json.JSONDecodeError):
+                                        json.loads(call["arguments"])
+                            if stream:
+                                done, = [event["item"] for event in result
+                                         if event["type"] == "response.output_item.done"
+                                         and event["item"]["type"] == kind]
+                                self.assertEqual(done["status"], status)
+
 
 if __name__ == "__main__":
     unittest.main()
