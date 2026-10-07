@@ -114,9 +114,14 @@ and i-quant blocks (Q6_K, IQ4_XS, Q4_K, IQ3_S, ...) one int at a time. Two chang
   (+3.5 GiB; the experts keep their offsets, so the native pack is reused). Point `--native` and
   `--ple-gguf` at the new folder. Requantizing costs at most 0.4% of a tensor's |w|max (Q8_0 is finer than the
   sources).
-- IQ3_XXS's codebook and sign-mask tables are staged in shared memory by the grouped expert kernels on compute
-  capability 6.x (ported from shinbunbun/llama-cpp-p100-patches 29 and 30; bitwise the same output;
-  `STRATA_IQ_STAGE_GRID18=0|1` forces it off or on, on any card). Within noise on the PH402 (+0-4%).
+- IQ3_XXS's and IQ3_S's codebooks and sign-mask tables are staged in shared memory by the grouped expert kernels on
+  compute capability 6.x (IQ3_XXS's ported from shinbunbun/llama-cpp-p100-patches 29 and 30, IQ3_S's the same for its
+  sign bytes; bitwise the same output; `STRATA_IQ_STAGE_TABLES=0|1` forces it off or on, on any card). IQ3_S was the
+  one gate/up format whose codebook those kernels still read from global memory: a verify window's layer of IQ3_S
+  experts (20 experts, 24 entries) takes 24% less on a GP100 die (517 -> 393 us with a Q2_0 down projection, 492 ->
+  369 us with IQ4_NL), and Swift 1.5 IQ3_XXS (13 of its 48 layers are IQ3_S) decodes 3.2% faster with the settings
+  below at 1M context (39.3 -> 40.5 tok/s, mean of the four prompts; the same drafts accepted). IQ3_XXS's tables
+  alone were within noise (+0-4%).
 
 Measured on a PH402 SKU 200 (two boards, four GP100 dies of 48 SMs and 32 GB HBM2), application clocks locked at
 1050 MHz, Windows 11, driver 581.80 (TCC), CUDA 12.9, engine 0.1.40.2; Flash-Next IQ3_XXS, 32K, `--layer-split 12,24,36
