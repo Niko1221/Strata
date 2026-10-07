@@ -142,13 +142,18 @@ std::size_t native_q8_1_il_bytes(int n_in, int ncols);
 // Writes the interleaved copy of 2..4 columns of plain q8_1 blocks (native_quantize_q8_1's, or a fused producer's)
 // to x_il (native_q8_1_il_bytes): the same values in the same bytes.
 void native_q8_1_interleave(const void* x_q8_1, void* x_il, int n_in, int ncols, void* stream);
-// True when native_mmvq_il runs its own kernel for this call (IQ4_XS, Q4_K, Q5_K, Q6_K, 2-4 columns, the exact layout).
-bool native_mmvq_il_supported(int ggml_type, int ncols, int n_out);
+// True when native_mmvq_il runs its own kernel (IQ4_XS, Q4_K, Q5_K, Q6_K, 2-4 columns, exact layout).
+// sm_75 requires explicit STRATA_MMVQ_IL=1 and a measured shape; sm_80+ keeps its automatic table.
+// Supply n_in for exact shape eligibility; 0 queries whether any measured reduction width matches.
+bool native_mmvq_il_supported(int ggml_type, int ncols, int n_out, int n_in);
 // native_mmvq for 2..4 columns whose copy native_q8_1_interleave wrote, bitwise native_mmvq's output: kernels in which a
 // warp takes 1, 2 or 4 rows and reads the columns from the interleaved copy; native_mmvq (x_q8_1) when not supported.
 void native_mmvq_il(int ggml_type, const void* weights, const void* x_q8_1, const void* x_il, float* y, int n_in,
                     int n_out, int ncols, void* stream);
-// Tests and benchmarks: every native_mmvq_il call takes `rows` a warp (0: the table).
+// Tests and benchmarks: force rows 1/2/4 on sm_75 or sm_80+ (0: the architecture's table).
 void native_mmvq_il_tune(int rows);
+// Host-side observation of this thread's last native_mmvq_il launch: 0 fallback, else rows/warp.
+// No synchronization or device work; also observes the path chosen during graph capture.
+int native_mmvq_il_last_rows();
 
 } // namespace strata::kernels

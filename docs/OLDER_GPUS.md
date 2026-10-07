@@ -111,6 +111,34 @@ Setup does not build these; build by hand and run `serve/server.py` with a confi
   `__syncwarp` are version-gated, and RDNA1's missing signed dot4 uses llama.cpp's SDWA sequence
   (`-DSTRATA_GFX1012_PORTABLE_DOT=ON`: the portable one).
 
+## Turing (sm_75): opt-in interleaved verify projections
+
+`STRATA_MMVQ_IL=1` enables an exact-shape table for dense IQ4_XS, Q4_K, Q5_K and Q6_K projections in
+2-4-token verify windows. All sm_75 cards are eligible, including RTX 20 and Quadro RTX cards, but the table was
+tuned and measured **only on a Quadro RTX 8000**. An unset value, `0`, or `true` keeps the existing sm_75 path.
+Unlisted shapes also keep it. The sm_80-and-newer automatic table is unchanged; Pascal, Volta and HIP do not use
+this path. It reorders the same Q8_1 bytes and preserves the multi-column kernel's output bit for bit.
+
+On that RTX 8000, CUDA 12.4 / GCC 13, the table retains 46 of 69 dense shape/window cells: each saved at least
+3% in every alternating A/B pair in two seven-pair sweeps, including the full interleave launch cost. Weights
+rotate between copies to avoid measuring only L2-resident data. These are not speed guarantees for other sm_75 cards.
+
+Controlled whole-model decode on the same card at 260 W, with a Xeon W-2295, IQ3_S + MTP, `--spec 4`, fixed
+19,000 expert slots, automatic prefill (8,192), INT8 KV, maximum context 262,144 / resident 32,768 and PCIe fraction
+0.20, gave the following medians of three runs with 128 output tokens each. Prompt caching and adaptation were disabled;
+the baseline already enabled the BF16-to-FP16 tensor-core projection path, and only `STRATA_MMVQ_IL=1` changed.
+
+| Prompt tokens | baseline decode (tok/s) | interleaved decode (tok/s) |
+| --- | ---: | ---: |
+| 537 | 83.7 | 88.9 |
+| 4,057 | 75.4 | 80.4 |
+| 32,057 | 68.4 | 72.1 |
+
+For a CUDA build with `-DSTRATA_BUILD_TESTS=ON`, `STRATA_MMVQ_IL=1 ./build/mmvq_il_parity` checks bitwise
+parity and the actual dispatch path for table, fallback and forced 1/2/4-row kernels. Repeat with `=0` and `=true`
+to check strict opt-in behavior; `./build/mmvq_il_parity --sm75-bench` runs the paired shape sweep on sm_75.
+No model is needed. Select the intended card with `CUDA_VISIBLE_DEVICES`; other sm_75 hardware needs its own measurements.
+
 ## Reports welcome
 
 These paths stay experimental until more people run them. A report with the card, the driver / ROCm version, the
