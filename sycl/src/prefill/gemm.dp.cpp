@@ -830,12 +830,15 @@ void fallback_selftest() {
 
 // Where the two meet: a decode window's rows are a handful, where the naive kernel's per-row weight reads are
 // cache hits and a 64-row tile would leave most of the block idle. The prompt path's chunks are the opposite.
+// STRATA_FALLBACK_NAIVE=1 sends every call to the naive kernel (the A/B for the tiled one, and the way out if a card
+// the tiled kernel behaves badly on turns up).
 void fallback_gemm_dispatch(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K,
                             int64_t ldx, int64_t ldy, float alpha, float beta, bool as_fp, void* stream) {
+    static const bool naive_only = std::getenv("STRATA_FALLBACK_NAIVE") != nullptr;
     static const bool selftest = std::getenv("STRATA_FALLBACK_SELFTEST") != nullptr;
     static std::atomic<bool> selftest_done{false};
     if (selftest && !selftest_done.exchange(true)) fallback_selftest();
-    if (T >= kFbBM)
+    if (T >= kFbBM && !naive_only)
         fallback_gemm_tiled(X, W, Y, T, N, K, ldx, ldy, alpha, beta, as_fp, stream);
     else
         fallback_gemm(X, W, Y, T, N, K, ldx, ldy, alpha, beta, as_fp, stream);
