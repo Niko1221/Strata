@@ -51,6 +51,25 @@ inline const char* batch_mtp_reason(int batch, bool has_mtp, int spec, bool serv
 /// The stage that owns the output head and the MTP draft layer: the last of the pipeline.
 inline int head_stage_of(std::size_t n_stages) { return n_stages == 0 ? 0 : (int) n_stages - 1; }
 
+// ── The batch hand-off: how many rows a window needs, and whether they fit ─────────────────────────────────────
+//
+// A LAYER SPLIT hands a window's residual on through a per-ROW buffer: row `t` of the window (the t-th token,
+// whatever slot it belongs to) writes its residual, its pending write and its inject to hand-off row `hbase + t`,
+// and the next stage reads them back from the same row.  Both stages index by ROW, never by slot, so a window
+// needs `hbase + S` hand-off rows INDEPENDENT of how many distinct slots its rows name.
+//
+// That is exactly why a `--batch-mtp` window (one confirmed token + one draft per slot, so up to TWO consecutive
+// rows of the same slot) crosses the split unchanged: the per-slot state (GDN recurrence and conv history, the QSA
+// K/V and indexer tail, the PLE history) is already handled per contiguous run of rows of one slot
+// (verify.cpp's `while (t < S && rows[t] == rows[first])` groups), and the hand-off is per row.
+//
+// The buffer holds `max_rows` rows (the engine's kVerifyMaxT).  A layout that would run past it must be refused
+// BEFORE a graph is captured - and, per the project's contract, that refusal is an ineligible COMBINATION, never a
+// reason to end the engine.
+inline bool batch_rows_fit_handoff(int hbase, int S, int max_rows) {
+    return hbase >= 0 && S >= 1 && hbase + S <= max_rows;
+}
+
 // ── The draft head's GGML type, and the reason --batch-mtp stays off when the drafters cannot run ──────────────
 //
 // A batch slot's drafter does not build the draft head's token subset: it COPIES the main drafter's (`dhead_`,

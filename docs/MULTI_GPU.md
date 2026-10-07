@@ -278,8 +278,11 @@ These are opt-in settings on one rig, not defaults.
 
 With a layer split, `--batch N --batch-groups G --trim-stage-weights` decodes several conversations together and
 pipelines them through the cards: see [BATCHING.md](BATCHING.md). With the MTP drafter, `--batch-mtp` also runs
-under a layer split since delta 3 (each slot's drafter lives on the head's card, beside that card's slot sessions);
-the throughput it buys there is not measured in this tree.
+under a layer split: each slot's drafter lives on the head's card, beside that card's slot sessions, and a window's
+grouped rows (the confirmed token and its draft, two per slot) cross the stage hand-off one row at a time - a window
+row writes hand-off row `hbase + t` on the stage that runs it and the next stage reads it back (delta 3a; before it
+the combination was refused at run time). The throughput and the bit-exact comparison under a split are not measured
+in this tree.
 
 ## Which card runs the head (`--head-device`)
 

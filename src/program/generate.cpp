@@ -6906,6 +6906,11 @@ int main(int argc, char** argv) {
                 v->set_always_publish(true);
             }
         }
+        // DELTA 3a: a --batch-mtp window is as wide as kVerifyMaxT ROWS (up to two rows per slot: the confirmed
+        // token and its draft), and every stage of a layer split verifies those same rows, so EVERY stage's
+        // verifier is sized for kVerifyMaxT - not just the first one.  With one GPU, or without the flag, this is
+        // max(o.spec, o.batch) exactly as before (the hand-off is one row per window row, so the stages must agree).
+        const int verifier_max_t = batch_mtp ? strata::kernels::kVerifyMaxT : std::max(o.spec, o.batch);
         if (n_stages > 1) {
             const size_t hb = (size_t) strata::kernels::kVerifyMaxT *
                               (size_t) strata::core::Verifier::handoff_floats(g) * sizeof(float);
@@ -6932,7 +6937,7 @@ int main(int argc, char** argv) {
             for (int st = 1; st < n_stages; ++st) {
                 bool ok_s = false;
                 if (split_same) {
-                    ok_s = ver_same.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, std::max(o.spec, o.batch), err);
+                    ok_s = ver_same.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, verifier_max_t, err);
                 } else {
                     GpuStage& gs = *stages[(size_t) st - 1];
                     const strata::core::OnDevice on(gs.dev);
@@ -6944,7 +6949,7 @@ int main(int argc, char** argv) {
                     vs.slot_off = gs.cache.slot_offsets();
                     vs.n_slots = gs.cache.slots();
                     gs.ver.set_remote_expert_opt(remote_opt.get());
-                    ok_s = gs.ver.init(gs.wt, g, gs.ss, vs, gs.head.loaded() ? &gs.head : nullptr, std::max(o.spec, o.batch), err);
+                    ok_s = gs.ver.init(gs.wt, g, gs.ss, vs, gs.head.loaded() ? &gs.head : nullptr, verifier_max_t, err);
                     split_drive.cache_base[st] = gs.cache.device_slot(0);
                     split_drive.cache_slot_off[st] = gs.cache.slot_offsets();
                     split_drive.pcie_num[st] = pcie_num_of(gs.pcie_frac);
@@ -7013,8 +7018,7 @@ int main(int argc, char** argv) {
         // `ver` (the first stage's verifier) is NOT wrapped: it reads its device from the current one, which must
         // stay the primary context's.
         const int draft_dev = last_st ? last_st->dev : -1;
-        if (!ver.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr,
-                      batch_mtp ? strata::kernels::kVerifyMaxT : std::max(o.spec, o.batch), err)) {
+        if (!ver.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, verifier_max_t, err)) {
             std::fprintf(stderr, "strata serve: %s\n", err.c_str());
             return 1;
         }

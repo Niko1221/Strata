@@ -19,6 +19,7 @@
 #include <vector>
 
 using strata::core::batch_mtp_reason;
+using strata::core::batch_rows_fit_handoff;
 using strata::core::draft_head_type;
 using strata::core::head_stage_of;
 using strata::core::order_with_head_device;
@@ -80,6 +81,27 @@ int main() {
     check(head_stage_of(2) == 1, "two stages: the head is the last (stage 1)");
     check(head_stage_of(4) == 3, "four stages: the head is the last (stage 3)");
     check(head_stage_of(0) == 0, "no stage: stage 0 (degenerate, never reached)");
+
+    // ── The batch hand-off (delta 3a): a window with SEVERAL rows per slot crossing a layer split ───────────────
+    //
+    // A --batch-mtp window proposes up to two rows per slot (the confirmed token and its draft), so its rows are
+    // grouped - [0,0,1,1,2,2,3,3] over four slots.  A layer split hands the residuals on through a per-ROW buffer
+    // (row t of the window uses hand-off row hbase + t on every stage), so the window fits whenever its ROW COUNT
+    // fits the buffer (kVerifyMaxT = 8), regardless of how many distinct slots those rows name.  Before delta 3a
+    // this combination was refused at RUN TIME - `verify: grouped slot rows do not support a layer split yet` -
+    // which ended the engine (exit 1) on a live admission.  These checks pin the ruling that replaced it.
+    std::printf("stage_plan: the batch hand-off (grouped rows across a layer split)\n");
+    for (int slots = 1; slots <= 4; ++slots)
+        check(batch_rows_fit_handoff(0, 2 * slots, 8),
+              std::to_string(slots) + " slot(s), 2 rows each: the window fits the 8-row hand-off");
+    check(batch_rows_fit_handoff(0, 8, 8), "8 rows over 8 slots: fits (the same 8-row bound)");
+    check(batch_rows_fit_handoff(0, 8, 8), "8 rows over 4 slots (2 each): fits - the bound is the ROW count, not the slots");
+    check(!batch_rows_fit_handoff(0, 9, 8), "9 rows in an 8-row hand-off: refused before any graph is captured");
+    // a pipeline group's rows start at its base: base + S must stay inside the buffer
+    check(batch_rows_fit_handoff(4, 4, 8), "a later group (base 4, 4 rows): fits");
+    check(!batch_rows_fit_handoff(5, 4, 8), "a later group past the buffer (base 5, 4 rows): refused");
+    check(!batch_rows_fit_handoff(-1, 2, 8), "a negative base: refused");
+    check(!batch_rows_fit_handoff(0, 0, 8), "an empty window: refused");
 
     std::printf("stage_plan: --head-device\n");
     bool ok = false;
