@@ -3,6 +3,7 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
+#include "strata/prefill/xmx_moe.hpp"
 #include "strata/prefill/prefill.hpp"
 #include "strata/core/gguf_expert_source.hpp"
 #include "../../../src/prefill/mmq_resident_sort.hpp"
@@ -223,7 +224,12 @@ inline int ring_slots(size_t T) {
     const int big = r < 16 ? 16 : r > ring_cap() ? ring_cap() : r;
     return (int64_t) T >= stream_all_min() ? big : STAGE;
 }
+// A770 port: STRATA_PF_XMX=2 holds up to a group of staged experts until its launch, so routed-only staging needs
+// that many more slots for the lookahead to keep copying (the slots are only reused once the group's event is in)
+inline int stage_slots() { return strata::prefill::xmx::mode() == 2 ? STAGE + strata::prefill::xmx::kMaxGroup : STAGE; }
 constexpr int DQ = 2;              // dequantized-expert ring (FP16 gate/up + down)
+// A770 port: STRATA_PF_XMX=1 dequantizes a whole group of experts, then one grouped XMX launch per product
+inline int dq_slots() { return strata::prefill::xmx::mode() == 1 ? strata::prefill::xmx::kMaxGroup : DQ; }
 // The BF16-weight projections (hyper-connection, SSM alpha/beta, indexer, router, shared gate, PLE key/value) take
 // BF16 activations here and FP32 ones in decode. STRATA_PREFILL_BF16X2=1 adds each activation's BF16 remainder as a
 // second GEMM (Y = W.hi + W.lo, ~16 mantissa bits): a router that picks its top 10 from the same x decode would.
@@ -672,8 +678,8 @@ struct Prefill::Impl {
     int32_t* grp_host = nullptr;
     int32_t* grp_dev = nullptr;          // its device alias
     size_t grp_n = 0, grp_tk = 0;        // int32s allocated; T_max * K (the offset of slot, and of src past it)
-    uint16_t* dq_gu[DQ] = {};
-    uint16_t* dq_d[DQ] = {};
+    uint16_t* dq_gu[strata::prefill::xmx::kMaxGroup] = {};
+    uint16_t* dq_d[strata::prefill::xmx::kMaxGroup] = {};
     uint8_t* stage_dev[RING_MAX] = {};
     int ring = STAGE;                        // the slots of this layout's ring (ring_slots)
     // this layout's GU, H and Xq are the fused path's (moe_bufs' `fused`), so a layer that runs MMQ or the FP16 path may
@@ -1187,7 +1193,7 @@ bool Prefill::carve(size_t T, void* alloc) {
         }
         if (base == nullptr) ok = false;
     }
-    for (int i = 0; i < DQ; ++i) { m.dq_gu[i] = o.take<uint16_t>(1280 * 2560, ok); m.dq_d[i] = o.take<uint16_t>(2560 * 640, ok); }
+    for (int i = 0; i < dq_slots(); ++i) { m.dq_gu[i] = o.take<uint16_t>(1280 * 2560, ok); m.dq_d[i] = o.take<uint16_t>(2560 * 640, ok); }
     if (mmq_plan().any) {
         const MmqPlan& mp = mmq_plan();
         m.ids_identity = o.take<int32_t>(T * K, ok);
@@ -1199,18 +1205,19 @@ bool Prefill::carve(size_t T, void* alloc) {
         if (!m.mmq_ctx) m.mmq_ctx = std::make_unique<mmq::Context>();
     }
     m.ring = ring_slots(T);
-    if (o.base == nullptr && m.ring > 0) {
+    const int ring_n = std::max(m.ring, stage_slots());   // A770 port: STRATA_PF_XMX=2 holds a group of staged experts
+    if (o.base == nullptr && ring_n > 0) {
         // OWNED buffers: the ring in ONE allocation.  384 separate 2.7 MiB cudaMallocs each round up to a 2 MiB page
         // (~1.3 MiB a slot, ~0.5 GiB in all) that no count ever saw.  A borrowed region keeps its per-slot layout (and
         // so its price, `bytes_needed`: the loans' slot counts do not move).
-        uint8_t* ring_base = o.take<uint8_t>((size_t) m.ring * (size_t) MAXBLOB(), ok);
-        for (int i = 0; ok && i < m.ring; ++i) {
+        uint8_t* ring_base = o.take<uint8_t>((size_t) ring_n * (size_t) MAXBLOB(), ok);
+        for (int i = 0; ok && i < ring_n; ++i) {
             m.stage_dev[i] = ring_base + (size_t) i * (size_t) MAXBLOB();
             m.stage_live[i] = false;
             m.used_of[i] = i;
         }
     } else {
-        for (int i = 0; i < m.ring; ++i) {
+        for (int i = 0; i < ring_n; ++i) {
             m.stage_dev[i] = o.take<uint8_t>((size_t) MAXBLOB(), ok);
             m.stage_live[i] = false;                        // a new buffer: nothing of an earlier layout to wait for
             m.used_of[i] = i;
@@ -1865,7 +1872,7 @@ uint64_t Prefill::bytes_needed_impl(const core::ModelGeometry& g, const core::Se
     const int64_t max_blocks = ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;
     o.take<uint8_t>((size_t) std::max({gdn_set_bytes(T), qsa_set_bytes(T, cap, max_blocks, 256, 32, s),
                                        moe_set_bytes(T, g.n_expert, fused_layout(T, true))}), ok);
-    for (int i = 0; i < DQ; ++i) { o.take<uint16_t>(1280 * 2560, ok); o.take<uint16_t>(2560 * 640, ok); }
+    for (int i = 0; i < dq_slots(); ++i) { o.take<uint16_t>(1280 * 2560, ok); o.take<uint16_t>(2560 * 640, ok); }
     if (mmq_plan().any) {
         const MmqPlan& mp = mmq_plan();
         o.take<int32_t>(T * K, ok);
@@ -1873,10 +1880,11 @@ uint64_t Prefill::bytes_needed_impl(const core::ModelGeometry& g, const core::Se
         o.take<uint8_t>(MMQ_GROUP * mp.gu_max + MMQ_TAIL, ok);
         o.take<uint8_t>(MMQ_GROUP * mp.d_max + MMQ_TAIL, ok);
     }
+    const int ring_n = std::max(ring_slots(T), stage_slots());
     if (owned_pages) {
-        if (ring_slots(T) > 0) o.take<uint8_t>((size_t) ring_slots(T) * (size_t) MAXBLOB(), ok);   // one allocation
+        if (ring_n > 0) o.take<uint8_t>((size_t) ring_n * (size_t) MAXBLOB(), ok);   // one allocation
     } else {
-        for (int i = 0; i < ring_slots(T); ++i) o.take<uint8_t>((size_t) MAXBLOB(), ok);
+        for (int i = 0; i < ring_n; ++i) o.take<uint8_t>((size_t) MAXBLOB(), ok);
     }
     f(T * N);
     f((size_t) strata::kernels::NG_HC_DIM);
@@ -3802,7 +3810,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                             const bool resident = m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0;
                             if (resident) return true;
                             const int sl = stage_next;
-                            stage_next = (stage_next + 1) % STAGE;
+                            stage_next = (stage_next + 1) % stage_slots();
                             const auto th = Clock::now();
                             const bool pinned = m.src->pinned(l, e);   // pinned: never transient
                             const uint8_t* b = pinned ? m.src->blob(l, e) : nullptr;
@@ -3904,6 +3912,82 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                           std::exit(1);
                         }
                         };
+                        // A770 port, STRATA_PF_XMX=2 (streamed walk, native pack, FP16 path): the experts' quantized
+                        // blobs are held until a group of kXmxGroupMax, then each product runs over the group in one
+                        // launch that decodes the weights itself.  Their ring slots are released by ONE event after
+                        // the group's down product, and nothing is given back to the issuer while any are held.
+                        // (the formats the parity test covers: gate/up IQ3_XXS / IQ3_S / IQ2_S / IQ4_XS, down IQ4_NL / Q2_0;
+                        // a layer in another format keeps the dequantize + oneMKL path)
+                        auto xmx2_fmt = [&]() {
+                            if (!lay.native) return false;
+                            const int gt = lay.fmt[(size_t) l].gu_type, dt = lay.fmt[(size_t) l].d_type;
+                            return (gt == 18 || gt == 21 || gt == 22 || gt == 23) && (dt == 20 || dt == 42);
+                        };
+                        const bool xmx2 = strata::prefill::xmx::mode() == 2 && !use_mmq && xmx2_fmt();
+                        if (strata::prefill::xmx::mode() == 2 && !xmx2) {
+                            static bool said = false;
+                            if (!said) {
+                                said = true;
+                                std::fprintf(stderr, "strata: STRATA_PF_XMX=2 not taken at layer %lld (stream_all %d, mmq %d, "
+                                                     "native %d, formats %d/%d)\n", (long long) l, (int) stream_all,
+                                             (int) use_mmq, (int) lay.native, lay.native ? lay.fmt[(size_t) l].gu_type : -1,
+                                             lay.native ? lay.fmt[(size_t) l].d_type : -1);
+                            }
+                        }
+                        const uint8_t* xg_g[strata::kernels::kXmxGroupMax];
+                        const uint8_t* xg_u[strata::kernels::kXmxGroupMax];
+                        const uint8_t* xg_d[strata::kernels::kXmxGroupMax];
+                        int32_t xg_c[strata::kernels::kXmxGroupMax];
+                        int xg_slots[strata::kernels::kXmxGroupMax];
+                        int xg_n = 0, xg_ns = 0;
+                        int64_t xg_r0 = 0;
+                        auto xflush = [&]() {
+                            if (xg_n == 0) return;
+                            if (static bool said = false; !said) {
+                                said = true;
+                                std::fprintf(stderr, "strata: prompt experts on the fused grouped XMX (STRATA_PF_XMX=2)\n");
+                            }
+                            const auto& f = lay.fmt[(size_t) l];
+                            int64_t nr = 0;
+                            for (int i = 0; i < xg_n; ++i) nr += xg_c[i];
+                            // measured (xmx_group_parity, 16 experts): the fused launch wins below ~200 rows per
+                            // expert, dequantize + oneMKL above (gate/up 0.67-0.76x at 320); STRATA_PF_XMX_ROWS moves it
+                            static const int xg_max = [] {
+                                const char* v = std::getenv("STRATA_PF_XMX_ROWS");
+                                return v ? std::atoi(v) : 200;
+                            }();
+                            if (nr / xg_n < xg_max) {
+                                pt.mark(kPfGemmGU, cs);
+                                strata::kernels::iq_xmx_grouped(f.gu_type, xg_g, xg_u, xg_c, xg_n, m.Xs + xg_r0 * N,
+                                                                m.GU + xg_r0 * 1280, 1280, (int) N, m.cs);
+                                swiglu_interleaved(m.GU + xg_r0 * 1280, m.Hh + xg_r0 * 640, nr, m.cs);
+                                pt.mark(kPfGemmD, cs);
+                                strata::kernels::iq_xmx_grouped(f.d_type, xg_d, nullptr, xg_c, xg_n, m.Hh + xg_r0 * 640,
+                                                                m.Dm + xg_r0 * N, (int) N, 640, m.cs);
+                            } else {
+                                int64_t o = xg_r0;
+                                for (int i = 0; i < xg_n; ++i) {
+                                    const int q = i % DQ;
+                                    pt.mark(kPfDequant, cs);
+                                    strata::kernels::iq_dequant_gu_f16(f.gu_type, xg_g[i], xg_u[i], f.n_ff, f.n_embd,
+                                                                       m.dq_gu[q], m.cs);
+                                    strata::kernels::iq_dequant_f16(f.d_type, xg_d[i], f.n_embd * f.n_ff, m.dq_d[q], m.cs);
+                                    pt.mark(kPfGemmGU, cs);
+                                    m.gemm.f16(m.Xs + o * N, m.dq_gu[q], m.GU + o * 1280, xg_c[i], 1280, N);
+                                    swiglu_interleaved(m.GU + o * 1280, m.Hh + o * 640, xg_c[i], m.cs);
+                                    pt.mark(kPfGemmD, cs);
+                                    m.gemm.f16(m.Hh + o * 640, m.dq_d[q], m.Dm + o * N, xg_c[i], N, 640);
+                                    o += xg_c[i];
+                                }
+                            }
+                            if (xg_ns > 0) {
+                                const int rel = xg_slots[xg_ns - 1];
+                                dpct::sync_barrier(m.used[rel], m.cs);
+                                for (int i = 0; i < xg_ns; ++i) m.used_of[xg_slots[i]] = rel;
+                            }
+                            xg_n = 0;
+                            xg_ns = 0;
+                        };
                         // one expert's products from its blob on the device; `slot` (a ring slot, or -1 for a resident
                         // expert) is released once the blob is read
                         auto compute = [&](size_t j, const uint8_t *blob_dev,
@@ -3961,7 +4045,20 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                 m.mmq_ctx->run(dn, m.cs);
                                 return true;
                             }
-                            const int q = (int) (j % DQ);
+                            if (xmx2) {
+                                const auto& f = lay.fmt[(size_t) l];
+                                if (xg_n == 0) xg_r0 = m.off[(size_t) e];
+                                xg_g[xg_n] = blob_dev;
+                                xg_u[xg_n] = blob_dev + f.up_off;
+                                xg_d[xg_n] = blob_dev + f.down_off;
+                                xg_c[xg_n] = m.cnt[(size_t) e];
+                                ++xg_n;
+                                if (slot >= 0) xg_slots[xg_ns++] = slot;
+                                if (xg_n == strata::kernels::kXmxGroupMax || j + 1 == order.size()) xflush();
+                                return true;
+                            }
+                            const bool xmx_on = strata::prefill::xmx::mode() == 1;
+                            const int q = (int) (j % (size_t) dq_slots());
                             if (lay.native) {
                                 // plan v0.3 P6: a native pack's layer, dequantized by llama.cpp's own formulas
                                 const auto& f = lay.fmt[(size_t) l];
@@ -3974,6 +4071,43 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                             if (slot >= 0) {
                                 dpct::sync_barrier(m.used[slot], m.cs);
                                 m.used_of[slot] = slot;
+                            }
+                            if (xmx_on) {
+                                if (static bool said = false; !said) {
+                                    said = true;
+                                    std::fprintf(stderr, "strata: prompt experts on the grouped XMX GEMM (STRATA_PF_XMX=1)\n");
+                                }
+                                // A770 port: the group's experts sit in dq slots 0..q, their rows back to back from
+                                // the first one's (the order is by id and so are the offsets)
+                                if (q + 1 < dq_slots() && j + 1 < order.size()) return true;
+                                const size_t j0 = j - (size_t) q;
+                                const int ng = q + 1;
+                                int32_t gc[strata::prefill::xmx::kMaxGroup];
+                                const uint16_t* wg[strata::prefill::xmx::kMaxGroup];
+                                const uint16_t* wd[strata::prefill::xmx::kMaxGroup];
+                                int64_t nr = 0;
+                                for (int i = 0; i < ng; ++i) {
+                                    gc[i] = m.cnt[(size_t) order[j0 + (size_t) i]];
+                                    wg[i] = m.dq_gu[i]; wd[i] = m.dq_d[i];
+                                    nr += gc[i];
+                                }
+                                const int64_t r0 = m.off[(size_t) order[j0]];
+                                pt.mark(kPfGemmGU, cs);
+                                if (nr / ng < strata::prefill::xmx::gu_max_mean()) {
+                                    strata::prefill::xmx::grouped_f16(m.Xs + r0 * N, wg, gc, ng, m.GU + r0 * 1280, 1280,
+                                                                      (int) N, m.cs);
+                                } else {
+                                    int64_t o = r0;
+                                    for (int i = 0; i < ng; ++i) {
+                                        m.gemm.f16(m.Xs + o * N, wg[i], m.GU + o * 1280, gc[i], 1280, N);
+                                        o += gc[i];
+                                    }
+                                }
+                                swiglu_interleaved(m.GU + r0 * 1280, m.Hh + r0 * 640, nr, m.cs);
+                                pt.mark(kPfGemmD, cs);
+                                strata::prefill::xmx::grouped_f16(m.Hh + r0 * 640, wd, gc, ng, m.Dm + r0 * N, (int) N, 640,
+                                                                  m.cs);
+                                return true;
                             }
                             const int64_t o0 = m.off[(size_t) e], ne = m.cnt[(size_t) e];
                             pt.mark(kPfGemmGU, cs);
@@ -4018,6 +4152,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                 try {
                             while (k < kend && seq[k].e < e_stop) {
                                     if (gg_nslots > 0) flush();   // the open group's slots get their event first
+                                    if (xg_n > 0) xflush();   // the open group's slots get their event first
                                     const int sl = (int) (k % (size_t) m.ring);
                                     dpct::sync_barrier(m.used[sl], m.cs);
                                     m.used_of[sl] = sl;
@@ -4046,7 +4181,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                     }
                                     if (!compute(j, m.stage_dev[sl], sl)) return false;
                                     consumed = ++k;
-                                    if (!group_gather || gg_nslots == 0) give_back(consumed);   // its group was gathered
+                                    if ((!group_gather || gg_nslots == 0) && xg_ns == 0) give_back(consumed);   // its group was gathered
                                 } else {
                                     const bool r0 = m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0;
                                     const uint8_t* bp = r0 ? m.cache->device_slot(m.host_res[(size_t) l * m.g->n_expert + e])
@@ -4058,6 +4193,8 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                 }
                             }
                             release_to(m.g->n_expert);
+                            xflush();
+                            give_back(consumed);
                         }
                     }
                     pt.mark(kPfCombine, cs);

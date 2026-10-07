@@ -211,7 +211,8 @@ target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_ker
 # cuBLAS -> oneMKL through dpct::blas (needs the MKL SYCL BLAS domain)
 strata_resolve(_prefill src/prefill/gemm.cu src/prefill/kernels.cu src/prefill/prefill.cpp)
 add_library(strata_prefill STATIC ${_prefill}
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill/moe_fused_stub.cpp)   # upstream's fused int8 kernels: not built here
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill/moe_fused_stub.cpp   # upstream's fused int8 kernels: not built here
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill/xmx_moe.dp.cpp)      # A770 port: grouped XMX expert GEMM
 target_compile_options(strata_prefill PUBLIC -qmkl=sequential)
 target_link_options(strata_prefill PUBLIC -qmkl=sequential)
 target_link_libraries(strata_prefill PUBLIC strata_engine)
@@ -289,6 +290,8 @@ if(STRATA_SYCL_PARITY)
   target_link_libraries(gr_bench PRIVATE strata_kernels)
   add_executable(xmx_gemm_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/xmx_gemm_bench.cpp)   # XMX quantized GEMM vs dequant+oneMKL
   target_link_libraries(xmx_gemm_bench PRIVATE strata_kernels strata_prefill)   # -qmkl for the oneMKL reference
+  add_executable(xmx_group_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/xmx_group_parity.cpp)   # A770: fused grouped XMX
+  target_link_libraries(xmx_group_parity PRIVATE strata_kernels strata_prefill)
   # one native expert three ways on real GGUF rows (ggml reference, CPU path, GPU native_expert_grouped):
   #   native_expert_parity <shard1.gguf> [layer ...]
   if(STRATA_NATIVE_EXPERTS)
