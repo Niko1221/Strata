@@ -133,7 +133,9 @@ caches.
 `--peer-device N` puts a second adaptive expert cache on CUDA device N. It
 takes the ranked pairs CUDA0's cache does not hold, as many as fit. The peer
 computes the rows of its own experts, for decode windows and for prompt
-chunks; the activations and the results cross NVLink or another P2P path. The
+chunks. The prompt path uses CUDA peer-to-peer copies when available, including
+NVLink; decode reads pinned-host inputs and returns results through mapped
+host rows. An NVLink bridge does not make that decode transport peer-to-peer. The
 tier adapts while the server runs, like the primary cache. It is an
 alternative to the CUDA1-3 caches above, not a third tier beside them.
 
@@ -171,3 +173,26 @@ not yet combined with the peer's rows. Mapped host buffers gain
 context write them. The tier size is manual for now (`--peer-reserve-mib`,
 `--peer-slots`); automatic sizing on small cards wants the buffer lending of
 #216 and is a follow-up.
+
+### Capacity-aware peer placement (opt-in)
+
+`STRATA_PEER_CAPACITY_AWARE=1` jointly plans primary and peer ownership from
+their available bytes after scratch and reserve costs. It prices each layer's
+aligned expert blobs, respects `--peer-slots`, and gives hot ranks to both cards
+instead of moving them behind a fixed 8,700-rank boundary. This matters when a
+large primary cache would still hold everything before that boundary, or when
+the two cards have unequal byte capacities.
+
+The profile records ranks, not routing counts: reciprocal square-root rank is
+a load-balancing proxy, not a measured expert frequency. Unprofiled experts
+complete the candidate list; each pair has one planned owner or remains a CPU
+miss. The peer's fill checks actual primary residency, including allocation
+retries, so it can use space for pairs dropped from the primary plan.
+
+This needs explicit `--peer-device`, a native pack, `--expert-profile` and the
+shared non-elastic expert cache with the CPU pool. With it on, the legacy
+`STRATA_PEER_HOT` and `STRATA_PEER_HOT_AT` settings are ignored. Without the
+switch, or without a peer, the existing placement is unchanged. Startup logs
+the byte caps and planned ownership. The planner has no GPU-name or
+architecture-specific selection rule. CPU-only tests cover unequal capacities
+and heterogeneous blobs; no two-GPU speed or answer-parity result is claimed.
