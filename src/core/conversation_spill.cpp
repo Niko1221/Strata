@@ -188,6 +188,7 @@ bool ConversationSpillCache::write_sidecar(const std::filesystem::path& meta, co
 bool ConversationSpillCache::open(const std::filesystem::path& directory, SessionFileIdentity identity,
                                   uint64_t budget_bytes, std::string& error, SpillWhenFull when_full,
                                   int64_t max_age_days) {
+    std::lock_guard<std::mutex> lock(mu_);
     enabled_ = false;
     stale_files_kept_ = 0;
     foreign_files_kept_ = 0;
@@ -195,6 +196,7 @@ bool ConversationSpillCache::open(const std::filesystem::path& directory, Sessio
     oversized_files_kept_ = 0;
     disk_evictions_ = 0;
     age_evictions_ = 0;
+    compacted_ = 0;
     entries_.clear();
     bytes_ = 0;
     pinned_path_.clear();
@@ -279,6 +281,7 @@ bool ConversationSpillCache::open(const std::filesystem::path& directory, Sessio
 
 bool ConversationSpillCache::load(const std::string& path, SavedConversation& image,
                                   const std::vector<SessionReadLimits>& limits, std::string& error) const {
+    std::lock_guard<std::mutex> lock(mu_);
     if (!enabled_) { error = "spill cache is disabled"; return false; }
     const Entry* entry = find(path);
     const size_t stages = entry ? entry->stages : 0;
@@ -304,7 +307,8 @@ bool ConversationSpillCache::load(const std::string& path, SavedConversation& im
     return true;
 }
 
-bool ConversationSpillCache::spill(const SavedConversation& image, std::string& error) {
+bool ConversationSpillCache::spill(const SavedConversation& image, std::string& error, std::string* stored_path) {
+    std::lock_guard<std::mutex> lock(mu_);
     if (!enabled_) return false;
     if (image.live.ids.empty()) { error = "spill needs a conversation with tokens"; return false; }
     // --conversation-cache-spill-when-full reject: a full directory refuses a new spill instead of evicting. The
@@ -369,6 +373,7 @@ bool ConversationSpillCache::spill(const SavedConversation& image, std::string& 
     }
     bytes_ += total;
     enforce_budget();
+    if (stored_path != nullptr) *stored_path = session;
     return true;
 }
 
@@ -392,6 +397,7 @@ bool ConversationSpillCache::remove_entry(size_t index) {
 }
 
 bool ConversationSpillCache::erase(const std::string& path, std::string& error) {
+    std::lock_guard<std::mutex> lock(mu_);
     auto found = std::find_if(entries_.begin(), entries_.end(),
                               [&](const Entry& entry) { return entry.session_path() == path; });
     if (found == entries_.end()) return true;
@@ -406,15 +412,21 @@ bool ConversationSpillCache::erase(const std::string& path, std::string& error) 
     return true;
 }
 
-void ConversationSpillCache::pin(const std::string& path) { pinned_path_ = path; }
+void ConversationSpillCache::pin(const std::string& path) {
+    std::lock_guard<std::mutex> lock(mu_);
+    pinned_path_ = path;
+}
 
 void ConversationSpillCache::unpin(const std::string& path) {
+    std::lock_guard<std::mutex> lock(mu_);
     if (pinned_path_ == path) { pinned_path_.clear(); enforce_budget(); }
 }
 
 size_t ConversationSpillCache::drop_superseded(const std::vector<int32_t>& ids,
                                                const std::vector<ConversationImageKey>& images,
-                                               const std::vector<ConversationCheckpoint>& checkpoints, bool cvec) {
+                                               const std::vector<ConversationCheckpoint>& checkpoints, bool cvec,
+                                               const std::string& keep) {
+    std::lock_guard<std::mutex> lock(mu_);
     size_t dropped = 0;
     for (size_t i = 0; i < entries_.size();) {
         const Entry& entry = entries_[i];
@@ -439,7 +451,8 @@ size_t ConversationSpillCache::drop_superseded(const std::vector<int32_t>& ids,
         bool held = same_saved_prefix(deepest, ids, images);
         for (const auto& checkpoint : checkpoints)
             if (!held && same_saved_prefix(deepest, checkpoint.ids, checkpoint.imgs)) held = true;
-        if (entry.cvec == cvec && deepest && held && entry.session_path() != pinned_path_) {
+        if (entry.cvec == cvec && deepest && held && entry.session_path() != pinned_path_ &&
+            !(!keep.empty() && entry.session_path() == keep)) {
             if (!remove_entry(i)) { ++i; continue; }   // a failed removal: leave this entry in the index
             ++dropped;
             continue;
@@ -447,6 +460,30 @@ size_t ConversationSpillCache::drop_superseded(const std::vector<int32_t>& ids,
         ++i;
     }
     return dropped;
+}
+
+size_t ConversationSpillCache::discard_diverged_impl(const std::vector<int32_t>& prompt, bool cvec,
+                                                     size_t divergence_tokens, int64_t turn_token) {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (!enabled_ || prompt.empty() || turn_token < 0) return 0;
+    size_t discarded = 0;
+    for (size_t i = 0; i < entries_.size();) {
+        const Entry& entry = entries_[i];
+        if (entry.cvec != cvec) { ++i; continue; }                    // another steering mode: another conversation
+        const std::vector<int32_t>& stored = entry.live_meta.ids;
+        const size_t n = stored.size() < prompt.size() ? stored.size() : prompt.size();
+        size_t common = 0;
+        while (common < n && stored[common] == prompt[common]) ++common;
+        if (common == stored.size()) { ++i; continue; }               // the prompt extends it: the normal turn
+        const size_t header = conversation_header_length(stored, turn_token);
+        if (header == 0 || common < header) { ++i; continue; }        // the headers differ: another conversation
+        if (common >= divergence_tokens) { ++i; continue; }           // a small edit, not a rewritten tail
+        if (entry.session_path() == pinned_path_) { ++i; continue; }
+        if (!remove_entry(i)) { ++i; continue; }                      // a failed removal: leave it in the index
+        ++discarded;
+        ++compacted_;
+    }
+    return discarded;
 }
 
 void ConversationSpillCache::enforce_budget() {

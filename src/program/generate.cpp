@@ -608,6 +608,17 @@ struct Options {
     /// --conversation-cache-spill-max-age-days: optional age pruning of the spill directory (0 = off, no deletion
     /// by time at all; positive = the GC drops conversations older than that, oldest first).
     int64_t conversation_cache_spill_max_age_days = 0;
+    /// --conversation-cache-spill-on: what turns the disk tier from overflow into a mirror. "park" (the default
+    /// when the tier is on) also writes a conversation the moment it is parked at the end of a request, so a close
+    /// loses at most the request in flight. "evict" is the delta-1 behaviour: only what the RAM cache evicts is
+    /// written. Without --conversation-cache-spill-dir both are inert.
+    std::string conversation_cache_spill_on = "park";
+    /// --conversation-cache-spill-divergence-tokens: the common-prefix length below which a stored copy whose header
+    /// took part in it is read as a rewritten tail (a compaction or an edited history) and is discarded, not kept.
+    int64_t conversation_cache_spill_divergence_tokens = 4096;
+    /// --conversation-cache-spill-park-throttle-s: 0 = write on every park; N > 0 = do not rewrite the same
+    /// conversation inside N seconds (the park is postponed to a later one).
+    int64_t conversation_cache_spill_park_throttle_s = 0;
     /// --system-prompt-cache (F5, opt-in): persist the checkpoint root that ends the system prompt (the one
     /// --prompt-cache-root builds in RAM) as an ordinary session file, and reload it at start so a NEW chat reads
     /// only the tokens after it. Off by default: no directory is created and no byte is written.
@@ -771,6 +782,15 @@ void usage() {
                  "                       removes nothing\n"
                  "  --conversation-cache-spill-max-age-days N  --serve: prune spill conversations older than N days,\n"
                  "                       oldest first (default 0 = off; no deletion by time at all)\n"
+                 "  --conversation-cache-spill-on MODE  --serve: park (default when the disk tier is on) also writes\n"
+                 "                       a conversation the moment it is parked at the end of a request, so a close\n"
+                 "                       loses at most the request in flight; evict is the delta-1 behaviour (only what\n"
+                 "                       the RAM cache evicts reaches disk). Inert without --conversation-cache-spill-dir\n"
+                 "  --conversation-cache-spill-divergence-tokens N  --serve: a stored copy whose common prefix with the\n"
+                 "                       incoming prompt is shorter than N tokens, with its header intact, is a rewritten\n"
+                 "                       tail (a compaction): it is discarded, not kept (default 4096)\n"
+                 "  --conversation-cache-spill-park-throttle-s N  --serve, park mode: do not rewrite the same\n"
+                 "                       conversation inside an N-second window (default 0 = write on every park)\n"
                  "  --system-prompt-cache  --serve: persist the system-prompt checkpoint root (--prompt-cache-root) to\n"
                  "                       disk and reload it at start, so a new chat of the same client reads only the\n"
                  "                       tokens after it (default off; needs --system-prompt-cache-dir)\n"
@@ -1908,6 +1928,25 @@ int main(int argc, char** argv) {
                 return 2;
             }
             o.conversation_cache_spill_max_age_days = number;
+        }
+        else if (a == "--conversation-cache-spill-on") {
+            const std::string value = next("--conversation-cache-spill-on");
+            if (value != "evict" && value != "park") {
+                std::fprintf(stderr, "--conversation-cache-spill-on takes evict or park\n");
+                return 2;
+            }
+            o.conversation_cache_spill_on = value;
+        }
+        else if (a == "--conversation-cache-spill-divergence-tokens" || a == "--conversation-cache-spill-park-throttle-s") {
+            const std::string value = next(a.c_str());
+            int64_t number = 0;
+            const auto result = std::from_chars(value.data(), value.data() + value.size(), number);
+            if (result.ec != std::errc{} || result.ptr != value.data() + value.size() || number < 0) {
+                std::fprintf(stderr, "%s needs a nonnegative integer within range\n", a.c_str());
+                return 2;
+            }
+            if (a == "--conversation-cache-spill-divergence-tokens") o.conversation_cache_spill_divergence_tokens = number;
+            else o.conversation_cache_spill_park_throttle_s = number;
         }
         else if (a == "--system-prompt-cache") o.system_prompt_cache = true;
         else if (a == "--system-prompt-cache-dir") o.system_prompt_cache_dir = next("--system-prompt-cache-dir");
@@ -7068,6 +7107,9 @@ int main(int argc, char** argv) {
         std::vector<int32_t> live;
         std::vector<ImgKey> live_imgs, req_imgs;
         bool live_ok = false;
+        // R4: the live session is provisional after a cancelled request: it is reverted to the last turn boundary and
+        // the next park must not publish a durable copy of it (the previous good copy is left alone).
+        bool park_provisional = false;
         std::vector<ConvCheckpoint> checks;
         uint64_t check_clock = 0;   // the checkpoints' LRU clock; creation and every use advance it
         int64_t tail_ckpt_len = -1;   // --prompt-cache-tail: the length of the one tail checkpoint alive (-1 = none)
@@ -7174,17 +7216,27 @@ int main(int argc, char** argv) {
                     std::fprintf(stderr, "strata serve: conversation cache: disk tier disabled (%s)\n", spill_error.c_str());
                 } else if (conversation_spill.enabled()) {
                     std::fprintf(stderr, "strata serve: conversation cache: spill dir ready (%zu conversations, %llu MiB, "
-                                 "when-full=%s, max-age=%lld d, %zu oversized kept, %zu stale kept, %zu foreign kept, "
-                                 "%zu orphans kept, %zu disk evictions, %zu age evictions)\n",
+                                 "when-full=%s, max-age=%lld d, spill-on=%s, divergence=%lld tok, park-throttle=%lld s, "
+                                 "%zu oversized kept, %zu stale kept, %zu foreign kept, %zu orphans kept, "
+                                 "%zu disk evictions, %zu age evictions)\n",
                                  conversation_spill.size(), (unsigned long long) (conversation_spill.bytes() >> 20),
                                  o.conversation_cache_spill_when_full.c_str(),
                                  (long long) o.conversation_cache_spill_max_age_days,
+                                 o.conversation_cache_spill_on.c_str(),
+                                 (long long) o.conversation_cache_spill_divergence_tokens,
+                                 (long long) o.conversation_cache_spill_park_throttle_s,
                                  conversation_spill.oversized_files_kept(), conversation_spill.stale_files_kept(),
                                  conversation_spill.foreign_files_kept(), conversation_spill.orphan_files_kept(),
                                  conversation_spill.disk_evictions(), conversation_spill.age_evictions());
                 }
             }
         }
+        // Delta 2 / R3: with --conversation-cache-spill-on park the tier is a mirror, not overflow. The park writer
+        // holds one cell per conversation (only the newest state) and a background thread drains it, so a turn with
+        // five tool calls writes once. It is inert without a spill directory.
+        const bool spill_on_park = conversation_spill.enabled() && o.conversation_cache_spill_on == "park";
+        strata::core::ConversationSpillWriter park_writer;
+        if (spill_on_park) park_writer.start(&conversation_spill, o.conversation_cache_spill_park_throttle_s);
         // The system-prompt prefill cache (F5): the checkpoint root that ends the system prompt (--prompt-cache-root)
         // persisted as ordinary session files and reloaded at start, so a NEW chat of the same client reads only
         // the tokens after it.  Its own directory, its own budget, its own variant count.  Off unless
@@ -7220,7 +7272,13 @@ int main(int argc, char** argv) {
             if (!conversation_spill.enabled()) return;
             try {
                 std::string spill_error;
-                if (conversation_spill.spill(evicted, spill_error)) {
+                std::string stored;
+                if (conversation_spill.spill(evicted, spill_error, &stored)) {
+                    // park mode: an eviction confirms what the mirror already wrote, so the older copy of this
+                    // conversation goes once the new one is on disk (one copy per conversation, never two).
+                    if (spill_on_park)
+                        conversation_spill.drop_superseded(evicted.live.ids, evicted.live.imgs, evicted.checkpoints,
+                                                           evicted.cvec, stored);
                     std::fprintf(stderr, "strata serve: conversation cache: spilled %zu tokens (%zu MiB); disk=%zu MiB "
                                  "disk_evictions=%zu\n", evicted.live.ids.size(), evicted.bytes() >> 20,
                                  (size_t) (conversation_spill.bytes() >> 20), conversation_spill.disk_evictions());
@@ -7236,15 +7294,26 @@ int main(int argc, char** argv) {
         // addresses change: all parked images live in ordinary host vectors.
         auto park_current_body = [&](size_t held) -> bool {
             if (!conversations.enabled() || !live_ok || live.empty()) return true;
+            // R4: a cancelled request left a provisional session. It is parked in RAM (the reuse is valid) but no
+            // durable copy is published of it, and the previous good copy is not touched: it is the prefix the
+            // client will resend on the retry.
+            const bool provisional = spill_on_park && park_provisional;
+            park_provisional = false;
+            if (provisional)
+                std::fprintf(stderr, "strata serve: conversation cache: provisional park (cancelled request); no disk copy\n");
             // #342: before make_room evicts oldest-first, the copies of this conversation a turn back go (they hold
             // nothing the outgoing chain does not, apart from the tail this conversation rewrote)
             if (const size_t dropped = conversations.drop_superseded(live, live_imgs, checks, cvec_cached))
                 std::fprintf(stderr, "strata serve: conversation cache: dropped %zu superseded cop%s of this "
                              "conversation; parked=%zu\n", dropped, dropped == 1 ? "y" : "ies", conversations.size());
-            const size_t disk_dropped = conversation_spill.drop_superseded(live, live_imgs, checks, cvec_cached);
-            if (disk_dropped)
-                std::fprintf(stderr, "strata serve: conversation cache: removed %zu superseded disk conversation%s\n",
-                             disk_dropped, disk_dropped == 1 ? "" : "s");
+            // park mode: the writer supersedes the previous disk copy once the new one is on disk (one copy per
+            // conversation, and no window with none); evict mode keeps the delta-1 synchronous supersede.
+            if (!spill_on_park) {
+                const size_t disk_dropped = conversation_spill.drop_superseded(live, live_imgs, checks, cvec_cached);
+                if (disk_dropped)
+                    std::fprintf(stderr, "strata serve: conversation cache: removed %zu superseded disk conversation%s\n",
+                                 disk_dropped, disk_dropped == 1 ? "" : "s");
+            }
             // A layer split parks one image per stage: the first stage's (with the draft layer's K/V) and one per
             // later stage (without it - the draft ring is saved once).  The checkpoints are MOVED apart into their
             // stage parts for the capture and put back together whichever way this ends (no running state copied).
@@ -7368,6 +7437,21 @@ int main(int argc, char** argv) {
                     return true;
                 }
                 const size_t snapshot_bytes = image.bytes();
+                // R3: mirror the parked state to disk (asynchronous, collapsed). The writer takes a copy - put()
+                // below takes the original, and the writer's cell must not alias the RAM cache's entry. wants()
+                // keeps the copy from being built when the writer would only discard it.
+                if (spill_on_park && !provisional) {
+                    const uint64_t key = strata::core::conversation_key(live, o.turn_token);
+                    if (park_writer.wants(key, live.size())) {
+                        const auto tc = Clock::now();
+                        strata::core::SavedConversation mirrored = image;
+                        const double copy_ms = std::chrono::duration<double, std::milli>(Clock::now() - tc).count();
+                        park_writer.post(key, std::move(mirrored));
+                        std::fprintf(stderr, "strata serve: conversation cache: park mirror queued (%zu tokens, copy %.1f ms); "
+                                     "writes=%zu collapsed=%zu throttled=%zu\n", live.size(), copy_ms,
+                                     park_writer.writes(), park_writer.collapsed(), park_writer.throttled());
+                    }
+                }
                 // put() reserves again with the captured size, so it carries the spill hook too: an eviction it makes
                 // here is as final as make_room's, and the same conversation must not be lost for want of a callback.
                 const bool stored = conversations.put(std::move(image), held, spill_evicted);
@@ -9411,6 +9495,18 @@ int main(int argc, char** argv) {
             std::optional<strata::core::SavedConversation> incoming;
             bool incoming_from_disk = false;
             std::string incoming_disk_path;
+            // R2: if the client rewrote this conversation's tail (a compaction or an edited history), the stored
+            // copy describes nothing it will send. Detect it from the sidecar's own token ids (no K/V read) and
+            // discard the copy - it can never be a hit and only occupies GB. A copy the prompt extends, or one
+            // whose header is another conversation's, is left alone.
+            if (spill_on_park) {   // a delta-2 refinement: --conversation-cache-spill-on evict reproduces delta 1
+                const size_t discarded = conversation_spill.discard_diverged(
+                        ids, want_cvec, (size_t) o.conversation_cache_spill_divergence_tokens, o.turn_token);
+                if (discarded)
+                    std::fprintf(stderr, "strata serve: conversation cache: discarded %zu compacted disk conversation%s "
+                                 "(the client rewrote the tail); compacted=%zu\n", discarded,
+                                 discarded == 1 ? "" : "s", conversation_spill.compacted());
+            }
             // A spilled conversation can beat the RAM cache: match it from its sidecar (no K/V read), and only if it
             // offers a longer resume than RAM, the batch slots and the live state does, read it back whole.
             const auto disk_match = conversation_spill.best(ids, req_imgs, want_cvec,
@@ -11288,6 +11384,24 @@ int main(int argc, char** argv) {
                 live.swap(consumed);
                 live_imgs = imgs_below(req_imgs, (int64_t) live.size());
                 live_ok = o.prompt_cache > 0 && req_ckpt;   // ckpt=0: nothing to continue or park (#830)
+                park_provisional = false;   // a finished request leaves a settled state
+            } else if (spill_on_park) {
+                // R4: the request was cancelled (the engine's own "(cancelled)" line). The partial answer is
+                // provisional: revert the live ids to the last turn boundary the read actually reached, so the
+                // session describes exactly the closed conversation the client will resend, and mark the next park
+                // provisional so no durable copy is published of it (the previous good copy is left alone). The
+                // K/V past the boundary belongs to the discarded answer and is re-read on the retry.
+                const size_t reached = (size_t) std::max<int64_t>(0, std::min<int64_t>(pp_reached, (int64_t) consumed.size()));
+                std::vector<int32_t> reverted = consumed;
+                if (strata::core::revert_to_turn_boundary(reverted, o.turn_token, reached)) {
+                    live.swap(reverted);
+                    live_imgs = imgs_below(req_imgs, (int64_t) live.size());
+                    std::fprintf(stderr, "strata serve: conversation cache: cancelled request reverted to the last turn "
+                                 "boundary (%zu of %zu tokens); the disk copy is not republished\n",
+                                 live.size(), consumed.size());
+                }
+                live_ok = o.prompt_cache > 0 && req_ckpt;
+                park_provisional = live_ok;   // only a parkable state can leak a durable copy
             }
             static const bool state_hash = std::getenv("STRATA_STATE_HASH") != nullptr;
             if (state_hash && !cancelled && o.prompt_cache > 0) {   // every finished request, ckpt=0 too (parity gates)
@@ -11609,10 +11723,17 @@ int main(int argc, char** argv) {
             if (!park_current(0))
                 std::fprintf(stderr, "strata serve: conversation cache: the final active conversation was not captured (%s)\n",
                              err.c_str());
+            // R3: drain the park writer before the RAM cache is emptied, so the mirror's own writes are on disk and
+            // the shutdown spill supersedes them instead of racing them.
+            if (spill_on_park) park_writer.stop();
             const size_t resident = conversations.spill_all(spill_evicted);
             std::fprintf(stderr, "strata serve: conversation cache: shutdown spilled %zu parked conversations; disk=%zu MiB "
                          "disk_evictions=%zu\n", resident, (size_t) (conversation_spill.bytes() >> 20),
                          conversation_spill.disk_evictions());
+            if (spill_on_park)
+                std::fprintf(stderr, "strata serve: conversation cache: park mirror: %zu writes, %zu collapsed, %zu skipped, "
+                             "%zu throttled, %zu refused\n", park_writer.writes(), park_writer.collapsed(),
+                             park_writer.skipped(), park_writer.throttled(), park_writer.refused());
         }
         if (system_prompt_cache.enabled())   // F5: the system prompt cache's own accounting, at shutdown
             std::fprintf(stderr, "strata serve: system prompt cache: shutdown: %zu variants, %llu MiB, hits=%llu misses=%llu, "

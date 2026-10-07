@@ -12,7 +12,8 @@ cache").
 ## How to read the "Since" column
 
 - **`layer/base`** — this tree's base: upstream `v0.1.40.1` plus PR #1271 (the disk tier) and PR #1269.
-- **`layer/delta1`** — this tree's own work on top of that base.
+- **`layer/delta1`** — this tree's own work on top of that base (the spill tier as overflow).
+- **`layer/delta2`** — the mirror at the park, compaction detection and cancellation (on top of delta 1).
 - **`engine <version>`** — the flag came from upstream and is unchanged here.
 
 ## Three caches, not one
@@ -22,9 +23,11 @@ Do not mix these. They share the word "cache" and little else:
 1. **The parked conversations in RAM** (`--conversation-cache-mib`, `--conversation-cache-slots`,
    `--conversation-cache-min-free-mib`; upstream engine). Conversations the engine keeps in host RAM between
    requests, so a returning chat does not read its prompt again. RAM only: lost on restart.
-2. **The disk tier** (`--conversation-cache-spill-dir` + `--conversation-cache-disk-mib` + the three flags beside
-   them). A conversation the RAM cache evicts is written to a folder as an ordinary session file, and read back
-   later or after a restart.
+2. **The disk tier** (`--conversation-cache-spill-dir` + `--conversation-cache-disk-mib` + the flags beside
+   them). A conversation is written to a folder as an ordinary session file and read back later or after a restart.
+   By default (`--conversation-cache-spill-on park`) it is a **mirror**: the state parked at the end of a request
+   is written then. With `--conversation-cache-spill-on evict` it is **overflow**: only a conversation the RAM cache
+   evicts reaches disk.
 3. **The system-prompt prefill cache** (`--system-prompt-cache*`). The checkpoint root that ends the system prompt
    (`--prompt-cache-root`, in RAM) is persisted to its own folder as a session file and reloaded at start.
 
@@ -35,12 +38,19 @@ the system-prompt cache persists; `--prompt-cache-root` is the threshold for the
 
 ## A. The disk tier (conversations on disk)
 
+The disk tier has two modes, selected by `--conversation-cache-spill-on` and detailed in the table below: the
+default **mirror** (`park`, when the tier is on) writes the conversation at the park, and the **overflow** opt-out
+(`evict`) reproduces delta 1 byte for byte. Without `--conversation-cache-spill-dir` both are inert.
+
 | Flag | Default | What it does | Scope (when it applies and when it does NOT) | Limit or non-claim | Since |
 | --- | --- | --- | --- | --- | --- |
 | `--conversation-cache-spill-dir DIR` | empty (off) | Turns the disk tier on and names its folder. A conversation the RAM cache evicts is written there as an ordinary session file (`.sess`) plus a small sidecar (`.meta`). | `--serve` only. Needs `--conversation-cache-mib > 0`, `--prompt-cache > 0`, `--conversation-cache-slots > 0` and a nonzero `--conversation-cache-disk-mib`; otherwise the engine warns and the tier stays off. Works with `--layer-split` (one file per stage). | No authentication: the files hold the conversation's token IDs and state, so the folder must stay private. A file from another model or another configuration (including another KV quant) is **rejected, not reused**. | `layer/base` (`v0.1.40.1` + PR #1271) |
 | `--conversation-cache-disk-mib N` | 8192 | The spill folder's byte budget, in MiB. The GC removes stored conversations over it, oldest first. | `--serve`; inside the disk tier. `0` disables the disk tier. This is the tier's own folder, not `--conversation-cache-mib`, which is the RAM budget. | A budget, not a disk reservation or a quota. A stored conversation larger than the whole budget is kept anyway (removing it could not bring the folder under the budget) and counted as `oversized`. | `layer/base` |
 | `--conversation-cache-spill-when-full MODE` | `evict-oldest` | What the GC does at the budget. `evict-oldest` drops the oldest stored conversation to make room (what the tier always did). `reject` stores nothing new and removes nothing. | `--serve`; only inside the disk tier. An unknown mode is refused at start. | `reject` does not bound the folder in any other way: a folder already over budget stops accepting spills and keeps what is there. The age lever below is independent of this. | `layer/delta1` |
 | `--conversation-cache-spill-max-age-days N` | 0 (off) | Optional age pruning. With a positive N, the GC removes stored conversations older than N days, oldest first, counted separately from the budget GC. | `--serve`; only inside the disk tier. `0` means **no deletion by time at all**: this lever is off unless set. | Off by default. Independent of `--conversation-cache-spill-when-full`: both can act, each with its own counter in the log. | `layer/delta1` |
+| `--conversation-cache-spill-on MODE` | **`park`** | What the tier is there for. `park` (the default **when the tier is on**: a spill directory and a nonzero budget) also writes a conversation the moment it is parked at the end of a request, so a close loses at most the request in flight. `evict` is the delta-1 behaviour: only what the RAM cache evicts reaches disk. | `--serve`; inside the disk tier. **The default changes with the tier**: without `--conversation-cache-spill-dir` neither mode does anything (no folder, no byte). An unknown mode is refused at start. | The mirror writes at the end of each request, never mid-generation, and collapses a burst of parks of one conversation (one cell per conversation holding only the newest state; the async writer drains it). The disk is bounded by `--conversation-cache-disk-mib` exactly as before. | `layer/delta2` |
+| `--conversation-cache-spill-divergence-tokens N` | 4096 | A stored copy whose common prefix with the incoming prompt is shorter than N tokens, while its header (system prompt + first turn) still matches, is read as a **rewritten tail** — a compaction or an edited history — and is **discarded** (index and file) instead of being kept as an orphan. Counted in `compacted`. | `--serve`; inside the disk tier. Needs a turn token (`--turn-token`); without one nothing is ever called a rewrite. A copy the prompt **extends** is kept; one whose header differs is another conversation and is left alone. | A threshold, not a measurement: a compaction that keeps more than N tokens of common prefix is not detected and the copy is left for the GC. Prevents a compacted copy from occupying GB while it can never be a hit. | `layer/delta2` |
+| `--conversation-cache-spill-park-throttle-s N` | 0 | In `park` mode, do not rewrite the same conversation inside an N-second window; the park is postponed to a later one. | `--serve`; inside the disk tier, `park` mode only. `0` = write on every park. | A rate limiter, not a correctness lever: the newest state still ends up on disk, just on the next park outside the window. Counted in `throttled`. | `layer/delta2` |
 | `--conversation-cache-similarity F` | 0.0 | The least fraction of the new prompt that a stored (RAM or disk) conversation must share as a common prefix before it may be reused. | `--serve`; applies to the RAM cache and the disk tier's match. A finite number in `[0, 1)`; anything else is refused. | 0 accepts any match. It filters weak hits only: a candidate that passes still has to be an exact token/image prefix to be restored. | `layer/base` |
 | `--conversation-cache-n-min N` | 0 | The least number of common-prefix tokens a stored conversation must offer before it may be reused. | `--serve`; same place as `--conversation-cache-similarity` (RAM and disk). | 0 accepts any length. A hit that offers fewer tokens than a live slot or the RAM cache already reaches is not used. | `layer/base` |
 

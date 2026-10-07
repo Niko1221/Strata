@@ -61,6 +61,33 @@ SavedConversation sample(size_t tokens) {
     }
     return s;
 }
+// A conversation whose live ids are exactly `ids` (the sidecar keeps only the checkpoint lengths, so their own ids
+// do not have to match - the divergence rule reads live ids alone). `cp` names the one checkpoint's length; 0 = half.
+SavedConversation conversation_with_ids(const std::vector<int32_t>& ids, size_t cp = 0) {
+    SavedConversation s = sample(ids.size());
+    s.live.ids = ids;
+    s.checkpoints.clear();
+    const size_t len = cp != 0 ? cp : ids.size() / 2;
+    ConversationCheckpoint c = checkpoint(len, 9);
+    c.ids.assign(ids.begin(), ids.begin() + (std::ptrdiff_t) len);
+    s.checkpoints.push_back(std::move(c));
+    return s;
+}
+// A conversation template: a header of twelve tokens (three turn markers, `seed` in it, so every seed is its own
+// conversation) followed by `n` tokens of tail. Two calls with the same seed share the header and are one chat.
+std::vector<int32_t> conv_ids(int32_t seed, size_t n) {
+    std::vector<int32_t> ids = {seed, seed + 1, seed + 2, 500, seed + 3, seed + 4, seed + 5, 500,
+                                seed + 6, seed + 7, seed + 8, 500};
+    for (size_t i = 0; i < n; ++i) ids.push_back((int32_t) (seed + 100 + (int32_t) i));
+    return ids;
+}
+std::vector<uint8_t> read_file_bytes(const fs::path& path) {
+    std::vector<uint8_t> bytes;
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return bytes;
+    bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    return bytes;
+}
 bool buffers_equal(const ConversationBuffer& a, const ConversationBuffer& b) {
     if (a.size() != b.size()) return false;
     bool same = true;
@@ -310,6 +337,221 @@ int main() {
     check(aged.max_age_days() == 7, "max-age recorded");
     check(aged.age_evictions() >= 1, "old conversations pruned by age");
     check(aged.size() == 0, "every conversation older than the limit went");
+
+    // ---- Delta 2 / R3: the park writer writes a conversation with no eviction, collapses, throttles ----
+    fs::remove_all(dir);
+    {
+        ConversationSpillCache park;
+        check(park.open(dir, id, 1ull << 30, error), "park: open the spill directory");
+        ConversationSpillWriter writer;
+        writer.start(&park, 0);
+        writer.stop();   // thread joined: post() + drain() below run deterministically on this thread
+        SavedConversation p1 = conversation_with_ids(conv_ids(1000, 800));
+        const uint64_t key = conversation_key(conv_ids(1000, 800), 248045);
+        check(writer.post(key, std::move(p1)), "park: post the conversation");
+        check(writer.writes() == 0, "park: nothing written before the drain");
+        check(writer.drain() == 1, "park: drain writes once");
+        check(writer.writes() == 1 && writer.refused() == 0, "park: one write, none refused");
+        // The file is on disk although nothing was evicted from any RAM cache: the acceptance criterion.
+        check(park.size() == 1, "park: one conversation on disk without an eviction");
+        check(park.disk_evictions() == 0, "park: no eviction happened");
+        std::vector<int32_t> cont = conv_ids(1000, 800);
+        cont.push_back(int32_t(7777));
+        const auto park_hit = park.best(cont, {}, false, 0.0, 0);
+        check(bool(park_hit) && park_hit.tokens == (int64_t) cont.size() - 1, "park: the written copy matches");
+
+        // R3 collapse: two parks of one conversation before the drain write once, replacing the queued state.
+        SavedConversation q1 = conversation_with_ids(conv_ids(2000, 800));
+        SavedConversation q2 = conversation_with_ids(conv_ids(2000, 1200));   // same chat, one turn longer
+        const uint64_t qkey = conversation_key(conv_ids(2000, 800), 248045);
+        check(writer.post(qkey, std::move(q1)), "park: post a growing conversation");
+        check(writer.post(qkey, std::move(q2)), "park: post its next state (replaces the queued one)");
+        check(writer.collapsed() == 1, "park: the replaced state is counted as collapsed");
+        const size_t before_q = park.size();
+        check(writer.drain() == 1, "park: the drain writes only the newest state");
+        check(writer.writes() == 2, "park: the second conversation added exactly one write");
+        check(park.size() == before_q + 1, "park: one copy for the conversation, not two");
+
+        // Two parks of the SAME conversation where the second supersedes the first on disk: one copy, new content.
+        SavedConversation r1 = conversation_with_ids(conv_ids(3000, 800), 500);
+        SavedConversation r2 = conversation_with_ids(conv_ids(3000, 1100), 500);
+        const uint64_t rkey = conversation_key(conv_ids(3000, 800), 248045);
+        const size_t before_r = park.size();
+        check(writer.post(rkey, std::move(r1)), "park: post state A");
+        check(writer.drain() == 1, "park: write A");
+        check(writer.post(rkey, std::move(r2)), "park: post the longer state B");
+        check(writer.drain() == 1, "park: write B supersedes A");
+        check(park.size() == before_r + 1, "park: one copy after the replacement");
+        std::vector<int32_t> rc = conv_ids(3000, 1100);
+        rc.push_back(int32_t(8888));
+        const auto rematch = park.best(rc, {}, false, 0.0, 0);
+        check(bool(rematch) && rematch.tokens == (int64_t) rc.size() - 1, "park: the replacement holds the newer state");
+
+        // The skip lever: a state that did not grow past what was written for that key is not posted again.
+        SavedConversation s1 = conversation_with_ids(conv_ids(4000, 500));
+        const uint64_t skey = conversation_key(conv_ids(4000, 500), 248045);
+        check(writer.post(skey, std::move(s1)), "park: post a state");
+        check(writer.drain() == 1, "park: write it");
+        SavedConversation s2 = conversation_with_ids(conv_ids(4000, 500));   // same size: nothing changed
+        check(!writer.post(skey, std::move(s2)), "park: an unchanged state is skipped");
+        check(writer.skipped() == 1, "park: the skip is counted");
+    }
+
+    // ---- Delta 2 / R3: park + reject keeps the older copy and counts the refusal ----
+    fs::remove_all(dir);
+    {
+        ConversationSpillCache seedp;
+        check(seedp.open(dir, id, 1ull << 30, error), "park/reject: open");
+        SavedConversation w1 = conversation_with_ids(conv_ids(5000, 800));
+        check(seedp.spill(w1, error), "park/reject: seed one conversation");
+        const uint64_t one_file = seedp.bytes();
+        std::string keep;
+        for (const auto& e : fs::directory_iterator(dir))
+            if (e.path().extension() == ".sess") keep = e.path().string();
+        const std::vector<uint8_t> keep_bytes = read_file_bytes(keep);
+        check(!keep_bytes.empty(), "park/reject: the stored copy has bytes");
+
+        ConversationSpillCache reject;
+        check(reject.open(dir, id, one_file, error, SpillWhenFull::reject, 0), "park/reject: open with reject");
+        ConversationSpillWriter writer;
+        writer.start(&reject, 0);
+        writer.stop();
+        SavedConversation w2 = conversation_with_ids(conv_ids(6000, 800));   // another conversation
+        const uint64_t wkey = conversation_key(conv_ids(6000, 800), 248045);
+        check(writer.post(wkey, std::move(w2)), "park/reject: post the conversation");
+        check(writer.drain() == 0, "park/reject: the drain writes nothing");
+        check(writer.refused() == 1, "park/reject: the refusal is counted");
+        check(reject.disk_evictions() == 0 && reject.size() == 1, "park/reject: nothing was evicted");
+        check(read_file_bytes(keep) == keep_bytes, "park/reject: the older copy is byte-for-byte intact");
+    }
+
+    // ---- Delta 2 / R3: the throttle postpones a rewrite inside its window ----
+    fs::remove_all(dir);
+    {
+        ConversationSpillCache park;
+        check(park.open(dir, id, 1ull << 30, error), "throttle: open");
+        ConversationSpillWriter writer;
+        writer.start(&park, 60);   // a 60 s window
+        writer.stop();             // join the worker; post()/drain() stay deterministic below
+        SavedConversation t1 = conversation_with_ids(conv_ids(7000, 500));
+        const uint64_t tkey = conversation_key(conv_ids(7000, 500), 248045);
+        check(writer.post(tkey, std::move(t1)), "throttle: the first state is queued");
+        check(writer.drain() == 1, "throttle: written");
+        SavedConversation t2 = conversation_with_ids(conv_ids(7000, 700));   // grew
+        check(!writer.post(tkey, std::move(t2)), "throttle: the rewrite inside the window is postponed");
+        check(writer.throttled() == 1, "throttle: the postponement is counted");
+        check(writer.writes() == 1, "throttle: still one write");
+    }
+    // Same, with the throttle off (0): the rewrite goes through.
+    fs::remove_all(dir);
+    {
+        ConversationSpillCache park;
+        check(park.open(dir, id, 1ull << 30, error), "throttle0: open");
+        ConversationSpillWriter writer;
+        writer.start(&park, 0);
+        writer.stop();
+        SavedConversation t1 = conversation_with_ids(conv_ids(8000, 500));
+        const uint64_t tkey = conversation_key(conv_ids(8000, 500), 248045);
+        check(writer.post(tkey, std::move(t1)), "throttle0: post");
+        check(writer.drain() == 1, "throttle0: write");
+        SavedConversation t2 = conversation_with_ids(conv_ids(8000, 700));
+        check(writer.post(tkey, std::move(t2)), "throttle0: the rewrite is not postponed");
+        check(writer.drain() == 1, "throttle0: rewritten");
+    }
+
+    // ---- Delta 2 / R2: a compacted conversation's copy is discarded; another conversation's is not ----
+    fs::remove_all(dir);
+    {
+        const int64_t turn = 500;
+        std::vector<int32_t> ids;
+        for (int32_t i = 1; i <= 10; ++i) ids.push_back(i);
+        ids.push_back((int32_t) turn);                       // 1st turn: start of the system message
+        for (int32_t i = 100; i < 120; ++i) ids.push_back(i);
+        ids.push_back((int32_t) turn);                       // 2nd turn: end of the system prompt
+        for (int32_t i = 200; i < 220; ++i) ids.push_back(i);
+        ids.push_back((int32_t) turn);                       // 3rd turn: end of the first user turn
+        const size_t header = conversation_header_length(ids, turn);
+        check(header == 52, "R2: the header ends at the first assistant turn");
+        for (int32_t i = 300; i < 5300; ++i) ids.push_back(i);   // a long tail
+
+        ConversationSpillCache c;
+        check(c.open(dir, id, 1ull << 30, error), "R2: open");
+        SavedConversation stored = conversation_with_ids(ids);
+        check(c.spill(stored, error), "R2: store the long conversation");
+        std::string stored_path;
+        for (const auto& e : fs::directory_iterator(dir))
+            if (e.path().extension() == ".sess") stored_path = e.path().string();
+        const std::vector<uint8_t> stored_bytes = read_file_bytes(stored_path);
+
+        // an extension (the normal next turn) is kept
+        std::vector<int32_t> extension = ids;
+        extension.push_back(int32_t(99999));
+        check(c.discard_diverged(extension, false, 4096, turn) == 0, "R2: an extension discards nothing");
+        check(c.size() == 1, "R2: the extension kept the copy");
+
+        // another conversation: the divergence is inside the header, so nothing is touched
+        std::vector<int32_t> other = ids;
+        other[40] = 123456;                                  // different first user turn
+        const std::vector<uint8_t> before_other = read_file_bytes(stored_path);
+        check(c.discard_diverged(other, false, 4096, turn) == 0, "R2: another conversation discards nothing");
+        check(c.size() == 1 && read_file_bytes(stored_path) == before_other, "R2: the other conversation's copy is untouched");
+
+        // a compaction: same header, rewritten short tail
+        std::vector<int32_t> compacted(ids.begin(), ids.begin() + (std::ptrdiff_t) header + 100);
+        for (int32_t i = 0; i < 100; ++i) compacted[(size_t) header + (size_t) i] = int32_t(70000 + i);
+        check(c.discard_diverged(compacted, false, 4096, turn) == 1, "R2: the compacted copy is discarded");
+        check(c.compacted() == 1, "R2: the compaction is counted");
+        check(c.size() == 0, "R2: the discarded copy left the index");
+        check(!fs::exists(stored_path), "R2: its file is gone, not left orphaned");
+        (void) stored_bytes;
+
+        // after the discard, the next park writes the compacted history (the conversation is new again)
+        check(c.spill(conversation_with_ids(compacted), error), "R2: the compacted conversation is repar ked");
+        check(c.size() == 1, "R2: one copy again");
+    }
+
+    // ---- Delta 2 / R4: a cancelled request is provisional; the previous copy is untouched ----
+    fs::remove_all(dir);
+    {
+        const int64_t turn = 500;
+        ConversationSpillCache c;
+        check(c.open(dir, id, 1ull << 30, error), "R4: open");
+        std::vector<int32_t> closed = {1, 2, turn, 3, 4, turn, 5, 6, turn, 7, 8, 9};   // the closed conversation
+        const size_t closed_len = closed.size();
+        check(c.spill(conversation_with_ids(closed), error), "R4: the closed conversation is on disk");
+        std::string path;
+        for (const auto& e : fs::directory_iterator(dir))
+            if (e.path().extension() == ".sess") path = e.path().string();
+        const std::vector<uint8_t> good = read_file_bytes(path);
+        check(!good.empty(), "R4: the good copy has bytes");
+
+        // The cancelled request: the prompt grew with a new assistant turn whose answer was cut short.
+        std::vector<int32_t> consumed = closed;
+        consumed.push_back((int32_t) turn);          // <|im_start|>assistant
+        for (int32_t i = 0; i < 40; ++i) consumed.push_back(int32_t(9000 + i));   // the partial answer
+        const size_t reached = consumed.size();
+        check(revert_to_turn_boundary(consumed, turn, reached), "R4: the live ids are reverted");
+        check(consumed.size() == closed_len + 1, "R4: the partial answer is dropped");
+        check(consumed.back() == (int32_t) turn, "R4: the live state ends on the last turn token");
+        // the boundary is never taken past what the read reached
+        std::vector<int32_t> no_turns = {1, 2, 3, 4, 5};
+        std::vector<int32_t> short_read = no_turns;
+        short_read.push_back((int32_t) turn);
+        short_read.push_back(int32_t(4242));
+        check(!revert_to_turn_boundary(short_read, turn, no_turns.size()), "R4: a boundary past the read is refused");
+
+        // Provisional: no post is made (the engine sets park_provisional and skips the writer), so the disk copy
+        // is byte-for-byte the same one.
+        check(read_file_bytes(path) == good, "R4: the previous copy is intact after the cancel");
+        check(c.size() == 1, "R4: no new copy was published");
+
+        // The retry succeeds: the stored (closed) copy is the prefix the reverted state starts with.
+        std::vector<int32_t> retry = consumed;
+        retry.push_back(int32_t(919191));            // the client's retried answer
+        const auto retry_hit = c.best(retry, {}, false, 0.0, 0);
+        check(bool(retry_hit) && retry_hit.tokens == (int64_t) closed_len,
+              "R4: the retry resumes from the closed conversation");
+    }
 
     fs::remove_all(dir);
     std::printf("conversation_spill_test: %d checks passed\n", checks);

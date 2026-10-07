@@ -9,10 +9,16 @@ upstream. Every flag is listed in [FLAGS.md](FLAGS.md).
 
 A long chat that comes back after a few turns is not free: the engine has to hold, or re-read, the history in
 front of the new message. Upstream keeps that in host RAM (`--conversation-cache-mib`), but the RAM cache is
-bounded and does not survive a restart. The disk tier closes that gap: when the RAM cache evicts a conversation it
-is written to a folder as an ordinary session file, and a later request — or a restart — reads it back instead of
-reading the whole prompt again. The file is the same format the manual slot save/restore API writes, so a spilled
-conversation and a hand-saved one are interchangeable.
+bounded and does not survive a restart. The disk tier closes that gap: a conversation is written to a folder as an
+ordinary session file, and a later request — or a restart — reads it back instead of reading the whole prompt
+again. The file is the same format the manual slot save/restore API writes, so a spilled conversation and a
+hand-saved one are interchangeable.
+
+The tier has two modes (`--conversation-cache-spill-on`). The default, **mirror** (`park`), writes the state the
+moment a request ends and its session is parked, so an abrupt close loses at most the request in flight. The
+opt-out, **overflow** (`evict`), is the delta-1 behaviour: only a conversation the RAM cache evicts reaches disk.
+In both modes the folder holds **one copy per conversation**, and the copy is only replaced once its successor is
+on disk.
 
 The system prompt in front of every chat is (for one client) the same on every new chat, and it can be thousands
 of tokens. Re-reading it costs time on the first request of each chat. The system-prompt cache persists the
@@ -22,27 +28,51 @@ prefix, never a conversation tail.
 ## Slot lifecycle
 
 A slot is one request's state. When its turn ends the state is parked; the RAM cache holds it, and the disk tier
-catches what the RAM cache drops.
+mirrors it (default) or catches what the RAM cache drops (`evict`). The write happens when a request **ends**,
+never mid-generation, and a burst of parks of one conversation collapses to its newest state: one cell per
+conversation, drained by one background writer.
 
 ```mermaid
 flowchart TD
     A["Turn ends: state in VRAM / host RAM"] --> B{"Fits the RAM cache budget?"}
     B -->|yes| C["Parked in RAM"]
     B -->|no| D["Evicted: spill to disk"]
-    D --> E["One session file per stage (.sess) + one sidecar (.meta), written to a temp name then renamed"]
-    C --> F["Next prefill: match in RAM (no disk read)"]
+    C --> M{"spill-on park (default)?"}
+    M -->|yes| N["One cell per conversation (newest state) -> async writer"]
+    M -->|no -- evict| P["Nothing yet: the disk tier is overflow"]
+    N --> E["One session file per stage (.sess) + one sidecar (.meta), written to a temp name then renamed"]
+    N --> Q["Superseded copies dropped AFTER the new one lands: one copy per conversation"]
+    D --> E
     E --> G["Next prefill: match from the sidecars only (no K/V read)"]
+    C --> F["Next prefill: match in RAM (no disk read)"]
     G --> H{"Identity and prefix valid?"}
     H -->|no| I["Rejected clean: ignored and counted, never deleted"]
-    H -->|yes| J["Validate header and hash, load, grow or compact"]
-    J --> K["Re-spill on a later eviction: atomic replacement (temp + rename)"]
+    H -->|yes| R{"Client rewrote the tail (compaction)?"}
+    R -->|yes, header intact and prefix < --conversation-cache-spill-divergence-tokens| S["Discard the copy: compacted, not left orphaned"]
+    R -->|no| J["Validate header and hash, load, grow or compact"]
+    J --> K["Re-park / re-evict: atomic replacement (temp + rename)"]
     K --> E
     D --> L["GC: the only thing that deletes"]
-    L --> M["By space: over --conversation-cache-disk-mib, oldest first"]
-    M --> N{"Is the age lever on?"}
-    N -->|yes| O["By age too: oldest first"]
-    N -->|no| P["No deletion by time at all"]
+    L --> T["By space: over --conversation-cache-disk-mib, oldest first"]
+    T --> U{"Is the age lever on?"}
+    U -->|yes| V["By age too: oldest first"]
+    U -->|no| W["No deletion by time at all"]
+    A --> X{"Request cancelled? (the engine's '(cancelled)')"}
+    X -->|yes| Y["Provisional: revert the live ids to the last turn boundary; publish nothing; previous copy untouched"]
 ```
+
+**Compaction.** The sidecar carries the conversation's own token ids, so the check needs no K/V. A stored copy
+whose common prefix with the incoming prompt is shorter than `--conversation-cache-spill-divergence-tokens`
+(4096 by default) **while its header still matches** describes a history the client has rewritten (a compaction or
+an edited history): it can never be a hit, so it is discarded — index and file — and counted (`compacted`). A copy
+the prompt extends is the normal turn and is kept; a copy whose header differs is another conversation and is left
+alone.
+
+**Cancellation.** A request the client aborts (Escape-Escape in a TUI) ends with the engine's own `(cancelled)`
+line. That state is provisional: the live ids are reverted to the last turn boundary the read actually reached
+(`--turn-token`), no durable copy is published of it, and the previous good copy is left exactly as it was — it is
+the prefix the client resends on the retry. The harness does not matter: the decision uses only the turn token and
+the engine's cancellation signal.
 
 ## Prefill decision tree
 
@@ -93,8 +123,12 @@ flowchart TD
 
 - Disk tier: `--conversation-cache-spill-dir DIR`, with `--conversation-cache-mib > 0`, `--prompt-cache > 0`,
   `--conversation-cache-slots > 0` and a nonzero `--conversation-cache-disk-mib` (default 8192 MiB).
+  `--conversation-cache-spill-on` chooses `park` (default once the tier is on: a mirror, written at the park) or
+  `evict` (the delta-1 overflow);
   `--conversation-cache-spill-when-full` chooses `evict-oldest` (default) or `reject`;
-  `--conversation-cache-spill-max-age-days` adds optional age pruning (0 = off).
+  `--conversation-cache-spill-max-age-days` adds optional age pruning (0 = off);
+  `--conversation-cache-spill-divergence-tokens` (4096) and `--conversation-cache-spill-park-throttle-s` (0) tune
+  the compaction check and the rewrite rate.
 - System-prompt cache: `--system-prompt-cache` with `--system-prompt-cache-dir DIR`. It also needs
   `--prompt-cache > 0`, `--prompt-cache-root > 0`, a turn token and `--mtp` (without MTP the feature reports
   itself off rather than capturing a different artifact). Its folder is separate from the spill folder.
@@ -114,7 +148,11 @@ shows their counters under `/metrics` in `conversation_cache` (`disk` and `syste
 - The scan never deletes. A file of another identity, a broken or missing sidecar, an orphan session file and a
   leftover temporary are ignored and counted (`foreign`, `stale`, `orphan`), never removed. Only the GC removes,
   by budget and (if enabled) by age, oldest first.
-- Nothing is written with the flags absent: no folder is created and no byte is written.
+- Nothing is written with the flags absent: no folder is created and no byte is written. The mirror writes at the
+  **end of a request** (the park), never mid-generation, and collapses a burst of parks of one conversation to its
+  newest state; the disk cost is bounded by `--conversation-cache-disk-mib` either way.
+- The **mirror** pays a host copy of the parked image per park (the writer owns its own copy, so the RAM cache's
+  entry is never aliased). The copy is synchronous at the park; the disk write itself is asynchronous.
 
 ## Validation environment
 
