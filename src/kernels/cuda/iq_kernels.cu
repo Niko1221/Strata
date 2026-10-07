@@ -661,7 +661,7 @@ template<int TY> struct Split;
 // per-entry ones, which call Fmt<TY>::dot per column exactly as before #242 (the launchers test kSplit at compile
 // time, so the multi kernels are never instantiated for a type without a Split).
 template<int TY> inline constexpr bool kSplit = false;
-template<int TY> inline constexpr bool kStageIqGrid = (TY == 16 || TY == 17 || TY == 22 || TY == 29);
+template<int TY> inline constexpr bool kStageIqGrid = (TY == 16 || TY == 17 || TY == 18 || TY == 22 || TY == 29);
 
 template<> inline constexpr bool kSplit<16> = true;
 template<> struct Split<16> {   // IQ2_XXS
@@ -770,20 +770,30 @@ template<> inline constexpr bool kSplit<18> = true;
 template<> struct Split<18> {   // IQ3_XXS
     struct W { int g[8]; int ls; float dw; };
     template<bool STAGE_GRID = false>
-    __device__ static W load(const void* __restrict__ vbq, int kbx, int iqs, const uint32_t* __restrict__ = nullptr) {
+    __device__ static W load(const void* __restrict__ vbq, int kbx, int iqs, const uint32_t* __restrict__ s_grid = nullptr) {
         const block_iq3_xxs* bq3 = (const block_iq3_xxs*) vbq + kbx;
         const int2 q3_packed = make_int2(get_int_b2(bq3->qs, iqs), get_int_b2(bq3->qs, iqs + 1));
         const uint8_t* q3 = (const uint8_t*) &q3_packed;
         const uint32_t aux32 = get_int_b2(bq3->qs, QK_K / 16 + iqs / 2);
+        const uint32_t* grid = STAGE_GRID ? s_grid : iq3xxs_grid;
         W r;
 #pragma unroll
         for (int l0 = 0; l0 < 8; l0 += 2) {
-            const int2 grid_pos = make_int2(iq3xxs_grid[q3[l0 + 0]], iq3xxs_grid[q3[l0 + 1]]);
-            const uint32_t signs = unpack_ksigns(aux32 >> (7 * l0 / 2));
-            const int signs0 = __vcmpne4(signs & 0x08040201, 0);
-            r.g[l0 + 0] = __vsub4(grid_pos.x ^ signs0, signs0);
-            const int signs1 = __vcmpne4(signs & 0x80402010, 0);
-            r.g[l0 + 1] = __vsub4(grid_pos.y ^ signs1, signs1);
+            const int2 grid_pos = make_int2(grid[q3[l0 + 0]], grid[q3[l0 + 1]]);
+            if constexpr (STAGE_GRID) {
+                // The staged tables hold one mask per 7-bit sign field; bit 7 of the field is the next group's
+                // first sign, which unpack_ksigns cancels, so masking it off is the same value.
+                const uint32_t v = (aux32 >> (7 * l0 / 2)) & 0x7f;
+                const uint32_t ml = s_grid[256 + v], mh = s_grid[384 + v];
+                r.g[l0 + 0] = (int) ((grid_pos.x ^ ml) + (ml & 0x01010101u));
+                r.g[l0 + 1] = (int) ((grid_pos.y ^ mh) + (mh & 0x01010101u));
+            } else {
+                const uint32_t signs = unpack_ksigns(aux32 >> (7 * l0 / 2));
+                const int signs0 = __vcmpne4(signs & 0x08040201, 0);
+                r.g[l0 + 0] = __vsub4(grid_pos.x ^ signs0, signs0);
+                const int signs1 = __vcmpne4(signs & 0x80402010, 0);
+                r.g[l0 + 1] = __vsub4(grid_pos.y ^ signs1, signs1);
+            }
         }
         r.ls = aux32 >> 28;
         r.dw = __half2float(bq3->d);
@@ -1145,6 +1155,27 @@ __device__ __forceinline__ const uint32_t* stage_iq_grid(uint32_t* s_buf, int ti
         for (int i = tid; i < 1024; i += nthreads) dst[i] = src[i];
         __syncthreads();
         return s_buf;
+    } else if constexpr (TY == 18) {
+        // 256 codebook words, then two 128-word tables of the per-byte sign masks (signs 0-3, signs 4-7).  A
+        // mask depends only on the 7 bits it is unpacked from, and iq3xxs_grid's bytes are all >= 4, so the
+        // consumer applies it as (g ^ mask) + (mask & 0x01010101): a negate per set byte, with no carry into
+        // the next.  One pass per block replaces the per-lookup unpack_ksigns / __vcmpne4 / __vsub4 chain.
+        // Ported from shinbunbun/llama-cpp-p100-patches (MIT), patches 29 `mmvq-iq3xxs-grid-smem` and 30
+        // `mmvq-ksigns-smem`, measured there on a Tesla P100 (sm_60).
+        for (int i = tid; i < 256; i += nthreads) s_buf[i] = iq3xxs_grid[i];
+        for (int u = tid; u < 128; u += nthreads) {
+            const uint32_t s = (uint32_t) u | ((__popc((uint32_t) u) & 1u) << 7);   // 8th sign = parity of the 7
+            uint32_t ml = 0, mh = 0;
+#pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                ml |= ((s >> i) & 1u) * (0xffu << (8 * i));
+                mh |= ((s >> (4 + i)) & 1u) * (0xffu << (8 * i));
+            }
+            s_buf[256 + u] = ml;
+            s_buf[384 + u] = mh;
+        }
+        __syncthreads();
+        return s_buf;
     } else {
         return nullptr;
     }
@@ -1152,7 +1183,7 @@ __device__ __forceinline__ const uint32_t* stage_iq_grid(uint32_t* s_buf, int ti
 
 template<int TY, bool STAGE_GRID = kStageIqGrid<TY>>
 struct IqGridWords {
-    static constexpr int value = !STAGE_GRID ? 4 : (TY == 22 || TY == 29) ? 2048 : (TY == 17) ? 1024 : (TY == 16) ? 512 : 4;
+    static constexpr int value = !STAGE_GRID ? 4 : (TY == 22 || TY == 29) ? 2048 : (TY == 17) ? 1024 : (TY == 16 || TY == 18) ? 512 : 4;
 };
 
 // mmvq_kernel with the columns taken NC at a time.  After warp_sum every lane holds the same sum, so lane c stores
@@ -1966,6 +1997,25 @@ bool g_stage_grid_mmvq = g_stage_grid && [] {
     const char* v = std::getenv("STRATA_IQ_STAGE_GRID_MMVQ");
     return v != nullptr && v[0] == '1';
 }();
+// IQ3_XXS's codebook and sign-mask tables staged in shared memory by the grouped expert kernels (the single-matrix
+// mmvq does not): bitwise the same either way.  Measured on Pascal GP100 only, so it is the default on compute
+// capability 6.x and off elsewhere; STRATA_IQ_STAGE_GRID18=1 / 0 forces it on / off on any card.
+bool stage_grid18_on() {
+    if (!g_stage_grid) return false;
+    static const int forced = [] {
+        const char* v = std::getenv("STRATA_IQ_STAGE_GRID18");
+        return (v && v[0]) ? (v[0] != '0' ? 1 : 0) : -1;
+    }();
+    if (forced >= 0) return forced == 1;
+    static int by_device[64];   // 0 unknown, 1 on, 2 off
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return false;
+    if (by_device[dev] == 0) {
+        int major = 0;
+        by_device[dev] = (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess && major == 6) ? 1 : 2;
+    }
+    return by_device[dev] == 1;
+}
 
 template<int TY, bool STAGE_GRID = kStageIqGrid<TY>>
 void launch_mmvq_multi_nc(dim3 grid, dim3 block, cudaStream_t s, const uint8_t* W, size_t rb, const block_q8_1* X,
@@ -2669,7 +2719,7 @@ void launch_gu(dim3 grid, cudaStream_t s, const unsigned long long* grp_ptr, con
     if constexpr (!kSplit<TG>) native_gu_kernel<TG><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
     else if (g_old_kernels) native_gu_kernel<TG><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
     else if constexpr (kStageIqGrid<TG>) {
-        if (!g_stage_grid) {
+        if (!g_stage_grid || (TG == 18 && !stage_grid18_on())) {
             if (g_no_sub16_gu) native_gu_multi_kernel<TG, false, false><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
             else native_gu_multi_kernel<TG, false, true><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
             return;
