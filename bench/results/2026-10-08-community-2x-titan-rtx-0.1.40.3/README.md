@@ -3,12 +3,12 @@
 Two consumer Turing cards, no AVX-512 on the CPU, and the model's native
 262,144-token window. Reported per `docs/COMMUNITY_BENCHMARKS.md`: three runs
 per configuration, medians and ranges, prompt and decode throughput kept apart,
-and the recall check attached. Engine version 0.1.40.3.
+and the recall check attached. Engine version 0.1.40.3 with `STRATA_STAGE_TRIM=1`.
 
 > A note from the submitter, since numbers alone do not say why this was worth
 > the weekend: I did not expect any of this to be possible. The whole point of
 > the exercise was to see whether a 125B MoE could run at all on two consumer
-> Turing cards, and it does — 71-77 tok/s of decode with the model's full
+> Turing cards, and it does — 70-80 tok/s of decode with the model's full
 > 262,144-token window, on hardware that was never sold for this. Whatever you
 > do with the engine, that part is genuinely surprising. Thank you.
 
@@ -46,14 +46,10 @@ Qwen3.8-Flash-Next **IQ3_S** (3.5 bpw, the recommended quality tier),
 --reasoning-budget-tokens 12000
 ```
 
-`host 0.0.0.0`, `api_key` set (removed here). Calibration was not enabled and
-the experimental speed projection was off. The vision encoder was compiled
-locally for sm_75 (the ready-made encoder has no Turing code) and enabled in
-the running configuration.
-
-Observed after warm-up: 8,649 cached experts, 16.00 GiB of VRAM across
-both cards' cache together. The 27.1 GiB n-gram table under `--ple-io ram`
-is file-backed, so `free` reports it as page cache, not `used`.
+`STRATA_STAGE_TRIM=1` in the environment (PR #639): each card loads only its
+own layers' dense weights instead of a full copy, which returns the VRAM to
+the expert cache. `host 0.0.0.0`, `api_key` set (removed here). Calibration
+was not enabled and the experimental speed projection was off.
 
 ## Method and reproduction
 
@@ -81,9 +77,9 @@ chunks.
 
 | Prompt tokens | Prompt t/s (3 runs) | Median | Decode t/s (3 runs) | Median | TTFT (3 runs) |
 | --- | --- | --- | --- | --- | --- |
-| 4,096 | 831.8 / 876.3 / 868.9 | 868.9 | 65.9 / 70.9 / 71.5 | 70.9 | 3.69 / 3.50 / 3.52 s |
-| 32,768 | 1552.1 / 1548.9 / 1540.3 | 1548.9 | 77.3 / 79.2 / 77.0 | 77.3 | 15.97 / 16.02 / 16.10 s |
-| 128,000 | 1636.7 / 1626.9 / 1621.7 | 1626.9 | 71.1 / 73.8 / 70.7 | 71.1 | 59.13 / 59.50 / 59.69 s |
+| 4,096 | 886.8 / 922.6 / 922.8 | 922.6 | 75.4 / 65.1 / 80.3 | 75.4 | 3.46 / 3.33 / 3.32 s |
+| 32,768 | 1647.2 / 1638.8 / 1642.1 | 1642.1 | 63.9 / 83.0 / 80.2 | 80.2 | 15.07 / 15.14 / 15.12 s |
+| 128,000 | 1856.8 / 1852.8 / 1853.6 | 1853.6 | 70.6 / 66.9 / 72.2 | 70.6 | 52.21 / 52.32 / 52.31 s |
 
 Longer replies decode at the same rate as short ones: a separate 2,000-token
 run at a 95-token prompt measured ~59-70 t/s with an expert cache hit rate of
@@ -97,8 +93,8 @@ Idle: both drop to 0% and ~1350 MHz.
 ## Recall and limitations
 
 `needle_bench.py --lengths 32k,128k --depths 10,50,90`: **6 of 6 found**, no
-misses or errors. Actual prompt lengths 32,343 (32k) and 125,918-125,920
-(128k); wall-clock 13-21 s (32k) and 75-83 s (128k).
+misses or errors. Actual prompt lengths 32,470 (32k) and 125,975-125,977
+(128k); wall-clock 12-22 s (32k) and 65-72 s (128k).
 
 **NVLink is present but unused.** `nvidia-smi topo -m` reports `NV2`
 between the two cards, but per `docs/MULTI_GPU.md` the engine deliberately
@@ -107,19 +103,24 @@ pinned RAM once per verify window rather than twice per layer, so the same
 numbers should be expected on cards with no bridge. Do not expect a gain from
 adding a bridge on consumer boards.
 
-Settings compared and a note on `--ple-io ram`: on this box the `--ple-io
-ram` and `direct` routes measure the same prompt throughput (1596 vs 1595
-t/s in the shared comparison we used for the earlier report), while the
-`ram` route holds 27.1 GiB more resident page cache. Kept here only because
-this machine has RAM to spare; on a smaller machine the default is the
-better choice.
+**`STRATA_STAGE_TRIM=1` and the expert cache** (the "please report how it
+goes" switch). With it, each card loads only its own layers' dense weights
+instead of a full copy, and the freed VRAM goes to the expert cache. On this
+box it raised the resident expert count from **8,649 to 9,387** (+8.5%, 16.00
+-> 16.91 GiB) and returned prompt throughput and TTFT to the levels measured
+on 0.1.40.1 (~1,854 t/s and ~52 s at 128K). Decode was unchanged. As
+`docs/MULTI_GPU.md` notes, a card holding more experts can change which
+experts run on the GPU, so output can differ slightly from a run without it.
 
-**Expert cache map.** 8,649 experts cached this run, 16.00 GiB of VRAM. The
-config's `--kv-resident 65536` left room for it; the earlier 0.1.31 build on
-this same box cached 10,080 experts at 18.17 GiB because the vision encoder
-was not resident yet. Vision loaded: the text part of the 0.1.40.3 run ran
-with the encoder resident, which costs a fixed slice of VRAM. During testing
-the slot count settled at 8,649.
+Settings compared and a note on `--ple-io ram`: on this box the `--ple-io
+ram` and `direct` routes measure the same prompt throughput, while the `ram`
+route holds 27.1 GiB more resident page cache. Kept here only because this
+machine has RAM to spare; on a smaller machine the default is the better
+choice.
+
+**Expert cache map.** 9,387 experts cached this run, 16.91 GiB of VRAM with
+the vision encoder resident. On an earlier 0.1.40.3 run without
+`STRATA_STAGE_TRIM=1` the same box cached 8,649 experts.
 
 Not measured: the experimental speed projection and the low-RAM variant.
 Vision is enabled in the graph but this report covers text-only runs.
