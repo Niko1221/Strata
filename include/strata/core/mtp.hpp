@@ -106,6 +106,11 @@ public:
     void set_draft_history(const int32_t* tail, int64_t n_tail, int32_t next);
     void set_ple_session(SessionState* s) { ple_ss_ = s; }
     bool coupled() const { return coupled_active_; }
+    /// PROBABILISTIC DRAFT ACCEPTANCE (core/spec_prob.hpp, STRATA_SPEC_PROB=1): this request's drafts are SAMPLED from
+    /// q and each draft j's distribution is in spec_q() + j * kSpecQStride (ids, -1 terminated; then float bits),
+    /// valid on the host once draft() has returned.  False for greedy requests and where the mode is off.
+    bool prob() const { return coupled_active_ && h_q_ != nullptr; }
+    const int32_t* spec_q() const { return h_q_; }
 
     // ---- --pipeline-windows 2: the chain as one asynchronous launch (the round and its steps back to back, no host
     // wait), its first `n_force` steps fed the given tokens instead of their own picks (teacher forcing: the drafts of
@@ -172,6 +177,7 @@ private:
     int coupled_j_ = 0;
     strata::kernels::SamplerParams *h_cparams_ = nullptr, *m_cparams_ = nullptr, *cparams_ = nullptr;
     int32_t *h_chist_ = nullptr, *m_chist_ = nullptr, *cring_ = nullptr, *dinv_ = nullptr;
+    int32_t *h_q_ = nullptr, *m_q_ = nullptr;   ///< STRATA_SPEC_PROB: the drafts' q lists (mapped, max_t_ rows)
     void* cscratch_ = nullptr;
     const float* f32(const char* name) const;
     const uint16_t* bf16(const char* name) const;

@@ -23,9 +23,12 @@ capability 6.1 too, and cannot hold any of the model).
 
 | Cards | Architecture | How it runs | Reported |
 | --- | --- | --- | --- |
-| RX 6800 / 6900 series | gfx1030 | setup (`--backend hip`), unvalidated | [AMD_HIP.md](AMD_HIP.md#rdna2-gfx1030) |
+| RX 6800 / 6900 series | gfx1030 | setup (`--backend hip`), unvalidated; #540's attention kernel is the default there, with 8 cells per step and DPP lane exchanges (bit-exact; `STRATA_ATTN_PRE75=0` runs the standard kernel) | [AMD_HIP.md](AMD_HIP.md#rdna2-gfx1030); RX 6900 XT, IQ3_S: prompts +4-6% alone, +7-12% with #835 ([bench/results/2026-10-04-rdna2-pre75-attention](../bench/results/2026-10-04-rdna2-pre75-attention/README.md)) |
 | RX 6700 XT | gfx1031 | setup (`--backend hip`), unvalidated (#524) | used daily by its reporter, one card |
 | RX 5500 XT (RDNA1) | gfx1012 | built by hand: `-DCMAKE_HIP_ARCHITECTURES=gfx1012` (HIP 5.7 or 7) | 8 GB card, IQ3_S, 8K prompt: 15.3 tok/s decode (#442) |
+| RX 5700 XT (RDNA1) | gfx1010 | built by hand: `-DCMAKE_HIP_ARCHITECTURES=gfx1010`, on ROCm 7.14's `gfx101X-dgpu` wheels; needs `ROCR_VISIBLE_DEVICES=0` in a PC that also has an AMD iGPU | 8 GB card, Coder IQ1_M, 32K context: prompt 115 / 144 / 149 tok/s and decode 18.0 / 20.3 / 23.3 tok/s at 4K / 16K / 30K prompt tokens, 6 of 6 needle checks at 8K and 30K, 61 of 61 ctest on the card, 607 of 12,288 experts in VRAM |
+| RX 5700 and the 6 GB RX 5600 (RDNA1) | gfx1010 | as above | the same Navi 10 silicon as the RX 5700 XT, so the same build; a 6 GB card leaves ~50 expert slots, expect the RX 5500 XT's range, not this one's |
+| Radeon PRO V520 / Pro 5600M (RDNA1) | gfx1011 | built by hand: `-DCMAKE_HIP_ARCHITECTURES=gfx1011` | untested on hardware: it is the same RDNA1 ISA as gfx1010 (Navi 12), and the engine builds for it with 0 errors on the same wheels |
 | Instinct MI50 / MI60, Radeon VII | gfx906 (wave64) | built by hand: `-DSTRATA_HIP_GFX906=ON` | 2x MI50, Coder IQ1_M, 128K context: decode 50.1 / 47.8 / 45.7 tok/s at 4K / 32K / 128K prompt tokens, prompt ~520 tok/s (#677) |
 
 ## NVIDIA: the CUDA 12 engine
@@ -78,6 +81,9 @@ cmake --build build-cuda12 --target strata -j
 Setup does the same when it compiles: it looks for the newest CUDA 12.x toolkit (`STRATA_NVCC=<path to nvcc>` picks
 one, #601; on glibc 2.43 use 12.8, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md)).
 
+On GCC 12.3 with nvcc (openEuler 24.03, CUDA 12.8, 2x V100) the build needed `-D_BITS_OPT_RANDOM_H` added to the host flags (#1074; one
+report, not reproduced here). The `size_t` error in `vmm.hpp` that the same report hit is fixed in 0.1.40.2.
+
 ### What the flag changes, and what it does not
 
 `-DSTRATA_EXPERIMENTAL_SM60=ON` lowers the runtime floor to compute capability 6.0 and compiles the older cards' code
@@ -90,7 +96,8 @@ sums round differently): #540 measured a mean KL of 8.4e-3 on the next-token dis
 product on an RTX 2080 Ti.
 
 A/B switches: `STRATA_BF16_TC=0|1`, `STRATA_PROMPT_ATTN_OLD=1` (the decode kernel for prompts), `STRATA_ATTN_PRE75=0`
-(#540's kernel off). [NVIDIA_V100.md](NVIDIA_V100.md) has the V100 build, its measurements and the parity test.
+(#540's kernel off; on gfx103x with HIP that kernel is the default, see the AMD table above, and `=1` turns it on for
+another wave32 AMD card). [NVIDIA_V100.md](NVIDIA_V100.md) has the V100 build, its measurements and the parity test.
 
 ## AMD: building gfx906 and gfx1012
 

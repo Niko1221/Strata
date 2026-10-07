@@ -30,7 +30,7 @@ The file goes where every model goes (`<data>/models/qwen36-UD-IQ4_XS/`), its pa
 separate draft download. The engine finds out which model it runs from the file (`general.architecture`):
 nothing in the command line says "Qwen3.6".
 
-No ready-made engine runs it yet: the published Windows engines (0.1.40, 0.1.40.1) were built before this model was
+No ready-made engine runs it yet: the published Windows engines (0.1.40 to 0.1.40.2) were built before this model was
 added. Setup looks for it in the engine and, when the ready-made one lacks it, compiles the engine on the PC instead
 (10-20 minutes, once; setup installs the compiler and the CUDA toolkit when they are missing, asking first). On Linux
 setup compiles the engine anyway. The compiled engine runs every model, Flash-Next too.
@@ -103,9 +103,11 @@ and the rest of the experts on the CPU), the same prompts:
 | Long prompt, writes | 86 | 49 | 68 | 36 |
 
 (tokens/s). The answers are the same: greedy decoding gives llama.cpp's tokens exactly on UD-IQ4_XS (three short
-prompts and the 8K prompt, 32 tokens each). On UD-IQ3_S the first tokens agree and a later token can differ where
-llama.cpp's own top two are within a few percent (37% against 35% at the first difference seen) - a rounding-level
-tie, both continuations correct.
+prompts and the 8K prompt, 32 tokens each, with the expert cache at 3,000 slots). The experts in the GPU's cache
+round slightly differently from the CPU's, so which experts the cache holds can move a near-tie: with the cache sized
+by `auto` (4,420 slots) the 8K prompt took the second choice at its 17th token, where llama.cpp's top two are 28% and
+26%. On UD-IQ3_S the first tokens agree and a later token can differ where llama.cpp's own top two are within a few
+percent (37% against 35% at the first difference seen) - a rounding-level tie, both continuations correct.
 
 ## Ornith-1.5-35B-A3B
 

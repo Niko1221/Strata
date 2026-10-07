@@ -80,7 +80,7 @@ def _only_objects(node, root, refs=()):
     return isinstance(branches, list) and any(_only_objects(b, root, refs) for b in branches)
 
 
-def prepare_format(response_format, messages):
+def prepare_format(response_format, messages, with_tools=False):
     if response_format is None:
         return messages, None
     if not isinstance(response_format, dict):
@@ -136,6 +136,10 @@ def prepare_format(response_format, messages):
                  "Use every required field, correct types, and only allowed fields. "
                  "Put all requested writing inside the appropriate JSON string fields.\nJSON Schema:\n" +
                  json.dumps(schema, ensure_ascii=False, allow_nan=False, separators=(",", ":")))
+    if with_tools:
+        # /v1/responses (#782): the schema is for the final answer; a turn that calls a tool is not an answer
+        directive += ("\nThis applies only to your final answer. To use a tool, call it as usual; the JSON object is "
+                      "what you write once you are done with the tools.")
     messages = [dict(message) for message in messages]
     if messages and messages[0].get("role") == "system":
         content = messages[0].get("content") or ""

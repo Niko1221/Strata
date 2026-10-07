@@ -301,5 +301,29 @@ int main() {
         r = cache.take_reuse();
         check(r.kv.size() == 2 && r.stages.empty(), "no layer split: no stage reuse, as before");
     }
+    {   // pin=N: a parked conversation that holds a pinned shared prefix is not the one evicted
+        const size_t one = image({1,2,3}).bytes();
+        auto pinned = image({1,2,3});
+        pinned.checkpoints.push_back(ConversationCheckpoint{});
+        pinned.checkpoints.back().ids = {1,2};
+        pinned.checkpoints.back().pinned = true;
+        pinned.checkpoints.back().gdn.resize(64, 1);
+        const size_t pinned_bytes = pinned.bytes();
+        ConversationCache big(pinned_bytes + one * 2 + 64, 3);
+        check(pinned.pinned() && !image({1,2,3}).pinned(), "a conversation is pinned when one of its checkpoints is");
+        check(big.put(std::move(pinned)), "the pinned conversation is parked first (the oldest)");
+        check(big.put(image({7,8,9})) && big.put(image({4,5,6})) && big.size() == 3, "two more fill the slots");
+        check(big.put(image({10,11,12})) && big.size() == 3 && big.evictions() == 1,
+              "a fourth evicts the oldest unpinned one");
+        check(big.best(std::vector<int32_t>{1,2,9,9}, {}, true).tokens == 2, "the pinned prefix is still found");
+        ConversationCache tiny(pinned_bytes + 8, 2);
+        auto p2 = image({1,2,3});
+        p2.checkpoints.push_back(ConversationCheckpoint{});
+        p2.checkpoints.back().ids = {1,2};
+        p2.checkpoints.back().pinned = true;
+        p2.checkpoints.back().gdn.resize(64, 1);
+        check(tiny.put(std::move(p2)), "a pinned one fits an empty cache");
+        check(!tiny.put(image({7,8,9})) && tiny.size() == 1, "nothing else fits beside it: parking is refused, the pin stays");
+    }
     std::printf("conversation_cache_test: %d checks passed\n", checks);
 }
