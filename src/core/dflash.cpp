@@ -628,14 +628,11 @@ bool DFlashDrafter::add_context(const uint16_t* taps, int n_taps, int64_t stride
     const DFlashGeometry& dg = artifact_.geom();
     const int64_t N = dg.hidden, F = dg.fusion_in();
     if (n_taps * N != F) { err = "dflash: the tap count does not match the fusion input"; return false; }
-    std::fprintf(stderr, "dflash dbg: add_context rows=%lld stride=%lld taps=%p\n", (long long) rows,
-                 (long long) stride_rows, (const void*) taps);
     for (int64_t r0 = 0; r0 < rows; r0 += 8) {
         const int nr = (int) std::min<int64_t>(8, rows - r0);
         for (int t = 0; t < n_taps; ++t)
             strata::kernels::bf16_gather_strided(taps + (size_t) ((int64_t) t * stride_rows + r0) * N, N,
                                                  tapin_ + (size_t) t * N, F, (int) N, nr, cs_);
-        std::fprintf(stderr, "dflash dbg: batch r0=%lld nr=%d fused...\n", (long long) r0, nr);
         if (!fusion_rows(pos0 + r0, nr, err)) return false;
     }
     return true;
@@ -688,30 +685,18 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
             if (n == name) return p;
         return nullptr;
     };
-    static bool said = false;
-    if (!said) {
-        std::fprintf(stderr, "dflash dbg: wf(hidden_norm)=%p wf(layers.0.self_attn.k_norm)=%p wf(layers.0.input_layernorm)=%p\n",
-                     (const void*) wf("hidden_norm"), (const void*) wf("layers.0.self_attn.k_norm"),
-                     (const void*) wf("layers.0.input_layernorm"));
-        said = true;
-    }
     // ctx = hidden_norm(fc(taps)); the projections run one row per launch (the bf16 path has no
     // multi-row variant yet - the prompt batches loop, the cycle needs at most 8)
     for (int r = 0; r < rows; ++r)
         bf16_gemv(tapin_ + (size_t) r * F, wp("fc"), ctx_ + (size_t) r * N, F, N, cs_);
-    std::fprintf(stderr, "dflash dbg: fusion rms ctx_=%p gamma=%p rows=%d N=%lld cs=%p\n", (void*) ctx_,
-                 (const void*) wf("hidden_norm"), rows, (long long) N, (void*) cs_);
     native_qsa_rms_norm_weighted(ctx_, wf("hidden_norm"), ctx_, (int) N, rows, kEps, cs_);
-    std::fprintf(stderr, "dflash dbg: fusion bf16...\n");
     f32_to_bf16_bulk(ctx_, xn16_, (int64_t) rows * N, cs_);
     for (int64_t l = 0; l < dg.layers; ++l) {
         const std::string pre = "layers." + std::to_string(l);
-        std::fprintf(stderr, "dflash dbg: layer %lld kv gemv...\n", (long long) l);
         for (int r = 0; r < rows; ++r) {
             bf16_gemv(xn16_ + (size_t) r * N, wp((pre + ".self_attn.k_proj").c_str()), kc_ + (size_t) r * KVW, N, KVW, cs_);
             bf16_gemv(xn16_ + (size_t) r * N, wp((pre + ".self_attn.v_proj").c_str()), vc_ + (size_t) r * KVW, N, KVW, cs_);
         }
-        std::fprintf(stderr, "dflash dbg: layer %lld k norm...\n", (long long) l);
         native_qsa_rms_norm_weighted(kc_, wf((pre + ".self_attn.k_norm").c_str()), kc_, (int) dg.head_dim,
                                      (int) (rows * dg.n_head_kv), kEps, cs_);
         // rope at each row's own position (k rows of one row sit NKV apart: [row r][head][hd]);
@@ -790,7 +775,6 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
                              emb_ref_->group_elems, (uint64_t) (emb_ref_->ne0 / (8 / emb_ref_->code_bits)),
                              (uint64_t) (emb_ref_->ne0 / emb_ref_->group_elems), emb_, cs_);
     }
-    if (cudaStreamSynchronize(cs_) != cudaSuccess) { err = "dbg: emb failed"; return false; }
     if (cudaMemcpyAsync(h_, emb_, (size_t) K * N * 4, cudaMemcpyDeviceToDevice, cs_) != cudaSuccess) {
         err = "dflash: the residual init failed";
         return false;
@@ -877,8 +861,8 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
             err = "dflash: the window cap is exceeded (raise --dflash-window)";
             return false;
         }
-        if (cudaStreamSynchronize(cs_) != cudaSuccess) { err = "dbg: attn layer failed"; return false; }
-        if (l == 0) {
+        static const bool df_dbg = std::getenv("STRATA_DF_DBG") != nullptr;
+        if (l == 0 && df_dbg) {
             const QsaAttnPools pl = qsa_attn_pools(st_[0]);
             std::fprintf(stderr,
                          "dflash dbg: attn cap=%lld K=%d step0=[%d %d %d %d] pools k=%p kq=%p kq4=%p pt=%p "
@@ -893,7 +877,7 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
         f32_to_bf16_bulk(attn_, attn16_, (int64_t) K * Q, cs_);
         for (int r = 0; r < K; ++r)
             bf16_gemv(attn16_ + (size_t) r * Q, wp((pre + ".self_attn.o_proj").c_str()), bo_ + (size_t) r * N, Q, N, cs_);
-        if (l == 0 && getenv("STRATA_DF_DBG")) {
+        if (l == 0 && df_dbg) {
             std::vector<float> hb(4), ab(4);
             cudaMemcpyAsync(hb.data(), h_, 16, cudaMemcpyDeviceToHost, cs_);
             cudaMemcpyAsync(ab.data(), bo_, 16, cudaMemcpyDeviceToHost, cs_);
@@ -915,7 +899,8 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
         add_inplace(h_, bo_, K * N, cs_);
     }
     // ---- final norm, the target's head, the row argmaxes
-    if (getenv("STRATA_DF_DBG")) {
+    static const bool df_dbg2 = std::getenv("STRATA_DF_DBG") != nullptr;
+    if (df_dbg2) {
         std::vector<float> hb(4), eb(4);
         cudaMemcpyAsync(hb.data(), h_, 16, cudaMemcpyDeviceToHost, cs_);
         cudaMemcpyAsync(eb.data(), emb_, 16, cudaMemcpyDeviceToHost, cs_);
@@ -923,10 +908,8 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
         std::fprintf(stderr, "df dbg: final h0=%.3e emb0=%.3e\n", hb[0], eb[0]);
     }
     native_qsa_rms_norm_weighted(h_, wf("norm"), xn_, (int) N, K, kEps, cs_);
-    if (cudaStreamSynchronize(cs_) != cudaSuccess) { err = "dbg: layers failed"; return false; }
     native_quantize_q8_1(xn_, xq_, (int) N, K, cs_);
     native_mmvq(head_->type(), head_->weights(), xq_, logits_, (int) N, (int) dg.vocab, K, cs_);
-    if (cudaStreamSynchronize(cs_) != cudaSuccess) { err = "dbg: head failed"; return false; }
     argmax_rows(logits_, K, (int) dg.vocab, arg_scratch_, out_, cs_);
     if (cudaStreamSynchronize(cs_) != cudaSuccess) {
         err = std::string("dflash: its stream failed: ") + cudaGetErrorString(cudaGetLastError());
