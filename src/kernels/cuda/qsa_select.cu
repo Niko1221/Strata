@@ -2,11 +2,45 @@
 #include "strata/core/emulate.hpp"
 #include <cstdlib>
 #include <cstring>
+//
+// AMD tensor cores, gfx110x arm: ROCWMMA (16x16x16, FP16 operands, FP32 accumulation) - measured 1.64x faster
+// at the qsa-select phase than the bf16 hand-rolled kernel below on gfx1100 (paired A/B, 2026-10-06).  The
+// CUDA-compat shim (hip_compat/intrinsics.hpp, force-included before this file) renames the CUDA warp
+// intrinsics with macros - and hip's own bf16/fp8 headers, which rocWMMA pulls in, use those same tokens as
+// function NAMES.  The macros are therefore lifted while rocWMMA parses and put back after; they must match
+// intrinsics.hpp exactly.  Without the rocWMMA headers the arm compiles out and the host entry refuses -
+// the bf16 kernel (gfx12 + the other gfx11 layouts) and the warp kernel stay the fallbacks everywhere else.
+#if defined(__HIPCC__) && defined(__has_include)
+#if __has_include(<rocwmma/rocwmma.hpp>)
+#define STRATA_QSA_HAVE_ROCWMMA 1
+#undef __dp4a
+#undef __vsub4
+#undef __vsubss4
+#undef __vcmpne4
+#undef __shfl_xor_sync
+#undef __shfl_down_sync
+#undef __shfl_up_sync
+#undef __shfl_sync
+#undef __ballot_sync
+#include <rocwmma/rocwmma.hpp>
+#define __dp4a(a, b, c) (::strata::hip_compat::dp4a((a), (b), (c)))
+#define __vsub4(a, b) (::strata::hip_compat::vsub4((a), (b)))
+#define __vsubss4(a, b) (::strata::hip_compat::vsubss4((a), (b)))
+#define __vcmpne4(a, b) (::strata::hip_compat::vcmpne4((a), (b)))
+#define __shfl_xor_sync(...) (::strata::hip_compat::shfl_xor_sync(__VA_ARGS__))
+#define __shfl_down_sync(...) (::strata::hip_compat::shfl_down_sync(__VA_ARGS__))
+#define __shfl_up_sync(...) (::strata::hip_compat::shfl_up_sync(__VA_ARGS__))
+#define __shfl_sync(...) (::strata::hip_compat::shfl_sync(__VA_ARGS__))
+#define __ballot_sync(mask, predicate) (::strata::hip_compat::ballot_sync((mask), (predicate)))
+#endif
+#endif
+
 #include "strata/kernels/qsa_select.hpp"
 #include "strata/kernels/gfx_arch.hpp"
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cfloat>
 #include <cstdio>
 #include <cstdlib>
@@ -483,6 +517,63 @@ __global__ void __launch_bounds__(32) block_scores_tail_kernel(const float* __re
         out[qi * max_blocks + n_bid] = score;
     }
 }
+
+// ---- AMD tensor cores (rocWMMA), the gfx110x arm: the same scores as block_scores_kernel with FP16 operands
+// and FP32 accumulation in another (unspecified) summation order - the PORTING.md 18 bound covers exactly that
+// difference.  The tail block is NOT computed here: block_scores_tail_kernel runs unchanged and keeps it
+// bitwise the warp kernel's.  Layout: one wave (32 lanes) per CTA computes a 16-row x 16-block tile; a row is
+// one (query, indexer head) pair (4 consecutive queries x IDX_HEADS heads, q_idx's own row order), the K axis
+// is IDX_DIM in 16-wide slices.
+#if defined(STRATA_QSA_HAVE_ROCWMMA)
+constexpr int WM_BT = 16;                                // key blocks per tile (mma n16)
+constexpr int WM_ROWS = 4 * IDX_HEADS;                   // (query, head) rows per tile: 4 queries
+
+__global__ void __launch_bounds__(256) f32_to_f16_poison_kernel(const float* __restrict__ in, size_t n,
+                                                                __half* __restrict__ out, size_t total) {
+    for (size_t i = blockIdx.x * (size_t) blockDim.x + threadIdx.x; i < total; i += (size_t) gridDim.x * blockDim.x)
+        out[i] = __float2half(i < n ? in[i] : 60000.0f);   // poisoned slack must never reach a score
+}
+
+__global__ void __launch_bounds__(32) block_scores_wmma_gfx11_kernel(const __half* __restrict__ pooled16,
+                                                               const __half* __restrict__ q16,
+                                                               const int32_t* __restrict__ steps, int nq,
+                                                               int64_t max_blocks, float* __restrict__ out) {
+    const int q0 = (int) blockIdx.y * 4;
+    const int64_t b0 = (int64_t) blockIdx.x * WM_BT;
+    if (q0 >= nq || b0 >= max_blocks) return;
+    int64_t n_bid[4];
+#pragma unroll
+    for (int q = 0; q < 4; ++q)
+        n_bid[q] = (q0 + q) < nq ? steps[(size_t) (q0 + q) * kStepCount + kStepNBid] : (int64_t) -1;
+    rocwmma::fragment<rocwmma::accumulator, 16, 16, 16, float> acc;
+    rocwmma::fill_fragment(acc, 0.0f);
+#pragma unroll
+    for (int ks = 0; ks < IDX_DIM / 16; ++ks) {
+        rocwmma::fragment<rocwmma::matrix_a, 16, 16, 16, __half, rocwmma::row_major> a;
+        rocwmma::fragment<rocwmma::matrix_b, 16, 16, 16, __half, rocwmma::col_major> b;
+        rocwmma::load_matrix_sync(a, q16 + (size_t) q0 * IDX_HEADS * IDX_DIM + ks * 16, IDX_DIM);
+        rocwmma::load_matrix_sync(b, pooled16 + b0 * IDX_DIM + ks * 16, IDX_DIM);
+        rocwmma::mma_sync(acc, a, b, acc);
+    }
+    __shared__ float tile[WM_ROWS * WM_BT];
+    rocwmma::store_matrix_sync(tile, acc, WM_BT, rocwmma::mem_row_major);
+    __syncthreads();
+    // tile[q * IDX_HEADS + h][c] = dot(query q0 + q, head h, pooled block b0 + c)
+    for (int i = threadIdx.x; i < 4 * WM_BT; i += blockDim.x) {
+        const int q = i / WM_BT, c = i - q * WM_BT;
+        const int64_t b = b0 + c;
+        const int qi = q0 + q;
+        if (qi >= nq || b >= max_blocks || b >= n_bid[q]) continue;   // b == n_bid is the tail kernel's
+        float s = 0.0f;
+#pragma unroll
+        for (int h = 0; h < IDX_HEADS; ++h) {
+            const float d = tile[(q * IDX_HEADS + h) * WM_BT + c];
+            s += d > 0.0f ? d : 0.0f;
+        }
+        out[(size_t) qi * max_blocks + b] = s;
+    }
+}
+#endif   // STRATA_QSA_HAVE_ROCWMMA
 
 // ---- the same top-k with each query's keys read once: 1,024 threads hold up to TK_PER consecutive blocks' keys in
 // registers (contexts up to 4 * 1024 * TK_PER cells), per-warp histograms, block-wide scans. The selection rule is
@@ -1058,7 +1149,16 @@ bool qsa_block_scores_tc(const float* pooled, const float* dead, const float* q_
         const char* v = std::getenv("STRATA_SELECT_WMMA");
         return v != nullptr && v[0] != '\0' && v[0] != '0';
     }();
-    if (!wmma_on || !sel_gfx12_device()) return false;
+    if (!wmma_on) return false;
+    // gfx110x first: the fp16 (rocWMMA) arm - 1.64x faster at the qsa-select phase than the bf16 kernel on
+    // gfx1100 (paired A/B, 2026-10-06).  False there (no rocWMMA headers, or a gfx110x geometry the arm
+    // refuses) falls through to the bf16 kernel, which also serves gfx115x and gfx12.
+    if (qsa_block_scores_wmma(pooled, dead, q_idx, steps, nq, max_blocks, s, scores, stream, active_blocks)) {
+        static int said11 = 0;
+        if (!said11) { said11 = 1; std::fprintf(stderr, "strata select: prompt scorer arm = wmma (gfx1100, fp16, opt-in)\n"); }
+        return true;
+    }
+    if (!sel_gfx12_device()) return false;
     {
         const int64_t reach = active_blocks > 0 && active_blocks < max_blocks ? active_blocks : max_blocks;
         const int64_t per = (int64_t) 4 * WITER * 16;
@@ -1107,6 +1207,68 @@ bool qsa_block_scores_tc(const float* pooled, const float* dead, const float* q_
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) { std::fprintf(stderr, "qsa_block_scores_tc: %s\n", cudaGetErrorString(e)); std::exit(1); }
     return true;
+#endif
+}
+
+bool qsa_block_scores_wmma(const float* pooled, const float* dead, const float* q_idx, const int32_t* steps, int64_t nq,
+                           int64_t max_blocks, const QsaShapes& s, float* scores, void* stream, int64_t active_blocks) {
+    if (nq <= 0) return true;
+    if (s.idx_dim != IDX_DIM || s.idx_n_head != IDX_HEADS || s.idx_block != R || nq > 65535 * 4) return false;
+#if defined(STRATA_QSA_HAVE_ROCWMMA)
+    static int arch[64] = {};   // 1 = gfx1100 (the arm's verified card), -1 = anything else: refuse, the caller
+                                // falls through to the bf16 kernel (gfx115x) or the warp kernel
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return false; }
+    if (arch[dev] == 0) {
+        hipDeviceProp_t p{};    // gcnArchName is a HIP field; this whole branch is HIP-only
+        if (hipGetDeviceProperties(&p, dev) != hipSuccess) { cudaGetLastError(); return false; }
+        arch[dev] = p.gcnArchName[0] == 'g' && p.gcnArchName[1] == 'f' && p.gcnArchName[2] == 'x' &&
+                            p.gcnArchName[3] == '1' && p.gcnArchName[4] == '1' && p.gcnArchName[5] == '0' &&
+                            p.gcnArchName[6] == '0'
+                        ? 1
+                        : -1;
+    }
+    if (arch[dev] < 0) return false;
+    // the conversion scratch: keys up to whole tiles, query rows up to whole 4-query tiles, poison in the slack
+    const int64_t reach = active_blocks > 0 && active_blocks < max_blocks ? active_blocks : max_blocks;
+    const size_t kb = (size_t) ((reach + WM_BT - 1) / WM_BT) * WM_BT * IDX_DIM;
+    const size_t qb = (size_t) ((nq + 3) / 4) * 4 * IDX_HEADS * IDX_DIM;
+    static __half* scratch[64] = {};
+    static size_t scratch_n[64] = {};
+    if (scratch_n[dev] < kb + qb) {
+        cudaFree(scratch[dev]);
+        cudaGetLastError();
+        scratch[dev] = nullptr;
+        scratch_n[dev] = 0;
+        if (cudaMalloc((void**) &scratch[dev], (kb + qb) * sizeof(__half)) != cudaSuccess) {
+            cudaGetLastError();
+            return false;
+        }
+        scratch_n[dev] = kb + qb;
+    }
+    const auto conv = [&](const float* in, size_t n, __half* out, size_t total) {
+        const unsigned blocks = (unsigned) std::min<size_t>((total + 255) / 256, 65535);
+        f32_to_f16_poison_kernel<<<blocks, 256, 0, (cudaStream_t) stream>>>(in, n, out, total);
+    };
+    conv(pooled, (size_t) reach * IDX_DIM, scratch[dev], kb);
+    conv(q_idx, (size_t) nq * IDX_HEADS * IDX_DIM, scratch[dev] + kb, qb);
+    block_scores_wmma_gfx11_kernel<<<dim3((unsigned) ((reach + WM_BT - 1) / WM_BT), (unsigned) ((nq + 3) / 4)), 32, 0,
+                               (cudaStream_t) stream>>>(scratch[dev], scratch[dev] + kb, steps, (int) nq, max_blocks,
+                                                        scores);
+    block_scores_tail_kernel<<<(unsigned) nq, 32, 0, (cudaStream_t) stream>>>(dead, q_idx, steps, max_blocks, scores);
+    const cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) { std::fprintf(stderr, "qsa_block_scores_wmma: %s\n", cudaGetErrorString(e)); std::exit(1); }
+    return true;
+#else
+    (void) pooled;
+    (void) dead;
+    (void) q_idx;
+    (void) steps;
+    (void) max_blocks;
+    (void) scores;
+    (void) stream;
+    (void) active_blocks;
+    return false;   // an AMD-only arm: a CUDA build keeps the TF32 path and the warp kernel
 #endif
 }
 
