@@ -100,6 +100,13 @@ option(STRATA_BUILD_TESTS "Build the test suite" ${_strata_tests_default})
 option(STRATA_BUILD_CONVERSATION_TESTS "Build standalone conversation cache tests" OFF)
 option(STRATA_WERROR "Treat compiler warnings as errors" OFF)
 
+if(STRATA_BUILD_TESTS)
+  enable_testing()
+  add_executable(remote_reserve_test src/core/remote_reserve_test.cpp)
+  target_include_directories(remote_reserve_test PRIVATE include)
+  add_test(NAME remote_reserve_test COMMAND remote_reserve_test)
+endif()
+
 if(STRATA_BUILD_CONVERSATION_TESTS)
   enable_testing()
   add_executable(conversation_cache_test src/core/conversation_cache_test.cpp)
