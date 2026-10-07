@@ -33,6 +33,53 @@ namespace {
 
 constexpr float kEps = 1e-6f;   // the architecture's rms_norm eps (the config's rms_norm_eps)
 
+// The stage-parity fixture (STRATA_DF_PARITY=<dir>): when the drafter's cycle counter reaches
+// STRATA_DF_PARITY_CYCLE (default 1), every named stage is written as [u32 float count][f32
+// payload] into <dir>/<name>.bin for tools/dflash_stage_parity.py.  No effect otherwise.
+int parity_want(int64_t cycle) {
+    static const char* dir = std::getenv("STRATA_DF_PARITY");
+    static const int64_t want = [] {
+        const char* c = std::getenv("STRATA_DF_PARITY_CYCLE");
+        return c ? std::atoll(c) : 1;
+    }();
+    return dir && cycle == want;
+}
+
+void parity_dump_u16_as_f32(const char* dir, const char* name, const void* dev, int64_t n, cudaStream_t cs) {
+    std::vector<uint16_t> host((size_t) n);
+    if (cudaMemcpyAsync(host.data(), dev, (size_t) n * 2, cudaMemcpyDeviceToHost, cs) != cudaSuccess) return;
+    cudaStreamSynchronize(cs);
+    std::vector<float> wide((size_t) n);
+    for (int64_t i = 0; i < n; ++i) {
+        const uint32_t bits = (uint32_t) host[(size_t) i] << 16;
+        std::memcpy(&wide[(size_t) i], &bits, 4);
+    }
+    char path[600];
+    std::snprintf(path, sizeof path, "%s/%s.bin", dir, name);
+    if (FILE* f = std::fopen(path, "wb")) {
+        const uint32_t cnt = (uint32_t) n;
+        std::fwrite(&cnt, 4, 1, f);
+        std::fwrite(wide.data(), 4, (size_t) n, f);
+        std::fclose(f);
+        std::fprintf(stderr, "dflash parity: dumped %s (fp16->f32, %lld)\n", name, (long long) n);
+    }
+}
+
+void parity_dump(const char* dir, const char* name, const void* dev, int64_t floats, cudaStream_t cs) {
+    std::vector<float> host((size_t) floats);
+    if (cudaMemcpyAsync(host.data(), dev, (size_t) floats * 4, cudaMemcpyDeviceToHost, cs) != cudaSuccess) return;
+    cudaStreamSynchronize(cs);
+    char path[600];
+    std::snprintf(path, sizeof path, "%s/%s.bin", dir, name);
+    FILE* f = std::fopen(path, "wb");
+    if (!f) return;
+    const uint32_t n = (uint32_t) floats;
+    std::fwrite(&n, 4, 1, f);
+    std::fwrite(host.data(), 4, (size_t) floats, f);
+    std::fclose(f);
+    std::fprintf(stderr, "dflash parity: dumped %s (%lld floats)\n", name, (long long) floats);
+}
+
 uint64_t mapped_bytes(int64_t n) { return ((uint64_t) n + 63) & ~uint64_t(63); }
 
 strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) {
@@ -158,10 +205,45 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
             err = "dflash: the draft K/V state init failed";
             return false;
         }
+        // The init COPIES the session reference's streaming/elastic plumbing: the page table's -1
+        // residency entries, the host-copy pointers, the stream map, and (worst) `kv_elastic` - an
+        // INDEX INTO THE SESSION'S elastic-pool registry.  With it copied, the drafter's k_pool
+        // pointed at the session's VMM range, which kvg_start/kvg_ensure re-map and zero while the
+        // prompt is read: context cells vanished in irregular holes.  The drafter streams nothing
+        // and owns its plain cudaMalloc arena: identity page table, no host copy, no map, no
+        // elastic registration.
+        st_[(size_t) l].kv_elastic = -1;
+        st_[(size_t) l].host = strata::kernels::KvHostPools{};
+        st_[(size_t) l].map = strata::kernels::KvStreamMap{};
+        st_[(size_t) l].kv_mode = 0;
+        {
+            std::vector<int32_t> ident_page((size_t) st_[(size_t) l].n_pages);
+            for (int64_t pg = 0; pg < st_[(size_t) l].n_pages; ++pg) ident_page[(size_t) pg] = (int32_t) pg;
+            if (cudaMemcpyAsync(st_[(size_t) l].page_table, ident_page.data(),
+                                (size_t) st_[(size_t) l].n_pages * 4, cudaMemcpyHostToDevice,
+                                cs_) != cudaSuccess) {
+                err = "dflash: the draft page table init failed";
+                return false;
+            }
+        }
         strata::core::qsa_state_zero(st_[(size_t) l], pool_g_, nullptr);
         vram_ += sb;
     }
     cudaDeviceSynchronize();
+    if (std::getenv("STRATA_DF_DBG")) {
+        const QsaState& s0 = st_[0];
+        const QsaState& ref = ss.qsa_states[ss.qsa_primary()];
+        std::fprintf(stderr, "dflash dbg: arena0=%p st0.k_pool=%p (offset %lld) ref.k_pool=%p\n",
+                     arenas_[0], (void*) s0.k_pool, (long long) ((uint8_t*) s0.k_pool - (uint8_t*) arenas_[0]),
+                     (void*) ref.k_pool);
+        std::vector<int32_t> pt((size_t) std::min<int64_t>(s0.n_pages, 40));
+        cudaMemcpyAsync(pt.data(), s0.page_table, pt.size() * 4, cudaMemcpyDeviceToHost);
+        cudaDeviceSynchronize();
+        std::fprintf(stderr, "dflash dbg: state kv_mode=%d n_slots=%lld n_pages=%lld ring table[:12]=", (int) s0.kv_mode,
+                     (long long) s0.n_slots, (long long) s0.n_pages);
+        for (size_t i = 0; i < pt.size() && i < 12; ++i) std::fprintf(stderr, " %d", pt[(size_t) i]);
+        std::fprintf(stderr, "\n");
+    }
 
     // ---- buffers: at most 8 rows ride through the forward at once
     max_rows_ = 8;
@@ -219,6 +301,8 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
         err = "dflash: the upload did not land";
         return false;
     }
+    if (const char* pd = std::getenv("STRATA_DF_PARITY"))
+        std::snprintf(parity_dir_, sizeof parity_dir_, "%s", pd);
     return true;
 }
 
@@ -260,6 +344,8 @@ bool DFlashDrafter::bind(const WeightTable& wt, const NativeHead* head, std::str
 /// K/V projected, k-normed, roped and appended at [pos0, pos0+rows).
 bool DFlashDrafter::add_context(const uint16_t* taps, int n_taps, int64_t stride_rows, int64_t pos0, int64_t rows,
                                 std::string& err) {
+    if (std::getenv("STRATA_DF_DBG")) std::fprintf(stderr, "dflash dbg: add_context rows=%lld pos0=%lld\n",
+                                                   (long long) rows, (long long) pos0);
     // The prompt path's capture: [n_taps][stride_rows][n_embd] bf16.  The fusion wants [rows][F]
     // (tap-major inside a row): transpose each 8-row batch into tapin_, then fuse + append.
     const DFlashGeometry& dg = artifact_.geom();
@@ -271,6 +357,11 @@ bool DFlashDrafter::add_context(const uint16_t* taps, int n_taps, int64_t stride
             strata::kernels::bf16_gather_strided(taps + (size_t) ((int64_t) t * stride_rows + r0) * N, N,
                                                  tapin_ + (size_t) t * N, F, (int) N, nr, cs_);
         if (!fusion_rows(pos0 + r0, nr, err)) return false;
+    }
+    if (cycle_ == 0 && parity_dir_[0]) {
+        // the prompt's context cells, layer 0: the first 32 pages raw ([page][kvh][slot][hd] fp16)
+        parity_dump_u16_as_f32(parity_dir_, "pool_cells0", st_[0].k_pool,
+                               32 * 2 * 4 * 256, cs_);
     }
     return true;
 }
@@ -328,15 +419,46 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
     for (int r = 0; r < rows; ++r)
         bf16_gemv(tapin_ + (size_t) r * F, wp("fc"), ctx_ + (size_t) r * N, F, N, cs_);
     native_qsa_rms_norm_weighted(ctx_, wf("hidden_norm"), ctx_, (int) N, rows, kEps, cs_);
+    if (parity_want(cycle_)) {
+        parity_dump(parity_dir_, "tapsin", tapf_, rows * F, cs_);
+        parity_dump(parity_dir_, "ctx", ctx_, rows * N, cs_);
+    }
+    if (cycle_ == 0 && parity_dir_[0]) {
+        char path[600];
+        std::snprintf(path, sizeof path, "%s/ctx_b%lld.bin", parity_dir_, (long long) pos0);
+        std::vector<float> host((size_t) rows * N);
+        if (cudaMemcpyAsync(host.data(), ctx_, host.size() * 4, cudaMemcpyDeviceToHost, cs_) != cudaSuccess) return false;
+        cudaStreamSynchronize(cs_);
+        if (FILE* f = std::fopen(path, "wb")) {
+            const uint32_t n = (uint32_t) (rows * N);
+            std::fwrite(&n, 4, 1, f);
+            std::fwrite(host.data(), 4, host.size(), f);
+            std::fclose(f);
+        }
+    }
+    if (std::getenv("STRATA_DF_DBG")) {
+        std::vector<float> probe(rows * N);
+        cudaMemcpyAsync(probe.data(), ctx_, probe.size() * 4, cudaMemcpyDeviceToHost, cs_);
+        cudaStreamSynchronize(cs_);
+        double s2 = 0;
+        for (double v : probe) s2 += v * v;
+        std::fprintf(stderr, "dflash dbg: fusion ctx norm pos0=%lld rows=%d rms=%.4f\n", (long long) pos0, rows,
+                     std::sqrt(s2 / probe.size()));
+    }
     f32_to_bf16_bulk(ctx_, xn16_, (int64_t) rows * N, cs_);
+    if (cycle_ == 0 && parity_dir_[0] && pos0 == 112) parity_dump_u16_as_f32(parity_dir_, "xn16_112", xn16_, rows * N, cs_);
     for (int64_t l = 0; l < dg.layers; ++l) {
         const std::string pre = "layers." + std::to_string(l);
         for (int r = 0; r < rows; ++r) {
             bf16_gemv(xn16_ + (size_t) r * N, wp((pre + ".self_attn.k_proj").c_str()), kc_ + (size_t) r * KVW, N, KVW, cs_);
+        if (cycle_ == 0 && parity_dir_[0] && pos0 == 112 && l == 0 && r == 0)
+            parity_dump(parity_dir_, "kraw_112", kc_, KVW, cs_);
             bf16_gemv(xn16_ + (size_t) r * N, wp((pre + ".self_attn.v_proj").c_str()), vc_ + (size_t) r * KVW, N, KVW, cs_);
         }
         native_qsa_rms_norm_weighted(kc_, wf((pre + ".self_attn.k_norm").c_str()), kc_, (int) dg.head_dim,
                                      (int) (rows * dg.n_head_kv), kEps, cs_);
+        if (cycle_ == 0 && parity_dir_[0] && pos0 == 112 && l == 0)
+            parity_dump(parity_dir_, "knorm_112", kc_, rows * KVW, cs_);
         // rope at each row's own position (k rows of one row sit NKV apart: [row r][head][hd]);
         // the rope reads DEVICE positions
         for (int r = 0; r < rows; ++r)
@@ -346,6 +468,8 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
             return false;
         }
         dflash_rope_neox_apply(kc_, kc_, (int) (rows * dg.n_head_kv), (int) dg.head_dim, dg.rope_theta, pos_, cs_);
+        if (cycle_ == 0 && parity_dir_[0] && pos0 == 112 && l == 0)
+            parity_dump(parity_dir_, "krope_112", kc_, rows * KVW, cs_);
         // append at the true cells
         for (int r = 0; r < rows; ++r) {
             const int64_t cell = pos0 + r;
@@ -358,17 +482,57 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
             err = "dflash: the step staging failed";
             return false;
         }
+        if (std::getenv("STRATA_DF_DBG") && l == 0) {
+            std::fprintf(stderr, "dflash dbg: fusion append pos0=%lld rows=%d cells [%lld..%lld)\n",
+                         (long long) pos0, rows, (long long) pos0, (long long) (pos0 + rows));
         const QsaState& stl = st_[(size_t) l];
         const QsaAttnPools pools = qsa_attn_pools(stl);
+        if (cycle_ == 0 && parity_dir_[0] && pos0 == 112 && l == 0) {
+            if (cudaStreamSynchronize(cs_) != cudaSuccess) { err = "dflash: sync failed"; return false; }
+            parity_dump(parity_dir_, "ctx_k0", kc_, rows * KVW, cs_);   // post-norm post-rope (final)
+        }
         if (stl.kv_q4)
             kv_append_q4_steps(stl.k_q4, stl.v_q4, stl.page_table, step_, 4, rows, kc_, vc_, shapes_, cs_, &stl.host);
         else if (stl.kv_int8)
             kv_append_q8_steps(stl.k_q, stl.v_q, stl.k_scale, stl.v_scale, stl.page_table, step_, 4, kc_, vc_,
                                (int) KVW, rows, shapes_, cs_, &stl.host);
-        else
+        else {
             for (int r = 0; r < rows; ++r)
                 kv_append_step(stl.k_pool, stl.v_pool, stl.page_table, step_ + r * 4, kc_ + (size_t) r * KVW,
                                vc_ + (size_t) r * KVW, shapes_, cs_, &stl.host);
+            // the pool rows the appends landed in, for the harness (after a sync so the appends are done)
+            if (parity_want(cycle_) && l == 0) {
+                if (cudaStreamSynchronize(cs_) != cudaSuccess) { err = "dflash: its stream failed"; return false; }
+                {
+                    const QsaState& s0 = st_[0];
+                    std::vector<int32_t> pt((size_t) std::min<int64_t>(s0.n_pages, 40));
+                    cudaMemcpyAsync(pt.data(), s0.page_table, pt.size() * 4, cudaMemcpyDeviceToHost, cs_);
+                    cudaStreamSynchronize(cs_);
+                    std::fprintf(stderr, "dflash dbg: table at cycle-1 ctx[:16]=");
+                    for (size_t i = 0; i < pt.size() && i < 16; ++i) std::fprintf(stderr, " %d", pt[(size_t) i]);
+                    std::fprintf(stderr, "\n");
+                }
+                for (int r = 0; r < rows; ++r) {
+                    const int64_t cell = pos0 + r;
+                    int32_t page_h = -1;
+                    cudaMemcpyAsync(&page_h, stl.page_table + cell / shapes_.page_size, 4,
+                                    cudaMemcpyDeviceToHost, cs_);
+                    cudaStreamSynchronize(cs_);
+                    const int64_t page = page_h;
+                    const int64_t row = (page * dg.n_head_kv) * shapes_.page_size + (cell % shapes_.page_size);
+                    parity_dump_u16_as_f32(parity_dir_, "pool_k0", stl.k_pool + row * dg.head_dim, dg.head_dim, cs_);
+                    parity_dump_u16_as_f32(parity_dir_, "pool_head", stl.k_pool, 163840, cs_);
+                    char path[600];
+                    std::snprintf(path, sizeof path, "%s/pool_meta.bin", parity_dir_);
+                    if (FILE* f = std::fopen(path, "wb")) {
+                        const uint32_t m[3] = {(uint32_t) cell, (uint32_t) page, (uint32_t) row};
+                        std::fwrite(m, 4, 3, f);
+                        std::fclose(f);
+                    }
+                }
+            }
+        }
+        }
     }
     return true;
 }
@@ -412,6 +576,13 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
         err = "dflash: the residual init failed";
         return false;
     }
+    if (parity_want(cycle_)) {
+        parity_dump(parity_dir_, "emb", emb_, K * N, cs_);
+        const uint32_t meta[2] = {(uint32_t) pos, (uint32_t) K};
+        char path[600];
+        std::snprintf(path, sizeof path, "%s/meta.bin", parity_dir_);
+        if (FILE* f = std::fopen(path, "wb")) { std::fwrite(meta, 4, 2, f); std::fclose(f); }
+    }
     // per-head rope positions of the query rows: row r at pos+r
     for (int r = 0; r < K; ++r)
         for (int64_t hh = 0; hh < dg.n_head; ++hh) h_pos_[(size_t) r * dg.n_head + hh] = (int32_t)(pos + r);
@@ -420,6 +591,7 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
         const std::string pre = "layers." + std::to_string(l);
         // ---- attention half
         native_qsa_rms_norm_weighted(h_, wf((pre + ".input_layernorm").c_str()), xn_, (int) N, K, kEps, cs_);
+        if (parity_want(cycle_) && l == 0) parity_dump(parity_dir_, "xn0", xn_, K * N, cs_);
         f32_to_bf16_bulk(xn_, xn16_, (int64_t) K * N, cs_);
         for (int r = 0; r < K; ++r) {
             bf16_gemv(xn16_ + (size_t) r * N, wp((pre + ".self_attn.q_proj").c_str()), q_ + (size_t) r * Q, N, Q, cs_);
@@ -427,8 +599,10 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
             bf16_gemv(xn16_ + (size_t) r * N, wp((pre + ".self_attn.v_proj").c_str()), vc_ + (size_t) r * KVW, N, KVW, cs_);
         }
         // per-head q/k norms, then rope (q rows: NH heads at [pos..pos+K); append uses true cells)
+        if (parity_want(cycle_) && l == 0) parity_dump(parity_dir_, "q_raw", q_, K * Q, cs_);
         native_qsa_rms_norm_weighted(q_, wf((pre + ".self_attn.q_norm").c_str()), q_, (int) dg.head_dim,
                                      (int) (K * dg.n_head), kEps, cs_);
+        if (parity_want(cycle_) && l == 0) parity_dump(parity_dir_, "q_normed", q_, K * Q, cs_);
         native_qsa_rms_norm_weighted(kc_, wf((pre + ".self_attn.k_norm").c_str()), kc_, (int) dg.head_dim,
                                      (int) (K * dg.n_head_kv), kEps, cs_);
         if (cudaMemcpyAsync(pos_, h_pos_, (size_t) K * dg.n_head * 4, cudaMemcpyHostToDevice, cs_) != cudaSuccess) {
@@ -497,6 +671,12 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
                          (long long) shapes_.n_rot);
         }
         qsa_decode_attn_batch(q_, pools, ident_, step_, cap_, shapes_, (float*) attn_scratch_, attn_, K, cs_);
+        if (parity_want(cycle_) && l == 0) {
+            parity_dump(parity_dir_, "q0", q_, K * Q, cs_);
+            parity_dump(parity_dir_, "k0", kc_, K * KVW, cs_);
+            parity_dump(parity_dir_, "v0", vc_, K * KVW, cs_);
+            parity_dump(parity_dir_, "attn0", attn_, K * Q, cs_);
+        }
         f32_to_bf16_bulk(attn_, attn16_, (int64_t) K * Q, cs_);
         for (int r = 0; r < K; ++r)
             bf16_gemv(attn16_ + (size_t) r * Q, wp((pre + ".self_attn.o_proj").c_str()), bo_ + (size_t) r * N, Q, N, cs_);
@@ -508,6 +688,7 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
             std::fprintf(stderr, "df dbg: after attn h0=%.3e bo0=%.3e\n", hb[0], ab[0]);
         }
         add_inplace(h_, bo_, K * N, cs_);
+        if (parity_want(cycle_) && l == 0) parity_dump(parity_dir_, "h_attn0", h_, K * N, cs_);
         // ---- MLP half
         native_qsa_rms_norm_weighted(h_, wf((pre + ".post_attention_layernorm").c_str()), xn_, (int) N, K, kEps, cs_);
         f32_to_bf16_bulk(xn_, xn16_, (int64_t) K * N, cs_);
@@ -520,6 +701,7 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
         for (int r = 0; r < K; ++r)
             bf16_gemv(xn16_ + (size_t) r * I, wp((pre + ".mlp.down_proj").c_str()), bo_ + (size_t) r * N, I, N, cs_);
         add_inplace(h_, bo_, K * N, cs_);
+        if (parity_want(cycle_) && l == 0) parity_dump(parity_dir_, "h_mlp0", h_, K * N, cs_);
     }
     // ---- final norm, the target's head, the row argmaxes
     static const bool df_dbg2 = std::getenv("STRATA_DF_DBG") != nullptr;
@@ -531,6 +713,8 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
         std::fprintf(stderr, "df dbg: final h0=%.3e emb0=%.3e\n", hb[0], eb[0]);
     }
     native_qsa_rms_norm_weighted(h_, wf("norm"), xn_, (int) N, K, kEps, cs_);
+    if (parity_want(cycle_)) parity_dump(parity_dir_, "final_norm", xn_, K * N, cs_);
+    ++cycle_;
     native_quantize_q8_1(xn_, xq_, (int) N, K, cs_);
     native_mmvq(head_->type(), head_->weights(), xq_, logits_, (int) N, (int) dg.vocab, K, cs_);
     argmax_rows(logits_, K, (int) dg.vocab, arg_scratch_, out_, cs_);
