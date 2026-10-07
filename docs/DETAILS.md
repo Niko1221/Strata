@@ -1378,7 +1378,11 @@ A prompt chunk below 1,024 tokens (an agent's tool result, a test's output, a sh
 expert that is not in VRAM over PCIe, while the CPU pool that decodes sits idle and the RAM arena already holds those
 experts. `STRATA_PREFILL_CPU_SHARE=auto` hands the pool the experts few of the chunk's tokens route to, measures per
 layer how long each side takes and gives the CPU the share at which both end together (`STRATA_PREFILL_CPU_SHARE=0.4`
-fixes a share). It is off unless you set it, and then the output is byte-identical to the build without it.
+fixes a share). `auto` also checks that sharing pays: it times layers with the share and without it (the first ones
+alternate until three comparisons are in, then one in 29 runs the other way) and shares only while the layers that
+share are the faster ones. Where sharing is slower (every share was on an RX 7900 GRE with a Ryzen 7 5700X3D under
+ROCm, #1282), the experts stay on the GPU apart from those measuring layers. It is off unless you set it, and then the
+output is byte-identical to the build without it.
 
 When on, the CPU's rows are computed in the CPU's own activation format, so the output changes in the last bits (first
 token KL against off: mean 0.006, max 0.026 nats over 22 prompts; about half of the 32-token greedy answers on 500 and

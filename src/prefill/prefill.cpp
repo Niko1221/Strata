@@ -145,7 +145,8 @@ inline int64_t stream_all_min() {
 // `auto`: the share measured, each layer's CPU time per expert and the GPU's per streamed expert (CUDA events around
 // its expert work, read after the next layer's routing sync - the host reaches the combine long before the GPU does)
 // as running means, and the next layers hand the CPU g / (c + g) of them, where both sides end together - so a small
-// CPU takes a small share.  x: a fixed x.  Unset or 0: every expert on the GPU (the default).  RTX 5090 + 9950X3D,
+// CPU takes a small share - and only while the layers that share are measured cheaper than the ones that do not (the
+// gate at cpu_maybe).  x: a fixed x.  Unset or 0: every expert on the GPU (the default).  RTX 5090 + 9950X3D,
 // 600-token prompts: UD-Q4_K_XL 1,528-1,548 -> 1,296-1,369 ms (share 0.65), Q2_0 472-491 -> 445-448, IQ2_XS 507 -> 490
 // (250 tokens 402 -> 368); IQ2_XS on 2 AVX2 workers 512 -> 487 (share 0.49).
 inline double cpu_share_env() {   // -1: measured
@@ -652,6 +653,22 @@ struct Prefill::Impl {
     bool cpu_pend = false;
     double pend_cpu_ms = 0;
     int64_t pend_n_cpu = 0, pend_n_gpu = 0;
+    // ... and whether sharing pays at all (auto): an eligible layer's wall time per non-resident expert, from before
+    // its routing sync to its combine (CUDA events, two sets: a layer's start is recorded before the last one's is
+    // read); two adjacent layers of the two arms give a ratio (with / without), and the median of the last
+    // CPU_RATIOS decides.  Layers differ up to 8x in that cost, the same in every run, which is why adjacent layers
+    // are compared rather than a running mean per arm.
+    static constexpr int CPU_RATIOS = 5;
+    int64_t cpu_layers = 0;   // the eligible layers so far (the arms' schedule)
+    int64_t cpu_first_l = -1;   // the model's first eligible layer: 2x the others' cost in both arms, never read
+    cudaEvent_t cpu_wall[4] = {};
+    int pend_wall = 0, pend_set = 0, pend_l = 0;   // pend_wall 1: the last eligible layer ran without the share, 2: with
+    int64_t pend_wall_n = 0;
+    int last_arm = 0, last_l = 0;
+    double last_w = 0;
+    double cpu_ratio[CPU_RATIOS] = {};
+    int cpu_nratio = 0;
+    bool cpu_gate = false;   // the median ratio is below 1: the layers that share are the cheaper ones
     // The grouping tables in mapped pinned memory, [ids | slot | src] of T_max * K each, then the MMQ bounds: kernels
     // read and write them in place.  A cudaMemcpyAsync of them queues behind the expert blobs the copy stream already
     // holds (up to `ring` of them, ~70 us each), and the GPU idles meanwhile - measured 4.2 s of a 128K prompt's
@@ -771,6 +788,8 @@ void Prefill::release() {
     for (float* p : {impl_->cpu_x, impl_->cpu_rows})
         if (p) cudaFreeHost(p);
     for (cudaEvent_t e : impl_->cpu_ev)
+        if (e) cudaEventDestroy(e);
+    for (cudaEvent_t e : impl_->cpu_wall)
         if (e) cudaEventDestroy(e);
     for (void* p : impl_->owned) cudaFree(p);
 }
@@ -2624,6 +2643,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     double cpu_ms = 0;                    // the thread's time (the measured share)
                     std::future<bool> cpu_fut;
                     int64_t rows_cpu = 0, n_cpu = 0, n_stream = 0;
+                    bool cpu_arm = true;                  // auto: this layer may share (false: the arm without)
+                    int cpu_set = -1;                     // auto: the wall events' set, -1 when not measured
+                    bool cpu_cold = false;                // auto: one-time costs in the window (no reading)
                     if (fused_l) {
                         if (static bool said = false; !said) {
                             said = true;
@@ -2695,9 +2717,29 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         else cudaMemcpyAsync(m.ids_host.data(), m.ids, (size_t) T * K * 4, cudaMemcpyDeviceToHost, m.cs);
                         const bool cpu_maybe = cpu_pool_ != nullptr && cpu_share_on() && !stream_all && m.src != nullptr &&
                                                lay.native && !m.pp && !lay.fmt.empty();
-                        if (cpu_maybe) {
+                        // auto shares only while the layers that share cost less per non-resident expert than their
+                        // neighbours that do not.  #1282 (RX 7900 GRE + 5700X3D): every share lost, auto's 0.47 by
+                        // 4.5%, the host's issue time per streamed expert rising 107 -> 200 us with the CPU busy -
+                        // a cost g / (c + g) cannot see, as both sides are measured with the share on.  The first
+                        // eligible layers alternate, without first, until CPU_MIN_RATIOS ratios are in; then the
+                        // cheaper arm, and every CPU_PROBE-th layer the other one (a prime: the probes move across
+                        // the layers from one chunk to the next), so both stay measured.
+                        if (cpu_maybe && cpu_share_env() < 0.0) {
+                            constexpr int64_t CPU_PROBE = 29;
+                            constexpr int CPU_MIN_RATIOS = 3;
+                            const int64_t i = m.cpu_layers++;
+                            cpu_arm = m.cpu_nratio < CPU_MIN_RATIOS ? (i & 1) != 0 : (i % CPU_PROBE == 0) != m.cpu_gate;
+                            if (m.cpu_first_l < 0) m.cpu_first_l = l;
+                            cpu_cold = l == m.cpu_first_l;
+                            if (m.cpu_wall[0] == nullptr)
+                                for (cudaEvent_t& e : m.cpu_wall) cudaEventCreate(&e);
+                            cpu_set = (int) (i & 1);
+                            cudaEventRecord(m.cpu_wall[2 * cpu_set], m.cs);
+                        }
+                        if (cpu_maybe && cpu_arm) {
                             const size_t want = (size_t) T * N;
                             if (m.cpu_x_n < want) {
+                                cpu_cold = true;
                                 if (m.cpu_x) cudaFreeHost(m.cpu_x);
                                 m.cpu_x = nullptr;
                                 m.cpu_x_n = 0;
@@ -2726,6 +2768,30 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 m.cpu_share_now = std::clamp(m.cpu_g_ms / (m.cpu_c_ms + m.cpu_g_ms), 0.05, 0.9);
                             }
                         }
+                        if (m.pend_wall) {   // the last eligible layer's wall, and its ratio to the one before it
+                            float w_ms = 0;
+                            if (cudaEventElapsedTime(&w_ms, m.cpu_wall[2 * m.pend_set], m.cpu_wall[2 * m.pend_set + 1]) == cudaSuccess) {
+                                const double w = w_ms / (double) m.pend_wall_n;
+                                if (m.last_arm != 0 && m.last_arm != m.pend_wall && m.pend_l > m.last_l) {   // same chunk
+                                    std::rotate(m.cpu_ratio, m.cpu_ratio + 1, m.cpu_ratio + Impl::CPU_RATIOS);
+                                    m.cpu_ratio[Impl::CPU_RATIOS - 1] = m.pend_wall == 2 ? w / m.last_w : m.last_w / w;
+                                    m.cpu_nratio = std::min(m.cpu_nratio + 1, Impl::CPU_RATIOS);
+                                    double v[Impl::CPU_RATIOS];
+                                    std::copy(m.cpu_ratio + Impl::CPU_RATIOS - m.cpu_nratio, m.cpu_ratio + Impl::CPU_RATIOS, v);
+                                    std::nth_element(v, v + m.cpu_nratio / 2, v + m.cpu_nratio);   // even: the upper one
+                                    m.cpu_gate = v[m.cpu_nratio / 2] < 1.0;
+                                }
+                                // debug: STRATA_DBG_CPU_GATE=1 prints each reading and what the next layers do
+                                if (static const bool dbg = std::getenv("STRATA_DBG_CPU_GATE") != nullptr; dbg)
+                                    std::fprintf(stderr, "cpu gate: layer %d %s, %lld non-resident, %.2f ms (%.4f a expert) -> %s\n",
+                                                 m.pend_l, m.pend_wall == 2 ? "shared" : "not shared", (long long) m.pend_wall_n,
+                                                 w_ms, w, m.cpu_gate ? "share" : "do not share");
+                                m.last_arm = m.pend_wall;
+                                m.last_l = m.pend_l;
+                                m.last_w = w;
+                            }
+                            m.pend_wall = 0;
+                        }
                         pt.fold();
                         if (pe.on) {   // the peer's marks so far are done: the primary waited for its last rows
                             int pd = 0; cudaGetDevice(&pd); cudaSetDevice(pe.dev); cudaStreamSynchronize(m.pp->s); pe.fold(); cudaSetDevice(pd);
@@ -2752,7 +2818,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 if (c <= strata::kernels::cpu::MAXT && m.src->pinned(l, e)) cand.emplace_back(c, e);
                             }
                             std::sort(cand.begin(), cand.end());
-                            const double share = cpu_share_env() >= 0.0 ? cpu_share_env() : m.cpu_share_now;
+                            const double share = cpu_share_env() >= 0.0 ? cpu_share_env() : cpu_arm ? m.cpu_share_now : 0.0;
                             const size_t take = std::min(cand.size(), (size_t) std::llround(share * (double) nstream));
                             n_stream = nstream;
                             if (take > 0) {
@@ -2838,6 +2904,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         if (rows_cpu > 0) {
                             const size_t want = (size_t) rows_cpu * N;
                             if (m.cpu_rows_n < want) {
+                                cpu_cold = true;
                                 if (m.cpu_rows) cudaFreeHost(m.cpu_rows);
                                 m.cpu_rows = nullptr;
                                 m.cpu_rows_n = 0;
@@ -3366,6 +3433,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         cudaMemcpyAsync(m.Dm + (size_t) r0c * N, m.cpu_rows, (size_t) rows_cpu * N * sizeof(float),
                                         cudaMemcpyHostToDevice, m.cs);
                         stats_.experts_cpu += n_cpu;
+                    }
+                    // no reading from a layer the share could not change (nothing taken) or with one-time costs
+                    if (cpu_set >= 0 && n_stream > 0 && (!cpu_arm || n_cpu > 0) && !cpu_cold) {
+                        cudaEventRecord(m.cpu_wall[2 * cpu_set + 1], m.cs);
+                        m.pend_wall = cpu_arm ? 2 : 1;
+                        m.pend_set = cpu_set;
+                        m.pend_l = (int) l;
+                        m.pend_wall_n = n_stream;
                     }
                     if (peer_now) {   // multi-GPU: the peer's rows are in Dm (or, without P2P, in host memory)
                         cudaStreamWaitEvent(m.cs, m.pp->ev_done, 0);
