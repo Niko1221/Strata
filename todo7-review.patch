@@ -1,0 +1,212 @@
+diff --git a/src/kernels/cuda/qsa.cu b/src/kernels/cuda/qsa.cu
+index f783164..888fa2b 100644
+--- a/src/kernels/cuda/qsa.cu
++++ b/src/kernels/cuda/qsa.cu
+@@ -185,9 +185,33 @@ __global__ void indexer_key_append_kernel(const float* __restrict__ raw, const i
+         }
+         const double inv = __ddiv_rn(1.0, __dsqrt_rn(ss / (double) idx_dim + (double) eps));
+         dead[d] = (float) (p * inv * (double) w_k_norm[d]);
+-        // rope at position 0 is the identity here (cos = 1, sin = 0 exactly), so no rotation is applied and
+-        // the parity test asserts the value is bit-exact - which is what makes skipping it legitimate.
+-        pooled[d] = dead[d];
++        // Position 0 is NOT an identity rotation by default: row 0 of the CONFIGURED table is
++        // cos = mscale, sin = 0 (cos(0) times the magnitude multiplier), so applying it here scales the
++        // spare by mscale exactly once - the multiplier is already inside the table and the kernel adds
++        // nothing on top.  An unscaled table has cos = 1, sin = 0, and the parity test confirms the
++        // spare bitwise for its fixture (a*1 - b*0 is exact for finite values; the claim is the tested
++        // fixture, not a proof over every input).
++        // The barrier first: the pairing below reads the partner element another thread has just written,
++        // and every thread of the block is inside this branch (pos is uniform), so the sync is uniform too.
++        // OWNERSHIP of the ROTATION: thread d (< half) is the single owner of pair {d, d+half} - it reads
++        // BOTH original values (rope_neox_pair takes them by value, so both are in registers before either
++        // output lands) and writes both outputs to BOTH buffers.  No cross-thread copy follows: a
++        // __syncthreads before the copy was tried first and was empirically insufficient - the compiled
++        // kernel placed the copy's load of dead[d] BEFORE the barrier (legal for the d < half threads,
++        // racy for d >= half, deterministically reproducing the unscaled second half).  Writing each
++        // element's owner directly to both buffers removes the hazard by construction.
++        __syncthreads();       // the pairing reads the partner element written by another thread above
++        const int half = n_rot / 2;
++        if (d < half) {
++            const size_t toff = (size_t) mrope_pos(mtab, 0, d) * half;   // position 0's table row
++            float oa, ob;
++            rope_neox_pair(dead[d], dead[half + d], cos_tab[toff + d], sin_tab[toff + d], oa, ob);
++            dead[d] = oa;        dead[half + d] = ob;
++            pooled[d] = oa;      pooled[half + d] = ob;
++        } else if (d >= n_rot) {
++            pooled[d] = dead[d];   // the pass-through elements, by their own thread (no partner reads)
++        }
++        // elements [half, n_rot) of both buffers are the pair owners' ob writes above
+     }
+ 
+     if (slot != r - 1) return;
+diff --git a/src/kernels/qsa_parity.cpp b/src/kernels/qsa_parity.cpp
+index 98495c4..22300bf 100644
+--- a/src/kernels/qsa_parity.cpp
++++ b/src/kernels/qsa_parity.cpp
+@@ -1454,6 +1454,166 @@ int main(int argc, char** argv) {
+         check(cudaStreamDestroy(cs), "csd");
+     }
+ 
++    // ================= the TABLE indexer's position-zero rotation under scaling (TODO 7) =================
++    // The spare key used to skip the rotation at position 0 on the strength of "cos = 1, sin = 0" - true
++    // for an unscaled table only.  The CONFIGURED table's row 0 is cos = mscale, sin = 0, so with a
++    // magnitude multiplier the spare must come out scaled exactly once and pooled[0] must hold the same
++    // key as dead; a completed block must be rotated with its own table row, which is also where LINEAR
++    // becomes observable (at position 0 linear is an identity, like none).  The reference is the
++    // configured table itself, and the magnitude multiplier is additionally checked against the yarn
++    // formula computed HERE - so the check cannot pass because both compared paths ignored the scaling.
++    // The fixture is asymmetric within every NEOX pair (d vs d+half), so an overwritten partner value or
++    // a missing barrier cannot hide behind symmetry or zeros.  Call path: indexer_key_append, the
++    // table-based indexer (src/kernels/cuda/qsa.cu), not the native one.
++    {
++        std::printf("\n-- the table indexer's position-zero rotation under scaling\n");
++        const int NR7 = (int) S.n_rot, half7 = NR7 / 2;
++        const int32_t BASE7 = 100;                     // the block rotates at pos_base; the spare at 0
++        std::vector<float> raw0((size_t) IDXD), rawb((size_t) R * IDXD);
++        for (int64_t d = 0; d < IDXD; ++d)             // asymmetric partners: d and d+half differ sharply
++            raw0[(size_t) d] = (float) (gauss(rng) * (d < half7 ? 1.0 : 4.0) + (d % 2 ? 0.37 : -0.61));
++        for (int64_t t = 0; t < R; ++t)
++            for (int64_t d = 0; d < IDXD; ++d)
++                rawb[(size_t) t * IDXD + d] =
++                    (float) (gauss(rng) * (2.0 + (double) t) + (float) ((d < half7 ? 0.9 : -0.4) * (1 + t % 3)));
++        for (int64_t d = 0; d < IDXD; ++d)     // cell 0 IS the asymmetric spare fixture (raw0): the spare
++            rawb[(size_t) d] = raw0[(size_t) d];   // key is rms_norm(raw[0]), so pos 0 sees these pairs
++        // the host pooling reference, in the kernel's own order: tail[0..r-2] then the incoming raw
++        std::vector<double> pool_un((size_t) IDXD);
++        {   for (int64_t d = 0; d < IDXD; ++d) {
++                double sum = 0.0;
++                for (int64_t t = 0; t < R - 1; ++t) sum += (double) rawb[(size_t) t * IDXD + d];
++                sum += (double) rawb[(size_t) (R - 1) * IDXD + d];
++                pool_un[(size_t) d] = sum / (double) R;
++            }
++            double ss = 0.0;
++            for (int64_t d = 0; d < IDXD; ++d) ss += pool_un[(size_t) d] * pool_un[(size_t) d];
++            const double inv = 1.0 / std::sqrt(ss / (double) IDXD + (double) EPS);
++            for (int64_t d = 0; d < IDXD; ++d) pool_un[(size_t) d] *= inv * (double) w_kn[(size_t) d];
++        }
++        std::vector<double> spare_un((size_t) IDXD);
++        {   double ss = 0.0;
++            for (int64_t d = 0; d < IDXD; ++d) ss += (double) raw0[(size_t) d] * raw0[(size_t) d];
++            const double inv = 1.0 / std::sqrt(ss / (double) IDXD + (double) EPS);
++            for (int64_t d = 0; d < IDXD; ++d) spare_un[(size_t) d] = (double) raw0[(size_t) d] * inv * (double) w_kn[(size_t) d];
++        }
++        cudaStream_t cs7 = nullptr;
++        check(cudaStreamCreate(&cs7), "cs7");
++        std::vector<float> none_row0;
++        const struct V7 { const char* name; strata::kernels::RopeScalingType type; double factor; double ext; } v7[] = {
++            {"none", strata::kernels::RopeScalingType::None, 1.0, 0.0},
++            {"linear 2", strata::kernels::RopeScalingType::Linear, 2.0, 0.0},
++            {"yarn 2", strata::kernels::RopeScalingType::YaRN, 2.0, 1.0},
++            {"yarn 1", strata::kernels::RopeScalingType::YaRN, 1.0, 1.0}};
++        for (const V7& v : v7) {
++            strata::kernels::RopeScaling sc;
++            sc.type = v.type; sc.factor = v.factor; sc.ext_factor = v.ext;
++            const int TPOS7 = 512;
++            std::vector<float> ct7((size_t) (TPOS7 * half7)), st7((size_t) (TPOS7 * half7));
++            strata::kernels::build_rope_table(NR7, sc, TPOS7, ct7.data(), st7.data());
++            Dev<float> dct7(ct7.size()), dst7(st7.size());
++            dct7.put(ct7); dst7.put(st7);
++            const size_t prows7 = (size_t) 2 * IDXD, trows7 = (size_t) (R - 1) * IDXD;
++            Dev<float> pooledT(prows7), deadT(IDXD), tailT(trows7);
++            Dev<int32_t> bposT(1), dposT(1);
++            Dev<float> drawT((size_t) IDXD);
++            check(cudaMemset(pooledT.p, 0, prows7 * 4), "zero");
++            check(cudaMemset(deadT.p, 0, (size_t) IDXD * 4), "zero");
++            check(cudaMemset(tailT.p, 0, trows7 * 4), "zero");
++            strata::kernels::QsaIndexerBuffers bufsT{tailT.p, deadT.p, pooledT.p, bposT.p};
++            // the host expectations, from the CONFIGURED tables: the spare (position 0) and the completed
++            // block row (position BASE)
++            std::vector<double> expS((size_t) IDXD, 0.0), expB((size_t) IDXD, 0.0);
++            const size_t row100 = (size_t) (BASE7 % TPOS7) * half7;
++            for (int64_t d = 0; d < half7; ++d) {
++                const double c0 = ct7[(size_t) d], s0 = st7[(size_t) d];
++                expS[(size_t) d] = spare_un[(size_t) d] * c0 - spare_un[(size_t) d + half7] * s0;
++                expS[(size_t) d + half7] = spare_un[(size_t) d] * s0 + spare_un[(size_t) d + half7] * c0;
++                const double cb = ct7[row100 + (size_t) d], sb = st7[row100 + (size_t) d];
++                expB[(size_t) d] = pool_un[(size_t) d] * cb - pool_un[(size_t) d + half7] * sb;
++                expB[(size_t) d + half7] = pool_un[(size_t) d] * sb + pool_un[(size_t) d + half7] * cb;
++            }
++            for (int64_t d = NR7; d < IDXD; ++d) { expB[(size_t) d] = pool_un[(size_t) d]; expS[(size_t) d] = spare_un[(size_t) d]; }   // partial RoPE: from n_rot on, the tail passes through
++
++            // ---- append 1: cell 0, position 0.  The spare lands in dead AND pooled[0]; BOTH are checked
++            // right here, before later appends can overwrite the pooled[0] copy of the evidence.
++            {   check(cudaMemcpy(drawT.p, raw0.data(), (size_t) IDXD * 4, cudaMemcpyHostToDevice), "raw0");
++                const int32_t tp0 = 0;                     // the DEVICE cell index; pos_base carries the offset
++                check(cudaMemcpy(dposT.p, &tp0, 4, cudaMemcpyHostToDevice), "pos0");
++                strata::kernels::indexer_key_append(drawT.p, dposT.p, BASE7, dw_kn.p, EPS, bufsT, S,
++                                                    dct7.p, dst7.p, (void*) cs7);
++            }
++            check(cudaStreamSynchronize(cs7), "sync0");
++            const std::vector<float> dh = deadT.get((size_t) IDXD), p0 = pooledT.get((size_t) IDXD);
++            double worst_s = 0.0, worst_p = 0.0;
++            for (int64_t d = 0; d < IDXD; ++d) {
++                const double den = std::fabs(expS[(size_t) d]) + 1e-30;
++                worst_s = std::max(worst_s, std::fabs((double) dh[(size_t) d] - expS[(size_t) d]) / den);
++                worst_p = std::max(worst_p, std::fabs((double) p0[(size_t) d] - expS[(size_t) d]) / den);
++            }
++            std::printf("  %-40s dead rel %.2e, pooled[0] rel %.2e\n", v.name, worst_s, worst_p);
++            if (!(worst_s <= 1e-5) || !(worst_p <= 1e-5)) { std::printf("    *** WRONG ***\n"); ++g_bad; }
++            int join_bad = 0;   // the two buffers must hold the SAME spare key, word for word
++            for (int64_t d = 0; d < IDXD; ++d) join_bad += std::memcmp(&p0[(size_t) d], &dh[(size_t) d], 4) != 0;
++            if (join_bad) { std::printf("    *** pooled[0] != dead (%d words) ***\n", join_bad); ++g_bad; }
++            if (v.type == strata::kernels::RopeScalingType::YaRN && v.factor != 1.0) {
++                // the magnitude multiplier against the yarn formula computed HERE, not read from the table
++                const double ms_ind = 1.0 * (1.0 + 0.1 * std::log(v.factor));
++                double worst_ms = 0.0;
++                for (int64_t d = 0; d < NR7; ++d) {    // the rotated region only; the tail is unscaled by design
++                    worst_ms = std::max(worst_ms, std::fabs((double) dh[(size_t) d] - spare_un[(size_t) d] * ms_ind) /
++                                                     (std::fabs(spare_un[(size_t) d] * ms_ind) + 1e-30));
++                }
++                std::printf("  %-40s independent mscale %.6f, dead rel %.2e\n", "magnitude vs the yarn formula",
++                            ms_ind, worst_ms);
++                if (!(worst_ms <= 1e-5)) { std::printf("    *** the multiplier is wrong ***\n"); ++g_bad; }
++            }
++            int ident_bad = 0;   // identity cases (none, yarn with a unit multiplier): exact to the cast
++            if (v.type == strata::kernels::RopeScalingType::None ||
++                (v.type == strata::kernels::RopeScalingType::YaRN && v.factor == 1.0)) {
++                for (int64_t d = 0; d < IDXD; ++d) {
++                    const float want = (float) spare_un[(size_t) d];
++                    ident_bad += std::memcmp(&dh[(size_t) d], &want, 4) != 0;
++                }
++                std::printf("  %-40s %d of %zu words differ from the unrotated cast\n",
++                            (std::string("identity case, ") + v.name).c_str(), ident_bad, (size_t) IDXD);
++                if (ident_bad) { std::printf("    *** the identity case moved a value ***\n"); ++g_bad; }
++            }
++
++            // ---- appends 2..4: cells 1..3 complete the block, which rotates pooled row 0 at BASE
++            for (int64_t t = 1; t < R; ++t) {
++                check(cudaMemcpy(drawT.p, &rawb[(size_t) t * IDXD], (size_t) IDXD * 4, cudaMemcpyHostToDevice), "raw");
++                const int32_t tp = (int32_t) t;   // the DEVICE cell index; pos_base carries the offset
++                check(cudaMemcpy(dposT.p, &tp, 4, cudaMemcpyHostToDevice), "pos");
++                strata::kernels::indexer_key_append(drawT.p, dposT.p, BASE7, dw_kn.p, EPS, bufsT, S,
++                                                    dct7.p, dst7.p, (void*) cs7);
++            }
++            check(cudaStreamSynchronize(cs7), "sync");
++            const std::vector<float> ph = pooledT.get(prows7);
++            double worst_b = 0.0;
++            for (int64_t d = 0; d < IDXD; ++d) {
++                const double den_b = std::fabs(expB[(size_t) d]) + 1e-30;
++                worst_b = std::max(worst_b, std::fabs((double) ph[(size_t) d] - expB[(size_t) d]) / den_b);
++            }
++            std::printf("  %-40s completed block rel %.2e\n", v.name, worst_b);
++            if (!(worst_b <= 1e-5)) { std::printf("    *** WRONG ***\n"); ++g_bad; }
++            if (v.type == strata::kernels::RopeScalingType::None) none_row0 = ph;
++            else if (v.factor != 1.0) {   // observability: a scaled row must differ from the none row.
++                                          // yarn 1 is exempt: fs = 1 makes its angles and mscale exactly
++                                          // the trained ones, so identity-vs-none is the CORRECT answer.
++                int moved = 0;
++                for (int64_t d = 0; d < IDXD; ++d) moved += std::memcmp(&ph[(size_t) d], &none_row0[(size_t) d], 4) != 0;
++                std::printf("  %-40s %d of %zu pooled words differ from none\n",
++                            (std::string("scaling observable vs none, ") + v.name).c_str(), moved, (size_t) IDXD);
++                if (!moved) { std::printf("    *** the scaled rotation is indistinguishable from none ***\n"); ++g_bad; }
++            } else {
++                std::printf("  %-40s identical to none by design (fs = 1, mscale = 1)\n",
++                            (std::string("identity vs none, ") + v.name).c_str());
++            }
++        }
++        check(cudaStreamDestroy(cs7), "csd");
++    }
++
+     std::printf("\nqsa: %d failures\n", g_bad);
+     if (g_bad) return 1;
+     if (selftest) std::printf("qsa_parity OK\n");
