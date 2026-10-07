@@ -504,7 +504,7 @@ void gr_read(const float *R, const float *w_norm, const uint16_t *w_down,
             dpct::has_capability_or_fail(st->get_device(),
                                          {sycl::aspect::fp64});
 
-            st->parallel_for<dpct_kernel_name<class gr_norm_kernel_8a2029,
+            st->parallel_for<dpct_kernel_name<class gr_norm_kernel_588e81,
                                               dpct_kernel_scalar<true>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, hc) *
                                       sycl::range(1, 1, THREADS),
@@ -521,7 +521,7 @@ void gr_read(const float *R, const float *w_norm, const uint16_t *w_down,
                 sycl::ext::oneapi::experimental::use_root_sync};
 
             st->parallel_for<
-                dpct_kernel_name<class gr_down_kernel_f016b0, float>>(
+                dpct_kernel_name<class gr_down_kernel_6ff92b, float>>(
                 sycl::nd_range<3>(sycl::range(1, 1, hc_lr) *
                                       sycl::range(1, 1, THREADS),
                                   sycl::range(1, 1, THREADS)),
@@ -537,7 +537,7 @@ void gr_read(const float *R, const float *w_norm, const uint16_t *w_down,
                 sycl::ext::oneapi::experimental::use_root_sync};
 
             st->parallel_for<
-                dpct_kernel_name<class gr_gate_kernel_4b823d, float>>(
+                dpct_kernel_name<class gr_gate_kernel_abf73c, float>>(
                 sycl::nd_range<3>(
                     sycl::range(1, 1, (hc_dim + WARPS - 1) / WARPS) *
                         sycl::range(1, 1, THREADS),
@@ -556,7 +556,7 @@ void gr_read(const float *R, const float *w_norm, const uint16_t *w_down,
             dpct::has_capability_or_fail(st->get_device(),
                                          {sycl::aspect::fp64});
 
-            st->parallel_for<dpct_kernel_name<class gr_norm_kernel_f7b23c,
+            st->parallel_for<dpct_kernel_name<class gr_norm_kernel_70bea5,
                                               dpct_kernel_scalar<false>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, hc) *
                                       sycl::range(1, 1, THREADS),
@@ -573,7 +573,7 @@ void gr_read(const float *R, const float *w_norm, const uint16_t *w_down,
                 sycl::ext::oneapi::experimental::use_root_sync};
 
             st->parallel_for<
-                dpct_kernel_name<class gr_down_kernel_cbf49c, uint16_t>>(
+                dpct_kernel_name<class gr_down_kernel_518fbb, uint16_t>>(
                 sycl::nd_range<3>(sycl::range(1, 1, hc_lr) *
                                       sycl::range(1, 1, THREADS),
                                   sycl::range(1, 1, THREADS)),
@@ -589,7 +589,7 @@ void gr_read(const float *R, const float *w_norm, const uint16_t *w_down,
                 sycl::ext::oneapi::experimental::use_root_sync};
 
             st->parallel_for<
-                dpct_kernel_name<class gr_gate_kernel_75fce5, uint16_t>>(
+                dpct_kernel_name<class gr_gate_kernel_feafeb, uint16_t>>(
                 sycl::nd_range<3>(
                     sycl::range(1, 1, (hc_dim + WARPS - 1) / WARPS) *
                         sycl::range(1, 1, THREADS),
@@ -634,7 +634,7 @@ void gr_read(const float *R, const float *w_norm, const uint16_t *w_down,
                 sycl::ext::oneapi::experimental::use_root_sync};
 
             st->parallel_for<
-                dpct_kernel_name<class gr_inject_kernel_182d54, float>>(
+                dpct_kernel_name<class gr_inject_kernel_569ce0, float>>(
                 sycl::nd_range<3>(sycl::range(1, 1, nthreads),
                                   sycl::range(1, 1, nthreads)),
                 exp_props,
@@ -655,7 +655,7 @@ void gr_read(const float *R, const float *w_norm, const uint16_t *w_down,
                 sycl::ext::oneapi::experimental::use_root_sync};
 
             st->parallel_for<
-                dpct_kernel_name<class gr_inject_kernel_500b2a, uint16_t>>(
+                dpct_kernel_name<class gr_inject_kernel_d9aa02, uint16_t>>(
                 sycl::nd_range<3>(sycl::range(1, 1, nthreads),
                                   sycl::range(1, 1, nthreads)),
                 exp_props,
@@ -677,6 +677,57 @@ void gr_read(const float *R, const float *w_norm, const uint16_t *w_down,
     if (stream == nullptr) {
         const dpct::err0 se = DPCT_CHECK_ERROR(
             dpct::get_current_device().queues_wait_and_throw());
+    }
+}
+catch (sycl::exception const &exc) {
+  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
+            << ", line:" << __LINE__ << std::endl;
+  std::exit(1);
+}
+
+static bool no_multi_gr() {
+    static const bool off = [] {
+        const char* v = std::getenv("STRATA_NO_MULTI_GR");
+        return v != nullptr && v[0] != '\0' && v[0] != '0';
+    }();
+    return off;
+}
+
+void gr_read_multi(const float *R, const float *w_norm, const uint16_t *w_down,
+                   const uint16_t *w_up, const uint16_t *w_inject, float eps,
+                   const GrShapes &s, const GrWorkspace &ws, float *xn_multi,
+                   float *lo_multi, float *gated_multi, float *mixed,
+                   float *inject, int n_tok, void *stream) try {
+    if (n_tok <= 0 || s.n_embd <= 0 || s.hc <= 0 || s.hc_lr <= 0) return;
+    if (!no_multi_gr() && native_mmvf && n_tok > 1 && xn_multi != nullptr && lo_multi != nullptr && gated_multi != nullptr) {
+        const int n_embd = (int) s.n_embd, hc = (int) s.hc, hc_lr = (int) s.hc_lr;
+        const int hc_dim = (int) (s.hc * s.n_embd);
+        if ((hc_dim & 1) != 0 || (hc_lr & 1) != 0)
+            throw std::invalid_argument("gr_read native MMVF requires even hc*n_embd and hc_lr");
+        native_gr_rms_norm_weighted_multi(R, w_norm, xn_multi, n_embd, hc, n_tok, eps, stream);
+        bf16_gemv_fp32_mmvf_multi(xn_multi, hc_dim, w_down, lo_multi, hc_lr, hc_dim, hc_lr, n_tok, stream);
+        native_gr_down_silu(lo_multi, hc_lr * n_tok, hc, stream);
+        bf16_gemv_fp32_mmvf_multi(lo_multi, hc_lr, w_up, gated_multi, hc_dim, hc_lr, hc_dim, n_tok, stream);
+        native_gr_pre_gated_multi(xn_multi, gated_multi, mixed, n_embd, hc, n_tok, w_inject != nullptr, stream);
+        if (w_inject != nullptr)
+            bf16_gemv_fp32_mmvf_multi(xn_multi, hc_dim, w_inject, inject, hc, hc_dim, hc, n_tok, stream);
+        /*
+        DPCT1010: SYCL uses exceptions to report errors and does not use
+        the error codes. The cudaGetLastError function call was replaced with 0.
+        You need to rewrite this code.
+        */
+        const dpct::err0 e = 0;
+
+        if (stream == nullptr) {
+            const dpct::err0 se = DPCT_CHECK_ERROR(
+                dpct::get_current_device().queues_wait_and_throw());
+        }
+        return;
+    }
+    const size_t hc_dim = (size_t) s.hc * (size_t) s.n_embd;
+    for (int t = 0; t < n_tok; ++t) {
+        gr_read(R + (size_t) t * hc_dim, w_norm, w_down, w_up, w_inject, eps, s, ws,
+                mixed + (size_t) t * s.n_embd, inject ? inject + (size_t) t * s.hc : nullptr, stream);
     }
 }
 catch (sycl::exception const &exc) {
@@ -724,6 +775,30 @@ void gr_write(const float *R, const float *block_out, const float *inject,
     if (stream == nullptr) {
         const dpct::err0 e = DPCT_CHECK_ERROR(
             dpct::get_current_device().queues_wait_and_throw());
+    }
+}
+catch (sycl::exception const &exc) {
+  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
+            << ", line:" << __LINE__ << std::endl;
+  std::exit(1);
+}
+
+void gr_write_multi(const float *R, const float *block_out, const float *inject,
+                    const GrShapes &s, float *R_out, int n_tok,
+                    void *stream) try {
+    if (n_tok <= 0 || s.n_embd <= 0 || s.hc <= 0) return;
+    if (!no_multi_gr() && native_mmvf && n_tok > 1) {
+        native_gr_post_multi(R, block_out, inject, R_out, (int) s.n_embd, (int) s.hc, n_tok, stream);
+        if (stream == nullptr) {
+            const dpct::err0 e = DPCT_CHECK_ERROR(
+                dpct::get_current_device().queues_wait_and_throw());
+        }
+        return;
+    }
+    const size_t hc_dim = (size_t) s.hc * (size_t) s.n_embd;
+    for (int t = 0; t < n_tok; ++t) {
+        gr_write(R + (size_t) t * hc_dim, block_out + (size_t) t * s.n_embd, inject + (size_t) t * s.hc, s,
+                 R_out + (size_t) t * hc_dim, stream);
     }
 }
 catch (sycl::exception const &exc) {

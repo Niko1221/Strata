@@ -920,13 +920,16 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_v70_kernel(const float* _
             }
         }
         __syncthreads();
-        // scores: warp w = dim group w (64 dims), QP q = cells 8q..8q+7
+        // scores: warp w = dim group w (64 dims), QP q = cells 8q..8q+7. The hi and lo halves of q accumulate in
+        // separate m8n8k4 chains (tg, tgl), added in FP32 at the end: Volta's tensor cores truncate as they
+        // accumulate, and in one chain behind the hi products most of the lo half was lost (error vs FP64 at 32K
+        // 5.1e-6 -> 2.3e-6, the FP32 kernel's level). The same for p.v below.
         {
-            float tg[2][8];
+            float tg[2][8], tgl[2][8];
 #pragma unroll
             for (int rb = 0; rb < 2; ++rb)
 #pragma unroll
-                for (int i = 0; i < 8; ++i) tg[rb][i] = 0.0f;
+                for (int i = 0; i < 8; ++i) tg[rb][i] = tgl[rb][i] = 0.0f;
             const int cell_b = qp * 8 + jj;
 #pragma unroll
             for (int ks = 0; ks < 16; ++ks) {
@@ -946,7 +949,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_v70_kernel(const float* _
                     const uint2 ah = *reinterpret_cast<const uint2*>(&S.qh[rb * 8 + jj][d0]);
                     const uint2 al = *reinterpret_cast<const uint2*>(&S.ql[rb * 8 + jj][d0]);
                     mma884(tg[rb], ah.x, ah.y, b0, b1);
-                    mma884(tg[rb], al.x, al.y, b0, b1);
+                    mma884(tgl[rb], al.x, al.y, b0, b1);
                 }
             }
 #pragma unroll
@@ -955,7 +958,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_v70_kernel(const float* _
                 for (int i = 0; i < 8; ++i) {
                     const int row = rb * 8 + crow + 2 * ((i >> 1) & 1);
                     const int cell = qp * 8 + ccol + 4 * (i >> 2) + (i & 1);
-                    S.part[warp][row][cell] = tg[rb][i] * S.ks[cell][warp];
+                    S.part[warp][row][cell] = (tg[rb][i] + tgl[rb][i]) * S.ks[cell][warp];
                 }
         }
         __syncthreads();
@@ -1003,13 +1006,13 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_v70_kernel(const float* _
 #pragma unroll
             for (int o = 16; o > 0; o >>= 1) vmax = fmaxf(vmax, __shfl_xor_sync(0xffffffffu, vmax, o));
             const float vup = vmax > 0.0f ? 16384.0f / vmax : 0.0f, vdown = vmax * (1.0f / 16384.0f);
-            float tmp[2][2][8];
+            float tmp[2][2][8], tmpl[2][2][8];   // the hi and lo halves of p in separate chains (see the scores)
 #pragma unroll
             for (int rb = 0; rb < 2; ++rb)
 #pragma unroll
                 for (int nt = 0; nt < 2; ++nt)
 #pragma unroll
-                    for (int i = 0; i < 8; ++i) tmp[rb][nt][i] = 0.0f;
+                    for (int i = 0; i < 8; ++i) tmp[rb][nt][i] = tmpl[rb][nt][i] = 0.0f;
 #pragma unroll
             for (int ks = 0; ks < CH / 4; ++ks) {
                 const int c0 = ks * 4;
@@ -1046,7 +1049,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_v70_kernel(const float* _
 #pragma unroll
                     for (int rb = 0; rb < 2; ++rb) {
                         mma884(tmp[rb][nt], ah[rb].x, ah[rb].y, b0, b1);
-                        mma884(tmp[rb][nt], al[rb].x, al[rb].y, b0, b1);
+                        mma884(tmpl[rb][nt], al[rb].x, al[rb].y, b0, b1);
                     }
                 }
             }
@@ -1059,7 +1062,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_v70_kernel(const float* _
                 for (int nt = 0; nt < 2; ++nt)
 #pragma unroll
                     for (int i = 0; i < 8; ++i)
-                        acc[rb][nt][i] = fmaf(acc[rb][nt][i], a_[(i >> 1) & 1], tmp[rb][nt][i] * vdown);
+                        acc[rb][nt][i] = fmaf(acc[rb][nt][i], a_[(i >> 1) & 1], (tmp[rb][nt][i] + tmpl[rb][nt][i]) * vdown);
             }
         }
     }

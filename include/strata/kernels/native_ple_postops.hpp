@@ -35,4 +35,11 @@ void native_ple_postops(const float* projected_key, const float* hidden,
 void native_ple_postops_batch(float* key, float* hidden, const float* value, float* history, const PleWeights& w,
                               float* query_norm, float* gated, float* gate, int T, void* stream);
 
+/// The verify window: native_ple_postops_batch whose norms divide by the column count at run time, exactly as
+/// native_gr_rms_norm_weighted (the per-token path's) does, so every value is bitwise that of T native_ple_postops
+/// calls with the history advanced after each; it also writes `snap` (T x 9 x 10240): the history after each token,
+/// as the per-token path's copies leave it for the commit.
+void native_ple_postops_batch_snap(float* key, float* hidden, const float* value, float* history, const PleWeights& w,
+                                   float* query_norm, float* gated, float* gate, int T, float* snap, void* stream);
+
 } // namespace strata::kernels

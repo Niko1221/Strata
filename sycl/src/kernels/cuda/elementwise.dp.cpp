@@ -166,9 +166,9 @@ runtimes. You may need to adjust the code.
     float inv = 0.0f;
     if (lane == 0) inv = sycl::rsqrt(acc / (float)cols + eps);
     /*
-    DPCT1108: '__shfl_sync' was migrated with the experimental feature
-    masked sub_group function which may not be supported by all compilers or
-    runtimes. You may need to adjust the code.
+    DPCT1108: '__shfl_sync' was migrated with the experimental feature masked
+    sub_group function which may not be supported by all compilers or runtimes.
+    You may need to adjust the code.
     */
     inv = dpct::experimental::select_from_sub_group(
         0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(), inv,
@@ -375,6 +375,9 @@ __dpct_inline__ void doorbell_ring_kernel(uint32_t *seq) {
     */
     sycl::atomic_fence(sycl::memory_order::acq_rel, sycl::memory_scope::system);
     strata::sys_store(seq, strata::sys_load(seq) + 1u);
+#if defined(__HIPCC__)  // #697: HIP only; on RDNA4 the volatile store alone can sit in L2 until the stream syncs
+    __threadfence_system();
+#endif
 }
 
 __dpct_inline__ void doorbell_wait_kernel(const volatile uint32_t *flag,
@@ -574,7 +577,8 @@ __dpct_inline__ void doorbell_publish_kernel(const float *__restrict__ x,
          i += item_ct1.get_local_range(2)) x_out[i] = x[i];
     if ((int)item_ct1.get_local_id(2) < k) {
         ids_out[item_ct1.get_local_id(2)] = ids[item_ct1.get_local_id(2)];
-        w_out[item_ct1.get_local_id(2)] = w[item_ct1.get_local_id(2)];
+        if (w_out != nullptr) w_out[item_ct1.get_local_id(2)] =
+            w[item_ct1.get_local_id(2)];
     }
     /*
     DPCT1078: Consider replacing memory_order::acq_rel with
@@ -589,6 +593,36 @@ __dpct_inline__ void doorbell_publish_kernel(const float *__restrict__ x,
     */
     item_ct1.barrier();
     if (item_ct1.get_local_id(2) == 0) {
+        strata::sys_store(seq, strata::sys_load(seq) + 1u);
+#if defined(__HIPCC__)  // #697: HIP only; on RDNA4 the volatile store alone can sit in L2 until the stream syncs
+        __threadfence_system();
+#endif
+    }
+}
+
+__dpct_inline__ void doorbell_publish_res_kernel(
+    const float *__restrict__ x, const int32_t *__restrict__ ids,
+    const int32_t *__restrict__ d_res, int n_expert, int n, int k, float *x_out,
+    int32_t *ids_out, uint32_t *seq) {
+    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+    int any_miss = 0;
+    if ((int)item_ct1.get_local_id(2) < k) {
+        const int32_t id = ids[item_ct1.get_local_id(2)];
+        ids_out[item_ct1.get_local_id(2)] = id;
+        if (d_res == nullptr || id < 0 || id >= n_expert || d_res[id] < 0) any_miss = 1;
+    }
+    /*
+    DPCT1065: Consider replacing sycl::nd_item::barrier() with
+    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
+    performance if there is no access to global memory.
+    */
+    if ((item_ct1.barrier(),
+         sycl::any_of_group(
+             sycl::ext::oneapi::this_work_item::get_work_group<3>(),
+             any_miss))) {
+#pragma unroll
+        for (int i = item_ct1.get_local_id(2); i < n;
+             i += item_ct1.get_local_range(2)) x_out[i] = x[i];
         /*
         DPCT1078: Consider replacing memory_order::acq_rel with
         memory_order::seq_cst for correctness if strong memory order
@@ -596,7 +630,26 @@ __dpct_inline__ void doorbell_publish_kernel(const float *__restrict__ x,
         */
         sycl::atomic_fence(sycl::memory_order::acq_rel,
                            sycl::memory_scope::system);
+    } else if ((int)item_ct1.get_local_id(2) < k) {
+        /*
+        DPCT1078: Consider replacing memory_order::acq_rel with
+        memory_order::seq_cst for correctness if strong memory order
+        restrictions are needed.
+        */
+        sycl::atomic_fence(sycl::memory_order::acq_rel,
+                           sycl::memory_scope::system);
+    }
+    /*
+    DPCT1065: Consider replacing sycl::nd_item::barrier() with
+    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
+    performance if there is no access to global memory.
+    */
+    item_ct1.barrier();
+    if (item_ct1.get_local_id(2) == 0) {
         strata::sys_store(seq, strata::sys_load(seq) + 1u);
+#if defined(__HIPCC__)  // #697: HIP only; on RDNA4 the volatile store alone can sit in L2 until the stream syncs
+        __threadfence_system();
+#endif
     }
 }
 
@@ -691,6 +744,31 @@ void doorbell_publish(const float* x, const int32_t* ids, const float* weights, 
     check_launch("doorbell_publish");
 }
 
+void doorbell_publish_res(const float* x, const int32_t* ids, const int32_t* d_res, int n_expert, int64_t n, int64_t k,
+                          float* x_out, int32_t* ids_out, uint32_t* d_seq, void* stream) {
+    if (k > 1024) { std::fprintf(stderr, "doorbell_publish_res: k too large\n"); std::exit(1); }
+    /*
+    DPCT1049: The work-group size passed to the SYCL kernel may exceed the
+    limit. To get the device limit, query info::device::max_work_group_size.
+    Adjust the work-group size if needed.
+    */
+    {
+        auto exp_props = sycl::ext::oneapi::experimental::properties{
+            sycl::ext::oneapi::experimental::use_root_sync};
+
+        strata::q_of(stream)
+            ->parallel_for<
+                dpct_kernel_name<class doorbell_publish_res_kernel_85b9b3>>(
+                sycl::nd_range<3>(sycl::range(1, 1, 1024),
+                                  sycl::range(1, 1, 1024)),
+                exp_props, [=](sycl::nd_item<3> item_ct1) {
+                    doorbell_publish_res_kernel(x, ids, d_res, n_expert, (int)n,
+                                                (int)k, x_out, ids_out, d_seq);
+                });
+    }
+    check_launch("doorbell_publish_res");
+}
+
 __dpct_inline__ void copy_i32_from_mapped_kernel(int32_t *__restrict__ dst,
                                                  const volatile int32_t *src,
                                                  int n) {
@@ -699,6 +777,65 @@ __dpct_inline__ void copy_i32_from_mapped_kernel(int32_t *__restrict__ dst,
     for (int i = item_ct1.get_local_id(2); i < n;
          i += item_ct1.get_local_range(2)) dst[i] = src[i];
 }
+
+#if !defined(__HIPCC__)
+struct MappedCopies {
+    MappedCopy c[8];
+};
+
+__dpct_inline__ void copy_from_mapped_multi_kernel(MappedCopies a) {
+    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+    const MappedCopy c = a.c[item_ct1.get_group(1)];
+    const int64_t i0 = (int64_t)item_ct1.get_group(2) *
+                           item_ct1.get_local_range(2) +
+                       item_ct1.get_local_id(2),
+                  st = (int64_t)item_ct1.get_group_range(2) *
+                       item_ct1.get_local_range(2);
+    if ((c.words & 3) == 0 && ((uintptr_t) c.dst & 15) == 0 && ((uintptr_t) c.src & 15) == 0) {
+        /*
+        DPCT1052: SYCL does not support the member access for a volatile
+        qualified vector type. The volatile qualifier was removed. You may need
+        to rewrite the code.
+        */
+        const sycl::float4 *s = (const sycl::float4 *)c.src;
+#pragma unroll
+        for (int64_t i = i0; i < c.words / 4; i += st)(
+            (sycl::float4 *)c.dst)[i] = const_cast<const sycl::float4 *>(s)[i];
+    } else {
+        const volatile int32_t* s = (const volatile int32_t*) c.src;
+#pragma unroll
+        for (int64_t i = i0; i < c.words; i += st)((int32_t *)c.dst)[i] = s[i];
+    }
+}
+
+void copy_from_mapped_multi(const MappedCopy* copies, int n, void* stream) {
+    if (n <= 0) return;
+    if (n > 8) { std::fprintf(stderr, "copy_from_mapped_multi: at most 8 copies\n"); std::exit(1); }
+    MappedCopies a;
+    int64_t most = 0;
+    for (int i = 0; i < n; ++i) {
+        a.c[i] = copies[i];
+        most = copies[i].words > most ? copies[i].words : most;
+    }
+    const int64_t units = (most + 3) / 4;
+    const unsigned bx = (unsigned) ((units + 255) / 256 < 32 ? (units + 255) / 256 : 32);
+    {
+        auto exp_props = sycl::ext::oneapi::experimental::properties{
+            sycl::ext::oneapi::experimental::use_root_sync};
+
+        strata::q_of(stream)
+            ->parallel_for<
+                dpct_kernel_name<class copy_from_mapped_multi_kernel_66c71e>>(
+                sycl::nd_range<3>(sycl::range(1, (unsigned)n, bx < 1 ? 1 : bx) *
+                                      sycl::range(1, 1, 256),
+                                  sycl::range(1, 1, 256)),
+                exp_props, [=](sycl::nd_item<3> item_ct1) {
+                    copy_from_mapped_multi_kernel(a);
+                });
+    }
+    check_launch("copy_from_mapped_multi");
+}
+#endif
 
 void copy_i32_from_mapped(int32_t* dst, const int32_t* src, int64_t n, void* stream) {
     if (n <= 0) return;
@@ -718,6 +855,13 @@ void copy_i32_from_mapped(int32_t* dst, const int32_t* src, int64_t n, void* str
     }
     check_launch("copy_i32_from_mapped");
 }
+
+#if defined(__HIPCC__)   // AMD keeps one copy a launch
+void copy_from_mapped_multi(const MappedCopy* copies, int n, void* stream) {
+    for (int i = 0; i < n; ++i)
+        copy_i32_from_mapped((int32_t*) copies[i].dst, (const int32_t*) copies[i].src, copies[i].words, stream);
+}
+#endif
 
 void doorbell_ring(uint32_t* d_seq, void* stream) {
     if (d_seq == nullptr) return;

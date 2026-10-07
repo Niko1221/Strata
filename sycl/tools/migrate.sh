@@ -8,7 +8,7 @@ set -euo pipefail
 repo=${1:-/work/Strata_B70}
 out=${2:-$repo/sycl}
 hdr=${CUDA_HEADERS:-/cuda-headers/include}
-source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1 || true
+set +u; source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1 || true; set -u
 export PATH=/opt/intel/oneapi/dpcpp-ct/latest/bin:$PATH
 cd "$repo"
 # the compilation database: every .cu plus every .cpp/.hpp that includes a CUDA header
@@ -20,6 +20,8 @@ repo, hdr, db_dir = sys.argv[1], sys.argv[2], sys.argv[3]
 files = subprocess.check_output(["bash", "-c",
     r"find src -name '*.cu'; grep -rl 'cuda_runtime\|cublas_v2\|cuda_fp16\|cuda\.h' src --include='*.cpp'"],
     cwd=repo, text=True).split()
+if os.environ.get("MIGRATE_ONLY"):            # explicit list: host files that reach CUDA only through the headers (verify.cpp, mtp.cpp)
+    files = os.environ["MIGRATE_ONLY"].split()
 db = []
 # not in this tree: the optional ggml MMQ prefill path needs llama.cpp's ggml-cuda sources, and one parity test needs
 # ggml-cpu.h. Both stay CUDA-only for now.

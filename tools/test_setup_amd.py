@@ -49,7 +49,7 @@ class KfdDetection(unittest.TestCase):
             (110001, 120, 128, "", 16 << 30),                     # gfx1101 without a product name
             (120000, 64, 129, None, 16 << 30),                    # gfx1200, no product_name file
             (120001, 128, 130, "AMD Radeon AI PRO R9700", 32 << 30),
-            (110002, 64, 131, None, 8 << 30),                     # gfx1102: listed, not supported
+            (110002, 64, 131, None, 8 << 30),                     # gfx1102: supported, unvalidated (#938)
             (100306, 4, 132, None, 512 << 20),                    # an integrated gfx1036: listed, not supported
             (110000, 192, 133, "Radeon RX 7900 XTX", 24 << 30),
         ])
@@ -59,11 +59,10 @@ class KfdDetection(unittest.TestCase):
         self.assertEqual(g[0]["name"], setup.AMD_NAMES["gfx1101"])
         self.assertEqual(g[1]["name"], setup.AMD_NAMES["gfx1200"])
         self.assertEqual(g[2]["name"], "AMD Radeon AI PRO R9700")
-        self.assertEqual(g[3]["name"], "AMD Radeon (gfx1102)")
+        self.assertEqual(g[3]["name"], setup.AMD_NAMES["gfx1102"])
         self.assertAlmostEqual(g[2]["vram_gb"], 32.0)
         ok = [x["arch"] for x in g if setup.amd_problem(x) is None]
-        self.assertEqual(ok, ["gfx1101", "gfx1200", "gfx1201", "gfx1100"])
-        self.assertIn("gfx1102", setup.amd_problem(g[3]))
+        self.assertEqual(ok, ["gfx1101", "gfx1200", "gfx1201", "gfx1102", "gfx1100"])
         self.assertIn("gfx1036", setup.amd_problem(g[4]))
 
     def test_no_kfd(self):

@@ -2,6 +2,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_queue.hpp"
 #include "strata/core/device.hpp"
 
 #include <cstdio>
@@ -200,8 +201,28 @@ IDXGIAdapter3* budget_adapter(int device) {
 }
 }  // namespace
 
+// #873 / #654: on some Windows setups the first hipMemGetInfo of a process fails with hipErrorInvalidValue because the ROCm
+// runtime has not finished initialising against the Adrenalin WDDM driver, and the first kernel launch after that
+// crashes (0xC0000005 in amdhip64_7.dll).  A hipFree(0) before the first query initialises the context, and one
+// failed query gets one retry after 250 ms.  Both happen once per process, before the DXGI budget below; any other
+// error, and a failure of the retry, are returned as they are (a real failure is never retried).
+static hipError_t first_mem_get_info(size_t* free_bytes, size_t* total_bytes) {
+    static std::atomic<bool> warmed{false}, retried{false};
+    if (!warmed.exchange(true)) (void) hipFree(nullptr);
+    hipError_t e = hipMemGetInfo(free_bytes, total_bytes);
+    if (e == hipErrorInvalidValue && !retried.exchange(true)) {
+        (void) hipGetLastError();
+        std::fprintf(stderr, "strata: hipMemGetInfo failed (%s); retrying once after 250 ms\n", hipGetErrorString(e));
+        Sleep(250);
+        e = hipMemGetInfo(free_bytes, total_bytes);
+        std::fprintf(stderr, "strata: hipMemGetInfo retry: %s\n", e == hipSuccess ? "ok" : hipGetErrorString(e));
+    }
+    return e;
+}
+
 hipError_t mem_get_info(size_t* free_bytes, size_t* total_bytes) {
-    const hipError_t e = hipMemGetInfo(free_bytes, total_bytes);
+    if (free_bytes == nullptr || total_bytes == nullptr) return hipMemGetInfo(free_bytes, total_bytes);
+    const hipError_t e = first_mem_get_info(free_bytes, total_bytes);
     static const bool off = [] {
         const char* v = std::getenv("STRATA_WDDM_BUDGET");
         return v != nullptr && std::atoi(v) == 0;
@@ -252,7 +273,7 @@ std::string gpu_arch_problem(int ordinal) {
 }
 
 std::string device_code_error() try {
-#if defined(STRATA_USE_HIP)
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
     return "";   // gpu_arch_problem() checks the HIP architectures against STRATA_HIP_ARCHS, before this point
 #else
     // every .cu of the engine is compiled for the same CMAKE_CUDA_ARCHITECTURES, so this kernel stands for all
@@ -349,7 +370,17 @@ DeviceInfo device_info(int ordinal) {
     // supported arch is enforced by CMake; RUNNING on an older card is caught here, because a binary can be carried
     // to a machine with an older card and would otherwise silently take whatever path the driver chose.  The HIP
     // backend checks the card against the architectures the binary was compiled for (and wave32).
-#if defined(STRATA_USE_HIP)
+#if defined(STRATA_HIP_GFX906)
+    // AMD gfx906 (the STRATA_HIP_GFX906 compat build, not STRATA_USE_HIP): the build targets one gfx arch
+    // (CMAKE_HIP_ARCHITECTURES, wave64); a card of another arch fails at the first kernel launch with
+    // hipErrorInvalidDeviceFunction.  gcnArchName says which it is.
+    {
+        std::string arch(p.gcnArchName);
+        if (const size_t colon = arch.find(':'); colon != std::string::npos) arch.resize(colon);
+        d.arch = arch;
+    }
+    if (p.gcnArchName[0] != 0) d.name += std::string(" (") + p.gcnArchName + ")";
+#elif defined(STRATA_USE_HIP)
     d.arch = base_arch(p.gcnArchName);
     if (const std::string why = arch_problem(p, ordinal); !why.empty()) throw CudaError(why, -1);
 #else
@@ -381,7 +412,7 @@ DeviceArena::DeviceArena(uint64_t bytes, int ordinal, bool poison)
     check(DPCT_CHECK_ERROR(dpct::select_device(ordinal)), "cudaSetDevice");
     // One allocation for the whole region.  cudaMalloc of a large block is the thing that can fail late, so it
     // happens once, here, before anything depends on it.
-    check(DPCT_CHECK_ERROR(base_ = (void *)sycl::malloc_device(
+    check(DPCT_CHECK_ERROR(base_ = (void *)strata::malloc_device_guarded(
                                (size_t)bytes, dpct::get_in_order_queue())),
           "cudaMalloc");
     if (poison_) {

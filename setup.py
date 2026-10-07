@@ -89,6 +89,78 @@ def hf_unpinned(url: str) -> str:
     return re.sub(r"^(https?://[^/]+/.+?/resolve/)[0-9a-f]{40}/", r"\1main/", url, count=1)
 
 
+# ModelScope (www.modelscope.cn) hosts every repository above under the same name, with the same file paths and
+# sizes, and is reachable from mainland China where huggingface.co often is not.  It serves a repository's current
+# files (no pinned revision), so a file from it is checked against the SHA-256 ModelScope publishes for it, and the
+# MTP tensors against the pinned checkpoint's own hashes (tools/mtp_fetch.py).
+# --source / STRATA_SOURCE: huggingface (what auto means), or modelscope: only when asked for (a different host
+# serving current files, not our pinned revision: setup never switches to it by itself, it recommends it, #908).
+MS_DEFAULT = "https://www.modelscope.cn"
+SOURCES = ("auto", "modelscope", "huggingface")
+HF_FILE = re.compile(r"^https?://[^/]+/(?P<repo>[^/]+/[^/]+)/resolve/[^/]+/(?P<path>.+)$")
+_sources = {}                                      # model_source()'s answer per (STRATA_SOURCE, HF_ENDPOINT, host)
+_ms_files = {}
+
+
+def ms_endpoint() -> str:
+    return (os.environ.get("MODELSCOPE_ENDPOINT") or "").strip().rstrip("/") or MS_DEFAULT
+
+
+def reachable(url: str, timeout: float = 5.0) -> bool:
+    """Whether `url` answers a HEAD request with success (2xx, after redirects) within `timeout` seconds."""
+    try:
+        urllib.request.urlopen(urllib.request.Request(url, method="HEAD", headers={"User-Agent": "strata-setup"}),
+                               timeout=timeout).close()
+        return True
+    except OSError:                                    # HTTPError too: an error page is not the file
+        return False
+
+
+def model_source() -> str:
+    """"modelscope" or "huggingface".  ModelScope only when --source modelscope / STRATA_SOURCE=modelscope asks for it;
+    everything else (auto, a HF_ENDPOINT mirror chosen on purpose, #495) is Hugging Face.  Setup does not switch hosts
+    by itself (#908): ModelScope serves a repository's current files, not our pinned revision."""
+    want = (os.environ.get("STRATA_SOURCE") or "auto").strip().lower()
+    key = (want, os.environ.get("HF_ENDPOINT") or "", ms_endpoint())
+    if key not in _sources:
+        _sources[key] = "modelscope" if want in ("ms", "modelscope") else "huggingface"
+    return _sources[key]
+
+
+def source_hint(url: str) -> str:
+    """The recommendation that goes with a failed download from Hugging Face: ModelScope, by an explicit choice."""
+    if "huggingface" in url or "hf-mirror" in url:
+        return ("; if huggingface.co does not reach you (mainland China), the same files are on ModelScope: run setup "
+                "with --source modelscope (docs/INSTALL.md)")
+    return ""
+
+
+def ms_file(url: str):
+    """(repo, path) when `url` is a Hugging Face file of a repository setup knows (HF_REVISIONS), else None."""
+    m = HF_FILE.match(url)
+    if m is None or m.group("repo") not in HF_REVISIONS:
+        return None
+    return m.group("repo"), m.group("path")
+
+
+def ms_url(repo: str, path: str) -> str:
+    return f"{ms_endpoint()}/models/{repo}/resolve/master/{path}"
+
+
+def ms_meta(repo: str, path: str):
+    """(size, sha256) ModelScope publishes for a file, or None when it cannot be asked."""
+    if repo not in _ms_files:
+        try:
+            api = f"{ms_endpoint()}/api/v1/models/{repo}/repo/files?Recursive=true"
+            with urllib.request.urlopen(urllib.request.Request(api, headers={"User-Agent": "strata-setup"}),
+                                        timeout=60) as r:
+                files = json.loads(r.read())["Data"]["Files"]
+            _ms_files[repo] = {f["Path"]: (int(f.get("Size") or 0), (f.get("Sha256") or "").lower()) for f in files}
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+    return _ms_files[repo].get(path)
+
+
 HF = hf("ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF")
 LLAMA_CPP_COMMIT = "3cf03257f219afbe7334045ff7c6a06ac68c627d"
 LLAMA_CPP_ZIP = f"https://github.com/ggml-org/llama.cpp/archive/{LLAMA_CPP_COMMIT}.zip"
@@ -99,6 +171,10 @@ LLAMA_CPP_ZIP = f"https://github.com/ggml-org/llama.cpp/archive/{LLAMA_CPP_COMMI
 # With the default, the release of this checkout's own version (PREBUILT_TAG_URL, CMakeLists.txt's version) is
 # tried first and the latest release is the fallback (#214): an older checkout keeps the engine it shipped with.
 PREBUILT_URL = "https://github.com/Niko1221/Strata/releases/latest/download/"
+# The repository the release assets and their SHA-256 come from; `engine_digest` reads the API here even
+# when --prebuilt points the download somewhere else, because the hash is only worth having if it comes
+# from somewhere the download does not.
+REPO = "Niko1221/Strata"
 PREBUILT_TAG_URL = "https://github.com/Niko1221/Strata/releases/download/v{version}/"
 PREBUILT_ASSET = "strata-windows-x64.zip" if WIN else "strata-linux-x64.zip"
 # the CUDA libraries the ready-made engine loads (the same CUDA 13.0 it is built with), from NVIDIA's pip packages
@@ -115,7 +191,7 @@ CUDA12_WHEELS = ["nvidia-cublas-cu12==12.9.1.4", "nvidia-cuda-runtime-cu12==12.9
 # toolkit the CUDA 12 zip is built with (cuBLAS 12.9.1.4, runtime 12.9.79).  Not tested on such an old driver here.
 CUDA12_MIN_DRIVER = 528 if WIN else 525
 ENGINE12_DIR = "engine-cuda12"
-MIN_ENGINE = (0, 1, 40)                # v0.1.40: --resident-experts on a layer split with the split+resident variant (#848), --kv k8v4 with KV streaming (#711); v0.1.39: the #577 file-tier regression fixed, the OpenAI Responses API (#451, Codex), a reply stuck on one token ended (#606), the head before the arena (#620), effort_position (#458), --vram-reserve hot resize opt-in (#533), PR batch; v0.1.38: prompts faster (one gather per expert group #372, the first chunk's PLE rows beside layer 0 #374, DeltaNet three heads per thread #413), --kv q4_0 prompts on tensor cores (#452), Q5_0 experts on the GPU (#473), IQ4_XS on AVX-2 (#415), unbuffered expert loading on Windows (#357 #362), --peer-device (#531), a 6 GB card starts (#496), PR batch; v0.1.37: a silent engine is restarted (#481), Windows AMD counts the desktop's VRAM (#380 #377 #497), a steadier PCIe probe (#485), fixes #496 #495 #498 #505 #493; v0.1.36: a cancelled prompt logged as read so far (#471), the draft-head hint (#474), UPDATE.bat (#475), --expert-profile-save (#477); v0.1.35: Windows AMD uses its bundled HIP runtime (#468 #461), the low-RAM resident mode on Windows 32 GB (#467), fixes #460 #459 #446 #447 #457 #448 #444; v0.1.34: AMD on Windows (a ready-made HIP engine), an MCP server for AI assistants (tools/strata_mcp.py), a shorter README; v0.1.33: a portable image encoder again (#411 #412), setup recommends instead of forcing (#406 #403 #364 #384), fixes #352 #365 #369 #371 #375 #393 #408 #414; v0.1.32: split prompts faster (#340), AMD router +12%, Unsloth Q4 in setup, faster Q4 prompts, #326/#327/#342/#344 fixes, PR batch; v0.1.31: Unsloth UD-Q4_K_XL (experimental), GGUF-in-place low-RAM mode, Windows GGUF load 2x, server race + tokenizer fixes, AMD intrinsics; v0.1.30: short prompts faster (streaming from 1024 tokens), resident low-RAM variant, multi-GPU session carve, RDNA4; v0.1.29: sampled answers faster (split top-k), #154 correctness fixes; v0.1.28: the expert cache reserves the draft head, a cancelled request no longer fails the next; v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
+MIN_ENGINE = (0, 1, 40, 2)             # versions compare all four numbers; v0.1.40.2: F4 verify windows, the Linux file tier (#1194), the stager wait (#1057), #1264/#1201/#1139 fixes, opt-in CPU share (#1282), Intel Arc; v0.1.40: --resident-experts on a layer split with the split+resident variant (#848), --kv k8v4 with KV streaming (#711); v0.1.39: the #577 file-tier regression fixed, the OpenAI Responses API (#451, Codex), a reply stuck on one token ended (#606), the head before the arena (#620), effort_position (#458), --vram-reserve hot resize opt-in (#533), PR batch; v0.1.38: prompts faster (one gather per expert group #372, the first chunk's PLE rows beside layer 0 #374, DeltaNet three heads per thread #413), --kv q4_0 prompts on tensor cores (#452), Q5_0 experts on the GPU (#473), IQ4_XS on AVX-2 (#415), unbuffered expert loading on Windows (#357 #362), --peer-device (#531), a 6 GB card starts (#496), PR batch; v0.1.37: a silent engine is restarted (#481), Windows AMD counts the desktop's VRAM (#380 #377 #497), a steadier PCIe probe (#485), fixes #496 #495 #498 #505 #493; v0.1.36: a cancelled prompt logged as read so far (#471), the draft-head hint (#474), UPDATE.bat (#475), --expert-profile-save (#477); v0.1.35: Windows AMD uses its bundled HIP runtime (#468 #461), the low-RAM resident mode on Windows 32 GB (#467), fixes #460 #459 #446 #447 #457 #448 #444; v0.1.34: AMD on Windows (a ready-made HIP engine), an MCP server for AI assistants (tools/strata_mcp.py), a shorter README; v0.1.33: a portable image encoder again (#411 #412), setup recommends instead of forcing (#406 #403 #364 #384), fixes #352 #365 #369 #371 #375 #393 #408 #414; v0.1.32: split prompts faster (#340), AMD router +12%, Unsloth Q4 in setup, faster Q4 prompts, #326/#327/#342/#344 fixes, PR batch; v0.1.31: Unsloth UD-Q4_K_XL (experimental), GGUF-in-place low-RAM mode, Windows GGUF load 2x, server race + tokenizer fixes, AMD intrinsics; v0.1.30: short prompts faster (streaming from 1024 tokens), resident low-RAM variant, multi-GPU session carve, RDNA4; v0.1.29: sampled answers faster (split top-k), #154 correctness fixes; v0.1.28: the expert cache reserves the draft head, a cancelled request no longer fails the next; v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
 # KV bytes per context token and attention layer: 8-bit 1056, rotated 4-bit 576, hybrid K8V4 (8-bit K, 4-bit V) 816
 KV_CELL_BYTES = {"q4_0": 576, "k8v4": 816}
 PY_PACKAGES = ["numpy", "jinja2", "regex", "pyyaml", "tqdm", "requests", "cmake", "ninja", "pillow", "psutil"]
@@ -141,7 +217,10 @@ MODELS = {
     "UD-Q4_K_XL": {"about": "4-bit (Unsloth Dynamic), EXPERIMENTAL: the best quality, but most experts come from the "
                             "SSD on a 64 GB PC (7-8.5 tokens/s measured)", "download_gb": 111.3, "ram_gb": 48,
                    "arena_gb": 77.0, "families": ("unsloth",), "budget": True, "nvidia_only": True,
-                   "experimental": True},
+                   "experimental": True,
+                   # #967: images are allowed (the same base model and image encoder as UD-IQ4_XS), with a warning:
+                   # reported working by hand (#967, #971), not tested by us on this file
+                   "vision": True, "vision_untested": True},
     # #621: Unsloth's UD-IQ4_XS - IQ3_S gate/up experts with IQ4_NL (43 layers) or Q8_0 (5) downs, the dense side as
     # UD-Q4_K_XL's; three shards.  A regular choice from 0.1.39 (no longer experimental).  Its 59.5 GB of experts: a
     # RAM budget of them, like UD-Q4_K_XL, but far fewer read from the SSD on a 64 GB PC and none from ~80 GB of RAM.
@@ -317,7 +396,12 @@ def done(path: Path) -> bool:
 
 
 def mark(path: Path, text=""):
-    path.with_name(path.name + ".done").write_text(text or time.strftime("%Y-%m-%d %H:%M"), encoding="utf-8")
+    """Write the finish mark.  A folder that cannot be written (--gguf-dir on a read-only share, #570) only costs the
+    mark: setup says so and goes on (the step is repeated on the next run), it does not stop."""
+    try:
+        path.with_name(path.name + ".done").write_text(text or time.strftime("%Y-%m-%d %H:%M"), encoding="utf-8")
+    except OSError as e:
+        warn(f"the finish mark of {path.name} cannot be written ({e}): the next run does this step again")
 
 
 # ------------------------------------------------------------------------------------------------ the PC
@@ -661,6 +745,41 @@ def gpu_drives_display(g) -> bool:
     VRAM too, and a full expert cache beside it has crashed laptops."""
     text = out(["nvidia-smi", "-i", str(g.get("index", 0)), "--query-gpu=display_active", "--format=csv,noheader"])
     return text.strip().lower() == "enabled"
+
+
+def pcie_link(index: int) -> dict | None:
+    """The NVIDIA card's PCIe link: {"gen": the generation card and board both run (an idle card drops to a lower
+    one, so the current generation is not asked), "gpu_gen", "host_gen", "width", "max_width"}; None when nvidia-smi
+    does not say."""
+    s = out(["nvidia-smi", "-i", str(index), "--query-gpu=pcie.link.gen.max,pcie.link.gen.gpumax,pcie.link.gen.hostmax,"
+             "pcie.link.width.current,pcie.link.width.max", "--format=csv,noheader,nounits"])
+    try:
+        gen, gpu_gen, host_gen, width, max_width = (int(x.strip()) for x in s.strip().splitlines()[0].split(","))
+    except (ValueError, IndexError):
+        return None
+    return {"gen": gen, "gpu_gen": gpu_gen, "host_gen": host_gen, "width": width, "max_width": max_width}
+
+
+PCIE_GBPS = {1: 0.25, 2: 0.5, 3: 0.985, 4: 1.97, 5: 3.94}    # GB/s per lane, each direction
+
+
+def pcie_lines(link: dict) -> tuple[str, str | None]:
+    """(the ok line, a warning or None) for step 1.  The copy rate the engine measures is about 75% of the link's."""
+    lim = []
+    if link["gpu_gen"] > link["gen"]:
+        lim.append(f"the card supports {link['gpu_gen']}.0, the board {link['host_gen']}.0")
+    line = f"PCIe: {link['gen']}.0 x{link['width']}" + (f" ({'; '.join(lim)})" if lim else "")
+    rate = PCIE_GBPS.get(link["gen"], 0) * link["width"]
+    if 0 < rate < 12:
+        line += (f" - up to ~{rate:.0f} GB/s to the GPU: long prompts are read slower than on a PCIe 4.0 x16 PC (their "
+                 "experts are copied over it); the engine measures the link at start for the output speed")
+    warn_line = None
+    if link["width"] < link["max_width"]:
+        # (#912) the width is read now, and some cards and laptops narrow the link while idle: a hint, not a verdict
+        warn_line = (f"the GPU's PCIe link reads {link['width']} of its {link['max_width']} lanes right now (some cards "
+                     "narrow it when idle); if it stays narrow under load: is it in the right slot (the one wired "
+                     "x16), fully seated, and not sharing lanes with an M.2 drive? (the BIOS can say)")
+    return line, warn_line
 
 
 GPU_PICK = None                                         # --gpu N (issue #51); None: the card with the most VRAM
@@ -1113,13 +1232,16 @@ def find_nvcc(below=None):
     return best
 
 
-def find_vcvars():
+def find_vcvars(cuda_v=None):
+    """Visual Studio's vcvars64.bat.  #985: CUDA 13.0-13.2 accept Visual Studio 2019 and 2022 only, so a newer one
+    (2026 = version 18) is taken only with CUDA 13.3 or newer (`cuda_v`, the toolkit's (major, minor))."""
     vswhere = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Microsoft Visual Studio/Installer/vswhere.exe"
     if not vswhere.exists():
         return None
     # CUDA 13 accepts Visual Studio 2019 and 2022 only: a newer one (2026 = version 18) installed next to them
     # must not be picked ("unsupported Microsoft Visual Studio version"); with only a newer one there is none
-    p = out([str(vswhere), "-latest", "-products", "*", "-version", "[16.0,18.0)", "-requires",
+    upper = "19.0" if cuda_v is not None and tuple(cuda_v) >= (13, 3) else "18.0"
+    p = out([str(vswhere), "-latest", "-products", "*", "-version", f"[16.0,{upper})", "-requires",
              "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath"]).strip()
     v = Path(p) / "VC/Auxiliary/Build/vcvars64.bat" if p else None
     return v if v and v.exists() else None
@@ -1166,6 +1288,13 @@ def download(url, dst: Path, what=None):
         mark(dst)
         ok(f"{what or dst.name} copied")
         return
+    ms = ms_file(url) if model_source() == "modelscope" else None
+    if ms is not None:
+        if reachable(ms_url(*ms), timeout=30):
+            url = ms_url(*ms)
+        else:
+            warn(f"{what or dst.name}: ModelScope does not answer; downloading it from {hf_endpoint()}")
+            ms = None
     part = dst.with_name(dst.name + ".part")
     total = 0
     for attempt in range(5):
@@ -1180,11 +1309,13 @@ def download(url, dst: Path, what=None):
                 url = hf_unpinned(url)
                 continue
             if attempt == 4:
-                fail(f"cannot reach {url.split('/')[2]} ({e})", "check your internet connection and run it again")
+                fail(f"cannot reach {url.split('/')[2]} ({e})",
+                     "check your internet connection and run it again" + source_hint(url))
             time.sleep(5)
         except OSError as e:
             if attempt == 4:
-                fail(f"cannot reach {url.split('/')[2]} ({e})", "check your internet connection and run it again")
+                fail(f"cannot reach {url.split('/')[2]} ({e})",
+                     "check your internet connection and run it again" + source_hint(url))
             time.sleep(5)
     if dst.exists() and total and dst.stat().st_size == total:    # finished by an older setup (no mark yet)
         mark(dst)
@@ -1224,7 +1355,13 @@ def download(url, dst: Path, what=None):
         fail(f"could not finish downloading {dst.name}: {part.stat().st_size:,} bytes on disk, the server says {total:,}",
              "check your internet connection and run it again (the download resumes where it stopped)")
     part.replace(dst)
-    mark(dst)
+    meta = ms_meta(*ms) if ms is not None else None
+    if meta is not None and meta[1]:
+        verify_sha256(dst, meta[0], meta[1])           # ModelScope's published hash; kept in the finish mark
+    else:
+        if ms is not None:
+            warn(f"{what or dst.name}: ModelScope publishes no SHA-256 for it: the file is not verified")
+        mark(dst)
     ok(f"{what or dst.name} downloaded")
 
 
@@ -1485,16 +1622,32 @@ def cuda_lib_dirs(toolkit=13):
 # No images yet.
 ROCM_INDEXES = {"gfx1100": "https://rocm.nightlies.amd.com/v2/gfx110X-dgpu/",   # TheRock's wheels per GPU family
                 "gfx1101": "https://rocm.nightlies.amd.com/v2/gfx110X-dgpu/",
+                "gfx1102": "https://rocm.nightlies.amd.com/v2/gfx110X-dgpu/",
                 "gfx1200": "https://rocm.nightlies.amd.com/v2/gfx120X-all/",
                 "gfx1201": "https://rocm.nightlies.amd.com/v2/gfx120X-all/",
                 "gfx1030": "https://rocm.nightlies.amd.com/v2/gfx103X-all/",
                 "gfx1031": "https://rocm.nightlies.amd.com/v2/gfx103X-all/",
-                "gfx1151": "https://rocm.nightlies.amd.com/v2/gfx1151/"}       # Strix Halo (docs/STRIX_HALO.md)
-ROCM_VERSION = os.environ.get("STRATA_ROCM_VERSION", "7.10.0a20251120")   # what Strata's HIP build was tested with
+                "gfx1151": "https://rocm.nightlies.amd.com/v2/gfx1151/",       # Strix Halo (docs/STRIX_HALO.md)
+                "gfx1103": "https://rocm.nightlies.amd.com/v2/gfx110X-all/"}   # Radeon 780M: only with STRATA_EXPERIMENTAL_GFX1103=1
+# The TheRock nightly indexes are pruned and move on, and each GPU family's index holds its own range (#1103: gfx103X-all
+# starts at 7.13.0a20260422 and has no 7.10; #1267: the 7.10 wheel segfaults on a Strix Halo with kernel 7.2.8), so one
+# version for every card cannot work.  The wheel is chosen per index (the family): a preferred version, tried first; when
+# the index no longer offers it, the newest one of the same 7.x line, else of the same major, with a warning (rocm_pick).
+# STRATA_ROCM_VERSION still forces one exact version (no lookup).
+ROCM_VERSION_DEFAULT = "7.10.0a20251120"                 # what Strata's HIP build was tested with (gfx120X, gfx110X)
+ROCM_FAMILY_PINS = {"gfx103X-all": "7.13.0a20260515",    # #1103: 7.13.0a20260515 runs; the 7.14 nightlies time out
+                    "gfx110X-all": "7.10.0a20251121",    # the experimental gfx1103: this index has no ...20251120
+                    "gfx1151": "7.14.0a20260608"}        # #1267: 7.14.0a20260529 to 20260608 run on kernel 7.2.8; the 7.10 wheel segfaults
+ROCM_VERSION_OVERRIDE = os.environ.get("STRATA_ROCM_VERSION") or None
+ROCM_VERSION = ROCM_VERSION_OVERRIDE or ROCM_VERSION_DEFAULT   # kept for callers that read one version
 ROCM_SYSTEM_MIN = (7, 0)       # an older system ROCm is passed over for the wheels (gfx1201 needs ROCm 6.4 or newer)
-AMD_ARCHS = ("gfx1100", "gfx1101", "gfx1200", "gfx1201", "gfx1030", "gfx1031", "gfx1151")
+# STRATA_EXPERIMENTAL_GFX1103=1 (opt-in, unsupported): the Radeon 780M / 760M / 740M iGPU (Ryzen 7040 / 8040, gfx1103) is taken
+# as a unified-memory AMD card like Strix Halo, with the portable kernels (no WMMA) (measured on one machine: Ryzen 7 255).  Unset: unchanged.
+GFX1103_OPT_IN = os.environ.get("STRATA_EXPERIMENTAL_GFX1103") == "1"
+AMD_ARCHS = ("gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201", "gfx1030", "gfx1031", "gfx1151") + (("gfx1103",) if GFX1103_OPT_IN else ())
 AMD_NAMES = {"gfx1100": "AMD Radeon RX 7900 series (gfx1100)",   # when sysfs has no product name
              "gfx1101": "AMD Radeon RX 7800 XT / 7700 XT (gfx1101)",
+             "gfx1102": "AMD Radeon RX 7600 / 7600 XT (gfx1102)",
              "gfx1200": "AMD Radeon RX 9060 series (gfx1200)",
              "gfx1201": "AMD Radeon RX 9070 series / AI PRO R9700 (gfx1201)",
              "gfx1030": "AMD Radeon RX 6800 / 6900 series (gfx1030)",
@@ -1506,12 +1659,68 @@ AMD_NAMES = {"gfx1100": "AMD Radeon RX 7900 series (gfx1100)",   # when sysfs ha
              "gfx1103": "AMD Radeon 780M / 760M / 740M (Ryzen 7040 / 8040, Phoenix / Hawk Point, gfx1103)"}
 AMD_CARDS = ("the RX 7900 XT / XTX (gfx1100), RX 7800 XT / 7700 XT (gfx1101), RX 9060 XT (gfx1200) and "
              "RX 9070 / 9070 XT / Radeon AI PRO R9700 (gfx1201), and the RX 6800 / 6900 series (gfx1030) and RX 6700 XT "
-             "(gfx1031, #524), both unvalidated, and the Ryzen AI Max \"Strix Halo\" APU (Radeon 8060S / 8050S / 8040S, "
+             "(gfx1031, #524), and the RX 7600 / 7600 XT (gfx1102, one run reported, #942), all unvalidated, and the Ryzen AI Max \"Strix Halo\" APU (Radeon 8060S / 8050S / 8040S, "
              "gfx1151: experimental, docs/STRIX_HALO.md)")
 
 
 def rocm_index(arch):
     return os.environ.get("STRATA_ROCM_INDEX") or ROCM_INDEXES[arch]
+
+
+def rocm_family(index):
+    """The family name of a TheRock index url (.../v2/gfx103X-all/ -> gfx103X-all)."""
+    return index.rstrip("/").rsplit("/", 1)[-1]
+
+
+def rocm_vkey(version):
+    """Sort key of a TheRock version: 7.13.0a20260515 -> (7, 13, 0, 20260515); None when it is not one."""
+    m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:[a-z]+(\d+))?", version)
+    return tuple(int(g or 0) for g in m.groups()) if m else None
+
+
+def rocm_index_versions(html):
+    """The versions of the `rocm` package that a TheRock index page (<index>/rocm/) lists, oldest first."""
+    return sorted({m for m in re.findall(r"rocm-(\d+\.\d+\.\d+(?:[a-z]+\d+)?)\.(?:tar\.gz|whl)", html or "")
+                   if rocm_vkey(m)}, key=rocm_vkey)
+
+
+def rocm_pick(available, preferred):
+    """(version, note) for an index that lists `available`: `preferred` when it is there, else the newest of the same
+    7.x line, else the newest of the same major (the note says so); `preferred` unchanged when the list is empty (the
+    index could not be read: pip then reports its own error) or nothing of that major exists (the note says so)."""
+    if not available or preferred in available:
+        return preferred, None
+    want = rocm_vkey(preferred)
+    for same, what in ((lambda k: k[:2] == want[:2], "line"), (lambda k: k[0] == want[0], "major")):
+        hits = [v for v in available if same(rocm_vkey(v))]
+        if hits:
+            got = max(hits, key=rocm_vkey)
+            return got, (f"ROCm {preferred} is not on this index any more: using {got}, the newest of the same {what} "
+                         f"(set STRATA_ROCM_VERSION to choose another)")
+    return preferred, (f"ROCm {preferred} is not on this index and nothing of its major version is: "
+                       f"{available[0]} to {available[-1]} are (set STRATA_ROCM_VERSION to one of them)")
+
+
+def rocm_wanted(index, listing=None):
+    """(ROCm wheel version, warning or None) for a TheRock index (see ROCM_FAMILY_PINS).  `listing` is the index
+    page's html (None: fetched from <index>/rocm/; a failed fetch keeps the preferred version)."""
+    if ROCM_VERSION_OVERRIDE:
+        version, note = ROCM_VERSION_OVERRIDE, None
+    else:
+        preferred = ROCM_FAMILY_PINS.get(rocm_family(index), ROCM_VERSION_DEFAULT)
+        if listing is None:
+            try:
+                req = urllib.request.Request(index.rstrip("/") + "/rocm/", headers={"User-Agent": "strata-setup"})
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    listing = r.read().decode("utf-8", "replace")
+            except (OSError, ValueError):
+                listing = ""
+        version, note = rocm_pick(rocm_index_versions(listing), preferred)
+    if rocm_family(index) == "gfx1151" and (rocm_vkey(version) or (9, 0))[:2] < (7, 11):
+        note = ((note + "; ") if note else "") + (
+            "the ROCm 7.10 wheels segfault in the HSA runtime on a Strix Halo with a new kernel (7.2.8, #1267): "
+            "the 7.14 line (docs/STRIX_HALO.md) is the one that works")
+    return version, note
 
 
 # Strix Halo (Ryzen AI Max 380 / 385 / 390 / 395 + PRO: Radeon 8040S / 8050S / 8060S, RDNA 3.5, gfx1151) and the other
@@ -1548,7 +1757,7 @@ def amd_apply_uma(g: dict, gtt_gb: float = 0.0, ram: float | None = None) -> dic
     the model's experts live in, so it is not extra room beside the RAM.  g gets: uma, dedicated_gb (the carve-out: the
     only part that adds to the RAM, which the low-RAM mode counts) and vram_gb = the memory the GPU can use in all
     (the carve-out plus the shared pool less what the OS keeps), which sizes the context and the parallel slots."""
-    if g.get("uma") or not is_strix_halo(g):
+    if g.get("uma") or not (is_strix_halo(g) or (GFX1103_OPT_IN and gfx_arch_is(g.get("arch"), "gfx1103"))):
         return g
     ram = ram_gb() if ram is None else ram
     carve = max(0.0, float(g.get("vram_gb") or 0.0))
@@ -1990,7 +2199,7 @@ def get_prebuilt_hip(url_base, gpu, updating=False) -> Path | None:
             meta = json.loads(info.read_text(encoding="utf-8"))
         except ValueError:
             meta = {}
-        ver = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:3] if x.isdigit())
+        ver = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:4] if x.isdigit())
         if meta.get("backend") == "hip" and meta.get("source") == "prebuilt" and ver >= WIN_HIP_MIN_ENGINE and \
                 gpu["arch"] in meta.get("archs", []) and not updating:
             ok("ready-made AMD engine already installed")
@@ -2015,6 +2224,11 @@ def get_prebuilt_hip(url_base, gpu, updating=False) -> Path | None:
             return None
     say("  Downloading the ready-made Strata engine for AMD GPUs (with the ROCm libraries it uses) ...")
     download(base + WIN_HIP_ASSET, z, "Strata AMD engine")
+    try:
+        verify_engine_archive(z, WIN_HIP_ASSET, base)
+    except UnverifiedEngine as e:
+        engine_refused(WIN_HIP_ASSET, e, updating)
+        return None
     tmp = eng / "_unpack"
     shutil.rmtree(tmp, ignore_errors=True)
     with zipfile.ZipFile(z) as f:
@@ -2023,7 +2237,7 @@ def get_prebuilt_hip(url_base, gpu, updating=False) -> Path | None:
         meta = json.loads((tmp / "BUILD.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         meta = {}
-    ver = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:3] if x.isdigit())
+    ver = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:4] if x.isdigit())
     why = None
     if meta.get("backend") != "hip" or not (tmp / EXE).exists():
         why = "it is not a HIP engine"
@@ -2073,7 +2287,7 @@ def rocm_dev_missing(sysroot: Path) -> list:
 def rocm_root(archs):
     """ROCm for compiling and running the HIP engine for `archs` (one arch or a list: the cards of a layer split):
     (root, library folders).  A system ROCm 7 with hipcc, hipBLAS and the HIP development files (#446), else AMD's
-    TheRock wheels (ROCM_VERSION, from the card family's index) installed into .venv."""
+    TheRock wheels (rocm_wanted: a version per card family, from the family's index) installed into .venv."""
     archs = [archs] if isinstance(archs, str) else list(archs)
     sysroot = Path(os.environ.get("ROCM_PATH") or "/opt/rocm")
     if (sysroot / "bin" / "hipcc").exists() and list((sysroot / "lib").glob("libhipblas.so*")):
@@ -2094,13 +2308,21 @@ def rocm_root(archs):
     index = indexes[0]
     stamp = Path(sys.prefix) / ".strata-rocm.json"
     have = json.loads(stamp.read_text(encoding="utf-8")) if stamp.exists() else {}
-    if have.get("version") != ROCM_VERSION or have.get("index") != index:
-        say(f"  Installing ROCm {ROCM_VERSION} for AMD GPUs into .venv (AMD's TheRock wheels, ~10 GB, no sudo) ...")
+    wheel = None
+    if have.get("index") == index and have.get("version") and not ROCM_VERSION_OVERRIDE \
+            and (Path(sys.executable).parent / "rocm-sdk").exists() and have["version"] == ROCM_FAMILY_PINS.get(rocm_family(index), ROCM_VERSION_DEFAULT):
+        wheel = have["version"]                         # the family's pin is installed: no lookup
+    if wheel is None:
+        wheel, note = rocm_wanted(index)
+        if note:
+            warn(note)
+    if have.get("version") != wheel or have.get("index") != index:
+        say(f"  Installing ROCm {wheel} for AMD GPUs into .venv (AMD's TheRock wheels, ~10 GB, no sudo) ...")
         pip = [sys.executable, "-m", "pip", "install", "--quiet", "--disable-pip-version-check", "--index-url", index]
-        if have.get("version") == ROCM_VERSION:        # the same version for another GPU family: its own libraries
-            run(pip + ["--force-reinstall", "--no-deps", f"rocm=={ROCM_VERSION}"])
-        run(pip + [f"rocm[libraries,devel]=={ROCM_VERSION}"])
-        stamp.write_text(json.dumps({"version": ROCM_VERSION, "index": index}))
+        if have.get("version") == wheel:               # the same version for another GPU family: its own libraries
+            run(pip + ["--force-reinstall", "--no-deps", f"rocm=={wheel}"])
+        run(pip + [f"rocm[libraries,devel]=={wheel}"])
+        stamp.write_text(json.dumps({"version": wheel, "index": index}))
     sdk = Path(sys.executable).parent / "rocm-sdk"
     root = Path(out([str(sdk), "path", "--root"]).strip())
     if not (root / "llvm" / "bin" / "clang++").exists():
@@ -2221,7 +2443,8 @@ def build_vision_cpu(eng: Path, stamp: Path, meta: dict, llama, vsrc) -> Path:
     if not ((eng / VEXE).exists() and meta.get("vision_src") == vsrc):
         say("  Compiling the image encoder (for the CPU) ...")
         cmake_build(ROOT / "tools" / "vision", ROOT / "build-vision", "strata-vision",
-                    [f"-DLLAMA_DIR={llama}", "-DSTRATA_VISION_CUDA=OFF"], find_vcvars() if WIN else None,
+                    [f"-DLLAMA_DIR={llama}", "-DSTRATA_VISION_CUDA=OFF", "-DSTRATA_PORTABLE=OFF"],
+                    find_vcvars() if WIN else None,
                     "build-vision-cpu.bat" if WIN else "")   # #881: MSVC's environment on Windows, as the CUDA path has
         shutil.copy2(ROOT / "build-vision" / "bin" / VEXE, eng / VEXE)
     stamp.write_text(json.dumps({**meta, "vision": "cpu", "vision_src": vsrc}, indent=1))
@@ -2235,6 +2458,165 @@ def driver_major(gpu):
         return int(gpu["driver"].split(".")[0])
     except (ValueError, KeyError):
         return 0
+
+
+class UnverifiedEngine(Exception):
+    """The engine archive could not be verified, with the reason.
+
+    Raised rather than `fail()`-ed on purpose.  The engine-UPDATE paths wrap their download in
+    `except Exception` and fall back to the engine already installed, so a refusal has to be an Exception:
+    `fail()` ends in `sys.exit(1)`, and SystemExit is a BaseException, so it flies past that guard and
+    kills the start instead.  Measured on this change before the fix - a wrong hash, a wrong size and a
+    missing digest each escaped get_prebuilt(updating=True) as SystemExit(1).
+    """
+
+
+def release_of(base: str) -> tuple[str, str | None] | None:
+    """("github", tag) for a GitHub release URL, or None when the URL is not one.
+
+    `base` is one of the bases from `prebuilt_bases`: a `releases/download/v0.1.40/` URL (which names its
+    tag), the `releases/latest/download/` URL, or something else entirely - a local folder, a plain mirror.
+    That last case matters: it has no published digest, so treating it as "latest" would check the file
+    against a release the user did not ask for, over the network, which is wrong twice over.
+
+    The repository comes out of the URL when it names one, so a fork's own releases are checked against
+    the fork rather than against Niko1221/Strata (which never has the fork's tags, so the check would
+    always fail).
+    """
+    m = re.search(r"https?://(?:www\.)?github\.com/([^/]+)/([^/]+)/releases/(?:download/v([^/]+)|latest)/",
+                  base)
+    if not m:
+        return None
+    return f"https://api.github.com/repos/{m.group(1)}/{m.group(2)}/releases", m.group(3)
+
+
+def is_local(base: str) -> bool:
+    """True for a path on this machine - `C:/mirror`, `/mnt/mirror`, `//share/engine`, `file://...`.
+
+    A local folder is the user's own file on their own disk, the same trust decision as `--gguf-dir`, and
+    there is no published digest for it to be checked against.  It is treated differently from a remote
+    mirror on purpose: nothing is between the file and setup, whereas a remote mirror has a network in the
+    middle and still no release to check it against.
+    """
+    b = base.strip()
+    if b.lower().startswith("file://"):
+        return True
+    return not re.match(r"^[a-z][a-z0-9+.\-]*://", b, re.I)
+
+
+def engine_digest(asset: str, base: str) -> tuple[int, str] | None:
+    """(size, "sha256:<hex>") for `asset` in the release `base` points at, or None if GitHub will not say.
+
+    The size and hash come from the releases API - a different origin from the download, which is the
+    whole point: a mirrored, substituted or TLS-intercepted download does not come with a matching digest,
+    while a compromised release does (see `verify_engine_archive` for what that leaves uncovered).
+
+    GitHub populates `digest` for every asset, including ones uploaded before the field existed
+    (measured on v0.1.34 through v0.1.40.1).  None means no answer - no network, a rate limit, or a
+    release that does not publish one - and the caller warns and installs anyway (never refuses).
+    """
+    where = release_of(base)
+    if where is None:                  # a local folder or a plain mirror: nothing published to check against
+        return None
+    releases, tag = where
+    url = f"{releases}/tags/v{tag}" if tag else f"{releases}/latest"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "strata-setup",
+                                                   "Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            rel = json.loads(r.read().decode("utf-8"))
+    except Exception:
+        return None                     # offline, rate-limited, or the release is not there
+    for a in rel.get("assets") or []:
+        if a.get("name") == asset and a.get("digest") and str(a.get("digest")).startswith("sha256:"):
+            return int(a.get("size") or 0), str(a["digest"]).split(":", 1)[1]
+    return None
+
+
+def drop_download(z: Path) -> None:
+    """The archive and its finish mark. A refused engine is not left where a later run would reuse it."""
+    z.unlink(missing_ok=True)
+    z.with_name(z.name + ".done").unlink(missing_ok=True)
+
+
+def verify_engine_archive(z: Path, asset: str, base: str) -> None:
+    """The downloaded engine archive against the published size and SHA-256, before it is unpacked.
+
+    Without this, a ready-made engine is installed on nothing more than the byte count matching the
+    server's Content-Length - and a substituted file of the same length passes that.  It runs before the
+    archive is opened, so a wrong engine never reaches `_unpack`, let alone the engine directory.
+
+    Raises UnverifiedEngine on a refusal; the caller decides whether that stops setup (a first install,
+    with nothing to fall back to) or keeps the engine that is already there (an update).
+
+    Where the hash comes from, and where it cannot:
+
+    - a GitHub release URL: the tag is read out of the URL, so the exact release the bytes claim to come
+      from is the one checked rather than "latest" (setup tries the checkout's own release first, #214),
+      and the repository comes out of the URL too, so a fork's releases are checked against the fork;
+    - a local folder (`--prebuilt D:/mirror`): nothing published to check against.  This warns and goes
+      ahead - it is the user's own file, the same trust decision as `--gguf-dir`, and there is nothing an
+      API could say about it;
+    - any other remote mirror: nothing published to check against either, but a network is in the middle,
+      so it warns and installs anyway (no digest is never a reason to refuse).
+
+    What a digest from the API does NOT cover, stated plainly: it proves the bytes are the ones GitHub
+    published for that asset, so it catches a corrupted transfer, a mirror or proxy that substituted the
+    file, and a hostile network.  It does not make a malicious RELEASE safe - if whoever can publish a
+    release publishes a hostile engine, the digest matches it.  Only a hash pinned in this file closes
+    that, at the cost of a commit per release; a dict of tag -> sha next to `engine_digest` is where one
+    would go.
+
+    The size and the hashing below are spelled out rather than delegated to `verify_sha256`, for two
+    reasons, both measured here.  That function ends in `fail()`, and a refusal has to be an Exception so
+    the update paths can fall back.  And it keeps a `.done` mark so 111 GB of Unsloth shards is hashed
+    once; the engine archive is 190 MB, which hashes in 0.79 s at 242 MB/s on this machine, against 3.0 s
+    to download the same file.  A mark that saves 0.8 s is not worth a class of hole - anything that
+    changes the file after it was verified, at any length - so there is no mark here.
+    """
+    if os.environ.get("STRATA_SKIP_SHA256") == "1":
+        warn(f"STRATA_SKIP_SHA256=1: NOT checking {asset} against its SHA-256. If the file is corrupt or "
+             f"tampered with, it will be installed anyway. Unset it to get the check back.")
+        return
+    want = engine_digest(asset, base)          # one API call: this is a rate-limited API
+    if not want:
+        # no published digest (offline, rate limit, a mirror or folder): install anyway, never refuse
+        warn(f"could not get a SHA-256 for {asset} from GitHub (offline, rate limited, or not a release "
+             f"URL), so it was NOT verified. Installing it as it is.")
+        return
+    size, sha = want
+    have = z.stat().st_size if z.exists() else -1
+    if have != size:
+        drop_download(z)
+        raise UnverifiedEngine(f"{z.name} is {have:,} bytes, not the published {size:,}")
+    h = hashlib.sha256()
+    with open(z, "rb") as f:
+        while True:
+            b = f.read(16 << 20)
+            if not b:
+                break
+            h.update(b)
+    if h.hexdigest() != sha:
+        got = h.hexdigest()
+        drop_download(z)
+        raise UnverifiedEngine(f"{z.name} has the wrong SHA-256 ({got}, expected {sha})")
+
+
+def engine_refused(asset: str, e: Exception, updating: bool) -> None:
+    """Report a refusal and either stop setup or keep the engine that is installed.
+
+    A first install has nothing to fall back to, so it stops.  An update does: the engine already in
+    place is untouched by a refusal (nothing has been unpacked), it works, and stopping the model from
+    starting over a hash is worse than keeping what is there - which is the whole reason that call site
+    catches what the download can throw.
+    """
+    if not updating:
+        fail(f"the downloaded Strata engine does not match GitHub's checksum: {e}",
+             "the bad download has been deleted (corrupt or tampered), so the next run fetches the "
+             "published file again. Set STRATA_SKIP_SHA256=1 only if you insist on installing it anyway")
+        return
+    warn(f"keeping the engine that is installed: {e}")
+    say("       Nothing was replaced. The bad download was deleted; run setup again to fetch it afresh.")
 
 
 def prebuilt_bases(url_base) -> list[str]:
@@ -2319,7 +2701,7 @@ def get_prebuilt(url_base, gpu, vision, updating=False, toolkit=13) -> Path | No
     info = eng / "BUILD.json"
     if info.exists() and (eng / EXE).exists() and json.loads(info.read_text(encoding="utf-8")).get("backend") != "hip":
         meta = json.loads(info.read_text(encoding="utf-8"))
-        ver = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:3] if x.isdigit())
+        ver = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:4] if x.isdigit())
         if meta.get("source") == "local":              # compiled here: build_engine checks its source and cards
             return None
         have = [int(a) for a in meta.get("archs", [])]
@@ -2354,6 +2736,11 @@ def get_prebuilt(url_base, gpu, vision, updating=False, toolkit=13) -> Path | No
             return None
     say("  Downloading the ready-made Strata engine" + (" (CUDA 12, experimental)" if int(toolkit) == 12 else "") + " ...")
     download(base + asset, z, "Strata engine")
+    try:
+        verify_engine_archive(z, asset, base)
+    except UnverifiedEngine as e:
+        engine_refused(asset, e, updating)
+        return None
     tmp = eng / "_unpack"
     shutil.rmtree(tmp, ignore_errors=True)
     try:
@@ -2363,7 +2750,7 @@ def get_prebuilt(url_base, gpu, vision, updating=False, toolkit=13) -> Path | No
         drop_archive(z)                                # every later run fail on it instead of downloading it again
         raise
     meta = json.loads((tmp / "BUILD.json").read_text(encoding="utf-8"))
-    if tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:3] if x.isdigit()) < MIN_ENGINE:
+    if tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:4] if x.isdigit()) < MIN_ENGINE:
         need = ".".join(map(str, MIN_ENGINE))
         if updating:                                   # these files are newer than the published release (#58)
             warn(f"engine {need} is not published yet (the release may still be uploading): run this again "
@@ -2414,7 +2801,7 @@ def update_installed_engine(url_base, toolkit=None) -> None:
     meta_text = info.read_text(encoding="utf-8")
     meta = json.loads(meta_text)
     if meta.get("backend") == "hip" and WIN:           # AMD on Windows: the ready-made HIP engine, when older
-        ver = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:3] if x.isdigit())
+        ver = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:4] if x.isdigit())
         if meta.get("source") == "prebuilt" and ver < WIN_HIP_MIN_ENGINE:
             try:
                 g = next((x for x in amd_gpus() if amd_problem(x) is None), None)
@@ -2442,7 +2829,7 @@ def update_installed_engine(url_base, toolkit=None) -> None:
                 warn(f"could not compile the updated engine{'' if isinstance(e, SystemExit) else f' ({e})'}: "
                      "starting the installed one")
         return
-    ver = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:3] if x.isdigit())
+    ver = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:4] if x.isdigit())
     local = meta.get("source") == "local"
     vision = meta.get("vision") or "none"
     if local:                                          # compiled here: is it older than the source (a git pull)?
@@ -2496,6 +2883,39 @@ def pip_cuda_libs(toolkit=13) -> None:
         pip_install(CUDA_WHEELS, "NVIDIA CUDA libraries (cuBLAS, CUDA runtime; ~0.4 GB)")
 
 
+CUDA_SM120_SUSPECT = (13, 2)   # #892 #968: nvcc 13.2.0 / 13.2.1 (build 13.2.51) for sm_120 made garbage answers (IQ1_S / IQ2_S / IQ3_S) and prompts
+                               # (K-quant MMQ) that the same source compiled with 13.0.88 answers correctly (llama.cpp hit it too)
+CUDA_SM120_FIXED_BUILD = 86    # CUDA 13.2.2 (nvcc build 13.2.86) fixes it (ggml-org/llama.cpp#28581, confirmed on a 5090 in #968)
+
+
+def nvcc_build(nvcc):
+    """The build number of an nvcc ("Build cuda_13.2.r13.2/compiler...", "V13.2.86" -> 86); None when it cannot be read."""
+    m = re.search(r"\bV\d+\.\d+\.(\d+)", out([nvcc, "--version"]) if nvcc else "")
+    return int(m.group(1)) if m else None
+
+
+def sm120_nvcc(nvcc, cuda_v, archs):
+    """#892 / #968: CUDA 13.2.0 / 13.2.1's nvcc for an RTX 50 card (sm_120).  Returns (nvcc, cuda_v): an older 13.x toolkit
+    when one is installed and the user did not name a compiler (STRATA_NVCC), else the one found, with a warning that says
+    what to do.  CUDA 13.2.2 (build 86 or newer) is fine.  Recommends, never forces: a user who picked 13.2 keeps it."""
+    if not nvcc or cuda_v != CUDA_SM120_SUSPECT or max(archs) < 120:
+        return nvcc, cuda_v
+    build = nvcc_build(nvcc)
+    if build is not None and build >= CUDA_SM120_FIXED_BUILD:
+        return nvcc, cuda_v
+    if not os.environ.get("STRATA_NVCC"):
+        alt, alt_v = find_nvcc(below=CUDA_SM120_SUSPECT)
+        if alt and alt_v and alt_v >= (13, 0):
+            ok(f"CUDA {alt_v[0]}.{alt_v[1]} is used for the RTX 50 card (sm_120): CUDA 13.2.0 / 13.2.1's compiler made wrong "
+               "answers there (#892, #968); STRATA_NVCC=<nvcc> picks another")
+            return alt, alt_v
+    warn("CUDA 13.2.0 and 13.2.1's compiler (nvcc) made garbage prompts and answers for RTX 50 cards (sm_120) in two "
+         "reports (#892, #968): the same source compiled with CUDA 13.0, 13.1 or 13.2.2 is right. If the engine answers "
+         "with nonsense, update to CUDA 13.2.2 or install CUDA 13.0 next to it (https://developer.nvidia.com/cuda-toolkit-archive) "
+         "and set STRATA_NVCC to its nvcc; the ready-made engine is built with 13.0")
+    return nvcc, cuda_v
+
+
 def install_build_tools(gpu, yes):
     """The compiler and the CUDA toolkit, installed for the user (asks once).  Returns (nvcc, vcvars)."""
     archs = [int(x) for x in gpu.get("archs", [gpu["arch"]])]
@@ -2515,7 +2935,7 @@ def install_build_tools(gpu, yes):
              "and run it again (STRATA_NVCC=<its nvcc> picks one toolkit)")
     # RTX 50 (sm_120): CUDA 13.0 - an engine built with 12.8 crashed in the prompt path on Linux (#220)
     need_cuda = need12 if old else (13, 0) if max(archs) >= 120 else (12, 0)
-    vcvars = find_vcvars() if WIN else None
+    vcvars = find_vcvars(cuda_v) if WIN else None
     have_cc = vcvars is not None if WIN else shutil.which("g++") is not None
     missing = []
     if not have_cc:
@@ -2523,6 +2943,7 @@ def install_build_tools(gpu, yes):
     if nvcc is None or cuda_v < need_cuda:
         missing.append("the NVIDIA CUDA Toolkit 13.0")
     if not missing:
+        nvcc, cuda_v = sm120_nvcc(nvcc, cuda_v, archs)
         ok(f"build tools present (CUDA {cuda_v[0]}.{cuda_v[1]})")
         return nvcc, vcvars
     say("  The engine has to be compiled for your PC, which needs: " + " and ".join(missing) + ".")
@@ -2542,7 +2963,7 @@ def install_build_tools(gpu, yes):
                 check=False)
         if nvcc is None or cuda_v < need_cuda:
             run([*wg, "--id", "Nvidia.CUDA", "--version", "13.0"], check=False)
-        vcvars = find_vcvars()
+        vcvars = find_vcvars(cuda_v)
     else:
         apt = shutil.which("apt-get")
         if apt is None:
@@ -2564,12 +2985,13 @@ def install_build_tools(gpu, yes):
             run(["sudo", "apt-get", "update"])
             run(["sudo", "apt-get", "install", "-y", "cuda-toolkit-13-0"])
     nvcc, cuda_v = find_nvcc(below=(13, 0)) if old else find_nvcc()
-    if (WIN and find_vcvars() is None) or (not WIN and shutil.which("g++") is None):
+    if (WIN and find_vcvars(cuda_v) is None) or (not WIN and shutil.which("g++") is None):
         fail("the C++ build tools did not install", "install them by hand (README.md) and run it again")
     if nvcc is None or cuda_v < need_cuda:
         fail("the CUDA Toolkit did not install", "install it from https://developer.nvidia.com/cuda-downloads, then run it again")
+    nvcc, cuda_v = sm120_nvcc(nvcc, cuda_v, archs)
     ok(f"build tools installed (CUDA {cuda_v[0]}.{cuda_v[1]})")
-    return nvcc, find_vcvars() if WIN else None
+    return nvcc, find_vcvars(cuda_v) if WIN else None
 
 
 def cmake_build(src, bdir, target, defs, vcvars, bat_name):
@@ -2598,7 +3020,7 @@ def cmake_build(src, bdir, target, defs, vcvars, bat_name):
             run(build)
 
 
-ENGINE_SOURCES = ("CMakeLists.txt", "src", "include", "third_party/ggml")
+ENGINE_SOURCES = ("CMakeLists.txt", "cmake", "src", "include", "third_party/ggml")
 VISION_SOURCES = ("tools/vision",)
 
 
@@ -2686,7 +3108,8 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
         shutil.copy2(bdir / EXE, eng / EXE)
     if not vision_ok:
         say("  Compiling the image encoder" + (" with CUDA (10-20 minutes, once) ..." if vision == "gpu" else " ..."))
-        defs = [f"-DLLAMA_DIR={llama}", f"-DSTRATA_VISION_CUDA={'ON' if vision == 'gpu' else 'OFF'}"]
+        defs = [f"-DLLAMA_DIR={llama}", f"-DSTRATA_VISION_CUDA={'ON' if vision == 'gpu' else 'OFF'}",
+                "-DSTRATA_PORTABLE=OFF"]                   # built here, for this PC: native, like the engine
         if vision == "gpu":
             defs += [f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}", f"-DCMAKE_CUDA_COMPILER={nvcc}"]
         cmake_build(ROOT / "tools" / "vision", vdir, "strata-vision", defs, vcvars,
@@ -3109,7 +3532,7 @@ def write_config(path: Path, cfg: dict):
 # "sampling" or "mcp_servers" block, "allowed_hosts", "cors_origins", "open_browser" - and is kept when setup runs again
 SETUP_KEYS = frozenset({"exe", "args", "cwd", "tokenizer", "model_name", "log", "lib_dirs", "port", "backend", "env",
                         "gpu", "gpus_asked", "layer_split", "host", "api_key", "draft_vocab", "vision"})
-SETUP_ENV = frozenset({"STRATA_HIPBLASLT_TUNING", "STRATA_RESIDENT_PIN"})   # the "env" entries setup writes
+SETUP_ENV = frozenset({"STRATA_HIPBLASLT_TUNING", "STRATA_RESIDENT_PIN", "STRATA_NO_ARENA_THP"})   # the "env" entries setup writes
 SETUP_VISION = frozenset({"exe", "mmproj", "model", "gpu", "max_tokens", "threads"})
 
 
@@ -3319,11 +3742,11 @@ def engine_version(exe: Path) -> tuple:
     v = str(meta.get("version") or "")
     if not v:                                          # the version compiled into the binary: 0.1.13 and newer
         try:                                           # carry it, so a binary without it is older
-            m = re.search(rb"engine=(\d+\.\d+\.\d+)(?:\.\d+)?\n", Path(exe).read_bytes())
+            m = re.search(rb"engine=(\d+\.\d+\.\d+(?:\.\d+)?)\n", Path(exe).read_bytes())
             v = m.group(1).decode() if m else "0.1.12"
         except OSError:
             v = "0"
-    return tuple(int(x) for x in v.split(".")[:3] if x.isdigit())
+    return tuple(int(x) for x in v.split(".")[:4] if x.isdigit())
 
 
 def is_wsl() -> bool:
@@ -3392,7 +3815,7 @@ def calibrate_config(cfg_path: Path) -> bool:
     cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
     say()
     say("  Tuning Strata for this PC: the output speed is measured with a few engine settings (the PCIe share, the")
-    say("  draft depth, the CPU threads). It takes about 5-10 minutes; the PC is busy meanwhile.")
+    say("  draft depth, the CPU threads, the expert cache). It takes about 10 minutes; the PC is busy meanwhile.")
     try:
         since = os.path.getsize(cfg["log"]) if cfg.get("log") and os.path.isfile(cfg["log"]) else 0
     except OSError:
@@ -4084,6 +4507,13 @@ def main() -> int:
     ap.add_argument("--rollback-engine", action="store_true",
                     help="put back the engine an update replaced (kept in engine/.previous), and keep the current one there")
     ap.add_argument("--build", action="store_true", help="compile the engine instead of using the ready-made one")
+    ap.add_argument("--source", choices=SOURCES, default=None,
+                    help="where the model files come from: auto (default: Hugging Face), huggingface or modelscope "
+                         "(mainland China: the same files, checked against ModelScope's published SHA-256; "
+                         "STRATA_SOURCE)")
+    ap.add_argument("--inspect", nargs="+", metavar=("SOURCE", "VARIANT"),
+                    help="what a GGUF is and whether Strata runs it, from its headers only (no download): a file, a "
+                         "folder, a URL, ms:owner/repo (ModelScope) or hf:owner/repo, and optionally a variant name")
     ap.add_argument("--cuda", choices=["12", "13", "auto"], default=os.environ.get("STRATA_CUDA") or None,
                     help="NVIDIA: the CUDA toolkit of this model's engine. auto (default): CUDA 13, the ready-made "
                          "engine; CUDA 12 (experimental) when a chosen card is older than CUDA 13 supports (Pascal, "
@@ -4121,6 +4551,10 @@ def main() -> int:
                          "sycl = Intel Arc, EXPERIMENTAL: Linux, built from source (docs/INTEL_ARC.md)")
     ap.add_argument("--skip-build", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
+    if a.source:
+        os.environ["STRATA_SOURCE"] = a.source
+    if a.inspect:                                      # headers only: nothing is installed
+        sys.exit(subprocess.run([sys.executable, str(ROOT / "tools" / "strata_inspect.py"), *a.inspect[:2]]).returncode)
     if a.backend == "sycl":                            # Intel Arc: the SYCL port's own setup (sycl/setup_intel.py)
         return sycl_setup(sys.argv[1:])
     if a.resident_budget_gib is not None and not a.resident_budget_gib > 0:
@@ -4340,6 +4774,12 @@ def main() -> int:
              "the model may not start or may use less VRAM. Set it to \"System managed\": System > About > "
              "Advanced system settings > Performance > Advanced > Virtual memory")
     ok(f"CPU: {cpu} ({'AVX-512' if avx512 else 'AVX2' if avx2 else 'no AVX2'})")
+    link = None if hip else pcie_link(int(gpu.get("index", 0)))
+    if link is not None:
+        line, problem = pcie_lines(link)
+        ok(line)
+        if problem:
+            warn(problem)
     floor = cpu_floor(avx2)
     if floor == "unsupported":
         fail("this CPU has neither AVX2 nor SSE4.2; Strata needs at least SSE4.2 (Intel Nehalem, 2008, or newer)")
@@ -4539,6 +4979,9 @@ def main() -> int:
         say("  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.")
         vision = "gpu" if ask("Do you want images?", ["y", "n"], "n", a.yes) == "y" else "none"
     ok("images: " + {"none": "off", "gpu": "on", "cpu": "on (encoder on the CPU)"}[vision])
+    if vision != "none" and MODELS[model].get("vision_untested"):
+        warn(f"images with {model} are untested: users report them working, but we have not run this file with "
+             "images (#967); tell us if the answers look wrong")
     # The low-RAM mode's two variants.  resident: the experts the GPU's cache does not hold (and, as far as RAM allows,
     # the ones the prompt path borrows cache room from) are copied from the pack's experts.bin into RAM once, so
     # nothing is read from the SSD while it answers (engine 0.1.30, --resident-experts; the engine falls back to mmap
@@ -4613,7 +5056,10 @@ def main() -> int:
                 break
     for s in shards:                                   # #173: a whole file copied in by hand has no finish mark
         if s.exists() and not done(s) and whole_shard(s):
-            mark(s, "whole (checked against its own tensor directory)")
+            try:
+                mark(s, "whole (checked against its own tensor directory)")
+            except OSError as e:                       # a read-only folder (--gguf-dir on a share): the file is still whole
+                warn(f"{s.name} is whole but its finish mark cannot be written ({e})")
     have_model = all(s.exists() and (done(s) or a.gguf_dir) for s in shards)
     # #425 (jctaborda): a download that resumes needs room only for what is still missing - the finished shards and
     # the .part files already on the disk count
@@ -4667,7 +5113,7 @@ def main() -> int:
         lib_dirs = [str(d) for d in hip_lib_dirs(eng)]
     else:
         lib_dirs = meta.get("lib_dirs") or meta.get("cuda_dirs") or cuda_lib_dirs(cuda_tk)
-    engine_ver = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:3] if x.isdigit())
+    engine_ver = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:4] if x.isdigit())
     need_engine = MODELS[model].get("engine", UNSLOTH_ENGINE)
     if budget is not None and engine_ver < need_engine:      # checked before the 94-111 GB download
         fail(f"{model} needs engine {'.'.join(map(str, need_engine))} or newer; this one is {meta.get('version')}",
@@ -4682,7 +5128,12 @@ def main() -> int:
             say(f"  The model files go in {models_dir}")
             say(f"  Files you already have: put them here with their original names ({', '.join(missing)}), or use "
                 "--gguf-dir <their folder>.")
-            if hf_endpoint() != HF_DEFAULT:
+            if model_source() == "modelscope":
+                say(f"  Downloading from ModelScope ({ms_endpoint()}); --source huggingface downloads from Hugging Face")
+                warn("ModelScope serves the repositories' current files, not the pinned revisions: each file is checked "
+                     "against the SHA-256 ModelScope itself publishes (self-attested); the MTP tensors against the "
+                     "pinned checkpoint's own hashes")
+            elif hf_endpoint() != HF_DEFAULT:
                 say(f"  Downloading from {hf_endpoint()} (HF_ENDPOINT)")
         for s in shards:
             if s.exists() and done(s):
@@ -4750,7 +5201,8 @@ def main() -> int:
     if corrupt or not (rt / "experts.bin").exists():
         say("  The MTP draft layer (speculative decoding, ~2x faster output) comes from the original Qwen checkpoint:")
         say("  only its ~5 GB of MTP tensors are downloaded.")
-        run([sys.executable, str(ROOT / "tools" / "mtp_fetch.py"), "fetch", "--out", str(mtp)], env=env)
+        run([sys.executable, str(ROOT / "tools" / "mtp_fetch.py"), "fetch", "--out", str(mtp)],
+            env={**env, "STRATA_SOURCE": model_source()})
         run([sys.executable, str(ROOT / "tools" / "mtp_pack.py"), "--src", str(mtp), "--experts", "q2_0",
              "--out", str(mtp / "mtp-q2_0.gguf")], env=env)
         run([sys.executable, str(ROOT / "tools" / "mtp_rt.py"), "--gguf", str(mtp / "mtp-q2_0.gguf"), "--out", str(rt)],
@@ -4879,6 +5331,9 @@ def main() -> int:
         table = hipblaslt_table(gpu["arch"], lib_dirs, meta.get("hipblaslt_version"))
         if table:
             cfg["env"] = {"STRATA_HIPBLASLT_TUNING": str(table)}
+        if GFX1103_OPT_IN and gfx_arch_is(gpu["arch"], "gfx1103") and not WIN:
+            # the 780M's KFD queues are evicted (a GPU reset) while transparent huge pages move the pinned expert arena
+            cfg.setdefault("env", {})["STRATA_NO_ARENA_THP"] = "1"
         if resident:   # ROCm: large page-locked host allocations can fail or be slow for the CPU; keep the copy pageable
             cfg.setdefault("env", {})["STRATA_RESIDENT_PIN"] = "0"
     if gpu["count"] > 1 or a.gpu is not None:
