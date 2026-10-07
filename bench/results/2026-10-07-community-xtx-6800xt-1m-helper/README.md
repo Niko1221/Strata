@@ -185,5 +185,4 @@ python quality.py final quality-out http://127.0.0.1:8080 --hs 200 --wg 200 \
 Dataset content is not redistributed;
 sample ordering and the answer-letter parser are preserved in`quality.py`.
 
-This report and the measurement harness were prepared with Codex. Historical
-results are retained; no new inference measurements were run for publication.
+Historical results are retained; no new inference measurements were run for publication.
