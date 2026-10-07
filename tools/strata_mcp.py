@@ -864,6 +864,8 @@ def own_ram_gb() -> float:
         m.dwLength = ctypes.sizeof(MS)
         ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m))
         return m.tp / 2**30
+    if sys.platform == "darwin":                       # no /proc on macOS
+        return os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") / 2**30
     try:
         for line in open("/proc/meminfo"):
             if line.startswith("MemTotal"):

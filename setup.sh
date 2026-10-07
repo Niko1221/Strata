@@ -1,5 +1,5 @@
 #!/bin/sh
-# Strata for Linux: the first run installs everything and starts the model; later runs just start it.
+# Strata for Linux and macOS (Apple Silicon, docs/MACOS.md): the first run installs everything and starts the model; later runs just start it.
 # Needs only an NVIDIA driver (or, for an AMD Radeon card, the kernel's amdgpu driver: see docs/AMD_HIP.md).
 # Python (with venv) is installed through apt/dnf if it is missing (asks for sudo).
 # NixOS (or STRATA_UV=1) with uv installed: uv makes the project venv; every other Linux uses the standard venv.
@@ -37,11 +37,14 @@ if [ ! -x .venv/bin/python ]; then
       sudo dnf install -y python3 python3-pip
     elif command -v pacman >/dev/null 2>&1; then
       sudo pacman -S --noconfirm python python-pip
+    elif command -v brew >/dev/null 2>&1; then          # macOS (Homebrew; no sudo)
+      brew install python
     fi
     PY=python3
     if ! ok_py $PY; then
-      echo "Please install Python 3.10 or newer with venv (Ubuntu/Debian: sudo apt install python3-venv), then run"
-      echo "./setup.sh again. On NixOS, add uv to environment.systemPackages."
+      echo "Please install Python 3.10 or newer with venv (Ubuntu/Debian: sudo apt install python3-venv; macOS:"
+      echo "https://www.python.org/downloads/ or brew install python), then run ./setup.sh again."
+      echo "On NixOS, add uv to environment.systemPackages."
       exit 1
     fi
   fi

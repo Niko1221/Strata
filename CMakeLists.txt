@@ -20,6 +20,17 @@ if(STRATA_ENABLE_SYCL)
   add_subdirectory(sycl)
   return()
 endif()
+# EXPERIMENTAL: the macOS / Apple Silicon engine in metal/ (docs/MACOS_PLAN.md): Strata's line protocol over
+# llama.cpp's Metal backend.  Its own small project; with this on, nothing below is configured.
+option(STRATA_ENABLE_METAL "EXPERIMENTAL: build the macOS (Metal) engine from metal/ - docs/MACOS_PLAN.md" OFF)
+if(STRATA_ENABLE_METAL)
+  if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP OR NOT APPLE)
+    message(FATAL_ERROR "STRATA_ENABLE_METAL is the macOS backend; leave STRATA_ENABLE_CUDA and STRATA_ENABLE_HIP off")
+  endif()
+  enable_language(C OBJC)
+  add_subdirectory(metal)
+  return()
+endif()
 add_compile_definitions(STRATA_VERSION="${PROJECT_VERSION}")
 # issue #31: release builds keep a PDB beside the exe (not shipped in it), so a minidump from a stalled engine can
 # be read back to the exact source line
