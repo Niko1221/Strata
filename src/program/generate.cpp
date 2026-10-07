@@ -10067,6 +10067,9 @@ int main(int argc, char** argv) {
                              (unsigned long long) look, (double) miss * 4224.0 / 1048576.0,
                              over ? " - OVERFLOW (too few resident cells)" : "");
             }
+            if (ver.dense_t8_enabled())
+                std::fprintf(stderr,"strata dense T8 MMQ: %llu actual verification windows (cumulative graph launches, not committed tokens)\n",
+                             (unsigned long long)ver.dense_t8_windows());
             if (sfx_windows > 0)
                 std::fprintf(stderr, "strata serve: suffix drafts: %lld windows, %lld of %lld drafts accepted\n",
                              (long long) sfx_windows, (long long) sfx_ok, (long long) sfx_drafts);

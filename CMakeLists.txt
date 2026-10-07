@@ -1,4 +1,4 @@
-﻿# Strata Engine - top-level build (P1.S1).
+# Strata Engine - top-level build (P1.S1).
 #
 # Targets (phase-1 Ă‚Â§P1.S1): `strata_artifact` (no CUDA dependency), `tests`.  `strata_plan` and the C++
 # `strata-pack` are added when their sources exist - a target with no sources would make the build graph
@@ -1225,6 +1225,19 @@ if(STRATA_NATIVE_EXPERTS)
     endif()
     target_link_libraries(strata_prefill PUBLIC strata_mmq)
     target_compile_definitions(strata_prefill PUBLIC STRATA_PREFILL_MMQ=1 STRATA_PREFILL_FUSED=1)
+    add_library(strata_dense_t8 STATIC src/prefill/dense_q8_t8.cu)
+    target_include_directories(strata_dense_t8 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(strata_dense_t8 PUBLIC strata_mmq ${_strata_gpu_runtime_target})
+    target_compile_definitions(strata_engine PRIVATE STRATA_VERIFY_DENSE_T8_MMQ=1)
+    target_link_libraries(strata_engine PUBLIC strata_dense_t8)
+    if(STRATA_BUILD_TESTS)
+      add_executable(dense_q8_t8_test tests/cuda/dense_q8_t8_test.cpp)
+      add_executable(dense_q8_t8_bench tools/dense_q8_t8_bench.cpp)
+      target_link_libraries(dense_q8_t8_bench PRIVATE strata_dense_t8 strata_kernels)
+      target_link_libraries(dense_q8_t8_test PRIVATE strata_dense_t8 strata_kernels)
+      add_test(NAME dense_q8_t8_test COMMAND dense_q8_t8_test)
+      set_tests_properties(dense_q8_t8_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
+    endif()
     if(STRATA_BUILD_TESTS)
       # #136: the fused int8 experts against a double-precision reference and the MMQ path (exit 77 below sm_80)
       add_executable(prefill_fused_moe_test tests/cuda/prefill_fused_moe_test.cpp)

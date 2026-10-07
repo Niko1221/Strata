@@ -2,6 +2,9 @@
 #include "strata/core/verify.hpp"
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/dma_batch.hpp"
+#if defined(STRATA_VERIFY_DENSE_T8_MMQ)
+#include "strata/prefill/dense_q8_t8.hpp"
+#endif
 #if defined(_WIN32)
 #include <intrin.h>
 #endif
@@ -343,6 +346,9 @@ Verifier::~Verifier() {
         if (kv.second) cudaGraphExecDestroy(kv.second);
     for (auto& kv : commit_bm_)
         if (kv.second) cudaGraphExecDestroy(kv.second);
+#if defined(STRATA_VERIFY_DENSE_T8_MMQ)
+    delete dense_t8_mmq_; // graph owners retired; stream still alive
+#endif
     if (arena_b_) cudaFree(arena_b_);
     if (h_commitb_) cudaFreeHost(h_commitb_);
     if (qcnt_) cudaFree(qcnt_);
@@ -613,6 +619,20 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         }
         if (!ok2) { cudaGetLastError(); all_resident_ = false; device_plan_ = false; }
     }
+    if (const char* value = std::getenv("STRATA_Q8_DENSE_T8_MMQ"); value && std::strcmp(value,"0")) {
+        if (std::strcmp(value,"1") || max_t < 8) {
+            err = "verify: dense T8 MMQ requires flag 0/1, max_t >=8, a supported SM120 CUDA build";
+            return false;
+        }
+#if defined(STRATA_VERIFY_DENSE_T8_MMQ)
+        dense_t8_mmq_ = new strata::prefill::DenseQ8T8();
+        if (!dense_t8_mmq_->open(cs_,err)) return false;
+        std::fprintf(stderr,"strata verify: SM120 Q8 dense T8 MMQ enabled: QKV2560->10240 only; original activation codes/scales, per-verifier stream-owned scratch\n");
+#else
+        err = "verify: dense T8 MMQ is not included in this build";
+        return false;
+#endif
+    }
     std::fprintf(stderr, "strata verify: window up to %d tokens, %.1f MiB of device buffers%s\n", max_t,
                  (double) count.used / 1048576.0,
                  all_resident_ ? " (100% VRAM resident: zero-doorbell graph)" : "");
@@ -845,7 +865,15 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 float* gate = gate_L_ + (size_t) gi * MT * HV;
                 float* beta = beta_L_ + (size_t) gi * MT * HV;
                 if (!q8_attn) native_quantize_q8_1(xm, xq_, (int) N, n, cs);
-                native_mmvq(wqkv->native_type, wqkv->native_data, xq_, qkv + (size_t) tb * C, (int) N, (int) C, n, cs);
+#if defined(STRATA_VERIFY_DENSE_T8_MMQ)
+                if (!(dense_t8_mmq_ && !batch_rec_ && G == 1 &&
+                      dense_t8_mmq_->run(wqkv->native_type,wqkv->native_data,xq_,qkv+(size_t)tb*C,
+                                         (int)N,(int)C,n,cs)))
+#endif
+                    native_mmvq(wqkv->native_type, wqkv->native_data, xq_, qkv + (size_t) tb * C, (int) N, (int) C, n, cs);
+#if defined(STRATA_VERIFY_DENSE_T8_MMQ)
+                else dense_t8_graph_ = true;
+#endif
                 stamp(l, 2, grp);
                 if (batch_rec_) {   // contiguous rows may be proposals for the same slot
                     for (int t = tb; t < te;) {
@@ -1712,6 +1740,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     const cudaError_t le = cudaGraphLaunch(ar_off_ ? exec_nr_[T] : exec_[T], cs_);
     trace_ev("LAUNCHED", -1, -1, (int64_t) le);
     if (le != cudaSuccess) { err = std::string("verify: launch: ") + cudaGetErrorString(le); return false; }
+    if (T == 8 && dense_t8_graph_) ++dense_t8_windows_;
     (void) cudaStreamQuery(cs_);
     VDBG("launched\n");
     volatile uint32_t* const seq = h_seq_;
