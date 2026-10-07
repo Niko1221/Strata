@@ -400,6 +400,13 @@ namespace {
 
 uint64_t mapped_bytes(int64_t n) { return ((uint64_t) n + 63) & ~uint64_t(63); }
 
+/// The batch attention's identity selection: ids[row * cap + i] = i for EVERY row (the kernel
+/// offsets by row * cap - a table filled for row 0 alone leaves rows 1..K-1 reading garbage).
+void dflash_identity_fill(int32_t* host, int rows, int64_t cap) {
+    for (int r = 0; r < rows; ++r)
+        for (int64_t i = 0; i < cap; ++i) host[(size_t) r * (size_t) cap + (size_t) i] = (int32_t) i;
+}
+
 strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) {
     strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
     s.n_head = g.n_head;
@@ -567,12 +574,14 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
               take((size_t) strata::kernels::native_q8_1_bytes((int) N, (int) R), (void**) &xq_) &&
               take((size_t) max_rows_ * (size_t) attn_scratch_floats_ * 4, (void**) &attn_scratch_);
     if (!ok) return false;
-    // the identity cell selection, once: [0, cap); every row of every window reads the same
-    // increasing range, bounded per window by the step record (window_ids' contract)
+    // the identity cell selection, once, for EVERY query row: the batch attention offsets the
+    // table by row * cap (ids += blockIdx.z * cap), so rows 1..K-1 read garbage when only row 0
+    // is initialized - the constant-mask-row symptom.  [r][i] = i, duplicated per row on purpose
+    // (no optimization before correctness).
     {
-        std::vector<int32_t> id_host((size_t) cap_);
-        for (int64_t i = 0; i < cap_; ++i) id_host[(size_t) i] = (int32_t) i;
-        if (cudaMemcpy(ident_, id_host.data(), (size_t) cap_ * 4, cudaMemcpyHostToDevice) != cudaSuccess) {
+        std::vector<int32_t> id_host((size_t) max_rows_ * (size_t) cap_);
+        dflash_identity_fill(id_host.data(), max_rows_, cap_);
+        if (cudaMemcpy(ident_, id_host.data(), id_host.size() * 4, cudaMemcpyHostToDevice) != cudaSuccess) {
             err = "dflash: the identity selection upload failed";
             return false;
         }
