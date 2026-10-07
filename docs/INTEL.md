@@ -732,31 +732,38 @@ power are not read yet.
 
 Measured 2026-10-07 on Windows 10, Arc Pro B70 32 GB, driver 32.0.101.8976, i9-9900 / 64 GB, conda-forge
 `dpcpp_win-64` 2026.1.1, Coder IQ1_M (12,288/12,288 experts resident, `--stream-experts`, INT8 KV,
-`--spec 4 --spec-min-p 0.5 --mtp`), through the OpenAI API:
+`--spec 4 --spec-min-p 0.5 --mtp`), greedy. Each row is an A/B of this branch's engine (0.1.40-sycl) against the
+previous 0.1.39-based build of this port, run interleaved (v1, v2, v1, v2, ...) from the command line, the way
+the numbers above were measured:
 
-| | this build (OpenCL) | the same card on Linux (Level Zero, AOT, command graphs) |
+| | 0.1.39-sycl | 0.1.40-sycl |
 |---|---|---|
-| decode, 155-token answer, warm, 3 runs | **47.7-50.5 tok/s** (75% of drafts accepted) | **78.2 tok/s** (19-token prompt, 256 tokens) |
-| decode, suffix drafter only (`--spec 2`) | **24.4 tok/s** | 33.6 |
-| prompt reading, warm (22 tokens, 17 reused) | 66-68 tok/s | 790 tok/s at 2,184 tokens |
-| `quantize_act_parity --selftest`, `sampler_parity` | byte-exact, 0 failures | same |
+| decode, 256 tokens, 3 pairs | 69.6-69.9 (median 69.7) | **77.2-77.3 (median 77.3)** |
+| decode, 128 tokens after a 2,048-token prompt, 2 pairs | 37.6 | **38.2-41.1 (median 39.6)** |
+| decode, 256 tokens, `--spec 2` (no draft layer), 3 pairs | 53.4-53.9 (median 53.6) | **22.0-22.9 (median 22.3)** |
+| prompt reading, 2,048 tokens | 14.5 tok/s | 14.5 tok/s |
+| `quantize_act_parity --selftest`, `sampler_parity` | byte-exact, 0 failures | byte-exact, 0 failures |
 
-The same test on the previous 0.1.39-based Windows build of this port, rebuilt and measured back to back on
-the same machine and model, ran at **63.9-67.1 tok/s** with the draft layer against 47.8-51.8 here, and took
-80% of its drafts against 72% - and that build was measured on the *longer* prompt, which costs it more.
-The 0.1.40 changes are not a speed-up on this backend; see the profile below.
+The same card on Linux (Level Zero, AOT, command graphs) does **78.2 tok/s** on the first row.
 
-**Why it is slower, and what it is not.** `STRATA_VERIFY_PROFILE=1` prints the window's stages per request (host
-clocks under `STRATA_VERIFY_EAGER=1`). A 4-token window is ~65 ms, and the GDN hyper-connection read is ~24 ms of
-it - almost flat from T=2 (23.6 ms) to T=6 (25.6 ms), i.e. a per-layer *fixed* cost of ~0.5 ms across 48 layers,
-not per-token arithmetic. That is the shape of kernel dispatch without command graphs: this Windows driver
-exposes no user-mode Level Zero adapter (`sycl-ls` lists only `opencl:gpu`), so the OpenCL adapter has neither the
-Graph extension nor sysman's free-VRAM query, and every window, commit and draft step is enqueued one kernel at a
-time. Level Zero with `ze_intel_gpu.dll` and an AOT build (`build-sycl-aot`) is what the Linux rows above use.
+**Measure long runs here.** Short generations are not comparable on this backend: the same build and mode gave
+48.9 and 67.5 tok/s on two consecutive 128-token runs, and a 155-token answer through the API varied by 25% around
+a number that a 256-token run contradicts. Interleave the builds and take medians of 256-token runs.
+
+**`--spec 2` is the outlier.** Without the draft layer this release decodes at 22.3 tok/s against 53.6 for the
+previous build on the same card, same flags, interleaved - the one reproducible regression in the table.
+
+`STRATA_VERIFY_PROFILE=1` prints the window's stages per request (host clocks under `STRATA_VERIFY_EAGER=1`): a
+4-token window is ~65 ms and the GDN hyper-connection read is ~24 ms of it, nearly flat from T=2 (23.6 ms) to T=6
+(25.6 ms) - a per-layer *fixed* cost of ~0.5 ms over 48 layers, i.e. kernel dispatch, not arithmetic. That is the
+shape of a backend without command graphs: this Windows driver exposes no user-mode Level Zero adapter
+(`sycl-ls` lists only `opencl:gpu`), so there is neither the Graph extension nor sysman's free-VRAM query, and
+every window, commit and draft step is enqueued one kernel at a time.
 
 Also true here, both by measurement on this card: oneMKL SYCL BLAS has no OpenCL Xe2 backend, so the prompt GEMM
-runs as a plain SYCL kernel (`sycl/src/prefill/gemm.dp.cpp`, slow prompts, identical answers), and the VRAM sizes
-come from `STRATA_DEVICE_FREE_MIB` / `STRATA_DEVICE_TOTAL_MIB` (setup writes them from the registry).
+runs as a plain SYCL kernel (`sycl/src/prefill/gemm.dp.cpp`) - 14.5 tok/s on a 2,048-token prompt where the Linux
+rows above read 790-1,002; and the VRAM sizes come from `STRATA_DEVICE_FREE_MIB` / `STRATA_DEVICE_TOTAL_MIB`
+(setup writes them from the registry).
 
 **Windows-SDK macro names.** `<sycl/sycl.hpp>` reaches the Windows SDK, whose headers define `OUT` (minwindef.h),
 `small` (rpcndr.h) and `near` (windef.h) as macros. An identifier with one of those names is macro-expanded away,
