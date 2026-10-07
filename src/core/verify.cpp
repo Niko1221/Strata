@@ -479,12 +479,14 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         sink_.ctx = this;
     }
 
+    tap_stride_ = (int64_t) max_t_ * (int64_t) g.n_embd;
     // ---- the device arena: the same sequence counted, then carved
     auto carve = [&](Bump& b) {
         tok_ = b.take<int32_t>(T); step_ = b.take<int32_t>(T * strata::kernels::kStepCount);
         pos_ = b.take<int32_t>(T * (NH + NKV + IQ)); commit_ = b.take<int32_t>(2 + T);
         ple_ = b.take<float>(T * N); emb_ = b.take<float>(T * N); R_ = b.take<float>(T * HC * N);
         mixed_ = b.take<float>(T * N); bo_ = b.take<float>(T * N);
+        if (n_taps_ > 0) taps_ = b.take<float>((uint64_t) n_taps_ * T * N);
         inj_ = b.take<float>(T * HC); inj2_ = b.take<float>(T * HC);
         lo_ = b.take<float>(T * (uint64_t) g.hc_lr); rs_ = b.take<float>(T * HC); xn_ = b.take<float>(T * HC * N);
         xq_ = b.take<uint8_t>(strata::kernels::native_q8_1_bytes(max_in, (int) T));
@@ -910,6 +912,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             join(1);
             inputs_pending = false;
         }
+        for (int ti = 0; ti < n_taps_; ++ti)
+            if (l == tap_layers_[ti]) {   // DFlash tap: the attn-half read's contracted residual (docs/DFLASH.md)
+                cudaMemcpyAsync(taps_ + ((size_t) ti * (size_t) max_t_ + (size_t) tb) * N,
+                                mixed_ + (size_t) tb * N, (size_t) (te - tb) * N * sizeof(float),
+                                cudaMemcpyDeviceToDevice, cs);
+            }
         stamp(l, 1, grp);
         float* xm = mixed_ + tb * N;
         bool il_ready = false;   // xil_ holds xq_'s interleaved copy (reset whenever xq_ is rewritten)

@@ -1221,6 +1221,43 @@ void mem_mark(const char* where) {
     std::fprintf(stderr, "strata trace: %lld MiB free after %s\n", (long long) (free_b >> 20), where);
 }
 
+// STRATA_DFLASH_TAPS=<file> (docs/DFLASH.md's feature-capture fixture, target-only): one raw record
+// per prompt chunk / verify window - magic, source (0 prompt, 1 window), pos0, T, n_taps, n_embd,
+// then the taps as f32 rows [n_taps][T][n_embd].  The device taps are strided per tap
+// (g_tap_stride_bytes; 0 = contiguous), so each tap is copied on its own; `bf16` widens on the way
+// out (the prompt path stores BF16).  The record is written before the window's commit / the next
+// chunk, on `stream`.
+static std::FILE* g_tap_dump = nullptr;
+static size_t g_tap_stride_bytes = 0;
+static bool tap_dump_record(int source, int64_t pos0, int T, int n_taps, const void* dev, int64_t n_embd,
+                            bool bf16, cudaStream_t stream) {
+    if (!g_tap_dump || !dev) return true;
+    uint32_t hdr[7] = {0x31504644u, (uint32_t) source, (uint32_t) pos0, (uint32_t) T,
+                       (uint32_t) n_taps, (uint32_t) n_embd, bf16 ? 1u : 0u};
+    if (std::fwrite(hdr, sizeof hdr, 1, g_tap_dump) != 1) return false;
+    const size_t rn = (size_t) T * (size_t) n_embd;
+    std::vector<float> wide((size_t) n_taps * rn);
+    for (int ti = 0; ti < n_taps; ++ti) {
+        const uint8_t* src = (const uint8_t*) dev + (size_t) ti * g_tap_stride_bytes;
+        if (bf16) {
+            std::vector<uint16_t> host(rn);
+            if (cudaMemcpyAsync(host.data(), src, rn * 2, cudaMemcpyDeviceToHost, stream) != cudaSuccess)
+                return false;
+            if (cudaStreamSynchronize(stream) != cudaSuccess) return false;
+            float* dst = wide.data() + (size_t) ti * rn;
+            for (size_t i = 0; i < rn; ++i) {
+                uint32_t bits = (uint32_t) host[i] << 16;
+                std::memcpy(&dst[i], &bits, 4);
+            }
+        } else {
+            if (cudaMemcpyAsync(wide.data() + (size_t) ti * rn, src, rn * sizeof(float),
+                                cudaMemcpyDeviceToHost, stream) != cudaSuccess) return false;
+        }
+    }
+    if (!bf16 && cudaStreamSynchronize(stream) != cudaSuccess) return false;
+    return std::fwrite(wide.data(), sizeof(float), wide.size(), g_tap_dump) == wide.size();
+}
+
 /// #463's A/B: STRATA_ADAPT_NOWAIT=1 lets a verify window start before the adaptive tier's copies have landed (0.1.37)
 bool adapt_nowait() {
     static const bool v = [] { const char* e = std::getenv("STRATA_ADAPT_NOWAIT"); return e && e[0] == '1'; }();
@@ -11055,6 +11092,25 @@ int main(int argc, char** argv) {
         if (borrow == nullptr)
             std::fprintf(stderr, "strata generate: prompt path allocates its own buffers (no cache slots to borrow)\n");
         if (!multi_gpu && !o.no_pool) prefill.set_cpu_pool(&pool);
+        if (const char* taps_path = std::getenv("STRATA_DFLASH_TAPS")) {
+            if (!g_tap_dump) g_tap_dump = std::fopen(taps_path, "wb");
+            if (!g_tap_dump) {
+                std::fprintf(stderr, "strata generate: cannot write STRATA_DFLASH_TAPS file %s\n", taps_path);
+                return 1;
+            }
+            static const int kTapBoundaries[5] = {4, 16, 24, 36, 44};   // the trained taps [3,15,23,35,43] + 1
+            prefill.set_tap_layers(kTapBoundaries, 5);   // before init: the taps join the buffer carve
+            const int64_t tap_n_embd = g.n_embd;
+            prefill.on_taps = [&prefill, tap_n_embd](const uint16_t* taps, int n_taps, int64_t T, int64_t p0,
+                                                     std::string& e) -> bool {
+                g_tap_stride_bytes = (size_t) prefill.tap_stride_rows() * (size_t) tap_n_embd * 2;
+                if (!tap_dump_record(0, p0, (int) T, n_taps, taps, tap_n_embd, /*bf16=*/true, nullptr)) {
+                    e = "tap dump failed";
+                    return false;
+                }
+                return true;
+            };
+        }
         if (!prefill.init(wt, g, ss, srcp, o.expert_cache > 0 ? &xcache : nullptr,
                           host_res.empty() ? nullptr : host_res.data(), o.prefill_chunk, main_cs, err, borrow,
                           borrow_bytes)) {
@@ -11392,6 +11448,15 @@ int main(int argc, char** argv) {
         vh.blob = thits.blob;
         vh.slot_off = xcache.slot_offsets();   // E-6: the device plan's pointers
         vh.n_slots = xcache.slots();
+        if (const char* taps_path = std::getenv("STRATA_DFLASH_TAPS")) {
+            if (!g_tap_dump) g_tap_dump = std::fopen(taps_path, "wb");
+            if (!g_tap_dump) {
+                std::fprintf(stderr, "strata generate: cannot write STRATA_DFLASH_TAPS file %s\n", taps_path);
+                return 1;
+            }
+            static const int kTapBoundaries[5] = {4, 16, 24, 36, 44};   // the trained taps [3,15,23,35,43] + 1
+            ver.set_tap_layers(kTapBoundaries, 5);   // before init: the tap buffer joins the arena carve
+        }
         if (!ver.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, o.spec, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
@@ -11659,6 +11724,14 @@ int main(int argc, char** argv) {
             if (!ver.run(T, window.data(), p, &drive_pool_multi, &drive, outv.data(), err)) {
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                 return 1;
+            }
+            // STRATA_DFLASH_TAPS: the window's tap rows [0, T) go to the fixture file before the commit
+            if (g_tap_dump != nullptr && ver.n_taps() > 0) {
+                g_tap_stride_bytes = (size_t) ver.tap_stride() * 4;
+                if (!tap_dump_record(1, p, T, ver.n_taps(), ver.taps(), g.n_embd, /*bf16=*/false, ver.stream())) {
+                    std::fprintf(stderr, "strata generate: the tap dump failed\n");
+                    return 1;
+                }
             }
             if (drive.d.failed) {
                 std::fprintf(stderr, "strata generate: the expert pool failed at layer %lld expert %lld: %s\n",
