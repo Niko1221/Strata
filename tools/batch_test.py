@@ -218,6 +218,11 @@ def main():
     ap.add_argument("--slots", default="", metavar="N,N,...",
                     help="engine slot IDs in prompt order; e.g. 0,2,4,6 spreads four requests across four groups "
                          "with --batch 8 --batch-groups 4 (default: consecutive slots)")
+    ap.add_argument("--http-lifecycle", action="store_true",
+                    help="run the real HTTP server with staggered requests, solo-to-batch promotion and capability-"
+                         "gated return to solo; compare raw engine tokens and response text")
+    ap.add_argument("--later-max-new", type=int, default=0,
+                    help="HTTP lifecycle mode: tokens for later requests (default: one quarter of --max-new)")
     a = ap.parse_args()
     if not 1 <= a.n <= min(a.batch, len(QUESTIONS)) or a.max_new < 1 or a.long_tokens < 0:
         ap.error("require 1 <= --n <= min(--batch, 8), positive --max-new and nonnegative --long-tokens")
@@ -234,6 +239,18 @@ def main():
         ap.error("--stagger-after needs --n minus one strictly increasing counts between 1 and --max-new minus 1")
     if a.promote_after and (not stagger_after or not 0 < a.promote_after < stagger_after[0]):
         ap.error("--promote-after requires --stagger-after and a positive count below its first admission count")
+    if a.http_lifecycle:
+        if a.skip_solo or a.slots or a.promote_after or a.n < 2:
+            ap.error("--http-lifecycle requires solo references and at least two prompts; the server controls slots and promotion")
+        from batch_http_test import main as http_main
+        output = a.dump or os.environ.get("BATCH_TEST_LOG") or str(Path(tempfile.gettempdir()) / "batch_http_test.json")
+        thresholds = a.stagger_after or ",".join(str(8*i) for i in range(1,a.n))
+        return http_main(["--exe",a.exe,"--config",a.config,"--out",output,"--batch",str(a.batch),"--n",str(a.n),
+                          "--max-new",str(a.max_new),"--later-max-new",str(a.later_max_new or max(1,a.max_new//4)),
+                          "--stagger-after",thresholds,"--long-tokens",str(a.long_tokens),
+                          "--mt-min",a.mt_min,"--extra="+a.extra,"--keys="+a.keys])
+    if a.later_max_new:
+        ap.error("--later-max-new is only used with --http-lifecycle")
     cfg = json.loads(Path(a.config).read_text())
     tok = tokenizer(cfg["tokenizer"])
     prompts = []
