@@ -1,0 +1,45 @@
+{
+  "tag": "tuning-off-3",
+  "time": "2026-10-07 19:06:10",
+  "cases": [
+    {
+      "kind": "decode",
+      "label": "short-64",
+      "prompt_tokens": 63,
+      "completion_tokens": 64,
+      "secs": 2.8702025413513184,
+      "tok_s": 22.3
+    },
+    {
+      "kind": "decode",
+      "label": "short-128",
+      "prompt_tokens": 63,
+      "completion_tokens": 128,
+      "secs": 3.871278762817383,
+      "tok_s": 33.1
+    },
+    {
+      "kind": "prefill",
+      "label": "pt-512",
+      "prompt_tokens": 739,
+      "completion_tokens": 8,
+      "secs": 0.40169453620910645,
+      "tok_s": 1839.7
+    },
+    {
+      "kind": "prefill",
+      "label": "pt-2048",
+      "prompt_tokens": 2803,
+      "completion_tokens": 8,
+      "secs": 0.4214746952056885,
+      "tok_s": 6650.5
+    },
+    {
+      "kind": "sample",
+      "prompt_tokens": 57,
+      "completion_tokens": 24,
+      "secs": 2.0950591564178467,
+      "tok_s": 11.5
+    }
+  ]
+}

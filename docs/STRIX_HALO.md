@@ -78,6 +78,11 @@ The engine accepts it only for the architecture and the hipBLASLt version named 
 gfx1151, version 100401)`). Then run `strata` with the same arguments as on any other card (the model packs, `--serve`, the
 settings of [DETAILS.md](DETAILS.md)); a pack of the Unsloth UD-IQ4_XS or UD-Q4_K_XL GGUFs is what the numbers below used.
 
+**The Windows ready-made engine (`strata-windows-x64-hip.zip`) bundles ROCm 10.2.0a20260930 (hipBLASLt 1.5.0, `100500`)**, so it needs its
+own table: `tools/hip/gfx1151-hipblaslt-100500.txt` (calibrated on a Windows Strix Halo with `tools/hip/tune_hipblaslt`, same 90 rows).
+`setup` finds it automatically from the engine's `BUILD.json` (`hipblaslt_version`); by hand, point `STRATA_HIPBLASLT_TUNING` at the
+100500 file on Windows (the 100401 table is refused there - the header's version must match the runtime's).
+
 ## 4. What is on by default on gfx1151
 
 At start the engine looks at GPU 0; on a gfx1151 it sets the switches below unless you set them yourself
@@ -162,3 +167,16 @@ shared-expert stream fork is off by default on HIP (#816). It overlaps the share
 stream and does help on gfx1151, so 0.1.40 turns it on there by default (section 4). It changes no bits (same ids). 4 interleaved pairs at 8K, merged
 code with the fork off -> on: UD-IQ4_XS output 53.1 -> 54.05 (+1.8%), UD-Q4_K_XL 49.5 -> 52.8 (+6.7%, the default arm ranged 46.0-52.1),
 prompt unchanged. With the fork on, the merged code's output is at or above the j build's (IQ4_XS 54.05 vs 53.94).
+
+### Windows Strix Halo first measurement (0.1.40 ready-made engine)
+
+Ryzen AI Max+ 395 (32 GB system RAM + 96 GB BIOS carve-out, Windows 11), the ready-made `strata-windows-x64-hip.zip` (ROCm
+10.2.0a20260930, hipBLASLt 100500) with UD-IQ4_XS, default `setup` config (`--resident-budget-gib 8`, int8 KV, 32K ctx, `--spec 4`).
+Prompt tok/s is (prompt tokens - 1) / prompt time. A/B: the engine's `STRATA_HIPBLASLT_TUNING` set to
+`gfx1151-hipblaslt-100500.txt` vs unset (plain hipBLAS); the ON cell is one fresh-process run, OFF is the median of 3. Decode is
+CPU-pool / SSD-bound here (8 GiB RAM budget on a 32 GB-RAM box), so the table's effect is in the prompt column.
+
+| Context / prompt size | Tuning ON | Tuning OFF (median of 3) |
+|---|---|---|
+| 739-token prompt | 2,337 tok/s | 1,861 tok/s (+26%) |
+| 2,803-token prompt | 6,665 tok/s | 6,922 tok/s (~0) |
