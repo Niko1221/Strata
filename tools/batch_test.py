@@ -174,7 +174,11 @@ def run_batch(eng, out, prompts, max_new, keys, stagger_after=(), promote_after=
         while not consume(next_line(out), i):
             pass
         event["tokens_during_admission"] = sum(len(got[s]) for s in active) - before
+        event["active_slots_after_admission"] = sorted(admitted - done.keys())
         admissions.append(event)
+        if i and stagger_after and 0 in done:
+            raise ProtocolError(f"anchor finished during admission {i}; increase --max-new so the new and anchor "
+                                "requests decode together")
     all_admitted = time.monotonic()
     while len(done) < len(prompts):
         consume(next_line(out))
