@@ -649,6 +649,12 @@ stage. Parked snapshots are not kept across restarts; session files are. `STRATA
 retention for diagnostics. The Monitor tab's **Conversation cache** card shows parked, restored and evicted counts and the
 prompt tokens the cache gave back; `/metrics` has the same under `"conversation_cache"`.
 
+The K/V retained after a restore belongs to the conversation it was restored from: the engine remembers that
+conversation's tokens and pictures, and a later parking may only reuse the bytes of the prefix two conversations
+actually share. When the session gives its conversation up - it moved into a batch slot (the shared KV pool,
+`--kv-pool-tokens`), the request was cancelled, the session was reset - the retained K/V is dropped with it
+instead of waiting to be mistaken for another conversation's.
+
 ### Session files (disk)
 
 The conversation the engine holds can be saved to a file and restored later, also after a restart of the same engine version,
