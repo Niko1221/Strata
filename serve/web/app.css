@@ -51,18 +51,33 @@ main { flex: 1; min-height: 0; display: flex; }
 @keyframes blink { 50% { opacity: 0; } }
 .msg-error { color: var(--st-danger-text); background: var(--st-danger-tint); border-radius: var(--st-r-md); padding: 10px 14px;
              font-size: var(--st-fs-md); }
-/* MCP tool calls inside an answer: one compact collapsible block per call */
-.st-bubble .tool-call { margin: var(--st-s-3) 0; }
-.tool-call > summary { min-width: 0; padding: 8px 12px; }
-.tool-call__name { font: 500 var(--st-fs-sm)/1.2 var(--st-font-mono); color: var(--st-ink); white-space: nowrap; }
-.tool-call__preview { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--st-fs-xs); }
-.tool-call .st-badge, .tool-call summary .small { flex: none; }
+/* One activity summary per run of tools. Raw payloads are only built on expansion. */
+.st-bubble > .tool-call, .st-bubble > .tool-group { margin: var(--st-s-3) 0; }
+.tool-call > summary, .tool-group > summary { min-width: 0; padding: 10px 12px; gap: var(--st-s-3); }
+.tool-call__copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.tool-call__name, .tool-group__title { font: var(--st-fw-medium) var(--st-fs-sm)/1.3 var(--st-font); color: var(--st-ink); }
+.tool-call__preview { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--st-fs-xs); }
+.tool-call .st-badge, .tool-group .st-badge, .tool-call__time { flex: none; }
+.tool-call__note, .tool-call__time { font-size: var(--st-fs-xs); }
+.tool-call__note { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-group__body { max-height: 340px; overflow: auto; overscroll-behavior: contain; padding: 0 var(--st-s-2) var(--st-s-2); }
+.tool-group__body > .tool-call { margin: 0; border-radius: 0; border-width: 0 0 1px; border-color: var(--st-line-soft); background: transparent; }
+.tool-group__body > .tool-call:last-child { border-bottom: 0; }
+.tool-call__source { display: inline-block; margin-top: var(--st-s-2); font-size: var(--st-fs-xs); }
+.tool-call > summary:focus-visible, .tool-group > summary:focus-visible { outline: 2px solid var(--st-accent); outline-offset: -2px; border-radius: var(--st-r-sm); }
+@media (max-width: 600px) { .tool-call__note { display: none; } .tool-call > summary, .tool-group > summary { gap: var(--st-s-2); } }
 .tool-call[data-state="error"] { border-color: color-mix(in srgb, var(--st-danger) 35%, var(--st-line)); }
 .tool-call[data-state="running"] .st-badge::before, .tool-call[data-state="writing"] .st-badge::before { animation: blink 1s steps(2) infinite; }
 .tool-call__label { font-size: var(--st-fs-xs); font-weight: var(--st-fw-medium); color: var(--st-ink-muted); margin: var(--st-s-2) 0 var(--st-s-1); }
 .tool-call__pre { margin: 0; padding: 10px 12px; max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
                   font: 400 12.5px/1.5 var(--st-font-mono); color: var(--st-ink-soft); background: var(--st-surface);
                   border: 1px solid var(--st-line-soft); border-radius: var(--st-r-sm); }
+.tool-group[data-state="running"] > summary .st-badge::before { animation: blink 1s steps(2) infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .tool-call > summary .st-chev, .tool-group > summary .st-chev { transition: none; }
+  .tool-call[data-state="running"] .st-badge::before, .tool-call[data-state="writing"] .st-badge::before,
+  .tool-group[data-state="running"] > summary .st-badge::before { animation: none; }
+}
 
 .composer-wrap { flex: none; padding: 0 var(--st-s-6) var(--st-s-6); }
 .st-composer { max-width: 860px; margin: 0 auto; }

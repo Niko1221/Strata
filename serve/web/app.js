@@ -609,40 +609,21 @@ function msgEl(m, i) {
   }
   return el;
 }
-// One MCP tool call in the answer: a compact block (name, state, a one-line preview) that opens to the arguments and
-// the result as the model read it.  Its body is built only while open: a result can be 20,000 characters.
-const TOOL_STATE = {writing: ["st-badge--reading", "Writing"], running: ["st-badge--generating", "Running"], done: ["", "Done"],
-                    error: ["st-badge--error", "Error"], skipped: ["st-badge--queued", "Not run"]};
-function toolHtml(t, k) {
-  const [cls, label] = TOOL_STATE[t.state] || ["", t.state];
-  const args = t.arguments == null ? "" : JSON.stringify(t.arguments, null, 2);
-  const preview = t.result != null ? t.result : args.replace(/\s+/g, " ");
-  let body = "";
-  if (t.open) {
-    body = `<div class="tool-call__label">Arguments</div><pre class="tool-call__pre">${esc(args || "(being written)")}</pre>`;
-    if (t.result != null) {
-      body += `<div class="tool-call__label">${t.ok ? "Result" : "Error"}${t.chars ? ` · ${fmt(t.chars)} characters` : ""}` +
-              `${t.truncated ? ", cut for the model" : ""}</div><pre class="tool-call__pre">${esc(t.result)}</pre>`;
-    }
-  }
-  return `<details class="st-collapse tool-call" data-tool="${k}" data-state="${esc(t.state)}"${t.open ? " open" : ""}>` +
-    `<summary>${icon("tool", "st-icon st-icon--sm")}<span class="tool-call__name" title="${esc(t.name || "")}">${esc(t.tool || t.name || "tool")}</span>` +
-    (t.server ? `<span class="muted small">${esc(t.server)}</span>` : "") +
-    `<span class="tool-call__preview muted">${esc(preview.slice(0, 200))}</span>` +
-    `<span class="st-badge ${cls}">${esc(label)}</span>${t.ms != null && t.state !== "skipped" ? `<span class="muted small">${fmt(t.ms / 1000, 1)} s</span>` : ""}` +
-    `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body">${body}</div></details>`;
-}
-// the answer's text with the tool blocks where the model called them
+// Disclosure state stays outside the archive; tool arguments/results remain available on demand.
+const toolGroupViews = new WeakMap();
+// Preserve text/tool ordering, grouping only calls at the same answer position.
 function answerHtml(m) {
   if (!m.tools || !m.tools.length) return markdown(m.text || "");
-  let html = "", pos = 0;
-  m.tools.forEach((t, k) => {
-    const at = Math.min(Math.max(t.at || 0, pos), m.text.length);
-    if (at > pos) html += markdown(m.text.slice(pos, at));
+  const text = m.text || "", views = toolGroupViews.get(m);
+  let html = "", pos = 0, k = 0;
+  while (k < m.tools.length) {
+    const at = Math.min(Math.max(m.tools[k].at || 0, pos), text.length), start = k;
+    if (at > pos) html += markdown(text.slice(pos, at));
     pos = at;
-    html += toolHtml(t, k);
-  });
-  return html + markdown(m.text.slice(pos));
+    do { k++; } while (k < m.tools.length && Math.min(Math.max(m.tools[k].at || 0, pos), text.length) === at);
+    html += StrataToolActivity.renderGroup(m.tools.slice(start, k), start, {escape: esc, icon, open: views?.get(start)});
+  }
+  return html + markdown(text.slice(pos));
 }
 // a tool event from the stream (the `strata_mcp` field of a chunk)
 function onTool(m, x) {
@@ -672,6 +653,12 @@ function updateAssistant(el, m, streaming) {
     if (!thinkingNow && det.open && !det.dataset.touched) { det._auto = true; det.open = false; }
   }
   const bubble = el.querySelector(".st-bubble");
+  const focused = document.activeElement;
+  const focusSummary = bubble.contains(focused) && focused.matches(".tool-group > summary, .tool-call > summary") ?
+    [focused.parentElement.classList.contains("tool-group") ? "tool-group" : "tool-call",
+     focused.parentElement.dataset.toolGroup ?? focused.parentElement.dataset.tool] : null;
+  const toolScroll = new Map([...bubble.querySelectorAll(".tool-group[open]")].map(group =>
+    [group.dataset.toolGroup, group.querySelector(".tool-group__body").scrollTop]));
   if (m.error) {
     bubble.innerHTML = `<div class="msg-error"></div>`;
     bubble.firstChild.textContent = m.error;
@@ -680,6 +667,15 @@ function updateAssistant(el, m, streaming) {
   } else {
     bubble.innerHTML = answerHtml(m);
     if (streaming) bubble.classList.add("cursor"); else bubble.classList.remove("cursor");
+  }
+  bubble.querySelectorAll(".tool-group[open]").forEach(group => {
+    const top = toolScroll.get(group.dataset.toolGroup);
+    if (top != null) group.querySelector(".tool-group__body").scrollTop = top;
+  });
+  if (focusSummary) {
+    const [kind, index] = focusSummary;
+    const key = kind === "tool-group" ? "data-tool-group" : "data-tool";
+    bubble.querySelector(`.${kind}[${key}="${index}"] > summary`)?.focus({preventScroll: true});
   }
   el.querySelector(".meta-text").textContent = m.meta || (streaming ? "" : m.stopped ? "Stopped" : "");
   el.querySelector("[data-msg-copy]").hidden = streaming || !m.text;
@@ -699,6 +695,17 @@ $("chat").addEventListener("click", (e) => {
   if (cc) { copyText(cc.closest(".st-code").querySelector("pre").textContent, cc); return; }
   const mc = e.target.closest("[data-msg-copy]");
   if (mc) { const i = +mc.closest(".st-msg").dataset.i; copyText(messages[i].text, mc); return; }
+  const group = e.target.closest(".tool-group > summary");
+  if (group) {
+    e.preventDefault();
+    const el = group.closest(".st-msg"), m = messages[+el.dataset.i], k = +group.parentElement.dataset.toolGroup;
+    if (!m) return;
+    if (!toolGroupViews.has(m)) toolGroupViews.set(m, new Map());
+    toolGroupViews.get(m).set(k, !group.parentElement.open);
+    updateAssistant(el, m, !!busy && busy.msg === m, false);
+    el.querySelector(`.tool-group[data-tool-group="${k}"] > summary`)?.focus({preventScroll: true});
+    return;
+  }
   // a tool block: its open state lives in the message (the answer is rebuilt while it streams), so the click sets it
   const sum = e.target.closest(".tool-call > summary");
   if (sum) {
@@ -706,7 +713,8 @@ $("chat").addEventListener("click", (e) => {
     const el = sum.closest(".st-msg"), m = messages[+el.dataset.i], t = m && m.tools && m.tools[+sum.parentElement.dataset.tool];
     if (!t) return;
     t.open = !t.open;
-    updateAssistant(el, m, !!busy && busy.msg === m);
+    updateAssistant(el, m, !!busy && busy.msg === m, false);
+    el.querySelector(`.tool-call[data-tool="${sum.parentElement.dataset.tool}"] > summary`)?.focus({preventScroll: true});
   }
 });
 $("chat").addEventListener("toggle", (e) => {
