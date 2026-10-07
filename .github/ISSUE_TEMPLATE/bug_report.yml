@@ -1,0 +1,37 @@
+name: Bug report
+description: Something in Strata doesn't work as documented
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    value: |
+      Thanks for the report.
+
+      Please search the [open issues](https://github.com/Niko1221/Strata/issues?q=is%3Aissue+state%3Aopen) first — this may already be tracked.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you got, and what you expected instead. Paste the exact error text if there is one. If there's a set of steps or commands that reproduces it, put them here too.
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: Strata version, GPU, OS
+      description: The engine version is on the About tab, or in `GET /v1/status` under `engine`.
+      placeholder: "0.1.31 · RTX 5070 12GB · Windows 11"
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Engine log
+      description: Drag in `strata-<model>.log` from your Strata folder. Drag and drop works directly into this box.
+    validations:
+      required: false
+  - type: markdown
+    value: |
+      A couple of extras that help a lot:
+
+      - Check the [troubleshooting table](https://github.com/Niko1221/Strata/blob/main/docs/DETAILS.md#troubleshooting) first, many reports are already solved there.

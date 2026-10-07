@@ -34,6 +34,18 @@ settings; it cannot be turned back on without a reset of Windows), or, if only t
 An update keeps the engine it replaced in `engine\.previous` (one generation, about 210 MiB).
 `python setup.py --rollback-engine` puts it back (and keeps the newer one there: run it again to go forward) (#670).
 
+**UPDATE.bat / update.sh say "git pull did not succeed", or "has no commit in common" (#1276).**
+The repository's history was cleaned up on 2026-10-06, so a clone made before that cannot be updated with `git pull`.
+The 0.1.40.2 scripts handle it: when no tracked file is edited they keep your old commits in the branch
+`pre-cleanup-backup` and move the clone to the new history; otherwise they print the two commands for you. Your models,
+settings and engine are untracked files and are never touched. An older UPDATE.bat / update.sh (before 0.1.40.2) cannot
+do this itself: run these once in the Strata folder, then use UPDATE.bat as usual (add `git stash` first if `git status`
+lists edited files):
+
+    git fetch origin
+    git branch pre-cleanup-backup
+    git checkout -B main origin/main
+
 **Python or the build tools could not be installed.**
 Install what it names (links are printed), then run it again. Everything already done is kept.
 
@@ -52,6 +64,9 @@ On Linux the engine now asks the kernel to read the model files ahead (a cold st
 PC); `STRATA_READ_AHEAD=0` turns that off. On Linux with transparent huge pages on `always`, the arena no longer asks
 for `MADV_HUGEPAGE` on top (a fragmented machine spent minutes compacting memory, #771); `STRATA_NO_ARENA_THP=1` skips
 that request on any setting.
+
+**Setup says the engine does not match GitHub's checksum.**
+Setup checks the downloaded ready-made engine against the SHA-256 GitHub publishes. On a mismatch the file is corrupt or was changed on the way, so setup deletes it and stops; run setup again to download it afresh. If GitHub gives no checksum (offline, rate limited, your own mirror), setup warns and installs anyway. `STRATA_SKIP_SHA256=1` skips the check, only if you insist.
 
 ## While it answers
 
@@ -77,6 +92,43 @@ The server leaves out finished assistant turns that have no text, so the next re
 **A Turing card (RTX 20) reads prompts above ~90K tokens differently (0.1.40, #743).**
 The prompt's top-k selection takes a wider kernel there, with the same ids. `STRATA_TOPK_STREAM=0` restores the old one.
 
+**Decode is several times slower with `--expert-cache N` than with `auto` (#781, #831).**
+An explicit N is a byte budget that is not checked against the free VRAM once the slots are written. On a card it
+fills (the log says `0 MiB of VRAM free with everything loaded - LOW`), Windows pages the GPU's memory and decode drops
+from 100 to 14 tok/s with only a few hundred slots too many. Use `--expert-cache auto`, or a smaller N.
+
+**A low-RAM PC (about 32 GB) stalls with `--resident-budget-gib N` (#649).**
+The budget is pinned (locked) in RAM, which leaves the OS and the CPU workers little room. `STRATA_RESIDENT_PIN=0` keeps
+it pageable; a smaller budget works too.
+
+**Decode got slower in 0.1.40 on a 32 GB PC with `--resident-budget-gib N`, and the drive is read hard (#1194, #1116, #1085).**
+The start line "the file tier reads unbuffered" means the experts outside the RAM copy are read straight from the drive.
+0.1.40 chose that whenever the free RAM could not hold all of them; but the same few come back token after token, and
+a cache a twentieth of their size serves most of the repeats. 0.1.40.2 asks for that much (at least 1.5 GiB beside the
+4 GiB headroom) and reads through the cache otherwise, which measured 7% to 118% faster decode with a third to a sixth of
+the drive traffic on a 20 to 32 GB box. On 0.1.40 / 0.1.40.1: `STRATA_UNBUFFERED_LOAD=0` does the same, `=1` forces the
+unbuffered reads.
+
+**Linux: the start is OOM-killed while the engine allocates the page-locked expert copy (#1250).**
+Page-locked pages come from the driver in one go and cannot wait for the kernel to give back file cache, so with the
+model files' cache in the way (little really free RAM, much "available") the host could run out. 0.1.40.2 gives back the
+cached pages of the model files it mapped before it page-locks the copy; when the really free RAM still does not cover it,
+it takes the pages in 1 GiB steps while the RAM available (cgroup limits included) stays above the headroom, page-locks
+what it has, and keeps the rest resident but pageable with a warning ("only N of M GiB could be page-locked"): the answers
+are the same, only the copies of the pageable part to the GPU go through the CPU. `STRATA_PIN_GUARD=0` turns this off,
+`STRATA_PIN_RESERVE_GIB=N` sets the RAM that must stay free (default: `STRATA_RESIDENT_HEADROOM_GIB`, 4 GiB).
+
+**The Windows display driver resets, then the PC blue-screens (0x141, then 0x116 in `nvlddmkm`) during an answer (#961).**
+This is the NVIDIA driver, not Strata: the report shows the same wedge with other CUDA programs on that driver (610.88,
+RTX 4080 SUPER). Try another driver (a Studio one, or an older one) and a lower power limit; if it only happens with
+`--spec 4`, `--spec 0` avoids the verify window while you wait for a driver fix.
+
+**An RTX 50 card (a source build with CUDA 13.2) answers with nonsense, or reads prompts wrongly (#892, #968).**
+CUDA 13.2.0 and 13.2.1's compiler (nvcc 13.2.51) miscompile some of the engine's kernels for sm_120: on our RTX 5070 the IQ2_S and IQ3_S
+products are wrong (relative error 0.5 to 1.0 in the tests) with 13.2 and right with 13.0. The ready-made engine is built
+with 13.0. If you compile it yourself, use CUDA 13.0, 13.1 or 13.2.2 (13.2.2, nvcc build 13.2.86, fixes it; an older one can sit next to a newer: `STRATA_NVCC=<path to its nvcc>`);
+setup warns when it finds 13.2.0 or 13.2.1 for such a card, and takes an older 13.x when one is installed.
+
 **Pictures are refused, or slow.**
 "this server was started without the vision encoder": the model was set up for text only - run setup again with
 `--vision gpu` (or `--vision cpu`). Pictures that take several seconds (about 3 s at 300 image tokens on 8 cores, more with more tokens) are read by the encoder on the CPU; `--vision gpu`
@@ -92,8 +144,20 @@ lists every card it found and whether Strata can use it.
 The engine was compiled for another card (for example after moving the Strata folder to another PC). Run
 `./setup.sh --setup --backend hip`: it compiles the engine for this card's architecture.
 
+**On Windows the engine exits with `0xC0000005` in `amdhip64_7.dll` before it prints anything (#654).**
+Two things in your environment can cause it, and the server now repairs both before it starts the engine (it says so in
+the log): `HIP_PATH`, `HIP_DEVICE_LIB_PATH` or `LLVM_PATH` naming a ROCm folder that no longer exists (a deleted build),
+and a `TEMP`/`TMP` folder the engine cannot create files in (AMD's runtime compiles its first kernels through temporary
+files). If you start `strata.exe` by hand, fix them yourself: `set HIP_PATH=`, and point `TEMP` and `TMP` at a normal
+folder such as `C:\Temp`.
+
 **Large pinned host allocations fail on ROCm although RAM is free.**
 See [AMD_HIP.md](AMD_HIP.md#model-and-serving-configuration): the mapped expert mode avoids the full pinned arena.
+
+**"verify: timed out at layer N" or "no progress for 60 s" on AMD (Linux), mostly with `--mmap-experts`.**
+Two reports fixed it with `"GPU_PINNED_MIN_XFER_SIZE": "1048576"` (RX 6800) or `"HSA_USERPTR_FOR_PAGED_MEM": "0"` (two
+R9700) in the `env` block of the server JSON, then a restart. Experimental, one machine each; on a systemd unit use
+`MemoryMax`, not `MemoryHigh`. Details: [AMD_HIP.md](AMD_HIP.md#linux-verify-timeouts-while-the-kernel-reclaims-host-memory-experimental-workarounds).
 
 ## Still stuck?
 

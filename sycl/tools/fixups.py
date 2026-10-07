@@ -307,3 +307,9 @@ for p in sorted((root / "src" / "kernels").glob("*_parity.cpp")):
 edit("src/program/generate.cpp", sub(
     r"(    const strata::core::OnDevice on\(dev\);\n        size_t fb = 0, tb = 0;\n)(?!        dpct::get_current_device)",
     r"\1        dpct::get_current_device().get_memory_info(fb, tb);   // #423 (tmking01): dpct dropped cudaMemGetInfo here\n"))
+
+# A770: only subgroup row zero reaches the native router's synchronization.
+# CUDA's early-exit block pattern must not become a divergent SYCL work-group barrier.
+edit("src/kernels/cuda/native_router.dp.cpp", lambda s: s.replace(
+    "    item_ct1.barrier(sycl::access::fence_space::local_space);",
+    "    sycl::group_barrier(item_ct1.get_sub_group());  // only subgroup row zero participates"))

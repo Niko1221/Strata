@@ -1,6 +1,6 @@
-"""A four-part hotfix version (0.1.40.1) cannot break setup: versions are read as their first three numbers, the
-engine zips are looked for under the checkout's own v<project version> tag first and the latest release second, and
-a binary that says `engine=0.1.40.1` is read as 0.1.40.
+"""A four-part version (0.1.40.2) cannot break setup: versions compare all four numbers (0.1.40 < 0.1.40.2, so a
+0.1.40 engine is updated), the engine zips are looked for under the checkout's own v<project version> tag first and
+the latest release second, and a binary that says `engine=0.1.40.2` is read as (0, 1, 40, 2).
 
     python -m unittest tools.test_setup_hotfix_tag
 """
@@ -19,10 +19,11 @@ import setup  # noqa: E402
 
 
 class HotfixTag(unittest.TestCase):
-    def test_a_four_part_version_is_read_as_its_first_three_numbers(self):
-        ver = tuple(int(x) for x in "0.1.40.1".split(".")[:3] if x.isdigit())
-        self.assertEqual(ver, (0, 1, 40))
+    def test_a_four_part_version_compares_all_four_numbers(self):
+        ver = tuple(int(x) for x in "0.1.40.2".split(".")[:4] if x.isdigit())
+        self.assertEqual(ver, (0, 1, 40, 2))
         self.assertGreaterEqual(ver, setup.MIN_ENGINE)
+        self.assertLess((0, 1, 40), setup.MIN_ENGINE)       # an installed 0.1.40 engine is replaced
 
     def test_the_engine_zips_are_found_for_a_hotfix_tag(self):
         # a hotfix that keeps CMakeLists.txt at the engine's version: the v0.1.40 release still holds the zips
@@ -34,11 +35,11 @@ class HotfixTag(unittest.TestCase):
             self.assertEqual(setup.prebuilt_bases(setup.PREBUILT_URL),
                              ["https://github.com/Niko1221/Strata/releases/download/v0.1.40.1/", setup.PREBUILT_URL])
 
-    def test_an_engine_that_says_four_parts_is_read_as_three(self):
+    def test_an_engine_that_says_four_parts_is_read_as_four(self):
         with tempfile.TemporaryDirectory() as d:
             exe = Path(d) / "strata.exe"
-            exe.write_bytes(b"MZ\x00engine=0.1.40.1\n\x00")
-            self.assertEqual(setup.engine_version(exe), (0, 1, 40))
+            exe.write_bytes(b"MZ\x00engine=0.1.40.2\n\x00")
+            self.assertEqual(setup.engine_version(exe), (0, 1, 40, 2))
             exe.write_bytes(b"MZ\x00engine=0.1.40\n\x00")
             self.assertEqual(setup.engine_version(exe), (0, 1, 40))
 

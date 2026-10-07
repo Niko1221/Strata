@@ -76,6 +76,7 @@ __dpct_inline__ void native_swiglu_kernel(const float *gate, const float *up,
     out[i] = gate[i] / (1.0f + sycl::native::exp(-gate[i])) * up[i];
 }
 
+
 void to_f16_kernel(const float* __restrict__ in, uint16_t* __restrict__ out, int n) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const int i = item_ct1.get_group(2) * item_ct1.get_local_range(2) +
@@ -181,8 +182,7 @@ __dpct_inline__ void native_scalar_sigmoid_kernel(float *gate) {
     // compilation flags. The dot product was already reduced by the pinned native MMVF implementation.
     gate[0] = 1.0f / (1.0f + sycl::native::exp(-gate[0]));
 }
-__dpct_inline__ void native_scalar_sigmoid_multi_kernel(
-    float *gate) { // thread t = token t, same expression
+void native_scalar_sigmoid_multi_kernel(float* gate) {   // thread t = token t, same expression
     /*
     DPCT1064: Migrated __expf call is used in a macro/template definition
     and may not be valid for all macro/template uses. Adjust the code.
@@ -216,6 +216,7 @@ __dpct_inline__ void moe_combine_kernel(const float *__restrict__ parts,
 }  // namespace
 
 void shared_expert_set_native_bf16(bool enabled) { native_bf16 = enabled; }
+bool shared_expert_native_bf16_enabled() { return native_bf16; }
 
 namespace {
 __dpct_inline__ void scale_rows_kernel(float *__restrict__ out,
@@ -226,57 +227,164 @@ __dpct_inline__ void scale_rows_kernel(float *__restrict__ out,
                   item_ct1.get_local_id(2);
     if (i < n) out[(size_t) t * n + i] *= g[t];
 }
-}  // namespace
 
-void shared_expert_multi(int n_tok, const float* x, const uint16_t* x_bf16, const NativeSharedWeights& nw,
-                         const uint16_t* gate_inp_bf16, float* gate, float* up, float* g, float* out, int64_t n_embd,
-                         int64_t n_ff, void* stream) {
-    if (n_tok < 1 || n_tok > 8 || !nw.q8_1 || !nw.gate_data || !nw.up_data || !nw.down_data || !stream)
-        throw std::invalid_argument("shared_expert_multi: needs 1..8 tokens, native weights, scratch and a stream");
-    dpct::queue_ptr cs = strata::q_of(stream);
-    native_quantize_q8_1(x, nw.q8_1, (int) n_embd, n_tok, stream);
-    native_mmvq(nw.gate_type, nw.gate_data, nw.q8_1, gate, (int) n_embd, (int) n_ff, n_tok, stream);
-    native_mmvq(nw.up_type, nw.up_data, nw.q8_1, up, (int) n_embd, (int) n_ff, n_tok, stream);
-    const int n = (int) (n_ff * n_tok);
-    {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
-
-        cs->parallel_for<dpct_kernel_name<class native_swiglu_kernel_93d137>>(
-            sycl::nd_range<3>(
-                sycl::range(1, 1, (unsigned)((n + THREADS - 1) / THREADS)) *
-                    sycl::range(1, 1, THREADS),
-                sycl::range(1, 1, THREADS)),
-            exp_props, [=](sycl::nd_item<3> item_ct1) {
-                native_swiglu_kernel(gate, up, gate, n);
-            });
+__dpct_inline__ void sigmoid_scale_rows_kernel(float *__restrict__ out,
+                                               const float *__restrict__ g,
+                                               int n) {
+    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+    const int t = item_ct1.get_group(1);
+    const int i = item_ct1.get_group(2) * item_ct1.get_local_range(2) +
+                  item_ct1.get_local_id(2);
+    if (i < n) {
+        const float gt = 1.0f / (1.0f + sycl::native::exp(-g[t]));
+        out[(size_t) t * n + i] *= gt;
     }
-    native_quantize_q8_1(gate, nw.q8_1, (int) n_ff, n_tok, stream);
-    native_mmvq(nw.down_type, nw.down_data, nw.q8_1, out, (int) n_ff, (int) n_embd, n_tok, stream);
-    static const bool batch = [] { const char* v = std::getenv("STRATA_DEC_BATCH"); return v == nullptr || std::atoi(v) != 0; }();
-    if (native_bf16 && batch && n_tok > 1) {   // one gemv for all rows (outputs identical), one sigmoid launch
-        bf16_gemv_fp32_mmvf_multi(x, n_embd, gate_inp_bf16, g, 1, n_embd, 1, n_tok, stream);
+}
+
+__dpct_inline__ void
+sigmoid_scale_rows_vec4_kernel(sycl::float4 *__restrict__ out4,
+                               const float *__restrict__ g, int n4) {
+    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+    const int t = item_ct1.get_group(1);
+    const int i = item_ct1.get_group(2) * item_ct1.get_local_range(2) +
+                  item_ct1.get_local_id(2);
+    if (i < n4) {
         /*
-        DPCT1049: The work-group size passed to the SYCL kernel may exceed
-        the limit. To get the device limit, query
-        info::device::max_work_group_size. Adjust the work-group size if needed.
+        DPCT1098: The '*' expression is used instead of the __ldg call.
+        These two expressions do not provide the exact same functionality. Check
+        the generated code for potential precision and/or performance issues.
         */
+        const float gt = 1.0f / (1.0f + sycl::native::exp(-*(g + t)));
+        sycl::float4 v = out4[(size_t)t * n4 + i];
+        v.x() *= gt;
+        v.y() *= gt;
+        v.z() *= gt;
+        v.w() *= gt;
+        out4[(size_t) t * n4 + i] = v;
+    }
+}
+
+void launch_sigmoid_scale_rows(float *out, const float *g, int n_embd,
+                               int n_tok, dpct::queue_ptr cs) {
+    if ((n_embd & 3) == 0 && ((uintptr_t) out & 15u) == 0) {
+        const int n4 = n_embd >> 2;
         {
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            cs->parallel_for<dpct_kernel_name<
-                class native_scalar_sigmoid_multi_kernel_e0530d>>(
-                sycl::nd_range<3>(sycl::range(1, 1, n_tok),
-                                  sycl::range(1, 1, n_tok)),
+            cs->parallel_for<
+                dpct_kernel_name<class sigmoid_scale_rows_vec4_kernel_723a94>>(
+                sycl::nd_range<3>(
+                    sycl::range(1, (unsigned)n_tok,
+                                (unsigned)((n4 + THREADS - 1) / THREADS)) *
+                        sycl::range(1, 1, THREADS),
+                    sycl::range(1, 1, THREADS)),
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    native_scalar_sigmoid_multi_kernel(g);
+                    sigmoid_scale_rows_vec4_kernel(
+                        reinterpret_cast<sycl::float4 *>(out), g, n4);
                 });
         }
-    } else
-    for (int t = 0; t < n_tok; ++t) {
-        if (native_bf16) {
-            bf16_gemv_fp32_mmvf(x + (size_t) t * n_embd, gate_inp_bf16, g + t, n_embd, 1, stream);
+    } else {
+        auto exp_props = sycl::ext::oneapi::experimental::properties{
+            sycl::ext::oneapi::experimental::use_root_sync};
+
+        cs->parallel_for<
+            dpct_kernel_name<class sigmoid_scale_rows_kernel_26f4a0>>(
+            sycl::nd_range<3>(
+                sycl::range(1, (unsigned)n_tok,
+                            (unsigned)((n_embd + THREADS - 1) / THREADS)) *
+                    sycl::range(1, 1, THREADS),
+                sycl::range(1, 1, THREADS)),
+            exp_props, [=](sycl::nd_item<3> item_ct1) {
+                sigmoid_scale_rows_kernel(out, g, n_embd);
+            });
+    }
+}
+
+bool fused_swiglu_q81_enabled() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_FUSED_SWIGLU_Q81");
+        return v == nullptr || std::atoi(v) != 0;
+    }();
+    return on;
+}
+}  // namespace
+
+void shared_expert_multi(int n_tok, const float* x, const uint16_t* x_bf16, const NativeSharedWeights& nw,
+                         const uint16_t* gate_inp_bf16, float* gate, float* up, float* g, float* out, int64_t n_embd,
+                         int64_t n_ff, void* stream, const void* x_q8_1_ready, int lfuse) {
+    const bool gate_deferred = (lfuse & 1) != 0, pair = (lfuse & 2) != 0;
+    if (n_tok < 1 || n_tok > 8 || !nw.q8_1 || !nw.gate_data || !nw.up_data || !nw.down_data || !stream)
+        throw std::invalid_argument("shared_expert_multi: needs 1..8 tokens, native weights, scratch and a stream");
+    dpct::queue_ptr cs = strata::q_of(stream);
+    // the activation's q8_1: the caller's (STRATA_VERIFY_QDEDUP, x_q8_1_ready) or the descriptor's, else quantized here
+    const void* x_q8_1 = x_q8_1_ready ? x_q8_1_ready : nw.x_q8_1;
+    if (!x_q8_1) {
+        native_quantize_q8_1(x, nw.q8_1, (int) n_embd, n_tok, stream);
+        x_q8_1 = nw.q8_1;
+    }
+    // S26 STRATA_LFUSE (gate_deferred): gate and up in one launch where the pair applies (bitwise the two calls)
+    if (!(pair && nw.gate_type == nw.up_type &&
+          native_mmvq_pair(nw.gate_type, nw.gate_data, nw.up_data, x_q8_1, gate, up, (int) n_embd, (int) n_ff, n_tok, stream))) {
+        native_mmvq(nw.gate_type, nw.gate_data, x_q8_1, gate, (int) n_embd, (int) n_ff, n_tok, stream);
+        native_mmvq(nw.up_type, nw.up_data, x_q8_1, up, (int) n_embd, (int) n_ff, n_tok, stream);
+    }
+    const int n = (int) (n_ff * n_tok);
+    if (fused_swiglu_q81_enabled()) {
+        native_swiglu_quantize_q8_1(gate, up, nw.q8_1, (int) n_ff, n_tok, stream);
+    } else {
+        {
+            auto exp_props = sycl::ext::oneapi::experimental::properties{
+                sycl::ext::oneapi::experimental::use_root_sync};
+
+            cs->parallel_for<
+                dpct_kernel_name<class native_swiglu_kernel_c4e755>>(
+                sycl::nd_range<3>(
+                    sycl::range(1, 1, (unsigned)((n + THREADS - 1) / THREADS)) *
+                        sycl::range(1, 1, THREADS),
+                    sycl::range(1, 1, THREADS)),
+                exp_props, [=](sycl::nd_item<3> item_ct1) {
+                    native_swiglu_kernel(gate, up, gate, n);
+                });
+        }
+        native_quantize_q8_1(gate, nw.q8_1, (int) n_ff, n_tok, stream);
+    }
+    native_mmvq(nw.down_type, nw.down_data, nw.q8_1, out, (int) n_ff, (int) n_embd, n_tok, stream);
+    if (gate_deferred) {   // the caller computed g (raw) with the router and scales `out` in the combine
+        /*
+        DPCT1010: SYCL uses exceptions to report errors and does not use the
+        error codes. The cudaGetLastError function call was replaced with 0. You
+        need to rewrite this code.
+        */
+        const dpct::err0 e = 0;
+        /*
+        DPCT1009: SYCL reports errors using exceptions and does not use
+        error codes. Please replace the "get_error_string_dummy(...)" with a
+        real error-handling function.
+        */
+        /*
+        DPCT1001: The statement could not be removed.
+        */
+        /*
+        DPCT1000: Error handling if-stmt was detected but could not be
+        rewritten.
+        */
+        if (e !=
+            0) throw std::runtime_error(std::string("shared_expert_multi: ") +
+                                        dpct::get_error_string_dummy(e));
+        return;
+    }
+    static const bool batch = [] { const char* v = std::getenv("STRATA_DEC_BATCH"); return v == nullptr || std::atoi(v) != 0; }();
+    if (native_bf16 && batch && n_tok > 1) {   // one gemv for all rows (outputs identical), fused sigmoid+scale
+        bf16_gemv_fp32_mmvf_multi(x, n_embd, gate_inp_bf16, g, 1, n_embd, 1, n_tok, stream);
+        launch_sigmoid_scale_rows(out, g, (int) n_embd, n_tok, cs);
+    } else if (native_bf16 && n_tok == 1) {
+        bf16_gemv_fp32_mmvf(x, gate_inp_bf16, g, n_embd, 1, stream);
+        launch_sigmoid_scale_rows(out, g, (int) n_embd, 1, cs);
+    } else {
+        for (int t = 0; t < n_tok; ++t) {
+            if (native_bf16) {
+                bf16_gemv_fp32_mmvf(x + (size_t) t * n_embd, gate_inp_bf16, g + t, n_embd, 1, stream);
                 {
                     auto exp_props =
                         sycl::ext::oneapi::experimental::properties{
@@ -286,7 +394,7 @@ void shared_expert_multi(int n_tok, const float* x, const uint16_t* x_bf16, cons
                         auto g_t_ct0 = g + t;
 
                         cgh.parallel_for<dpct_kernel_name<
-                            class native_scalar_sigmoid_kernel_344179>>(
+                            class native_scalar_sigmoid_kernel_9552ea>>(
                             sycl::nd_range<3>(sycl::range(1, 1, 1),
                                               sycl::range(1, 1, 1)),
                             exp_props, [=](sycl::nd_item<3> item_ct1) {
@@ -294,7 +402,7 @@ void shared_expert_multi(int n_tok, const float* x, const uint16_t* x_bf16, cons
                             });
                     });
                 }
-        } else {
+            } else {
                 auto exp_props = sycl::ext::oneapi::experimental::properties{
                     sycl::ext::oneapi::experimental::use_root_sync};
                 dpct::has_capability_or_fail(cs->get_device(),
@@ -306,7 +414,7 @@ void shared_expert_multi(int n_tok, const float* x, const uint16_t* x_bf16, cons
                     auto g_t_ct2 = g + t;
 
                     cgh.parallel_for<
-                        dpct_kernel_name<class scalar_gate_kernel_372f76>>(
+                        dpct_kernel_name<class scalar_gate_kernel_76bc5d>>(
                         sycl::nd_range<3>(sycl::range(1, 1, 256),
                                           sycl::range(1, 1, 256)),
                         exp_props,
@@ -317,21 +425,22 @@ void shared_expert_multi(int n_tok, const float* x, const uint16_t* x_bf16, cons
                                                    (int)n_embd);
                             });
                 });
+            }
         }
-    }
-    {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        {
+            auto exp_props = sycl::ext::oneapi::experimental::properties{
+                sycl::ext::oneapi::experimental::use_root_sync};
 
-        cs->parallel_for<dpct_kernel_name<class scale_rows_kernel_4f17ec>>(
-            sycl::nd_range<3>(
-                sycl::range(1, (unsigned)n_tok,
-                            (unsigned)((n_embd + THREADS - 1) / THREADS)) *
-                    sycl::range(1, 1, THREADS),
-                sycl::range(1, 1, THREADS)),
-            exp_props, [=](sycl::nd_item<3> item_ct1) {
-                scale_rows_kernel(out, g, (int)n_embd);
-            });
+            cs->parallel_for<dpct_kernel_name<class scale_rows_kernel_4f17ec>>(
+                sycl::nd_range<3>(
+                    sycl::range(1, (unsigned)n_tok,
+                                (unsigned)((n_embd + THREADS - 1) / THREADS)) *
+                        sycl::range(1, 1, THREADS),
+                    sycl::range(1, 1, THREADS)),
+                exp_props, [=](sycl::nd_item<3> item_ct1) {
+                    scale_rows_kernel(out, g, (int)n_embd);
+                });
+        }
     }
     /*
     DPCT1010: SYCL uses exceptions to report errors and does not use the
@@ -434,56 +543,62 @@ void shared_expert(const uint8_t *x_q8_0, const uint8_t *x_q8k,
         native_mmvq(native->up_type, native->up_data, native->q8_1, up, (int) n_embd, (int) n_ff, 1, stream);
     else
         gemv(up_form, up_codes, up_scales, up_off, x_q8_0, x_q8k, up, n_embd, n_ff);
-    if (native_projection)
-    {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
-
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class native_swiglu_kernel_5e9503>>(
-                sycl::nd_range<3>(sycl::range(1, 1, g_ff) *
-                                      sycl::range(1, 1, THREADS),
-                                  sycl::range(1, 1, THREADS)),
-                exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    native_swiglu_kernel(gate, up, gate, (int)n_ff);
-                });
-    } else {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
-        dpct::has_capability_or_fail(
-            strata::q_of(stream)->get_device(),
-            {sycl::aspect::fp64});
-
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class swiglu_kernel_fbfcfe>>(
-                sycl::nd_range<3>(sycl::range(1, 1, g_ff) *
-                                      sycl::range(1, 1, THREADS),
-                                  sycl::range(1, 1, THREADS)),
-                exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    swiglu_kernel(gate, up, gate, (int)n_ff);
-                });
-    }
-
-    // down: (n_ff) -> (n_embd), and THE INTERMEDIATE IS QUANTIZED TO THE DOWN WEIGHT'S OWN CONTRACT - which is
-    // what `ggml_mul_mat` does for every matmul in the model.  It used to be rounded to fp16 with no
-    // justification beyond "the kernel takes fp16".
-    if (native_down) {
-        native_quantize_q8_1(gate, native->q8_1, (int) n_ff, 1, stream);
+    if (native_projection && native_down && fused_swiglu_q81_enabled()) {
+        native_swiglu_quantize_q8_1(gate, up, native->q8_1, (int) n_ff, 1, stream);
         native_mmvq(native->down_type, native->down_data, native->q8_1, out, (int) n_ff, (int) n_embd, 1, stream);
-    } else if (down_form.act_kind == 1) {
-        if (n_ff % 256 != 0) {
-            std::fprintf(stderr, "shared_expert: the down weight wants Q8_K but n_ff %lld is not a multiple "
-                                 "of 256; Q8_K is structurally impossible here\n", (long long) n_ff);
-            std::exit(1);
-        }
-        quantize_q8_K(gate, h_q8k, n_ff, stream);
-        gemv(down_form, down_codes, down_scales, down_off, h_q8_0, h_q8k, out, n_ff, n_embd);
-    } else if (down_form.code_bits == 2) {
-        quantize_q8_0(gate, h_q8_0, n_ff, stream);
-        gemv(down_form, down_codes, down_scales, down_off, h_q8_0, h_q8k, out, n_ff, n_embd);
     } else {
-        quantize_q8_0(gate, h_q8_0, n_ff, stream);
-        gemv(down_form, down_codes, down_scales, down_off, h_q8_0, h_q8k, out, n_ff, n_embd);
+        if (native_projection)
+        {
+            auto exp_props = sycl::ext::oneapi::experimental::properties{
+                sycl::ext::oneapi::experimental::use_root_sync};
+
+            strata::q_of(stream)
+                ->parallel_for<
+                    dpct_kernel_name<class native_swiglu_kernel_75dcdc>>(
+                    sycl::nd_range<3>(sycl::range(1, 1, g_ff) *
+                                          sycl::range(1, 1, THREADS),
+                                      sycl::range(1, 1, THREADS)),
+                    exp_props, [=](sycl::nd_item<3> item_ct1) {
+                        native_swiglu_kernel(gate, up, gate, (int)n_ff);
+                    });
+        } else {
+            auto exp_props = sycl::ext::oneapi::experimental::properties{
+                sycl::ext::oneapi::experimental::use_root_sync};
+            dpct::has_capability_or_fail(
+                strata::q_of(stream)->get_device(),
+                {sycl::aspect::fp64});
+
+            strata::q_of(stream)
+                ->parallel_for<dpct_kernel_name<class swiglu_kernel_fbfcfe>>(
+                    sycl::nd_range<3>(sycl::range(1, 1, g_ff) *
+                                          sycl::range(1, 1, THREADS),
+                                      sycl::range(1, 1, THREADS)),
+                    exp_props, [=](sycl::nd_item<3> item_ct1) {
+                        swiglu_kernel(gate, up, gate, (int)n_ff);
+                    });
+        }
+
+        // down: (n_ff) -> (n_embd), and THE INTERMEDIATE IS QUANTIZED TO THE DOWN WEIGHT'S OWN CONTRACT - which is
+        // what `ggml_mul_mat` does for every matmul in the model.  It used to be rounded to fp16 with no
+        // justification beyond "the kernel takes fp16".
+        if (native_down) {
+            native_quantize_q8_1(gate, native->q8_1, (int) n_ff, 1, stream);
+            native_mmvq(native->down_type, native->down_data, native->q8_1, out, (int) n_ff, (int) n_embd, 1, stream);
+        } else if (down_form.act_kind == 1) {
+            if (n_ff % 256 != 0) {
+                std::fprintf(stderr, "shared_expert: the down weight wants Q8_K but n_ff %lld is not a multiple "
+                                     "of 256; Q8_K is structurally impossible here\n", (long long) n_ff);
+                std::exit(1);
+            }
+            quantize_q8_K(gate, h_q8k, n_ff, stream);
+            gemv(down_form, down_codes, down_scales, down_off, h_q8_0, h_q8k, out, n_ff, n_embd);
+        } else if (down_form.code_bits == 2) {
+            quantize_q8_0(gate, h_q8_0, n_ff, stream);
+            gemv(down_form, down_codes, down_scales, down_off, h_q8_0, h_q8k, out, n_ff, n_embd);
+        } else {
+            quantize_q8_0(gate, h_q8_0, n_ff, stream);
+            gemv(down_form, down_codes, down_scales, down_off, h_q8_0, h_q8k, out, n_ff, n_embd);
+        }
     }
 
     // the per-token scalar gate, then the multiply.  Note the gate is computed from `x`, the ORIGINAL hidden
@@ -493,49 +608,41 @@ void shared_expert(const uint8_t *x_q8_0, const uint8_t *x_q8k,
     // round trip.  256 threads is the reduction's width, not the problem's size.
     if (use_native) {
         bf16_gemv_fp32_mmvf(x_f32, gate_inp_bf16, g, n_embd, 1, stream);
+        launch_sigmoid_scale_rows(out, g, (int)n_embd, 1,
+                                  strata::q_of(stream));
+    } else {
+        {
+            auto exp_props = sycl::ext::oneapi::experimental::properties{
+                sycl::ext::oneapi::experimental::use_root_sync};
+            dpct::has_capability_or_fail(
+                strata::q_of(stream)->get_device(),
+                {sycl::aspect::fp64});
+
+            strata::q_of(stream)
+                ->parallel_for<
+                    dpct_kernel_name<class scalar_gate_kernel_82de77>>(
+                    sycl::nd_range<3>(sycl::range(1, 1, 256),
+                                      sycl::range(1, 1, 256)),
+                    exp_props,
+                    [=](sycl::nd_item<3> item_ct1)
+                        [[sycl::reqd_sub_group_size(32)]] {
+                            scalar_gate_kernel(x_bf16, gate_inp_bf16, g,
+                                               (int)n_embd);
+                        });
+        }
         {
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
             strata::q_of(stream)
-                ->parallel_for<dpct_kernel_name<
-                    class native_scalar_sigmoid_kernel_3dbcd0>>(
-                    sycl::nd_range<3>(sycl::range(1, 1, 1),
-                                      sycl::range(1, 1, 1)),
+                ->parallel_for<dpct_kernel_name<class scale_kernel_a41a71>>(
+                    sycl::nd_range<3>(sycl::range(1, 1, g_embd) *
+                                          sycl::range(1, 1, THREADS),
+                                      sycl::range(1, 1, THREADS)),
                     exp_props, [=](sycl::nd_item<3> item_ct1) {
-                        native_scalar_sigmoid_kernel(g);
+                        scale_kernel(out, g, (int)n_embd);
                     });
         }
-    } else {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
-        dpct::has_capability_or_fail(
-            strata::q_of(stream)->get_device(),
-            {sycl::aspect::fp64});
-
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class scalar_gate_kernel_264fbf>>(
-                sycl::nd_range<3>(sycl::range(1, 1, 256),
-                                  sycl::range(1, 1, 256)),
-                exp_props,
-                [=](sycl::nd_item<3> item_ct1)
-                    [[sycl::reqd_sub_group_size(32)]] {
-                        scalar_gate_kernel(x_bf16, gate_inp_bf16, g,
-                                           (int)n_embd);
-                    });
-    }
-    {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
-
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class scale_kernel_a41a71>>(
-                sycl::nd_range<3>(sycl::range(1, 1, g_embd) *
-                                      sycl::range(1, 1, THREADS),
-                                  sycl::range(1, 1, THREADS)),
-                exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    scale_kernel(out, g, (int)n_embd);
-                });
     }
 
     if (stream == nullptr) {

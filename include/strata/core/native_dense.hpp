@@ -30,11 +30,18 @@ public:
     /// Layer split: load only blocks [lb, le) (every other `blk.N.` projection belongs to another GPU's stage; the
     /// PLE tensors are loaded everywhere).  Process-wide, read by the next `load`; (-1, -1) = all layers.
     static void set_layer_range(int lb, int le);
+    /// Layer split: the device bytes `load` would allocate for the matrices of layers [lb, le) - the same walk and
+    /// filters, each matrix rounded up to the granule cudaMalloc backs it with - reading the GGUF headers and `table`
+    /// only, so it allocates nothing and needs no device (#1238).  `table` must hold every tensor the shards carry.
+    static bool weight_bytes_for(const std::vector<std::string>& shards, WeightTable& table, bool include_ple_key,
+                                 int64_t lb, int64_t le, uint64_t& out, std::string& err);
     /// #326: a native pack whose `blk.1.ple_key.weight` row is unquantized (iq_pack --compat-bf16 of a GGUF key
     /// the native kernel also reads, e.g. OrcaRouter's IQ3_XXS) serves the PLE from that row, so it is taken out
     /// of `skip` and `load` does not upload the GGUF key over it.  A quantized row leaves `skip` unchanged.
     static bool keep_unquantized_ple_key(const std::string& pack_dir, std::set<std::string>& skip, std::string& err);
     uint64_t weight_bytes() const { return bytes_; }
+    /// What the device lost to `load`: each matrix rounded up to the granule `cudaMalloc` backs it with.
+    uint64_t allocated_bytes() const { return allocated_; }
     size_t tensor_count() const { return weights_.size() - packed_keys_.size(); }
 
 private:
@@ -42,5 +49,6 @@ private:
     std::vector<const void*> packed_keys_;   // GGUF-layout pointers registered with STRATA_Q8_PACKED=1
     void* scratch_ = nullptr;
     uint64_t bytes_ = 0;
+    uint64_t allocated_ = 0;
 };
 } // namespace strata::core

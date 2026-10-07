@@ -24,6 +24,7 @@
 #include <dpct/dpct.hpp>
 #include "strata/kernels/gr.hpp"
 #include "strata/kernels/fused_gr.hpp"
+#include "strata/kernels/native_mmvq.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -592,6 +593,88 @@ int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const ui
         ++bad;
     }
 
+
+    // S26 STRATA_QFUSE: the read's own q8_1 image of `mixed` must be the bytes native_quantize_q8_1 writes from it -
+    // for every T (1..8), directly and through a captured graph replayed twice (the group counters must reset)
+    {
+        uint8_t *d_q = nullptr, *d_ref = nullptr;
+        unsigned* d_cnt = nullptr;
+        const size_t qbytes = (size_t) T * (N / 32) * 36;
+        check(DPCT_CHECK_ERROR(d_q = (uint8_t *)sycl::malloc_device(
+                                   qbytes, dpct::get_in_order_queue())),
+              "qfuse q8");
+        check(DPCT_CHECK_ERROR(d_ref = (uint8_t *)sycl::malloc_device(
+                                   qbytes, dpct::get_in_order_queue())),
+              "qfuse ref");
+        check(DPCT_CHECK_ERROR(d_cnt = sycl::malloc_device<unsigned int>(
+                                   (N / 32), dpct::get_in_order_queue())),
+              "qfuse counters");
+        check(
+            DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                 .memset(d_cnt, 0, (N / 32) * sizeof(unsigned))
+                                 .wait()),
+            "qfuse counters zero");
+        int qbad = 0;
+        std::vector<uint8_t> hq(qbytes), hr(qbytes);
+        for (int tt = 1; tt <= T && !qbad; ++tt) {
+            std::vector<FusedGrArgs> qa(args.begin(), args.begin() + tt);
+            for (int t = 0; t < tt; ++t) { qa[t].q8_mixed = d_q + (size_t) t * (N / 32) * 36; qa[t].q8_cnt = d_cnt; }
+            for (int rep = 0; rep < 3 && !qbad; ++rep) {
+                check(DPCT_CHECK_ERROR(stream->memset(d_q, 0x5a, qbytes)),
+                      "qfuse poison");
+                bool wrote = false;
+                dpct::experimental::command_graph_ptr qg = nullptr;
+                dpct::experimental::command_graph_exec_ptr qx = nullptr;
+                if (rep == 0) {
+                    wrote = fused_gr_read_multi(qa.data(), tt, d_xn, stream);
+                } else {   // a captured read, replayed (twice: rep 1 and 2 use fresh captures, each replayed twice)
+                    check(DPCT_CHECK_ERROR(
+                              dpct::experimental::begin_recording(stream)),
+                          "qfuse begin");
+                    wrote = fused_gr_read_multi(qa.data(), tt, d_xn, stream);
+                    check(DPCT_CHECK_ERROR(
+                              dpct::experimental::end_recording(stream, &qg)),
+                          "qfuse end");
+                    check(
+                        DPCT_CHECK_ERROR(
+                            qx = new sycl::ext::oneapi::experimental::
+                                command_graph<sycl::ext::oneapi::experimental::
+                                                  graph_state::executable>(
+                                    qg->finalize())),
+                        "qfuse instantiate");
+                    check(DPCT_CHECK_ERROR(stream->ext_oneapi_graph(*qx)),
+                          "qfuse replay 1");
+                    check(DPCT_CHECK_ERROR(stream->memset(d_q, 0x5a, qbytes)),
+                          "qfuse poison 2");
+                    check(DPCT_CHECK_ERROR(stream->ext_oneapi_graph(*qx)),
+                          "qfuse replay 2");
+                }
+                strata::kernels::native_quantize_q8_1(d_mixed, d_ref, N, tt, stream);
+                check(DPCT_CHECK_ERROR(stream->wait()), "qfuse sync");
+                if (qx) { delete (qx); delete (qg); }
+                if (v3) { std::printf("  QFUSE: the v3 read writes no q8_1 (%s)\n", wrote ? "WRONG: it says it did" : "ok"); qbad += wrote; break; }
+                check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                           .memcpy(hq.data(), d_q,
+                                                   (size_t)tt * (N / 32) * 36)
+                                           .wait()),
+                      "qfuse read");
+                check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                           .memcpy(hr.data(), d_ref,
+                                                   (size_t)tt * (N / 32) * 36)
+                                           .wait()),
+                      "qfuse ref read");
+                if (!wrote || std::memcmp(hq.data(), hr.data(), (size_t) tt * (N / 32) * 36) != 0) {
+                    std::printf("  QFUSE: T=%d rep %d: %s\n", tt, rep, wrote ? "q8_1 bytes differ" : "not written");
+                    ++qbad;
+                }
+            }
+        }
+        std::printf("  fused GR read + q8_1 (STRATA_QFUSE), T 1..8, direct and graph replays: %s\n", qbad ? "FAIL" : "pass");
+        bad += qbad;
+        sycl::free(d_q, dpct::get_in_order_queue());
+            sycl::free(d_ref, dpct::get_in_order_queue());
+            sycl::free(d_cnt, dpct::get_in_order_queue());
+    }
     std::printf("  fused GR multi max-T=8 LDS launch and changing graph replay %s\n",
                 bad == 0 ? "pass" : "FAIL");
     check(DPCT_CHECK_ERROR(delete (graph_exec)), "multi graph exec destroy");

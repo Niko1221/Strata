@@ -484,6 +484,74 @@ __global__ void __launch_bounds__(32) block_scores_tail_kernel(const float* __re
     }
 }
 
+// ---- the block scores as an FP32 tiled GEMM for CUDA cards without TF32 tensor cores (below sm_80): rows (query,
+// indexer head) x columns (blocks), K = 128 through shared memory, 2 queries x 4 heads x 4 blocks per thread, relu per
+// head summed in registers.  The warp kernel spends 5 shuffles per 4 products and reached ~1 TFLOPS on an RTX 2080
+// Ti; this one ~6.9 (256 queries: 4.5x at 4K, 6.8x at 120K-250K).  FP32 like the warp kernel in another summation
+// order, so not bitwise (as the tensor-core scorer).  Blocks < n_bid only; the tail block is block_scores_tail_kernel's.
+constexpr int SM_QT = 32, SM_NB = 64, SM_KC = 32, SM_QS = SM_QT * IDX_HEADS + 4, SM_KS = SM_NB + 4;
+__global__ void __launch_bounds__(256) block_scores_simt_kernel(const float* __restrict__ pooled,
+                                                                const float* __restrict__ q_idx,
+                                                                const int32_t* __restrict__ steps, int64_t nq,
+                                                                int64_t max_blocks, int64_t reach,
+                                                                float* __restrict__ out) {
+    __shared__ __align__(16) float Qs[SM_KC][SM_QS];
+    __shared__ __align__(16) float Ks[SM_KC][SM_KS];
+    const int64_t q0 = (int64_t) blockIdx.y * SM_QT, b0 = (int64_t) blockIdx.x * SM_NB;
+    const int64_t qlast = (q0 + SM_QT < nq ? q0 + SM_QT : nq) - 1;
+    if (b0 >= steps[qlast * kStepCount + kStepNBid]) return;   // n_bid rises with the position
+    const int tid = threadIdx.x, tx = tid & 15, ty = tid >> 4;
+    float acc[8][4] = {};
+    for (int kc = 0; kc < IDX_DIM; kc += SM_KC) {
+#pragma unroll
+        for (int i = 0; i < 4; ++i) {   // the query rows: 128 x 8 float4
+            const int idx = tid + i * 256, r = idx >> 3, k4 = idx & 7;
+            float4 v = make_float4(0.f, 0.f, 0.f, 0.f);
+            if (q0 + (r >> 2) < nq)
+                v = *reinterpret_cast<const float4*>(q_idx + (q0 * IDX_HEADS + r) * IDX_DIM + kc + k4 * 4);
+            Qs[k4 * 4 + 0][r] = v.x; Qs[k4 * 4 + 1][r] = v.y; Qs[k4 * 4 + 2][r] = v.z; Qs[k4 * 4 + 3][r] = v.w;
+        }
+#pragma unroll
+        for (int i = 0; i < 2; ++i) {   // the pooled keys: 64 x 8 float4
+            const int idx = tid + i * 256, c = idx >> 3, k4 = idx & 7;
+            float4 v = make_float4(0.f, 0.f, 0.f, 0.f);
+            if (b0 + c < reach) v = *reinterpret_cast<const float4*>(pooled + (b0 + c) * IDX_DIM + kc + k4 * 4);
+            Ks[k4 * 4 + 0][c] = v.x; Ks[k4 * 4 + 1][c] = v.y; Ks[k4 * 4 + 2][c] = v.z; Ks[k4 * 4 + 3][c] = v.w;
+        }
+        __syncthreads();
+#pragma unroll 8
+        for (int k = 0; k < SM_KC; ++k) {
+            const float4 qa = *reinterpret_cast<const float4*>(&Qs[k][ty * 8]);
+            const float4 qb = *reinterpret_cast<const float4*>(&Qs[k][ty * 8 + 4]);
+            const float4 kv = *reinterpret_cast<const float4*>(&Ks[k][tx * 4]);
+            const float qr[8] = {qa.x, qa.y, qa.z, qa.w, qb.x, qb.y, qb.z, qb.w}, kr[4] = {kv.x, kv.y, kv.z, kv.w};
+#pragma unroll
+            for (int i = 0; i < 8; ++i)
+#pragma unroll
+                for (int j = 0; j < 4; ++j) acc[i][j] = fmaf(qr[i], kr[j], acc[i][j]);
+        }
+        __syncthreads();
+    }
+#pragma unroll
+    for (int i = 0; i < 2; ++i) {
+        const int64_t q = q0 + ty * 2 + i;
+        if (q >= nq) continue;
+        const int64_t n_bid = steps[q * kStepCount + kStepNBid];
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            const int64_t b = b0 + tx * 4 + j;
+            if (b >= n_bid || b >= max_blocks) continue;
+            float sc = 0.0f;
+#pragma unroll
+            for (int h = 0; h < IDX_HEADS; ++h) {
+                const float d = acc[i * 4 + h][j];
+                sc += d > 0.0f ? d : 0.0f;
+            }
+            out[q * max_blocks + b] = sc;
+        }
+    }
+}
+
 // ---- the same top-k with each query's keys read once: 1,024 threads hold up to TK_PER consecutive blocks' keys in
 // registers (contexts up to 4 * 1024 * TK_PER cells), per-warp histograms, block-wide scans. The selection rule is
 // block_topk_kernel's (radix threshold, ties to the lowest index, cells ascending): identical ids.
@@ -1084,7 +1152,25 @@ bool qsa_block_scores_tc(const float* pooled, const float* dead, const float* q_
             const char* w = std::getenv("STRATA_QSA_WARP");
             cc_major[dev] = w && (!std::strcmp(w, "1") || !std::strcmp(w, "select")) ? 7 : strata::cc_major_of(major);
         }
-        if (cc_major[dev] < 8) return false;
+        if (cc_major[dev] < 8) {
+            // no TF32 tensor cores: the FP32 tiled kernel, opt-in (STRATA_SELECT_SIMT=1): its sum order differs from the
+            // warp kernel's, so the default stays the caller's warp kernel and the output bytes stay the same
+            static const bool simt = [] {
+                const char* v = std::getenv("STRATA_SELECT_SIMT");
+                return v != nullptr && v[0] == '1';
+            }();
+            if (!simt) return false;
+            const int64_t reach = active_blocks > 0 && active_blocks < max_blocks ? active_blocks : max_blocks;
+            const dim3 grid((unsigned) ((reach + SM_NB - 1) / SM_NB), (unsigned) ((nq + SM_QT - 1) / SM_QT));
+            if (grid.y > 65535) return false;
+            block_scores_simt_kernel<<<grid, 256, 0, (cudaStream_t) stream>>>(pooled, q_idx, steps, nq, max_blocks,
+                                                                              reach, scores);
+            block_scores_tail_kernel<<<(unsigned) nq, 32, 0, (cudaStream_t) stream>>>(dead, q_idx, steps, max_blocks,
+                                                                                    scores);
+            const cudaError_t e = cudaGetLastError();
+            if (e != cudaSuccess) { std::fprintf(stderr, "qsa_block_scores (simt): %s\n", cudaGetErrorString(e)); std::exit(1); }
+            return true;
+        }
     }
     static bool attr[64] = {};   // the shared-memory opt-in is per device (a layer split runs it on several)
     int adev = 0;

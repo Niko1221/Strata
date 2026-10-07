@@ -226,6 +226,13 @@ def build(gguf: pathlib.Path, out_dir: pathlib.Path, n_layers: int | None, skip_
               "--out, or --force to rebuild it" % (out_dir, marker.name))
         return 1
     out_dir.mkdir(parents=True, exist_ok=True)
+    if force:
+        # the old pack's markers go before a byte is written, so a forced build that stops part-way leaves an
+        # unfinished build (experts.bin without a manifest.json), which the next build or setup makes again - not
+        # the old manifest.json and index.txt over partly new experts, which setup's "index.txt and experts.bin are
+        # there" check would hand to the engine.  The data files need no removing: the build rewrites each one.
+        for name in PACK_MARKERS:
+            (out_dir / name).unlink(missing_ok=True)
     g = G.GGUFFile(gguf)
     head, flen = open_shard(gguf)
     data_off = data_section_offset(g, flen)
@@ -423,7 +430,7 @@ def main() -> int:
     b.add_argument("--out", required=True)
     b.add_argument("--layers", type=int, default=None, help="expert layers to emit (default 48)")
     b.add_argument("--skip-hash", action="store_true")
-    b.add_argument("--force", action="store_true", help="build into a directory that already holds a pack (#634)")
+    b.add_argument("--force", action="store_true", help="build into a directory that already holds a pack, unmaking that pack first (#634)")
     v = sub.add_parser("verify")
     v.add_argument("--gguf", required=True)
     v.add_argument("--out", required=True)

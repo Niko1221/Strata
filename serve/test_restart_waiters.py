@@ -184,6 +184,25 @@ class RestartWaiters(unittest.TestCase):
         with self.assertRaises(EngineDied):
             self.engine._send("STOP")
 
+    def refused(self, slots):
+        """#1059: the engine refuses a request up front (ERR, then idle).  The server answered after a 300 s drain of
+        a DONE that never comes, and held the control lines meanwhile."""
+        self.start(slots)
+        out = {}
+        t0 = time.time()
+        self.post("REFUSEME please", out, 0)
+        self.assertLess(time.time() - t0, 20)
+        self.assertEqual(out[0][0], "http", out)
+        self.assertIn("refused", out[0][2])
+        self.clean()
+        self.assertEqual(self.chat("after")["choices"][0]["message"]["content"], "ok, done.")
+
+    def test_an_engine_err_answers_at_once_solo_loop(self):
+        self.refused(2)
+
+    def test_an_engine_err_answers_at_once_not_batched(self):
+        self.refused(0)
+
     def test_solo_engine_is_unchanged(self):
         self.start(4, fit=0)                                          # the engine turns batching off
         self.kill()

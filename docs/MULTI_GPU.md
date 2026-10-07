@@ -42,7 +42,11 @@ now on; the answer is kept.
 ```
 
 **Not supported** (setup says so and names the cards that can be used instead):
-- a card older than the RTX 20 series (compute capability below 7.5: GTX 10 and older);
+- a card older than the RTX 20 series (compute capability below 7.5: GTX 10 and older), unless you name it: Pascal
+  and Volta cards (Tesla P100 / P40, GTX 10, V100) are admitted when you choose them with `--gpus` (or `--gpu`,
+  `--cuda 12`) and then run the experimental CUDA 12 engine, see [OLDER_GPUS.md](OLDER_GPUS.md). Two Tesla P40s
+  (`"gpu": [0, 1]` in the config) ran the layer split in a community benchmark: IQ2_XS decode 19.6 tok/s on one card,
+  34.8 on both (#1028, experimental, one report);
 - a card with less than 8 GB of VRAM, together with others (each card holds a copy of the dense weights and its
   own prompt buffers) - unless you name it with `--gpus`: then setup says the risk and asks (`--yes` with the named
   cards goes ahead);
@@ -223,6 +227,10 @@ Two cards, exactly two stages, `--serve`. In the config:
   (`--expert-cache-device1..3`, `--remote-expert-opt`), a split into three or more stages or onto one GPU
   (`--split-device 0`), or no draft layer. A request with repetition penalties (`penalty_last_n`) or coupled
   draft sampling decodes serially.
+- **With the resident RAM mode's asynchronous swaps** (`--adapt-async 1`, [DETAILS.md](DETAILS.md)) a round's steps
+  advance between the verified windows. Each card's copies are queued by the decode loop itself while that card has
+  no window in flight, after every window that may still read what they overwrite has finished; the moves into RAM
+  wait the same way.
 - **Measured** (Swift 1.5 IQ3_XXS, 160K context, q4_0 KV, the stock draft layer, RTX 4060 Ti (layers 0-19) +
   RTX 5080 (20-47), i9-14900KF, 32 GB of RAM with the resident RAM mode on the split (#848); greedy, 500 tokens, two
   interleaved pairs of three rounds, decode tok/s): Python code 90.4 -> 103.1, C code 76.6 -> 81.6, English prose
