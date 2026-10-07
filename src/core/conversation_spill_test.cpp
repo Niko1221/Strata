@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 #include <chrono>
@@ -140,10 +141,11 @@ int main() {
     const auto rematched = again.best(continuing, a.live.imgs, false, 0.0, 0);
     check(bool(rematched) && rematched.tokens == (int64_t) a.live.ids.size(), "rematch after reopen");
 
-    // a foreign identity is refused and its files removed
+    // a foreign identity is refused, nothing is indexed, and its files are left alone (the scan never deletes)
     ConversationSpillCache foreign;
     check(foreign.open(dir, SessionFileIdentity{1, 2}, 1ull << 30, error), "open with foreign identity");
     check(foreign.size() == 0, "foreign identity: nothing indexed");
+    check(foreign.foreign_files_kept() >= 1, "foreign identity reported, not removed");
     check(fs::exists(dir / "strata-conv-1.sess"), "another identity's files are left alone");
 
     // budget eviction drops the oldest
@@ -185,6 +187,80 @@ int main() {
     check(drained == 1, "spill_all drained the parked conversation");
     check(ram.size() == 0, "ram cache empty after spill_all");
     check(tier.size() == 2, "both conversations now on disk");
+
+    // ---- Delta 1: a layer split is one file per stage plus one joint sidecar ----
+    fs::remove_all(dir);
+    ConversationSpillCache split;
+    check(split.open(dir, id, 1ull << 30, error), "open for the layer-split test");
+    SavedConversation stage0 = sample(1200);        // the first stage: its own carve
+    SavedConversation stage1 = sample(600);         // a later stage: its own carve, no draft layer
+    stage1.layer_lo = 48; stage1.layer_hi = 96;
+    stage0.stage_images.push_back(stage1);
+    check(split.spill(stage0, error), "spill a two-stage conversation");
+    check(fs::exists(dir / "strata-conv-1.sess"), "first stage file written");
+    check(fs::exists(dir / "strata-conv-1.stage1.sess"), "later stage file written");
+    check(fs::exists(dir / "strata-conv-1.meta"), "one joint sidecar");
+    std::vector<int32_t> cont = stage0.live.ids;
+    cont.push_back(int32_t(4242));
+    const auto split_match = split.best(cont, stage0.live.imgs, false, 0.0, 0);
+    check(bool(split_match), "match a two-stage conversation");
+    check(split_match.stages == 1, "the sidecar reports one extra stage");
+    SavedConversation back_split;
+    check(split.load(split_match.path, back_split, {}, error), "load a two-stage conversation back");
+    check(back_split.stage_images.size() == 1, "one stage image read back");
+    check(back_split.stage_images[0].live.ids == stage1.live.ids, "stage ids round-trip");
+    check(back_split.stage_images[0].layer_lo == 48 && back_split.stage_images[0].layer_hi == 96,
+          "stage layer range round-trip");
+    bool stage_kv_same = back_split.stage_images[0].kv.size() == stage1.kv.size();
+    for (size_t i = 0; stage_kv_same && i < back_split.stage_images[0].kv.size(); ++i)
+        stage_kv_same = buffers_equal(back_split.stage_images[0].kv[i].k, stage1.kv[i].k) &&
+                        buffers_equal(back_split.stage_images[0].kv[i].v, stage1.kv[i].v);
+    check(stage_kv_same, "stage kv bytes round-trip");
+    // the stage count comes from the sidecar, so a reopen re-reads both files
+    ConversationSpillCache split_again;
+    check(split_again.open(dir, id, 1ull << 30, error), "reopen the split dir");
+    const auto split_rematch = split_again.best(cont, stage0.live.imgs, false, 0.0, 0);
+    check(bool(split_rematch) && split_rematch.stages == 1, "stage count survives a reopen");
+    SavedConversation back_split2;
+    check(split_again.load(split_rematch.path, back_split2, {}, error), "reopen load");
+    check(back_split2.stage_images.size() == 1 && back_split2.stage_images[0].live.ids == stage1.live.ids,
+          "stage read back after reopen");
+    // every file of the conversation counts against the budget and goes together
+    check(split.bytes() == fs::file_size(dir / "strata-conv-1.sess") + fs::file_size(dir / "strata-conv-1.stage1.sess"),
+          "both stage files counted against the budget");
+    check(split.erase(split_match.path, error), "erase a two-stage conversation");
+    check(!fs::exists(dir / "strata-conv-1.sess") && !fs::exists(dir / "strata-conv-1.stage1.sess") &&
+          !fs::exists(dir / "strata-conv-1.meta"), "erase removes every stage file and the sidecar");
+
+    // ---- a conversation larger than the whole budget is KEPT and reported ----
+    fs::remove_all(dir);
+    ConversationSpillCache tiny;
+    check(tiny.open(dir, id, 4096, error), "open with a tiny budget");
+    SavedConversation big = sample(800);
+    check(tiny.spill(big, error), "spill a conversation over the budget");
+    check(tiny.size() == 1, "oversized conversation indexed, not dropped");
+    check(tiny.bytes() > 4096, "it is larger than the budget");
+    check(tiny.oversized_files_kept() >= 1, "reported as oversized");
+    check(tiny.disk_evictions() == 0, "the GC did not evict it");
+    check(fs::exists(dir / "strata-conv-1.sess"), "its file is on disk");
+    ConversationSpillCache tiny_again;
+    check(tiny_again.open(dir, id, 4096, error), "reopen with the tiny budget");
+    check(tiny_again.size() == 1, "the oversized conversation survives a reopen");
+    check(tiny_again.oversized_files_kept() >= 1, "reported oversized on reopen");
+
+    // ---- the scan never deletes: an orphan session file is reported and left in place ----
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    {
+        std::ofstream out(dir / "strata-conv-99.sess", std::ios::binary);
+        out << "not a session file";
+    }
+    check(fs::exists(dir / "strata-conv-99.sess"), "orphan file created");
+    ConversationSpillCache orphan;
+    check(orphan.open(dir, id, 1ull << 30, error), "scan with an orphan session file");
+    check(orphan.size() == 0, "an orphan is not indexed");
+    check(orphan.orphan_files_kept() >= 1, "orphan reported");
+    check(fs::exists(dir / "strata-conv-99.sess"), "orphan left in place");
 
     fs::remove_all(dir);
     std::printf("conversation_spill_test: %d checks passed\n", checks);

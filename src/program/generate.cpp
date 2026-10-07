@@ -7082,8 +7082,10 @@ int main(int argc, char** argv) {
         // conversation and a hand-saved session file are interchangeable.
         strata::core::ConversationSpillCache conversation_spill;
         strata::core::SessionFileIdentity spill_identity;
+        // The disk tier works with a layer split too: one session file per stage plus one joint sidecar (#1271
+        // upstream keeps it single-GPU; the stage split is this tree's).
         if (o.serve && conversations.enabled() && !o.conversation_cache_spill_dir.empty() &&
-            o.conversation_cache_disk_mib > 0 && stages.empty()) {
+            o.conversation_cache_disk_mib > 0) {
             std::string identity_error;
             if (!session_identity(spill_identity, identity_error, nullptr)) {
                 std::fprintf(stderr, "strata serve: conversation cache: disk tier disabled (%s)\n", identity_error.c_str());
@@ -7094,9 +7096,11 @@ int main(int argc, char** argv) {
                     std::fprintf(stderr, "strata serve: conversation cache: disk tier disabled (%s)\n", spill_error.c_str());
                 } else if (conversation_spill.enabled()) {
                     std::fprintf(stderr, "strata serve: conversation cache: spill dir ready (%zu conversations, %llu MiB, "
-                                 "%zu stale files wiped, %zu disk evictions)\n",
+                                 "%zu oversized kept, %zu stale kept, %zu foreign kept, %zu orphans kept, %zu disk evictions)\n",
                                  conversation_spill.size(), (unsigned long long) (conversation_spill.bytes() >> 20),
-                                 conversation_spill.stale_files_wiped(), conversation_spill.disk_evictions());
+                                 conversation_spill.oversized_files_kept(), conversation_spill.stale_files_kept(),
+                                 conversation_spill.foreign_files_kept(), conversation_spill.orphan_files_kept(),
+                                 conversation_spill.disk_evictions());
                 }
             }
         }
@@ -9322,17 +9326,25 @@ int main(int argc, char** argv) {
                                          (unsigned long long) (estimate >> 20), (long long) o.conversation_cache_min_free_mib);
                             conversation_spill.unpin(disk_match.path);
                         } else {
-                            strata::core::SessionReadLimits limits;
-                            limits.admit = [floor, &o](uint64_t need, std::string& why) {
+                            // One read limit per stage file: the main image's carve, then each later stage's. The
+                            // disk tier writes one session file per stage (conversation_spill.hpp), so the limits
+                            // must match the stage they bound.
+                            std::vector<strata::core::SessionReadLimits> limits(1 + stages.size());
+                            for (auto& l : limits) l.admit = [floor, &o](uint64_t need, std::string& why) {
                                 const auto avail = strata::core::conversation_available_memory();
                                 if (strata::core::conversation_memory_admit(avail, need, floor)) return true;
                                 why = "not enough RAM to read it";
                                 return false;
                             };
                             std::string limits_error;
-                            if (!strata::core::conversation_session_read_limits(
-                                    limits, ss, g, mtp.kv_state(), (uint64_t) o.max_context,
-                                    (uint64_t) std::max(o.prompt_cache, 1), limits_error)) {
+                            bool limits_ok = strata::core::conversation_session_read_limits(
+                                    limits[0], ss, g, mtp.kv_state(), (uint64_t) o.max_context,
+                                    (uint64_t) std::max(o.prompt_cache, 1), limits_error);
+                            for (size_t i = 0; limits_ok && i < stages.size(); ++i)
+                                limits_ok = strata::core::conversation_session_read_limits(
+                                        limits[i + 1], stages[i]->ss, g, mtp.kv_state(), (uint64_t) o.max_context,
+                                        (uint64_t) std::max(o.prompt_cache, 1), limits_error);
+                            if (!limits_ok) {
                                 std::fprintf(stderr, "strata serve: conversation cache: disk hit skipped (%s)\n", limits_error.c_str());
                                 conversation_spill.unpin(disk_match.path);
                             } else {

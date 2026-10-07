@@ -2,6 +2,10 @@
 // written and read by conversation_file.cpp, so a spilled conversation is byte-for-byte what the slot save/restore
 // API would write and the same model/config identity rules refuse a foreign file. The sidecar carries the token and
 // image metadata (no K/V) so best() can match without reading the conversation.
+//
+// A layer-split conversation is one session file per stage (SavedConversation::stage_images), one joint sidecar.
+// The scan never deletes; only enforce_budget() (the GC) does, and it leaves a conversation larger than the budget
+// alone.
 #include "strata/core/conversation_spill.hpp"
 
 #include <algorithm>
@@ -15,8 +19,9 @@ namespace strata::core {
 namespace {
 
 constexpr char kMetaMagic[4] = {'S', 'C', 'S', 'M'};   // Strata conversation-spill metadata
-constexpr uint32_t kMetaVersion = 1;
+constexpr uint32_t kMetaVersion = 2;                   // v2 adds the stage count; v1 (single image) is still read
 constexpr size_t kMaxSidecarEntries = 256;
+constexpr char kFilePrefix[] = "strata-conv-";
 
 // A small length-delimited writer/reader for the sidecar, with a trailing hash of the payload (the same
 // SessionHasher the session file uses) so a truncated or edited sidecar is refused rather than trusted.
@@ -76,7 +81,38 @@ bool valid_meta_chain(const ConversationCheckpoint& live, const std::vector<size
     return true;
 }
 
+// The shared stem of every file of a conversation: drop the ".sess" suffix and, when present, a trailing ".stageN".
+std::string stem_string(const std::filesystem::path& path) {
+    std::string s = path.string();
+    const std::string ext = ".sess";
+    if (s.size() > ext.size() && s.compare(s.size() - ext.size(), ext.size(), ext) == 0)
+        s.resize(s.size() - ext.size());
+    const size_t at = s.rfind(".stage");
+    if (at != std::string::npos) {
+        const std::string tail = s.substr(at + 6);
+        if (!tail.empty() && tail.find_first_not_of("0123456789") == std::string::npos) s.resize(at);
+    }
+    return s;
+}
+
+bool is_spill_name(const std::string& name) {
+    return name.rfind(kFilePrefix, 0) == 0;
+}
+
 } // namespace
+
+std::string ConversationSpillCache::stage_path(const std::string& session_path, size_t stage) {
+    std::string stem = session_path;
+    const std::string ext = ".sess";
+    if (stem.size() > ext.size() && stem.compare(stem.size() - ext.size(), ext.size(), ext) == 0)
+        stem.resize(stem.size() - ext.size());
+    return stem + ".stage" + std::to_string(stage) + ".sess";
+}
+
+const ConversationSpillCache::Entry* ConversationSpillCache::find(const std::string& path) const {
+    for (const Entry& entry : entries_) if (entry.session_path() == path) return &entry;
+    return nullptr;
+}
 
 bool ConversationSpillCache::read_sidecar(const std::filesystem::path& meta, Entry& entry, bool& other_identity,
                                           std::string& error) const {
@@ -90,7 +126,8 @@ bool ConversationSpillCache::read_sidecar(const std::filesystem::path& meta, Ent
     char magic[4];
     uint64_t version = 0;
     uint64_t model = 0, config = 0;
-    if (!r.raw(magic, 4) || std::memcmp(magic, kMetaMagic, 4) != 0 || !r.u64(version) || version != kMetaVersion ||
+    if (!r.raw(magic, 4) || std::memcmp(magic, kMetaMagic, 4) != 0 || !r.u64(version) ||
+        (version != 1 && version != kMetaVersion) ||
         !r.u64(model) || !r.u64(config)) {
         error = "unknown spill sidecar magic or version"; return false;
     }
@@ -111,6 +148,11 @@ bool ConversationSpillCache::read_sidecar(const std::filesystem::path& meta, Ent
     if (!r.u64(n) || n > kMaxSidecarEntries) { error = "invalid checkpoint count in sidecar"; return false; }
     entry.checkpoint_lengths.reserve((size_t) n);
     for (uint64_t i = 0; i < n; ++i) { uint64_t len = 0; if (!r.u64(len)) { error = "truncated sidecar checkpoints"; return false; } entry.checkpoint_lengths.push_back((size_t) len); }
+    entry.stages = 0;
+    if (version >= 2) {
+        if (!r.u64(n) || n > kMaxSidecarEntries) { error = "invalid stage count in sidecar"; return false; }
+        entry.stages = (size_t) n;
+    }
     if (!r.finish()) { error = "spill sidecar checksum or length mismatch"; return false; }
     if (!valid_meta_chain(entry.live_meta, entry.checkpoint_lengths)) { error = "spill sidecar is not a valid prefix chain"; return false; }
     return true;
@@ -131,6 +173,7 @@ bool ConversationSpillCache::write_sidecar(const std::filesystem::path& meta, co
         for (const auto& k : entry.live_meta.imgs) if (!w.i64(k.start) || !w.u64(k.hash)) { error = "cannot write spill sidecar images"; return false; }
         if (!w.u64(entry.checkpoint_lengths.size())) { error = "cannot write spill sidecar"; return false; }
         for (size_t len : entry.checkpoint_lengths) if (!w.u64(len)) { error = "cannot write spill sidecar checkpoints"; return false; }
+        if (!w.u64(entry.stages)) { error = "cannot write spill sidecar stages"; return false; }
         if (!w.finish()) { error = "cannot finish spill sidecar"; return false; }
         out.flush();
         if (!out) { error = "cannot flush spill sidecar"; return false; }
@@ -144,7 +187,10 @@ bool ConversationSpillCache::write_sidecar(const std::filesystem::path& meta, co
 bool ConversationSpillCache::open(const std::filesystem::path& directory, SessionFileIdentity identity,
                                   uint64_t budget_bytes, std::string& error) {
     enabled_ = false;
-    stale_files_wiped_ = 0;
+    stale_files_kept_ = 0;
+    foreign_files_kept_ = 0;
+    orphan_files_kept_ = 0;
+    oversized_files_kept_ = 0;
     disk_evictions_ = 0;
     entries_.clear();
     bytes_ = 0;
@@ -159,19 +205,23 @@ bool ConversationSpillCache::open(const std::filesystem::path& directory, Sessio
         if (ec || !std::filesystem::is_directory(directory_, ec) || ec) {
             error = "cannot create or inspect spill directory " + directory_.string(); return false;
         }
+        // The scan only reads. A leftover temporary, a broken sidecar, a foreign identity, an orphan session file or
+        // a conversation over the budget are all counted and left in place; removal is the GC's, below.
         std::vector<std::filesystem::path> metas;
+        std::vector<std::filesystem::path> session_files;
         for (std::filesystem::directory_iterator it(directory_, ec), end; !ec && it != end; it.increment(ec)) {
             const auto status = it->symlink_status(ec);
             if (ec) break;
             const std::string name = it->path().filename().string();
-            if (name.rfind("strata-conv-", 0) != 0) continue;
+            if (!is_spill_name(name)) continue;
             if (!std::filesystem::is_regular_file(status)) continue;
-            if (it->path().extension() == ".meta") metas.push_back(it->path());
-            else if (it->path().extension() == ".tmp") { std::filesystem::remove(it->path(), ec); if (!ec) ++stale_files_wiped_; ec.clear(); }
+            const std::string ext = it->path().extension().string();
+            if (ext == ".meta") metas.push_back(it->path());
+            else if (ext == ".sess") session_files.push_back(it->path());
+            else ++stale_files_kept_;     // a leftover temporary or an unknown kind: reported, never removed
         }
         if (ec) { error = "cannot scan spill directory " + directory_.string(); return false; }
         std::sort(metas.begin(), metas.end());
-        size_t stale = stale_files_wiped_;
         for (const auto& meta : metas) {
             Entry entry;
             entry.stem = meta;
@@ -179,33 +229,36 @@ bool ConversationSpillCache::open(const std::filesystem::path& directory, Sessio
             bool other_identity = false;
             std::string parse_error;
             if (!read_sidecar(meta, entry, other_identity, parse_error)) {
-                if (!other_identity) { std::filesystem::remove(meta, ec); ec.clear(); std::filesystem::remove(entry.session_path(), ec); ec.clear(); ++stale; }
-                continue;
+                if (other_identity) ++foreign_files_kept_;
+                else ++stale_files_kept_;
+                continue;   // ignored, not removed: a variant or a newer format beside this one is left alone
             }
             std::error_code sec;
             const uint64_t session_bytes = std::filesystem::file_size(entry.session_path(), sec);
-            if (sec) { std::filesystem::remove(meta, ec); ec.clear(); ++stale; continue; }   // session file gone: sidecar is useless
-            entry.file_bytes = session_bytes;
-            if (session_bytes > budget_) { std::filesystem::remove(meta, ec); ec.clear(); std::filesystem::remove(entry.session_path(), ec); ec.clear(); ++stale; continue; }
+            if (sec) { ++stale_files_kept_; continue; }   // session file gone: the sidecar is useless, kept anyway
+            uint64_t total = session_bytes;
+            bool complete = true;
+            for (size_t k = 1; k <= entry.stages; ++k) {
+                std::error_code kec;
+                const uint64_t part = std::filesystem::file_size(entry.stage_path(k), kec);
+                if (kec) { complete = false; break; }
+                total += part;
+            }
+            if (!complete) { ++stale_files_kept_; continue; }
+            entry.file_bytes = total;
+            if (total > budget_) ++oversized_files_kept_;   // KEPT: the GC alone decides, and leaves it alone too
             entries_.push_back(std::move(entry));
-            bytes_ += session_bytes;
-            enforce_budget();
+            bytes_ += total;
         }
-        // session files with no sidecar left behind (a crash between the two writes) go too.
-        for (std::filesystem::directory_iterator it(directory_, ec), end; !ec && it != end; it.increment(ec)) {
-            const auto status = it->symlink_status(ec);
-            if (ec) break;
-            const std::string name = it->path().filename().string();
-            if (name.rfind("strata-conv-", 0) != 0 || it->path().extension() != ".sess") continue;
-            if (!std::filesystem::is_regular_file(status)) continue;
-            std::filesystem::path meta = it->path();
-            meta.replace_extension(".meta");
-            if (std::filesystem::exists(meta, ec) && !ec) continue;
-            std::filesystem::remove(it->path(), ec); ec.clear(); ++stale;
+        // A session file (of the first stage or of a later one) with no sidecar left behind (a crash between the two
+        // writes) would never be matched: report it, do not delete it.
+        for (const auto& path : session_files) {
+            std::filesystem::path meta = stem_string(path) + ".meta";
+            if (!std::filesystem::exists(meta, ec) && !ec) ++orphan_files_kept_;
+            ec.clear();
         }
         enabled_ = true;
         enforce_budget();
-        stale_files_wiped_ = stale;
         return true;
     } catch (const std::bad_alloc&) {
         entries_.clear(); bytes_ = 0; enabled_ = false;
@@ -216,48 +269,105 @@ bool ConversationSpillCache::open(const std::filesystem::path& directory, Sessio
     }
 }
 
-bool ConversationSpillCache::load(const std::string& path, SavedConversation& image, const SessionReadLimits& limits,
-                                  std::string& error) const {
+bool ConversationSpillCache::load(const std::string& path, SavedConversation& image,
+                                  const std::vector<SessionReadLimits>& limits, std::string& error) const {
     if (!enabled_) { error = "spill cache is disabled"; return false; }
+    const Entry* entry = find(path);
+    const size_t stages = entry ? entry->stages : 0;
+    const SessionReadLimits open_limits;
+    auto for_stage = [&](size_t i) -> const SessionReadLimits& {
+        if (limits.empty()) return open_limits;
+        return limits[i < limits.size() ? i : limits.size() - 1];
+    };
+    SavedConversation main;
     size_t bytes = 0;
-    return session_file_read(path, identity_, image, bytes, error, limits);
+    if (!session_file_read(path, identity_, main, bytes, error, for_stage(0))) return false;
+    std::vector<SavedConversation> stage_images;
+    stage_images.reserve(stages);
+    for (size_t k = 1; k <= stages; ++k) {
+        SavedConversation part;
+        size_t part_bytes = 0;
+        const std::string file = stage_path(path, k);
+        if (!session_file_read(file, identity_, part, part_bytes, error, for_stage(k))) return false;
+        stage_images.push_back(std::move(part));
+    }
+    main.stage_images = std::move(stage_images);
+    image = std::move(main);
+    return true;
 }
 
 bool ConversationSpillCache::spill(const SavedConversation& image, std::string& error) {
     if (!enabled_) return false;
-    if (image.live.ids.empty() || !image.stage_images.empty()) { error = "spill needs a single-GPU conversation"; return false; }
+    if (image.live.ids.empty()) { error = "spill needs a conversation with tokens"; return false; }
     std::error_code ec;
     std::filesystem::path stem;
     do {
-        stem = directory_ / ("strata-conv-" + std::to_string(++serial_));
+        stem = directory_ / (std::string(kFilePrefix) + std::to_string(++serial_));
     } while (std::filesystem::exists(stem.string() + ".sess", ec) || std::filesystem::exists(stem.string() + ".meta", ec));
     const std::string session = stem.string() + ".sess";
-    size_t file_bytes = 0;
-    SessionWriteOptions wo;
-    wo.durable = true;
-    SessionStatus st;
-    if (!session_file_write(session, image, identity_, file_bytes, error, wo, &st)) {
-        std::filesystem::remove(session, ec);
-        return false;
+    std::vector<std::string> written;
+    auto write_one = [&](const std::string& file, const SavedConversation& part, size_t& bytes) -> bool {
+        SessionWriteOptions wo;
+        wo.durable = true;
+        SessionStatus st;
+        if (!session_file_write(file, part, identity_, bytes, error, wo, &st)) return false;
+        written.push_back(file);
+        return true;
+    };
+    auto discard_written = [&] {
+        for (const std::string& file : written) std::filesystem::remove(file, ec);
+        written.clear();
+    };
+    size_t total = 0;
+    size_t first_bytes = 0;
+    if (!write_one(session, image, first_bytes)) { discard_written(); return false; }
+    total = first_bytes;
+    for (size_t k = 0; k < image.stage_images.size(); ++k) {
+        size_t part_bytes = 0;
+        if (!write_one(stage_path(session, k + 1), image.stage_images[k], part_bytes)) { discard_written(); return false; }
+        total += part_bytes;
     }
-    if (file_bytes > budget_) { std::filesystem::remove(session, ec); error = "snapshot exceeds the disk cache limit"; return false; }
+    // Over the budget is written and indexed anyway: removing it on the spot would be a decision of the scan, and
+    // this one cannot bring the directory under the budget by itself. The GC decides, and it leaves it alone too.
     Entry entry;
     entry.stem = stem;
-    entry.file_bytes = file_bytes;
+    entry.file_bytes = total;
+    entry.stages = image.stage_images.size();
     entry.cvec = image.cvec;
     entry.live_meta.ids = image.live.ids;
     entry.live_meta.imgs = image.live.imgs;
     entry.checkpoint_lengths.reserve(image.checkpoints.size());
     for (const auto& c : image.checkpoints) entry.checkpoint_lengths.push_back(c.ids.size());
-    if (!write_sidecar(stem.string() + ".meta", entry, error)) { std::filesystem::remove(session, ec); return false; }
+    if (!write_sidecar(stem.string() + ".meta", entry, error)) { discard_written(); return false; }
+    if (total > budget_) ++oversized_files_kept_;
     try {
         entries_.push_back(std::move(entry));
     } catch (const std::bad_alloc&) {
-        std::filesystem::remove(session, ec); std::filesystem::remove(stem.string() + ".meta", ec);
+        discard_written();
+        std::filesystem::remove(stem.string() + ".meta", ec);
         error = "not enough RAM to index conversation spill file"; return false;
     }
-    bytes_ += file_bytes;
+    bytes_ += total;
     enforce_budget();
+    return true;
+}
+
+// Removes every file of the entry at `index` and drops it from the index. False when the first (session) file
+// could not be removed: the entry stays, the way a failed eviction leaves it in the RAM cache.
+bool ConversationSpillCache::remove_entry(size_t index) {
+    const std::string session = entries_[index].session_path();
+    const std::string meta = entries_[index].meta_path();
+    const size_t stages = entries_[index].stages;
+    const uint64_t file_bytes = entries_[index].file_bytes;
+    std::error_code ec;
+    const bool removed = std::filesystem::remove(session, ec);
+    ec.clear();
+    if (!removed && std::filesystem::exists(session)) return false;
+    for (size_t k = 1; k <= stages; ++k) { std::filesystem::remove(stage_path(session, k), ec); ec.clear(); }
+    std::filesystem::remove(meta, ec);
+    if (session == pinned_path_) pinned_path_.clear();
+    bytes_ -= file_bytes;
+    entries_.erase(entries_.begin() + (std::ptrdiff_t) index);
     return true;
 }
 
@@ -268,6 +378,7 @@ bool ConversationSpillCache::erase(const std::string& path, std::string& error) 
     std::error_code ec;
     std::filesystem::remove(found->session_path(), ec);
     if (ec) { error = "cannot remove spill file " + found->session_path(); return false; }
+    for (size_t k = 1; k <= found->stages; ++k) std::filesystem::remove(found->stage_path(k), ec);
     std::filesystem::remove(found->meta_path(), ec);
     bytes_ -= found->file_bytes;
     if (pinned_path_ == path) pinned_path_.clear();
@@ -309,12 +420,7 @@ size_t ConversationSpillCache::drop_superseded(const std::vector<int32_t>& ids,
         for (const auto& checkpoint : checkpoints)
             if (!held && same_saved_prefix(deepest, checkpoint.ids, checkpoint.imgs)) held = true;
         if (entry.cvec == cvec && deepest && held && entry.session_path() != pinned_path_) {
-            std::error_code ec;
-            std::filesystem::remove(entry.session_path(), ec);
-            std::filesystem::remove(entry.meta_path(), ec);
-            if (ec) { ++i; continue; }
-            bytes_ -= entry.file_bytes;
-            entries_.erase(entries_.begin() + (std::ptrdiff_t) i);
+            if (!remove_entry(i)) { ++i; continue; }   // a failed removal: leave this entry in the index
             ++dropped;
             continue;
         }
@@ -324,14 +430,11 @@ size_t ConversationSpillCache::drop_superseded(const std::vector<int32_t>& ids,
 }
 
 void ConversationSpillCache::enforce_budget() {
+    // The GC: budget plus age, oldest first, with a counter. A conversation larger than the whole budget is left
+    // alone - removing it could never bring `bytes_` under `budget_` - and counted as oversized instead.
     for (size_t i = 0; (bytes_ > budget_ || entries_.size() > kMaxSidecarEntries) && i < entries_.size();) {
-        if (entries_[i].session_path() == pinned_path_) { ++i; continue; }
-        std::error_code ec;
-        std::filesystem::remove(entries_[i].session_path(), ec);
-        std::filesystem::remove(entries_[i].meta_path(), ec);
-        if (ec) { ++i; continue; }
-        bytes_ -= entries_[i].file_bytes;
-        entries_.erase(entries_.begin() + (std::ptrdiff_t) i);
+        if (entries_[i].session_path() == pinned_path_ || entries_[i].file_bytes > budget_) { ++i; continue; }
+        if (!remove_entry(i)) { ++i; continue; }   // a failed removal: skip it
         ++disk_evictions_;
     }
 }
