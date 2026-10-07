@@ -675,7 +675,6 @@ test an SM-holding NVIDIA bench (not built). Outputs identical to 0.1.33 (Coder 
 - AOT device code is what runs: `AOT=bmg-g31 BUILD_DIR=.../build-sycl-aot` (the JIT build costs ~47 s of
   compiling on the first window).
 
-<<<<<<< HEAD
 ## Arc A750 and the other Alchemist cards (`i915`, 2026-10-07)
 
 Measured on an Arc A750 (8 GB, `i915`, PCIe 4.0) with the Flash-Next IQ3_XXS in a PC with 64 GB of RAM, a Ryzen 5 5600X
@@ -720,7 +719,6 @@ Measured on an Arc A750 (8 GB, `i915`, PCIe 4.0) with the Flash-Next IQ3_XXS in 
   1.3 s; the A750's PCIe link probes at 10.6 GB/s.
 - **A750 and the xe error counters.** The engine segfaults in a worker thread of the CPU pool when it exits (dmesg only, the server
   has already printed "stopped"); it is not a GPU event.
-=======
 ## Windows: native, OpenCL (experimental)
 
 `setup --backend sycl` runs on Windows too. There is no container and no Docker: the engine is built from source
@@ -741,7 +739,7 @@ the numbers above were measured:
 | decode, 256 tokens, 3 pairs | 69.6-69.9 (median 69.7) | **77.2-77.3 (median 77.3)** |
 | decode, 128 tokens after a 2,048-token prompt, 2 pairs | 37.6 | **38.2-41.1 (median 39.6)** |
 | decode, 256 tokens, `--spec 2` (no draft layer), 3 pairs | 53.4-53.9 (median 53.6) | **22.0-22.9 (median 22.3)** |
-| prompt reading, 2,048 tokens | 14.5 tok/s | 14.5 tok/s |
+| prompt reading, 2,048 tokens | 8.0-14.5 tok/s | **71-73 tok/s** |
 | `quantize_act_parity --selftest`, `sampler_parity` | byte-exact, 0 failures | byte-exact, 0 failures |
 
 The same card on Linux (Level Zero, AOT, command graphs) does **78.2 tok/s** on the first row.
@@ -760,16 +758,32 @@ shape of a backend without command graphs: this Windows driver exposes no user-m
 (`sycl-ls` lists only `opencl:gpu`), so there is neither the Graph extension nor sysman's free-VRAM query, and
 every window, commit and draft step is enqueued one kernel at a time.
 
-Also true here, both by measurement on this card: oneMKL SYCL BLAS has no OpenCL Xe2 backend, so the prompt GEMM
-runs as a plain SYCL kernel (`sycl/src/prefill/gemm.dp.cpp`) - 14.5 tok/s on a 2,048-token prompt where the Linux
-rows above read 790-1,002; and the VRAM sizes come from `STRATA_DEVICE_FREE_MIB` / `STRATA_DEVICE_TOTAL_MIB`
-(setup writes them from the registry).
+**The prompt path is the one place this backend was far off, and it is fixed.** oneMKL SYCL BLAS has no OpenCL Xe2
+backend, so every prompt GEMM runs through the port's plain SYCL kernel. That kernel gave each work-item its own four
+columns of W and so read the whole weight matrix once *per row*: a 2,048-row chunk of one 2,560 x 4,096 projection
+moved 86 GB of weights (T x N x K x 2 bytes), and a 2,048-token prompt read at 8.0-14.5 tok/s where the Linux rows
+above read 790-1,002. `fallback_gemm_tiled` (`sycl/src/prefill/gemm.dp.cpp`) gives a work-group a 64 x 64 corner of Y
+and walks K in 16-wide tiles with the activations and weights staged in local memory: **71-73 tok/s**, 5-9x, with
+decode unchanged. The old kernel stays for T < 64, which is all a decode window asks for.
+
+It is the same arithmetic, not an approximation: both kernels accumulate over k in ascending order and spell the
+fused multiply-add out, so the compiler cannot round them differently. `STRATA_FALLBACK_SELFTEST=1` runs both over one
+problem whose rows, columns and k count all cross the tile edges and prints the bitwise difference - **0 of 4,189
+values, largest 0**.
+
+**Do not use the model's own output to check a change on this backend.** With a 2,048-token prompt the engine is not
+run-to-run deterministic here: the same binary diverges at token 60 (and the state hash differs between two runs of
+one binary). The web app is a second trap - it answers a `temperature: 0.0` request with its own Chat defaults
+(temperature 1.0, top_p 0.95), so a "greedy" run through it is sampled. The kernel-level self-tests and the CLI's
+`--greedy` are the checks that hold.
+
+The VRAM sizes come from `STRATA_DEVICE_FREE_MIB` / `STRATA_DEVICE_TOTAL_MIB` (setup writes them from the
+registry), because the free query needs Level Zero sysman.
 
 **Windows-SDK macro names.** `<sycl/sycl.hpp>` reaches the Windows SDK, whose headers define `OUT` (minwindef.h),
 `small` (rpcndr.h) and `near` (windef.h) as macros. An identifier with one of those names is macro-expanded away,
 so `template <bool OUT>` loses its parameter and every use is a parse error ("expected expression") - this hit
 `verify_kernels.dp.cpp`, `generate.cpp` and `sampler_parity.cpp`. Renamed, not worked around.
->>>>>>> aecddb6 (docs/INTEL.md: the Windows path, measured on a B70 (OpenCL), and what it costs)
 
 ## Not done
 
