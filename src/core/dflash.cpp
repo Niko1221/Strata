@@ -138,13 +138,34 @@ const uint8_t* DFlashArtifact::host_data(const DFlashTensor& t) const {
 }
 
 bool DFlashArtifact::open(const std::string& path, std::string& err) {
-    path_ = path;
+    struct Rollback {
+        DFlashArtifact* self;
+        std::string path;
+        std::unique_ptr<GgufFile> file;
+        DFlashGeometry geom;
+        std::vector<DFlashTensor> tensors;
+        uint64_t weight_bytes;
+        bool keep = false;
+        ~Rollback() {
+            if (keep || self == nullptr) return;
+            self->path_ = path;
+            self->file_ = std::move(file);
+            self->geom_ = geom;
+            self->tensors_ = std::move(tensors);
+            self->weight_bytes_ = weight_bytes;
+        }
+    } rb{this, path_, std::move(file_), geom_, std::move(tensors_), weight_bytes_};
+    // TRANSACTIONAL: the parse fills this artifact's members exactly as before, and the rollback
+    // guard holds a snapshot of everything it touches - any failure (a bad artifact, or a bad
+    // re-open over a good one) restores them, so loaded() and every accessor stay exactly as they
+    // were.  The good state commits by keeping the guard.
     try {
         file_ = std::make_unique<GgufFile>(path);
     } catch (const std::exception& e) {
         err = std::string("dflash: ") + e.what();
         return false;
     }
+    path_ = path;
     const GgufFile& f = *file_;
 
     if (const MetaValue* arch = f.get("general.architecture")) {
@@ -338,6 +359,8 @@ bool DFlashArtifact::open(const std::string& path, std::string& err) {
             return false;
         }
     }
+    // every check passed: the guard keeps the parsed state
+    rb.keep = true;
     return true;
 }
 
@@ -374,22 +397,6 @@ bool DFlashArtifact::validate_supported(const DFlashGeometry& g, std::string& er
     return true;
 }
 
-
-namespace {
-
-constexpr float kEps = 1e-6f;   // the architecture's rms_norm eps (config.json), not stored
-
-/// A tiny bump allocator over one device block, the MTP carve's shape.
-struct Bump {
-    Bump(uint8_t* base) : base_(base) {}
-    template <class T> T* take(int64_t n) {
-        return reinterpret_cast<T*>(base_ + (at_ += sizeof(T) * (size_t) n) - sizeof(T) * (size_t) n);
-    }
-    uint8_t* base_;
-    size_t at_ = 0;
-};
-
-}  // namespace
 
 void dflash_identity_fill(int32_t* host, int rows, int64_t cap) {
     for (int r = 0; r < rows; ++r)
