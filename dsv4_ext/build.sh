@@ -59,6 +59,9 @@ if [ "$CUDA_ONLY" = 0 ]; then
     "$CXX" $FL $SRC tests/test_ops.cpp -o "$OUT/test_ops"
     # The CUDA decode math, checked on the host against dequant.cpp: needs no GPU and no nvcc.
     "$CXX" $FL $SRC tests/test_dq_traits.cpp -o "$OUT/test_dq_traits"
+    # The batched prefill against the token-per-token path. Needs a tiny GGUF, so it is built here and
+    # run by hand (see tests/test_prefill_batch.cpp); build.sh does not generate that model.
+    "$CXX" $FL $SRC tests/test_prefill_batch.cpp -o "$OUT/test_prefill_batch"
 
     echo "==> Compiling dsv4_plan..."
     "$CXX" $FL $SRC src/dsv4_plan_main.cpp -o "$OUT/dsv4_plan"

@@ -34,6 +34,31 @@ router (always authoritative) -> residency table (layer, expert) -> HIT: GPU gro
 both fed the SAME quantized activation and fp32 scales, each writing its own routed row, then combine.
 The profile only decides which experts are resident; it never touches routing.
 
+## Prefill (why it was the first thing to fix)
+
+The engine had no prefill at all: `serve_loop` called `forward()` once per prompt token. At 43 layers x
+256 experts x top-6 that is ~1.8 GB of weights read and decoded PER TOKEN, so a prompt cost the same as
+the same number of generated tokens and a long prompt dominated the request.
+
+The fix follows `src/prefill/prefill.cpp`: batch the prompt into chunks and make the weight row the
+thing that gets reused.
+
+| Piece | What it does |
+| --- | --- |
+| `row_dots()` (`src/dequant.cpp`) | one decoded weight block, T dot products; same accumulator as `row_dot()` |
+| `gpu::matmul()` | device version: one block per (weight row, token), optional token gather |
+| `gpu::experts_batch()` | one MoE expert against all of the chunk's tokens that routed to it, then scatter-add |
+| `attention_batch()` | projections batched; the window ring is snapshotted so a chunk cannot leak future tokens |
+| `moe_batch()` | router per token, then (token, expert) pairs bucketed by expert |
+
+Two invariants the design is built around:
+
+- **No re-association of sums.** `row_dots()` walks the same blocks in the same order with the same
+  `double` accumulator, and the MoE buckets are summed in expert order on both backends (no atomics),
+  so the logits do not move. `tests/test_prefill_batch.cpp` is the check.
+- **The window ring is the limit.** It is indexed by `pos % win`, so a chunk longer than the window
+  would need more than one snapshot; the chunk is capped at `attention.sliding_window`.
+
 ## Roadmap (each step is tested before the next)
 
 1. [done, CPU-tested] GGUF header reader, config, expert inventory from real shapes, VRAM plan (`--expert-vram-pct`).

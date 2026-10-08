@@ -67,6 +67,47 @@ void d2h(void* dst, const void* src, size_t bytes);
 /// the caller must fall back to the host. Never a partial or zero result.
 bool matvec(uint32_t type, const uint8_t* W, int64_t rows, int64_t in, const float* d_x, float* d_y);
 
+// ------------------------------------------------------------------ prefill (batched over tokens)
+// A prompt of T tokens evaluates the SAME weight row T times. matvec() re-decodes that row once per
+// token, which is what makes dsv4_run prefill cost the same as decode: 43 layers x 256 experts x
+// top-6 is ~1.8 GB of weights PER TOKEN, and at one token at a time none of it is reused.
+// matmul() decodes each row once and dots it against T activation rows.
+//
+// Layout is TOKEN-MAJOR on both sides, which is what the forward pass wants:
+//   d_X[k*x_stride + i]      is token k's input vector, x_stride >= in
+//   d_Y[k*y_stride + r]      is token k's output element r, r in [0,rows), y_stride >= rows
+// `sel` (nullable, HOST memory) gathers: token k reads row sel[k] of d_X. That is the MoE case, where
+// an expert is asked for the handful of tokens of the chunk that routed to it.
+// False: no kernel for this type, nothing written (same contract as matvec()).
+constexpr int kMaxSel = 8192;   // largest gather a single batched matmul may ask for
+
+bool matmul(uint32_t type, const uint8_t* W, int64_t rows, int64_t in,
+            const float* d_X, int T, const int32_t* sel, float* d_Y, int64_t x_stride, int64_t y_stride);
+
+// One expert of a batched MoE layer: the n tokens of the chunk that routed to it, with their routing
+// weights. gate/up/down are device pointers, or host pointers that get staged (see ExpPtrs).
+struct ExpBatch {
+    uint8_t* gate = nullptr;
+    uint8_t* up = nullptr;
+    uint8_t* down = nullptr;
+    const uint8_t* hg = nullptr;
+    const uint8_t* hu = nullptr;
+    const uint8_t* hd = nullptr;
+    const int32_t* tok = nullptr;   // token index in the chunk, per entry (host)
+    const float* w = nullptr;       // routing weight, per entry (host)
+    int n = 0;
+};
+
+/// The whole batched MoE HIT path, in expert order (deterministic, no atomics):
+///   for each expert e, for each of its tokens t:
+///     g = Wg*xt ; u = Wu*xt ; a = w_t * swiglu_clamped(g,u,limit) ; d_Y[t] += Wd*a
+/// T is the chunk size: d_X is [T][dim] and d_Y is [T][dim], which this call ZEROES and then
+/// accumulates into. Scratch: d_g/d_u/d_a hold maxN*ff floats each, d_dn holds maxN*dim, where maxN
+/// is the largest e.n over the batch.
+bool experts_batch(const ExpBatch* e, int n_exp, uint32_t type_g, uint32_t type_u, uint32_t type_d,
+                   int64_t ff, int64_t dim, float swiglu_limit,
+                   const float* d_X, int T, float* d_g, float* d_u, float* d_a, float* d_dn, float* d_Y);
+
 /// One MoE layer's HIT experts, all resident in VRAM:
 ///   d_g[k] = Wg[k] * d_x ; d_u[k] = Wu[k] * d_x ; d_a[k] = w_k * swiglu_clamped(d_g[k], d_u[k], limit)
 ///   d_y    = sum_k Wd[k] * d_a[k]

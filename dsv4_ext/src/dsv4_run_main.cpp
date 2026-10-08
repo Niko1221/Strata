@@ -43,6 +43,7 @@ static void usage() {
         "  --expert-profile-save F   write the routing-frequency profile at the end (atomic)\n"
         "  --expert-ram all|profile  'all' copies every expert to RAM (default: profile only)\n"
         "  --ram-cache-mib M         host-RAM LRU arena for MISS experts (default 8192, 0 = read straight from disk)\n"
+        "  --prefill-chunk N         prompt tokens per batched forward (default 256, 0 = one token per pass)\n"
         "  --expert-adapt-swaps N    max VRAM swaps per token (0 = static)      --verify-slots   byte-compare every uploaded slot\n"
         "  --dump-routing F          write the routing trace (input of tools/make_expert_profile.py)\n"
         "  --dump-logits F           write float32 logits of every processed token\n"
@@ -104,6 +105,7 @@ int main(int argc, char** argv) {
         else if (a == "--expert-profile-save") o.profile_out = next();
         else if (a == "--expert-ram") o.ram_all = std::string(next()) == "all";
         else if (a == "--ram-cache-mib") o.ram_cache_mib = std::atoll(next());
+        else if (a == "--prefill-chunk") o.prefill_chunk = std::atoi(next());
         else if (a == "--expert-adapt-swaps") o.adapt_swaps = std::atoi(next());
         else if (a == "--expert-source") { if (std::string(next()) == "host") std::fprintf(stderr, "note: --expert-source host == --expert-ram all in this build; experts are always mmap'ed first\n"); }
         else if (a == "--verify-slots") o.verify_slots = true;
@@ -142,6 +144,7 @@ int main(int argc, char** argv) {
 
     std::vector<float> logits;
     int pos = 0, next_tok = -1;
+    const int route_row = (int) m.last_routing.size();   // n_layer * n_expert_used ints per token
     auto step = [&](int tok, bool want) {
         std::fill(m.last_routing.begin(), m.last_routing.end(), -1);
         m.forward(tok, pos, (want || lf) ? &logits : nullptr);
@@ -150,10 +153,36 @@ int main(int argc, char** argv) {
         m.end_token();
         ++pos;
     };
+    // A chunk leaves one routing row PER TOKEN, which is what the trace format counts: without this a
+    // chunked prefill would write one row per chunk and make_expert_profile.py would see fewer tokens.
+    auto dump_chunk_routing = [&]() {
+        if (!tr) return;
+        const std::vector<int>& cr = m.chunk_routing();
+        const int n = m.chunk_routing_n();
+        if (n <= 0 || (int) cr.size() < n * route_row) return;
+        for (int t = 0; t < n; ++t) std::fwrite(cr.data() + (size_t) t * route_row, 4, (size_t) route_row, tr);
+    };
     auto tp = std::chrono::steady_clock::now();
-    for (size_t i = 0; i < prompt.size(); ++i) step(prompt[i], i + 1 == prompt.size());
+    // Prefill in chunks: the same weights are read once per chunk instead of once per token.
+    const int bchunk = m.max_chunk();
+    for (size_t i = 0; i < prompt.size(); ) {
+        const size_t left = prompt.size() - i;
+        const int n = (bchunk > 1 && left > 1) ? (int) std::min<size_t>(left, (size_t) bchunk) : 1;
+        if (n == 1) {
+            step(prompt[i], i + 1 == prompt.size());
+        } else {
+            std::fill(m.last_routing.begin(), m.last_routing.end(), -1);
+            m.forward_chunk(prompt.data() + i, n, (int) pos, (i + (size_t) n == prompt.size()) ? &logits : nullptr);
+            dump_chunk_routing();
+            if (lf && !logits.empty()) std::fwrite(logits.data(), 4, logits.size(), lf);
+            m.end_chunk(n);
+            pos += n;
+        }
+        i += (size_t) n;
+    }
     const double prefill_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - tp).count();
-    std::printf("prompt: %zu tokens in %.2f s (%.2f tok/s)\n", prompt.size(), prefill_s, prompt.size() / std::max(prefill_s, 1e-9));
+    std::printf("prompt: %zu tokens in %.2f s (%.2f tok/s)%s\n", prompt.size(), prefill_s, prompt.size() / std::max(prefill_s, 1e-9),
+                bchunk > 1 ? "" : " [no prefill batching]");
     std::printf("generated ids:");
     std::string text;
     auto tg = std::chrono::steady_clock::now();
@@ -178,11 +207,12 @@ int main(int argc, char** argv) {
     std::printf("decode: %d tokens in %.2f s (%.2f tok/s)\n", produced, gen_s, produced / std::max(gen_s, 1e-9));
     const Stats& s = m.stats;
     const double tot = (double) (s.hits + s.misses);
-    std::fprintf(stderr, "expert stats:\n  hits: %llu\n  misses: %llu\n  hit rate: %.2f%%\n  admits: %llu  swaps: %llu\n  RAM cache: %llu hits, %llu loads (%.2f GiB), %llu evictions\n  H2D: %.3f GiB\n  CPU miss time: %.2f s\n  GPU hit wait: %.2f s\n",
+    std::fprintf(stderr, "expert stats:\n  hits: %llu\n  misses: %llu\n  hit rate: %.2f%%\n  admits: %llu  swaps: %llu\n  RAM cache: %llu hits, %llu loads (%.2f GiB), %llu evictions\n  H2D: %.3f GiB\n  CPU miss time: %.2f s\n  GPU hit wait: %.2f s\n  prefill: %llu tokens in %llu chunks (chunk cap %d)\n",
                  (unsigned long long) s.hits, (unsigned long long) s.misses, tot > 0 ? 100.0 * (double) s.hits / tot : 0.0, (unsigned long long) s.admits,
                  (unsigned long long) s.swaps, (unsigned long long) s.cache_hits, (unsigned long long) s.cache_loads,
                  s.cache_bytes / 1073741824.0, (unsigned long long) s.cache_evictions,
-                 s.h2d_bytes / 1073741824.0, s.cpu_miss_s, s.gpu_hit_s);
+                 s.h2d_bytes / 1073741824.0, s.cpu_miss_s, s.gpu_hit_s,
+                 (unsigned long long) s.prefill_tokens, (unsigned long long) s.prefill_chunks, m.max_chunk());
     if (tr) std::fclose(tr);
     if (lf) std::fclose(lf);
     if (!o.profile_out.empty()) { if (!m.save_profile(err)) std::fprintf(stderr, "profile save failed: %s\n", err.c_str()); else std::fprintf(stderr, "profile saved: %s\n", o.profile_out.c_str()); }

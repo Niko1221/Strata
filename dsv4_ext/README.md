@@ -54,6 +54,45 @@ CPU-emulated device layer the VRAM size is `DSV4_EMULATED_VRAM_MIB` (default 819
 `--engine-env DSV4_EMULATED_VRAM_MIB=22000`. With `--cuda` that variable is ignored: the engine asks the
 driver for its real free VRAM, so `--expert-vram-pct` / `--expert-vram-reserve-mib` are what steer the plan.
 
+### Prefill: chunks of tokens, not tokens
+
+`--prefill-chunk N` (default 256, `0` = the old one-token-at-a-time path) makes the prompt run through
+the model N tokens at a time. It is the same idea Strata's `src/prefill/prefill.cpp` runs on: an
+expert's 6.8 MiB of IQ1_M weights are the traffic, so reading them once for 256 tokens instead of
+256 times is what a prefill is worth.
+
+Three things change, and none of them changes a number:
+
+1. **`row_dots()`** ([`src/dequant.cpp`](src/dequant.cpp:470)) decodes one weight block and dots it
+   against T activation rows. Same block walk, same `double` accumulator as `row_dot()`, so column k
+   is bit-identical to what `row_dot()` returns for token k alone.
+2. **`gpu::matmul()` / `gpu::experts_batch()`** ([`include/dsv4/gpu.hpp`](include/dsv4/gpu.hpp:70)) do
+   the same on the device: one block per (weight row, token), and one launch per expert covering all
+   of that expert's tokens of the chunk, gathered through a device index list.
+3. **The MoE is bucketed by expert.** A chunk of 256 tokens over 43 layers routes 1536 pairs per layer
+   onto at most 256 experts, so an expert is evaluated once for its whole bucket instead of once per
+   token. The buckets are walked in expert order and `d_Y` is accumulated, never `atomicAdd`-ed, so
+   the sum order is fixed and identical on both backends.
+
+The sliding window is the one thing that cannot just be batched: the ring is written at `pos % win`,
+so token 200 of a chunk would read a slot token 205 has already overwritten. `attention_batch()`
+snapshots the ring before the chunk and redirects those reads into the snapshot
+([`src/model.cpp`](src/model.cpp:1085)), which holds exactly what the token-per-token path read. That
+is also why a chunk never exceeds `attention.sliding_window`.
+
+Memory: the arena is sized at load and shrinks by halving until it fits. Half a GiB of host scratch
+at most, and on the card `2 * chunk * widest_row + 3 * chunk * ff + 2 * chunk * dim` floats; the
+residency plan sees it as used VRAM, so it cannot over-book the card.
+
+Check it before trusting it - it needs no GPU and takes seconds:
+
+    python3 tools/tiny_model.py /tmp/dsv4_tiny
+    sh build.sh
+    ./build-out/test_prefill_batch --model /tmp/dsv4_tiny/tiny.gguf --ids 5,9,17,23,31,7,11,3 --no-qat-sim
+
+It runs the same prompt one token at a time and in chunks of 1, 2, 3, 4, 5 and 8, and fails if the
+routing of the last token differs or a logit moves by more than 1e-4.
+
 ### Speed: what actually decides the tok/s
 
 The real GGUF is **43 layers x 256 experts, top-6** (`dsv4_plan` prints it): 74.4 GiB of
@@ -150,4 +189,5 @@ Protocol (`dsv4/serve_loop.hpp`):
 | Dequant self-check on the REAL IQ1_M shards (10 types) | OK on your run | `finite=1`, mean ~0, std ~0.025; `output.weight` Q4_K std 0.30 |
 | Sampler (temperature, top-k, top-p, min_p, repeat/freq/presence penalties, seed) | WRITTEN (`src/sampler.cpp`) | replaces the hardcoded argmax; greedy still the default |
 | `--serve` engine loop + `tools/serve_dsv4.py` (OpenAI /v1, Anthropic /v1/messages, web app) | WRITTEN, NOT RUN | links clean; the protocol matches `serve/server.py:533` line for line |
+| Batched prefill (`--prefill-chunk`, `row_dots`, `gpu::matmul`, `gpu::experts_batch`, window snapshot) | WRITTEN, COMPILES (g++-10 host + nvcc 12.8 sm_89), NOT RUN | `tests/test_prefill_batch.cpp` compares it token-by-token against the sequential path on the tiny GGUF; needs `python3 tools/tiny_model.py` first |
 | Tokenizer strings kept whole (`kMaxStoredStrs` 16 -> 2M) | WRITTEN | 16 entries truncated the 129280-entry vocab: every answer decoded to "" |
