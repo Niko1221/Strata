@@ -1,3 +1,4 @@
+#include "strata/platform/cpu_arch.hpp"
 // src/kernels/native_expert_parity.cpp - plan v0.3 P6: one native expert three ways.
 //
 //     build/native_expert_parity <shard.gguf> [layer ...]     real rows (a split model's shards are found by name)
@@ -96,6 +97,7 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
         cpu::native_gu_rows(f, blob.data(), a, NT, ffp, 0, (int) FF);
         // either multi-token kernel: IQ4_XS has an AVX-2 one and no AVX-512 one, so the gate cannot be
         // iq512_supported alone - that would leave the format untested on every CPU.
+#if STRATA_CPU_X86
         if (cpu::iq512_supported(f.gu_type) || cpu::iq256_supported(f.gu_type)) {
             // ggml's own vec_dot, same Q8_K activations: the reference for both multi-token kernels
             // (float-order differences only)
@@ -149,6 +151,7 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
             if (cpu::cpu_avx512_ok() && cpu::iq512_supported(f.gu_type)) check("avx512", true);
             if (cpu::cpu_avx2_ok() && cpu::iq256_supported(f.gu_type)) check("avx2", false);   // no AVX2: ggml-cpu only
         }
+#endif
         for (int k = 0; k < NT; ++k) {
             cpu::native_quant_h(f, ff[k].data(), hq[k].data());
             hp[k] = hq[k].data();
@@ -178,6 +181,7 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
         }
         // UD-Q4_K_XL's formats: the multi-token AVX2 kernels (kq_avx2.cpp) against ggml-cpu's vec_dot per token,
         // BIT FOR BIT, for 1..8 tokens; then the time of 4 tokens (a verify window) both ways
+#if STRATA_CPU_X86
         for (int role = 0; role < 2; ++role) {
             const int type = role == 0 ? f.gu_type : f.d_type;
             if (!cpu::cpu_avx2_ok() || !cpu::kq256_supported(type) || (role == 0 && type != 12)) continue;
@@ -223,6 +227,7 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
                         role == 0 ? "gate" : "down", differ, us_k, us_g, us_g / us_k);
             if (differ) ++failures;
         }
+#endif
         if (cpu::q2_native_kernels(f.d_type)) {
             // (b2) the GGUF-layout Q2_0 kernel the pool uses for Q2_0 down projections - the AVX-512 one
             // where the CPU has it, the AVX-2 one (q2_avx2.cpp) where it does not.  Calling the AVX-512
@@ -240,6 +245,7 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
             std::printf("          q2_0 %s down vs ggml down: rel %.2e\n",
                         cpu::cpu_avx512_ok() ? "AVX-512" : "AVX-2", rel(alt, got_c));
         }
+#if STRATA_CPU_X86
         if (f.d_type == 20 && cpu::cpu_avx2_ok()) {
             // (b3) the IQ4_NL multi-token AVX-2 kernel the pool now uses for IQ4_NL down projections,
             // against ggml-cpu's single-token vec_dot on the SAME Q8_0 activations (h), plus timing.
@@ -275,6 +281,7 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
                         NT, usn, (double) (f.bytes - f.down_off) / usn / 1e3, usg,
                         (double) (f.bytes - f.down_off) / usg / 1e3);
         }
+#endif
     }
     // (c) the GPU: one group holding the NT entries
     {

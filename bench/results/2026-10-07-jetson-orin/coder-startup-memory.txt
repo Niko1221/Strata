@@ -1,0 +1,3 @@
+command ['/tmp/strata-orin-build/strata', '--pack', '/home/calvin/models/strata-orin-validation/pack', '--native', '/home/calvin/models/strata-orin-validation/IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf', '--tokens', '248045', '--spec', '2', '--prefill', '1', '--max-context', '4096', '--mmap-experts', '--max-new', '1']
+return code 1
+strata generate: no shared physical RAM remains after 6.00 GiB headroom; free memory before starting the model (STRATA_UMA_HEADROOM_GIB sets headroom)

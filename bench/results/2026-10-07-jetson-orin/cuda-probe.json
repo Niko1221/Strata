@@ -1,0 +1,1 @@
+{"driver_version":12060,"runtime_version":12060,"host_physical_bytes":32187883520,"devices":[{"device":0,"name":"Orin","sm":87,"integrated":1,"unified_addressing":1,"cuda_total_bytes":32187883520,"cuda_free_bytes":2219732992,"managed_memory":1,"concurrent_managed_access":0,"pageable_memory_access":0,"can_map_host_memory":1,"host_register_supported":1,"vmm_supported":1}]}

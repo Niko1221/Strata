@@ -1,0 +1,679 @@
+[0/2] Re-checking globbed directories...
+[1/339] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml.c.o
+[2/339] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml.cpp.o
+[3/339] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml-alloc.c.o
+[4/339] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-backend.cpp.o
+[5/339] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-backend-meta.cpp.o
+[6/339] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-opt.cpp.o
+[7/339] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-threading.cpp.o
+[8/339] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml-quants.c.o
+[9/339] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/gguf.cpp.o
+[10/339] Building HIP object CMakeFiles/strata_core.dir/src/core/device.cu.o
+/home/calvin/workspace/strata-validation/strata/src/core/device.cu:79:9: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   79 |         cudaGetLastError();
+      |         ^~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:57:26: note: expanded from macro 'cudaGetLastError'
+   57 | #define cudaGetLastError hipGetLastError
+      |                          ^
+/home/calvin/workspace/strata-validation/strata/src/core/device.cu:88:9: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   88 |         cudaGetLastError();
+      |         ^~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:57:26: note: expanded from macro 'cudaGetLastError'
+   57 | #define cudaGetLastError hipGetLastError
+      |                          ^
+/home/calvin/workspace/strata-validation/strata/src/core/device.cu:219:9: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  219 |         cudaGetLastError();
+      |         ^~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:57:26: note: expanded from macro 'cudaGetLastError'
+   57 | #define cudaGetLastError hipGetLastError
+      |                          ^
+/home/calvin/workspace/strata-validation/strata/src/core/device.cu:224:9: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  224 |         cudaGetLastError();
+      |         ^~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:57:26: note: expanded from macro 'cudaGetLastError'
+   57 | #define cudaGetLastError hipGetLastError
+      |                          ^
+/home/calvin/workspace/strata-validation/strata/src/core/device.cu:348:16: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  348 |     if (base_) cudaFree(base_);          // best effort: a destructor must not throw
+      |                ^~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:45:18: note: expanded from macro 'cudaFree'
+   45 | #define cudaFree hipFree
+      |                  ^
+5 warnings generated when compiling for gfx1100.
+/home/calvin/workspace/strata-validation/strata/src/core/device.cu:79:9: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   79 |         cudaGetLastError();
+      |         ^~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:57:26: note: expanded from macro 'cudaGetLastError'
+   57 | #define cudaGetLastError hipGetLastError
+      |                          ^
+/home/calvin/workspace/strata-validation/strata/src/core/device.cu:88:9: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   88 |         cudaGetLastError();
+      |         ^~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:57:26: note: expanded from macro 'cudaGetLastError'
+   57 | #define cudaGetLastError hipGetLastError
+      |                          ^
+/home/calvin/workspace/strata-validation/strata/src/core/device.cu:219:9: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  219 |         cudaGetLastError();
+      |         ^~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:57:26: note: expanded from macro 'cudaGetLastError'
+   57 | #define cudaGetLastError hipGetLastError
+      |                          ^
+/home/calvin/workspace/strata-validation/strata/src/core/device.cu:224:9: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  224 |         cudaGetLastError();
+      |         ^~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:57:26: note: expanded from macro 'cudaGetLastError'
+   57 | #define cudaGetLastError hipGetLastError
+      |                          ^
+/home/calvin/workspace/strata-validation/strata/src/core/device.cu:348:16: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  348 |     if (base_) cudaFree(base_);          // best effort: a destructor must not throw
+      |                ^~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:45:18: note: expanded from macro 'cudaFree'
+   45 | #define cudaFree hipFree
+      |                  ^
+5 warnings generated when compiling for host.
+[11/339] Building HIP object CMakeFiles/strata_core.dir/src/core/pinned.cu.o
+/home/calvin/workspace/strata-validation/strata/src/core/pinned.cu:502:47: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  502 |             for (uint64_t off : slice_starts) cudaHostUnregister((uint8_t*) base + off);
+      |                                               ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:80:28: note: expanded from macro 'cudaHostUnregister'
+   80 | #define cudaHostUnregister hipHostUnregister
+      |                            ^
+/home/calvin/workspace/strata-validation/strata/src/core/pinned.cu:504:13: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  504 |             cudaHostUnregister(base);
+      |             ^~~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:80:28: note: expanded from macro 'cudaHostUnregister'
+   80 | #define cudaHostUnregister hipHostUnregister
+      |                            ^
+/home/calvin/workspace/strata-validation/strata/src/core/pinned.cu:778:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  778 |     cudaStreamCreate(&s);
+      |     ^~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:113:26: note: expanded from macro 'cudaStreamCreate'
+  113 | #define cudaStreamCreate hipStreamCreate
+      |                          ^
+/home/calvin/workspace/strata-validation/strata/src/core/pinned.cu:782:9: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  782 |         cudaMemcpyAsync(dst, src + off, (size_t) chunk, cudaMemcpyHostToDevice, s);
+      |         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:98:25: note: expanded from macro 'cudaMemcpyAsync'
+   98 | #define cudaMemcpyAsync hipMemcpyAsync
+      |                         ^
+/home/calvin/workspace/strata-validation/strata/src/core/pinned.cu:784:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  784 |     cudaStreamSynchronize(s);
+      |     ^~~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:120:31: note: expanded from macro 'cudaStreamSynchronize'
+  120 | #define cudaStreamSynchronize hipStreamSynchronize
+      |                               ^
+/home/calvin/workspace/strata-validation/strata/src/core/pinned.cu:789:13: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  789 |             cudaMemcpyAsync(dst, src + off, (size_t) chunk, cudaMemcpyHostToDevice, s);
+      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:98:25: note: expanded from macro 'cudaMemcpyAsync'
+   98 | #define cudaMemcpyAsync hipMemcpyAsync
+      |                         ^
+/home/calvin/workspace/strata-validation/strata/src/core/pinned.cu:792:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  792 |     cudaStreamSynchronize(s);
+      |     ^~~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:120:31: note: expanded from macro 'cudaStreamSynchronize'
+  120 | #define cudaStreamSynchronize hipStreamSynchronize
+      |                               ^
+/home/calvin/workspace/strata-validation/strata/src/core/pinned.cu:795:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  795 |     cudaStreamDestroy(s);
+      |     ^~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:115:27: note: expanded from macro 'cudaStreamDestroy'
+  115 | #define cudaStreamDestroy hipStreamDestroy
+      |                           ^
+/home/calvin/workspace/strata-validation/strata/src/core/pinned.cu:796:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  796 |     cudaFree(dst);
+      |     ^~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:45:18: note: expanded from macro 'cudaFree'
+   45 | #define cudaFree hipFree
+      |                  ^
+9 warnings generated when compiling for gfx1100.
+/home/calvin/workspace/strata-validation/strata/src/core/pinned.cu:502:47: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  502 |             for (uint64_t off : slice_starts) cudaHostUnregister((uint8_t*) base + off);
+      |                                               ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:80:28: note: expanded from macro 'cudaHostUnregister'
+   80 | #define cudaHostUnregister hipHostUnregister
+      |                            ^
+/home/calvin/workspace/strata-validation/strata/src/core/pinned.cu:504:13: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  504 |             cudaHostUnregister(base);
+      |             ^~~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:80:28: note: expanded from macro 'cudaHostUnregister'
+   80 | #define cudaHostUnregister hipHostUnregister
+      |                            ^
+/home/calvin/workspace/strata-validation/strata/src/core/pinned.cu:778:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  778 |     cudaStreamCreate(&s);
+      |     ^~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:113:26: note: expanded from macro 'cudaStreamCreate'
+  113 | #define cudaStreamCreate hipStreamCreate
+      |                          ^
+/home/calvin/workspace/strata-validation/strata/src/core/pinned.cu:782:9: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  782 |         cudaMemcpyAsync(dst, src + off, (size_t) chunk, cudaMemcpyHostToDevice, s);
+      |         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:98:25: note: expanded from macro 'cudaMemcpyAsync'
+   98 | #define cudaMemcpyAsync hipMemcpyAsync
+      |                         ^
+/home/calvin/workspace/strata-validation/strata/src/core/pinned.cu:784:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  784 |     cudaStreamSynchronize(s);
+      |     ^~~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:120:31: note: expanded from macro 'cudaStreamSynchronize'
+  120 | #define cudaStreamSynchronize hipStreamSynchronize
+      |                               ^
+/home/calvin/workspace/strata-validation/strata/src/core/pinned.cu:789:13: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  789 |             cudaMemcpyAsync(dst, src + off, (size_t) chunk, cudaMemcpyHostToDevice, s);
+      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:98:25: note: expanded from macro 'cudaMemcpyAsync'
+   98 | #define cudaMemcpyAsync hipMemcpyAsync
+      |                         ^
+/home/calvin/workspace/strata-validation/strata/src/core/pinned.cu:792:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  792 |     cudaStreamSynchronize(s);
+      |     ^~~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:120:31: note: expanded from macro 'cudaStreamSynchronize'
+  120 | #define cudaStreamSynchronize hipStreamSynchronize
+      |                               ^
+/home/calvin/workspace/strata-validation/strata/src/core/pinned.cu:795:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  795 |     cudaStreamDestroy(s);
+      |     ^~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:115:27: note: expanded from macro 'cudaStreamDestroy'
+  115 | #define cudaStreamDestroy hipStreamDestroy
+      |                           ^
+/home/calvin/workspace/strata-validation/strata/src/core/pinned.cu:796:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  796 |     cudaFree(dst);
+      |     ^~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:45:18: note: expanded from macro 'cudaFree'
+   45 | #define cudaFree hipFree
+      |                  ^
+9 warnings generated when compiling for host.
+[12/339] Building CXX object CMakeFiles/strata_core.dir/src/platform/memory.cpp.o
+[13/339] Building CXX object CMakeFiles/strata_core.dir/src/core/graph.cpp.o
+/home/calvin/workspace/strata-validation/strata/src/core/graph.cpp: In member function ‘void strata::core::CapturedGraph::reset()’:
+/home/calvin/workspace/strata-validation/strata/src/core/graph.cpp:41:38: warning: ignoring returned value of type ‘hipError_t’, declared with attribute ‘nodiscard’ [-Wunused-result]
+   41 |     if (exec_) { cudaGraphExecDestroy(exec_); exec_ = nullptr; }
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:8347:12: note: in call to ‘hipError_t hipGraphExecDestroy(hipGraphExec_t)’, declared here
+ 8347 | hipError_t hipGraphExecDestroy(hipGraphExec_t graphExec);
+      |            ^~~~~~~~~~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:419:3: note: ‘hipError_t’ declared here
+  419 | } hipError_t;
+      |   ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/src/core/graph.cpp:42:35: warning: ignoring returned value of type ‘hipError_t’, declared with attribute ‘nodiscard’ [-Wunused-result]
+   42 |     if (graph_) { cudaGraphDestroy(graph_); graph_ = nullptr; }
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:8075:12: note: in call to ‘hipError_t hipGraphDestroy(hipGraph_t)’, declared here
+ 8075 | hipError_t hipGraphDestroy(hipGraph_t graph);
+      |            ^~~~~~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:419:3: note: ‘hipError_t’ declared here
+  419 | } hipError_t;
+      |   ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/src/core/graph.cpp:43:34: warning: ignoring returned value of type ‘hipError_t’, declared with attribute ‘nodiscard’ [-Wunused-result]
+   43 |     if (done_) { cudaEventDestroy(done_); done_ = nullptr; }
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:3456:12: note: in call to ‘hipError_t hipEventDestroy(hipEvent_t)’, declared here
+ 3456 | hipError_t hipEventDestroy(hipEvent_t event);
+      |            ^~~~~~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:419:3: note: ‘hipError_t’ declared here
+  419 | } hipError_t;
+      |   ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/src/core/graph.cpp: In member function ‘bool strata::core::GraphRegistry::record(strata::core::LayerType, int, const std::function<void()>&, std::string&)’:
+/home/calvin/workspace/strata-validation/strata/src/core/graph.cpp:117:29: warning: ignoring returned value of type ‘hipError_t’, declared with attribute ‘nodiscard’ [-Wunused-result]
+  117 |         cudaStreamEndCapture((cudaStream_t) stream_, &junk);
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:7986:12: note: in call to ‘hipError_t hipStreamEndCapture(hipStream_t, ihipGraph**)’, declared here
+ 7986 | hipError_t hipStreamEndCapture(hipStream_t stream, hipGraph_t* pGraph);
+      |            ^~~~~~~~~~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:419:3: note: ‘hipError_t’ declared here
+  419 | } hipError_t;
+      |   ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/src/core/graph.cpp:118:35: warning: ignoring returned value of type ‘hipError_t’, declared with attribute ‘nodiscard’ [-Wunused-result]
+  118 |         if (junk) cudaGraphDestroy(junk);
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:8075:12: note: in call to ‘hipError_t hipGraphDestroy(hipGraph_t)’, declared here
+ 8075 | hipError_t hipGraphDestroy(hipGraph_t graph);
+      |            ^~~~~~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:419:3: note: ‘hipError_t’ declared here
+  419 | } hipError_t;
+      |   ^~~~~~~~~~
+[14/339] Building CXX object CMakeFiles/strata_core.dir/src/core/weights.cpp.o
+/home/calvin/workspace/strata-validation/strata/src/core/weights.cpp: In member function ‘bool strata::core::WeightTable::load(const string&, void*, uint64_t, std::string&, const std::set<std::__cxx11::basic_string<char> >*)’:
+/home/calvin/workspace/strata-validation/strata/src/core/weights.cpp:230:35: warning: ignoring returned value of type ‘hipError_t’, declared with attribute ‘nodiscard’ [-Wunused-result]
+  230 |         if (stage_in) cudaFreeHost(stage_in);
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:4604:12: note: in call to ‘hipError_t hipFreeHost(void*)’, declared here
+ 4604 | hipError_t hipFreeHost(void* ptr);
+      |            ^~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:419:3: note: ‘hipError_t’ declared here
+  419 | } hipError_t;
+      |   ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/src/core/weights.cpp:231:36: warning: ignoring returned value of type ‘hipError_t’, declared with attribute ‘nodiscard’ [-Wunused-result]
+  231 |         if (stage_out) cudaFreeHost(stage_out);
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:4604:12: note: in call to ‘hipError_t hipFreeHost(void*)’, declared here
+ 4604 | hipError_t hipFreeHost(void* ptr);
+      |            ^~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:419:3: note: ‘hipError_t’ declared here
+  419 | } hipError_t;
+      |   ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/src/core/weights.cpp:274:25: warning: ignoring returned value of type ‘hipError_t’, declared with attribute ‘nodiscard’ [-Wunused-result]
+  274 |             cudaFreeHost(stage_in); cudaFreeHost(stage_out);
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:4604:12: note: in call to ‘hipError_t hipFreeHost(void*)’, declared here
+ 4604 | hipError_t hipFreeHost(void* ptr);
+      |            ^~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:419:3: note: ‘hipError_t’ declared here
+  419 | } hipError_t;
+      |   ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/src/core/weights.cpp:274:49: warning: ignoring returned value of type ‘hipError_t’, declared with attribute ‘nodiscard’ [-Wunused-result]
+  274 |             cudaFreeHost(stage_in); cudaFreeHost(stage_out);
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:4604:12: note: in call to ‘hipError_t hipFreeHost(void*)’, declared here
+ 4604 | hipError_t hipFreeHost(void* ptr);
+      |            ^~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:419:3: note: ‘hipError_t’ declared here
+  419 | } hipError_t;
+      |   ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/src/core/weights.cpp:282:63: warning: ignoring returned value of type ‘hipError_t’, declared with attribute ‘nodiscard’ [-Wunused-result]
+  282 |             if (!cur) { err = "cannot open " + p; cudaFreeHost(stage_in); cudaFreeHost(stage_out); return false; }
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:4604:12: note: in call to ‘hipError_t hipFreeHost(void*)’, declared here
+ 4604 | hipError_t hipFreeHost(void* ptr);
+      |            ^~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:419:3: note: ‘hipError_t’ declared here
+  419 | } hipError_t;
+      |   ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/src/core/weights.cpp:282:87: warning: ignoring returned value of type ‘hipError_t’, declared with attribute ‘nodiscard’ [-Wunused-result]
+  282 |             if (!cur) { err = "cannot open " + p; cudaFreeHost(stage_in); cudaFreeHost(stage_out); return false; }
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:4604:12: note: in call to ‘hipError_t hipFreeHost(void*)’, declared here
+ 4604 | hipError_t hipFreeHost(void* ptr);
+      |            ^~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:419:3: note: ‘hipError_t’ declared here
+  419 | } hipError_t;
+      |   ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/src/core/weights.cpp:351:32: warning: ignoring returned value of type ‘hipError_t’, declared with attribute ‘nodiscard’ [-Wunused-result]
+  351 |         if (bad) { cudaFreeHost(stage_in); cudaFreeHost(stage_out); return false; }
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:4604:12: note: in call to ‘hipError_t hipFreeHost(void*)’, declared here
+ 4604 | hipError_t hipFreeHost(void* ptr);
+      |            ^~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:419:3: note: ‘hipError_t’ declared here
+  419 | } hipError_t;
+      |   ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/src/core/weights.cpp:351:56: warning: ignoring returned value of type ‘hipError_t’, declared with attribute ‘nodiscard’ [-Wunused-result]
+  351 |         if (bad) { cudaFreeHost(stage_in); cudaFreeHost(stage_out); return false; }
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:4604:12: note: in call to ‘hipError_t hipFreeHost(void*)’, declared here
+ 4604 | hipError_t hipFreeHost(void* ptr);
+      |            ^~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:419:3: note: ‘hipError_t’ declared here
+  419 | } hipError_t;
+      |   ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/src/core/weights.cpp:358:29: warning: ignoring returned value of type ‘hipError_t’, declared with attribute ‘nodiscard’ [-Wunused-result]
+  358 |                 cudaFreeHost(stage_in); cudaFreeHost(stage_out);
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:4604:12: note: in call to ‘hipError_t hipFreeHost(void*)’, declared here
+ 4604 | hipError_t hipFreeHost(void* ptr);
+      |            ^~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:419:3: note: ‘hipError_t’ declared here
+  419 | } hipError_t;
+      |   ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/src/core/weights.cpp:358:53: warning: ignoring returned value of type ‘hipError_t’, declared with attribute ‘nodiscard’ [-Wunused-result]
+  358 |                 cudaFreeHost(stage_in); cudaFreeHost(stage_out);
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:4604:12: note: in call to ‘hipError_t hipFreeHost(void*)’, declared here
+ 4604 | hipError_t hipFreeHost(void* ptr);
+      |            ^~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:419:3: note: ‘hipError_t’ declared here
+  419 | } hipError_t;
+      |   ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/src/core/weights.cpp:367:106: warning: ignoring returned value of type ‘hipError_t’, declared with attribute ‘nodiscard’ [-Wunused-result]
+  367 |                     if (n == 1) { err = r.name + ": an fp16 plane ending on a half element"; cudaFreeHost(stage_in); cudaFreeHost(stage_out); return false; }
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:4604:12: note: in call to ‘hipError_t hipFreeHost(void*)’, declared here
+ 4604 | hipError_t hipFreeHost(void* ptr);
+      |            ^~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:419:3: note: ‘hipError_t’ declared here
+  419 | } hipError_t;
+      |   ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/src/core/weights.cpp:367:130: warning: ignoring returned value of type ‘hipError_t’, declared with attribute ‘nodiscard’ [-Wunused-result]
+  367 |                     if (n == 1) { err = r.name + ": an fp16 plane ending on a half element"; cudaFreeHost(stage_in); cudaFreeHost(stage_out); return false; }
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:4604:12: note: in call to ‘hipError_t hipFreeHost(void*)’, declared here
+ 4604 | hipError_t hipFreeHost(void* ptr);
+      |            ^~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:419:3: note: ‘hipError_t’ declared here
+  419 | } hipError_t;
+      |   ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/src/core/weights.cpp:371:33: warning: ignoring returned value of type ‘hipError_t’, declared with attribute ‘nodiscard’ [-Wunused-result]
+  371 |                     cudaFreeHost(stage_in); cudaFreeHost(stage_out);
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:4604:12: note: in call to ‘hipError_t hipFreeHost(void*)’, declared here
+ 4604 | hipError_t hipFreeHost(void* ptr);
+      |            ^~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:419:3: note: ‘hipError_t’ declared here
+  419 | } hipError_t;
+      |   ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/src/core/weights.cpp:371:57: warning: ignoring returned value of type ‘hipError_t’, declared with attribute ‘nodiscard’ [-Wunused-result]
+  371 |                     cudaFreeHost(stage_in); cudaFreeHost(stage_out);
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:4604:12: note: in call to ‘hipError_t hipFreeHost(void*)’, declared here
+ 4604 | hipError_t hipFreeHost(void* ptr);
+      |            ^~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:419:3: note: ‘hipError_t’ declared here
+  419 | } hipError_t;
+      |   ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/src/core/weights.cpp:435:33: warning: ignoring returned value of type ‘hipError_t’, declared with attribute ‘nodiscard’ [-Wunused-result]
+  435 |                     cudaFreeHost(stage_in); cudaFreeHost(stage_out);
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:4604:12: note: in call to ‘hipError_t hipFreeHost(void*)’, declared here
+ 4604 | hipError_t hipFreeHost(void* ptr);
+      |            ^~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:419:3: note: ‘hipError_t’ declared here
+  419 | } hipError_t;
+      |   ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/src/core/weights.cpp:435:57: warning: ignoring returned value of type ‘hipError_t’, declared with attribute ‘nodiscard’ [-Wunused-result]
+  435 |                     cudaFreeHost(stage_in); cudaFreeHost(stage_out);
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:4604:12: note: in call to ‘hipError_t hipFreeHost(void*)’, declared here
+ 4604 | hipError_t hipFreeHost(void* ptr);
+      |            ^~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:419:3: note: ‘hipError_t’ declared here
+  419 | } hipError_t;
+      |   ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/src/core/weights.cpp:472:17: warning: ignoring returned value of type ‘hipError_t’, declared with attribute ‘nodiscard’ [-Wunused-result]
+  472 |     cudaFreeHost(stage_in);
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:4604:12: note: in call to ‘hipError_t hipFreeHost(void*)’, declared here
+ 4604 | hipError_t hipFreeHost(void* ptr);
+      |            ^~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:419:3: note: ‘hipError_t’ declared here
+  419 | } hipError_t;
+      |   ^~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/src/core/weights.cpp:473:17: warning: ignoring returned value of type ‘hipError_t’, declared with attribute ‘nodiscard’ [-Wunused-result]
+  473 |     cudaFreeHost(stage_out);
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:4604:12: note: in call to ‘hipError_t hipFreeHost(void*)’, declared here
+ 4604 | hipError_t hipFreeHost(void* ptr);
+      |            ^~~~~~~~~~~
+In file included from /home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:65,
+                 from /home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:12,
+                 from <command-line>:
+/home/calvin/workspace/strata-validation/toolchains/rocm/lib/python3.10/site-packages/_rocm_sdk_devel/include/hip/hip_runtime_api.h:419:3: note: ‘hipError_t’ declared here
+  419 | } hipError_t;
+      |   ^~~~~~~~~~
+[15/339] Building CXX object CMakeFiles/strata_core.dir/src/core/layout.cpp.o
+[16/339] Linking CXX static library ggml/src/libggml-base.a
+[17/339] Building C object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.c.o
+[18/339] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.cpp.o
+[19/339] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/repack.cpp.o
+[20/339] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/iqp.cpp.o
+[21/339] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/hbm.cpp.o
+[22/339] Building C object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/quants.c.o
+[23/339] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/traits.cpp.o
+[24/339] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/amx.cpp.o
+[25/339] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/mmq.cpp.o
+[26/339] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/binary-ops.cpp.o
+[27/339] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/unary-ops.cpp.o
+[28/339] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/vec.cpp.o
+[29/339] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ops.cpp.o
+[30/339] Building C object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/x86/quants.c.o
+[31/339] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/x86/repack.cpp.o
+[32/339] Linking HIP static library libstrata_core.a
+[33/339] Building HIP object CMakeFiles/strata_kernels.dir/src/kernels/cuda/dequant_s2.cu.o
+[34/339] Building HIP object CMakeFiles/strata_kernels.dir/src/kernels/cuda/s2_gemv.cu.o
+[35/339] Building HIP object CMakeFiles/strata_kernels.dir/src/kernels/cuda/s_gemv.cu.o
+[36/339] Building HIP object CMakeFiles/strata_kernels.dir/src/kernels/cuda/s2_gemv_quads.cu.o
+/home/calvin/workspace/strata-validation/strata/src/kernels/cuda/s2_gemv_quads.cu:31:15: warning: unused variable 'CODES_PER_BYTE_S2' [-Wunused-const-variable]
+   31 | constexpr int CODES_PER_BYTE_S2 = 4;
+      |               ^~~~~~~~~~~~~~~~~
+1 warning generated when compiling for gfx1100.
+/home/calvin/workspace/strata-validation/strata/src/kernels/cuda/s2_gemv_quads.cu:31:15: warning: unused variable 'CODES_PER_BYTE_S2' [-Wunused-const-variable]
+   31 | constexpr int CODES_PER_BYTE_S2 = 4;
+      |               ^~~~~~~~~~~~~~~~~
+1 warning generated when compiling for host.
+[37/339] Building HIP object CMakeFiles/strata_kernels.dir/src/kernels/cuda/s2_gemv_fast.cu.o
+/home/calvin/workspace/strata-validation/strata/src/kernels/cuda/s2_gemv_fast.cu:50:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   50 |     cudaGetDevice(&dev);
+      |     ^~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:53:23: note: expanded from macro 'cudaGetDevice'
+   53 | #define cudaGetDevice hipGetDevice
+      |                       ^
+1 warning generated when compiling for gfx1100.
+/home/calvin/workspace/strata-validation/strata/src/kernels/cuda/s2_gemv_fast.cu:50:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   50 |     cudaGetDevice(&dev);
+      |     ^~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:53:23: note: expanded from macro 'cudaGetDevice'
+   53 | #define cudaGetDevice hipGetDevice
+      |                       ^
+1 warning generated when compiling for host.
+[38/339] Building HIP object CMakeFiles/strata_kernels.dir/src/kernels/cuda/router_top10.cu.o
+[39/339] Building HIP object CMakeFiles/strata_kernels.dir/src/kernels/cuda/quantize_act.cu.o
+/home/calvin/workspace/strata-validation/strata/src/kernels/cuda/quantize_act.cu:274:28: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  274 |     if (stream == nullptr) cudaDeviceSynchronize();
+      |                            ^~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:28:31: note: expanded from macro 'cudaDeviceSynchronize'
+   28 | #define cudaDeviceSynchronize hipDeviceSynchronize
+      |                               ^
+/home/calvin/workspace/strata-validation/strata/src/kernels/cuda/quantize_act.cu:303:28: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  303 |     if (stream == nullptr) cudaDeviceSynchronize();
+      |                            ^~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:28:31: note: expanded from macro 'cudaDeviceSynchronize'
+   28 | #define cudaDeviceSynchronize hipDeviceSynchronize
+      |                               ^
+/home/calvin/workspace/strata-validation/strata/src/kernels/cuda/quantize_act.cu:317:28: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  317 |     if (stream == nullptr) cudaDeviceSynchronize();
+      |                            ^~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:28:31: note: expanded from macro 'cudaDeviceSynchronize'
+   28 | #define cudaDeviceSynchronize hipDeviceSynchronize
+      |                               ^
+/home/calvin/workspace/strata-validation/strata/src/kernels/cuda/quantize_act.cu:335:28: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  335 |     if (stream == nullptr) cudaDeviceSynchronize();
+      |                            ^~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:28:31: note: expanded from macro 'cudaDeviceSynchronize'
+   28 | #define cudaDeviceSynchronize hipDeviceSynchronize
+      |                               ^
+/home/calvin/workspace/strata-validation/strata/src/kernels/cuda/quantize_act.cu:349:28: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  349 |     if (stream == nullptr) cudaDeviceSynchronize();
+      |                            ^~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:28:31: note: expanded from macro 'cudaDeviceSynchronize'
+   28 | #define cudaDeviceSynchronize hipDeviceSynchronize
+      |                               ^
+5 warnings generated when compiling for gfx1100.
+/home/calvin/workspace/strata-validation/strata/src/kernels/cuda/quantize_act.cu:274:28: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  274 |     if (stream == nullptr) cudaDeviceSynchronize();
+      |                            ^~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:28:31: note: expanded from macro 'cudaDeviceSynchronize'
+   28 | #define cudaDeviceSynchronize hipDeviceSynchronize
+      |                               ^
+/home/calvin/workspace/strata-validation/strata/src/kernels/cuda/quantize_act.cu:303:28: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  303 |     if (stream == nullptr) cudaDeviceSynchronize();
+      |                            ^~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:28:31: note: expanded from macro 'cudaDeviceSynchronize'
+   28 | #define cudaDeviceSynchronize hipDeviceSynchronize
+      |                               ^
+/home/calvin/workspace/strata-validation/strata/src/kernels/cuda/quantize_act.cu:317:28: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  317 |     if (stream == nullptr) cudaDeviceSynchronize();
+      |                            ^~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:28:31: note: expanded from macro 'cudaDeviceSynchronize'
+   28 | #define cudaDeviceSynchronize hipDeviceSynchronize
+      |                               ^
+/home/calvin/workspace/strata-validation/strata/src/kernels/cuda/quantize_act.cu:335:28: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  335 |     if (stream == nullptr) cudaDeviceSynchronize();
+      |                            ^~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:28:31: note: expanded from macro 'cudaDeviceSynchronize'
+   28 | #define cudaDeviceSynchronize hipDeviceSynchronize
+      |                               ^
+/home/calvin/workspace/strata-validation/strata/src/kernels/cuda/quantize_act.cu:349:28: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  349 |     if (stream == nullptr) cudaDeviceSynchronize();
+      |                            ^~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:28:31: note: expanded from macro 'cudaDeviceSynchronize'
+   28 | #define cudaDeviceSynchronize hipDeviceSynchronize
+      |                               ^
+5 warnings generated when compiling for host.
+[40/339] Building HIP object CMakeFiles/strata_kernels.dir/src/kernels/cuda/rope.cu.o
+/home/calvin/workspace/strata-validation/strata/src/kernels/cuda/rope.cu:133:28: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  133 |     if (stream == nullptr) cudaDeviceSynchronize();
+      |                            ^~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:28:31: note: expanded from macro 'cudaDeviceSynchronize'
+   28 | #define cudaDeviceSynchronize hipDeviceSynchronize
+      |                               ^
+1 warning generated when compiling for gfx1100.
+/home/calvin/workspace/strata-validation/strata/src/kernels/cuda/rope.cu:133:28: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+  133 |     if (stream == nullptr) cudaDeviceSynchronize();
+      |                            ^~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:28:31: note: expanded from macro 'cudaDeviceSynchronize'
+   28 | #define cudaDeviceSynchronize hipDeviceSynchronize
+      |                               ^
+1 warning generated when compiling for host.
+[41/339] Building HIP object CMakeFiles/strata_kernels.dir/src/kernels/cuda/sampler.cu.o
+/home/calvin/workspace/strata-validation/strata/src/kernels/cuda/sampler.cu:1297:28: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+ 1297 |     if (stream == nullptr) cudaDeviceSynchronize();
+      |                            ^~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:28:31: note: expanded from macro 'cudaDeviceSynchronize'
+   28 | #define cudaDeviceSynchronize hipDeviceSynchronize
+      |                               ^
+/home/calvin/workspace/strata-validation/strata/src/kernels/cuda/sampler.cu:1368:28: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+ 1368 |     if (stream == nullptr) cudaDeviceSynchronize();
+      |                            ^~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:28:31: note: expanded from macro 'cudaDeviceSynchronize'
+   28 | #define cudaDeviceSynchronize hipDeviceSynchronize
+      |                               ^
+2 warnings generated when compiling for gfx1100.
+/home/calvin/workspace/strata-validation/strata/src/kernels/cuda/sampler.cu:1297:28: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+ 1297 |     if (stream == nullptr) cudaDeviceSynchronize();
+      |                            ^~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:28:31: note: expanded from macro 'cudaDeviceSynchronize'
+   28 | #define cudaDeviceSynchronize hipDeviceSynchronize
+      |                               ^
+/home/calvin/workspace/strata-validation/strata/src/kernels/cuda/sampler.cu:1368:28: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+ 1368 |     if (stream == nullptr) cudaDeviceSynchronize();
+      |                            ^~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:28:31: note: expanded from macro 'cudaDeviceSynchronize'
+   28 | #define cudaDeviceSynchronize hipDeviceSynchronize
+      |                               ^
+2 warnings generated when compiling for host.
+[42/339] Building HIP object CMakeFiles/strata_kernels.dir/src/kernels/cuda/s2_gemv_q8.cu.o
+/home/calvin/workspace/strata-validation/strata/src/kernels/cuda/s2_gemv_q8.cu:93:28: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   93 |     if (stream == nullptr) cudaDeviceSynchronize();
+      |                            ^~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:28:31: note: expanded from macro 'cudaDeviceSynchronize'
+   28 | #define cudaDeviceSynchronize hipDeviceSynchronize
+      |                               ^
+1 warning generated when compiling for gfx1100.
+/home/calvin/workspace/strata-validation/strata/src/kernels/cuda/s2_gemv_q8.cu:93:28: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   93 |     if (stream == nullptr) cudaDeviceSynchronize();
+      |                            ^~~~~~~~~~~~~~~~~~~~~~~
+/home/calvin/workspace/strata-validation/strata/include/strata/hip_compat/cuda_runtime.h:28:31: note: expanded from macro 'cudaDeviceSynchronize'
+   28 | #define cudaDeviceSynchronize hipDeviceSynchronize
+      |                               ^
+1 warning generated when compiling for host.
+ninja: build stopped: interrupted by user.

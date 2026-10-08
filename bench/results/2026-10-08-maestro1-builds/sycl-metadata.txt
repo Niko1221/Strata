@@ -1,0 +1,12 @@
+Thu Oct  8 21:45:22 UTC 2026
+Linux maestro1 6.8.0-65-generic #68~22.04.1-Ubuntu SMP PREEMPT_DYNAMIC Tue Jul 15 18:06:34 UTC 2 x86_64 x86_64 x86_64 GNU/Linux
+13ea3b0f13ecad9da4a6d0915ea6d508b0b4deb2
+Intel(R) oneAPI DPC++/C++ Compiler 2026.1.1 (2026.1.1.20260724)
+Target: x86_64-unknown-linux-gnu
+Thread model: posix
+InstalledDir: /mnt/sda2/home/calvin/workspace/strata-validation/toolchains/intel-root/opt/intel/oneapi/compiler/2026.1/bin/compiler
+Configuration file: /mnt/sda2/home/calvin/workspace/strata-validation/toolchains/intel-root/opt/intel/oneapi/compiler/2026.1/bin/compiler/../icpx.cfg
+cmake version 3.31.10
+
+CMake suite maintained and supported by Kitware (kitware.com/cmake).
+MKLROOT=/mnt/sda2/home/calvin/workspace/strata-validation/toolchains/intel-root/opt/intel/oneapi/mkl/2026.1

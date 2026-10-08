@@ -1,0 +1,8 @@
+Internal ctest changing into directory: /tmp/strata-orin-build
+Test project /tmp/strata-orin-build
+    Start 64: pinned_fallback_test
+1/1 Test #64: pinned_fallback_test .............   Passed    0.38 sec
+
+100% tests passed, 0 tests failed out of 1
+
+Total Test time (real) =   0.38 sec

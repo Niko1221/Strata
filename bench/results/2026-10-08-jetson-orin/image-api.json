@@ -1,0 +1,40 @@
+{
+  "elapsed_s": 12.033922582981177,
+  "response": {
+    "id": "chatcmpl-b179497542c6416da3a16945",
+    "object": "chat.completion",
+    "created": 1791463047,
+    "model": "Qwen3.8-Flash-Next-Coder-IQ1_M-Orin-validation",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "The image displays a grid of colored squares arranged in a checkerboard-like pattern, with alternating light and dark tones within each row and column. The colors transition smoothly across the grid from left to right and top to bottom, creating a gradient effect"
+        },
+        "finish_reason": "length"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 41,
+      "completion_tokens": 48,
+      "total_tokens": 89,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 41,
+      "prompt_ms": 8443.6,
+      "prompt_per_token_ms": 205.941,
+      "prompt_per_second": 4.9,
+      "predicted_n": 48,
+      "predicted_ms": 3528.2,
+      "predicted_per_token_ms": 73.504,
+      "predicted_per_second": 13.6,
+      "draft_n": 57,
+      "draft_n_accepted": 31
+    }
+  }
+}

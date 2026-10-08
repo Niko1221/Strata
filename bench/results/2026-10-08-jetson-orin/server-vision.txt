@@ -1,0 +1,21 @@
+loading the vision encoder ...
+loading the model (the first start takes a minute or two) ...
+[strata] starting the engine: reading the model's weights ...
+[strata] mapping the experts from the model files (about 30 GB, --mmap-experts): they are not loaded into RAM - the OS file cache reads them as the GPU's expert cache fills and as requests need them.
+         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.
+         Please wait and don't close this window; the browser opens when it is ready.
+[strata] filling the GPU's expert cache (6428 experts, 12.22 GiB of shared RAM allocated to the GPU) ...
+[strata] almost ready ...
+ready: http://127.0.0.1:18081/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 4096 tokens, images on)
+       open http://127.0.0.1:18081/ in a browser to chat; close this window to stop the model
+[strata] reading the prompt: 34 of 41 tokens, 8 s so far
+[strata] answering: 4 of max 48 tokens, 7.7 tok/s, 9 s
+[strata] answering: 18 of max 48 tokens, 11.9 tok/s, 10 s
+[strata] answering: 32 of max 48 tokens, 12.4 tok/s, 11 s
+[strata] done: 48 tokens in 12 s (13.9 tok/s) (length, cancel=False), expert cache 77.9% hit
+[strata] answering: 15 of max 48 tokens, 22.1 tok/s, 1 s
+[strata] answering: 40 of max 48 tokens, 22.4 tok/s, 2 s
+[strata] done: 48 tokens in 2 s (23.8 tok/s) (length, cancel=False), expert cache 93.3% hit
+
+[strata] stopping (Ctrl+C again to end the engine at once) ...
+[strata] stopped

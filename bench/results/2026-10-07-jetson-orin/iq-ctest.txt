@@ -1,0 +1,16 @@
+Internal ctest changing into directory: /tmp/strata-orin-build
+Test project /tmp/strata-orin-build
+    Start 92: native_expert_parity_iq3_xxs_iq4_nl
+1/5 Test #92: native_expert_parity_iq3_xxs_iq4_nl ...   Passed    2.99 sec
+    Start 93: native_expert_parity_iq2_s_q2_0
+2/5 Test #93: native_expert_parity_iq2_s_q2_0 .......   Passed    5.94 sec
+    Start 94: native_expert_parity_iq3_s_iq4_nl
+3/5 Test #94: native_expert_parity_iq3_s_iq4_nl .....   Passed    2.33 sec
+    Start 95: native_expert_parity_iq4_xs_q2_0
+4/5 Test #95: native_expert_parity_iq4_xs_q2_0 ......   Passed    1.09 sec
+    Start 99: q2_portable_reference_test
+5/5 Test #99: q2_portable_reference_test ............   Passed    0.01 sec
+
+100% tests passed, 0 tests failed out of 5
+
+Total Test time (real) =  12.44 sec

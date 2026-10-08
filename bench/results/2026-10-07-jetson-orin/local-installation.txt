@@ -1,0 +1,18 @@
+Installed locally built ARM64 CUDA 12.6 SM87 engine and CPU vision encoder in engine-cuda12/.
+setup.build_engine(..., toolkit=None) selects CUDA12 and recognizes current ARM64 metadata without rebuilding.
+{
+  "source": "local",
+  "version": "0.1.40.3",
+  "archs": [
+    87
+  ],
+  "vision": "cpu",
+  "cpu_arch": "arm64",
+  "toolkit": 12,
+  "cuda_dirs": [
+    "/usr/local/cuda-12/bin",
+    "/usr/local/cuda-12/lib64"
+  ],
+  "src": "6676fc3a1bb0080c",
+  "vision_src": "bccffef4afd95604"
+}

@@ -1,0 +1,6 @@
+CUDA 12.6 ARM64 vision encoder built and installed in engine-cuda12/strata-vision.
+CPU-only encoder preserved as engine-cuda12/strata-vision-cpu.
+143 embedded CUDA ELF images target SM87.
+Both CPU and GPU setup requests reuse current GPU-capable encoder.
+No-argument launch returns expected usage error (2), before loading model files.
+Image inference remains unverified.

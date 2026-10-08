@@ -1,0 +1,37 @@
+{
+  "id": "chatcmpl-1bca5ed441434d44b00303af",
+  "object": "chat.completion",
+  "created": 1791462581,
+  "model": "Qwen3.8-Flash-Next-Coder-IQ1_M-Orin-validation",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Hello Orin."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 19,
+    "completion_tokens": 5,
+    "total_tokens": 24,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    }
+  },
+  "timings": {
+    "cache_n": 0,
+    "prompt_n": 19,
+    "prompt_ms": 1010.1,
+    "prompt_per_token_ms": 53.163,
+    "prompt_per_second": 18.8,
+    "predicted_n": 5,
+    "predicted_ms": 555.9,
+    "predicted_per_token_ms": 111.18,
+    "predicted_per_second": 9.0,
+    "draft_n": 6,
+    "draft_n_accepted": 5
+  }
+}

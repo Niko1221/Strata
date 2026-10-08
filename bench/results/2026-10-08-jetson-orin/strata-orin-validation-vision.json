@@ -1,0 +1,48 @@
+{
+  "exe": "/home/calvin/workspace/strata/engine-cuda12/strata",
+  "args": [
+    "--pack",
+    "/home/calvin/models/strata-orin-validation/pack",
+    "--native",
+    "/home/calvin/models/strata-orin-validation/IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf",
+    "--ple-gguf",
+    "/home/calvin/models/strata-orin-validation/IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00002-of-00002.gguf",
+    "--expert-profile",
+    "/home/calvin/workspace/strata/data/expert-profile-coder.bin",
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "64",
+    "--spec",
+    "4",
+    "--max-context",
+    "4096",
+    "--mmap-experts",
+    "--mtp",
+    "/home/calvin/models/strata-orin-validation/mtp/rt",
+    "--vision",
+    "--vram-reserve-mib",
+    "3072"
+  ],
+  "cwd": "/home/calvin/workspace/strata",
+  "tokenizer": "/home/calvin/models/strata-orin-validation/pack/tokenizer",
+  "model_name": "Qwen3.8-Flash-Next-Coder-IQ1_M-Orin-validation",
+  "log": "/home/calvin/models/strata-orin-validation/strata-engine-vision.log",
+  "lib_dirs": [
+    "/usr/local/cuda-12/lib64"
+  ],
+  "port": 18081,
+  "host": "127.0.0.1",
+  "cuda": 12,
+  "open_browser": false,
+  "draft_vocab": "cjk",
+  "vision": {
+    "exe": "/home/calvin/workspace/strata/engine-cuda12/strata-vision",
+    "mmproj": "/home/calvin/models/strata-orin-validation/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "/home/calvin/models/strata-orin-validation/IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf",
+    "gpu": true,
+    "threads": 8,
+    "min_tokens": 16,
+    "max_tokens": 16
+  }
+}

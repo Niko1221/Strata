@@ -1,0 +1,56 @@
+{
+  "health": {
+    "status": "ok",
+    "max_context": 8192,
+    "model": "Qwen3.8-Flash-Next-Coder-IQ1_M-Orin-validation",
+    "images": false,
+    "api_key": false,
+    "loaded": true,
+    "service": "strata"
+  },
+  "checks": [
+    {
+      "round": 0,
+      "pattern_repeats": 1800,
+      "elapsed_s": 145.99158282997087,
+      "response": {
+        "id": "chatcmpl-d948abe94eb54fd9b56de113",
+        "object": "chat.completion",
+        "created": 1791461758,
+        "model": "Qwen3.8-Flash-Next-Coder-IQ1_M-Orin-validation",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "OK"
+            },
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 7234,
+          "completion_tokens": 2,
+          "total_tokens": 7236,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 7234,
+          "prompt_ms": 145427.8,
+          "prompt_per_token_ms": 20.103,
+          "prompt_per_second": 49.7,
+          "predicted_n": 2,
+          "predicted_ms": 497.6,
+          "predicted_per_token_ms": 248.8,
+          "predicted_per_second": 4.0,
+          "draft_n": 3,
+          "draft_n_accepted": 3
+        }
+      },
+      "wall_time": 1791461904.8724399
+    }
+  ]
+}

@@ -1,0 +1,442 @@
+{
+  "label": "baseline",
+  "context_limit": 262144,
+  "source_root": "/tmp/strata-orin-baseline-src",
+  "exe": "/home/calvin/models/strata-orin-validation/baseline-engine-c32492c/strata",
+  "source_commit": "c32492c107ecbf4db7d22f81533ef72a86e7dd2d",
+  "binary_sha256": "6d790f88137483906dda4e72d7d0069461f4e67c47efd9cb7d5e217aa18f0ee9",
+  "requests": [
+    {
+      "start_time": 1791475483.41427,
+      "end_time": 1791475511.8143823,
+      "pattern_repeats": 32,
+      "round": 0,
+      "task": "throughput",
+      "output_cap": 64,
+      "http_status": 200,
+      "response": {
+        "id": "chatcmpl-9ba866c267da48c5bdf228cf",
+        "object": "chat.completion",
+        "created": 1791475483,
+        "model": "Orin-baseline-ctx262144",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "A computer processes information through a complex, hierarchical system that begins with the processor, the central processing unit (CPU). The processor is the engine of computation, responsible for executing instructions and performing arithmetic and logical operations. It operates by fetching instructions from memory, decoding them to determine the required action, and then executing them using specialized"
+            },
+            "finish_reason": "length"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 172,
+          "completion_tokens": 64,
+          "total_tokens": 236,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 172,
+          "prompt_ms": 19264.7,
+          "prompt_per_token_ms": 112.004,
+          "prompt_per_second": 8.9,
+          "predicted_n": 64,
+          "predicted_ms": 9103.7,
+          "predicted_per_token_ms": 142.245,
+          "predicted_per_second": 7.0,
+          "draft_n": 84,
+          "draft_n_accepted": 35
+        }
+      }
+    },
+    {
+      "start_time": 1791475511.8172905,
+      "end_time": 1791475547.793768,
+      "pattern_repeats": 128,
+      "round": 0,
+      "task": "throughput",
+      "output_cap": 64,
+      "http_status": 200,
+      "response": {
+        "id": "chatcmpl-571f337341a24af38311fd9b",
+        "object": "chat.completion",
+        "created": 1791475511,
+        "model": "Orin-baseline-ctx262144",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "A computer processes information through a complex, hierarchical system that begins with the processor, the central processing unit (CPU). The processor is the engine of computation, responsible for executing instructions and performing arithmetic and logical operations. It operates by fetching instructions from memory, decoding them to understand the specific task required, and then executing them using"
+            },
+            "finish_reason": "length"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 557,
+          "completion_tokens": 64,
+          "total_tokens": 621,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 557,
+          "prompt_ms": 29078.2,
+          "prompt_per_token_ms": 52.205,
+          "prompt_per_second": 19.2,
+          "predicted_n": 64,
+          "predicted_ms": 6814.5,
+          "predicted_per_token_ms": 106.477,
+          "predicted_per_second": 9.4,
+          "draft_n": 78,
+          "draft_n_accepted": 37
+        }
+      }
+    },
+    {
+      "start_time": 1791475547.8055472,
+      "end_time": 1791475599.472933,
+      "pattern_repeats": 256,
+      "round": 0,
+      "task": "throughput",
+      "output_cap": 64,
+      "http_status": 200,
+      "response": {
+        "id": "chatcmpl-c33709a8359d487cb41fdb37",
+        "object": "chat.completion",
+        "created": 1791475547,
+        "model": "Orin-baseline-ctx262144",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "A computer processes information through a sophisticated hierarchy of hardware components, beginning with the processor, which serves as the central engine for all computational tasks. The processor, or CPU, is responsible for executing instructions that have been fetched from memory. It operates in a continuous cycle known as the fetch-decode-execute cycle. During the"
+            },
+            "finish_reason": "length"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 1069,
+          "completion_tokens": 64,
+          "total_tokens": 1133,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 1069,
+          "prompt_ms": 43472.5,
+          "prompt_per_token_ms": 40.667,
+          "prompt_per_second": 24.6,
+          "predicted_n": 64,
+          "predicted_ms": 8086.7,
+          "predicted_per_token_ms": 126.355,
+          "predicted_per_second": 7.9,
+          "draft_n": 96,
+          "draft_n_accepted": 31
+        }
+      }
+    },
+    {
+      "start_time": 1791475599.4866667,
+      "end_time": 1791475621.209211,
+      "pattern_repeats": 32,
+      "round": 1,
+      "task": "throughput",
+      "output_cap": 64,
+      "http_status": 200,
+      "response": {
+        "id": "chatcmpl-4b79bc7feefc4851879e57d4",
+        "object": "chat.completion",
+        "created": 1791475599,
+        "model": "Orin-baseline-ctx262144",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "A computer processes information through a complex, hierarchical system that begins with the processor, the central processing unit (CPU). The processor is the engine of computation, responsible for executing instructions and performing arithmetic and logical operations. It operates by fetching instructions from memory, decoding them to understand the required action, and then executing them using internal"
+            },
+            "finish_reason": "length"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 172,
+          "completion_tokens": 64,
+          "total_tokens": 236,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 172,
+          "prompt_ms": 14638.3,
+          "prompt_per_token_ms": 85.106,
+          "prompt_per_second": 11.7,
+          "predicted_n": 64,
+          "predicted_ms": 6959.4,
+          "predicted_per_token_ms": 108.741,
+          "predicted_per_second": 9.2,
+          "draft_n": 81,
+          "draft_n_accepted": 36
+        }
+      }
+    },
+    {
+      "start_time": 1791475621.2219872,
+      "end_time": 1791475657.153451,
+      "pattern_repeats": 128,
+      "round": 1,
+      "task": "throughput",
+      "output_cap": 64,
+      "http_status": 200,
+      "response": {
+        "id": "chatcmpl-f5331edb3e434325a88c68da",
+        "object": "chat.completion",
+        "created": 1791475621,
+        "model": "Orin-baseline-ctx262144",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "A computer processes information through a sophisticated, hierarchical system that begins with the processor, the central engine of computation. The processor, often referred to as the CPU, is responsible for executing instructions and performing arithmetic and logical operations. It operates by fetching instructions from memory, decoding them to understand the specific task required, and then executing"
+            },
+            "finish_reason": "length"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 557,
+          "completion_tokens": 64,
+          "total_tokens": 621,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 557,
+          "prompt_ms": 28397.2,
+          "prompt_per_token_ms": 50.982,
+          "prompt_per_second": 19.6,
+          "predicted_n": 64,
+          "predicted_ms": 7442.0,
+          "predicted_per_token_ms": 116.281,
+          "predicted_per_second": 8.6,
+          "draft_n": 90,
+          "draft_n_accepted": 33
+        }
+      }
+    },
+    {
+      "start_time": 1791475657.1659017,
+      "end_time": 1791475707.6520696,
+      "pattern_repeats": 256,
+      "round": 1,
+      "task": "throughput",
+      "output_cap": 64,
+      "http_status": 200,
+      "response": {
+        "id": "chatcmpl-8810fdf5dfb34a2a820d1862",
+        "object": "chat.completion",
+        "created": 1791475657,
+        "model": "Orin-baseline-ctx262144",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "A computer processes information through a sophisticated interplay of hardware components, with the processor serving as the central engine for this operation. The processor, often referred to as the CPU, is responsible for executing instructions and performing calculations. It operates by fetching data from memory, decoding the instruction set, and executing the specific operation required."
+            },
+            "finish_reason": "length"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 1069,
+          "completion_tokens": 64,
+          "total_tokens": 1133,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 1069,
+          "prompt_ms": 43470.9,
+          "prompt_per_token_ms": 40.665,
+          "prompt_per_second": 24.6,
+          "predicted_n": 64,
+          "predicted_ms": 6925.2,
+          "predicted_per_token_ms": 108.206,
+          "predicted_per_second": 9.2,
+          "draft_n": 84,
+          "draft_n_accepted": 37
+        }
+      }
+    },
+    {
+      "start_time": 1791475707.6585984,
+      "end_time": 1791475728.686969,
+      "pattern_repeats": 32,
+      "round": 2,
+      "task": "throughput",
+      "output_cap": 64,
+      "http_status": 200,
+      "response": {
+        "id": "chatcmpl-1908a49089324c60968cb2e4",
+        "object": "chat.completion",
+        "created": 1791475707,
+        "model": "Orin-baseline-ctx262144",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "A computer processes information through a complex, hierarchical system that begins with the processor, the central processing unit (CPU). The processor is the engine of computation, responsible for executing instructions and performing arithmetic and logical operations. It operates by fetching instructions from memory, decoding them to understand the required action, and then executing them using specialized"
+            },
+            "finish_reason": "length"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 172,
+          "completion_tokens": 64,
+          "total_tokens": 236,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 172,
+          "prompt_ms": 14414.5,
+          "prompt_per_token_ms": 83.805,
+          "prompt_per_second": 11.9,
+          "predicted_n": 64,
+          "predicted_ms": 6477.4,
+          "predicted_per_token_ms": 101.209,
+          "predicted_per_second": 9.9,
+          "draft_n": 78,
+          "draft_n_accepted": 37
+        }
+      }
+    },
+    {
+      "start_time": 1791475728.7000396,
+      "end_time": 1791475763.5529556,
+      "pattern_repeats": 128,
+      "round": 2,
+      "task": "throughput",
+      "output_cap": 64,
+      "http_status": 200,
+      "response": {
+        "id": "chatcmpl-92049fee492745e6b7beac2c",
+        "object": "chat.completion",
+        "created": 1791475728,
+        "model": "Orin-baseline-ctx262144",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "A computer processes information through a sophisticated, hierarchical system that begins with the processor, often referred to as the CPU. The processor is the central engine of computation, responsible for executing instructions and performing arithmetic and logical operations. It operates by fetching instructions from memory, decoding them to determine the specific task required, and then executing those"
+            },
+            "finish_reason": "length"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 557,
+          "completion_tokens": 64,
+          "total_tokens": 621,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 557,
+          "prompt_ms": 27526.7,
+          "prompt_per_token_ms": 49.42,
+          "prompt_per_second": 20.2,
+          "predicted_n": 64,
+          "predicted_ms": 7215.4,
+          "predicted_per_token_ms": 112.741,
+          "predicted_per_second": 8.9,
+          "draft_n": 84,
+          "draft_n_accepted": 35
+        }
+      }
+    },
+    {
+      "start_time": 1791475763.5664704,
+      "end_time": 1791475814.1689293,
+      "pattern_repeats": 256,
+      "round": 2,
+      "task": "throughput",
+      "output_cap": 64,
+      "http_status": 200,
+      "response": {
+        "id": "chatcmpl-49776392869844bc99e8b40f",
+        "object": "chat.completion",
+        "created": 1791475763,
+        "model": "Orin-baseline-ctx262144",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "A computer processes information through a sophisticated, hierarchical system that begins with the processor, the central engine of computation. The processor, often referred to as the CPU, is responsible for executing instructions and performing arithmetic and logical operations. It operates by fetching instructions from memory, decoding them to determine the specific task required, and then executing"
+            },
+            "finish_reason": "length"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 1069,
+          "completion_tokens": 64,
+          "total_tokens": 1133,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 1069,
+          "prompt_ms": 42975.7,
+          "prompt_per_token_ms": 40.202,
+          "prompt_per_second": 24.9,
+          "predicted_n": 64,
+          "predicted_ms": 7527.2,
+          "predicted_per_token_ms": 117.612,
+          "predicted_per_second": 8.5,
+          "draft_n": 87,
+          "draft_n_accepted": 34
+        }
+      }
+    }
+  ],
+  "status": "passed",
+  "health": {
+    "status": "ok",
+    "max_context": 262144,
+    "model": "Orin-baseline-ctx262144",
+    "images": false,
+    "api_key": false,
+    "loaded": true,
+    "service": "strata"
+  },
+  "memory": {
+    "minimum_available_bytes": 8207126528,
+    "maximum_system_used_bytes": 23980756992,
+    "maximum_process_tree_rss_bytes": 9712095232,
+    "maximum_swap_used_bytes": 2575826944,
+    "host_disk_read_bytes": 135975745536
+  },
+  "headroom_preserved": true
+}

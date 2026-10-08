@@ -1,9 +1,81 @@
-<h1 align="center">Strata</h1>
+<h1 align="center">Strata Inference for Jetson Orin</h1>
+
+This repository is a derivative of **[Strata by Niko1221 and its contributors](https://github.com/Niko1221/Strata)**,
+maintained at [calvinvette/strata-inference-orin](https://github.com/calvinvette/strata-inference-orin).
+It adds ARM64 and shared physical RAM support for **NVIDIA Jetson AGX Orin 32 GB**, running
+**JetPack 6.2 with CUDA 12.6 (SM87)**. The original engine, server, web app and desktop features come from Strata.
+The project retains the original [MIT license and attribution](LICENSE).
+
+The Orin changes are on **`feat/jetson-orin-arm64`**. The translated READMEs below describe the original
+project and have not been updated for this port.
 
 **English** · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · [Español](README.es.md) · [Português](README.pt-BR.md)
 
-<p align="center"><b>Run a 125-billion-parameter AI model on your own gaming PC</b><br>
-NVIDIA or AMD graphics card (12 GB or more) · Windows or Linux · free and open source</p>
+## What this fork adds
+
+- Local ARM64 builds targeting SM87, portable CPU kernels and pinned ggml's ARM backend.
+- A single physical RAM budget for CPU and GPU allocations, with file-backed experts when they do not fit in RAM.
+- ARM synchronization for CUDA mapped host buffers, registration fallback and tested VMM cache resizing.
+- Jetson setup that preserves JetPack's CUDA libraries and avoids x86 binaries and desktop CUDA packages.
+- CPU and CUDA image encoder builds, real API validation and reproducible hardware results.
+
+Orin's CPU and GPU share its 32 GB of RAM; there is no separate 32 GB VRAM pool. The runtime leaves six GiB
+of physical RAM headroom by default and an additional three GiB for late workspaces when sizing the automatic
+expert cache. Managed memory is supported for sequential ownership, but this Orin reports no concurrent
+managed access. The port retains device allocations and mapped control buffers rather than replacing them
+with managed allocations.
+
+## Measured on Jetson AGX Orin 32 GB
+
+The tested model is **Qwen3.8-Flash-Next Coder IQ1_M**, with file-backed experts, MTP spec 4 and prefill batch 64.
+These measurements used JetPack 6.2, CUDA 12.6.68, MAXN power mode and unlocked clocks.
+The table below records the original 0.1.40.3 port; the [0.1.41 rebase validation and context sweep](bench/results/2026-10-08-jetson-orin/README.md#rebase-onto-upstream-0141) preserves the same-day comparison separately.
+
+| Check | Result |
+| --- | --- |
+| Decode, three runs per prompt size with 64-token replies | Median 18.6–21.6 tokens/s |
+| Prefill, 172–1069 prompt tokens | Median 37.8–52.5 tokens/s |
+| Long prompt at context limit 32768 | 31234 tokens processed in 584 seconds; expected reply and follow-up passed |
+| Available physical RAM across the 32K run | At least 7.33 GiB; swap was in use |
+| Real API checks | Repeated greedy replies, OpenAI/Anthropic streaming and cancellation recovery passed |
+| Vision | CPU/CUDA encoding and repeated image API requests passed for a 56-by-56 image with a 16-token encoder cap |
+
+After rebasing onto upstream 0.1.41, all nine requested capacities from 1K through 256K passed.
+At context 262144, a 261936-token prompt completed at 58.5 prompt tokens/s, followed by 64 generated
+tokens at 6.6 tokens/s and a successful recovery check. Minimum available RAM was 9.33 GiB;
+swap was in use. Larger contexts reduce the automatic expert cache and decode throughput.
+The linked report contains the same-day baseline, three matched runs per short prompt and one near-limit
+run per capacity, with raw results and allocation differences.
+
+See the [phased implementation plan](docs/JETSON_ORIN_PLAN.md),
+[portability tests](bench/results/2026-10-07-jetson-orin/README.md) and
+[real-model results, commands and limits](bench/results/2026-10-08-jetson-orin/README.md).
+Other model variants, larger images and controlled thermal tests have not been validated on this host.
+Formatted chat prompts agreed with the CPU reference's top token, but raw-token log probabilities differed;
+universal numerical parity is not established. Desktop setup regressions and x86 CPU cross-builds passed;
+desktop GPU runtime was not tested on the Orin.
+
+## Install this fork on Orin
+
+Use an NVMe SSD with room for the model downloads and prepared packs. This port builds from source using
+JetPack's installed CUDA 12.6 toolkit:
+
+```bash
+git clone --branch feat/jetson-orin-arm64 https://github.com/calvinvette/strata-inference-orin.git
+cd strata-inference-orin
+./setup.sh --cuda 12
+```
+
+Close other large memory users before loading the model. Choose Coder IQ1_M for the measured configuration;
+32 GB shared RAM does not provide the same allocation budget as 32 GB system RAM plus a discrete GPU.
+Start with a short context and use the [recorded configuration](bench/results/2026-10-08-jetson-orin/README.md)
+when reproducing the measurements. Keep the server on `127.0.0.1`; configuring an external listener requires
+`--api-key`. For setup details, see [AI_SETUP.md](docs/AI_SETUP.md) and [INSTALL.md](docs/INSTALL.md).
+
+## Original Strata features and desktop results
+
+The following overview and desktop measurements are retained from the original Strata project. They describe
+its Windows/Linux desktop configurations and are separate from the Orin measurements above.
 
 <p align="center"><a href="https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4"><img src="docs/media/pagoda-preview.webp" width="720" alt="A voxel pagoda garden that Strata's model wrote, running in the browser"></a><br>
 <sub>A voxel pagoda garden, 1 shot prompt running on an RTX 5070 with Strata (IQ3_S, 128K context) ·
@@ -13,9 +85,9 @@ Strata runs **[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Nex
 large, smart AI model that usually needs a server. It chats, writes code, reads pictures and works with your apps
 and coding agents. Nothing leaves your PC.
 
-## How fast is it?
+## Upstream desktop performance
 
-We measured it on two ordinary gaming PCs. A token is about ¾ of a word.
+The original Strata project measured it on two ordinary gaming PCs. A token is about ¾ of a word.
 
 - **Writes answers:** how fast the reply appears in a short chat. 60 tokens per second is faster than you can read.
 - **Reads your prompt:** how fast it takes in what you send (here a 32K-token document, code or chat history).
@@ -51,7 +123,7 @@ about 100-140 tokens per second. Long chats and other cards: [speed of each mode
 <p align="center"><a href="https://buymeacoffee.com/strataengine"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="50"></a><br>
 <sub>Strata is free. If it runs well on your PC, a coffee keeps the work on it going.</sub></p>
 
-## What you need
+## Desktop requirements
 
 | | |
 | --- | --- |
@@ -71,14 +143,15 @@ Experimental, written and tested by community members on their own machines:
 
 The full list: [docs/INSTALL.md](docs/INSTALL.md#what-you-need).
 
-## Install
+## Desktop installation
 
 ### Let your AI set it up
 
 Do you use an AI coding assistant (Claude Code, Cursor, Codex, GitHub Copilot, ...)? Paste this into it:
 
 ```text
-Set up Strata on this PC for me: https://github.com/Niko1221/Strata - follow docs/AI_SETUP.md in that repository.
+Set up Strata from https://github.com/calvinvette/strata-inference-orin, branch feat/jetson-orin-arm64.
+Follow docs/AI_SETUP.md and the Jetson section of README.md in that repository.
 ```
 
 It checks your graphics card, RAM and disk and picks the model that fits. Then it installs and starts it and tells
@@ -87,7 +160,7 @@ you how to connect your apps. AI tools can also install, start and stop Strata t
 
 ### Or do it yourself
 
-[Download Strata](https://github.com/Niko1221/Strata/archive/refs/heads/main.zip) and unzip it (or `git clone` it).
+[Download this fork](https://github.com/calvinvette/strata-inference-orin/archive/refs/heads/feat/jetson-orin-arm64.zip) and unzip it (or `git clone` it).
 **Windows:** double-click **`START-HERE.bat`**. **Linux:** run **`./setup.sh`** in the Strata folder.
 
 The steps are the same for NVIDIA and AMD. The installer finds your card and sets up the right engine for it. It

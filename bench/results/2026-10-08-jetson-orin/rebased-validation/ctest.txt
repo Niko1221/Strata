@@ -1,0 +1,254 @@
+Internal ctest changing into directory: /tmp/strata-orin-build
+Test project /tmp/strata-orin-build
+        Start   1: shared_memory_budget_test
+  1/103 Test   #1: shared_memory_budget_test .............   Passed    0.00 sec
+        Start   2: gguf_reader_test
+  2/103 Test   #2: gguf_reader_test ......................   Passed    0.05 sec
+        Start   3: gguf_split_test
+  3/103 Test   #3: gguf_split_test .......................   Passed    0.04 sec
+        Start   4: tuning_header_arch_family_test
+  4/103 Test   #4: tuning_header_arch_family_test ........   Passed    0.01 sec
+        Start   5: qsa_topk_active_parity
+  5/103 Test   #5: qsa_topk_active_parity ................   Passed    1.57 sec
+        Start   6: qsa_select_bench
+  6/103 Test   #6: qsa_select_bench ......................   Passed    0.37 sec
+        Start   7: qsa_select_bench_fp32_tiled
+  7/103 Test   #7: qsa_select_bench_fp32_tiled ...........   Passed    0.59 sec
+        Start   8: exchange_storage_test
+  8/103 Test   #8: exchange_storage_test .................   Passed    0.67 sec
+        Start   9: file_expert_source_test
+  9/103 Test   #9: file_expert_source_test ...............   Passed    0.37 sec
+        Start  10: vmm_test
+ 10/103 Test  #10: vmm_test ..............................***Failed    2.17 sec
+FAIL /home/calvin/workspace/strata/tests/core/vmm_test.cpp:67: f1 >= f0 + 8 * G
+vmm_test: FAILED
+
+        Start  11: expert_profile_save_test
+ 11/103 Test  #11: expert_profile_save_test ..............   Passed    0.01 sec
+        Start  12: expert_profile_version_test
+ 12/103 Test  #12: expert_profile_version_test ...........   Passed    0.01 sec
+        Start  13: expert_layout_test
+ 13/103 Test  #13: expert_layout_test ....................   Passed    0.24 sec
+        Start  14: native_dense_ple_key_test
+ 14/103 Test  #14: native_dense_ple_key_test .............   Passed    0.11 sec
+        Start  15: expert_cache_per_layer_test
+ 15/103 Test  #15: expert_cache_per_layer_test ...........   Passed    0.11 sec
+        Start  16: expert_cache_segmented_test
+ 16/103 Test  #16: expert_cache_segmented_test ...........***Failed    0.14 sec
+freed 18446744073705357312 bytes
+FAIL VRAM not given back
+
+        Start  17: dequant_s2_parity
+ 17/103 Test  #17: dequant_s2_parity .....................   Passed    0.19 sec
+        Start  18: s2_gemv_parity
+ 18/103 Test  #18: s2_gemv_parity ........................   Passed    0.12 sec
+        Start  19: iq_parity_fixtures
+ 19/103 Test  #19: iq_parity_fixtures ....................***Skipped   0.15 sec
+        Start  20: iq_parity
+ 20/103 Test  #20: iq_parity .............................***Skipped   0.10 sec
+        Start  21: mmvq_multi_parity
+ 21/103 Test  #21: mmvq_multi_parity .....................   Passed    0.67 sec
+        Start  22: mmvq_il_parity
+ 22/103 Test  #22: mmvq_il_parity ........................   Passed    2.38 sec
+        Start  23: pdl_parity
+ 23/103 Test  #23: pdl_parity ............................   Passed    1.34 sec
+        Start  24: iq_multi_parity
+ 24/103 Test  #24: iq_multi_parity .......................   Passed    2.57 sec
+        Start  25: dma_batch_parity
+ 25/103 Test  #25: dma_batch_parity ......................   Passed    2.72 sec
+        Start  26: gdn_rec_parity
+ 26/103 Test  #26: gdn_rec_parity ........................   Passed    1.02 sec
+        Start  27: gemm_bf16_parity
+ 27/103 Test  #27: gemm_bf16_parity ......................   Passed    4.87 sec
+        Start  28: native_grouped_parity
+ 28/103 Test  #28: native_grouped_parity .................   Passed    3.45 sec
+        Start  29: shared_expert_parity
+ 29/103 Test  #29: shared_expert_parity ..................   Passed    0.13 sec
+        Start  30: verify_parity
+ 30/103 Test  #30: verify_parity .........................   Passed    0.27 sec
+        Start  31: gr_parity
+ 31/103 Test  #31: gr_parity .............................   Passed    0.37 sec
+        Start  32: gdn_parity
+ 32/103 Test  #32: gdn_parity ............................   Passed    0.45 sec
+        Start  33: s2_gemv_q8_parity
+ 33/103 Test  #33: s2_gemv_q8_parity .....................   Passed    0.11 sec
+        Start  34: sampler_parity
+ 34/103 Test  #34: sampler_parity ........................   Passed    2.31 sec
+        Start  35: spec_verify_parity
+ 35/103 Test  #35: spec_verify_parity ....................   Passed    4.80 sec
+        Start  36: sampler_parity_one_block
+ 36/103 Test  #36: sampler_parity_one_block ..............   Passed    3.14 sec
+        Start  37: sampler_parity_old
+ 37/103 Test  #37: sampler_parity_old ....................   Passed    8.17 sec
+        Start  38: decode_cluster_parity
+ 38/103 Test  #38: decode_cluster_parity .................   Passed    0.10 sec
+        Start  39: rope_parity
+ 39/103 Test  #39: rope_parity ...........................   Passed    0.13 sec
+        Start  40: quantize_act_parity
+ 40/103 Test  #40: quantize_act_parity ...................***Failed    0.19 sec
+  random normal              blocks byte-exact (0 bad bytes)   round trip bit-exact (0 differ)
+  small magnitude (1e-6)     blocks byte-exact (0 bad bytes)   round trip bit-exact (0 differ)
+  all zero                   blocks byte-exact (0 bad bytes)   round trip bit-exact (0 differ)
+  exact .5 boundaries        blocks byte-exact (0 bad bytes)   round trip bit-exact (0 differ)
+  one extreme per block      blocks byte-exact (0 bad bytes)   round trip bit-exact (0 differ)
+
+quantize_q8_0: 0 failures over 5 distributions x 131072 elements
+  f32->f16 overflow saturates, not NaN         yes (0 of 11 wrong)
+  f16->f32 keeps subnormals                    yes (0x0001 -> 5.96046448e-08, want 2^-24)
+
+Q8_K  (ggml block_q8_K: 292 bytes / 256 elements, {f32 d; i8 qs[256]; i16 bsums[16]})
+  random normal              blocks byte-exact (0 bad bytes)   round trip bit-exact (0 differ)
+  small magnitude (1e-7)     blocks *** WRONG *** (2 bad bytes)   round trip *** WRONG *** (1 differ)
+      first bad byte: block 343 offset 148 = qs (the quants)   ref db  got da
+      element 144: x -8.56978275e-08  max -2.90229991e-07  iscale 437584000  iscale*x -37.5 (frac 0.500000)
+  all zero                   blocks byte-exact (0 bad bytes)   round trip bit-exact (0 differ)
+  exact .5 ties (half-to-even) blocks byte-exact (0 bad bytes)   round trip bit-exact (0 differ)
+    tie fixture discriminates 522240 ties, 260096 where half-to-even != half-away (49.8%)
+  -127 vs -128 scale observable yes  (0.915% of magnitude, 172014 bytes differ)
+
+quantize_act: 3 failures over 5 Q8_0 + 4 Q8_K distributions
+
+        Start  41: route_window_parity
+ 41/103 Test  #41: route_window_parity ...................   Passed    0.18 sec
+        Start  42: router_top10_parity
+ 42/103 Test  #42: router_top10_parity ...................   Passed    0.12 sec
+        Start  43: native_multi_parity
+ 43/103 Test  #43: native_multi_parity ...................   Passed    0.24 sec
+        Start  44: kv_steps_parity
+ 44/103 Test  #44: kv_steps_parity .......................   Passed    0.16 sec
+        Start  45: resident_plan_parity
+ 45/103 Test  #45: resident_plan_parity ..................   Passed    0.18 sec
+        Start  46: gr_multi_parity
+ 46/103 Test  #46: gr_multi_parity .......................   Passed    0.34 sec
+        Start  47: s_gemv_parity
+ 47/103 Test  #47: s_gemv_parity .........................   Passed    0.18 sec
+        Start  48: elementwise_parity
+ 48/103 Test  #48: elementwise_parity ....................   Passed    0.12 sec
+        Start  49: bf16_gemv_parity
+ 49/103 Test  #49: bf16_gemv_parity ......................   Passed    0.32 sec
+        Start  50: s_gemv_q8k_parity
+ 50/103 Test  #50: s_gemv_q8k_parity .....................   Passed    0.12 sec
+        Start  51: qsa_parity
+ 51/103 Test  #51: qsa_parity ............................   Passed    1.35 sec
+        Start  52: qsa_topk_parity
+ 52/103 Test  #52: qsa_topk_parity .......................   Passed    1.34 sec
+        Start  53: ple_parity
+ 53/103 Test  #53: ple_parity ............................***Failed    0.00 sec
+ple_parity: required PLE table is missing or incompatible: ../../Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf (cannot open ../../Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf)
+
+        Start  54: kv_q8_parity
+ 54/103 Test  #54: kv_q8_parity ..........................   Passed    0.21 sec
+        Start  55: kv_stream_parity
+ 55/103 Test  #55: kv_stream_parity ......................   Passed   20.31 sec
+        Start  56: kv_hybrid_parity
+ 56/103 Test  #56: kv_hybrid_parity ......................   Passed    0.42 sec
+        Start  57: kv_q4_parity
+ 57/103 Test  #57: kv_q4_parity ..........................   Passed    0.17 sec
+        Start  58: verify_batch_parity
+ 58/103 Test  #58: verify_batch_parity ...................   Passed    0.15 sec
+        Start  59: cvec_parity
+ 59/103 Test  #59: cvec_parity ...........................   Passed    0.25 sec
+        Start  60: s2_expert_grouped_parity
+ 60/103 Test  #60: s2_expert_grouped_parity ..............   Passed    0.38 sec
+        Start  61: expert_cache_memory_test
+ 61/103 Test  #61: expert_cache_memory_test ..............   Passed    0.12 sec
+        Start  62: expert_cache_memory_refusal
+ 62/103 Test  #62: expert_cache_memory_refusal ...........   Passed    0.11 sec
+        Start  63: platform_memory_test
+ 63/103 Test  #63: platform_memory_test ..................   Passed    0.04 sec
+        Start  64: pinned_fallback_test
+ 64/103 Test  #64: pinned_fallback_test ..................   Passed    0.11 sec
+        Start  65: pinned_shared_test
+ 65/103 Test  #65: pinned_shared_test ....................   Passed    0.11 sec
+        Start  66: ple_reader_selftest
+ 66/103 Test  #66: ple_reader_selftest ...................   Passed   44.38 sec
+        Start  67: cuda_device_selftest
+ 67/103 Test  #67: cuda_device_selftest ..................   Passed    0.25 sec
+        Start  68: arch_defaults_test
+ 68/103 Test  #68: arch_defaults_test ....................   Passed    0.00 sec
+        Start  69: suffix_drafter_test
+ 69/103 Test  #69: suffix_drafter_test ...................   Passed    0.04 sec
+        Start  70: controller_test
+ 70/103 Test  #70: controller_test .......................   Passed    0.00 sec
+        Start  71: draft_policy_test
+ 71/103 Test  #71: draft_policy_test .....................   Passed    0.00 sec
+        Start  72: message_boundary_test
+ 72/103 Test  #72: message_boundary_test .................   Passed    0.00 sec
+        Start  73: conv_cache_test
+ 73/103 Test  #73: conv_cache_test .......................   Passed    0.00 sec
+        Start  74: coupled_draft_test
+ 74/103 Test  #74: coupled_draft_test ....................   Passed    0.01 sec
+        Start  75: spec_prob_test
+ 75/103 Test  #75: spec_prob_test ........................   Passed    6.19 sec
+        Start  76: bf16_bits_test
+ 76/103 Test  #76: bf16_bits_test ........................   Passed    3.23 sec
+        Start  77: dequant_q5_1_test
+ 77/103 Test  #77: dequant_q5_1_test .....................   Passed    0.00 sec
+        Start  78: pool_tasks_test
+ 78/103 Test  #78: pool_tasks_test .......................   Passed    9.11 sec
+        Start  79: router_dot_parity
+ 79/103 Test  #79: router_dot_parity .....................   Passed    0.19 sec
+        Start  80: router_dot_parity_avx
+ 80/103 Test  #80: router_dot_parity_avx .................   Passed    0.20 sec
+        Start  81: q8_oracle_contract_test
+ 81/103 Test  #81: q8_oracle_contract_test ...............   Passed    0.01 sec
+        Start  82: prefill_fused_moe_test
+ 82/103 Test  #82: prefill_fused_moe_test ................   Passed    3.74 sec
+        Start  83: prefill_fused_iq_test
+ 83/103 Test  #83: prefill_fused_iq_test .................   Passed   89.85 sec
+        Start  84: native_expert_parity_refuses_q6_K
+ 84/103 Test  #84: native_expert_parity_refuses_q6_K .....   Passed    0.12 sec
+        Start  85: native_expert_parity_q4_K_q5_1
+ 85/103 Test  #85: native_expert_parity_q4_K_q5_1 ........   Passed    0.62 sec
+        Start  86: native_expert_parity_q4_K_q8_0
+ 86/103 Test  #86: native_expert_parity_q4_K_q8_0 ........   Passed    0.61 sec
+        Start  87: native_expert_parity_q5_K_q8_0
+ 87/103 Test  #87: native_expert_parity_q5_K_q8_0 ........   Passed    0.57 sec
+        Start  88: native_expert_parity_q8_0_q8_0
+ 88/103 Test  #88: native_expert_parity_q8_0_q8_0 ........   Passed    0.30 sec
+        Start  89: native_expert_parity_q4_K_q5_0
+ 89/103 Test  #89: native_expert_parity_q4_K_q5_0 ........   Passed    0.60 sec
+        Start  90: native_expert_parity_q5_0_q8_0
+ 90/103 Test  #90: native_expert_parity_q5_0_q8_0 ........   Passed    0.30 sec
+        Start  91: native_expert_parity_q4_0_q4_0
+ 91/103 Test  #91: native_expert_parity_q4_0_q4_0 ........   Passed    0.30 sec
+        Start  92: native_expert_parity_q4_0_q4_1
+ 92/103 Test  #92: native_expert_parity_q4_0_q4_1 ........   Passed    0.31 sec
+        Start  93: native_expert_parity_iq3_xxs_iq4_nl
+ 93/103 Test  #93: native_expert_parity_iq3_xxs_iq4_nl ...   Passed    2.82 sec
+        Start  94: native_expert_parity_iq2_s_q2_0
+ 94/103 Test  #94: native_expert_parity_iq2_s_q2_0 .......   Passed    5.95 sec
+        Start  95: native_expert_parity_iq3_s_iq4_nl
+ 95/103 Test  #95: native_expert_parity_iq3_s_iq4_nl .....   Passed    2.19 sec
+        Start  96: native_expert_parity_iq4_xs_q2_0
+ 96/103 Test  #96: native_expert_parity_iq4_xs_q2_0 ......   Passed    1.08 sec
+        Start  97: native_expert_parity_q5_1_min
+ 97/103 Test  #97: native_expert_parity_q5_1_min .........   Passed    0.13 sec
+        Start  98: native_expert_parity_bf16_embd
+ 98/103 Test  #98: native_expert_parity_bf16_embd ........   Passed    0.12 sec
+        Start  99: pool_affinity_test
+ 99/103 Test  #99: pool_affinity_test ....................   Passed    0.01 sec
+        Start 100: q2_portable_reference_test
+100/103 Test #100: q2_portable_reference_test ............   Passed    0.01 sec
+        Start 101: expert_multi_test
+101/103 Test #101: expert_multi_test .....................***Skipped   0.00 sec
+        Start 102: pool_stress
+102/103 Test #102: pool_stress ...........................   Passed   20.02 sec
+        Start 103: direct_file_async_test
+103/103 Test #103: direct_file_async_test ................   Passed    0.01 sec
+
+96% tests passed, 4 tests failed out of 103
+
+Total Test time (real) = 266.64 sec
+
+The following tests did not run:
+	 19 - iq_parity_fixtures (Skipped)
+	 20 - iq_parity (Skipped)
+	101 - expert_multi_test (Skipped)
+
+The following tests FAILED:
+	 10 - vmm_test (Failed)
+	 16 - expert_cache_segmented_test (Failed)
+	 40 - quantize_act_parity (Failed)
+	 53 - ple_parity (Failed)
+Errors while running CTest

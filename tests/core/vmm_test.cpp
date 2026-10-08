@@ -21,6 +21,10 @@ int main() {
         return 0;
     }
     const uint64_t G = strata::core::vmm_granularity();
+    int device = 0;
+    cudaDeviceProp properties{};
+    CHECK(cudaGetDevice(&device) == cudaSuccess);
+    CHECK(cudaGetDeviceProperties(&properties, device) == cudaSuccess);
     CHECK(G >= 4096);
     VmmRange a, b;
     CHECK(a.reserve(8 * G + 1));   // rounds up
@@ -59,12 +63,19 @@ int main() {
     cudaMemGetInfo(&f0, &t);
     a.release();
     b.release();
-    for (int i = 0; i < 20; ++i) {   // the free-memory counter may lag a release by a moment on Windows (WDDM)
+    for (int i = 0; i < (properties.integrated ? 1 : 20); ++i) {
+        // Dedicated VRAM counters may lag on WDDM. Shared RAM also changes
+        // with unrelated CPU allocations, so its delta is an observation.
         cudaMemGetInfo(&f1, &t);
         if (f1 >= f0 + 8 * G) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
-    CHECK(f1 >= f0 + 8 * G);   // 7 + 2 chunks went back (the driver may round)
+    if (!properties.integrated) CHECK(f1 >= f0 + 8 * G);
+    else std::printf("shared RAM free-byte delta: %lld (host-wide observation)\n",
+                     (long long) f1 - (long long) f0);
+    // Keep release-state checks on both device types. Freed handles must not
+    // be queried; CUDA does not define their behavior after release.
+    CHECK(a.base() == nullptr && b.base() == nullptr && a.mapped_count() == 0 && b.mapped_count() == 0);
     CHECK(cudaGetLastError() == cudaSuccess);
     std::printf("vmm_test: %s\n", fails ? "FAILED" : "ok");
     return fails ? 1 : 0;

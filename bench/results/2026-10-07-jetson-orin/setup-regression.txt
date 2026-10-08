@@ -1,0 +1,13 @@
+.............................  [!]  the finish mark of x.gguf cannot be written ([Errno 13] read-only): the next run does this step again
+...............................................  [ok] hipBLASLt tuning table: gfx1151-hipblaslt-100401.txt (faster prompts)
+.............  [!]  no earlier engine is kept in /tmp/tmpyjzvdsnq/engine/.previous (one is kept when an update replaces the engine)
+.  [ok] the engine it replaced (0.1.38) is kept in /tmp/tmp3pgenau1/engine/.previous; setup.py --rollback-engine puts it back
+  [ok] the engine it replaced (0.1.39) is kept in /tmp/tmp3pgenau1/engine/.previous; setup.py --rollback-engine puts it back
+.  [ok] the engine it replaced (0.1.39) is kept in /tmp/tmp3s478tly/engine/.previous; setup.py --rollback-engine puts it back
+  [ok] engine 0.1.39 is installed again (it replaced 0.1.40, which is kept in /tmp/tmp3s478tly/engine/.previous)
+  [ok] engine 0.1.40 is installed again (it replaced 0.1.39, which is kept in /tmp/tmp3s478tly/engine/.previous)
+...................
+----------------------------------------------------------------------
+Ran 110 tests in 4.227s
+
+OK

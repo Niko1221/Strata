@@ -1,3 +1,4 @@
+#include "strata/platform/cpu_arch.hpp"
 // src/kernels/cpu/expert_parity.cpp - P2.S3's test for the CPU expert path.
 //
 // WHAT IS BEING CHECKED, and the two tolerances are different questions:
@@ -98,7 +99,7 @@ int main(int argc, char** argv) {
     const cpu::CpuFeatures feat = cpu::cpu_features();
     std::printf("  %-44s %s\n", "AVX512 F/BW/VL/VNNI/VBMI",
                 feat.usable() ? "all present" : feat.reason());
-    if (!feat.usable()) {
+    if (STRATA_CPU_X86 && !feat.usable()) {
         std::printf("      the VNNI path cannot run here; only the scalar oracle can be exercised.\n");
         std::printf("      P2.S3's kernel check is SKIPPED, not passed.\n");
         std::printf("\nexpert_parity: 0 failures, 1 SKIPPED\n");

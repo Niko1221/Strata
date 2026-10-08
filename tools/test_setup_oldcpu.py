@@ -26,6 +26,9 @@ def cpuinfo(flags: str):
 
 class FloorTest(unittest.TestCase):
     def setUp(self):
+        self.arch = mock.patch.object(setup, "arm64_host", return_value=False)
+        self.arch.start()
+        self.addCleanup(self.arch.stop)
         self.env = mock.patch.dict(os.environ, {"STRATA_ISA_FLOOR": ""})
         self.env.start()
 

@@ -1,0 +1,14 @@
+{
+  "tokens": [
+    248045
+  ],
+  "reference_argmax": 846,
+  "strata_argmax": 846,
+  "max_abs_logit_difference": 0.09568247199058533,
+  "rms_logit_difference": 0.017592410285728485,
+  "centered_relative_rms": 0.018684670697879185,
+  "reference_top_logprob": -0.5617873333608259,
+  "strata_top_logprob": -0.5617962668531342,
+  "kl_reference_to_strata": 8.391460891713869e-08,
+  "finite_logits": true
+}

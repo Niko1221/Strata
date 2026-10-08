@@ -1,3 +1,4 @@
+#include "strata/platform/cpu_arch.hpp"
 // src/kernels/cpu/pool_stress.cpp - issue #29: the expert pool under the load a big-VRAM card gives it.
 //
 // With most experts resident on the GPU, many layers hand the pool nothing, the workers go to sleep in the middle
@@ -25,7 +26,7 @@ namespace cpu = strata::kernels::cpu;
 int main(int argc, char** argv) {
     const double seconds = argc > 1 ? std::atof(argv[1]) : 20.0;
     const cpu::CpuFeatures feat = cpu::cpu_features();
-    if (!feat.usable()) {
+    if (STRATA_CPU_X86 && !feat.usable()) {
         std::printf("CPU lacks %s: pool_stress SKIPPED\n", feat.reason());
         return 0;
     }

@@ -53,7 +53,7 @@ inline constexpr size_t O_D_SCALES = O_GU_SCALES + 2ull * FF * SC_GU * 2;
 /// One activation in Strata's planar storage: `QKA` elements per chunk.
 /// The default legacy quantizer uses FP32 scales and half-away rounding. It is
 /// not the pinned ggml CPU Q8_0 contract; expert_set_oracle_q8_0 selects that
-/// experimental contract (FP16-rounded scales and x86 nearest-even codes).
+/// experimental contract (FP16-rounded scales and nearest-even codes).
 ///
 /// The historical function name `act_quant_q8_1` does not describe a native
 /// ggml block layout. One 64-weight block always spans two 32-element chunks.

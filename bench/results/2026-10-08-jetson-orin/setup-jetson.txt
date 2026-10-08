@@ -1,0 +1,8 @@
+..............  Compiling the image encoder with CUDA (10-20 minutes, once) ...
+  [ok] engine compiled: /tmp/tmp6_glzp_u/engine-cuda12/strata
+  [ok] engine already built for this PC
+.
+----------------------------------------------------------------------
+Ran 15 tests in 0.175s
+
+OK

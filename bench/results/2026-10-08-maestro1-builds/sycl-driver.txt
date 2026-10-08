@@ -1,0 +1,3 @@
+WARNING: hwloc library not found in /tcm/latest/lib
+   WARNING: vars.sh does not set up dependencies when invoked directly. Please perform environment setup for UMF before running DPC++ applications.
+icpx: warning: future releases of the clang compiler will prefer GCC installations containing libstdc++ include directories; '/usr/lib/gcc/x86_64-linux-gnu/11' would be chosen over '/usr/lib/gcc/x86_64-linux-gnu/12' [-Wgcc-install-dir-libstdcxx]

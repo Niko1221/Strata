@@ -1,0 +1,543 @@
+Internal ctest changing into directory: /tmp/strata-arm-tests
+Test project /tmp/strata-arm-tests
+      Start  1: shared_memory_budget_test
+ 1/25 Test  #1: shared_memory_budget_test ........   Passed    0.00 sec
+      Start  2: gguf_reader_test
+Could not find executable /tmp/strata-arm-tests/gguf_reader_test
+Looked in the following places:
+/tmp/strata-arm-tests/gguf_reader_test
+/tmp/strata-arm-tests/gguf_reader_test
+/tmp/strata-arm-tests/Release/gguf_reader_test
+/tmp/strata-arm-tests/Release/gguf_reader_test
+/tmp/strata-arm-tests/Debug/gguf_reader_test
+/tmp/strata-arm-tests/Debug/gguf_reader_test
+/tmp/strata-arm-tests/MinSizeRel/gguf_reader_test
+/tmp/strata-arm-tests/MinSizeRel/gguf_reader_test
+/tmp/strata-arm-tests/RelWithDebInfo/gguf_reader_test
+/tmp/strata-arm-tests/RelWithDebInfo/gguf_reader_test
+/tmp/strata-arm-tests/Deployment/gguf_reader_test
+/tmp/strata-arm-tests/Deployment/gguf_reader_test
+/tmp/strata-arm-tests/Development/gguf_reader_test
+/tmp/strata-arm-tests/Development/gguf_reader_test
+tmp/strata-arm-tests/gguf_reader_test
+tmp/strata-arm-tests/gguf_reader_test
+tmp/strata-arm-tests/Release/gguf_reader_test
+tmp/strata-arm-tests/Release/gguf_reader_test
+tmp/strata-arm-tests/Debug/gguf_reader_test
+tmp/strata-arm-tests/Debug/gguf_reader_test
+tmp/strata-arm-tests/MinSizeRel/gguf_reader_test
+tmp/strata-arm-tests/MinSizeRel/gguf_reader_test
+tmp/strata-arm-tests/RelWithDebInfo/gguf_reader_test
+tmp/strata-arm-tests/RelWithDebInfo/gguf_reader_test
+tmp/strata-arm-tests/Deployment/gguf_reader_test
+tmp/strata-arm-tests/Deployment/gguf_reader_test
+tmp/strata-arm-tests/Development/gguf_reader_test
+tmp/strata-arm-tests/Development/gguf_reader_test
+Unable to find executable: /tmp/strata-arm-tests/gguf_reader_test
+ 2/25 Test  #2: gguf_reader_test .................***Not Run   0.00 sec
+      Start  3: gguf_split_test
+Could not find executable /tmp/strata-arm-tests/gguf_split_test
+Looked in the following places:
+/tmp/strata-arm-tests/gguf_split_test
+/tmp/strata-arm-tests/gguf_split_test
+/tmp/strata-arm-tests/Release/gguf_split_test
+/tmp/strata-arm-tests/Release/gguf_split_test
+/tmp/strata-arm-tests/Debug/gguf_split_test
+/tmp/strata-arm-tests/Debug/gguf_split_test
+/tmp/strata-arm-tests/MinSizeRel/gguf_split_test
+/tmp/strata-arm-tests/MinSizeRel/gguf_split_test
+/tmp/strata-arm-tests/RelWithDebInfo/gguf_split_test
+/tmp/strata-arm-tests/RelWithDebInfo/gguf_split_test
+/tmp/strata-arm-tests/Deployment/gguf_split_test
+/tmp/strata-arm-tests/Deployment/gguf_split_test
+/tmp/strata-arm-tests/Development/gguf_split_test
+/tmp/strata-arm-tests/Development/gguf_split_test
+tmp/strata-arm-tests/gguf_split_test
+tmp/strata-arm-tests/gguf_split_test
+tmp/strata-arm-tests/Release/gguf_split_test
+tmp/strata-arm-tests/Release/gguf_split_test
+tmp/strata-arm-tests/Debug/gguf_split_test
+tmp/strata-arm-tests/Debug/gguf_split_test
+tmp/strata-arm-tests/MinSizeRel/gguf_split_test
+tmp/strata-arm-tests/MinSizeRel/gguf_split_test
+tmp/strata-arm-tests/RelWithDebInfo/gguf_split_test
+tmp/strata-arm-tests/RelWithDebInfo/gguf_split_test
+tmp/strata-arm-tests/Deployment/gguf_split_test
+tmp/strata-arm-tests/Deployment/gguf_split_test
+tmp/strata-arm-tests/Development/gguf_split_test
+tmp/strata-arm-tests/Development/gguf_split_test
+Unable to find executable: /tmp/strata-arm-tests/gguf_split_test
+ 3/25 Test  #3: gguf_split_test ..................***Not Run   0.00 sec
+      Start  4: tuning_header_arch_family_test
+Could not find executable /tmp/strata-arm-tests/tuning_header_arch_family_test
+Looked in the following places:
+/tmp/strata-arm-tests/tuning_header_arch_family_test
+/tmp/strata-arm-tests/tuning_header_arch_family_test
+/tmp/strata-arm-tests/Release/tuning_header_arch_family_test
+/tmp/strata-arm-tests/Release/tuning_header_arch_family_test
+/tmp/strata-arm-tests/Debug/tuning_header_arch_family_test
+/tmp/strata-arm-tests/Debug/tuning_header_arch_family_test
+/tmp/strata-arm-tests/MinSizeRel/tuning_header_arch_family_test
+/tmp/strata-arm-tests/MinSizeRel/tuning_header_arch_family_test
+/tmp/strata-arm-tests/RelWithDebInfo/tuning_header_arch_family_test
+/tmp/strata-arm-tests/RelWithDebInfo/tuning_header_arch_family_test
+/tmp/strata-arm-tests/Deployment/tuning_header_arch_family_test
+/tmp/strata-arm-tests/Deployment/tuning_header_arch_family_test
+/tmp/strata-arm-tests/Development/tuning_header_arch_family_test
+/tmp/strata-arm-tests/Development/tuning_header_arch_family_test
+tmp/strata-arm-tests/tuning_header_arch_family_test
+tmp/strata-arm-tests/tuning_header_arch_family_test
+tmp/strata-arm-tests/Release/tuning_header_arch_family_test
+tmp/strata-arm-tests/Release/tuning_header_arch_family_test
+tmp/strata-arm-tests/Debug/tuning_header_arch_family_test
+tmp/strata-arm-tests/Debug/tuning_header_arch_family_test
+tmp/strata-arm-tests/MinSizeRel/tuning_header_arch_family_test
+tmp/strata-arm-tests/MinSizeRel/tuning_header_arch_family_test
+tmp/strata-arm-tests/RelWithDebInfo/tuning_header_arch_family_test
+tmp/strata-arm-tests/RelWithDebInfo/tuning_header_arch_family_test
+tmp/strata-arm-tests/Deployment/tuning_header_arch_family_test
+tmp/strata-arm-tests/Deployment/tuning_header_arch_family_test
+tmp/strata-arm-tests/Development/tuning_header_arch_family_test
+tmp/strata-arm-tests/Development/tuning_header_arch_family_test
+Unable to find executable: /tmp/strata-arm-tests/tuning_header_arch_family_test
+ 4/25 Test  #4: tuning_header_arch_family_test ...***Not Run   0.00 sec
+      Start  5: arch_defaults_test
+Could not find executable /tmp/strata-arm-tests/arch_defaults_test
+Looked in the following places:
+/tmp/strata-arm-tests/arch_defaults_test
+/tmp/strata-arm-tests/arch_defaults_test
+/tmp/strata-arm-tests/Release/arch_defaults_test
+/tmp/strata-arm-tests/Release/arch_defaults_test
+/tmp/strata-arm-tests/Debug/arch_defaults_test
+/tmp/strata-arm-tests/Debug/arch_defaults_test
+/tmp/strata-arm-tests/MinSizeRel/arch_defaults_test
+/tmp/strata-arm-tests/MinSizeRel/arch_defaults_test
+/tmp/strata-arm-tests/RelWithDebInfo/arch_defaults_test
+/tmp/strata-arm-tests/RelWithDebInfo/arch_defaults_test
+/tmp/strata-arm-tests/Deployment/arch_defaults_test
+/tmp/strata-arm-tests/Deployment/arch_defaults_test
+/tmp/strata-arm-tests/Development/arch_defaults_test
+/tmp/strata-arm-tests/Development/arch_defaults_test
+tmp/strata-arm-tests/arch_defaults_test
+tmp/strata-arm-tests/arch_defaults_test
+tmp/strata-arm-tests/Release/arch_defaults_test
+tmp/strata-arm-tests/Release/arch_defaults_test
+tmp/strata-arm-tests/Debug/arch_defaults_test
+tmp/strata-arm-tests/Debug/arch_defaults_test
+tmp/strata-arm-tests/MinSizeRel/arch_defaults_test
+tmp/strata-arm-tests/MinSizeRel/arch_defaults_test
+tmp/strata-arm-tests/RelWithDebInfo/arch_defaults_test
+tmp/strata-arm-tests/RelWithDebInfo/arch_defaults_test
+tmp/strata-arm-tests/Deployment/arch_defaults_test
+tmp/strata-arm-tests/Deployment/arch_defaults_test
+tmp/strata-arm-tests/Development/arch_defaults_test
+tmp/strata-arm-tests/Development/arch_defaults_test
+Unable to find executable: /tmp/strata-arm-tests/arch_defaults_test
+ 5/25 Test  #5: arch_defaults_test ...............***Not Run   0.00 sec
+      Start  6: suffix_drafter_test
+Could not find executable /tmp/strata-arm-tests/suffix_drafter_test
+Looked in the following places:
+/tmp/strata-arm-tests/suffix_drafter_test
+/tmp/strata-arm-tests/suffix_drafter_test
+/tmp/strata-arm-tests/Release/suffix_drafter_test
+/tmp/strata-arm-tests/Release/suffix_drafter_test
+/tmp/strata-arm-tests/Debug/suffix_drafter_test
+/tmp/strata-arm-tests/Debug/suffix_drafter_test
+/tmp/strata-arm-tests/MinSizeRel/suffix_drafter_test
+/tmp/strata-arm-tests/MinSizeRel/suffix_drafter_test
+/tmp/strata-arm-tests/RelWithDebInfo/suffix_drafter_test
+/tmp/strata-arm-tests/RelWithDebInfo/suffix_drafter_test
+/tmp/strata-arm-tests/Deployment/suffix_drafter_test
+/tmp/strata-arm-tests/Deployment/suffix_drafter_test
+/tmp/strata-arm-tests/Development/suffix_drafter_test
+/tmp/strata-arm-tests/Development/suffix_drafter_test
+tmp/strata-arm-tests/suffix_drafter_test
+tmp/strata-arm-tests/suffix_drafter_test
+tmp/strata-arm-tests/Release/suffix_drafter_test
+tmp/strata-arm-tests/Release/suffix_drafter_test
+tmp/strata-arm-tests/Debug/suffix_drafter_test
+tmp/strata-arm-tests/Debug/suffix_drafter_test
+tmp/strata-arm-tests/MinSizeRel/suffix_drafter_test
+tmp/strata-arm-tests/MinSizeRel/suffix_drafter_test
+tmp/strata-arm-tests/RelWithDebInfo/suffix_drafter_test
+tmp/strata-arm-tests/RelWithDebInfo/suffix_drafter_test
+tmp/strata-arm-tests/Deployment/suffix_drafter_test
+tmp/strata-arm-tests/Deployment/suffix_drafter_test
+tmp/strata-arm-tests/Development/suffix_drafter_test
+tmp/strata-arm-tests/Development/suffix_drafter_test
+Unable to find executable: /tmp/strata-arm-tests/suffix_drafter_test
+ 6/25 Test  #6: suffix_drafter_test ..............***Not Run   0.00 sec
+      Start  7: controller_test
+Could not find executable /tmp/strata-arm-tests/controller_test
+Looked in the following places:
+/tmp/strata-arm-tests/controller_test
+/tmp/strata-arm-tests/controller_test
+/tmp/strata-arm-tests/Release/controller_test
+/tmp/strata-arm-tests/Release/controller_test
+/tmp/strata-arm-tests/Debug/controller_test
+/tmp/strata-arm-tests/Debug/controller_test
+/tmp/strata-arm-tests/MinSizeRel/controller_test
+/tmp/strata-arm-tests/MinSizeRel/controller_test
+/tmp/strata-arm-tests/RelWithDebInfo/controller_test
+/tmp/strata-arm-tests/RelWithDebInfo/controller_test
+/tmp/strata-arm-tests/Deployment/controller_test
+/tmp/strata-arm-tests/Deployment/controller_test
+/tmp/strata-arm-tests/Development/controller_test
+/tmp/strata-arm-tests/Development/controller_test
+tmp/strata-arm-tests/controller_test
+tmp/strata-arm-tests/controller_test
+tmp/strata-arm-tests/Release/controller_test
+tmp/strata-arm-tests/Release/controller_test
+tmp/strata-arm-tests/Debug/controller_test
+tmp/strata-arm-tests/Debug/controller_test
+tmp/strata-arm-tests/MinSizeRel/controller_test
+tmp/strata-arm-tests/MinSizeRel/controller_test
+tmp/strata-arm-tests/RelWithDebInfo/controller_test
+tmp/strata-arm-tests/RelWithDebInfo/controller_test
+tmp/strata-arm-tests/Deployment/controller_test
+tmp/strata-arm-tests/Deployment/controller_test
+tmp/strata-arm-tests/Development/controller_test
+tmp/strata-arm-tests/Development/controller_test
+Unable to find executable: /tmp/strata-arm-tests/controller_test
+ 7/25 Test  #7: controller_test ..................***Not Run   0.00 sec
+      Start  8: draft_policy_test
+Could not find executable /tmp/strata-arm-tests/draft_policy_test
+Looked in the following places:
+/tmp/strata-arm-tests/draft_policy_test
+/tmp/strata-arm-tests/draft_policy_test
+/tmp/strata-arm-tests/Release/draft_policy_test
+/tmp/strata-arm-tests/Release/draft_policy_test
+/tmp/strata-arm-tests/Debug/draft_policy_test
+/tmp/strata-arm-tests/Debug/draft_policy_test
+/tmp/strata-arm-tests/MinSizeRel/draft_policy_test
+/tmp/strata-arm-tests/MinSizeRel/draft_policy_test
+/tmp/strata-arm-tests/RelWithDebInfo/draft_policy_test
+/tmp/strata-arm-tests/RelWithDebInfo/draft_policy_test
+/tmp/strata-arm-tests/Deployment/draft_policy_test
+/tmp/strata-arm-tests/Deployment/draft_policy_test
+/tmp/strata-arm-tests/Development/draft_policy_test
+/tmp/strata-arm-tests/Development/draft_policy_test
+tmp/strata-arm-tests/draft_policy_test
+tmp/strata-arm-tests/draft_policy_test
+tmp/strata-arm-tests/Release/draft_policy_test
+tmp/strata-arm-tests/Release/draft_policy_test
+tmp/strata-arm-tests/Debug/draft_policy_test
+tmp/strata-arm-tests/Debug/draft_policy_test
+tmp/strata-arm-tests/MinSizeRel/draft_policy_test
+tmp/strata-arm-tests/MinSizeRel/draft_policy_test
+tmp/strata-arm-tests/RelWithDebInfo/draft_policy_test
+tmp/strata-arm-tests/RelWithDebInfo/draft_policy_test
+tmp/strata-arm-tests/Deployment/draft_policy_test
+tmp/strata-arm-tests/Deployment/draft_policy_test
+tmp/strata-arm-tests/Development/draft_policy_test
+tmp/strata-arm-tests/Development/draft_policy_test
+Unable to find executable: /tmp/strata-arm-tests/draft_policy_test
+ 8/25 Test  #8: draft_policy_test ................***Not Run   0.00 sec
+      Start  9: message_boundary_test
+Could not find executable /tmp/strata-arm-tests/message_boundary_test
+Looked in the following places:
+/tmp/strata-arm-tests/message_boundary_test
+/tmp/strata-arm-tests/message_boundary_test
+/tmp/strata-arm-tests/Release/message_boundary_test
+/tmp/strata-arm-tests/Release/message_boundary_test
+/tmp/strata-arm-tests/Debug/message_boundary_test
+/tmp/strata-arm-tests/Debug/message_boundary_test
+/tmp/strata-arm-tests/MinSizeRel/message_boundary_test
+/tmp/strata-arm-tests/MinSizeRel/message_boundary_test
+/tmp/strata-arm-tests/RelWithDebInfo/message_boundary_test
+/tmp/strata-arm-tests/RelWithDebInfo/message_boundary_test
+/tmp/strata-arm-tests/Deployment/message_boundary_test
+/tmp/strata-arm-tests/Deployment/message_boundary_test
+/tmp/strata-arm-tests/Development/message_boundary_test
+/tmp/strata-arm-tests/Development/message_boundary_test
+tmp/strata-arm-tests/message_boundary_test
+tmp/strata-arm-tests/message_boundary_test
+tmp/strata-arm-tests/Release/message_boundary_test
+tmp/strata-arm-tests/Release/message_boundary_test
+tmp/strata-arm-tests/Debug/message_boundary_test
+tmp/strata-arm-tests/Debug/message_boundary_test
+tmp/strata-arm-tests/MinSizeRel/message_boundary_test
+tmp/strata-arm-tests/MinSizeRel/message_boundary_test
+tmp/strata-arm-tests/RelWithDebInfo/message_boundary_test
+tmp/strata-arm-tests/RelWithDebInfo/message_boundary_test
+tmp/strata-arm-tests/Deployment/message_boundary_test
+tmp/strata-arm-tests/Deployment/message_boundary_test
+tmp/strata-arm-tests/Development/message_boundary_test
+tmp/strata-arm-tests/Development/message_boundary_test
+Unable to find executable: /tmp/strata-arm-tests/message_boundary_test
+ 9/25 Test  #9: message_boundary_test ............***Not Run   0.00 sec
+      Start 10: conv_cache_test
+Could not find executable /tmp/strata-arm-tests/conv_cache_test
+Looked in the following places:
+/tmp/strata-arm-tests/conv_cache_test
+/tmp/strata-arm-tests/conv_cache_test
+/tmp/strata-arm-tests/Release/conv_cache_test
+/tmp/strata-arm-tests/Release/conv_cache_test
+/tmp/strata-arm-tests/Debug/conv_cache_test
+/tmp/strata-arm-tests/Debug/conv_cache_test
+/tmp/strata-arm-tests/MinSizeRel/conv_cache_test
+/tmp/strata-arm-tests/MinSizeRel/conv_cache_test
+/tmp/strata-arm-tests/RelWithDebInfo/conv_cache_test
+/tmp/strata-arm-tests/RelWithDebInfo/conv_cache_test
+/tmp/strata-arm-tests/Deployment/conv_cache_test
+/tmp/strata-arm-tests/Deployment/conv_cache_test
+/tmp/strata-arm-tests/Development/conv_cache_test
+/tmp/strata-arm-tests/Development/conv_cache_test
+tmp/strata-arm-tests/conv_cache_test
+tmp/strata-arm-tests/conv_cache_test
+tmp/strata-arm-tests/Release/conv_cache_test
+tmp/strata-arm-tests/Release/conv_cache_test
+tmp/strata-arm-tests/Debug/conv_cache_test
+tmp/strata-arm-tests/Debug/conv_cache_test
+tmp/strata-arm-tests/MinSizeRel/conv_cache_test
+tmp/strata-arm-tests/MinSizeRel/conv_cache_test
+tmp/strata-arm-tests/RelWithDebInfo/conv_cache_test
+tmp/strata-arm-tests/RelWithDebInfo/conv_cache_test
+tmp/strata-arm-tests/Deployment/conv_cache_test
+tmp/strata-arm-tests/Deployment/conv_cache_test
+tmp/strata-arm-tests/Development/conv_cache_test
+tmp/strata-arm-tests/Development/conv_cache_test
+Unable to find executable: /tmp/strata-arm-tests/conv_cache_test
+10/25 Test #10: conv_cache_test ..................***Not Run   0.00 sec
+      Start 11: coupled_draft_test
+Could not find executable /tmp/strata-arm-tests/coupled_draft_test
+Looked in the following places:
+/tmp/strata-arm-tests/coupled_draft_test
+/tmp/strata-arm-tests/coupled_draft_test
+/tmp/strata-arm-tests/Release/coupled_draft_test
+/tmp/strata-arm-tests/Release/coupled_draft_test
+/tmp/strata-arm-tests/Debug/coupled_draft_test
+/tmp/strata-arm-tests/Debug/coupled_draft_test
+/tmp/strata-arm-tests/MinSizeRel/coupled_draft_test
+/tmp/strata-arm-tests/MinSizeRel/coupled_draft_test
+/tmp/strata-arm-tests/RelWithDebInfo/coupled_draft_test
+/tmp/strata-arm-tests/RelWithDebInfo/coupled_draft_test
+/tmp/strata-arm-tests/Deployment/coupled_draft_test
+/tmp/strata-arm-tests/Deployment/coupled_draft_test
+/tmp/strata-arm-tests/Development/coupled_draft_test
+/tmp/strata-arm-tests/Development/coupled_draft_test
+tmp/strata-arm-tests/coupled_draft_test
+tmp/strata-arm-tests/coupled_draft_test
+tmp/strata-arm-tests/Release/coupled_draft_test
+tmp/strata-arm-tests/Release/coupled_draft_test
+tmp/strata-arm-tests/Debug/coupled_draft_test
+tmp/strata-arm-tests/Debug/coupled_draft_test
+tmp/strata-arm-tests/MinSizeRel/coupled_draft_test
+tmp/strata-arm-tests/MinSizeRel/coupled_draft_test
+tmp/strata-arm-tests/RelWithDebInfo/coupled_draft_test
+tmp/strata-arm-tests/RelWithDebInfo/coupled_draft_test
+tmp/strata-arm-tests/Deployment/coupled_draft_test
+tmp/strata-arm-tests/Deployment/coupled_draft_test
+tmp/strata-arm-tests/Development/coupled_draft_test
+tmp/strata-arm-tests/Development/coupled_draft_test
+Unable to find executable: /tmp/strata-arm-tests/coupled_draft_test
+11/25 Test #11: coupled_draft_test ...............***Not Run   0.00 sec
+      Start 12: spec_prob_test
+Could not find executable /tmp/strata-arm-tests/spec_prob_test
+Looked in the following places:
+/tmp/strata-arm-tests/spec_prob_test
+/tmp/strata-arm-tests/spec_prob_test
+/tmp/strata-arm-tests/Release/spec_prob_test
+/tmp/strata-arm-tests/Release/spec_prob_test
+/tmp/strata-arm-tests/Debug/spec_prob_test
+/tmp/strata-arm-tests/Debug/spec_prob_test
+/tmp/strata-arm-tests/MinSizeRel/spec_prob_test
+/tmp/strata-arm-tests/MinSizeRel/spec_prob_test
+/tmp/strata-arm-tests/RelWithDebInfo/spec_prob_test
+/tmp/strata-arm-tests/RelWithDebInfo/spec_prob_test
+/tmp/strata-arm-tests/Deployment/spec_prob_test
+/tmp/strata-arm-tests/Deployment/spec_prob_test
+/tmp/strata-arm-tests/Development/spec_prob_test
+/tmp/strata-arm-tests/Development/spec_prob_test
+tmp/strata-arm-tests/spec_prob_test
+tmp/strata-arm-tests/spec_prob_test
+tmp/strata-arm-tests/Release/spec_prob_test
+tmp/strata-arm-tests/Release/spec_prob_test
+tmp/strata-arm-tests/Debug/spec_prob_test
+tmp/strata-arm-tests/Debug/spec_prob_test
+tmp/strata-arm-tests/MinSizeRel/spec_prob_test
+tmp/strata-arm-tests/MinSizeRel/spec_prob_test
+tmp/strata-arm-tests/RelWithDebInfo/spec_prob_test
+tmp/strata-arm-tests/RelWithDebInfo/spec_prob_test
+tmp/strata-arm-tests/Deployment/spec_prob_test
+tmp/strata-arm-tests/Deployment/spec_prob_test
+tmp/strata-arm-tests/Development/spec_prob_test
+tmp/strata-arm-tests/Development/spec_prob_test
+Unable to find executable: /tmp/strata-arm-tests/spec_prob_test
+12/25 Test #12: spec_prob_test ...................***Not Run   0.00 sec
+      Start 13: bf16_bits_test
+Could not find executable /tmp/strata-arm-tests/bf16_bits_test
+Looked in the following places:
+/tmp/strata-arm-tests/bf16_bits_test
+/tmp/strata-arm-tests/bf16_bits_test
+/tmp/strata-arm-tests/Release/bf16_bits_test
+/tmp/strata-arm-tests/Release/bf16_bits_test
+/tmp/strata-arm-tests/Debug/bf16_bits_test
+/tmp/strata-arm-tests/Debug/bf16_bits_test
+/tmp/strata-arm-tests/MinSizeRel/bf16_bits_test
+/tmp/strata-arm-tests/MinSizeRel/bf16_bits_test
+/tmp/strata-arm-tests/RelWithDebInfo/bf16_bits_test
+/tmp/strata-arm-tests/RelWithDebInfo/bf16_bits_test
+/tmp/strata-arm-tests/Deployment/bf16_bits_test
+/tmp/strata-arm-tests/Deployment/bf16_bits_test
+/tmp/strata-arm-tests/Development/bf16_bits_test
+/tmp/strata-arm-tests/Development/bf16_bits_test
+tmp/strata-arm-tests/bf16_bits_test
+tmp/strata-arm-tests/bf16_bits_test
+tmp/strata-arm-tests/Release/bf16_bits_test
+tmp/strata-arm-tests/Release/bf16_bits_test
+tmp/strata-arm-tests/Debug/bf16_bits_test
+tmp/strata-arm-tests/Debug/bf16_bits_test
+tmp/strata-arm-tests/MinSizeRel/bf16_bits_test
+tmp/strata-arm-tests/MinSizeRel/bf16_bits_test
+tmp/strata-arm-tests/RelWithDebInfo/bf16_bits_test
+tmp/strata-arm-tests/RelWithDebInfo/bf16_bits_test
+tmp/strata-arm-tests/Deployment/bf16_bits_test
+tmp/strata-arm-tests/Deployment/bf16_bits_test
+tmp/strata-arm-tests/Development/bf16_bits_test
+tmp/strata-arm-tests/Development/bf16_bits_test
+Unable to find executable: /tmp/strata-arm-tests/bf16_bits_test
+13/25 Test #13: bf16_bits_test ...................***Not Run   0.00 sec
+      Start 14: dequant_q5_1_test
+Could not find executable /tmp/strata-arm-tests/dequant_q5_1_test
+Looked in the following places:
+/tmp/strata-arm-tests/dequant_q5_1_test
+/tmp/strata-arm-tests/dequant_q5_1_test
+/tmp/strata-arm-tests/Release/dequant_q5_1_test
+/tmp/strata-arm-tests/Release/dequant_q5_1_test
+/tmp/strata-arm-tests/Debug/dequant_q5_1_test
+/tmp/strata-arm-tests/Debug/dequant_q5_1_test
+/tmp/strata-arm-tests/MinSizeRel/dequant_q5_1_test
+/tmp/strata-arm-tests/MinSizeRel/dequant_q5_1_test
+/tmp/strata-arm-tests/RelWithDebInfo/dequant_q5_1_test
+/tmp/strata-arm-tests/RelWithDebInfo/dequant_q5_1_test
+/tmp/strata-arm-tests/Deployment/dequant_q5_1_test
+/tmp/strata-arm-tests/Deployment/dequant_q5_1_test
+/tmp/strata-arm-tests/Development/dequant_q5_1_test
+/tmp/strata-arm-tests/Development/dequant_q5_1_test
+tmp/strata-arm-tests/dequant_q5_1_test
+tmp/strata-arm-tests/dequant_q5_1_test
+tmp/strata-arm-tests/Release/dequant_q5_1_test
+tmp/strata-arm-tests/Release/dequant_q5_1_test
+tmp/strata-arm-tests/Debug/dequant_q5_1_test
+tmp/strata-arm-tests/Debug/dequant_q5_1_test
+tmp/strata-arm-tests/MinSizeRel/dequant_q5_1_test
+tmp/strata-arm-tests/MinSizeRel/dequant_q5_1_test
+tmp/strata-arm-tests/RelWithDebInfo/dequant_q5_1_test
+tmp/strata-arm-tests/RelWithDebInfo/dequant_q5_1_test
+tmp/strata-arm-tests/Deployment/dequant_q5_1_test
+tmp/strata-arm-tests/Deployment/dequant_q5_1_test
+tmp/strata-arm-tests/Development/dequant_q5_1_test
+tmp/strata-arm-tests/Development/dequant_q5_1_test
+Unable to find executable: /tmp/strata-arm-tests/dequant_q5_1_test
+14/25 Test #14: dequant_q5_1_test ................***Not Run   0.00 sec
+      Start 15: pool_tasks_test
+15/25 Test #15: pool_tasks_test ..................   Passed    9.34 sec
+      Start 16: router_dot_parity
+16/25 Test #16: router_dot_parity ................   Passed    0.22 sec
+      Start 17: router_dot_parity_avx
+17/25 Test #17: router_dot_parity_avx ............   Passed    0.90 sec
+      Start 18: q8_oracle_contract_test
+18/25 Test #18: q8_oracle_contract_test ..........   Passed    0.01 sec
+      Start 19: pool_affinity_test
+19/25 Test #19: pool_affinity_test ...............   Passed    0.01 sec
+      Start 20: q2_portable_reference_test
+20/25 Test #20: q2_portable_reference_test .......   Passed    0.01 sec
+      Start 21: expert_multi_test
+21/25 Test #21: expert_multi_test ................   Passed    3.73 sec
+      Start 22: expert_parity
+22/25 Test #22: expert_parity ....................***Failed    0.01 sec
+cannot read expert 0 (layer 0) from pack/full/experts.bin
+  AVX512 F/BW/VL/VNNI/VBMI                     missing AVX512F AVX512BW AVX512VL AVX512-VNNI AVX512-VBMI
+
+      Start 23: pool_test
+Could not find executable /tmp/strata-arm-tests/pool_test
+Looked in the following places:
+/tmp/strata-arm-tests/pool_test
+/tmp/strata-arm-tests/pool_test
+/tmp/strata-arm-tests/Release/pool_test
+/tmp/strata-arm-tests/Release/pool_test
+/tmp/strata-arm-tests/Debug/pool_test
+/tmp/strata-arm-tests/Debug/pool_test
+/tmp/strata-arm-tests/MinSizeRel/pool_test
+/tmp/strata-arm-tests/MinSizeRel/pool_test
+/tmp/strata-arm-tests/RelWithDebInfo/pool_test
+/tmp/strata-arm-tests/RelWithDebInfo/pool_test
+/tmp/strata-arm-tests/Deployment/pool_test
+/tmp/strata-arm-tests/Deployment/pool_test
+/tmp/strata-arm-tests/Development/pool_test
+/tmp/strata-arm-tests/Development/pool_test
+tmp/strata-arm-tests/pool_test
+tmp/strata-arm-tests/pool_test
+tmp/strata-arm-tests/Release/pool_test
+tmp/strata-arm-tests/Release/pool_test
+tmp/strata-arm-tests/Debug/pool_test
+tmp/strata-arm-tests/Debug/pool_test
+tmp/strata-arm-tests/MinSizeRel/pool_test
+tmp/strata-arm-tests/MinSizeRel/pool_test
+tmp/strata-arm-tests/RelWithDebInfo/pool_test
+tmp/strata-arm-tests/RelWithDebInfo/pool_test
+tmp/strata-arm-tests/Deployment/pool_test
+tmp/strata-arm-tests/Deployment/pool_test
+tmp/strata-arm-tests/Development/pool_test
+tmp/strata-arm-tests/Development/pool_test
+Unable to find executable: /tmp/strata-arm-tests/pool_test
+23/25 Test #23: pool_test ........................***Not Run   0.00 sec
+      Start 24: pool_stress
+24/25 Test #24: pool_stress ......................   Passed   20.22 sec
+      Start 25: direct_file_async_test
+Could not find executable /tmp/strata-arm-tests/direct_file_async_test
+Looked in the following places:
+/tmp/strata-arm-tests/direct_file_async_test
+/tmp/strata-arm-tests/direct_file_async_test
+/tmp/strata-arm-tests/Release/direct_file_async_test
+/tmp/strata-arm-tests/Release/direct_file_async_test
+/tmp/strata-arm-tests/Debug/direct_file_async_test
+/tmp/strata-arm-tests/Debug/direct_file_async_test
+/tmp/strata-arm-tests/MinSizeRel/direct_file_async_test
+/tmp/strata-arm-tests/MinSizeRel/direct_file_async_test
+/tmp/strata-arm-tests/RelWithDebInfo/direct_file_async_test
+/tmp/strata-arm-tests/RelWithDebInfo/direct_file_async_test
+/tmp/strata-arm-tests/Deployment/direct_file_async_test
+/tmp/strata-arm-tests/Deployment/direct_file_async_test
+/tmp/strata-arm-tests/Development/direct_file_async_test
+/tmp/strata-arm-tests/Development/direct_file_async_test
+tmp/strata-arm-tests/direct_file_async_test
+tmp/strata-arm-tests/direct_file_async_test
+tmp/strata-arm-tests/Release/direct_file_async_test
+tmp/strata-arm-tests/Release/direct_file_async_test
+tmp/strata-arm-tests/Debug/direct_file_async_test
+tmp/strata-arm-tests/Debug/direct_file_async_test
+tmp/strata-arm-tests/MinSizeRel/direct_file_async_test
+tmp/strata-arm-tests/MinSizeRel/direct_file_async_test
+tmp/strata-arm-tests/RelWithDebInfo/direct_file_async_test
+tmp/strata-arm-tests/RelWithDebInfo/direct_file_async_test
+tmp/strata-arm-tests/Deployment/direct_file_async_test
+tmp/strata-arm-tests/Deployment/direct_file_async_test
+tmp/strata-arm-tests/Development/direct_file_async_test
+tmp/strata-arm-tests/Development/direct_file_async_test
+Unable to find executable: /tmp/strata-arm-tests/direct_file_async_test
+25/25 Test #25: direct_file_async_test ...........***Not Run   0.00 sec
+
+36% tests passed, 16 tests failed out of 25
+
+Total Test time (real) =  34.64 sec
+
+The following tests FAILED:
+	  2 - gguf_reader_test (Not Run)
+	  3 - gguf_split_test (Not Run)
+	  4 - tuning_header_arch_family_test (Not Run)
+	  5 - arch_defaults_test (Not Run)
+	  6 - suffix_drafter_test (Not Run)
+	  7 - controller_test (Not Run)
+	  8 - draft_policy_test (Not Run)
+	  9 - message_boundary_test (Not Run)
+	 10 - conv_cache_test (Not Run)
+	 11 - coupled_draft_test (Not Run)
+	 12 - spec_prob_test (Not Run)
+	 13 - bf16_bits_test (Not Run)
+	 14 - dequant_q5_1_test (Not Run)
+	 22 - expert_parity (Failed)
+	 23 - pool_test (Not Run)
+	 25 - direct_file_async_test (Not Run)
+Errors while running CTest

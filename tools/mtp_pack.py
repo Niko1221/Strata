@@ -141,7 +141,8 @@ def main() -> int:
     src = Path(a.src)
     manifest = json.loads((src / "mtp-manifest.json").read_text())
     fn, qtype, block, block_bytes = QUANT[a.experts]
-    w = gguf.GGUFWriter(a.out, "qwen4exp-mtp")
+    # Spill completed tensors to disk instead of retaining the whole model in RAM.
+    w = gguf.GGUFWriter(a.out, "qwen4exp-mtp", use_temp_file=True)
     w.add_string("strata.mtp.source", "Qwen/Qwen3.8-Flash-Next BF16 checkpoint, mtp.* tensors")
     w.add_string("strata.mtp.source_sha256", hashlib.sha256(
         json.dumps({t["name"]: t["sha256"] for t in manifest}, sort_keys=True).encode()).hexdigest())
@@ -158,18 +159,21 @@ def main() -> int:
             x = _Experts(raw)
             if shape[-1] % block:
                 raise ValueError(f"{name}: inner dim {shape[-1]} not a multiple of {block}")
-            parts = [fn(x[e]) for e in range(shape[0])]            # one expert at a time bounds memory
-            blob = np.concatenate(parts)
+            expert_bytes = int(np.prod(shape[1:])) // block * block_bytes
+            blob = np.empty(shape[0] * expert_bytes, dtype=np.uint8)
+            for e in range(shape[0]):
+                blob[e * expert_bytes:(e + 1) * expert_bytes] = fn(x[e])
             errs = []
             for e in range(min(a.check_experts, shape[0])):
                 ref = x[e].reshape(-1)
-                got = dequant(a.experts, parts[e], ref.size)
+                got = dequant(a.experts, blob[e * expert_bytes:(e + 1) * expert_bytes], ref.size)
                 errs.append(float(np.sqrt(((got - ref) ** 2).mean()) / (np.sqrt((ref ** 2).mean()) + 1e-12)))
             # gguf-py takes the quantized bytes with the ELEMENT shape; ggml order is innermost-first.
             w.add_tensor(name, blob, raw_shape=list(shape[:-1]) + [shape[-1] // block * block_bytes], raw_dtype=qtype)
             report.append({"tensor": name, "format": a.experts, "bytes": int(blob.size),
                            "relative_rms_error_first_experts": round(float(np.mean(errs)), 5),
                            "seconds": round(time.time() - t0, 1)})
+            del blob, raw, x
         elif len(shape) == 1:
             x = load_bf16(src / t["file"], shape)
             w.add_tensor(name, x.astype(np.float32))

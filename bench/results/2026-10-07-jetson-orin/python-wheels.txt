@@ -1,0 +1,69 @@
+Ignoring numpy: markers 'python_version == "3.11"' don't match your environment
+Ignoring numpy: markers 'python_version < "3.11"' don't match your environment
+Ignoring colorama: markers 'sys_platform == "win32"' don't match your environment
+Collecting numpy==2.5.3 (from -r requirements.txt (line 4))
+  Using cached numpy-2.5.3-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl.metadata (6.6 kB)
+Collecting jinja2==3.1.6 (from -r requirements.txt (line 7))
+  Using cached jinja2-3.1.6-py3-none-any.whl.metadata (2.9 kB)
+Collecting regex==2026.9.10 (from -r requirements.txt (line 8))
+  Using cached regex-2026.9.10-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl.metadata (40 kB)
+Collecting pyyaml==6.0.3 (from -r requirements.txt (line 9))
+  Using cached pyyaml-6.0.3-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl.metadata (2.4 kB)
+Collecting tqdm==4.70.1 (from -r requirements.txt (line 10))
+  Using cached tqdm-4.70.1-py3-none-any.whl.metadata (57 kB)
+Collecting requests==2.34.2 (from -r requirements.txt (line 11))
+  Downloading requests-2.34.2-py3-none-any.whl.metadata (4.8 kB)
+Collecting cmake==4.4.3 (from -r requirements.txt (line 12))
+  Downloading cmake-4.4.3-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl.metadata (7.0 kB)
+Collecting ninja==1.13.2 (from -r requirements.txt (line 13))
+  Downloading ninja-1.13.2-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl.metadata (5.4 kB)
+Collecting pillow==12.3.0 (from -r requirements.txt (line 14))
+  Downloading pillow-12.3.0-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl.metadata (9.1 kB)
+Collecting psutil==7.2.2 (from -r requirements.txt (line 15))
+  Downloading psutil-7.2.2-cp36-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl.metadata (22 kB)
+Collecting markupsafe==3.0.3 (from -r requirements.txt (line 18))
+  Using cached markupsafe-3.0.3-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl.metadata (2.7 kB)
+Collecting certifi==2026.7.22 (from -r requirements.txt (line 19))
+  Downloading certifi-2026.7.22-py3-none-any.whl.metadata (2.5 kB)
+Collecting charset-normalizer==3.5.1 (from -r requirements.txt (line 20))
+  Downloading charset_normalizer-3.5.1-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl.metadata (45 kB)
+Collecting idna==3.20 (from -r requirements.txt (line 21))
+  Using cached idna-3.20-py3-none-any.whl.metadata (7.2 kB)
+Collecting urllib3==2.8.0 (from -r requirements.txt (line 22))
+  Downloading urllib3-2.8.0-py3-none-any.whl.metadata (7.4 kB)
+Using cached numpy-2.5.3-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl (15.7 MB)
+Using cached jinja2-3.1.6-py3-none-any.whl (134 kB)
+Using cached regex-2026.9.10-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl (800 kB)
+Using cached pyyaml-6.0.3-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl (775 kB)
+Using cached tqdm-4.70.1-py3-none-any.whl (80 kB)
+Downloading requests-2.34.2-py3-none-any.whl (73 kB)
+Downloading cmake-4.4.3-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl (30.3 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 30.3/30.3 MB 5.3 MB/s eta 0:00:00
+Downloading ninja-1.13.2-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl (177 kB)
+Downloading pillow-12.3.0-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl (6.3 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 6.3/6.3 MB 15.0 MB/s eta 0:00:00
+Downloading psutil-7.2.2-cp36-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl (156 kB)
+Using cached markupsafe-3.0.3-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl (24 kB)
+Downloading certifi-2026.7.22-py3-none-any.whl (136 kB)
+Downloading charset_normalizer-3.5.1-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl (238 kB)
+Using cached idna-3.20-py3-none-any.whl (69 kB)
+Downloading urllib3-2.8.0-py3-none-any.whl (135 kB)
+Saved /tmp/strata-orin-python-wheels/numpy-2.5.3-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl
+Saved /tmp/strata-orin-python-wheels/jinja2-3.1.6-py3-none-any.whl
+Saved /tmp/strata-orin-python-wheels/regex-2026.9.10-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl
+Saved /tmp/strata-orin-python-wheels/pyyaml-6.0.3-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl
+Saved /tmp/strata-orin-python-wheels/tqdm-4.70.1-py3-none-any.whl
+Saved /tmp/strata-orin-python-wheels/requests-2.34.2-py3-none-any.whl
+Saved /tmp/strata-orin-python-wheels/cmake-4.4.3-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl
+Saved /tmp/strata-orin-python-wheels/ninja-1.13.2-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl
+Saved /tmp/strata-orin-python-wheels/pillow-12.3.0-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl
+Saved /tmp/strata-orin-python-wheels/psutil-7.2.2-cp36-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl
+Saved /tmp/strata-orin-python-wheels/markupsafe-3.0.3-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl
+Saved /tmp/strata-orin-python-wheels/certifi-2026.7.22-py3-none-any.whl
+Saved /tmp/strata-orin-python-wheels/charset_normalizer-3.5.1-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl
+Saved /tmp/strata-orin-python-wheels/idna-3.20-py3-none-any.whl
+Saved /tmp/strata-orin-python-wheels/urllib3-2.8.0-py3-none-any.whl
+Successfully downloaded numpy jinja2 regex pyyaml tqdm requests cmake ninja pillow psutil markupsafe certifi charset-normalizer idna urllib3
+
+[notice] A new release of pip is available: 25.0.1 -> 26.2.1
+[notice] To update, run: python -m pip install --upgrade pip

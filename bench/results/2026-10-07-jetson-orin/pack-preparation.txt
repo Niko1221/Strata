@@ -1,0 +1,9 @@
+model shards: Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00002-of-00002.gguf
+index.txt: 1079 tensors, 302 served natively, 0 in extra.bin, arena 1.37 GiB
+  layer  0  IQ3_XXS /IQ4_NL  blob  2176000  at 0.00 GiB
+  layer  8  IQ2_S   /Q2_0    blob  1510400  at 3.75 GiB
+  layer 16  IQ3_XXS /IQ4_NL  blob  2176000  at 7.17 GiB
+  layer 24  IQ2_S   /IQ4_NL  blob  1971200  at 11.07 GiB
+  layer 32  IQ2_S   /IQ4_NL  blob  1971200  at 15.16 GiB
+  layer 40  IQ3_S   /IQ4_NL  blob  2329600  at 19.04 GiB
+experts.bin: 48 layers, 23.42 GiB

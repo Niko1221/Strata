@@ -1,0 +1,3 @@
+starting 0 768
+completed 0 768 {'prompt_tokens': 3105, 'completion_tokens': 2, 'total_tokens': 3107, 'prompt_tokens_details': {'cached_tokens': 0}} {'cache_n': 0, 'prompt_n': 3105, 'prompt_ms': 55250.6, 'prompt_per_token_ms': 17.794, 'prompt_per_second': 56.2, 'predicted_n': 2, 'predicted_ms': 272.7, 'predicted_per_token_ms': 136.35, 'predicted_per_second': 7.3, 'draft_n': 3, 'draft_n_accepted': 3}
+median 768 {'prompt_per_second': 56.2, 'predicted_per_second': 7.3}

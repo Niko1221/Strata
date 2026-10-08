@@ -1,0 +1,3 @@
+portable_q8_1 rows=256 width=2560 tokens=3 iterations=20 mean_ms=2.303242
+ggml_arm_q8_0 rows=256 width=2560 tokens=3 iterations=20 mean_ms=0.322774
+activation contracts differ; output relative RMS=0.000199541; finite=PASS

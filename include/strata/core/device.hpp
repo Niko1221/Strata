@@ -26,6 +26,9 @@ struct DeviceInfo {
     uint64_t free_bytes = 0;
     int driver_version = 0, runtime_version = 0;
     int multi_processor_count = 0;
+    bool integrated = false;     // GPU allocations and host allocations share physical RAM
+    bool managed_memory = false, concurrent_managed_access = false;
+    bool can_map_host_memory = false;
     std::string arch;              // HIP: gcnArchName without its feature suffix ("gfx1201"); empty on CUDA
 };
 

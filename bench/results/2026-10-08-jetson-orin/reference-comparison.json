@@ -1,0 +1,54 @@
+[
+  {
+    "ids": [
+      248045,
+      9707
+    ],
+    "prefill": 1,
+    "elapsed_s": 38.11192704795394,
+    "reference_argmax": 248046,
+    "strata_argmax": 248046,
+    "max_abs_logit_difference": 3.358130931854248,
+    "rms_logit_difference": 0.502849722937188,
+    "reference_top_logprob": -0.4720899612505738,
+    "strata_reference_top_logprob": -1.2998476520273232,
+    "kl_reference_to_strata": 0.35636971829463143,
+    "finite_logits": true
+  },
+  {
+    "ids": [
+      248045,
+      9707,
+      11,
+      1917
+    ],
+    "prefill": 1,
+    "elapsed_s": 37.2859011690598,
+    "reference_argmax": 248046,
+    "strata_argmax": 248046,
+    "max_abs_logit_difference": 3.7603875398635864,
+    "rms_logit_difference": 0.7682208574143197,
+    "reference_top_logprob": -1.1999676403276487,
+    "strata_reference_top_logprob": -0.21744564013466172,
+    "kl_reference_to_strata": 1.0341540801102673,
+    "finite_logits": true
+  },
+  {
+    "ids": [
+      248045,
+      9707,
+      11,
+      1917
+    ],
+    "prefill": 64,
+    "elapsed_s": 34.59198222309351,
+    "reference_argmax": 248046,
+    "strata_argmax": 248046,
+    "max_abs_logit_difference": 3.8257543444633484,
+    "rms_logit_difference": 0.7665525578377977,
+    "reference_top_logprob": -1.1999676403276487,
+    "strata_reference_top_logprob": -0.19472027498534886,
+    "kl_reference_to_strata": 1.1182491357461468,
+    "finite_logits": true
+  }
+]

@@ -496,6 +496,13 @@ void test_host_memory() {
         require(m.commit == ~0ull, "Linux memory probe retained a commit limit");
         return ok;
     };
+    // Zero available RAM is a known exhausted pool, distinct from a missing
+    // reading. Jetson cache planning must refuse allocation in either case.
+    put("meminfo", "MemTotal: 33554432 kB\nMemAvailable: 0 kB\n");
+    require(probe("") && m.available == 0, "zero MemAvailable treated as unknown");
+    put("meminfo", "MemTotal: 33554432 kB\n");
+    require(!probe(""), "missing MemAvailable accepted");
+    put("meminfo", "MemTotal: 134217728 kB\nMemAvailable: 104857600 kB\n");
     // no cgroup line at all: MemAvailable alone (before #633: "cannot determine")
     require(probe("") && m.available == 100 * GiB && m.cgroup_limit == ~0ull, "no cgroup: MemAvailable alone");
     // v2, a 48 GiB limit with 16 GiB charged, 4 GiB of it clean cache

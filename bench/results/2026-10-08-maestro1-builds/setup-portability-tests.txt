@@ -1,0 +1,10 @@
+..............  Compiling the image encoder with CUDA (10-20 minutes, once) ...
+  [ok] engine compiled: /home/calvin/workspace/strata-validation/tmp/tmp9mznylld/engine-cuda12/strata
+  [ok] engine already built for this PC
+.....s............................  Compiling the image encoder (for the CPU) ...
+  [ok] engine: /home/calvin/workspace/strata-validation/tmp/tmpo55ntx11/engine/strata, image encoder (CPU): /home/calvin/workspace/strata-validation/tmp/tmpo55ntx11/engine/strata-vision
+..............
+----------------------------------------------------------------------
+Ran 62 tests in 1.975s
+
+OK (skipped=1)

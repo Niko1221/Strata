@@ -7,6 +7,7 @@
 // The bench measures the speculation model's `extra_use_cost`: the CPU time of each extra token routed to an
 // expert, as a fraction of reading the expert once (tools/spec_economics.py assumes 0.2).
 #include "strata/kernels/cpu/expert.hpp"
+#include "strata/platform/cpu_arch.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -46,7 +47,7 @@ double now_ms() {
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (const c::CpuFeatures feat = c::cpu_features(); !feat.usable()) {   // the AVX-512 kernel: nothing to test here
+    if (const c::CpuFeatures feat = c::cpu_features(); STRATA_CPU_X86 && !feat.usable()) {
         std::printf("expert_multi_test: CPU lacks %s: SKIPPED\n", feat.reason());
         return 77;
     }

@@ -1,0 +1,18 @@
+Internal ctest changing into directory: /tmp/strata-orin-build
+Test project /tmp/strata-orin-build
+    Start  10: vmm_test
+1/6 Test  #10: vmm_test .........................   Passed    0.40 sec
+    Start  16: expert_cache_segmented_test
+2/6 Test  #16: expert_cache_segmented_test ......   Passed    0.47 sec
+    Start  19: iq_parity_fixtures
+3/6 Test  #19: iq_parity_fixtures ...............   Passed    0.29 sec
+    Start  20: iq_parity
+4/6 Test  #20: iq_parity ........................   Passed    0.16 sec
+    Start  40: quantize_act_parity
+5/6 Test  #40: quantize_act_parity ..............   Passed    0.19 sec
+    Start 101: expert_multi_test
+6/6 Test #101: expert_multi_test ................   Passed    3.73 sec
+
+100% tests passed, 0 tests failed out of 6
+
+Total Test time (real) =   5.25 sec

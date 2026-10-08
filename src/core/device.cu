@@ -269,6 +269,12 @@ DeviceInfo device_info(int ordinal) {
     d.cc_major = p.major;
     d.cc_minor = p.minor;
     d.multi_processor_count = p.multiProcessorCount;
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+    d.integrated = p.integrated != 0;
+    d.managed_memory = p.managedMemory != 0;
+    d.concurrent_managed_access = p.concurrentManagedAccess != 0;
+    d.can_map_host_memory = p.canMapHostMemory != 0;
+#endif
 
     size_t free_b = 0, total_b = 0;
     check(cudaMemGetInfo(&free_b, &total_b), "cudaMemGetInfo");
