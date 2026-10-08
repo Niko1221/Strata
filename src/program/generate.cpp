@@ -2628,7 +2628,8 @@ int main(int argc, char** argv) {
     // every quantized tensor in its GGUF form, so it needs --native (the dense projections, head and embedding
     // come from the model file) and runs its experts in verify windows only (--spec).
     {
-        if (!strata::kernels::cpu::expert_layout_load(o.pack, g.n_layers, g.n_expert, g.n_embd, g.n_ff, err)) {
+        if (!strata::kernels::cpu::expert_layout_load(o.pack, g.n_layers, g.n_expert, g.n_embd, g.n_ff,
+                                                      (float) g.swiglu_clamp, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }

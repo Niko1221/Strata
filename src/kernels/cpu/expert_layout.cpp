@@ -312,7 +312,7 @@ void native_down_rows_ptr(const NativeFmt&, const uint8_t*, const void* const*, 
 #endif
 
 bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, int64_t n_embd,
-                        int64_t n_ff, std::string& err) {
+                        int64_t n_ff, float swiglu_limit, std::string& err) {
     ExpertLayout L;
     L.n_layers = n_layers;
     L.n_expert = n_expert;
@@ -409,6 +409,11 @@ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n
                 for (size_t r = 0; r < 3; ++r) L.gguf_file[(size_t) (3 * l) + r] = parts[r];
             }
         }
+        // Stamp every layer, the dense-lead ones included: those carry no experts and their `ffn3` clamp comes
+        // from the geometry, but an index in this table is a BLOCK index, and a block that never reaches the
+        // pool is better described by the model's own number than by the 0 a default-constructed `NativeFmt`
+        // would leave behind.
+        f.swiglu_limit = swiglu_limit;
         L.fmt[(size_t) l] = f;
         L.offset[(size_t) l] = off;
         L.bytes[(size_t) l] = blob;

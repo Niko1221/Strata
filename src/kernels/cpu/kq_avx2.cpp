@@ -237,7 +237,10 @@ void bf16_rows_dot(const uint16_t* w, int rows, int cols, const float* x, float*
 }
 
 void kq256_gu_rows(int type, const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act, int nt,
-                   float* const* ff, int r0, int r1) {
+                   float* const* ff, int r0, int r1, float limit) {
+    // The silu's output is clamped above only and the up on both sides (see native_expert.cpp); `limit == 0` is
+    // no clamp at all.
+    const bool cl = limit > 1e-6f;
     for (int t0 = 0; t0 < nt; t0 += MAXT) {
         const int m = nt - t0 < MAXT ? nt - t0 : MAXT;
         float g[MAXT], u[MAXT];
@@ -245,7 +248,10 @@ void kq256_gu_rows(int type, const uint8_t* blob, size_t gu_row, size_t up_off, 
             dot_rows(type, blob + (size_t) r * gu_row, n, act + t0, m, g);
             dot_rows(type, blob + up_off + (size_t) r * gu_row, n, act + t0, m, u);
             // native_gu_rows' own SwiGLU expression: the same bits as the per-token ggml path
-            for (int t = 0; t < m; ++t) ff[t0 + t][r] = (g[t] / (1.f + std::exp(-g[t]))) * u[t];
+            for (int t = 0; t < m; ++t) {
+                const float h = g[t] / (1.f + std::exp(-g[t]));
+                ff[t0 + t][r] = (cl ? std::fmin(h, limit) : h) * (cl ? std::fmin(std::fmax(u[t], -limit), limit) : u[t]);
+            }
         }
     }
 }

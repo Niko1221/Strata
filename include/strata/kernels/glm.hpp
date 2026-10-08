@@ -146,8 +146,14 @@ void glm_mla_attn(const float* q, const uint16_t* k_cache, float* out, int64_t n
 
 // ---- the two elementwise steps the FFN adds ---------------------------------------------------------------
 
-/// `gate = silu(gate) * up`, in place on `gate`.  No clamp: see the note in `glm_elt.cu`.
-void glm_swiglu(float* gate, const float* up, int64_t n, void* stream);
+/// `gate = min(silu(gate), limit) * clamp(up, -limit, +limit)`, in place on `gate`.  The reference's SwiGLU with
+/// a limit, and the CLAMP IS APPLIED - see the note in `glm_elt.cu`, which is also where the two readings of it
+/// that the oracles disagree about are written down.
+///
+/// `limit <= 1e-6` means no clamp - the reference's own guard - which is how it reads an absent limit; that makes
+/// the unclamped form reachable for a caller that wants it (a pack with no `swiglu_clamp_*` key) without a second
+/// entry point.
+void glm_swiglu(float* gate, const float* up, float limit, int64_t n, void* stream);
 
 /// `dst += src`.
 void glm_add_inplace(float* dst, const float* src, int64_t n, void* stream);

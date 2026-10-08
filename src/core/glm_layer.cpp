@@ -749,13 +749,15 @@ bool mla_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer,
 /// and the arithmetic is identical on both.  The two writers disagree about nothing else, which is why one
 /// function can serve them and a second copy would only be a place for them to drift apart.
 ///
-/// NO CLAMP, THOUGH THE GGUF CARRIES ONE.  `swiglu_clamp_exp` is 10.0 on every layer, and the reference never
-/// applies it: the value is read into the hparams and then not passed to the graph.  Clamping anyway is
-/// invisible on a confident prompt and wrong on a long one - see the note in `glm_elt.cu`.
+/// **THE CLAMP IS APPLIED, AND THIS COMMENT USED TO SAY IT WAS NOT.**  It read "NO CLAMP, THOUGH THE GGUF
+/// CARRIES ONE ... the reference never applies it", which is the opposite of what both oracles do - the full
+/// evidence is in the header of `glm_elt.cu`.  `limit` is `swiglu_clamp_shexp`: BOTH callers here are the
+/// shexp path (the dense-lead layers and the shared expert), while the routed experts read
+/// `swiglu_clamp_exp` and are clamped on the CPU in `native_gu_rows*`.  `limit <= 0` means no clamp.
 ///
 /// The two up-projections read `cur`, so they share its images; only the down projection needs the wide pair.
 bool ffn3(const WeightTable& tables, int64_t layer, const GlmBuffers& b, const char* gate_name, const char* up_name,
-          const char* down_name, int64_t n, int64_t fw, float* out, void* stream, std::string& err) {
+          const char* down_name, int64_t n, int64_t fw, float limit, float* out, void* stream, std::string& err) {
     const LayerView v(tables, layer);
     const WeightRef* w_gate = req(v, gate_name, err);
     const WeightRef* w_up = req(v, up_name, err);
@@ -768,7 +770,7 @@ bool ffn3(const WeightTable& tables, int64_t layer, const GlmBuffers& b, const c
     if (!project(*w_up, v.name(up_name), b.cur, b.cur_q8_0, b.cur_q8k, b.cur_bf16, b.ffn_up, n, fw, b.ntok, stream,
                  err))
         return false;
-    kernels::glm_swiglu(b.ffn_gate, b.ffn_up, fw * b.ntok, stream);
+    kernels::glm_swiglu(b.ffn_gate, b.ffn_up, limit, fw * b.ntok, stream);
 
     // `b.ffn_gate` now holds the hidden, and the same `wide` pair that served the KDA output serves it: the
     // width is a parameter of every kernel that touches it, so one pair of images is enough for both roles.
@@ -883,7 +885,7 @@ bool glm_block_layer_pre(const WeightTable& tables, const ModelGeometry& g, int6
         // DENSE: the whole FFN runs here, straight into `bb.block_out`, which is where `hc_post` reads the
         // sublayer's result from.  A buffer of its own would be one more copy of 16 KB per layer for nothing.
         if (!ffn3(tables, layer, b, "ffn_gate.weight", "ffn_up.weight", "ffn_down.weight", n, g.n_ff_dense,
-                  bb.block_out, stream, err))
+                  (float) g.swiglu_clamp_shexp, bb.block_out, stream, err))
             return false;
         // ...AND THE RESIDUAL WRITE TOO.  A dense layer has no host pool between the halves, so the block is
         // not actually split and `post` has nothing left to do.
@@ -900,7 +902,7 @@ bool glm_block_layer_pre(const WeightTable& tables, const ModelGeometry& g, int6
     // the gate that scales qwen4exp's shared expert does not exist here - and `moe_combine_parts` adds
     // `mb.shared` unconditionally, which is exactly this family's rule.
     if (!ffn3(tables, layer, b, "ffn_gate_shexp.weight", "ffn_up_shexp.weight", "ffn_down_shexp.weight", n, g.n_ff,
-              mb.shared, stream, err))
+              (float) g.swiglu_clamp_shexp, mb.shared, stream, err))
         return false;
     return glm_router(tables, g, layer, b, mb, k, stream, err);
 }

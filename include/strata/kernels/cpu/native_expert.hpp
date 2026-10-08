@@ -38,6 +38,15 @@ struct NativeFmt {
     size_t up_off = 0, down_off = 0;    ///< inside the blob
     size_t bytes = 0;                   ///< the whole blob
     size_t act_bytes = 0, h_bytes = 0;  ///< quantized activation sizes (n_embd of gu_act, n_ff of d_act)
+    /// The gate/up activation's SwiGLU clamp limit, from `swiglu_clamp_exp`.
+    ///
+    /// **0 IS THE DEFAULT AND IT IS NOT A PLACEHOLDER.**  An arch whose file carries no limit is one the
+    /// reference does not clamp, and 0 is how the kernels spell "no clamp" - so the first family's pack, which
+    /// has no such key, computes exactly what it computed before this field existed.  glm5-next sets it to
+    /// 10.0 and every `native_gu_rows*` path below applies
+    /// `out = min(silu(gate), limit) * clamp(up, -limit, +limit)` - the SILU'S OUTPUT is what the limit caps,
+    /// above only, exactly as both oracles compute it (native_expert.cpp has the citations).
+    float swiglu_limit = 0.0f;
 };
 
 /// Whether this build has the ggml-cpu path.

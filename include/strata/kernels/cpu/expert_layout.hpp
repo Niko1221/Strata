@@ -95,8 +95,12 @@ const ExpertLayout& expert_layout();
 /// blob's row sizes are computed from.  They are arguments and not the `H` / `FF` constants because a second
 /// family (glm5-next: 4096 / 2048) is not a multiple of the first's, and a blob sized from the wrong width is
 /// a wrong answer, not a crash.
+///
+/// `swiglu_limit` is stamped into every layer's `NativeFmt` - it is a property of the MODEL and not of the
+/// pack, so it is an argument here rather than a column of `native_experts.txt`.  0 means no clamp, which is
+/// what the first family gets (its geometry leaves `swiglu_clamp` at 0); glm5-next passes 10.0.
 bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, int64_t n_embd,
-                        int64_t n_ff, std::string& err);
+                        int64_t n_ff, float swiglu_limit, std::string& err);
 /// The newest native_experts.txt this engine reads.  v4 = v3 plus the per-role shard column `gate,up,down`,
 /// written only when some layer's roles are in different shards (every other pack stays v3, byte for byte).
 inline constexpr int kExpertLayoutVersion = 4;

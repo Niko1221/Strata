@@ -69,16 +69,25 @@ std::string apply_model_geometry(const GgufFile& f, ModelGeometry& g, int64_t& K
     // The SwiGLU clamp is a PER-LAYER array (one float per block).  The engine applies one value, so the file
     // is only usable if they agree - and a fine-tune that clamps layer 20 differently would otherwise be run
     // with layer 0's limit, which is a wrong answer that looks like a rounding difference.
-    if (const MetaValue* v = f.get(p + "swiglu_clamp_exp"); v != nullptr && v->type == MetaType::ARRAY && v->count > 0) {
+    //
+    // TWO KEYS, because glm5-next clamps two different FFNs: `swiglu_clamp_exp` for the routed experts and
+    // `swiglu_clamp_shexp` for the dense-lead layers and the shared expert.  They happen to be equal (10.0) on
+    // every published artifact, which is exactly why reading only one of them would go unnoticed.
+    const auto read_clamp = [&](const char* key, double& out) -> std::string {
+        const MetaValue* v = f.get(p + key);
+        if (v == nullptr || v->type != MetaType::ARRAY || v->count == 0) return std::string();
         const double first = v->items[0].num();
         for (uint64_t i = 1; i < v->count; ++i) {
             if (v->items[i].num() != first)
-                return p + "swiglu_clamp_exp is not uniform (layer 0 is " + std::to_string(first) + ", layer " +
+                return p + key + " is not uniform (layer 0 is " + std::to_string(first) + ", layer " +
                        std::to_string(i) + " is " + std::to_string(v->items[i].num()) +
                        "); this engine applies one clamp to every layer";
         }
-        g.swiglu_clamp = first;
-    }
+        out = first;
+        return std::string();
+    };
+    if (std::string e = read_clamp("swiglu_clamp_exp", g.swiglu_clamp); !e.empty()) return e;
+    if (std::string e = read_clamp("swiglu_clamp_shexp", g.swiglu_clamp_shexp); !e.empty()) return e;
 
     // ---- the block count, and what counts as a trunk layer ----
     // `block_count` counts the MTP/NextN block; the trunk the engine runs does not include it.  The file says

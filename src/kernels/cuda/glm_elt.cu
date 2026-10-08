@@ -1,11 +1,48 @@
 // src/kernels/cuda/glm_elt.cu - the two elementwise steps a glm5-next FFN has and the existing elementwise
 // family does not.
 //
-// `glm_swiglu` is `silu(gate) * up` with the clamp the reference DOES NOT APPLY.  The GGUF carries
-// `swiglu_clamp_exp`/`swiglu_clamp_shexp` and ik_llama.cpp reads them into its key table and then never uses
-// them: `llm_build_ffn`'s `LLM_FFN_SILU` arm is `ggml_silu(gate)` then `mul(gate, up)`, and the only arch that
-// consults a limit there is STEP35/BAILINGMOE3.  So the clamp is inert on this model and applying it would be
-// the port's own invention - a difference that shows up only on the tokens where a gate exceeds 10.
+// `glm_swiglu` is the reference's SwiGLU with a limit, and the CLAMP IS APPLIED on this model:
+//
+//     out = min(silu(gate), limit) * clamp(up, -limit, +limit)
+//
+// **THIS FILE USED TO SAY THE CLAMP WAS NEVER APPLIED, AND THAT CLAIM WAS WRONG.**  It read: "`swiglu_clamp_exp`
+// is 10.0 on every layer, and the reference never applies it: the value is read into the hparams and then not
+// passed to the graph ... the only arch that consults a limit there is STEP35/BAILINGMOE3."  It is applied:
+//
+//   * ik_llama.cpp's `swiglu_limit()` (llama-model.h:686) has `LLM_ARCH_GLM5NEXT` in its allow-list and returns
+//     `swiglu_limits[il]` / `swiglu_limits_shared[il]`.  It is called at llama-build-context.cpp:1274 for the
+//     routed experts and :1335 for the dense/shared path.
+//   * Mainline llama.cpp applies it to this arch too (llama-graph.cpp:1840-1848 for the shared expert,
+//     :2235-2243 for the experts).
+//   * It was added deliberately: commit 42a9a2fd "model: Add GLM-5.3-Flash (glm5next) runtime support (#2376)"
+//     is what put GLM5NEXT into that allow-list.
+//
+// The mistake was easy to make and easy to keep: on a confident prompt the gate rarely reaches 10, so the port
+// matched the oracle for 30 of 32 cases WITH THE CLAMP MISSING and nothing pointed at it.
+//
+// **THE CLAMP GOES ON THE SILU'S OUTPUT, NOT ON THE RAW GATE, AND BOTH ORACLES SAY SO.**  This is the trap in
+// this file, because mainline llama.cpp contains BOTH arithmetics and reads the right one off the arch:
+//
+//   * `ggml_swiglu_clamp` itself (ggml-cpu/ops.cpp:3448-3451) clamps the RAW GATE - `gate = min(gate, limit)`,
+//     `up = clamp(up, +-limit)`, `out = silu(gate) * up` - and that op is reached ONLY by `LLM_ARCH_DEEPSEEK4`
+//     and DFLASH-with-hc_mult (llama-graph.cpp:2237 and :1842).  Reading the op and not the dispatch around it
+//     gives clamp-before-silu, which is what this file's first version of this fix did.
+//   * GLM5NEXT is every OTHER arch, so it takes the decomposed branch (llama-graph.cpp:1840-1848 / :2235-2243):
+//     `up = clamp(up, -limit, limit)`, `gate_act = silu(gate)`, `gate_act = clamp(gate_act, -INF, limit)`,
+//     `out = gate_act * up`.  The gate's clamp is ABOVE ONLY, on the silu's output.
+//   * ik_llama.cpp, the oracle our ladder runs against, computes the same thing twice: the CUDA kernel
+//     (`fused_mul_silu_f32` with a limit, ggml-cuda/unary.cu:74-83) is `g = x/(1+expf(-x)); g = min(g, limit);
+//     dst = g * max(-limit, min(limit, y))`, and its CPU iqk path (iqk/iqk_mul_mat.cpp:156-171) is the same
+//     order.
+//
+// The two readings are the same arithmetic until `silu(gate) > limit`, which at limit 10 means `gate > 10.00045`;
+// there this one gives exactly `10.0` and clamp-before-silu gives `silu(10) = 9.9995460`, 4.5e-5 apart.  The
+// limit guard is the reference's: mainline's `eps = 1e-6f` (llama-graph.cpp:2233) and ik's `limit > 1e-6f`
+// (iqk_mul_mat.cpp:156), so an absent limit and a zero one are both "no clamp".
+//
+// The rival readings - no clamp at all (what this port used to compute), the gate clamped on BOTH sides, and the
+// raw-gate clamp that DEEPSEEK4 uses - are finite, fluent and different, which is what `glm_parity`'s rival cases
+// exist to catch.
 #include "strata/kernels/glm.hpp"
 
 #include <cuda_runtime.h>
@@ -32,12 +69,19 @@ void check_launch(const char* what) {
     if (e != cudaSuccess) std::fprintf(stderr, "%s launch: %s\n", what, cudaGetErrorString(e));
 }
 
-__global__ void swiglu_kernel(float* __restrict__ gate, const float* __restrict__ up, int64_t n) {
+__global__ void swiglu_kernel(float* __restrict__ gate, const float* __restrict__ up, float limit, int64_t n) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
-    const float g = gate[i];
     // The reference's `ggml_silu` (f32): `x / (1 + exp(-x))`, the same form `glm_kda_conv_silu` uses.
-    gate[i] = (g / (1.0f + expf(-g))) * up[i];
+    const float g = gate[i] / (1.0f + expf(-gate[i]));
+    // **THE SILU'S OUTPUT IS WHAT GETS CLAMPED, AND ABOVE ONLY** - see the two readings in this file's header.
+    // Clamping the raw gate, or clamping the gate on both sides, is the natural misreading and it is not this.
+    // The up is clamped on BOTH sides, and that one IS on the raw value.
+    if (limit > 1e-6f) {
+        gate[i] = fminf(g, limit) * fminf(fmaxf(up[i], -limit), limit);
+    } else {
+        gate[i] = g * up[i];
+    }
 }
 
 __global__ void add_inplace_kernel(float* __restrict__ dst, const float* __restrict__ src, int64_t n) {
@@ -158,10 +202,10 @@ __global__ void router_sigmoid_topk_kernel(const float* __restrict__ logits, con
 
 }  // namespace
 
-void glm_swiglu(float* gate, const float* up, int64_t n, void* stream) {
+void glm_swiglu(float* gate, const float* up, float limit, int64_t n, void* stream) {
     if (n <= 0) return;
     const int blocks = (int) ((n + 255) / 256);
-    swiglu_kernel<<<blocks, 256, 0, (cudaStream_t) stream>>>(gate, up, n);
+    swiglu_kernel<<<blocks, 256, 0, (cudaStream_t) stream>>>(gate, up, limit, n);
     check_launch("glm_swiglu");
     sync_if_needed(stream, "glm_swiglu");
 }

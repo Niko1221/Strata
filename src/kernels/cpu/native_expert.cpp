@@ -155,14 +155,15 @@ void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* 
     // weights stay in L1 across ggml's per-token calls; 1.01-1.13x in native_expert_parity).  One token takes
     // ggml's own dot below - the same bits, less overhead.
     if (kq256_on() && f.gu_type == 12 && nt >= 2) {
-        kq256_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
+        kq256_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1, f.swiglu_limit);
         return;
     }
     // Each kernel only for the formats it implements: falling through an empty switch would leave ff unwritten
     // instead of falling back to ggml-cpu.
     if (const int kind = gu_multi_kind(f.gu_type, nt)) {
-        if (kind == 5) iq512_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
-        else iq256_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
+        if (kind == 5)
+            iq512_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1, f.swiglu_limit);
+        else iq256_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1, f.swiglu_limit);
         return;
     }
     // ggml-cpu's vec_dot, reached through the slice form: the blob's two halves ARE its gate and up rows.
@@ -227,12 +228,14 @@ void native_gu_rows_slice(const NativeFmt& f, const uint8_t* gate, const uint8_t
     if (slice_mt_on()) {
         const size_t up_off = (size_t) (up - gate);
         if (kq256_on() && f.gu_type == 12 && nt >= 2) {
-            kq256_gu_rows(f.gu_type, gate, f.gu_row, up_off, (int) f.n_embd, act, nt, ff, r0, r1);
+            kq256_gu_rows(f.gu_type, gate, f.gu_row, up_off, (int) f.n_embd, act, nt, ff, r0, r1, f.swiglu_limit);
             return;
         }
         if (const int kind = gu_multi_kind(f.gu_type, nt)) {
-            if (kind == 5) iq512_gu_rows(f.gu_type, gate, f.gu_row, up_off, (int) f.n_embd, act, nt, ff, r0, r1);
-            else iq256_gu_rows(f.gu_type, gate, f.gu_row, up_off, (int) f.n_embd, act, nt, ff, r0, r1);
+            if (kind == 5)
+                iq512_gu_rows(f.gu_type, gate, f.gu_row, up_off, (int) f.n_embd, act, nt, ff, r0, r1, f.swiglu_limit);
+            else
+                iq256_gu_rows(f.gu_type, gate, f.gu_row, up_off, (int) f.n_embd, act, nt, ff, r0, r1, f.swiglu_limit);
             return;
         }
     }
@@ -261,6 +264,13 @@ void native_gu_rows_ptrs(const NativeFmt& f, const uint8_t* gate, const uint8_t*
                          int nt, float* const* ff, int r0, int r1) {
     const ggml_vec_dot_t dot = traits(f.gu_type)->vec_dot;
     const int n = (int) f.n_embd;
+    // The reference's SwiGLU with a limit: **THE SILU'S OUTPUT IS CLAMPED, ABOVE ONLY** - not the raw gate, which
+    // is what DEEPSEEK4's `ggml_swiglu_clamp` does and what this port computed for a while - and the UP IS
+    // CLAMPED ON BOTH SIDES.  Both oracles in the engine's header note compute it this way.  `1e-6` is the
+    // reference's own guard, so `f.swiglu_limit == 0` (the first family's pack) takes the same branch it always
+    // took and this loop computes exactly its old arithmetic.
+    const float lim = f.swiglu_limit;
+    const bool clamp = lim > 1e-6f;
     for (int r = r0; r < r1; ++r) {
         const uint8_t* gr = gate + (size_t) r * f.gu_row;
         const uint8_t* ur = up + (size_t) r * f.gu_row;
@@ -268,7 +278,8 @@ void native_gu_rows_ptrs(const NativeFmt& f, const uint8_t* gate, const uint8_t*
             float g = 0.f, u = 0.f;
             dot(n, &g, 0, gr, 0, act[t], 0, 1);
             dot(n, &u, 0, ur, 0, act[t], 0, 1);
-            ff[t][r] = (g / (1.f + std::exp(-g))) * u;
+            const float h = g / (1.f + std::exp(-g));
+            ff[t][r] = (clamp ? std::fmin(h, lim) : h) * (clamp ? std::fmin(std::fmax(u, -lim), lim) : u);
         }
     }
 }

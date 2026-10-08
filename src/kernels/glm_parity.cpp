@@ -1,4 +1,5 @@
-// src/kernels/glm_parity.cpp - the parity test for GLM-5.3-Flash's own kernels (mHC, KDA).
+// src/kernels/glm_parity.cpp - the parity test for GLM-5.3-Flash's own kernels (mHC, KDA, MLA, the SwiGLU
+// clamp).
 //
 // Every function here is a transcription of the REFERENCE, not of the kernel: the arithmetic is in double and
 // laid out the way `ggml_compute_forward_hc_pre_f32` / `ggml_compute_forward_kda_f32` /
@@ -15,6 +16,7 @@
 // `comb[j*S + i]` with j the SOURCE, and `g` is [head_dim, head_count, T] with head_dim fastest.  All three are
 // silent when wrong and this file fills every buffer with a value that encodes its own coordinates.
 #include "strata/kernels/glm.hpp"
+#include "strata/kernels/glm_dsa.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -25,6 +27,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <random>
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -763,6 +767,456 @@ void test_mla_attn(Dev& d, int64_t nh, int64_t T, int64_t kv, int64_t n_kv, int6
     cudaFree(d_q); cudaFree(d_out); cudaFree(d_cache);
 }
 
+// ---------------------------------------------------------------------------------------------------------
+// the FFN's SwiGLU with a limit
+// ---------------------------------------------------------------------------------------------------------
+
+/// The reference's SwiGLU with a limit, in double, and the four other readings of it.
+///
+/// **MODE 0 IS THE BRANCH GLM5NEXT ACTUALLY TAKES**, and reading the wrong one is the mistake this case exists
+/// to catch: mainline llama.cpp contains two arithmetics for this and picks by arch.  `ggml_swiglu_clamp`
+/// (ggml-cpu/ops.cpp:3448-3451) clamps the RAW GATE - `gate = min(gate, limit)`, `up = clamp(up, +-limit)`,
+/// `out = silu(gate) * up` - and it is reached ONLY by `LLM_ARCH_DEEPSEEK4` and DFLASH-with-hc_mult
+/// (llama-graph.cpp:2237, :1842).  GLM5NEXT is every other arch, so it takes the decomposed run at
+/// llama-graph.cpp:1840-1848 (shared expert) and :2235-2243 (experts): the up clamped on both sides, the gate
+/// through silu FIRST, and the silu's output then clamped ABOVE ONLY.  ik_llama.cpp - the oracle the ladder
+/// runs against - computes that same order in both its CUDA kernel (ggml-cuda/unary.cu:74-83) and its CPU iqk
+/// path (iqk/iqk_mul_mat.cpp:156-171), so upstream and the oracle agree and there is nothing to choose between.
+///
+///   mode 1: no clamp at all - what this port computed before the missing clamp was found.
+///   mode 2: the up left raw.
+///   mode 3: the SILU'S OUTPUT clamped on BOTH sides.
+///   mode 4: the RAW GATE clamped before the silu - deepseek4's op, and this port's first attempt at the fix.
+void ref_swiglu(const std::vector<float>& gate, const std::vector<float>& up, double limit, int mode,
+                std::vector<double>& out) {
+    const bool cl = limit > 1e-6;   // the reference's own guard (llama-graph.cpp:2233, iqk_mul_mat.cpp:156)
+    out.resize(gate.size());
+    for (size_t i = 0; i < gate.size(); ++i) {
+        const double g = gate[i], u = up[i];
+        const double silu = g / (1.0 + std::exp(-g));
+        const double upc = cl ? std::fmin(std::fmax(u, -limit), limit) : u;
+        double a;   // the gate's contribution: where the four readings part company
+        if (mode == 1)      a = silu;                                      // no clamp
+        else if (mode == 2) a = cl ? std::fmin(silu, limit) : silu;        // the up left raw
+        else if (mode == 3) a = cl ? std::fmin(std::fmax(silu, -limit), limit) : silu;
+        else if (mode == 4) {                                              // the raw gate, before the silu
+            const double gq = cl ? std::fmin(g, limit) : g;
+            a = gq / (1.0 + std::exp(-gq));
+        } else              a = cl ? std::fmin(silu, limit) : silu;        // 0: the reference
+        out[i] = a * (mode == 2 ? u : upc);
+    }
+}
+
+void test_swiglu(Dev& d, int64_t n, float limit) {
+    std::mt19937 rng((uint32_t) (0x85EBCA6Bu ^ (uint32_t) (n * 131 + (int) (limit * 8))));
+    std::uniform_real_distribution<float> u(-1.0f, 1.0f);
+    // THE FIXTURE HAS TO REACH THE CLAMP, OR THE CASE PROVES NOTHING.  `silu(gate)` is above a limit of 10 only
+    // once `gate > 10.00045`, so the gates span +-22 (a quarter of them are past it) and the ups span +-30, and
+    // the counts are ASSERTED below rather than hoped for.  A fixture of ordinary activations would have passed
+    // against the unclamped kernel, which is exactly how the missing clamp survived 30 of the 32 ladder cases.
+    std::vector<float> gate((size_t) n), up((size_t) n);
+    for (int64_t i = 0; i < n; ++i) {
+        gate[i] = 22.0f * u(rng);
+        up[i] = 30.0f * u(rng);
+    }
+    int n_gate = 0, n_up = 0;
+    for (int64_t i = 0; i < n; ++i) {
+        const double g = gate[i];
+        if (g / (1.0 + std::exp(-g)) > (double) limit) ++n_gate;
+        if (std::fabs((double) up[i]) > (double) limit) ++n_up;
+    }
+    report("swiglu: the fixture reaches the clamp", n_gate > 0 && n_up > 0);
+
+    float* d_gate = d.put(gate);
+    float* d_up = d.put(up);
+    strata::kernels::glm_swiglu(d_gate, d_up, limit, n, nullptr);
+    const std::vector<float> got = d.get(d_gate, (size_t) n);
+    cudaFree(d_gate);
+    cudaFree(d_up);
+
+    std::vector<double> want;
+    ref_swiglu(gate, up, limit, 0, want);
+    report("swiglu (limit caps the silu's output)", close_enough(got, want));
+
+    std::vector<double> rival;
+    // **THE RIVALS ARE ONLY RIVALS WHERE THE CLAMP CAN BITE.**  At `limit == 0` - the first family's packs - all
+    // five readings are the same arithmetic, so reporting "the kernel disagrees with a reading it agrees with"
+    // would be a false pass dressed up as a test.  That case gets the opposite assertion below instead.
+    if (limit > 1e-6f) {
+        ref_swiglu(gate, up, limit, 1, rival);
+        report("  rival: no clamp", differs(got, rival));
+        ref_swiglu(gate, up, limit, 2, rival);
+        report("  rival: the up left raw", differs(got, rival));
+        // The raw-gate reading is the CLOSE one, and the tolerance says why: the two differ at all only where
+        // `silu(gate) > limit`, and there by the 4.54e-4 between `limit` and `silu(limit)` at limit 10 - about
+        // 1.5e-5 of this fixture's peak.  The default 1e-4 would have reported the two readings as equal, so
+        // this line is the tightest one in the file on purpose.
+        ref_swiglu(gate, up, limit, 4, rival);
+        report("  rival: the raw gate clamped (deepseek4's op)", differs(got, rival, 1e-5));
+
+        // ...and the reading that CANNOT be caught, asserted as the finding it is: clamping the silu's output on
+        // BOTH sides is the same computation as clamping it above only, because silu's range is (-0.2785, inf)
+        // and a limit of 10 has nothing to clamp at the bottom.
+        std::vector<double> both;
+        ref_swiglu(gate, up, limit, 3, both);
+        report("  rival: both sides of the silu's output, indistinguishable", rel_gap(want, both) <= 0.0);
+    } else {
+        ref_swiglu(gate, up, limit, 1, rival);
+        report("  limit 0: the kernel is the unclamped form", close_enough(got, rival));
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// DSA: the k-pool indexer and the sparse attention it selects for
+// ---------------------------------------------------------------------------------------------------------
+
+/// `pooled[e,p] = sum_m softmax_m(ig[e, m_p] + ape[e,m]) * ik[e, m_p]`, in double.
+///
+/// `rival` picks the reading: 0 the reference, 1 ONE softmax over the pool's whole key_dim x kpool block (the
+/// natural misreading - it is finite, it is normalised, and it weights every element of the pool by every
+/// element's gate), 2 the logits without `ape` at all.
+void ref_dsa_pool(const std::vector<float>& ik, const std::vector<float>& ig, const std::vector<float>& ape,
+                  int kd, int kp, int n_pools, int rival, std::vector<double>& out) {
+    auto lg = [&](int e, int p, int m) {
+        const double g = (double) ig[(size_t) e + (size_t) kd * (p * kp + m)];
+        return g + (rival == 2 ? 0.0 : (double) ape[(size_t) e + (size_t) kd * m]);
+    };
+    out.assign((size_t) kd * n_pools, 0.0);
+    for (int p = 0; p < n_pools; ++p) {
+        if (rival == 1) {
+            double mx = -1e300;
+            for (int e = 0; e < kd; ++e)
+                for (int m = 0; m < kp; ++m) mx = std::max(mx, lg(e, p, m));
+            double den = 0.0;
+            for (int e = 0; e < kd; ++e)
+                for (int m = 0; m < kp; ++m) den += std::exp(lg(e, p, m) - mx);
+            for (int e = 0; e < kd; ++e) {
+                double acc = 0.0;
+                for (int m = 0; m < kp; ++m)
+                    acc += std::exp(lg(e, p, m) - mx) / den * (double) ik[(size_t) e + (size_t) kd * (p * kp + m)];
+                out[(size_t) e + (size_t) kd * p] = acc;
+            }
+            continue;
+        }
+        for (int e = 0; e < kd; ++e) {
+            double mx = -1e300, den = 0.0, acc = 0.0;
+            for (int m = 0; m < kp; ++m) mx = std::max(mx, lg(e, p, m));
+            for (int m = 0; m < kp; ++m) den += std::exp(lg(e, p, m) - mx);
+            for (int m = 0; m < kp; ++m)
+                acc += std::exp(lg(e, p, m) - mx) / den * (double) ik[(size_t) e + (size_t) kd * (p * kp + m)];
+            out[(size_t) e + (size_t) kd * p] = acc;
+        }
+    }
+}
+
+/// `score[t,p] = sum_h relu(iq_h . pooled_p) * weights[h,t]`.  Rival 1 drops the relu; rival 2 relu's the
+/// weighted term instead of the dot, which is the same expression with one bracket moved.
+void ref_dsa_score(const std::vector<float>& iq, const std::vector<double>& pooled, const std::vector<float>& wts,
+                   int kd, int nh, int T, int n_pools, int rival, std::vector<double>& out) {
+    out.assign((size_t) n_pools * T, 0.0);
+    for (int t = 0; t < T; ++t)
+        for (int p = 0; p < n_pools; ++p) {
+            double acc = 0.0;
+            for (int h = 0; h < nh; ++h) {
+                double dot = 0.0;
+                for (int e = 0; e < kd; ++e)
+                    dot += (double) iq[(size_t) e + (size_t) kd * h + (size_t) kd * nh * t] * pooled[(size_t) e + (size_t) kd * p];
+                const double w = (double) wts[(size_t) h + (size_t) nh * t];
+                if (rival == 1) acc += dot * w;
+                else if (rival == 2) acc += std::max(dot * w, 0.0);
+                else acc += std::max(dot, 0.0) * w;
+            }
+            out[(size_t) p + (size_t) n_pools * t] = acc;
+        }
+}
+
+/// The selection, on the host, exactly as the kernel does it - the rank formula, the cell expansion and the
+/// tail.  `tie` flips the tie-break to the HIGHER index, `cell_order` emits each selected pool's cells sorted
+/// ascending instead of in rank order.
+void ref_dsa_select(const std::vector<float>& score, int n_pools, int kp, int top_pools, int select_tail, int T,
+                    int n_sel, const std::vector<int>& pos, int tie, int cell_order, std::vector<int32_t>& out) {
+    out.assign((size_t) n_sel * T, -1);
+    std::vector<std::pair<float, int>> vis;
+    for (int t = 0; t < T; ++t) {
+        const int n_vis = (pos[(size_t) t] + 1) / kp;
+        vis.clear();
+        for (int p = 0; p < n_vis; ++p) vis.emplace_back(score[(size_t) p + (size_t) n_pools * t], p);
+        if (cell_order) std::sort(vis.begin(), vis.end(), [](auto& a, auto& b) { return a.second < b.second; });
+        else std::stable_sort(vis.begin(), vis.end(), [tie](auto& a, auto& b) {
+            if (a.first != b.first) return a.first > b.first;
+            return tie ? a.second > b.second : a.second < b.second;
+        });
+        int32_t* row = out.data() + (size_t) n_sel * t;
+        for (size_t r = 0; r < vis.size() && (int) r < top_pools; ++r)
+            for (int m = 0; m < kp; ++m) row[r * kp + m] = vis[r].second * kp + m;
+        if (select_tail)
+            for (int m = 0; m < kp - 1; ++m) {
+                const int cell = n_vis * kp + m;
+                if (cell <= pos[(size_t) t]) row[top_pools * kp + m] = cell;
+            }
+    }
+}
+
+/// The sparse attention over the selected cells, in double.  `rival`: 0 the reference, 1 the scale from
+/// `kv_lora` instead of `qk_nope`, 2 the padding cells NOT masked (they keep probability 0 in the score but
+/// are counted in the normaliser, i.e. the -1 row is read as "a cell with score 0").
+void ref_dsa_attn(const std::vector<float>& q_abs, const std::vector<float>& lat, const std::vector<int32_t>& cells,
+                  int kv, int nh, int qk_nope, int T, int n_sel, int rival, std::vector<double>& out) {
+    out.assign((size_t) kv * nh * T, 0.0);
+    const double scale = rival == 1 ? 1.0 / std::sqrt((double) kv) : 1.0 / std::sqrt((double) qk_nope);
+    for (int t = 0; t < T; ++t)
+        for (int h = 0; h < nh; ++h) {
+            const int32_t* row = cells.data() + (size_t) n_sel * t;
+            const float* qa = q_abs.data() + (size_t) kv * h + (size_t) kv * nh * t;
+            std::vector<double> sc((size_t) n_sel, 0.0);
+            double mx = -1e300;
+            for (int s = 0; s < n_sel; ++s) {
+                const int c = row[s];
+                if (c < 0) {
+                    sc[(size_t) s] = (rival == 2) ? 0.0 : -1e300;
+                    continue;
+                }
+                double dot = 0.0;
+                for (int e = 0; e < kv; ++e) dot += (double) qa[e] * (double) lat[(size_t) e + (size_t) kv * c];
+                sc[(size_t) s] = dot * scale;
+                mx = std::max(mx, sc[(size_t) s]);
+            }
+            double den = 0.0;
+            for (int s = 0; s < n_sel; ++s) {
+                const double v = sc[(size_t) s] <= -1e299 ? 0.0 : std::exp(sc[(size_t) s] - mx);
+                sc[(size_t) s] = v;
+                den += v;
+            }
+            for (int e = 0; e < kv; ++e) {
+                double acc = 0.0;
+                for (int s = 0; s < n_sel; ++s) {
+                    const int c = row[s];
+                    if (c >= 0) acc += sc[(size_t) s] / den * (double) lat[(size_t) e + (size_t) kv * c];
+                }
+                out[(size_t) e + (size_t) kv * h + (size_t) kv * nh * t] = acc;
+            }
+        }
+}
+
+/// An int comparison that says WHERE, because a `cells` row is opaque and "they differ" is not actionable.
+bool ids_same(const std::vector<int32_t>& got, const std::vector<int32_t>& want, std::string& note) {
+    for (size_t i = 0; i < got.size() && i < want.size(); ++i)
+        if (got[i] != want[i]) {
+            note = "first at " + std::to_string(i) + ": got " + std::to_string(got[i]) + ", want " +
+                   std::to_string(want[i]);
+            return false;
+        }
+    if (got.size() != want.size()) { note = "different lengths"; return false; }
+    return true;
+}
+
+/// Does a rival differ from the REFERENCE at all?  A rival the reference cannot separate from itself is not a
+/// rival, and reporting "the kernel disagrees with it" would be a false pass - the same trap the Sinkhorn cases
+/// above answer with `rel_gap`.  Every rival below is checked against the reference first and skipped, with a
+/// note, when the fixture does not separate the two readings.
+bool dbl_differ(const std::vector<double>& a, const std::vector<double>& b, double rel = 1e-4) {
+    double peak = 0.0;
+    for (double v : a) peak = std::max(peak, std::fabs(v));
+    const double tol = rel * std::max(peak, 1e-6);
+    for (size_t i = 0; i < a.size(); ++i)
+        if (std::fabs(a[i] - b[i]) > tol) return true;
+    return false;
+}
+
+void rival_f(const char* name, const std::vector<float>& got, const std::vector<double>& ref,
+             const std::vector<double>& rival) {
+    if (!dbl_differ(ref, rival)) {
+        report(name, true, "(not separable from the reference here)");
+        return;
+    }
+    report(name, differs(got, rival));
+}
+
+void rival_i(const char* name, const std::vector<int32_t>& got, const std::vector<int32_t>& ref,
+             const std::vector<int32_t>& rival) {
+    if (ref == rival) {
+        report(name, true, "(not separable from the reference here)");
+        return;
+    }
+    report(name, got != rival);
+}
+
+struct DsaFix {
+    int kd = 8;          // key_dim
+    int kp = 4;          // kpool
+    int nh = 3;          // indexer heads
+    int n_pools = 4;     // COMPLETED pools
+    int top_pools = 2;
+    int kv = 12;         // kv_lora (the latent width)
+    int vhead = 2;       // n_head
+    int n_sel = 2 * 4 + 3;
+    int n_cells = 0;
+};
+
+void test_dsa_indexer(Dev& d, DsaFix f, int T, int select_tail) {
+    std::mt19937 rng((uint32_t) (0x5BF03635u ^ (uint32_t) (f.kd * 31 + f.kp * 977 + f.nh * 131 + T * 7 + select_tail)));
+    std::uniform_real_distribution<float> u(-1.0f, 1.0f);
+    const size_t n_cells = (size_t) f.kp * f.n_pools + f.kp;   // the completed pools plus an incomplete tail
+    std::vector<float> ik(n_cells * f.kd), ig(n_cells * f.kd), ape((size_t) f.kp * f.kd);
+    std::vector<float> iq((size_t) f.kd * f.nh * T), wts((size_t) f.nh * T);
+    for (float& v : ik) v = u(rng);
+    for (float& v : ig) v = u(rng);
+    for (float& v : ape) v = u(rng);
+    for (float& v : iq) v = u(rng);
+    for (float& v : wts) v = u(rng);
+    // The indexer's weights are prescaled by `1/sqrt(key_dim * idx_heads)` where the reference BUILDS them, so
+    // the kernel must not scale again - a second division is a factor of ~0.05 here and would still select cells.
+    const float wscale = (float) (1.0 / std::sqrt((double) f.kd * f.nh));
+    for (float& v : wts) v *= wscale;
+
+    // The queries' absolute positions: the last token sits inside an incomplete pool, so the tail path is live,
+    // and the first ones sit before any pool has completed.
+    std::vector<int> pos((size_t) T);
+    for (int t = 0; t < T; ++t) pos[(size_t) t] = f.kp * f.n_pools - 2 + t;
+
+    float* d_ik = d.put(ik);
+    float* d_ig = d.put(ig);
+    float* d_ape = d.put(ape);
+    float* d_iq = d.put(iq);
+    float* d_wts = d.put(wts);
+    float* d_pooled = nullptr;
+    float* d_score = nullptr;
+    int* d_cells = nullptr;
+    int* d_pos = d.put(pos);
+    check(cudaMalloc(&d_pooled, (size_t) f.kd * f.n_pools * 4), "dsa pooled");
+    check(cudaMalloc(&d_score, (size_t) f.n_pools * T * 4), "dsa score");
+    check(cudaMalloc(&d_cells, (size_t) f.n_sel * T * 4), "dsa cells");
+
+    strata::kernels::glm_dsa_pool(d_ik, d_ig, d_ape, f.kd, f.kp, f.n_pools, d_pooled, nullptr);
+    const std::vector<float> got_pooled = d.get(d_pooled, (size_t) f.kd * f.n_pools);
+    std::vector<double> want, ref_pool;
+    ref_dsa_pool(ik, ig, ape, f.kd, f.kp, f.n_pools, 0, ref_pool);
+    report("dsa_pool", close_enough(got_pooled, ref_pool));
+    ref_dsa_pool(ik, ig, ape, f.kd, f.kp, f.n_pools, 1, want);
+    rival_f("  rival: one softmax over the whole pool block", got_pooled, ref_pool, want);
+    ref_dsa_pool(ik, ig, ape, f.kd, f.kp, f.n_pools, 2, want);
+    rival_f("  rival: the logits without ape", got_pooled, ref_pool, want);
+
+    std::vector<float> pooled_f(got_pooled.begin(), got_pooled.end());
+    strata::kernels::glm_dsa_score(d_iq, d_pooled, d_wts, f.kd, f.nh, T, f.n_pools, d_score, nullptr);
+    const std::vector<float> got_score = d.get(d_score, (size_t) f.n_pools * T);
+    std::vector<double> want_score, ref_score;
+    ref_dsa_score(iq, ref_pool, wts, f.kd, f.nh, T, f.n_pools, 0, ref_score);
+    report("dsa_score", close_enough(got_score, ref_score));
+    ref_dsa_score(iq, ref_pool, wts, f.kd, f.nh, T, f.n_pools, 1, want_score);
+    rival_f("  rival: no relu", got_score, ref_score, want_score);
+    ref_dsa_score(iq, ref_pool, wts, f.kd, f.nh, T, f.n_pools, 2, want_score);
+    rival_f("  rival: relu after the weighting", got_score, ref_score, want_score);
+
+    // The selection is on the SCORES THE KERNEL PRODUCED, so a score error cannot hide as a selection pass.
+    std::vector<float> score_f(got_score.begin(), got_score.end());
+    strata::kernels::glm_dsa_select(d_score, f.n_pools, f.kp, f.top_pools, select_tail, T, f.n_sel, d_pos, d_cells,
+                                    nullptr);
+    const std::vector<int32_t> got_cells = d.get(d_cells, (size_t) f.n_sel * T);
+    std::vector<int32_t> ref_cells, want_cells;
+    std::string note;
+    ref_dsa_select(score_f, f.n_pools, f.kp, f.top_pools, select_tail, T, f.n_sel, pos, 0, 0, ref_cells);
+    report("dsa_select", ids_same(got_cells, ref_cells, note), note.c_str());
+    // The tail is what makes positions before the first complete pool visible at all, so flipping it must move
+    // the rows - and it only does when `pos` reaches past a completed pool's end, which the fixture's positions
+    // are chosen to do.
+    ref_dsa_select(score_f, f.n_pools, f.kp, f.top_pools, !select_tail, T, f.n_sel, pos, 0, 0, want_cells);
+    rival_i("  rival: select_tail flipped", got_cells, ref_cells, want_cells);
+    ref_dsa_select(score_f, f.n_pools, f.kp, f.top_pools, select_tail, T, f.n_sel, pos, 1, 0, want_cells);
+    rival_i("  rival: cells in cell order, not score order", got_cells, ref_cells, want_cells);
+
+    cudaFree(d_ik); cudaFree(d_ig); cudaFree(d_ape); cudaFree(d_iq); cudaFree(d_wts);
+    cudaFree(d_pooled); cudaFree(d_score); cudaFree(d_cells); cudaFree(d_pos);
+}
+
+/// The tie-break and the padding are their own case, because ties do not occur by chance in a random fixture
+/// and a padding cell that is only ever -1 in the fixture cannot show a kernel that fails to write it.
+void test_dsa_select_ties(Dev& d) {
+    const int n_pools = 4, kp = 4, top_pools = 2, n_sel = top_pools * kp + kp - 1;
+    // Scores with a deliberate three-way tie for first and a two-way tie for second.
+    const std::vector<float> score = {2.0f, 2.0f, 2.0f, 1.0f};
+    const std::vector<int> pos = {2 * kp + 1};   // two pools visible, so the tie is over 2 of the 4 numbers
+    float* d_score = d.put(score);
+    int* d_pos = d.put(pos);
+    int* d_cells = nullptr;
+    check(cudaMalloc(&d_cells, (size_t) n_sel * 4), "dsa tie cells");
+    strata::kernels::glm_dsa_select(d_score, n_pools, kp, top_pools, /*select_tail=*/1, 1, n_sel, d_pos, d_cells,
+                                    nullptr);
+    const std::vector<int32_t> got = d.get(d_cells, (size_t) n_sel);
+    std::vector<int32_t> ref, want;
+    std::string note;
+    ref_dsa_select(score, n_pools, kp, top_pools, 1, 1, n_sel, pos, 0, 0, ref);
+    report("dsa_select ties by lower index", ids_same(got, ref, note), note.c_str());
+    ref_dsa_select(score, n_pools, kp, top_pools, 1, 1, n_sel, pos, 1, 0, want);
+    rival_i("  rival: ties by higher index", got, ref, want);
+    // Every row must END with the padding the row did not fill: the two selected pools' cells, then the tail,
+    // then -1.  A real cell after a pad is a row the kernel did not clean, which the count alone would miss.
+    int32_t last = -2;
+    bool padded = true;
+    for (int s = 0; s < n_sel; ++s) {
+        if (got[(size_t) s] == -1) last = -1;
+        else if (last == -1) padded = false;
+    }
+    report("  the padding is -1 and contiguous at the end", padded);
+
+    cudaFree(d_score); cudaFree(d_pos); cudaFree(d_cells);
+}
+
+void test_dsa_attn(Dev& d, DsaFix f, int T, int kind) {
+    std::mt19937 rng((uint32_t) (0xC2B2AE35u ^ (uint32_t) (f.kv * 31 + f.vhead * 7 + T * 131 + kind)));
+    std::uniform_real_distribution<float> u(-1.0f, 1.0f);
+    const size_t n_cells = (size_t) f.kp * f.n_pools + f.kp;
+    std::vector<float> q((size_t) f.kv * f.vhead * T), lf(n_cells * f.kv);
+    for (float& v : q) v = u(rng);
+    for (float& v : lf) v = u(rng);
+    // `cells` is built from `pos`, not random: rows must be sorted-descending by pool, padded with -1, and every
+    // cell must be inside the cache.  A random row would let the kernel pass on inputs the model never makes.
+    std::vector<int32_t> cells((size_t) f.n_sel * T, -1);
+    std::vector<int> pos((size_t) T);
+    for (int t = 0; t < T; ++t) {
+        pos[(size_t) t] = (int) n_cells - 1;
+        int32_t* row = cells.data() + (size_t) f.n_sel * t;
+        int w = 0;
+        for (int p = 1; p < f.top_pools && w + f.kp <= f.n_sel; ++p)
+            for (int m = 0; m < f.kp; ++m) row[w++] = p * f.kp + m;
+        for (int m = 0; m < f.kp - 1 && w < f.n_sel; ++m) row[w++] = f.kp * f.n_pools + m;
+    }
+
+    float* d_q = d.put(q);
+    int* d_cells = d.put(cells);
+    float* d_out = nullptr;
+    check(cudaMalloc(&d_out, q.size() * 4), "dsa attn out");
+    __half* d_lat = nullptr;
+    check(cudaMalloc(&d_lat, lf.size() * 2), "dsa latents");
+    // Through the engine's own cache store, as the MLA test does: a wrong row stride then fails every case
+    // rather than passing on a cache this test laid out itself.
+    for (size_t c = 0; c < n_cells; ++c) {
+        float* d_row = d.put(std::vector<float>(lf.begin() + c * f.kv, lf.begin() + (c + 1) * f.kv));
+        strata::kernels::glm_mla_cache_store(d_row, (uint16_t*) d_lat, (int64_t) c, f.kv, nullptr);
+        check(cudaFree(d_row), "dsa row free");
+    }
+    const std::vector<__half> hl = d.get((const __half*) d_lat, lf.size());
+    std::vector<float> lat(hl.size());
+    for (size_t i = 0; i < hl.size(); ++i) lat[i] = __half2float(hl[i]);
+
+    // `kind` is the scale's rival: 0 gives the kernel the real `qk_nope` (wider than kv_lora here, as it is in
+    // the model), 1 gives it `kv_lora` - which must then MATCH the `1/sqrt(kv_lora)` rival, i.e. the kernel is
+    // not applying a scale of its own.
+    const int qk_nope = kind == 0 ? 2 * f.kv + 3 : f.kv;
+    strata::kernels::glm_dsa_attn(d_q, (const uint16_t*) d_lat, d_cells, f.kv, f.vhead, qk_nope, T, f.n_sel, d_out,
+                                  nullptr);
+    const std::vector<float> got = d.get(d_out, q.size());
+    std::vector<double> ref, want;
+    ref_dsa_attn(q, lat, cells, f.kv, f.vhead, qk_nope, T, f.n_sel, 0, ref);
+    report("dsa_attn", close_enough(got, ref));
+    ref_dsa_attn(q, lat, cells, f.kv, f.vhead, qk_nope, T, f.n_sel, 1, want);
+    rival_f("  rival: the scale from kv_lora", got, ref, want);
+    ref_dsa_attn(q, lat, cells, f.kv, f.vhead, qk_nope, T, f.n_sel, 2, want);
+    rival_f("  rival: the -1 padding counted in the normaliser", got, ref, want);
+
+    cudaFree(d_q); cudaFree(d_cells); cudaFree(d_out); cudaFree(d_lat);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -772,7 +1226,7 @@ int main(int argc, char** argv) {
             return 2;
         }
     Dev d;
-    std::printf("glm (mHC, KDA) parity:\n");
+    std::printf("glm (mHC, KDA, MLA, swiglu) parity:\n");
 
     // A small embed width keeps the mHC cases fast; the shaping is what is under test, not the size.
     for (int64_t T : {(int64_t) 1, (int64_t) 3, (int64_t) 7}) test_hc(d, 64, 4, 20, T);
@@ -797,6 +1251,25 @@ int main(int argc, char** argv) {
     test_mla_attn(d, 4, 4, 8, 12, 8);
     test_mla_attn(d, 2, 1, 512, 3, 2);
     test_mla_attn(d, 2, 2, 512, 5, 3);
+
+    // The FFN's SwiGLU clamp: glm5-next's limit is 10.0 (`swiglu_clamp_exp`/`_shexp`), a second limit is run so
+    // the constant is not hard-coded, and 0 is the no-clamp form the first family's packs get.
+    test_swiglu(d, 64, 10.0f);
+    test_swiglu(d, 128, 10.0f);
+    test_swiglu(d, 48, 3.0f);
+    test_swiglu(d, 32, 0.0f);
+
+    // DSA: the k-pool indexer.  `select_tail` is run both ways - 1 is what ik_llama.cpp, our ladder oracle,
+    // always does, and 0 is upstream's default; the header says why the model cannot settle it.  The single-token
+    // case is the streaming shape this engine drives and the multi-token one is a prefill chunk.
+    DsaFix f;
+    test_dsa_indexer(d, f, 1, 1);
+    test_dsa_indexer(d, f, 4, 1);
+    test_dsa_indexer(d, f, 1, 0);
+    test_dsa_select_ties(d);
+    test_dsa_attn(d, f, 1, 0);
+    test_dsa_attn(d, f, 1, 1);   // given `kv_lora` as the nope width, the kernel must match that scale
+    test_dsa_attn(d, f, 3, 0);
 
     std::printf("\nglm parity: %d cases, %d failures\n", cases, failures);
     if (failures) return 1;

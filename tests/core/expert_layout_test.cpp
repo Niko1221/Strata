@@ -54,10 +54,11 @@ struct TempDir {
 
 void write_text(const fs::path& p, const std::string& s) { std::ofstream(p, std::ios::binary) << s; }
 
-bool load(const fs::path& dir, int64_t n_layers, int64_t n_expert, std::string& err) {
+bool load(const fs::path& dir, int64_t n_layers, int64_t n_expert, std::string& err, float swiglu_limit = 0.0f) {
     err.clear();
     return strata::kernels::cpu::expert_layout_load(dir.string(), n_layers, n_expert,
-                                                     strata::kernels::cpu::H, strata::kernels::cpu::FF, err);
+                                                     strata::kernels::cpu::H, strata::kernels::cpu::FF, swiglu_limit,
+                                                     err);
 }
 
 // ---- 1. the real packs' files
@@ -104,6 +105,32 @@ void real_packs(const fs::path& data) {
         same = same && L.n_expert == hdr_n && (long long) L.total == hdr_total && L.max_blob == max_blob;
         check(same, std::string(pack) + ": every field as the pre-v4 reader, totals as the header (v" +
                         std::to_string(L.version) + ", n_expert " + std::to_string(L.n_expert) + ")");
+    }
+}
+
+// ---- 1b. the SwiGLU limit the model, not the pack, decides (`swiglu_clamp_exp` on glm5-next's routed experts)
+void swiglu_limit(const fs::path& data) {
+    // The limit is an argument to the load and not a column of the file, so the check is that it reaches every
+    // layer's NativeFmt - including the dense-lead layer, whose line is a zero blob and is still a NativeFmt.
+    for (float lim : {0.0f, 10.0f}) {
+        TempDir d;
+        fs::copy_file(data / "iq3_s.txt", d.path / "native_experts.txt");
+        std::string err;
+        const bool ok = load(d.path, 48, 512, err, lim);
+        check(ok, "iq3_s: loads with swiglu_limit " + std::to_string(lim) + (ok ? "" : ": " + err));
+        if (!ok) continue;
+        const ExpertLayout& L = strata::kernels::cpu::expert_layout();
+        size_t stamped = 0, zero = 0;
+        for (const auto& f : L.fmt) {
+            stamped += f.swiglu_limit == lim;
+            zero += f.swiglu_limit == 0.0f;
+        }
+        check(stamped == L.fmt.size(), "every one of the " + std::to_string(L.fmt.size()) +
+                                           " layers' NativeFmt carries it (the pack has no such column)");
+        // and 0 is what the first family's geometry leaves: the field must not appear from anywhere else
+        check(lim == 0.0f ? zero == L.fmt.size() : zero == 0, lim == 0.0f
+                  ? "limit 0 stamps 0, not a default from the file"
+                  : "limit 10 stamps 10 on every layer, none left at 0");
     }
 }
 
@@ -360,6 +387,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     real_packs(argv[1]);
+    swiglu_limit(argv[1]);
     columns();
     arena();
     std::printf(g_fail ? "expert_layout_test: %d FAILED\n" : "expert_layout_test: all passed\n", g_fail);

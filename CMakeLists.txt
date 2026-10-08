@@ -353,6 +353,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
                           src/kernels/cuda/glm_kda.cu
                           src/kernels/cuda/glm_delta.cu
                           src/kernels/cuda/glm_attn.cu
+                          src/kernels/cuda/glm_dsa.cu
                           src/kernels/cuda/glm_elt.cu
                           src/kernels/ngram.cpp
                           src/ngram/ple_reader.cpp

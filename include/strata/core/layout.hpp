@@ -87,7 +87,16 @@ struct ModelGeometry {
     int64_t idx_top_k = 0;          // 2048
     int64_t idx_kpool = 0;          // 4
     double expert_weights_scale = 0.0;  // 2.5, applied after the sum-normalisation
-    double swiglu_clamp = 0.0;      // 10.0 - per-layer in the file, uniform on every artifact seen
+    /// The SwiGLU clamp limit, two of them because glm5-next carries two: the ROUTED experts read
+    /// `swiglu_clamp_exp` and the dense-lead layers plus the shared expert read `swiglu_clamp_shexp`.  Both are
+    /// 10.0 on every layer of the shipped artifact and they are equal there, but they are separate keys and a
+    /// pack may disagree - so they are separate fields and the FFN a site belongs to picks.
+    ///
+    /// **0 means NO CLAMP**, which is the reference's own reading of an absent limit (`swiglu_limit` returns 0
+    /// for an arch that carries none, and the graph then applies nothing).  Both are per-layer arrays in the
+    /// file, refused unless uniform.
+    double swiglu_clamp = 0.0;        // 10.0, `swiglu_clamp_exp`: the routed experts
+    double swiglu_clamp_shexp = 0.0;  // 10.0, `swiglu_clamp_shexp`: the dense lead + the shared expert
     /// `attention.layer_norm_rms_epsilon`: **1e-6 on qwen4exp and 1e-5 on glm5-next**, so a layer file must
     /// read it from here rather than use `gemv::RMS_EPS`, which is the first family's number.  KDA's L2
     /// normalisation reuses it too (there it is a floor on the norm, not a term in the sum).
@@ -146,6 +155,7 @@ inline ModelGeometry glm5next_geometry() {
 
     g.expert_weights_scale = 2.5;
     g.swiglu_clamp = 10.0;
+    g.swiglu_clamp_shexp = 10.0;
     g.rms_eps = 1e-5;              // measured from `l4.gguf`'s own `attention.layer_norm_rms_epsilon`
     return g;
 }

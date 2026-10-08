@@ -670,9 +670,18 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
                     const int nbk = (int) (nfmt_->n_embd / 64);
                     q2_rows_any(mjobs_[e].blob, nfmt_->gu_row, nbk, mjobs_[e].act, mjobs_[e].nt, gp, r0, r1);
                     q2_rows_any(mjobs_[e].blob + nfmt_->up_off, nfmt_->gu_row, nbk, mjobs_[e].act, mjobs_[e].nt, up, r0, r1);
+                    // The models that reach a native Q2_0 layer carry no `swiglu_clamp_*` key, so this is 0 and the
+                    // line computes what it always did; the clamp is here so that the one place in this file that
+                    // writes a gate/up activation cannot be the one that ignores the geometry.  As everywhere else
+                    // it is the SILU'S OUTPUT that is clamped (above only, see native_expert.cpp), not the gate.
+                    const float lim = nfmt_->swiglu_limit;
+                    const bool cl = lim > 1e-6f;
                     for (int t = 0; t < mjobs_[e].nt; ++t)
-                        for (int r = r0; r < r1; ++r)
-                            sb.ff[t][r] = (gbuf[t][r] / (1.f + std::exp(-gbuf[t][r]))) * ubuf[t][r];
+                        for (int r = r0; r < r1; ++r) {
+                            const float h = gbuf[t][r] / (1.f + std::exp(-gbuf[t][r]));
+                            const float u = cl ? std::fmin(std::fmax(ubuf[t][r], -lim), lim) : ubuf[t][r];
+                            sb.ff[t][r] = (cl ? std::fmin(h, lim) : h) * u;
+                        }
                 } else if (mode_ == 5) {
                     float* ff[MAXT];
                     for (int t = 0; t < mjobs_[e].nt; ++t) ff[t] = sb.ff[t];
