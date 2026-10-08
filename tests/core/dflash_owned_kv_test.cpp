@@ -16,6 +16,8 @@
 #include "strata/core/layer.hpp"
 #include "strata/kernels/f16_bits.hpp"
 #include "strata/kernels/qsa.hpp"
+#include "strata/kernels/qsa_decode_attn.hpp"
+#include "strata/kernels/native_rope.hpp"
 #include "strata/core/vmm.hpp"
 
 #include <cuda_runtime.h>
@@ -148,6 +150,91 @@ void append_and_readback(const Owned& o, const ModelGeometry& g, const std::vect
     cudaFree(step_dev);
     cudaStreamDestroy(cs);
 }
+
+// Compare batched appends and active attention with the existing selected-cell
+// implementation, across page/chunk boundaries and every supported draft width.
+void batch_and_attention_regression(const ModelGeometry& g) {
+    using namespace strata::kernels;
+    const QsaShapes s = qsa_real_shapes();
+    const int cap = 8256, qw = s.n_head * s.head_dim, kvw = s.n_head_kv * s.head_dim;
+    Owned o;
+    check(o.init(g, cap), "batch regression pool init");
+    cudaStream_t cs;
+    cudaStreamCreateWithFlags(&cs, cudaStreamNonBlocking);
+    float *kd, *vd, *qd, *old_out, *new_out, *scratch;
+    int32_t *steps, *positions, *ids;
+    cudaMalloc(&kd, cap * kvw * sizeof(float));
+    cudaMalloc(&vd, cap * kvw * sizeof(float));
+    cudaMalloc(&qd, 7 * qw * sizeof(float));
+    cudaMalloc(&old_out, 7 * qw * sizeof(float));
+    cudaMalloc(&new_out, 7 * qw * sizeof(float));
+    cudaMalloc(&scratch, 7 * qsa_decode_attn_scratch_floats(cap, s) * sizeof(float));
+    cudaMalloc(&steps, cap * 4 * sizeof(int32_t));
+    cudaMalloc(&positions, 7 * s.n_head * sizeof(int32_t));
+    cudaMalloc(&ids, 7 * cap * sizeof(int32_t));
+    std::vector<float> kh(cap * kvw), vh(kh.size()), qh(7 * qw);
+    for (int c = 0; c < cap; ++c)
+        for (int i = 0; i < kvw; ++i) {
+            kh[c * kvw + i] = kval(c, i / s.head_dim, i % s.head_dim);
+            vh[c * kvw + i] = vval(c, i / s.head_dim, i % s.head_dim);
+        }
+    for (size_t i = 0; i < qh.size(); ++i) qh[i] = (int(i % 29) - 14) * 0.03125f;
+    std::vector<int32_t> ih(7 * cap);
+    for (size_t i = 0; i < ih.size(); ++i) ih[i] = i % cap;
+    cudaMemcpyAsync(kd, kh.data(), kh.size() * 4, cudaMemcpyHostToDevice, cs);
+    cudaMemcpyAsync(vd, vh.data(), vh.size() * 4, cudaMemcpyHostToDevice, cs);
+    cudaMemcpyAsync(qd, qh.data(), qh.size() * 4, cudaMemcpyHostToDevice, cs);
+    cudaMemcpyAsync(ids, ih.data(), ih.size() * 4, cudaMemcpyHostToDevice, cs);
+    dflash_build_steps(steps, cap, 0, s.page_size, cs);
+    kv_append_f16_steps(o.st.k_pool, o.st.v_pool, o.st.page_table, steps, 4, kd, vd, kvw, cap, s, cs);
+    cudaStreamSynchronize(cs);
+    std::vector<uint16_t> pool(cap * kvw);
+    for (bool value : {false, true}) {
+        cudaMemcpy(pool.data(), value ? o.st.v_pool : o.st.k_pool, pool.size() * 2, cudaMemcpyDeviceToHost);
+        for (int c = 0; c < cap; ++c)
+            for (int h = 0; h < s.n_head_kv; ++h)
+                for (int d = 0; d < s.head_dim; ++d) {
+                    const int row = (c / s.page_size * s.n_head_kv + h) * s.page_size + c % s.page_size;
+                    if (pool[row * s.head_dim + d] != f16_from_f32(value ? vval(c, h, d) : kval(c, h, d))) {
+                        check(false, "batched append FP16 bits and page layout");
+                        goto checked;
+                    }
+                }
+        checked:;
+    }
+    QsaAttnPools pools;
+    pools.k_pool = o.st.k_pool; pools.v_pool = o.st.v_pool; pools.page_table = o.st.page_table;
+    for (int k : {2, 3, 4, 5, 6, 7}) {
+        dflash_build_positions(positions, k, s.n_head, 65, cs);
+        std::vector<int32_t> ph(k * s.n_head);
+        cudaMemcpyAsync(ph.data(), positions, ph.size() * 4, cudaMemcpyDeviceToHost, cs);
+        cudaStreamSynchronize(cs);
+        for (size_t i = 0; i < ph.size(); ++i) check(ph[i] == 65 + int(i) / s.n_head, "device head positions");
+        for (int active : {1, 63, 64, 65, 120, 512, 2048, 8192}) {
+            dflash_build_attn_steps(steps, k, active, s.page_size, cs);
+            qsa_decode_attn_batch(qd, pools, ids, steps, cap, s, scratch, old_out, k, cs);
+            dflash_attn_batch(qd, pools, steps, active, cap, s, scratch, new_out, k, cs);
+            std::vector<float> a(k * qw), b(k * qw);
+            cudaMemcpyAsync(a.data(), old_out, a.size() * 4, cudaMemcpyDeviceToHost, cs);
+            cudaMemcpyAsync(b.data(), new_out, b.size() * 4, cudaMemcpyDeviceToHost, cs);
+            cudaStreamSynchronize(cs);
+            double maxerr = 0;
+            for (size_t i = 0; i < a.size(); ++i) {
+                check(std::isfinite(b[i]), "active attention finite");
+                maxerr = std::max(maxerr, double(std::abs(a[i] - b[i])));
+            }
+            if (maxerr > 1e-5) {
+                std::fprintf(stderr, "active attention K=%d cells=%d maxerr=%.9g\n", k, active, maxerr);
+                check(false, "active vs selected attention tolerance 1e-5");
+            }
+        }
+    }
+    for (void* p : {static_cast<void*>(kd), static_cast<void*>(vd), static_cast<void*>(qd),
+                   static_cast<void*>(old_out), static_cast<void*>(new_out), static_cast<void*>(scratch),
+                   static_cast<void*>(steps), static_cast<void*>(positions), static_cast<void*>(ids)}) cudaFree(p);
+    cudaStreamDestroy(cs);
+    cudaFree(o.arena);
+}
 }  // namespace
 
 int main() {
@@ -157,6 +244,7 @@ int main() {
     }
     ModelGeometry g;   // the canonical head geometry: 24Q/2KV x 256, page_size 4
     const int64_t max_cells = 4096;
+    batch_and_attention_regression(g);
 
     std::fprintf(stderr, "dbg: section 1 (owned+append)\n");
     {   // 1+2: one owned state, ownership + append/readback across page boundaries

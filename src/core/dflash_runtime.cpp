@@ -167,7 +167,7 @@ void df_timing_dump() {
         std::fprintf(stderr, "  %-28s %10.2f %10.2f %8.3f %8lld\n", name.c_str(), a.gpu_ms, a.wall_ms,
                      a.wall_ms > 0 ? a.gpu_ms / a.wall_ms : 0.0, (long long) a.n);
     }
-    std::fprintf(stderr, "  %-28s %10.2f %10.2f\n", "TOTAL", gpu_sum, wall_sum);
+    std::fprintf(stderr, "  %-28s %10.2f %10.2f\n", "SUM (not decode wall)", gpu_sum, wall_sum);
 }
 
 cudaStream_t& DFlashSection::df_stream() {
@@ -216,7 +216,7 @@ void DFlashDrafter::release() {
         }
     }
     for (void* a : arenas_) free_dev(a);
-    free_dev(tok_); free_dev(step_); free_dev(pos_);
+    free_dev(tok_); free_dev(step_); free_dev(pos_); free_dev(poskv_); free_dev(attn_step_);
     free_dev(tapin_); free_dev(xn16_); free_dev(attn16_);
     free_dev(tapf_); free_dev(emb_); free_dev(h_); free_dev(xn_); free_dev(ctx_);
     free_dev(q_); free_dev(kc_); free_dev(vc_); free_dev(attn_); free_dev(bo_);
@@ -224,12 +224,10 @@ void DFlashDrafter::release() {
     free_dev(xq_); free_dev(attn_scratch_);
     if (h_out_) cudaFreeHost(h_out_);
     if (h_tok_) cudaFreeHost(h_tok_);
-    if (h_step_) cudaFreeHost(h_step_);
-    if (h_pos_) cudaFreeHost(h_pos_);
     if (cs_) cudaStreamDestroy(cs_);
     w_ = nullptr; wf_.clear(); wt_.clear();
     st_.clear(); arenas_.clear();
-    tok_ = step_ = pos_ = nullptr;
+    tok_ = step_ = pos_ = poskv_ = attn_step_ = nullptr;
     tapin_ = xn16_ = attn16_ = nullptr;
     tapf_ = emb_ = h_ = xn_ = ctx_ = nullptr;
     q_ = kc_ = vc_ = attn_ = bo_ = nullptr;
@@ -237,7 +235,7 @@ void DFlashDrafter::release() {
     xq_ = nullptr;
     attn_scratch_ = nullptr;
     arg_scratch_ = nullptr;
-    out_ = h_out_ = nullptr; h_tok_ = h_step_ = h_pos_ = nullptr;
+    out_ = h_out_ = nullptr; h_tok_ = nullptr;
     cs_ = nullptr;
     vram_ = 0;
     device_ = -1;
@@ -406,15 +404,12 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
 
     // ---- buffers: at most 8 rows ride through the forward at once
     max_rows_ = 8;
-    pos_kv_off_ = max_rows_ * dg.n_head;   // the KV positions' region starts after the q region
     shapes_ = strata::core::shapes_of(pool_g_);
     attn_scratch_floats_ = (int64_t) strata::kernels::qsa_decode_attn_scratch_floats(cap_, shapes_);
     const int64_t R = max_rows_, N = dg.hidden, F = dg.fusion_in(), I = dg.intermediate;
     const int64_t Q = dg.n_head * dg.head_dim, KVW = dg.n_head_kv * dg.head_dim;
     if (!dflash_mapped(R * 4 + 64, (void**) &h_out_, (void**) &out_) ||
-        cudaHostAlloc(&h_tok_, (size_t)(R + 4) * 4, cudaHostAllocDefault) != cudaSuccess ||
-        cudaHostAlloc(&h_step_, (size_t) R * 16, cudaHostAllocDefault) != cudaSuccess ||
-        cudaHostAlloc(&h_pos_, (size_t)(R * (dg.n_head + dg.n_head_kv)) * 4, cudaHostAllocDefault) != cudaSuccess) {
+        cudaHostAlloc(&h_tok_, (size_t)(R + 4) * 4, cudaHostAllocDefault) != cudaSuccess) {
         return bail("dflash: mapped staging failed");
     }
     auto take = [&](size_t n, void** p) -> bool {
@@ -427,7 +422,9 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
     };
     const int64_t W16 = std::max(N, std::max(I, Q));   // the widest bf16 activation (MLP down's input)
     bool ok = take((R + 4) * 4, (void**) &tok_) && take(R * 4 * 4, (void**) &step_) &&
+              take(R * 4 * 4, (void**) &attn_step_) &&
               take(R * (int64_t) dg.n_head * 4, (void**) &pos_) &&
+              take(R * (int64_t) dg.n_head_kv * 4, (void**) &poskv_) &&
               take(R * F * 2, (void**) &tapin_) && take(R * W16 * 2, (void**) &xn16_) &&
               take(R * W16 * 2, (void**) &attn16_) && take(R * F * 4, (void**) &tapf_) &&
               take(R * N * 4, (void**) &emb_) && take(R * N * 4, (void**) &h_) &&
@@ -489,10 +486,24 @@ bool DFlashDrafter::add_context(const uint16_t* taps, int n_taps, int64_t stride
     if (n_taps * N != F) { err = "dflash: the tap count does not match the fusion input"; return false; }
     for (int64_t r0 = 0; r0 < rows; r0 += 8) {
         const int nr = (int) std::min<int64_t>(8, rows - r0);
+        {
+        DFlashSection section("prompt.tap_gather");
         for (int t = 0; t < n_taps; ++t)
             strata::kernels::bf16_gather_strided(taps + (size_t) ((int64_t) t * stride_rows + r0) * N, N,
                                                  tapin_ + (size_t) t * N, F, (int) N, nr, cs_);
+        }
         if (!fusion_rows(pos0 + r0, nr, err)) return false;
+        if (df_timing().on) {
+            if (cudaStreamSynchronize(cs_) != cudaSuccess) { err = "dflash: profiling sync failed"; return false; }
+            df_timing_drain();
+        }
+    }
+    // The prefill callback lends its tap buffer only until this call returns. Its
+    // producer runs on another stream and can reuse/free the buffer immediately.
+    // Keep this ownership boundary even though fusion no longer stages on the host.
+    if (cudaStreamSynchronize(cs_) != cudaSuccess) {
+        err = "dflash: prompt context consumption failed";
+        return false;
     }
     if (cycle_ == 0 && parity_dir_[0]) {
         // the prompt's context cells, layer 0: the first 32 pages raw ([page][kvh][slot][hd] fp16)
@@ -580,7 +591,10 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
         DFlashSection s("fusion.fc_gemv");
         bf16_gemv_batch(tapin_, wp("fc"), ctx_, F, N, rows, cs_);
     }
-    native_qsa_rms_norm_weighted(ctx_, wf("hidden_norm"), ctx_, (int) N, rows, kEps, cs_);
+    {
+        DFlashSection section("fusion.rmsnorm");
+        native_qsa_rms_norm_weighted(ctx_, wf("hidden_norm"), ctx_, (int) N, rows, kEps, cs_);
+    }
     if (parity_want(cycle_)) {
         parity_dump(parity_dir_, "tapsin", tapf_, rows * F, cs_);
         parity_dump(parity_dir_, "ctx", ctx_, rows * N, cs_);
@@ -607,7 +621,12 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
         std::fprintf(stderr, "dflash dbg: fusion ctx norm pos0=%lld rows=%d rms=%.4f\n", (long long) pos0, rows,
                      std::sqrt(s2 / probe.size()));
     }
-    f32_to_bf16_bulk(ctx_, xn16_, (int64_t) rows * N, cs_);
+    {
+        DFlashSection section("fusion.to_bf16");
+        f32_to_bf16_bulk(ctx_, xn16_, (int64_t) rows * N, cs_);
+    }
+    dflash_build_positions(poskv_, rows, (int) dg.n_head_kv, pos0, cs_);
+    dflash_build_steps(step_, rows, pos0, (int) shapes_.page_size, cs_);
 
     for (int64_t l = 0; l < dg.layers; ++l) {
         const std::string pre = "layers." + std::to_string(l);
@@ -620,42 +639,14 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
                                      (int) (rows * dg.n_head_kv), kEps, cs_);
 
         // rope at each row's own position (k rows of one row sit NKV apart: [row r][head][hd]);
-        // the rope reads DEVICE positions.  The staging lands in the KV region of h_pos_ (disjoint
-        // from the query rows' region), and the copy is synced before returning: these positions
-        // CHANGE from call to call, so a pending copy of h_pos_ while the next call rewrites it
-        // would rope this chunk's context K at the next chunk's positions
-        for (int r = 0; r < rows; ++r)
-            for (int64_t hh = 0; hh < dg.n_head_kv; ++hh)
-                h_pos_[(size_t) pos_kv_off_ + (size_t) r * dg.n_head_kv + hh] = (int32_t)(pos0 + r);
+        // the positions and the append cells are built on the DEVICE - no pinned staging whose
+        // pending copy a rewrite could overtake, so the per-layer syncs are gone with it
         {
-            DFlashSection s("fusion.rope");
-            if (cudaMemcpyAsync(pos_, h_pos_ + pos_kv_off_, (size_t) rows * dg.n_head_kv * 4,
-                                cudaMemcpyHostToDevice, cs_) != cudaSuccess) {
-                err = "dflash: the position staging failed";
-                return false;
-            }
-            if (cudaStreamSynchronize(cs_) != cudaSuccess) { err = "dflash: its stream failed"; return false; }
-            dflash_rope_neox_apply(kc_, kc_, (int) (rows * dg.n_head_kv), (int) dg.head_dim, dg.rope_theta, pos_, cs_);
+            DFlashSection section("fusion.rope");
+            dflash_rope_neox_apply(kc_, kc_, (int) (rows * dg.n_head_kv), (int) dg.head_dim, dg.rope_theta, poskv_, cs_);
         }
 
         // append at the true cells
-        for (int r = 0; r < rows; ++r) {
-            const int64_t cell = pos0 + r;
-            h_step_[(size_t) r * 4 + 0] = (int32_t) cell;
-            h_step_[(size_t) r * 4 + 1] = (int32_t)(cell + 1);
-            h_step_[(size_t) r * 4 + 2] = (int32_t)((cell + 1) / 4);
-            h_step_[(size_t) r * 4 + 3] = (int32_t)(cell + 1);
-        }
-        {
-            DFlashSection s("fusion.kv_append");
-            if (cudaMemcpyAsync(step_, h_step_, (size_t) rows * 16, cudaMemcpyHostToDevice, cs_) != cudaSuccess) {
-                err = "dflash: the step staging failed";
-                return false;
-            }
-            // same pinned-staging rule: the append cells change per call - let the copy land before
-            // the next call rewrites h_step_
-            if (cudaStreamSynchronize(cs_) != cudaSuccess) { err = "dflash: its stream failed"; return false; }
-        }
         if (std::getenv("STRATA_DF_DBG") && l == 0)
             std::fprintf(stderr, "dflash dbg: fusion append pos0=%lld rows=%d cells [%lld..%lld)\n",
                          (long long) pos0, rows, (long long) pos0, (long long) (pos0 + rows));
@@ -669,10 +660,8 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
                                (int) KVW, rows, shapes_, cs_, &stl.host);
         else {
             DFlashSection s("fusion.kv_append");
-            for (int r = 0; r < rows; ++r)
-                kv_append_step(stl.k_pool, stl.v_pool, stl.page_table, step_ + r * 4, kc_ + (size_t) r * KVW,
-                               vc_ + (size_t) r * KVW, shapes_, cs_, nullptr);
-            if (cudaStreamSynchronize(cs_) != cudaSuccess) { err = "dflash: its stream failed"; return false; }
+            kv_append_f16_steps(stl.k_pool, stl.v_pool, stl.page_table, step_, 4, kc_, vc_, (int) KVW, rows,
+                                shapes_, cs_, nullptr);
             // the pool rows the appends landed in, for the harness (after a sync so the appends are done)
             if (parity_want(cycle_) && l == 0) {
                 if (cudaStreamSynchronize(cs_) != cudaSuccess) { err = "dflash: its stream failed"; return false; }
@@ -761,9 +750,14 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
         std::snprintf(path, sizeof path, "%s/meta.bin", parity_dir_);
         if (FILE* f = std::fopen(path, "wb")) { std::fwrite(meta, 4, 5, f); std::fclose(f); }
     }
-    // per-head rope positions of the query rows: row r at pos+r
-    for (int r = 0; r < K; ++r)
-        for (int64_t hh = 0; hh < dg.n_head; ++hh) h_pos_[(size_t) r * dg.n_head + hh] = (int32_t)(pos + r);
+    // the query rows' and the KV rows' rope positions, the appends' cells and the attention's
+    // window are all built ON THE DEVICE once for the whole block: the values are the same every
+    // layer, and nothing here is host memory any more, so there is no staging copy a rewrite
+    // could overtake (the old two-region pinned h_pos_ dance existed only for that race)
+    dflash_build_positions(pos_, K, (int) dg.n_head, pos, cs_);
+    dflash_build_positions(poskv_, K, (int) dg.n_head_kv, pos, cs_);
+    dflash_build_steps(step_, K, pos, (int) shapes_.page_size, cs_);
+    dflash_build_attn_steps(attn_step_, K, pos + K, (int) shapes_.page_size, cs_);
 
     for (int64_t l = 0; l < dg.layers; ++l) {
         const std::string pre = "layers." + std::to_string(l);
@@ -790,13 +784,6 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
             std::snprintf(name, sizeof name, "qraw%d", (int) l);
             parity_dump(parity_dir_, name, q_, K * Q, cs_);
         }
-        // the q-rope positions are re-staged HERE for every layer.  They are the same values every
-        // layer, and they live in the q region of h_pos_ - disjoint from the KV region below - so
-        // a rewrite racing a pending copy of the buffer hands the copy the SAME bytes (the old
-        // single-region layout let the layer's KV restage corrupt the query rows' positions
-        // in flight: row 0's first heads roped at the wrong positions, rows 1.. untouched)
-        for (int r = 0; r < K; ++r)
-            for (int64_t hh = 0; hh < dg.n_head; ++hh) h_pos_[(size_t) r * dg.n_head + hh] = (int32_t)(pos + r);
         native_qsa_rms_norm_weighted(q_, wf((pre + ".self_attn.q_norm").c_str()), q_, (int) dg.head_dim,
                                      (int) (K * dg.n_head), kEps, cs_);
         if (parity_want(cycle_)) {
@@ -808,36 +795,14 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
                                      (int) (K * dg.n_head_kv), kEps, cs_);
         {
             DFlashSection s("L*.rope_q");
-            if (cudaMemcpyAsync(pos_, h_pos_, (size_t) K * dg.n_head * 4, cudaMemcpyHostToDevice, cs_) != cudaSuccess) {
-                err = "dflash: the position staging failed";
-                return false;
-            }
             dflash_rope_neox_apply(q_, q_, (int) (K * dg.n_head), (int) dg.head_dim, dg.rope_theta, pos_, cs_);
         }
-        for (int r = 0; r < K; ++r)
-            for (int64_t hh = 0; hh < dg.n_head_kv; ++hh)
-                h_pos_[(size_t) pos_kv_off_ + (size_t) r * dg.n_head_kv + hh] = (int32_t)(pos + r);
         {
             DFlashSection s("L*.rope_kv");
-            if (cudaMemcpyAsync(pos_, h_pos_ + pos_kv_off_, (size_t) K * dg.n_head_kv * 4,
-                                cudaMemcpyHostToDevice, cs_) != cudaSuccess) {
-                err = "dflash: the position staging failed";
-                return false;
-            }
-            dflash_rope_neox_apply(kc_, kc_, (int) (K * dg.n_head_kv), (int) dg.head_dim, dg.rope_theta, pos_, cs_);
+            dflash_rope_neox_apply(kc_, kc_, (int) (K * dg.n_head_kv), (int) dg.head_dim, dg.rope_theta, poskv_, cs_);
         }
-        // append the queries' own cells at their true positions, then every query reads [0, pos+K)
-        for (int r = 0; r < K; ++r) {
-            const int64_t cell = pos + r;
-            h_step_[(size_t) r * 4 + 0] = (int32_t) cell;
-            h_step_[(size_t) r * 4 + 1] = (int32_t)(cell + 1);
-            h_step_[(size_t) r * 4 + 2] = (int32_t)((cell + 1) / 4);
-            h_step_[(size_t) r * 4 + 3] = (int32_t)(cell + 1);
-        }
-        if (cudaMemcpyAsync(step_, h_step_, (size_t) K * 16, cudaMemcpyHostToDevice, cs_) != cudaSuccess) {
-            err = "dflash: the step staging failed";
-            return false;
-        }
+        // append the queries' own cells at their true positions (step_, built once above), then
+        // every query reads [0, pos+K) (attn_step_)
         const QsaState& stl = st_[(size_t) l];
         const QsaAttnPools pools = qsa_attn_pools(stl);
         {
@@ -848,28 +813,13 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
                 kv_append_q8_steps(stl.k_q, stl.v_q, stl.k_scale, stl.v_scale, stl.page_table, step_, 4, kc_, vc_,
                                    (int) KVW, K, shapes_, cs_, &stl.host);
             else
-                for (int r = 0; r < K; ++r)
-                    kv_append_step(stl.k_pool, stl.v_pool, stl.page_table, step_ + r * 4, kc_ + (size_t) r * KVW,
-                                   vc_ + (size_t) r * KVW, shapes_, cs_, &stl.host);
-        }
-        // non-causal over every cell: each row's record reads [0, pos+K)
-        {
-            std::vector<int32_t> attn_steps((size_t) K * 4);
-            for (int r = 0; r < K; ++r) {
-                attn_steps[(size_t) r * 4 + 0] = (int32_t)(pos + K - 1);
-                attn_steps[(size_t) r * 4 + 1] = (int32_t)(pos + K);
-                attn_steps[(size_t) r * 4 + 2] = (int32_t)((pos + K) / 4);
-                attn_steps[(size_t) r * 4 + 3] = (int32_t)(pos + K);
-            }
-            if (cudaMemcpyAsync(step_, attn_steps.data(), (size_t) K * 16, cudaMemcpyHostToDevice, cs_) != cudaSuccess) {
-                err = "dflash: the attention staging failed";
-                return false;
-            }
+                kv_append_f16_steps(stl.k_pool, stl.v_pool, stl.page_table, step_, 4, kc_, vc_, (int) KVW, K,
+                                    shapes_, cs_, &stl.host);
         }
         if (parity_want(cycle_)) {
             char name[32];
             std::snprintf(name, sizeof name, "steps%d", (int) l);
-            parity_dump(parity_dir_, name, step_, K * 4, cs_);   // i32 bits reinterpreted as f32
+            parity_dump(parity_dir_, name, attn_step_, K * 4, cs_);   // i32 bits reinterpreted as f32
         }
         if ((int64_t)(pos + K) > cap_) {
             err = "dflash: the window cap is exceeded (raise --dflash-window)";
@@ -893,9 +843,9 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
         if (l == 0 && df_dbg) {
             const QsaAttnPools pl = qsa_attn_pools(st_[0]);
             std::fprintf(stderr,
-                         "dflash dbg: attn cap=%lld K=%d step0=[%d %d %d %d] pools k=%p kq=%p kq4=%p pt=%p "
+                         "dflash dbg: attn cap=%lld K=%d attn_end=%lld pools k=%p kq=%p kq4=%p pt=%p "
                          "kv_mode=%d rot=%d int8=%d q4=%d shapes hd=%lld nh=%lld nkv=%lld ps=%lld rot_bits=%lld\n",
-                         (long long) cap_, K, h_step_[0], h_step_[1], h_step_[2], h_step_[3], (const void*) pl.k_pool,
+                         (long long) cap_, K, (long long) (pos + K), (const void*) pl.k_pool,
                          (const void*) pl.k_q, (const void*) pl.k_q4, (const void*) pl.page_table, (int) st_[0].kv_mode,
                          (int) st_[0].kv_rot, (int) st_[0].kv_int8, (int) st_[0].kv_q4, (long long) shapes_.head_dim,
                          (long long) shapes_.n_head, (long long) shapes_.n_head_kv, (long long) shapes_.page_size,
@@ -905,7 +855,7 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
             DFlashSection s("L*.attn");
             // the drafter's cells are the identity [0, pos+K): no selection table, and only their
             // chunks launch (the configured window cap stays the scratch stride)
-            dflash_attn_batch(q_, pools, step_, pos + K, cap_, shapes_, (float*) attn_scratch_, attn_, K, cs_);
+            dflash_attn_batch(q_, pools, attn_step_, pos + K, cap_, shapes_, (float*) attn_scratch_, attn_, K, cs_);
         }
         if (parity_want(cycle_)) {
             char name[32];
