@@ -54,6 +54,13 @@ class MemoryPolicy:
         self.reconcile_after_load = False
         self.pressure_recovery_ceiling_gib = None
         self.recovery_since = None
+        self.safety_waiting = False
+        self.safety_recovery_since = None
+        self.safety_last_stamp = None
+        self.safety_missing_since = None
+        self.last_safety = {"action": "run", "reason": "disabled"}
+        self.last_capacity = None
+        self.ram_growth_block = None
         self.last_reason = "disabled" if not self.enabled else "awaiting_telemetry"
 
     @staticmethod
@@ -128,6 +135,101 @@ class MemoryPolicy:
             return self.headroom
         return max(self.headroom, reading["ram_total"] / GIB * (1 - self.ram_target))
 
+    @property
+    def background_guard_active(self):
+        """Only the explicitly enabled coadaptive live owner changes this behavior."""
+        return (self.enabled and self.mode == "live" and self.fixed_resource_limits
+                and self.reclaim_gpu_headroom)
+
+    def safety_decision(self, snapshot, now, info=None, limitation=None):
+        """Admission/pause advice, independent of cache growth and compute routing.
+
+        The caller must enforce ``wait`` at native safe points while preserving
+        conversation state. A wait is not an allocation and does not promise
+        that external applications will ever leave enough memory to resume.
+        Missing required telemetry cannot authorize more inference allocations.
+        Soft target breaches reclaim while inference progresses. The guard only
+        waits below a one-GiB host or 250-MiB GPU emergency floor. Five fresh quiet
+        seconds, with a modest recovery margin, prevent pause/resume oscillation.
+        """
+        decision = {"action": "run", "reason": "disabled", "retry_after_seconds": 1}
+        if not self.background_guard_active:
+            self.safety_waiting = False
+            self.safety_recovery_since = self.safety_last_stamp = None
+            self.safety_missing_since = None
+            self.last_safety = decision
+            return dict(decision)
+        reading = self._reading(snapshot, now)
+        reason = None
+        hard_ram_gib, hard_gpu_mib = min(1.0, self.headroom), min(250, self.reserve_floor)
+        if reading is None:
+            if self.safety_missing_since is None:
+                self.safety_missing_since = now
+            # Telemetry is sampled asynchronously. A short missing native
+            # sample freezes allocations without interrupting a valid running
+            # request. Never use that grace at startup or after an actual wait.
+            grace = (self.safety_last_stamp is not None and not self.safety_waiting
+                     and _number(now) and 0 <= now - self.safety_missing_since <= 5)
+            decision["reason"] = "telemetry_grace" if grace else "telemetry_unavailable"
+            reason = None if grace else "telemetry_unavailable"
+            self.safety_recovery_since = None
+            # A valid host emergency still matters if only the GPU sensor is
+            # missing; don't let a combined-sensor validation failure hide it.
+            host = snapshot if isinstance(snapshot, dict) else {}
+            if (all(_number(host.get(k)) for k in ("sampled_at", "ram_total", "ram_used"))
+                    and _number(now) and 0 <= now - host["sampled_at"] <= self.max_age
+                    and 0 <= host["ram_used"] <= host["ram_total"] and host["ram_total"] > 0):
+                physical = (host["ram_total"] - host["ram_used"]) / GIB
+                commit = host.get("ram_commit_available")
+                if physical < hard_ram_gib or _number(commit) and 0 <= commit / GIB < hard_ram_gib:
+                    reason = "ram_floor"
+        else:
+            self.safety_missing_since = None
+            stamp = reading["sampled_at"]
+            free_ram = self._free_ram(reading)
+            free_gpu = (reading["gpu_mem_total"] - reading["gpu_mem_used"]) / MIB
+            arena = (info or {}).get("arena_mib")
+            decision.update(physical_free_mib=(reading["ram_total"] - reading["ram_used"]) / MIB,
+                            effective_ram_free_mib=free_ram * 1024, native_free_mib=free_gpu,
+                            min_ram_free_mib=hard_ram_gib * 1024,
+                            min_vram_free_mib=hard_gpu_mib,
+                            resident_cache_mib=arena if _number(arena) and arena >= 0 else None,
+                            limitation=limitation)
+            if free_ram < hard_ram_gib:
+                reason = "ram_floor" if not _number(arena) or arena > 0 else "non_evictable_ram_floor"
+            if free_gpu < hard_gpu_mib:
+                reason = ("memory_floors" if reason else "vram_floor")
+                if limitation in ("prefill_cache_floor", "reserve_unreachable"):
+                    reason = "non_evictable_vram_floor"
+            if self.safety_last_stamp is not None and stamp < self.safety_last_stamp:
+                reason = "telemetry_not_advancing"
+            advancing = self.safety_last_stamp is None or stamp > self.safety_last_stamp
+            if (self.safety_last_stamp is not None and stamp - self.safety_last_stamp > self.max_age):
+                self.safety_recovery_since = None
+            self.safety_last_stamp = stamp
+            if reason is None and self.safety_waiting:
+                # Duplicate reads may retain a wait but cannot earn its release.
+                recovered = free_ram >= hard_ram_gib + .25 and free_gpu >= hard_gpu_mib + 32
+                if not recovered:
+                    self.safety_recovery_since = None
+                elif advancing and self.safety_recovery_since is None:
+                    self.safety_recovery_since = stamp
+                if (not advancing or self.safety_recovery_since is None
+                        or stamp - self.safety_recovery_since < 5):
+                    reason = "recovery_dwell"
+        if reason is not None:
+            self.safety_waiting = True
+            if reason != "recovery_dwell":
+                self.safety_recovery_since = None
+            decision.update(action="wait", reason=reason)
+        else:
+            self.safety_waiting = False
+            self.safety_recovery_since = None
+            if reading is not None:
+                decision["reason"] = "headroom_available"
+        self.last_safety = decision
+        return dict(decision)
+
     def _budget(self, reading, arena_gib=0, loaded=False):
         free_ram = self._free_ram(reading)
         headroom = self._required_headroom(reading)
@@ -135,6 +237,13 @@ class MemoryPolicy:
         # Charge the startup allowance only before those allocations exist.
         startup_allowance = 0 if loaded else self.overhead
         resident = max(1.0, min(self.cap, free_ram + arena_gib - headroom - startup_allowance))
+        if loaded and self.background_guard_active:
+            # The backing GGUF remains authoritative when the resident cache is
+            # empty. Round down to the native 32 MiB release granule, so even a
+            # small foreground allocation can reclaim RAM without waiting for
+            # the legacy one-GiB material-change threshold.
+            wanted = min(self.cap, free_ram + arena_gib - headroom)
+            resident = max(0.0, math.floor(wanted * 1024 / 32) * 32 / 1024)
         reserve = self.reserve_floor
         if loaded and self.mode == "live" and self.fixed_resource_limits and self.reclaim_gpu_headroom:
             # MEMORY consumes an absolute running free-memory target. Adding a
@@ -159,7 +268,8 @@ class MemoryPolicy:
             # for a high utilization target; GPU workspace must still fit.
             if not self.fixed_resource_limits:
                 reserve = max(reserve, math.ceil(reading["gpu_mem_total"] / MIB * (1 - self.vram_target)))
-        return {"resident_budget_gib": round(resident, 3), "vram_reserve_mib": reserve}
+        return {"resident_budget_gib": resident if loaded and self.background_guard_active else round(resident, 3),
+                "vram_reserve_mib": reserve}
 
     def plan_for_load(self, snapshot, now):
         """Return a fresh bounded budget for a naturally unloaded model."""
@@ -202,6 +312,10 @@ class MemoryPolicy:
             self.pressure_recovery_ceiling_gib = None
         if loaded:
             self.gpu_capacity_ceiling = False
+            self.ram_growth_block = None
+            self.safety_waiting = False
+            self.safety_recovery_since = self.safety_last_stamp = None
+            self.safety_missing_since = None
         self.gpu_baseline = None
         self._reset_windows()
 
@@ -213,6 +327,14 @@ class MemoryPolicy:
         """
         if limitation == "gpu_capacity":
             self.gpu_capacity_ceiling = True
+        if (self.background_guard_active and limitation == "ram_capacity_or_rounding"
+                and self.current is not None and self.last_capacity is not None
+                and plan.get("resident_budget_gib", 0) > self.current["resident_budget_gib"] + .0625):
+            # Native admission is authoritative. A failed grow must not repeat
+            # every recovery dwell; material new RAM or a bounded retry delay is
+            # needed. GPU recovery and all release actions remain independent.
+            self.ram_growth_block = {"free_ram_gib": self.last_capacity["free_ram_gib"],
+                                     "until": self.last_applied + 120}
         if plan.get("reason") == "sustained_pressure":
             self.gpu_capacity_ceiling = False
         if (self.fixed_resource_limits or self.mode != "live" or not self.recovery_duration
@@ -278,7 +400,8 @@ class MemoryPolicy:
             self._reset_windows()
         self.last_sample = stamp
         arena = info.get("arena_mib") if isinstance(info, dict) else None
-        if not loaded or self.current is None or not _number(arena) or arena <= 0:
+        if (not loaded or self.current is None or not _number(arena) or arena < 0
+                or arena == 0 and not self.background_guard_active):
             self._reset_windows()
             if not loaded:
                 self.pressure_recovery_ceiling_gib = None
@@ -290,6 +413,7 @@ class MemoryPolicy:
             self.last_reason = "awaiting_post_load_telemetry"
             return None
         plan = self._budget(reading, arena / 1024, loaded=True)
+        self.last_capacity = {"free_ram_gib": self._free_ram(reading), "sampled_at": stamp}
         if self.fixed_resource_limits:
             return self._observe_fixed(reading, plan, stamp)
         ram_delta = plan["resident_budget_gib"] - self.current["resident_budget_gib"]
@@ -375,13 +499,19 @@ class MemoryPolicy:
         pressure = (free_ram < self.headroom or free_vram < self.reserve_floor
                     or self.current["vram_reserve_mib"] < self.reserve_floor)
         absolute_live = self.mode == "live" and self.reclaim_gpu_headroom
-        shrink = pressure and (ram_delta <= -1 or vram_delta >= 32 or
+        shrink = pressure and (ram_delta <= (-1 / 1024 if absolute_live else -1) or vram_delta >= 32 or
                                absolute_live and free_vram < self.reserve_floor)
         # Use raw headroom as well as the rounded budget: rounding cannot earn
         # a two-GiB expansion from slightly less safe space.
         ram_grow = (ram_delta >= 2 and free_ram - self.headroom >= 2) or (
             .25 <= ram_delta < 2 and plan["resident_budget_gib"] == self.cap
             and free_ram - self.headroom >= ram_delta + .25)
+        if self.background_guard_active and self.ram_growth_block is not None:
+            blocked = self.ram_growth_block
+            if stamp >= blocked["until"] or free_ram >= blocked["free_ram_gib"] + 2:
+                self.ram_growth_block = None
+            else:
+                ram_grow = False
         # A floor already reached is not a ceiling: newly freed GPU capacity can
         # admit more experts even when the reserve value itself is unchanged.
         # Native VMM admission leaves its additional mapping-granule margin.
@@ -393,10 +523,10 @@ class MemoryPolicy:
         self.gpu_growth_since = (stamp if self.gpu_growth_since is None else self.gpu_growth_since) if not pressure and vram_grow else None
         ram_ready = self.growth_since is not None and stamp - self.growth_since >= 30
         vram_ready = self.gpu_growth_since is not None and stamp - self.gpu_growth_since >= 30
-        if self.pressure_since is not None and stamp - self.pressure_since >= self.pressure_duration:
+        if self.pressure_since is not None and (absolute_live or stamp - self.pressure_since >= self.pressure_duration):
             # Reclamation must not grow the other cache, even after retargeting.
             plan["resident_budget_gib"] = min(plan["resident_budget_gib"], self.current["resident_budget_gib"])
-            plan["vram_reserve_mib"] = (max(self.reserve_floor, int(free_vram)) if absolute_live else
+            plan["vram_reserve_mib"] = (max(self.reserve_floor, math.ceil(free_vram)) if absolute_live else
                                         max(plan["vram_reserve_mib"], self.current["vram_reserve_mib"]))
             reason = "sustained_pressure"
         elif ram_ready or vram_ready:
@@ -412,7 +542,7 @@ class MemoryPolicy:
                 # action lowers the previous absolute target (<=128 MiB per
                 # policy step); native mapping remains bounded per safe window.
                 plan["vram_reserve_mib"] = max(self.reserve_floor,
-                    self.current["vram_reserve_mib"] - 128 if vram_ready else int(free_vram))
+                    self.current["vram_reserve_mib"] - 128 if vram_ready else math.ceil(free_vram))
         else:
             self.last_reason = "pressure_debounce" if shrink else "growth_debounce" if grow else "stable"
             return None
@@ -429,5 +559,7 @@ class MemoryPolicy:
                 "resource_targets": {"headroom_gib": self.headroom,
                                      "vram_reserve_mib": self.reserve_floor} if self.fixed_resource_limits else None,
                 "recovery_seconds": self.recovery_duration,
+                "background_guard": dict(self.last_safety),
+                "ram_growth_retry": dict(self.ram_growth_block) if self.ram_growth_block else None,
                 "pressure_recovery_ceiling_gib": self.pressure_recovery_ceiling_gib,
                 "gpu_baseline_free_mib": self.gpu_baseline[1] if self.gpu_baseline is not None else None}

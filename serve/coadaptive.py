@@ -63,6 +63,37 @@ class CoAdaptive:
             return None
         return self.selected_fraction
 
+    def fairness_decision(self, snapshot, now):
+        """Bounded cooperative delay, not an unmeasured CPU/GPU route change.
+
+        The service applies this via a short native lease at safe boundaries.
+        Unknown or stale external work cannot be inferred from Strata's own
+        device utilization. A delay offers time to other work; it does not claim
+        a scheduling guarantee or free resources that the engine must retain.
+        """
+        result = {"delay_ms": 0, "reason": "disabled"}
+        if not self.active:
+            return result
+        work = snapshot.get("workload", {}) if isinstance(snapshot, dict) else {}
+        work = work if isinstance(work, dict) else {}
+        stamp = snapshot.get("sampled_at") if isinstance(snapshot, dict) else None
+        if (not number(now) or not number(stamp) or not 0 <= now - stamp <= 5
+                or work.get("complete") is not True):
+            result["reason"] = "workload_unavailable"
+            return result
+        cpu, gpu = work.get("cpu_percent"), work.get("gpu_percent")
+        cpu = cpu if number(cpu) and 0 <= cpu <= 100 else None
+        gpu = gpu if number(gpu) and 0 <= gpu <= 100 else None
+        if cpu is None and gpu is None:
+            result["reason"] = "workload_unavailable"
+            return result
+        cpu_delay = max(0, (cpu - 20) / 4) if cpu is not None else 0
+        gpu_delay = max(0, (gpu - 60) / 2) if gpu is not None else 0
+        result["delay_ms"] = min(20, math.ceil(max(cpu_delay, gpu_delay)))
+        result["reason"] = ("external_cpu_and_gpu" if cpu_delay and gpu_delay else
+                            "external_cpu" if cpu_delay else "external_gpu" if gpu_delay else "quiet")
+        return result
+
     def choose_route(self, snapshot, native, context, output_tokens, now, sampling=None):
         snapshot = {**snapshot, "workload": dict(snapshot.get("workload", {}))}
         if snapshot["workload"].get("gpu_percent") is None and self.gpu_idle_sample is not None:
@@ -70,21 +101,32 @@ class CoAdaptive:
             if 0 <= now - stamp <= 5:
                 snapshot["workload"]["gpu_percent"] = value
         # RAM pressure limits CPU promotion independently of CPU utilization.
-        free_ram = snapshot.get("ram_total", 0) - snapshot.get("ram_used", 0)
-        if number(snapshot.get("ram_commit_available")):
-            free_ram = min(free_ram, snapshot["ram_commit_available"])
+        total_ram, used_ram = snapshot.get("ram_total"), snapshot.get("ram_used")
+        free_ram = total_ram - used_ram if (number(total_ram) and number(used_ram)
+                                             and 0 <= used_ram <= total_ram) else None
+        if snapshot.get("ram_commit_required") or "ram_commit_available" in snapshot:
+            commit = snapshot.get("ram_commit_available")
+            free_ram = min(free_ram, commit) if (free_ram is not None and number(commit) and commit >= 0) else None
+        free_gpu = native.get("free_mib") if isinstance(native, dict) else None
+        free_gpu = free_gpu if number(free_gpu) and free_gpu >= 0 else None
+        if isinstance(native, dict) and "budget_free_mib" in native:
+            budget = native["budget_free_mib"]
+            # CUDA free bytes may exceed the current WDDM resident budget. A
+            # numeric zero is the strongest pressure signal, not missing data.
+            free_gpu = min(free_gpu, max(0, budget)) if (free_gpu is not None and number(budget)) else None
         self.selected_fraction = self.routing.choose(
             key=self.runtime_key, baseline=self.base_fraction, current=self.selected_fraction,
             snapshot=snapshot, native=native, context=context, prompt_read=context,
             output_tokens=output_tokens, now=now, sampling=sampling,
-            allow_more_gpu=native is not None and native.get("free_mib", 0) >= self.gpu_floor,
-            allow_more_cpu=free_ram >= self.ram_floor * GIB)
+            allow_more_gpu=free_gpu is not None and free_gpu >= self.gpu_floor,
+            allow_more_cpu=free_ram is not None and free_ram >= self.ram_floor * GIB)
         return self.selected_fraction
 
     def observe(self, snapshot, now, *, engine_idle=False):
         if not self.enabled:
             return False
         work = snapshot.get("workload", {}) if isinstance(snapshot, dict) else {}
+        work = work if isinstance(work, dict) else {}
         stamp = snapshot.get("sampled_at") if isinstance(snapshot, dict) else None
         keys = ("ram_total", "ram_used", "gpu_mem_total", "gpu_mem_used")
         valid = (number(stamp) and number(now) and 0 <= now - stamp <= 5
