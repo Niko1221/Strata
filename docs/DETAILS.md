@@ -932,6 +932,14 @@ If reserving space for growth would evict another conversation, parking uses a
 full capture instead.
 Oldest parked entries are evicted first.
 Oversized snapshots or host allocation failures fall back to ordinary prompt processing.
+`--conversation-cache-min-tokens N` (default 0 = park every conversation) parks only conversations of at least N
+tokens. A parked conversation costs one of the slots whatever its length, and parking is a switch-time decision, so a
+client that interleaves short side requests with one long conversation spends the cache on the side requests and, once
+it is full, evicts the long one oldest-first - exactly the reuse it wanted. Setting the minimum above the side
+requests' length keeps the long conversation parked. The check runs before `make_room()`, so a skipped park evicts
+nothing and stores nothing; the log line is `conversation cache: skip parking (N tokens, below the M minimum;
+parked=P)`. 0 is the pre-flag behaviour and the flag leaves the answers untouched - it only decides which
+conversations keep a slot.
 `--conversation-cache-min-free-mib N` (default 2560) additionally requires that
 physical-RAM headroom remain available: the engine checks before allocation and
 again after capture. Unknown telemetry or insufficient RAM skips parking. Windows
