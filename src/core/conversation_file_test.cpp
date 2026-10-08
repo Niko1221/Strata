@@ -520,6 +520,128 @@ int main() {
         check(!session_file_read(good.string(), id, back, n, error, l, &st) && st.error == SessionError::memory,
               "status: the RAM preflight is 'memory'");
     }
+    // S: the streaming read (metadata and the whole-payload check, no K/V materialized) and the apply pass that
+    // hands every K/V block to the caller - what a session larger than RAM restores through (conversation_file.hpp)
+    {
+        SessionReadLimits lim;
+        lim.max_tokens = 1000; lim.max_checkpoints = 2; lim.max_kv_layers = 3;
+        lim.max_state_bytes = {4099, 77, 301, 64, 8};
+        uint64_t asked = 0;
+        lim.admit = [&](uint64_t need, std::string&) { asked = need; return true; };
+        SavedConversation meta;
+        std::vector<std::array<uint64_t, 5>> sizes;
+        size_t n = 0;
+        check(session_file_read_streamed(good.string(), id, meta, n, error, lim, &sizes), "streamed: read succeeds");
+        check(n == written, "streamed: reports the file size");
+        bool sizes_ok = sizes.size() == original.kv.size();
+        for (size_t i = 0; sizes_ok && i < sizes.size(); ++i) {
+            const ConversationBuffer* bufs[5] = {&original.kv[i].k, &original.kv[i].v, &original.kv[i].k_scale,
+                                                 &original.kv[i].v_scale, &original.kv[i].pooled};
+            for (size_t p2 = 0; p2 < 5; ++p2) sizes_ok = sizes_ok && sizes[i][p2] == bufs[p2]->size();
+        }
+        check(sizes_ok, "streamed: the read pass reports every K/V part size");
+        check(asked == session_read_stream_peak_bytes(image.size(), lim) &&
+              asked < session_read_peak_bytes(image.size()),
+              "streamed: the preflight prices the blocks and the metadata, not the snapshot");
+        check(meta.kv.size() == original.kv.size(), "streamed: keeps the K/V layer headers");
+        bool headers_ok = true, no_bytes = true;
+        for (size_t i = 0; i < meta.kv.size(); ++i) {
+            const ConversationKv& x = original.kv[i]; const ConversationKv& y = meta.kv[i];
+            headers_ok = headers_ok && x.format == y.format && x.cells == y.cells && x.heads == y.heads &&
+                         x.head_dim == y.head_dim && x.page_size == y.page_size && x.pooled_rows == y.pooled_rows &&
+                         x.idx_dim == y.idx_dim;
+            no_bytes = no_bytes && y.k.size() == 0 && y.v.size() == 0 && y.k_scale.size() == 0 &&
+                       y.v_scale.size() == 0 && y.pooled.size() == 0;
+        }
+        check(headers_ok, "streamed: the headers match the image");
+        check(no_bytes, "streamed: no K/V byte is materialized");
+        check(same_checkpoint(original.live, meta.live) && meta.checkpoints.size() == original.checkpoints.size(),
+              "streamed: keeps the running state");
+        // the apply pass: in-order blocks of at most 16 MiB, together byte-identical to the image
+        std::vector<std::vector<uint8_t>> part(meta.kv.size() * 5);
+        size_t biggest = 0;
+        check(session_file_apply_streamed(good.string(), id,
+              [&](size_t layer, size_t slot, uint64_t offset, const void* data, size_t len) {
+                  std::vector<uint8_t>& out = part[layer * 5 + slot];
+                  if (offset != out.size()) return false;
+                  const uint8_t* p = static_cast<const uint8_t*>(data);
+                  out.insert(out.end(), p, p + len);
+                  if (len > biggest) biggest = len;
+                  return true;
+              }, sizes, error), "streamed: apply succeeds");
+        check(biggest > 0 && biggest <= (16u << 20), "streamed: blocks are at most 16 MiB");
+        bool same_part = true;
+        for (size_t i = 0; i < meta.kv.size(); ++i) {
+            const ConversationBuffer* bufs[5] = {&original.kv[i].k, &original.kv[i].v, &original.kv[i].k_scale,
+                                                 &original.kv[i].v_scale, &original.kv[i].pooled};
+            for (size_t p2 = 0; p2 < 5; ++p2) {
+                const std::vector<uint8_t>& got = part[i * 5 + p2];
+                if (bufs[p2]->size() != got.size()) { same_part = false; continue; }
+                bufs[p2]->visit(0, bufs[p2]->size(), [&](const uint8_t* q, size_t len, size_t at) {
+                    same_part = same_part && std::memcmp(q, got.data() + at, len) == 0;
+                    return same_part;
+                });
+            }
+        }
+        check(same_part, "streamed: the applied K/V equals the image byte for byte");
+        // a file changed between the passes: the apply pass walks it to the end and refuses (the caller fail-stops)
+        {
+            const fs::path p = dir / "changed.bin";
+            check(session_file_write(p.string(), original, id, written, error), "streamed: changed-file write");
+            SavedConversation m2; size_t n2 = 0;
+            check(session_file_read_streamed(p.string(), id, m2, n2, error), "streamed: changed-file read");
+            auto d = slurp(p);
+            d[d.size() / 2] ^= 0x20;   // a K/V payload byte
+            spit(p, d);
+            SessionStatus st;
+            check(!session_file_apply_streamed(p.string(), id,
+                  [](size_t, size_t, uint64_t, const void*, size_t) { return true; }, sizes, error, &st) &&
+                  error.find("changed") != std::string::npos,
+                  "streamed: a file changed between the passes is refused");
+        }
+        // a truncated file fails the read pass before anything could be applied
+        {
+            auto d = slurp(good);
+            d.resize(d.size() / 2);
+            const fs::path p = dir / "short.bin"; spit(p, d);
+            SavedConversation m2; size_t n2 = 0;
+            check(!session_file_read_streamed(p.string(), id, m2, n2, error),
+                  "streamed: a truncated file fails the read pass");
+            check(!session_file_apply_streamed(p.string(), id,
+                  [](size_t, size_t, uint64_t, const void*, size_t) { return false; }, sizes, error),
+                  "streamed: apply on a truncated file fails");
+        }
+        // the apply pass is bound to the read pass: a file grown between the passes (more K/V layers) or one with a
+        // smaller part is refused before any block reaches the sink, instead of being applied against other targets
+        {
+            const fs::path p = dir / "grown.bin";
+            SavedConversation bigger = original;
+            bigger.kv.push_back(bigger.kv.back());
+            check(session_file_write(p.string(), bigger, id, written, error), "streamed: grown-file write");
+            size_t calls = 0;
+            check(!session_file_apply_streamed(p.string(), id,
+                  [&](size_t, size_t, uint64_t, const void*, size_t) { ++calls; return true; }, sizes, error) &&
+                  calls == 0 && error.find("layer count") != std::string::npos,
+                  "streamed: a file with more K/V layers than the read pass saw is refused before any block");
+        }
+        {
+            const fs::path p = dir / "smallpart.bin";
+            SavedConversation smaller = original;
+            smaller.kv[0].k = pattern(smaller.kv[0].k.size() - 4096, 9);
+            check(session_file_write(p.string(), smaller, id, written, error), "streamed: smaller-part write");
+            size_t calls = 0;
+            check(!session_file_apply_streamed(p.string(), id,
+                  [&](size_t, size_t, uint64_t, const void*, size_t) { ++calls; return true; }, sizes, error) &&
+                  calls == 0 && error.find("part size") != std::string::npos,
+                  "streamed: a shrunken K/V part is refused before any block");
+        }
+        // the read pass rejects the same foreign or corrupted files the materializing read does
+        check(!session_file_read_streamed(good.string(), {id.model ^ 1, id.config}, meta, n, error),
+              "streamed: another model refused");
+        auto d = image; d[image.size() / 2] ^= 0x40;
+        const fs::path p = dir / "flip.bin"; spit(p, d);
+        check(!session_file_read_streamed(p.string(), id, meta, n, error), "streamed: a corrupted byte refused");
+    }
     // R3/R5: injected failures at each write step - kind, publication and the old file
     {
         const fs::path p = dir / "fault.bin";

@@ -63,6 +63,8 @@ from serve.winjob import contain  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
+from serve import response_runner  # noqa: E402
+from serve.response_store import ResponseStore  # noqa: E402
 
 IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
@@ -2395,6 +2397,8 @@ class Service:
         self.shared_path = None                       # where they are kept between starts (next to the config)
         self.fifo = threading.Lock()
         self.slot_save_path = None                    # --slot-save-path: /slots/0?action=save|restore (off when None)
+        self.response_store = None                   # experimental API history, separate from native KV files
+        self.response_summaries = False               # an optional second generation on the same queue
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
         self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
         # #458 (opt-in, the config's "effort_position": "end"): a non-default reasoning effort goes in a short system
@@ -3191,7 +3195,7 @@ class Service:
                   f"{el:.0f} s", flush=True)
         return now
 
-    def run(self, ids, thinking, tools, max_new, sampling, cancel, force=None) -> Iterator[tuple[str, object]]:
+    def run(self, ids, thinking, tools, max_new, sampling, cancel, force=None, *, parse_tools=True) -> Iterator[tuple[str, object]]:
         """Yields ("event", Event) as text arrives, then ("done", {"finish": .., "completion_tokens": ..}).
         `force` (forced_call): the opening of the call the reply must make - see prepare()."""
         defaults = {**self.sampling_defaults, **self.shared}   # the config's, then the Chat settings shared with apps
@@ -3200,7 +3204,8 @@ class Service:
             sampling = {**defaults, **req_values}
         # #123: read after the merge, so a budget shared through POST /settings is seen like the other keys
         budget = self.reasoning_budget(sampling) if thinking else None
-        parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True, recover=self.tool_call_recovery)
+        parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True, recover=self.tool_call_recovery,
+                              parse_tools=parse_tools)
         detok, n, finish = Detokenizer(self.tok), 0, "length"
         run_tok, run_len, repeated = None, 0, False     # #606: the current run of one repeated token
         thinking_n = 0                                  # tokens written while thinking (Responses' reasoning_tokens)
@@ -4111,7 +4116,7 @@ def make_handler(svc: Service):
                                  f"or add the page's host to \"allowed_hosts\" (or its origin to \"cors_origins\") "
                                  f"in the config"}})
                 return True
-            if not self.headers.get("Content-Type", "").startswith("application/json"):
+            if self.command != "DELETE" and not self.headers.get("Content-Type", "").startswith("application/json"):
                 self._json(415, {"error": {"message": "send application/json"}})
                 return True
             return False
@@ -4169,7 +4174,8 @@ def make_handler(svc: Service):
             else:
                 return
             self.send_header("Access-Control-Allow-Origin", allow)
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS" if svc.response_store
+                             else "GET, POST, OPTIONS")
             # the headers the preflight asks for (SDKs add their own; "*" does not cover Authorization)
             asked = self.headers.get("Access-Control-Request-Headers")
             self.send_header("Access-Control-Allow-Headers",
@@ -4212,6 +4218,8 @@ def make_handler(svc: Service):
 
         def do_GET(self):
             path = self.path.split("?")[0].rstrip("/")
+            if path.startswith("/v1/responses/"):
+                return self._stored_response(path)
             if path.startswith("/fonts/"):
                 # the web app's font (Outfit, OFL: serve/web/fonts); the page falls back to the system font
                 name = path[len("/fonts/"):]
@@ -4394,9 +4402,10 @@ def make_handler(svc: Service):
                 req = json.loads(self._body() or b"{}")
                 if not isinstance(req, dict):
                     raise ValueError("send a JSON object")
-                if path.startswith("/v1/responses/"):        # retrieve/delete/cancel/compact: nothing is stored
-                    self._json(404, responses_error_body("this server keeps no responses (stateless); send the "
-                                                         "whole conversation to POST /v1/responses", code="not_found"))
+                if path.startswith("/v1/responses/"):        # no POST subresources (cancel / compact)
+                    message = "this Responses POST subresource is not supported" if svc.response_store else \
+                        "this server keeps no responses (stateless); send the whole conversation to POST /v1/responses"
+                    self._json(404, responses_error_body(message, code="not_found"))
                     return
                 if path in ("/v1/load", "/v1/unload"):
                     if not self._own_page("the model can be loaded or unloaded"):
@@ -4750,6 +4759,33 @@ def make_handler(svc: Service):
                 self._note(error=err["error"])
                 self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\ndata: [DONE]\n\n")
 
+        def do_DELETE(self):
+            path = self.path.split("?")[0].rstrip("/")
+            if path.startswith("/v1/responses/"):
+                return self._stored_response(path, delete=True)
+            return self._json(404, responses_error_body("not found"))
+
+        def _stored_response(self, path, delete=False):
+            if not self._authorized():
+                return
+            if delete and self._foreign_page():
+                return
+            parts = path.split("/")[3:]
+            if not svc.response_store or not parts or len(parts) > 2 or (len(parts) == 2 and
+                    (delete or parts[1] != "input_items")):
+                return self._json(404, responses_error_body("response persistence is disabled or route not found"))
+            try:
+                if delete:
+                    result = svc.response_store.delete(parts[0])
+                elif len(parts) == 2:
+                    result = svc.response_store.input_items(parts[0], parse_qs(urlsplit(self.path).query,
+                                                                             keep_blank_values=True))
+                else:
+                    result = svc.response_store.get(parts[0])
+                return self._json(200, result)
+            except ResponsesError as e:
+                return self._json(e.status, e.body())
+
         def _responses_ready(self, req, events):
             """Send a finished Responses result that did not run on the engine."""
             if not req.get("stream"):
@@ -4766,15 +4802,35 @@ def make_handler(svc: Service):
         def _responses(self, req):
             """#451: POST /v1/responses - OpenAI's Responses API, stateless (serve/responses.py), on the chat path.
             Errors use the Responses format; once the stream has started they arrive as a response.failed event."""
+            context = None
             try:
-                title = (responses_api.thread_title_events(req, svc.model_for(req))
-                         if svc.codex_thread_titles else None)
+                responses_api.check_request(req, allow_previous=svc.response_store is not None)
+                if svc.response_store:
+                    req, context = svc.response_store.resolve(req, svc.model_for(req))
+                title = (responses_api.thread_title_events(req, svc.model_for(req),
+                         allow_previous=svc.response_store is not None) if svc.codex_thread_titles else None)
+                if title is not None and context is not None:
+                    for event in title:
+                        if "response" in event:
+                            event["response"].update(previous_response_id=context["parent"], store=context["store"])
+                    svc.response_store.begin(title[0]["response"], context)
+                    try:
+                        svc.response_store.finish(title[-1]["response"])
+                    except ResponsesError as e:
+                        title[-1]["response"].update(status="failed", error={"code": e.code, "message": str(e)})
+                        svc.response_store.finish(title[-1]["response"])
+                        raise
             except ResponsesError as e:
                 return self._json(e.status, e.body())
             if title is not None:
                 return self._responses_ready(req, title)
             try:
                 ids, thinking, tools, max_new, asm, validator, req = self._responses_prepare(req)
+                reserve = response_runner.summary_reserve(req, svc.response_summaries, max_new)
+                if not thinking:
+                    reserve = 0
+                if context is not None:
+                    svc.response_store.begin(asm.response, context)
             except ResponsesError as e:
                 return self._json(e.status, e.body())
             except ModelBusy as e:
@@ -4787,22 +4843,13 @@ def make_handler(svc: Service):
             def check(text, finish):
                 return validated_json(text, validator, finish)
 
-            def events():
-                yield from asm.start()
-                done = None
-                for kind, x in svc.run(ids, thinking, tools, max_new, req, cancel):
-                    if kind == "ping":
-                        yield None
-                    elif kind == "event":
-                        yield from asm.feed(x)
-                    elif kind == "done":
-                        done = x
-                if done is not None and done["finish"] != "cancel" and not cancel.is_set():
-                    yield from asm.finish(done, check)
-            items = self._capture(events(), "responses")
+            items = self._capture(response_runner.generate(svc, ids, thinking, tools, max_new, req, cancel,
+                                                          asm, check, reserve), "responses")
             if not req.get("stream"):
                 try:
                     result = responses_api.collect(items)
+                except ResponsesError as e:
+                    return self._json(e.status, e.body())
                 except StructuredOutputError as e:
                     return self._json(502, responses_error_body(str(e), "server_error",
                                                                 code="structured_output_failed"))
@@ -4812,7 +4859,14 @@ def make_handler(svc: Service):
                 except ValueError as e:                      # the engine's ERR line
                     return self._json(500, responses_error_body(str(e), "server_error", code="server_error"))
                 return self._json(200, result)
-            self._sse()
+            try:
+                self._sse()
+            except OSError:
+                cancel.set()
+                asm.response["status"] = "cancelled"
+                if svc.response_store:
+                    svc.response_store.finish(asm.response)
+                return
             last = time.monotonic()
 
             def send(e):
@@ -4837,6 +4891,8 @@ def make_handler(svc: Service):
                 self._note(outcome="disconnected")
                 cancel.set()                                 # client went away: stop the engine
                 items.close()
+            except ResponsesError as e:
+                self._responses_failed(asm, str(e), e.code or "server_error", send)
             except EngineDied as e:                          # mid-stream: response.failed, then the stream ends
                 self._responses_failed(asm, f"{e}; the next request restarts it", "server_error", send)
             except StructuredOutputError as e:
@@ -4845,7 +4901,8 @@ def make_handler(svc: Service):
                 self._responses_failed(asm, str(e), "server_error", send)
 
         def _responses_failed(self, asm, message, code, send):
-            e = asm.failed(message, code)
+            e = asm.event("response.failed", response=asm.snapshot()) if asm.response["status"] == "failed" \
+                else asm.failed(message, code)
             self._note(error=e["response"]["error"])
             try:
                 send(e)
@@ -4854,10 +4911,11 @@ def make_handler(svc: Service):
                 pass
 
         def _responses_prepare(self, req):
-            responses_api.check_request(req)
+            responses_api.check_request(req, allow_previous=svc.response_store is not None)
             messages = responses_api.input_messages(req)
             tools, names, skipped = responses_api.request_tools(req)
             kw = responses_api.template_kwargs(req, svc.shared)
+            kw["preserve_empty_reasoning"] = True    # Responses can replay a completed thought without an answer
             try:
                 self._no_local_images(messages)              # as on the chat route: no file read for a foreign page
             except ValueError as e:
@@ -5366,8 +5424,23 @@ def main() -> int:
     ap.add_argument("--slot-save-path", default=None, metavar="DIR",
                     help="enable POST /slots/0?action=save|restore {\"filename\": NAME} (llama-server's API): the "
                          "conversation the engine holds, to or from DIR/NAME (also \"slot_save_path\" in the config)")
+    ap.add_argument("--experimental-responses-persistence", action=argparse.BooleanOptionalAction, default=None,
+                    help="retain Responses item history and enable previous_response_id / GET / DELETE (default: off)")
+    ap.add_argument("--responses-store-path", metavar="DIR", help="directory owned by this server for Responses history")
+    ap.add_argument("--experimental-responses-summaries", action=argparse.BooleanOptionalAction, default=None,
+                    help="allow a second generation for reasoning.summary; --no-experimental-responses-summaries skips it")
     a = ap.parse_args()
     cfg = json.loads(Path(a.config).read_text(encoding="utf-8-sig")) if a.config else {}   # Notepad adds a BOM
+    for name in ("experimental_responses_persistence", "experimental_responses_summaries"):
+        value = getattr(a, name)
+        if value is None:
+            value = cfg.get(name, False)
+        if not isinstance(value, bool):
+            ap.error(f"{name} must be true or false")
+        setattr(a, name, value)
+    responses_path = a.responses_store_path or cfg.get("responses_store_path")
+    if a.experimental_responses_persistence and not responses_path:
+        ap.error("--experimental-responses-persistence requires --responses-store-path DIR or responses_store_path")
     if a.gpu is not None:
         cfg["gpu"] = int(a.gpu) if a.gpu.strip().isdigit() else a.gpu
     a.host = a.host or cfg.get("host") or "127.0.0.1"   # issue #26: the run scripts pass no --host, the config can
@@ -5496,6 +5569,17 @@ def main() -> int:
     svc.min_free_vram_mib = a.min_free_vram_mib if a.min_free_vram_mib is not None else \
         int(cfg.get("min_free_vram_mib") or 0)
     svc.before_load = a.before_load or cfg.get("before_load") or None
+    svc.response_summaries = a.experimental_responses_summaries
+    if a.experimental_responses_persistence:
+        try:
+            capacity = cfg.get("responses_store_max_mib", 256)
+            if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 1:
+                raise ValueError("responses_store_max_mib must be a positive whole number")
+            svc.response_store = ResponseStore(slot_save_dir(responses_path,
+                None if a.responses_store_path else cfg.get("cwd")),
+                cfg.get("responses_retention_s", 30 * 86400), capacity * 1024 * 1024)
+        except (ValueError, OSError) as e:
+            raise SystemExit(f"[strata] {e}")
     # --slot-save-path is relative to the working directory the server was started in; the config's slot_save_path
     # to the config's "cwd" (the engine's folder) when it has one.  Either way the engine gets an absolute path.
     if a.slot_save_path or cfg.get("slot_save_path"):
