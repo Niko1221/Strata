@@ -1,0 +1,166 @@
+[
+  {
+    "label": "warmup",
+    "expected_prompt_tokens": null,
+    "request_sha256": "b63e57873441a996a529b246a66cf12de70a7c671777f99329354d5c195f788f",
+    "client_ttft_s": 0.340967018972151,
+    "client_elapsed_s": 0.42708506097551435,
+    "finish_reason": "stop",
+    "usage": {
+      "prompt_tokens": 19,
+      "completion_tokens": 2,
+      "total_tokens": 21,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "engine": {
+      "projection": null,
+      "time": 1791431909.6572928,
+      "duration_s": 0.4,
+      "finish": "stop",
+      "prompt_tokens": 19,
+      "reused": 0,
+      "output_tokens": 2,
+      "prompt_total": 19,
+      "prompt_read": 19,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 2,
+      "prompt_ms": 274.9,
+      "decode_ms": 126.1,
+      "decode_tok_s": 15.9,
+      "hit_rate": 0.926,
+      "pcie_share": 0.02,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 3,
+      "drafts_accepted": 3
+    },
+    "text": "READY"
+  },
+  {
+    "label": "tokens-450000-run-1",
+    "expected_prompt_tokens": 450000,
+    "request_sha256": "732aac5b6195457e1bd0331a5132b0c831da4ea124371c428257b6b7637f8f59",
+    "client_ttft_s": 271.05486498901155,
+    "client_elapsed_s": 274.67539438197855,
+    "finish_reason": "length",
+    "usage": {
+      "prompt_tokens": 450000,
+      "completion_tokens": 256,
+      "total_tokens": 450256,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "engine": {
+      "projection": null,
+      "time": 1791431925.7454305,
+      "duration_s": 273.8,
+      "finish": "length",
+      "prompt_tokens": 450000,
+      "reused": 0,
+      "output_tokens": 256,
+      "prompt_total": 450000,
+      "prompt_read": 450000,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 256,
+      "prompt_ms": 269949.1,
+      "decode_ms": 3644.3,
+      "decode_tok_s": 70.2,
+      "hit_rate": 0.989,
+      "pcie_share": 0.001,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 223,
+      "drafts_accepted": 158
+    },
+    "text": "The provided Python module represents a synthetic benchmark designed to evaluate the performance, correctness, and maintainability of code generation or analysis systems. It consists of a massive, repetitive series of function definitions, ranging from `task_00000` to `task_11849`. Each function accepts a single integer argument, `value`, and returns an integer result derived from a specific linear transformation followed by a modulo operation. While the code appears verbose and redundant, it serves as a rigorous test case for understanding deterministic integer transforms, modular arithmetic, and software engineering principles such as naming conventions and complexity management.\n\n### Deterministic Integer Transforms and Modular Arithmetic\n\nAt the core of every function in this module is a deterministic linear transform. The general formula for any given function `task_NNNNN` can be expressed as:\n\n$$ f(x) = (x \\cdot a + b) \\pmod m $$\n\nWhere:\n*   $x$ is the input `value`.\n*   $a$ is a multiplier that generally increases with the task index.\n*   $b$ is an additive constant that also correlates with the task index.\n*   $m$ is the modulus, consistently set to `100003"
+  },
+  {
+    "label": "tokens-450000-run-2",
+    "expected_prompt_tokens": 450000,
+    "request_sha256": "77a030f7894e4a48d012903e66f1310420a83c6c0387aba231228023d65c31d2",
+    "client_ttft_s": 275.98265971790534,
+    "client_elapsed_s": 279.5478381959256,
+    "finish_reason": "length",
+    "usage": {
+      "prompt_tokens": 450000,
+      "completion_tokens": 256,
+      "total_tokens": 450256,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "engine": {
+      "projection": null,
+      "time": 1791432215.1591015,
+      "duration_s": 278.4,
+      "finish": "length",
+      "prompt_tokens": 450000,
+      "reused": 0,
+      "output_tokens": 256,
+      "prompt_total": 450000,
+      "prompt_read": 450000,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 256,
+      "prompt_ms": 274620.8,
+      "decode_ms": 3588.5,
+      "decode_tok_s": 71.3,
+      "hit_rate": 0.997,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 212,
+      "drafts_accepted": 157
+    },
+    "text": "The provided Python module represents a synthetic benchmark designed to evaluate the performance, correctness, and maintainability of code generation or execution systems. It consists of a massive, repetitive series of function definitions, ranging from `task_00000` to `task_11849`. Each function accepts a single integer argument, `value`, and returns an integer result derived from a specific linear transformation followed by a modulo operation. While the code appears verbose and redundant, it serves as a rigorous test case for handling large-scale, deterministic integer arithmetic and static analysis.\n\n### Deterministic Integer Transforms and Modulo Arithmetic\n\nAt the core of every function in this module is a deterministic linear transform of the form $f(x) = (ax + b) \\pmod m$. In this specific implementation, the modulus $m$ is constant across all functions, set to `100003`. This number is a prime, which is a common choice in cryptographic and hashing contexts to ensure that the distribution of results remains uniform and that multiplicative inverses exist for all non-zero coefficients.\n\nThe coefficients $a$ (the multiplier) and $b$ (the addend) vary systematically based on the function's index. For the first 97"
+  },
+  {
+    "label": "tokens-450000-run-3",
+    "expected_prompt_tokens": 450000,
+    "request_sha256": "e09b7db6f1f180f4c75e0c3d3e2179734673281f08d25c3471ede529ac55bd6b",
+    "client_ttft_s": 276.38782844296657,
+    "client_elapsed_s": 279.9882635020185,
+    "finish_reason": "length",
+    "usage": {
+      "prompt_tokens": 450000,
+      "completion_tokens": 256,
+      "total_tokens": 450256,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "engine": {
+      "projection": null,
+      "time": 1791432509.553313,
+      "duration_s": 278.9,
+      "finish": "length",
+      "prompt_tokens": 450000,
+      "reused": 0,
+      "output_tokens": 256,
+      "prompt_total": 450000,
+      "prompt_read": 450000,
+      "reasoning_recoveries": 0,
+      "reasoning_repeat_coverage": 0.0,
+      "engine_generated": 256,
+      "prompt_ms": 275058.6,
+      "decode_ms": 3623.8,
+      "decode_tok_s": 70.6,
+      "hit_rate": 0.998,
+      "pcie_share": 0.0,
+      "ram_blobs": 0,
+      "file_blobs": 0,
+      "file_mb": 0,
+      "drafts_offered": 217,
+      "drafts_accepted": 158
+    },
+    "text": "The provided Python module represents a synthetic benchmark suite designed to evaluate the performance, correctness, and maintainability of code generation or execution systems. It consists of a massive, repetitive series of function definitions, ranging from `task_00000` to `task_11849`. Each function accepts a single integer argument, `value`, and returns an integer result derived from a specific linear transformation followed by a modulo operation. While the code appears verbose and redundant, it serves as a rigorous test case for handling large-scale, deterministic integer arithmetic and static analysis tools.\n\n### Deterministic Integer Transforms and Modulo Arithmetic\n\nAt the core of every function in this module is a deterministic linear transform of the form $f(x) = (ax + b) \\pmod m$. In this specific implementation, the modulus $m$ is constant at `100003`, a prime number often used in competitive programming and cryptographic hashing to ensure uniform distribution of results and avoid trivial collisions. The coefficients $a$ (the multiplier) and $b$ (the addend) vary systematically across the functions.\n\nFor the first block of functions (`task_00000` to `task_00096`), the multiplier"
+  }
+]
