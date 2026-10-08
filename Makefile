@@ -162,9 +162,9 @@ test-engine:
 	STRATA_METAL_EXE=$(or $(TEST_EXE),build-metal/metal/strata-metal) STRATA_METAL_GGUF=$(TEST_GGUF) $(PY) -m unittest metal.test_strata_metal -v
 
 build-ab:
-	$(CMAKE) -S . -B build-metal-a -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_METAL=ON -DSTRATA_METAL_PATCHES=OFF
+	$(CMAKE) -S . -B build-metal-a -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_METAL=ON -DSTRATA_METAL_KERNEL_PATCHES=OFF
 	$(CMAKE) --build build-metal-a --target strata-metal -j
-	$(CMAKE) -S . -B build-metal-b -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_METAL=ON -DSTRATA_METAL_PATCHES=ON
+	$(CMAKE) -S . -B build-metal-b -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_METAL=ON -DSTRATA_METAL_KERNEL_PATCHES=ON
 	$(CMAKE) --build build-metal-b --target strata-metal -j
 
 ab:

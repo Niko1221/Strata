@@ -106,7 +106,9 @@ def build_engine(*_a, **_k) -> Path:
 def llama_source() -> Path:
     """The llama.cpp source the engine was built from (its converter makes the MTP file): CMake's fetched copy, or
     STRATA_LLAMA_DIR."""
-    src = Path(os.environ.get("STRATA_LLAMA_DIR") or ROOT / "build-metal" / "_deps" / "llama_cpp-src")
+    deps = ROOT / "build-metal" / "_deps"              # metal/CMakeLists.txt: one tree per kernel-patch choice
+    src = Path(os.environ.get("STRATA_LLAMA_DIR") or next(
+        (d for d in (deps / "llama_cpp-src-plain", deps / "llama_cpp-src-patched") if d.is_dir()), deps / "llama_cpp-src-plain"))
     if not (src / "convert_hf_to_gguf.py").exists():
         S.fail(f"llama.cpp's converter is not in {src}", "run setup again: it compiles the engine and fetches llama.cpp")
     return src

@@ -16,7 +16,7 @@ them is different: `strata-metal` (`metal/`) runs the model on llama.cpp's Metal
 - Python 3.10 or newer. If it is missing, setup installs it with [Homebrew](https://brew.sh) when Homebrew is there;
   otherwise install it from [python.org](https://www.python.org/downloads/). Everything else (cmake, ninja, Python
   packages) setup installs into the Strata folder.
-- Quit virtual machines, big compiles and Docker builds while you use it: they can halve the speed (see below).
+- Expect the speed to drop after a few minutes of steady use (on the test Mac the GPU's clock went down; see below).
 
 ## Quick start
 
@@ -70,9 +70,12 @@ If setup stops, it says what is missing and the command that fixes it.
   must fit in Metal's limit. UD-Q4_K_XL (111 GB) is larger than the test Mac's default limit.
 - **Speed.** On the test Mac: 13-17 tokens/s for the answer and 225-270 tokens/s to read a prompt, with other programs
   running (see [Measured](#measured)). Other Macs will differ; slower memory means fewer tokens per second.
-- **Other programs can halve it.** The same engine and settings gave 24.7 tokens/s with a virtual machine and an Xcode
-  build running, and 48.3 without them, while a GPU benchmark run alongside kept its full speed. So the engine needs
-  free CPU time, not only a free GPU. Before you judge the speed, quit VMs, compiles and other heavy programs.
+- **It can halve after a few minutes.** On the test Mac, short IQ3_S answers with `--mtp on`, sent one after another,
+  ran at 59-65 tokens/s in the first minute after a pause and at about 30-35 (at times 13-20) later, with the same
+  answers. The slow phase came with a low GPU clock (600-830 MHz), the GPU busy about half the time, 8-11 W and a
+  59-69 °C die. The cause was not isolated; macOS's power management is the likely one. A single long answer, Q2_0 and
+  MTP off were not measured this way. See [Why the speed changes](#why-the-speed-changes);
+  [macmon](https://github.com/vladkens/macmon) (`brew install macmon`, no sudo) shows the GPU's clock live.
 - **Power.** Keep a laptop plugged in and out of Low Power Mode. If your Mac has it, *System Settings > Battery >
   Energy Mode > High Power* may help long answers; its effect on Strata was not measured.
 - **Disk.** The download is 66.4 GB (67.3 GB with the image encoder); installed with the engine, about 70 GB. `--mtp on`
@@ -133,7 +136,7 @@ medians of 3, 2026-10-06, with other programs running (the answer speed moved by
 - One picture (640×240, a 196-token prompt) was read and answered in 3.4 s in all.
 - Two requests at once with MTP: 17.2 tok/s together against 18.7 one after the other (batch slots decode without
   drafts). llama.cpp's `batched-bench` without MTP: 13.2 tok/s for one sequence, 22.5 for two, 29.7 for four.
-- The engine adds nothing on top of llama.cpp: `llama-bench` on the same file gives 16.9 tok/s output.
+- No large overhead over llama.cpp was apparent: `llama-bench` on the same file gave 16.9 tok/s output.
 
 ### IQ3_S compared with Q2_0
 
@@ -151,11 +154,37 @@ and Docker running (load average 10-40).
 | MTP drafts accepted | 60-64% | 53-58% | |
 | Engine memory at a 128K context | | ~74 GB | |
 
-- IQ3_S is only 7-11% slower: most of a token's time here is fixed work that does not grow with the weights (the
-  CPU that dispatches the GPU's work, the recurrent layers, the MTP draft), not reading the weights. Its drafts are
-  accepted a little less often, which costs part of that gap.
+- IQ3_S was only 7-11% slower in these runs despite 46% more expert bytes, so reading the expert weights is not most
+  of a token's time; these runs do not show which costs are. Its drafts were accepted a little less often, a possible
+  part of the gap.
 - Q2_0's 18.6 tok/s run came when the load average reached 40; without it, the long-prompt range is 24.3-27.2.
-- So on this Mac IQ3_S costs about a tenth of the speed and 16 GB more memory for the better quality.
+- So on this Mac IQ3_S costs about a tenth of the speed and 16 GB more memory; its quality was not measured here
+  (the model card rates it closest to the full model).
+
+### Why the speed changes
+
+Measured on the test Mac, 2026-10-08, IQ3_S with `--mtp on` and `--spec 3`, the engine driven directly, one 256-token
+answer to the same prompt again and again:
+
+- In the first minute after a pause: 59-65 tok/s, about 44 ms per verify step. After a few minutes: 30-36 tok/s, about
+  82 ms per step. The accepted drafts were the same total every time (165 of 273).
+- [macmon](https://github.com/vladkens/macmon) in the slow phase: GPU 600-830 MHz, 40-50% busy, 8-11 W, die
+  59-69 °C. A fast phase was not recorded with macmon. In both phases the engine's main thread spent most of its time
+  (88% fast, 91% slow) waiting for the GPU to finish.
+- Tried without a measurable change in the slow phase: fewer CPU threads and no spin-waiting (`--threads 1/4`,
+  `--poll 0`), reading the n-gram file into the cache first, stopping a Time Machine backup and a busy System Settings
+  storage scan. `GGML_METAL_NO_RESIDENCY=1` was tried only in a fast phase (56-66 against 59-65 tok/s).
+- `--spec 3` stayed the default: `--spec 2` was about the same or slower, `--spec 4` slower.
+- The llama.cpp update of 2026-10-08 (55 upstream commits, among them few-row matrix kernels and a Metal fusion fix)
+  was faster in two A/Bs: +11.5% (4 rounds, p = 0.46) and +8.3% (6 rounds, p = 0.054; 15 of 18 runs faster), with
+  the same tokens every run. Which upstream change gives it was not isolated.
+- Strata's two kernel patches (below) are now off by default: on the new commit, the build without them was 5.7%
+  faster in one A/B (6 of 6 runs, the same tokens); a second A/B was swamped by a clock drop and showed nothing either
+  way. They had not been measurably faster on the earlier commit either.
+- Both changes together against the engine as it was that morning (6 alternating rounds, 3 prompts): the new one was
+  faster in 12 of 18 runs, by 6% on average (paired geometric mean; +11.5% by medians), with the same tokens. During
+  the run both fell from about 38 to about 17 tok/s as the GPU's clock dropped, so the gain is small next to the
+  swings.
 
 ### Compared with MLX (mlx-lm)
 
@@ -175,8 +204,8 @@ turn, on the same prompts: greedy, thinking off, MTP off, through its OpenAI API
 
 - The load from other programs was not controlled and moved both engines by up to 2x (an Xcode build pulled MLX
   down to 15-19 tok/s while a GPU benchmark kept its full speed), so read the table as ranges, not as a ranking.
-- The answers are not the same: 3 of 12 greedy answers matched; the rest parted after 2 to 58 tokens, because the
-  non-expert weights are requantized for MLX.
+- The answers are not the same: 3 of 12 greedy answers matched; the rest parted after 2 to 58 tokens (the non-expert
+  weights are requantized for MLX, and the two backends round differently; which matters more was not isolated).
 - mlx-lm's server slowed down on repeated requests (40.7 to about 20 tok/s) until its prompt cache was turned off
   (`--prompt-cache-size 0`).
 - Tried on the MLX side: the n-gram lookup on the GPU from one table, and fused hyper-connection steps (same tokens,
@@ -209,15 +238,16 @@ make test-engine TEST_GGUF=<a small .gguf with <|im_start|>, e.g. LiquidAI LFM2-
 ```
 
 llama.cpp comes at a pinned commit (`-DSTRATA_LLAMA_DIR=<checkout>` builds offline). Strata's own Metal kernels are
-patches on that commit in `metal/patches/`; `-DSTRATA_METAL_PATCHES=OFF` builds the plain commit. To A/B the two:
+patches on that commit in `metal/patches/`, off by default; `-DSTRATA_METAL_KERNEL_PATCHES=ON` applies them. To A/B
+the two:
 
 ```sh
 make build-ab                                # build-metal-a (plain) and build-metal-b (patched)
 make ab AB_GGUF=<shard 1> AB_PROMPTS=<json list of token-id lists>
 ```
 
-`metal/bench/ab.py` runs both builds in turns and exits 1 when their greedy tokens differ. Results so far, on Q2_0 on
-the test Mac:
+`metal/bench/ab.py` runs both builds in turns and exits 1 when their greedy tokens differ. Results on the earlier pin
+(2026-10-06), on Q2_0 on the test Mac:
 
 - `0001-metal-fuse-scale-unary`: fuses a scale into the following unary op; the same tokens on the tested prompts, no
   measurable speedup.

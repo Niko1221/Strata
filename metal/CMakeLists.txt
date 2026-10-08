@@ -2,7 +2,7 @@
 # (docs/MACOS.md).  Entered from the top-level CMakeLists.txt with -DSTRATA_ENABLE_METAL=ON; nothing else there
 # is configured.  llama.cpp comes at a pinned commit (STRATA_LLAMA_COMMIT), or from STRATA_LLAMA_DIR, a checkout of
 # exactly that commit (offline builds).
-set(STRATA_LLAMA_COMMIT "c479922ac520a08969b4c1dc154d7bbb3c386d85")   # 2026-10-06, after qwen4exp (#27742)
+set(STRATA_LLAMA_COMMIT "71ad0590f4808b6202f9213d166913858c73b1bc")   # 2026-10-08: few-row MMA mat-mul (#30065), +8% decode with MTP
 set(STRATA_LLAMA_DIR "" CACHE PATH "a llama.cpp checkout at STRATA_LLAMA_COMMIT with metal/patches applied (default: fetched)")
 
 set(GGML_METAL ON CACHE BOOL "" FORCE)
@@ -22,10 +22,11 @@ if(STRATA_LLAMA_DIR)
   add_subdirectory(${STRATA_LLAMA_DIR} llama.cpp EXCLUDE_FROM_ALL)
 else()
   # Strata's own Metal kernels (docs/MACOS.md, "For developers"), as patches on the pinned commit; each one is checked
-  # by llama.cpp's test-backend-ops and A/B-tested on the model.  STRATA_METAL_PATCHES=OFF builds the plain commit.
-  option(STRATA_METAL_PATCHES "apply metal/patches/*.patch to the fetched llama.cpp" ON)
+  # by llama.cpp's test-backend-ops and A/B-tested on the model.  Off by default: on the 2026-10-08 pin they were not
+  # measurably faster (docs/MACOS.md).  A new name, so a build folder made with the old ON default does not keep it.
+  option(STRATA_METAL_KERNEL_PATCHES "apply metal/patches/*.patch to the fetched llama.cpp" OFF)
   set(_patch "")
-  if(STRATA_METAL_PATCHES)
+  if(STRATA_METAL_KERNEL_PATCHES)
     file(GLOB _patches "${CMAKE_CURRENT_SOURCE_DIR}/patches/*.patch")
     list(SORT _patches)
     # patch(1), not git apply: the fetched tree lies inside this repository's build folder, and git apply inside
@@ -41,7 +42,15 @@ else()
     endforeach()
   endif()
   include(FetchContent)
-  FetchContent_Declare(llama_cpp URL https://github.com/ggml-org/llama.cpp/archive/${STRATA_LLAMA_COMMIT}.tar.gz ${_patch})
+  # a source folder per choice: FetchContent reuses a populated one, so turning the patches off in a build folder that
+  # had them on kept building the patched tree
+  if(STRATA_METAL_KERNEL_PATCHES)
+    set(_src "${FETCHCONTENT_BASE_DIR}/llama_cpp-src-patched")
+  else()
+    set(_src "${FETCHCONTENT_BASE_DIR}/llama_cpp-src-plain")
+  endif()
+  FetchContent_Declare(llama_cpp URL https://github.com/ggml-org/llama.cpp/archive/${STRATA_LLAMA_COMMIT}.tar.gz
+                       SOURCE_DIR "${_src}" ${_patch})
   FetchContent_MakeAvailable(llama_cpp)
 endif()
 
