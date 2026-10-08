@@ -1,0 +1,171 @@
+digraph dsv4_classes {
+    rankdir=TB;
+    fontname="Helvetica";
+    fontsize=10;
+    label="DSV4-Strata-Ext Class Diagram\nDoxygen/Javadoc Style";
+    labelloc=t;
+
+    node [fontname="Helvetica", fontsize=9];
+    edge [fontname="Helvetica", fontsize=8];
+
+    // ====================================================================
+    // CONFIGURATION MODULE
+    // ====================================================================
+    subgraph cluster_config {
+        label="Configuration Module";
+        style=filled;
+        color="#fff3cd";
+
+        Dsv4Config [label="Dsv4Config struct\narch: string\nn_ctx_train: int64\nn_layer, n_embd, n_head, n_head_kv\nkey_len, val_len, rope_dim\nq_lora, o_lora, sliding_window\nn_expert, ff_exp: int\ngating_func: int\nexp_w_scale: float\ncompress_ratios: vector<int>\nvocab: int64", shape=box style=filled fillcolor="#fff3cd"];
+
+        ExpertInventory [label="ExpertInventory struct\nbytes_per_expert: vector<uint64_t>\ntypes: vector<string>\ntotal_expert_bytes: uint64\nother_bytes: uint64", shape=box style=filled fillcolor="#fff3cd"];
+    }
+
+    // ====================================================================
+    // GGUF MODULE
+    // ====================================================================
+    subgraph cluster_gguf {
+        label="GGUF Module";
+        style=filled;
+        color="#d4edda";
+
+        GgufType [label="GgufType enum\nGGUF_U8=0, GGUF_I8=1\nGGUF_F32=6, GGUF_STR=8\nGGUF_ARR=9, GGUF_U64=10", shape=box style=filled fillcolor="#ffc107"];
+
+        GgufValue [label="GgufValue struct\ntype: uint32\narr_len: uint64\ni: int64, u: uint64\nf: double\ns: string\nnums: vector<double>", shape=box style=filled fillcolor="#d4edda"];
+
+        GgufTensor [label="GgufTensor struct\nname: string\ndims: vector<uint64_t>\ntype: uint32\nabs_offset: uint64", shape=box style=filled fillcolor="#d4edda"];
+
+        GgufHeader [label="GgufHeader struct\nversion: uint32\nfiles: vector<string>\nkv: map<string, GgufValue>\ntensors: vector<GgufTensor>", shape=box style=filled fillcolor="#d4edda"];
+    }
+
+    // ====================================================================
+    // QUANTIZATION MODULE
+    // ====================================================================
+    subgraph cluster_quant {
+        label="Quantization Module";
+        style=filled;
+        color="#f8d7da";
+
+        GgmlType [label="GgmlType enum\nT_F32=0, T_F16=1, T_BF16=30\nT_Q4_0=2..T_Q8_K=15\nT_IQ2_XXS=16..T_MXFP4=39", shape=box style=filled fillcolor="#ffc107"];
+
+        F32T [label="F32T trait struct\nBE=1, BB=4", shape=box style=filled fillcolor="#e2d5f0"];
+
+        Q8_0T [label="Q8_0T trait struct\nBE=32, BB=34", shape=box style=filled fillcolor="#e2d5f0"];
+
+        IQ1_MT [label="IQ1_MT trait (DeepSeek primary)\nBE=256, BB=56", shape=box style=filled fillcolor="#e2d5f0"];
+    }
+
+    // ====================================================================
+    // GPU MODULE
+    // ====================================================================
+    subgraph cluster_gpu {
+        label="GPU Device Module";
+        style=filled;
+        color="#ffe0cc";
+
+        ExpPtrs [label="ExpPtrs struct\nn: int\ngate[kMaxHit], up[], down[]: uint8*\nw[kMaxHit]: float", shape=box style=filled fillcolor="#ffe0cc"];
+
+        ExpBatch [label="ExpBatch struct\ngate, up, down: uint8*\ntok: const int32*\nw: const float*\nn: int", shape=box style=filled fillcolor="#ffe0cc"];
+    }
+
+    // ====================================================================
+    // MEMORY PLANNING MODULE
+    // ====================================================================
+    subgraph cluster_mem {
+        label="Memory Planning Module";
+        style=filled;
+        color="#e2d5f0";
+
+        MemPlanInput [label="MemPlanInput struct\nvram_total, vram_free: int64\nreserve: int64 (default 1GiB)\nn_expert: int\nbytes_per_expert: vector<uint64_t>", shape=box style=filled fillcolor="#e2d5f0"];
+
+        MemPlan [label="MemPlan struct\nok: bool, err: string\nbudget_expert, expert_budget: int64\nslots_layer: vector<int>\nall_resident: bool", shape=box style=filled fillcolor="#e2d5f0"];
+    }
+
+    // ====================================================================
+    // MODEL MODULE (Pimpl)
+    // ====================================================================
+    subgraph cluster_model {
+        label="Model Inference Engine";
+        style=filled;
+        color="#cce5ff";
+
+        RunOpts [label="RunOpts struct\nctx: int (default 2048)\ngpu: bool (true)\nthreads: int (0=all cores)\nvram_pct: double (-1=auto)\nram_cache_mib: long long (8192)\nprefill_chunk: int (256)", shape=box style=filled fillcolor="#cce5ff"];
+
+        Stats [label="Stats struct\nh2d_bytes, admits, hits, misses: uint64\ncache_hits, cache_loads: uint64\ntokens, prefill_tokens: uint64\ntotal_s, cpu_miss_s, gpu_hit_s: double", shape=box style=filled fillcolor="#cce5ff"];
+
+        Model [label="Model class (Pimpl)\n+ Model(), ~Model()\n+ load(shards, opts, err): bool\n+ reset(): void\n+ forward(token, pos, logits): void\n+ forward_chunk(tokens, n, pos0, logits): int\n+ save_profile(err): bool\n+ selfcheck(): void\nlast_routing: vector<int>\nstats: Stats", shape=box style=filled fillcolor="#007bff" fontcolor=white];
+    }
+
+    // ====================================================================
+    // SAMPLER MODULE
+    // ====================================================================
+    subgraph cluster_sampler {
+        label="Token Sampling Module";
+        style=filled;
+        color="#d4edda";
+
+        Score [label="Score enum class\nSoftmax, Sigmoid, SqrtSoftplus", shape=box style=filled fillcolor="#ffc107"];
+
+        SampleOpts [label="SampleOpts struct\ntemperature: float (0=g greedy)\ntop_k: int (0=off)\ntop_p: float (1.0=off)\nmin_p: float (0.0=off)", shape=box style=filled fillcolor="#d4edda"];
+
+        Sampler [label="Sampler class\n+ Sampler(opts)\n+ sample(logits, n, history): int\no_: SampleOpts\nst_: uint64", shape=box style=filled fillcolor="#28a745" fontcolor=white];
+    }
+
+    // ====================================================================
+    // SERVE MODULE
+    // ====================================================================
+    subgraph cluster_serve {
+        label="Serve Loop Module";
+        style=filled;
+        color="#f0e8f0";
+
+        ServeLoop [label="serve_loop function\nParams: Model& m, RunOpts o, vector<int>& eos_ids\nReturns: int (exit code)", shape=box style=filled fillcolor="#6f42c1" fontcolor=white];
+    }
+
+    // ====================================================================
+    // IQ TABLES NAMESPACE
+    // ====================================================================
+    subgraph cluster_iq {
+        label="namespace iq (codebook tables)";
+        style=filled;
+        color="#f8f9fa";
+
+        kQkK [label="kQkK = 256", shape=box style=filled fillcolor="#dee2e6"];
+        IQ1SGrid [label="iq1s_grid[2048]", shape=box style=filled fillcolor="#dee2e6"];
+    }
+
+    // ====================================================================
+    // FREE FUNCTION
+    // ====================================================================
+    DecodeToken [label="decode_token_text(const string& tok): string\n(Free function)", shape=box style=filled fillcolor="#f8d7da"];
+
+    // ====================================================================
+    // RELATIONSHIPS
+    // ====================================================================
+
+    // Config depends on GGUF
+    Dsv4Config -> GgufHeader [label="config_from_gguf()" style=solid arrowhead=vee];
+    ExpertInventory -> GgufHeader [label="inventory_from_gguf()" style=solid arrowhead=vee];
+
+    // Quantization traits
+    F32T -> GgmlType [label="T_F32" style=dotted arrowhead=vee];
+    IQ1_MT -> GgmlType [label="T_IQ1_M" style=dotted arrowhead=vee];
+
+    // GPU depends on quantization types
+    ExpPtrs -> GgmlType [label="type_g, u, d" style=solid arrowhead=vee];
+
+    // Model depends on everything
+    RunOpts -> MemPlanInput [label="--expert-vram-pct" style=dashed arrowhead=vee];
+    Model -> Dsv4Config [label="config()" style=solid arrowhead=vee];
+    Model -> Stats [label="stats" style=solid arrowhead=diamond];
+    Model -> Sampler [label="per-request" style=solid arrowhead=vee];
+
+    // IQ tables used by traits
+    IQ1SGrid -> IQ1_MT [label="G_iq1s_grid" style=dotted arrowhead=vee];
+
+    // Serve depends on model
+    ServeLoop -> Model [label="Model& m" style=solid arrowhead=vee];
+
+    // Decode token text used by Model
+    Model -> DecodeToken [label="token decoding" style=dashed arrowhead=vee];
+}

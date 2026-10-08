@@ -62,6 +62,9 @@ if [ "$CUDA_ONLY" = 0 ]; then
     # The batched prefill against the token-per-token path. Needs a tiny GGUF, so it is built here and
     # run by hand (see tests/test_prefill_batch.cpp); build.sh does not generate that model.
     "$CXX" $FL $SRC tests/test_prefill_batch.cpp -o "$OUT/test_prefill_batch"
+    # Per-operation check of the batched device kernels (matmul, gather, experts_batch): trivial on the
+    # emulated device, and the one that says WHICH op is wrong when the CUDA run below disagrees.
+    "$CXX" $FL $SRC tests/test_gpu_batch.cpp -o "$OUT/test_gpu_batch"
 
     echo "==> Compiling dsv4_plan..."
     "$CXX" $FL $SRC src/dsv4_plan_main.cpp -o "$OUT/dsv4_plan"
@@ -77,6 +80,22 @@ if [ "$CUDA_ONLY" = 0 ]; then
 
     echo "==> Running CUDA decode-trait tests (host only, no GPU touched)..."
     "$OUT/test_dq_traits"
+
+    echo "==> Running batched device kernel tests (CPU-emulated device)..."
+    "$OUT/test_gpu_batch"
+fi
+
+# Prefill a chunk contro token-per-token su un GGUF minuscolo generato al volo (serve python3 + numpy).
+# Con --cuda lo stesso test viene ricompilato sul device reale e confrontato con la reference CPU.
+TINY="$OUT/tiny_model"
+HAVE_TINY=0
+if python3 tools/tiny_model.py "$TINY" >/dev/null 2>&1; then HAVE_TINY=1; else
+    echo "WARNING: python3/numpy not available: prefill batch test skipped."
+fi
+PB_IDS=5,9,17,23,31,7,11,3
+if [ "$CUDA_ONLY" = 0 ] && [ "$HAVE_TINY" = 1 ]; then
+    echo "==> Running prefill batch parity test (CPU + emulated device)..."
+    "$OUT/test_prefill_batch" --model "$TINY/tiny.gguf" --ids "$PB_IDS" --no-qat-sim --gpu
 fi
 
 if [ "$WITH_CUDA" = 1 ]; then
@@ -95,9 +114,26 @@ if [ "$WITH_CUDA" = 1 ]; then
     echo "==> Compiling dsv4_run_cuda (real CUDA device, $("$NVCC" --version | tail -1 | sed 's/^Build //'), arch $ARCH)..."
     "$NVCC" -std=c++17 -O2  ${NVCCFLAGS_EXTRA:-} -Xcompiler "$OMP" -Iinclude -gencode arch=compute_${ARCH#sm_},code=$ARCH \
         src/gpu_cuda.cu $SRC_NO_GPU src/dsv4_run_main.cpp -o "$OUT/dsv4_run_cuda" $CLIB
+    echo "==> Compiling test_gpu_batch_cuda (real CUDA device)..."
+    "$NVCC" -std=c++17 -O2  ${NVCCFLAGS_EXTRA:-} -Xcompiler "$OMP" -Iinclude -gencode arch=compute_${ARCH#sm_},code=$ARCH \
+        src/gpu_cuda.cu $SRC_NO_GPU tests/test_gpu_batch.cpp -o "$OUT/test_gpu_batch_cuda" $CLIB
+    echo "==> Compiling test_prefill_batch_cuda (real CUDA device)..."
+    "$NVCC" -std=c++17 -O2  ${NVCCFLAGS_EXTRA:-} -Xcompiler "$OMP" -Iinclude -gencode arch=compute_${ARCH#sm_},code=$ARCH \
+        src/gpu_cuda.cu $SRC_NO_GPU tests/test_prefill_batch.cpp -o "$OUT/test_prefill_batch_cuda" $CLIB
     echo "==> Compiling dsv4_plan_cuda..."
     "$NVCC" -std=c++17 -O2  ${NVCCFLAGS_EXTRA:-} -Xcompiler "$OMP" -Iinclude -gencode arch=compute_${ARCH#sm_},code=$ARCH \
         src/gpu_cuda.cu $SRC_NO_GPU src/dsv4_plan_main.cpp -o "$OUT/dsv4_plan_cuda" $CLIB
+fi
+
+# Both CUDA tests always run, so one failure does not hide the other; the script fails at the end.
+CUDA_RC=0
+if [ "$WITH_CUDA" = 1 ]; then
+    echo "==> Running batched device kernel tests on the CUDA device (op by op vs host)..."
+    "$OUT/test_gpu_batch_cuda" || CUDA_RC=1
+    if [ "$HAVE_TINY" = 1 ]; then
+        echo "==> Running prefill batch parity test on the CUDA device (device path vs CPU reference)..."
+        "$OUT/test_prefill_batch_cuda" --model "$TINY/tiny.gguf" --ids "$PB_IDS" --no-qat-sim --gpu || CUDA_RC=1
+    fi
 fi
 
 echo ""
@@ -106,3 +142,4 @@ echo " Build successful!"
 [ "$CUDA_ONLY" = 0 ] && echo " Planner: $OUT/dsv4_plan" && echo " Runner:  $OUT/dsv4_run            (CPU-emulated device)"
 [ "$WITH_CUDA" = 1 ] && echo " Runner:  $OUT/dsv4_run_cuda        (real CUDA device)"
 echo "========================================================"
+[ "$CUDA_RC" = 0 ] || { echo "CUDA TESTS FAILED (binaries are built, but do not trust the batched prefill on the device)"; exit 1; }

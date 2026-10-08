@@ -164,7 +164,11 @@ int main(int argc, char** argv) {
     };
     auto tp = std::chrono::steady_clock::now();
     // Prefill in chunks: the same weights are read once per chunk instead of once per token.
-    const int bchunk = m.max_chunk();
+    // --dump-logits writes one logit vector per token, and a chunk only computes the last one: with a dump
+    // open the prefill goes token by token, so the file has the same layout whatever --prefill-chunk is.
+    const int bchunk = lf ? 1 : m.max_chunk();
+    if (lf && m.max_chunk() > 1)
+        std::fprintf(stderr, "note: --dump-logits needs one logit set per token, prefill batching disabled\n");
     for (size_t i = 0; i < prompt.size(); ) {
         const size_t left = prompt.size() - i;
         const int n = (bchunk > 1 && left > 1) ? (int) std::min<size_t>(left, (size_t) bchunk) : 1;
@@ -174,7 +178,6 @@ int main(int argc, char** argv) {
             std::fill(m.last_routing.begin(), m.last_routing.end(), -1);
             m.forward_chunk(prompt.data() + i, n, (int) pos, (i + (size_t) n == prompt.size()) ? &logits : nullptr);
             dump_chunk_routing();
-            if (lf && !logits.empty()) std::fwrite(logits.data(), 4, logits.size(), lf);
             m.end_chunk(n);
             pos += n;
         }

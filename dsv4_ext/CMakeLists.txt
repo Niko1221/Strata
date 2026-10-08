@@ -81,10 +81,26 @@ target_link_libraries(test_ops PRIVATE dsv4_core)
 # dequant_row()/row_dot(): nessun touch della GPU, nessun nvcc.
 add_executable(test_dq_traits tests/test_dq_traits.cpp)
 target_link_libraries(test_dq_traits PRIVATE dsv4_core)
-# Il prefill a chunk contro il percorso token-per-token: vuole un GGUF minuscolo, quindi non e'
-# registrato come add_test (lo genera tools/tiny_model.py). Vedi tests/test_prefill_batch.cpp.
+# Il prefill a chunk contro il percorso token-per-token: vuole un GGUF minuscolo, che tools/tiny_model.py
+# genera al volo (serve python3 + numpy). Senza python il test non viene registrato.
 add_executable(test_prefill_batch tests/test_prefill_batch.cpp)
 target_link_libraries(test_prefill_batch PRIVATE dsv4_core)
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    set(_dsv4_tiny_dir ${CMAKE_CURRENT_BINARY_DIR}/tiny_model)
+    set(_dsv4_prefill_ids 5,9,17,23,31,7,11,3)
+    add_test(NAME tiny_model_gen
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/tiny_model.py ${_dsv4_tiny_dir})
+    set_tests_properties(tiny_model_gen PROPERTIES FIXTURES_SETUP dsv4_tiny_model)
+    # CPU: chunked prefill vs token-per-token.
+    add_test(NAME prefill_batch
+             COMMAND test_prefill_batch --model ${_dsv4_tiny_dir}/tiny.gguf --ids ${_dsv4_prefill_ids} --no-qat-sim)
+    set_tests_properties(prefill_batch PROPERTIES FIXTURES_REQUIRED dsv4_tiny_model)
+    # Device path (CUDA when built with it, the CPU-emulated device otherwise) vs the CPU reference.
+    add_test(NAME prefill_batch_gpu
+             COMMAND test_prefill_batch --model ${_dsv4_tiny_dir}/tiny.gguf --ids ${_dsv4_prefill_ids} --no-qat-sim --gpu)
+    set_tests_properties(prefill_batch_gpu PROPERTIES FIXTURES_REQUIRED dsv4_tiny_model)
+endif()
 add_test(NAME core COMMAND test_dsv4_core)
 add_test(NAME ops COMMAND test_ops ${CMAKE_CURRENT_SOURCE_DIR}/tests/golden.txt)
 add_test(NAME dq_traits COMMAND test_dq_traits)

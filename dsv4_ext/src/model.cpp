@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <numeric>
@@ -232,7 +233,10 @@ struct Model::Impl {
     /// stride the CALLER wants its output rows at: the kernel writes them there directly, so no
     /// repacking pass is needed on the host (and none of the caller's other rows get clobbered).
     bool pf_dev(int64_t stride, int T, int64_t in, int64_t rows, int64_t y_stride) const {
-        return o.gpu && d_pX && d_pY && T > 0 && T <= pf_cap && T <= gpu::kMaxSel &&
+        // Diagnostics only: DSV4_NO_DEVICE_MATMUL=1 keeps the batched projections on the host, so a parity
+        // failure can be pinned on the matmul path or on the expert path (DSV4_NO_DEVICE_EXPERTS).
+        static const bool off = std::getenv("DSV4_NO_DEVICE_MATMUL") != nullptr;
+        return !off && o.gpu && d_pX && d_pY && T > 0 && T <= pf_cap && T <= gpu::kMaxSel &&
                (size_t) ((T - 1) * stride + in) * 4 <= (size_t) pf_xcap * 4 &&
                (size_t) ((T - 1) * y_stride + rows) * 4 <= (size_t) pf_ycap * 4;
     }
@@ -354,13 +358,13 @@ struct Model::Impl {
             h_w = pf_w.data();
             h_wt = h_w + (size_t) T * c.n_expert_used;
             pf_b.assign((size_t) c.n_expert, gpu::ExpBatch{});
-            chunk_routing.assign((size_t) T * (size_t) nrun * c.n_expert_used, -1);
+            chunk_routing.assign((size_t) T * (size_t) c.n_layer * c.n_expert_used, -1);
             return;
         }
         pf_cap = 0;
         // Even with batching off, forward_chunk() may be asked for a whole prompt and the sequential
         // fallback still has somewhere to put the per-token routing trace.
-        chunk_routing.assign((size_t) std::max(1, o.ctx) * (size_t) nrun * c.n_expert_used, -1);
+        chunk_routing.assign((size_t) std::max(1, o.ctx) * (size_t) c.n_layer * c.n_expert_used, -1);
     }
     /// Routing of every token of the last forward_chunk(): [t][layer*K + k]. Empty for a sequential
     /// forward(). dsv4_run --dump-routing writes one row per token from this.
@@ -998,6 +1002,9 @@ struct Model::Impl {
         rotary(kvn.data(), hd, rd, cs, sn, false);
         if (o.qat_sim) fp8_sim(kvn.data(), hd - rd, 64);
         std::memcpy(&y.kvbuf[(size_t) (pos % win) * hd], kvn.data(), (size_t) hd * 4);
+        // Keep ring_pos in step with the ring (attention_batch() does the same): win_row() trusts it whenever
+        // snap_base > 0, which is for the whole life of the layer.
+        if (!y.ring_pos.empty()) y.ring_pos[(size_t) (pos % win)] = pos;
         std::vector<int> idx, tmp; int r, cc;
         window_topk(win, 1, pos, idx, r, cc);
         if (y.ratio) {
@@ -1184,7 +1191,10 @@ struct Model::Impl {
     }
 
     /// True when this build can run a batched MoE layer on the device at all.
-    bool pf_device_experts() const { return o.gpu && !gpu::is_emulated() && d_pYm != nullptr; }
+    bool pf_device_experts() const {
+        static const bool off = std::getenv("DSV4_NO_DEVICE_EXPERTS") != nullptr;   // diagnostics, see pf_dev()
+        return !off && o.gpu && !gpu::is_emulated() && d_pYm != nullptr;
+    }
 
     void moe_batch(int l, const float* X, int T, const int32_t* toks, float* out) {
         Layer& y = L[(size_t) l];
@@ -1205,10 +1215,11 @@ struct Model::Impl {
             }
             // The routing trace of the LAST token of the chunk is what --dump-routing and the
             // adaptive swaps read, so it is kept in the same place the sequential path leaves it.
+            // (A trace row is n_layer*K wide like last_routing, so --max-layers leaves the unused layers at -1.)
             // Every token's routing also goes into chunk_routing, which lets a chunked prefill write
             // the same per-token trace file the token-per-token path does.
             for (int k = 0; k < K; ++k) {
-                chunk_routing[(size_t) t * (size_t) nrun * K + (size_t) l * K + k] = idx[k];
+                chunk_routing[(size_t) t * (size_t) c.n_layer * K + (size_t) l * K + k] = idx[k];
                 if (t == T - 1) last_routing_p[(size_t) l * K + k] = idx[k];
             }
         }
@@ -1392,11 +1403,14 @@ struct Model::Impl {
         chunk_routing_n = T;
         // Only the last token of the chunk needs logits: it is the one that starts the answer.
         if (logits) {
-            std::vector<float> x((size_t) dim);
+            std::vector<float> x((size_t) dim), xn((size_t) dim);
             hc_head(h_h + (size_t) (T - 1) * n, hc, dim, out_hc_fn.f(), out_hc_scale.f(), out_hc_base.f(),
                     c.rms_eps, c.hc_eps, x.data());
+            // output_norm.weight, exactly as forward() does: without it the logits are the projection of an
+            // unnormalised vector (wrong scale, wrong argmax).
+            rmsnorm(x.data(), outnorm.f(), c.rms_eps, dim, xn.data());
             logits->assign((size_t) c.vocab, 0.f);
-            mv(outw, x.data(), logits->data());
+            mv(outw, xn.data(), logits->data());
         }
         st->total_s += secs(t0, Clock::now());
         ++st->prefill_chunks;
@@ -1502,6 +1516,9 @@ void Model::forward(int token, int pos, std::vector<float>* logits) {
     chunk_routing_n_ = 0;
 }
 int Model::forward_chunk(const int* tokens, int n, int pos0, std::vector<float>* logits) {
+    // Only the last token of a batched chunk writes last_routing: start from a clean row so nothing left over
+    // from the previous chunk survives in the slots this chunk does not touch.
+    std::fill(last_routing.begin(), last_routing.end(), -1);
     const int done = p_->forward_chunk(tokens, n, pos0, logits);
     // The per-token routing trace of the chunk, handed out so --dump-routing writes the same rows
     // the token-per-token path writes.
