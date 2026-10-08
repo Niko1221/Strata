@@ -1,0 +1,12 @@
+diff --git a/include/strata/platform/hip_compat/strata_hip.h b/include/strata/platform/hip_compat/strata_hip.h
+index 5af9b68..6d997fe 100644
+--- a/include/strata/platform/hip_compat/strata_hip.h
++++ b/include/strata/platform/hip_compat/strata_hip.h
+@@ -49,6 +49,7 @@
+ #define cudaStreamCaptureStatusNone hipStreamCaptureStatusNone
+ #define cudaStreamCaptureStatusActive hipStreamCaptureStatusActive
+ #define cudaEventDisableTiming hipEventDisableTiming
++#define cudaEventBlockingSync hipEventBlockingSync
+ #define cudaEventDefault hipEventDefault
+ #define cudaHostAllocDefault hipHostMallocDefault
+ #define cudaHostAllocPortable hipHostMallocPortable

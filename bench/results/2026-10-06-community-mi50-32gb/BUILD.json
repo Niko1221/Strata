@@ -1,0 +1,14 @@
+{
+ "source": "local-hip-gfx906",
+ "backend": "hip",
+ "version": "0.1.40",
+ "archs": [
+  "gfx906"
+ ],
+ "vision": "none",
+ "lib_dirs": [
+  "/opt/rocm/lib",
+  "/opt/compat-libxml2-noble"
+ ],
+ "src": "840cd325d022fb96"
+}

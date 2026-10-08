@@ -1,0 +1,18 @@
+versao 0.1.41 pronto apos ~22s; health={"status": "ok", "max_context": 262144, "model": "qwen3.8-flash-next-iq2_xs", "images": false, "api_key": false, "loaded": true, "service": "strata"}
+=== seed 23 ===
+[1] prompt=251950 tok tempo=696s prefill~362 tok/s agulhas(10/50/90%)=[True, True, True] resp='917241, 403999, 969943'
+[2] prompt=251944 gerados=300 tempo=32s
+DONE
+strata verify: captured the 2-token window (upload no error, sync no error)
+strata verify: captured the 3-token window (upload no error, sync no error)
+strata serve: prompt 251944 tokens = 245760 reused + 6184 read in 21381 ms (289.2 tok/s), 300 generated in 10317 ms (29.1 tok/s), drafts accepted 139 of 230, 6 checkpoints
+strata serve: decode expert cache hit rate: 90.2% (159340 hits / 176699 lookups); 10981 more read by the GPU over PCIe or from another GPU (5.9% of all 187680 routed)
+=== seed 11 ===
+[1] prompt=252304 tok tempo=699s prefill~361 tok/s agulhas(10/50/90%)=[True, True, True] resp='574354, 686963, 998485'
+[2] prompt=252298 gerados=300 tempo=32s
+DONE
+strata serve: prompt 252304 tokens = 0 reused + 252304 read in 697874 ms (361.5 tok/s), 23 generated in 945 ms (24.3 tok/s), drafts accepted 17 of 22, 6 checkpoints
+strata serve: decode expert cache hit rate: 74.9% (9194 hits / 12276 lookups); 2604 more read by the GPU over PCIe or from another GPU (17.5% of all 14880 routed)
+strata serve: prompt 252298 tokens = 245760 reused + 6538 read in 22341 ms (292.6 tok/s), 300 generated in 9398 ms (31.9 tok/s), drafts accepted 135 of 273, 6 checkpoints
+strata serve: decode expert cache hit rate: 96.2% (198778 hits / 206724 lookups); 3996 more read by the GPU over PCIe or from another GPU (1.9% of all 210720 routed)
+TEST_DONE

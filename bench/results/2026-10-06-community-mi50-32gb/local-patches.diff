@@ -1,0 +1,12 @@
+1743c1743
+<         return;
+---
+>         return false;   // local patch (gfx906 split path: no q8_1, the caller quantizes); upstream has a bare return here
+418c418
+< #if !defined(STRATA_USE_HIP)   // (HIP: the default priority)
+---
+> #if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)   // (HIP: the default priority)
+3c3
+< #if !defined(STRATA_USE_HIP)
+---
+> #if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)

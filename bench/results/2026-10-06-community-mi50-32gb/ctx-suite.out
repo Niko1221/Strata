@@ -1,0 +1,45 @@
+=== COMPLETO 32GB | contexto 131072 | prompt alvo 126000 tokens ===
+Subindo servidor (Strata/gfx906)... (log: <models-dir>/qwen38-strata-iq2xs.log ; motor: <strata-dir>/strata-iq2_xs.log)
+Pronto em 24s — http://localhost:8080 (PID 25647)
+[1] prompt=125991 tok tempo=309s prefill~408 tok/s agulhas(10/50/90%)=[True, True, True] resp='574354, 686963, 998485'
+[2] prompt=125985 gerados=293 tempo=39s
+DONE
+strata serve: prompt 125991 tokens = 0 reused + 125991 read in 307796 ms (409.3 tok/s), 23 generated in 524 ms (43.9 tok/s), drafts accepted 15 of 20, 6 checkpoints
+strata serve: decode expert cache hit rate: 95.9% (12636 hits / 13170 lookups); 270 more read by the GPU over PCIe or from another GPU (2.0% of all 13440 routed)
+strata serve: prompt 125985 tokens = 114688 reused + 11297 read in 31579 ms (357.7 tok/s), 293 generated in 6894 ms (42.5 tok/s), drafts accepted 144 of 236, 6 checkpoints
+strata serve: decode expert cache hit rate: 98.3% (181746 hits / 184868 lookups); 892 more read by the GPU over PCIe or from another GPU (0.5% of all 185760 routed)
+Parado.
+=== COMPLETO 32GB | contexto 262144 | prompt alvo 250000 tokens ===
+Subindo servidor (Strata/gfx906)... (log: <models-dir>/qwen38-strata-iq2xs.log ; motor: <strata-dir>/strata-iq2_xs.log)
+Pronto em 30s — http://localhost:8080 (PID 26792)
+[1] prompt=252304 tok tempo=689s prefill~366 tok/s agulhas(10/50/90%)=[True, True, True] resp='574354, 686963, 998485'
+[2] prompt=252298 gerados=300 tempo=30s
+DONE
+strata serve: prompt 252304 tokens = 0 reused + 252304 read in 681378 ms (370.3 tok/s), 23 generated in 6606 ms (3.5 tok/s), drafts accepted 16 of 18, 6 checkpoints
+strata serve: decode expert cache hit rate: 95.8% (11714 hits / 12226 lookups); 254 more read by the GPU over PCIe or from another GPU (2.0% of all 12480 routed)
+strata serve: prompt 252298 tokens = 245760 reused + 6538 read in 21504 ms (304.0 tok/s), 300 generated in 8265 ms (36.3 tok/s), drafts accepted 141 of 255, 6 checkpoints
+strata serve: decode expert cache hit rate: 98.5% (194886 hits / 197865 lookups); 855 more read by the GPU over PCIe or from another GPU (0.4% of all 198720 routed)
+Parado.
+=== LIMITADO 16GB | contexto 131072 | prompt alvo 126000 tokens ===
+Subindo servidor (Strata/gfx906)... (log: <models-dir>/qwen38-strata-iq2xs-16gb.log ; motor: <strata-dir>/strata-iq2_xs-16gb.log)
+Pronto em 21s — http://localhost:8080 (PID 28847)
+[1] prompt=125991 tok tempo=321s prefill~393 tok/s agulhas(10/50/90%)=[True, True, True] resp='574354, 686963, 998485'
+[2] prompt=125985 gerados=300 tempo=42s
+DONE
+strata serve: prompt 125991 tokens = 0 reused + 125991 read in 312521 ms (403.1 tok/s), 23 generated in 7644 ms (3.0 tok/s), drafts accepted 15 of 20, 6 checkpoints
+strata serve: decode expert cache hit rate: 73.0% (8000 hits / 10960 lookups); 2480 more read by the GPU over PCIe or from another GPU (18.5% of all 13440 routed)
+strata serve: prompt 125985 tokens = 114688 reused + 11297 read in 31823 ms (355.0 tok/s), 300 generated in 9618 ms (31.2 tok/s), drafts accepted 134 of 252, 6 checkpoints
+strata serve: decode expert cache hit rate: 91.2% (173975 hits / 190831 lookups); 10769 more read by the GPU over PCIe or from another GPU (5.3% of all 201600 routed)
+Parado.
+=== LIMITADO 16GB | contexto 262144 | prompt alvo 250000 tokens ===
+Subindo servidor (Strata/gfx906)... (log: <models-dir>/qwen38-strata-iq2xs-16gb.log ; motor: <strata-dir>/strata-iq2_xs-16gb.log)
+Pronto em 25s — http://localhost:8080 (PID 30030)
+[1] prompt=252304 tok tempo=665s prefill~380 tok/s agulhas(10/50/90%)=[False, False, False] resp='!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!'
+[2] prompt=252298 gerados=256 tempo=30s
+DONE
+strata serve: prompt 252304 tokens = 0 reused + 252304 read in 660486 ms (382.0 tok/s), 60 generated in 3576 ms (16.8 tok/s), drafts accepted 3 of 3, 6 checkpoints
+strata serve: decode expert cache hit rate: 93.0% (25366 hits / 27275 lookups); 1525 more read by the GPU over PCIe or from another GPU (5.3% of all 28800 routed)
+strata serve: prompt 252298 tokens = 245760 reused + 6538 read in 20185 ms (323.9 tok/s), 256 generated in 9563 ms (26.8 tok/s), drafts accepted 0 of 0, 6 checkpoints
+strata serve: decode expert cache hit rate: 99.9% (122724 hits / 122863 lookups); 17 more read by the GPU over PCIe or from another GPU (0.0% of all 122880 routed)
+Parado.
+SUITE_DONE
