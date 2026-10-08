@@ -1708,9 +1708,10 @@ __device__ void dq_q2_0(const void* vx, int64_t ibs, dst_t* yy, int tid) {
     for (int j = 0; j < 8; ++j) {
         const int i = part * 8 + j;
         const int code = (x[b].qs[i / 4] >> ((i % 4) * 2)) & 3;
-#if defined(__HIPCC__) && ((defined(__gfx1012__) && HIP_VERSION_MAJOR < 7) || defined(__gfx1151__))
-        // HIP 5.7 on RDNA1 and the HIP compiler on gfx1151 (PR #895, ROCm 7.13) fold the half path's negative scale
-        // times +0 to +0. Preserve the scale's sign, as the FP32/CPU paths do.
+#if defined(__HIPCC__)
+        // HIP compilers fold the half path's negative scale times +0 to +0 (HIP 5.7 on gfx1012, gfx1151 on ROCm
+        // 7.13, gfx1201 on ROCm 7.10 - #1474); the gating arch list only ever chased the report. Preserve the
+        // scale's sign, as the FP32/CPU paths do: value-identical where the fold never happens.
         if constexpr (std::is_same_v<dst_t, __half>) {
             if (code == 1) {
                 yy[b * 64 + i] = __ushort_as_half(__half_as_ushort(x[b].d) & 0x8000u);
