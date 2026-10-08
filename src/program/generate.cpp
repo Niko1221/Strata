@@ -56,6 +56,7 @@
 #include "strata/core/mtp.hpp"
 #include "strata/prefill/prefill.hpp"
 #include "strata/core/native_dense.hpp"
+#include "strata/program/split_ring.hpp"
 #include "strata/program/logits_selection.hpp"
 #include "strata/program/conv_cache.hpp"
 #include "strata/program/message_boundary.hpp"
@@ -5450,6 +5451,24 @@ int main(int argc, char** argv) {
                         : nullptr;
         if (why != nullptr) adapt_async_off(why);
     }
+    // #340 / STRATA_SPLIT_RING: a layer split's streamed-ring override, decided from the stage caches' residency.  It
+    // has to be in place BEFORE the split's lend regions are sized (Prefill::bytes_needed counts the ring): they were
+    // sized with the default ring and the override applied afterwards, so a ring of 384 borrowed 5396 slots and the RAM
+    // copy kept 4662 (the rest streamed from the GGUF mmap on every chunk).  Called once; later calls do nothing.
+    bool split_ring_decided = false;
+    auto decide_split_ring = [&]() {
+        if (split_ring_decided || !o.serve || !multi_gpu || host_res.empty()) return;
+        split_ring_decided = true;
+        int64_t res_n = 0;
+        for (const int32_t r : host_res) res_n += r >= 0;
+        const double res_share = (double) res_n / (double) host_res.size();
+        const int ring = strata::program::split_ring_slots(std::getenv("STRATA_SPLIT_RING"), res_share);
+        if (ring > 0) {
+            strata::prefill::Prefill::set_ring_override(ring);
+            std::fprintf(stderr, "strata serve: layer split: %.0f%% of the experts resident, the prompt path's "
+                                 "streamed ring %d slots\n", 100.0 * res_share, ring);
+        }
+    };
     if (o.resident_cpu_experts) {
         int64_t lend_from = -1;
         if (o.prefill_chunk > 0 && !o.no_prefill_borrow && d_res != nullptr && xcache.slots() > 0) {
@@ -5481,6 +5500,7 @@ int main(int argc, char** argv) {
         // is spent on it.  The single-GPU loan is untouched: without a split the lend region stays in
         // pin_cache_complement's own path, and no regions are set.
         std::vector<std::vector<std::pair<int32_t, int32_t>>> stage_lends;
+        decide_split_ring();   // the ring the prompt path really uses, BEFORE bytes_needed sizes the regions below
         if (pf_borrow && d_res != nullptr && o.prefill_chunk > 0 && multi_gpu && !stages.empty()) {
             const int64_t bound = o.prefill_auto ? auto_ceiling : o.prefill_chunk;
             static const bool own_ok = [] {
@@ -5502,14 +5522,10 @@ int main(int argc, char** argv) {
                         if ((uint64_t) fb >= need + (3ull << 29)) continue;
                     } else (void) cudaGetLastError();
                 }
-                int64_t k = 0;   // its tail slots, as the scan's `cache_slots_for` counts them
-                if (xc.slot_offsets() != nullptr) {
-                    while (k < xc.slots() &&
-                           (uint64_t) (xc.bytes() - (int64_t) xc.slot_offsets()[xc.slots() - k]) < need) ++k;
-                } else {
-                    const int64_t blob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
-                    k = (int64_t) ((need + (uint64_t) blob - 1) / (uint64_t) blob);
-                }
+                // its tail slots, as the scan's `cache_slots_for` counts them
+                int64_t k = strata::program::split_lend_slots(
+                    xc.slots(), xc.bytes(), xc.slot_offsets(),
+                    (uint64_t) strata::kernels::cpu::expert_layout().max_blob, need);
                 k = std::min(k, xc.slots() - 128);                       // the scan's 128-slot floor
                 if (o.prefill_auto) k = std::min(k, kAutoLendPct * xc.slots() / 100);   // the auto cap
                 if (k <= 0) continue;
@@ -5637,14 +5653,8 @@ int main(int argc, char** argv) {
         // bytes -> slots for one cache: exact when it knows its per-slot offsets (a native pack's blobs differ
         // per layer), otherwise max_blob each.
         auto cache_slots_for = [&](const strata::core::ExpertCache& xc, uint64_t need) -> int64_t {
-            if (xc.slot_offsets() != nullptr) {   // sized slots: from the end until they hold `need`
-                int64_t k = 0;
-                while (k < xc.slots() &&
-                       (uint64_t) (xc.bytes() - (int64_t) xc.slot_offsets()[xc.slots() - k]) < need) ++k;
-                return k;
-            }
-            const int64_t blob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
-            return (int64_t) ((need + (uint64_t) blob - 1) / (uint64_t) blob);
+            return strata::program::split_lend_slots(xc.slots(), xc.bytes(), xc.slot_offsets(),
+                                                     (uint64_t) strata::kernels::cpu::expert_layout().max_blob, need);
         };
         auto part_slots = [&](const PfPart& p, int64_t c) -> int64_t {
             return cache_slots_for(*p.cache, strata::prefill::Prefill::bytes_needed(g, *p.ses, c));
@@ -5659,18 +5669,8 @@ int main(int argc, char** argv) {
         // the 384-slot ring (sized for a card that streams nearly every expert of a chunk) only makes every stage's
         // loan bigger: 96 slots (0.1.30's ring here) when >= 75% of the (layer, expert) pairs are resident.  One GPU
         // keeps the pinned-share rule.  STRATA_SPLIT_RING=N: N slots on a split; 0: the pinned-share rule.
-        if (multi_gpu && !host_res.empty()) {
-            int64_t res_n = 0;
-            for (const int32_t r : host_res) res_n += r >= 0;
-            const double res_share = (double) res_n / (double) host_res.size();
-            const char* v = std::getenv("STRATA_SPLIT_RING");
-            const int ring = v ? std::atoi(v) : (res_share >= 0.75 ? 96 : 0);
-            if (ring > 0) {
-                strata::prefill::Prefill::set_ring_override(ring);
-                std::fprintf(stderr, "strata serve: layer split: %.0f%% of the experts resident, the prompt path's "
-                                     "streamed ring %d slots\n", 100.0 * res_share, ring);
-            }
-        }
+        // (decided above, before the lend regions were sized: a no-op here unless the resident RAM mode skipped it)
+        decide_split_ring();
         std::vector<PfPart> pf_parts;
         // a cache too small to lend the prompt path its buffers would make it allocate them on top - on a card
         // whose cache already filled its reserve, that is the over-subscription the auto sizing avoids - so the
@@ -5875,6 +5875,25 @@ int main(int argc, char** argv) {
                              pf_parts[i].dev, (long long) (pf_parts[i].cache->slots() - pf_parts[i].first),
                              (long long) pf_parts[i].cache->slots(),
                              (double) part_bytes(pf_parts[i], pf_parts[i].first) / 1073741824.0);
+            // A split's RAM copy keeps the experts of the slots the prompt path borrows (the lend regions sized above):
+            // every borrowed expert not kept is streamed from the GGUF mmap during every chunk.  Say both counts side
+            // by side - they used to differ whenever a ring override (STRATA_SPLIT_RING) was set, because the regions
+            // were sized with the default ring before the override applied.
+            if (multi_gpu && src.complement_ready()) {
+                int64_t borrowed = borrow != nullptr ? xcache.slots() - lend_first : 0;
+                for (size_t i = 1; i < pf_parts.size(); ++i)
+                    if (pf_parts[i].first >= 0) borrowed += pf_parts[i].cache->slots() - pf_parts[i].first;
+                const int64_t kept = src.resident_lent_slots();
+                std::fprintf(stderr, "strata serve: lend sizing: the prompt path borrows %lld slots (ring %lld slots at "
+                                     "chunk %lld), %lld of them keep their experts in RAM too\n",
+                             (long long) borrowed,
+                             (long long) strata::prefill::Prefill::ring_slots_for(o.prefill_chunk),
+                             (long long) o.prefill_chunk, (long long) kept);
+                if (kept < borrowed)
+                    std::fprintf(stderr, "strata serve: WARNING: %lld of the %lld borrowed slots have no RAM copy: "
+                                         "their experts are streamed from the model file during every chunk\n",
+                                 (long long) (borrowed - kept), (long long) borrowed);
+            }
         } else {
             std::fprintf(stderr, "strata serve: the prompt path allocates its own buffers (too few cache slots to borrow)\n");
         }

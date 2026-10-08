@@ -121,6 +121,23 @@ The split with `--mmap-experts` catches up once the OS file cache holds the expe
 running; the resident copy is there from the first request and stays locked when other programs need the RAM. With
 `--pcie-frac 0 --adapt-every 0` the split's greedy output is the same with either mode.
 
+**The prompt path's loan on a split and its streamed ring (`STRATA_SPLIT_RING`).** Under a split the prompt path borrows
+the tail slots of each card's expert cache for its buffers (they are given back after the prompt), and the resident RAM
+copy keeps those experts too, so a borrowed expert is not read back from the model file during a prompt. How many slots
+are borrowed depends on the prompt path's streamed ring: a split uses 96 ring slots when at least 75% of the (layer,
+expert) pairs sit in some card's cache, and `STRATA_SPLIT_RING=N` sets N slots (`0` goes back to the pinned-share rule).
+The ring used to be chosen after the RAM copy's regions were sized, so the regions were sized for a different ring than
+the prompt path then used: with `STRATA_SPLIT_RING=384` it borrowed 5,396 slots and the copy kept 4,662, and the
+other 734 were read from the model file in every chunk. The ring is now chosen first (`Prefill::set_ring_override`
+says it must be set before the buffers are counted). The start-up line `strata serve: lend sizing: the prompt path
+borrows N slots (ring R slots at chunk C), K of them keep their experts in RAM too` shows both numbers, and a
+`WARNING` follows when K is below N. Without a split, or without `--resident-experts`, nothing changes. With a split
+the order of the two steps changed for every ring choice, the 96-slot rule included: its regions used to be sized for
+the larger default ring, so there the copy probably kept more slots than were borrowed (not measured). The 5,396 /
+4,662 figures are from one start on the test machine (2x RTX 3080 20 GB, UD-Q4_K_XL, `--layer-split 23`);
+TODO-EVIDENCE (PREvidence: borrowed and kept slots before and after, with `STRATA_SPLIT_RING` unset and at 384, and the
+prompt time of a long prompt, n and the A/A).
+
 **A separate VRAM reserve for the later cards:** `--vram-reserve-later-mib N` (default: `--vram-reserve-mib`'s value).
 The card that drives the monitors needs more headroom than one that drives none; with the display on the last card,
 `--vram-reserve-mib 300 --vram-reserve-later-mib 1800` gives the first card's cache that VRAM.
