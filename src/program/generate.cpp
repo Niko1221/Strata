@@ -5026,7 +5026,7 @@ int main(int argc, char** argv) {
     drive.d.jobs.resize((size_t) K);
     // CS-T: routing-aware prefetch of the file tier (the GGUF in place): the next layer's router on this layer's MoE
     // input predicts its experts and their pages are warmed meanwhile.  It only warms pages; STRATA_LOOKAHEAD=0 is
-    // the A/B arm, STRATA_LOOKAHEAD_K the experts per token (default 10).
+    // the A/B arm, STRATA_LOOKAHEAD_K the experts per token (default 10; qwen35moe uses its active expert count).
     strata::core::RouterLookahead lookahead;
     // #1348, one prefetch design: with the Foresight swap space on (STRATA_FS_SLOTS) the look-ahead also runs on the pinned-RAM
     // tiers, where there are no pages to warm, and feeds its predictions to the swap space (STRATA_FS_AHEAD=0: not)
@@ -5045,7 +5045,9 @@ int main(int argc, char** argv) {
             ok = cudaMemcpy(routers[(size_t) l].data(), w->data, (size_t) w->bytes, cudaMemcpyDeviceToHost) == cudaSuccess;
         }
         const char* kv = std::getenv("STRATA_LOOKAHEAD_K");
-        if (ok && lookahead.start(std::move(routers), g.n_embd, g.n_expert, kv ? std::atoi(kv) : 10, srcp, err, fs_ahead)) {
+        const int lookahead_k = kv ? std::atoi(kv) :
+                                g.arch == strata::core::ModelArch::kQwen35Moe ? (int) g.n_expert_used : 10;
+        if (ok && lookahead.start(std::move(routers), g.n_embd, g.n_expert, lookahead_k, srcp, err, fs_ahead)) {
             drive.d.lookahead = &lookahead;
             if (const char* dv = std::getenv("STRATA_IO_PREFETCH_DEPTH"); dv != nullptr && std::atoi(dv) > 0)
                 lookahead.set_depth(std::atoi(dv));
@@ -5053,6 +5055,9 @@ int main(int argc, char** argv) {
                 lookahead.set_depth(2);
             std::fprintf(stderr, "strata generate: routing-aware prefetch on (the next layer's router%s)\n",
                          fs_ahead ? ", feeding the Foresight swap space" : ", file tier");
+            if (g.arch == strata::core::ModelArch::kQwen35Moe)
+                std::fprintf(stderr, "strata generate: routing-aware prefetch width %d experts per token (model uses %lld)\n",
+                             std::clamp(lookahead_k, 1, (int) g.n_expert), (long long) g.n_expert_used);
         } else {
             (void) cudaGetLastError();
             std::fprintf(stderr, "strata generate: routing-aware prefetch off (%s)\n",
