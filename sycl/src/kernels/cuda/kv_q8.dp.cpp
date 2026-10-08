@@ -30,22 +30,31 @@ void validate(const QsaShapes& s, const char* what) {
 }
 
 // One block = one 64-value group of one KV head of K (blockIdx.z = 0) or V (1); 64 threads, one value each.
+// MULTI (S26 STRATA_LFUSE): blockIdx.z = 2 * token + (K / V); token j reads step + j * step_stride and its rows at
+// kcur / vcur + j * cur_stride - every token's code is the single launch's
+template <bool MULTI = false>
 __dpct_inline__ void kv_append_q8_kernel(
     int8_t *__restrict__ k_q, int8_t *__restrict__ v_q,
     uint16_t *__restrict__ k_scale, uint16_t *__restrict__ v_scale,
     const int32_t *__restrict__ table, const int32_t *__restrict__ step,
     const float *__restrict__ kcur, const float *__restrict__ vcur,
-    int kv_heads, int head_dim, int page_size, KvHostPools host) {
+    int kv_heads, int head_dim, int page_size, KvHostPools host,
+    int step_stride = 0, int cur_stride = 0) {
+    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+    if constexpr (MULTI) {
+        const int j = item_ct1.get_group(0) >> 1;
+        step += (size_t) j * step_stride; kcur += (size_t) j * cur_stride; vcur += (size_t) j * cur_stride;
+    }
     /*
     DPCT1098: The '*' expression is used instead of the __ldg call. These
     two expressions do not provide the exact same functionality. Check the
     generated code for potential precision and/or performance issues.
     */
-    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const long long pos = (long long)*(step + kStepPos);
     const int h = item_ct1.get_group(2), g = item_ct1.get_group(1),
               t = item_ct1.get_local_id(2);
-    const bool is_v = item_ct1.get_group(0) == 1;
+    const bool is_v =
+        MULTI ? (item_ct1.get_group(0) & 1) == 1 : item_ct1.get_group(0) == 1;
     const int groups = head_dim / KV_Q8_GROUP;
     const float x = (is_v ? vcur : kcur)[h * head_dim + g * KV_Q8_GROUP + t];
     // max |x| over the 64 values: two warps, then combine through shared memory in a fixed order
@@ -158,8 +167,13 @@ void kv_append_q8_step(int8_t* k_q, int8_t* v_q, uint16_t* k_scale, uint16_t* v_
                 KvHostPools host_host_KvHostPools_ct11 =
                     host ? *host : KvHostPools{};
 
-                cgh.parallel_for<
-                    dpct_kernel_name<class kv_append_q8_kernel_b60fdc>>(
+                /*
+                DPCT1050: The template argument of the dpct_kernel_name
+                could not be deduced. You need to update this code.
+                */
+                cgh.parallel_for<dpct_kernel_name<
+                    class kv_append_q8_kernel_b60fdc,
+                    dpct_kernel_scalar<false>>>(
                     sycl::nd_range<3>(grid * sycl::range(1, 1, KV_Q8_GROUP),
                                       sycl::range(1, 1, KV_Q8_GROUP)),
                     exp_props,
@@ -168,11 +182,48 @@ void kv_append_q8_step(int8_t* k_q, int8_t* v_q, uint16_t* k_scale, uint16_t* v_
                             kv_append_q8_kernel(
                                 k_q, v_q, k_scale, v_scale, page_table, step,
                                 kcur, vcur, (int)s.n_head_kv, (int)s.head_dim,
-                                (int)s.page_size, host_host_KvHostPools_ct11);
+                                (int)s.page_size, host_host_KvHostPools_ct11, 0,
+                                0);
                         });
             });
     }
     check("kv_append_q8 launch");
+}
+
+void kv_append_q8_steps(int8_t* k_q, int8_t* v_q, uint16_t* k_scale, uint16_t* v_scale, const int32_t* page_table,
+                        const int32_t* step, int step_stride, const float* kcur, const float* vcur, int cur_stride,
+                        int n_tok, const QsaShapes& s, void* stream, const KvHostPools* host) {
+    validate(s, "kv_append_q8 (steps)");
+    if (n_tok < 1) return;
+    const dpct::dim3 grid((unsigned)s.n_head_kv,
+                          (unsigned)(s.head_dim / KV_Q8_GROUP),
+                          (unsigned)(2 * n_tok));
+    {
+        auto exp_props = sycl::ext::oneapi::experimental::properties{
+            sycl::ext::oneapi::experimental::use_root_sync};
+
+        strata::q_of(stream)
+            ->submit([&](sycl::handler &cgh) {
+                KvHostPools host_host_KvHostPools_ct11 =
+                    host ? *host : KvHostPools{};
+
+                cgh.parallel_for<
+                    dpct_kernel_name<class kv_append_q8_kernel_b60fdc,
+                                     dpct_kernel_scalar<true>>>(
+                    sycl::nd_range<3>(grid * sycl::range(1, 1, KV_Q8_GROUP),
+                                      sycl::range(1, 1, KV_Q8_GROUP)),
+                    exp_props,
+                    [=](sycl::nd_item<3> item_ct1)
+                        [[sycl::reqd_sub_group_size(32)]] {
+                            kv_append_q8_kernel<true>(
+                                k_q, v_q, k_scale, v_scale, page_table, step,
+                                kcur, vcur, (int)s.n_head_kv, (int)s.head_dim,
+                                (int)s.page_size, host_host_KvHostPools_ct11,
+                                step_stride, cur_stride);
+                        });
+            });
+    }
+    check("kv_append_q8 (steps) launch");
 }
 
 void kv_gather_q8_step(const int8_t* k_q, const int8_t* v_q, const uint16_t* k_scale, const uint16_t* v_scale,

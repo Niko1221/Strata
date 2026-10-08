@@ -153,7 +153,8 @@ struct PleIoOptions {
                                      ///< ~335 MB (BF16); 0 disables
     bool io_thread = true;           ///< reads submitted by a worker thread, not the caller
     /// Mmap mode only (`--ple-io ram`): lock the whole mapped table in RAM at open, so no SSD read ever sits on
-    /// the prompt or token path. Needs RAM for the full table. POSIX only (mlock); `locked()` reports the outcome.
+    /// the prompt or token path. Needs RAM for the full table (28.8 GB IQ4_NL, 51.2 GB FP8). mlock on POSIX,
+    /// the process working-set minimum plus VirtualLock on Windows; `locked()` reports the outcome.
     bool lock = false;
     /// Direct mode with the I/O worker only: keep the SSD awake while rows are asked for - one page of the table
     /// after this long without a read (0 = off), until `keepalive_window_s` after the last request for rows
@@ -197,7 +198,7 @@ public:
     bool open(const std::string& gguf_path, std::string& err);
     void close();
     bool is_open() const;
-    /// True when `PleIoOptions::lock` was asked for and mlock succeeded (false: pages only pre-touched).
+    /// True when `PleIoOptions::lock` was asked for and the OS lock succeeded (false: pages only pre-touched).
     bool locked() const;
     uint64_t rows() const;
     /// "IQ4_NL" or "F8_E4M3" (a GGUF from tools/ple_fp8_pack.py: type I8, strata.ple.format = f8_e4m3).

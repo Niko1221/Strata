@@ -59,6 +59,21 @@ int main() {
         check(!p.choose(4, 5, 40).lookup, "after the probes, the measured cost decides");
     }
     {
+        // #1252: a wide size priced high in one slow stretch is measured again after a while
+        DraftPolicy p(6);
+        for (int i = 0; i < 50; ++i) p.observe(false, 4, 3, 0, cost(4));      // a strong MTP
+        for (int t = 2; t <= 6; ++t) for (int i = 0; i < 4; ++i) p.observe(false, t, t - 1, 0, cost(t));
+        for (int i = 0; i < 6; ++i) p.observe(true, 6, 5, 40, 4.0 * cost(6));  // the wide size, in a slow stretch
+        for (int i = 0; i < 30; ++i) p.observe(true, 4, 3, 40, cost(4));       // and the short window's rate is fine
+        bool saw6 = false;
+        for (int i = 0; i < 400 && !saw6; ++i) {
+            const DraftPolicy::Pick k = p.choose(4, 5, 40);
+            if (k.lookup && k.t == 6) { saw6 = true; p.observe(true, 6, 5, 40, cost(6)); }
+            else p.observe(k.lookup, k.t, k.t - 1, 40, cost(k.t));
+        }
+        check(saw6, "a stale wide size is tried again within a few hundred rounds");
+    }
+    {
         // --lookup-chain: rows cheap (UMA-like) and the chain always accepted -> chained; rows dear or the chain
         // always rejected -> not
         auto cheap = [](int t) { return 40.0 + 2.0 * (t - 1); };

@@ -660,6 +660,15 @@ native_kernel(const Batch b, const NativeGeom geo, const Tables tb, const uint8_
 #else
 #define STRATA_NAT_W11 0
 #endif
+// The VGPR cap of the occupancy variant (amdgpu_waves_per_eu).  8 was measured against ROCm 7's clang; clang 22 (ROCm 7.10)
+// computes wrong results with it (#1180: gfx1100, every run), so there the cap is off.  -DSTRATA_W_LB=N sets it.
+#if defined(STRATA_W_LB)
+constexpr int NW_LB = STRATA_W_LB;
+#elif defined(__clang_major__) && __clang_major__ >= 22
+constexpr int NW_LB = 1;
+#else
+constexpr int NW_LB = 8;
+#endif
 typedef int nw_i4 __attribute__((ext_vector_type(4)));
 typedef int nw_i8 __attribute__((ext_vector_type(8)));
 constexpr int NW_ROWS = 128;
@@ -816,6 +825,7 @@ native_w11_kernel(const Batch b, const NativeGeom geo, const Tables tb, const ui
             }
             if (s + 1 < NS) {
                 put(raw, (s + 1) & 1);                            // the other buffer: its readers passed this barrier
+                __syncthreads();                                      // the writes of every thread are in LDS before the next stage reads them (#1180)
                 if (s + 2 < NS) load_unit<WT>(unit(s + 2), sub(s + 2), raw);
                 if (on) {
 #pragma unroll
@@ -1067,7 +1077,7 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
         const unsigned g_d = (unsigned) std::min<int64_t>(tiles * (2560 / NW_ROWS), (int64_t) d.sms * (occ_d ? 4 : wgp_blocks(d.occ)));
         const uint8_t* xa8 = (const uint8_t*) xa;
         uint8_t* ha8 = (uint8_t*) ha;
-#define STRATA_NW_GU(T) do { if (occ_gu) native_w11_kernel<T, true, true, 8><<<g_gu, NW_THREADS, 0, s>>>(b, g, tb, xa8, src, ha8, nullptr); else native_w11_kernel<T, true><<<g_gu, NW_THREADS, 0, s>>>(b, g, tb, xa8, src, ha8, nullptr); } while (0)
+#define STRATA_NW_GU(T) do { if (occ_gu) native_w11_kernel<T, true, true, NW_LB><<<g_gu, NW_THREADS, 0, s>>>(b, g, tb, xa8, src, ha8, nullptr); else native_w11_kernel<T, true><<<g_gu, NW_THREADS, 0, s>>>(b, g, tb, xa8, src, ha8, nullptr); } while (0)
         switch (g.gu_type) {
             case T_IQ2_XXS: STRATA_NW_GU(T_IQ2_XXS); break;
             case T_IQ2_XS: STRATA_NW_GU(T_IQ2_XS); break;
@@ -1079,7 +1089,7 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
             default: STRATA_NW_GU(T_IQ4_XS); break;
         }
 #undef STRATA_NW_GU
-#define STRATA_NW_D(T) do { if (occ_d) native_w11_kernel<T, false, true, 8><<<g_d, NW_THREADS, 0, s>>>(b, g, tb, ha8, src, nullptr, dm); else native_w11_kernel<T, false><<<g_d, NW_THREADS, 0, s>>>(b, g, tb, ha8, src, nullptr, dm); } while (0)
+#define STRATA_NW_D(T) do { if (occ_d) native_w11_kernel<T, false, true, NW_LB><<<g_d, NW_THREADS, 0, s>>>(b, g, tb, ha8, src, nullptr, dm); else native_w11_kernel<T, false><<<g_d, NW_THREADS, 0, s>>>(b, g, tb, ha8, src, nullptr, dm); } while (0)
         if (g.d_type == T_Q2_0) STRATA_NW_D(T_Q2_0);
         else if (g.d_type == T_Q5_1) STRATA_NW_D(T_Q5_1);
         else if (g.d_type == T_Q8_0) STRATA_NW_D(T_Q8_0);
