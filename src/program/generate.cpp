@@ -550,6 +550,7 @@ struct Options {
     int64_t mtp_window = 32768;   ///< the draft layer attends to the last N cells (0 = every cell)
     /// DFlash (docs/DFLASH.md): the standalone block drafter's GGUF; --mtp and --dflash are exclusive.
     std::string dflash;
+    std::string dflash_head;       ///< optional draft-only GGUF output.weight
     int dflash_block = 0;          ///< cap the candidates per pass below the trained block (0 = min(spec-1, trained))
     int64_t dflash_window = 32768; ///< the drafter's attention window in cells (the reference attends to every cell)
     int64_t dflash_mask = -1;      ///< the mask token id when the artifact's metadata lacks it
@@ -779,6 +780,7 @@ void usage() {
                  "  --dflash GGUF        experimental: the standalone DeepSpec DFlash block drafter (docs/DFLASH.md)\n"
                  "                       instead of the MTP layer; needs --spec 2..8 (the window = 1 anchor + K\n"
                  "                       candidates, K <= the artifact's trained block) and is exclusive with --mtp\n"
+                 "  --dflash-head GGUF   experimental draft-only output.weight; target verification keeps its own head\n"
                  "  --dflash-block K     cap the candidates per pass below the trained block (0 = min(--spec-1, trained))\n"
                  "  --dflash-window N    the drafter's attention window in cells (default 32768; the reference model\n"
                  "                       attends to every cell)\n"
@@ -1790,6 +1792,7 @@ int main(int argc, char** argv) {
         else if (a == "--mtp") o.mtp = next("--mtp");
         else if (a == "--mtp-window") o.mtp_window = std::atoll(next("--mtp-window"));
         else if (a == "--dflash") o.dflash = next("--dflash");
+        else if (a == "--dflash-head") o.dflash_head = next("--dflash-head");
         else if (a == "--dflash-block") o.dflash_block = std::max(0, std::atoi(next("--dflash-block")));
         else if (a == "--dflash-window") o.dflash_window = std::max(1024LL, std::atoll(next("--dflash-window")));
         else if (a == "--dflash-mask-token") o.dflash_mask = std::atoll(next("--dflash-mask-token"));
@@ -3957,6 +3960,10 @@ int main(int argc, char** argv) {
     // DFlash (docs/DFLASH.md): the standalone block drafter.  Mutually exclusive with --mtp; the
     // artifact is parsed and validated HERE, before the expert cache is sized, exactly like the
     // MTP drafter above, so the cache auto-sizing reserves the drafter's footprint.
+    if (!o.dflash_head.empty() && o.dflash.empty()) {
+        std::fprintf(stderr, "strata generate: --dflash-head requires --dflash\n");
+        return 2;
+    }
     strata::core::DFlashDrafter dflash;
     int dflash_k = 0;   // THE effective draft length (1 anchor + dflash_k candidates = the window)
     if (!o.dflash.empty()) {
@@ -4044,7 +4051,8 @@ int main(int argc, char** argv) {
             const strata::core::OnDevice on_dflash(last_st ? last_st->dev : -1);
             int dev = 0;
             cudaGetDevice(&dev);
-            if (!dflash.upload(g, ss, dev, o.dflash_window, effective_mask, err)) {
+            if (!dflash.upload(g, ss, dev, o.dflash_window, effective_mask, err) ||
+                (!o.dflash_head.empty() && !dflash.load_head(o.dflash_head, err))) {
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                 return 1;
             }

@@ -224,6 +224,7 @@ void DFlashDrafter::release() {
     free_dev(xq_); free_dev(attn_scratch_); free_dev(arg_scratch_);
     if (h_out_) cudaFreeHost(h_out_);
     if (h_tok_) cudaFreeHost(h_tok_);
+    delete owned_head_; owned_head_ = nullptr;
     if (cs_) cudaStreamDestroy(cs_);
     w_ = nullptr; wf_.clear(); wt_.clear();
     st_.clear(); arenas_.clear();
@@ -448,9 +449,21 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
     return true;
 }
 
+bool DFlashDrafter::load_head(const std::string& path, std::string& err) {
+    if (owned_head_) { err = "dflash: draft head already loaded"; return false; }
+    const DFlashGeometry& dg = artifact_.geom();
+    auto candidate = std::make_unique<NativeHead>();
+    if (!candidate->load({path}, dg.hidden, dg.vocab, err)) return false;
+    vram_ += candidate->weight_bytes();
+    std::fprintf(stderr, "dflash: draft-only head %s, type %d, +%.1f MiB weights; verifier head unchanged\n",
+                 path.c_str(), candidate->type(), candidate->weight_bytes() / 1048576.0);
+    owned_head_ = candidate.release();
+    return true;
+}
+
 bool DFlashDrafter::bind(const WeightTable& wt, const NativeHead* head, std::string& err) {
     const DFlashGeometry& dg = artifact_.geom();
-    head_ = head;
+    head_ = owned_head_ ? owned_head_ : head;
     if (head_ == nullptr || !head_->loaded()) {
         err = "dflash: the target's native head is required (the full-vocabulary draft head)";
         return false;
