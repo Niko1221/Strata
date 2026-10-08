@@ -1,0 +1,3069 @@
+{
+  "method": "All frozen requests included; warmups excluded only from performance aggregates. Engine DONE timings: prompt_tokens*1000/prompt_ms and generated*1000/decode_ms. Median and min/max of three repetitions, not a confidence interval. No quality or isolated-feature-effect claim.",
+  "matrices": {
+    "main-0-1": {
+      "request_count": 36,
+      "measured_count": 24,
+      "manifest_sha256": "165f132a05354c7fac61a18e798c6e41206502a8c88979f31cabaea0b2db673c",
+      "requests_sha256": "94d01261234ee0ba87c20fa8dfaa89cc6784471b6c3d28590300d5c4ff33f3c2",
+      "prompt_hashes": {
+        "1024": "4f223ae7d95b181037f165d05c967536f886f9eadc6af1ccc91463cdacb7edff",
+        "6144": "c56fb5a5b61db67f79cffc9d701d710860bd34ccfd5b787848ea7f5331867657",
+        "32768": "763e8980aa62afbb61da7177013979e4dd9e810a7e1857d2552bc6e15b2d54e3"
+      },
+      "hardware": "index, uuid, name, memory.total [MiB], pci.bus_id, driver_version\n0, GPU-REDACTED, NVIDIA GeForce RTX 4080 SUPER, 32760 MiB, 00000000:17:00.0, 610.43.03\n1, GPU-REDACTED, NVIDIA GeForce RTX 4080 SUPER, 32760 MiB, 00000000:65:00.0, 610.43.03\n",
+      "topology": "\t\u001b[4mGPU0\tGPU1\tCPU Affinity\tNUMA Affinity\tGPU NUMA ID\u001b[0m\nGPU0\t X \tNODE\t0-31\t0\t\tN/A\nGPU1\tNODE\t X \t0-31\t0\t\tN/A\n\nLegend:\n\n  X    = Self\n  SYS  = Connection traversing PCIe as well as the SMP interconnect between NUMA nodes (e.g., QPI/UPI)\n  NODE = Connection traversing PCIe as well as the interconnect between PCIe Host Bridges within a NUMA node\n  PHB  = Connection traversing PCIe as well as a PCIe Host Bridge (typically the CPU)\n  PXB  = Connection traversing multiple PCIe bridges (without traversing the PCIe Host Bridge)\n  PIX  = Connection traversing at most a single PCIe bridge\n  NV#  = Connection traversing a bonded set of # NVLinks\n",
+      "paths": {
+        "0-serial": {
+          "split": 24,
+          "resident_experts": 24576,
+          "pipeline_active": false,
+          "async_requested": false,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 12288 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "b916f344cec78869175becd64b91f256b4821577ae968840bb92e4eb5db906e9"
+        },
+        "0-async": {
+          "split": 24,
+          "resident_experts": 24576,
+          "pipeline_active": false,
+          "async_requested": true,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 12288 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "dfe1c90a334e4dcf86f265ac5e538c1b10bcba7118bfb88e5ebe2034276e04eb"
+        },
+        "0-pipeline": {
+          "split": 24,
+          "resident_experts": 24576,
+          "pipeline_active": true,
+          "async_requested": false,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 12288 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "06e8f8aed5109ae7d16452ee211335378609a3a7a9b784465093120b1b77090e"
+        },
+        "0-pipeline-async": {
+          "split": 24,
+          "resident_experts": 24576,
+          "pipeline_active": true,
+          "async_requested": true,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 12288 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "e33750432b00a1c497e98d52d78c42a905f8a83a02dddb2dbcc1fdf23b10d6eb"
+        },
+        "1-pipeline-async": {
+          "split": 24,
+          "resident_experts": 24576,
+          "pipeline_active": true,
+          "async_requested": true,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 12288 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "cf15371c933f4559c0748de8b3fbf212642546f7e2ea36b8b4b83a49386da952"
+        },
+        "1-pipeline": {
+          "split": 24,
+          "resident_experts": 24576,
+          "pipeline_active": true,
+          "async_requested": false,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 12288 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "46f8d6801e5fff25c7970c9ed147acb83c5a32993832a5a8625e593e1013cca4"
+        },
+        "1-async": {
+          "split": 24,
+          "resident_experts": 24576,
+          "pipeline_active": false,
+          "async_requested": true,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 12288 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "2b979d538a62e1e326372fb84fb1db9c5ab65169c534fd607baa787b621ced52"
+        },
+        "1-serial": {
+          "split": 24,
+          "resident_experts": 24576,
+          "pipeline_active": false,
+          "async_requested": false,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 12288 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "734ec1939339ad12ff09ac938ccf819a737e3ffd6dc21ae285a11d4139791fa8"
+        },
+        "2-serial": {
+          "split": 24,
+          "resident_experts": 24576,
+          "pipeline_active": false,
+          "async_requested": false,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 12288 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "153ddabead5a3ed37b06e076209090bf62441e72e165f8f4446d01d6fd4c86fe"
+        },
+        "2-async": {
+          "split": 24,
+          "resident_experts": 24576,
+          "pipeline_active": false,
+          "async_requested": true,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 12288 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "35973d4c89daad2b67270f57248e272dc01ad906d930cfefa198f673e4b84589"
+        },
+        "2-pipeline": {
+          "split": 24,
+          "resident_experts": 24576,
+          "pipeline_active": true,
+          "async_requested": false,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 12288 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "7bac095cda6bf20df06ca77aaa390e84235950dde7ed9014f0e957507228cb97"
+        },
+        "2-pipeline-async": {
+          "split": 24,
+          "resident_experts": 24576,
+          "pipeline_active": true,
+          "async_requested": true,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 12288 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "54ea1716613623d1d473f21f8fec5751691e6b3c25ad8bc434d97dee71b64c94"
+        }
+      }
+    },
+    "main-1-0": {
+      "request_count": 36,
+      "measured_count": 24,
+      "manifest_sha256": "8410a0fc153b20df066d93f7903dd372987b004666955ca65b5f2d4ae6af170a",
+      "requests_sha256": "9fad3d4b39eba6c24d00912bd01f9e00f772d7649d8e773d8f7308a27cfef4e9",
+      "prompt_hashes": {
+        "1024": "4f223ae7d95b181037f165d05c967536f886f9eadc6af1ccc91463cdacb7edff",
+        "6144": "c56fb5a5b61db67f79cffc9d701d710860bd34ccfd5b787848ea7f5331867657",
+        "32768": "763e8980aa62afbb61da7177013979e4dd9e810a7e1857d2552bc6e15b2d54e3"
+      },
+      "hardware": "index, uuid, name, memory.total [MiB], pci.bus_id, driver_version\n0, GPU-REDACTED, NVIDIA GeForce RTX 4080 SUPER, 32760 MiB, 00000000:17:00.0, 610.43.03\n1, GPU-REDACTED, NVIDIA GeForce RTX 4080 SUPER, 32760 MiB, 00000000:65:00.0, 610.43.03\n",
+      "topology": "\t\u001b[4mGPU0\tGPU1\tCPU Affinity\tNUMA Affinity\tGPU NUMA ID\u001b[0m\nGPU0\t X \tNODE\t0-31\t0\t\tN/A\nGPU1\tNODE\t X \t0-31\t0\t\tN/A\n\nLegend:\n\n  X    = Self\n  SYS  = Connection traversing PCIe as well as the SMP interconnect between NUMA nodes (e.g., QPI/UPI)\n  NODE = Connection traversing PCIe as well as the interconnect between PCIe Host Bridges within a NUMA node\n  PHB  = Connection traversing PCIe as well as a PCIe Host Bridge (typically the CPU)\n  PXB  = Connection traversing multiple PCIe bridges (without traversing the PCIe Host Bridge)\n  PIX  = Connection traversing at most a single PCIe bridge\n  NV#  = Connection traversing a bonded set of # NVLinks\n",
+      "paths": {
+        "0-serial": {
+          "split": 24,
+          "resident_experts": 24576,
+          "pipeline_active": false,
+          "async_requested": false,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 12288 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "ff5185ad7aab1a6c97475f162e38f071087483f3469a82c6212a3403ad6d187a"
+        },
+        "0-async": {
+          "split": 24,
+          "resident_experts": 24576,
+          "pipeline_active": false,
+          "async_requested": true,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 12288 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "0314df7c6b713be62ff4569960ab9c7853242267d5c70ebf1d07e962869c0efc"
+        },
+        "0-pipeline": {
+          "split": 24,
+          "resident_experts": 24576,
+          "pipeline_active": true,
+          "async_requested": false,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 12288 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "c457ac97decda7ce5cafb4386dc8fa2dfffce0d9b6a856a08c854c6d0cf72a4f"
+        },
+        "0-pipeline-async": {
+          "split": 24,
+          "resident_experts": 24576,
+          "pipeline_active": true,
+          "async_requested": true,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 12288 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "2accb000f1d11d4690627b37ff4b361f048d06ee55a036e13797897d02ad7812"
+        },
+        "1-pipeline-async": {
+          "split": 24,
+          "resident_experts": 24576,
+          "pipeline_active": true,
+          "async_requested": true,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 12288 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "619b448e9e8f00bf0224c87c9a3bd892437527e73e23333791bd771bd3aec643"
+        },
+        "1-pipeline": {
+          "split": 24,
+          "resident_experts": 24576,
+          "pipeline_active": true,
+          "async_requested": false,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 12288 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "4e5dae0a127f54cc039af6915c4f071d08ab4c9dd79b26ebd46f483ca7578970"
+        },
+        "1-async": {
+          "split": 24,
+          "resident_experts": 24576,
+          "pipeline_active": false,
+          "async_requested": true,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 12288 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "7411e544a0db5f3e68cfbc7299e7b7c6de3499c2e36463077050d2b3ff64e6a7"
+        },
+        "1-serial": {
+          "split": 24,
+          "resident_experts": 24576,
+          "pipeline_active": false,
+          "async_requested": false,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 12288 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "5594336005a58cd3e082bbad31870c7f86069c2d0de2b09ffe7f6e44f5013eb6"
+        },
+        "2-serial": {
+          "split": 24,
+          "resident_experts": 24576,
+          "pipeline_active": false,
+          "async_requested": false,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 12288 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "798b2f2194888e9d8a25876a955697e81026efc513894f621df23a7d9bcce4a4"
+        },
+        "2-async": {
+          "split": 24,
+          "resident_experts": 24576,
+          "pipeline_active": false,
+          "async_requested": true,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 12288 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "204ad38269d0f54d0556f898e02b9588ec2b9bb2832d8e295018d03464e40964"
+        },
+        "2-pipeline": {
+          "split": 24,
+          "resident_experts": 24576,
+          "pipeline_active": true,
+          "async_requested": false,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 12288 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "c25ea63fd4c54081500b367df9545a7c18111adf807f8e272bce780a544f141b"
+        },
+        "2-pipeline-async": {
+          "split": 24,
+          "resident_experts": 24576,
+          "pipeline_active": true,
+          "async_requested": true,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 12288 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "8886d442d211af6e7bc78a85b05478cb267649434713e7a0e86605f82f1284d8"
+        }
+      }
+    },
+    "fork-0-1": {
+      "request_count": 36,
+      "measured_count": 24,
+      "manifest_sha256": "26846596f5af99af2b4bbc2cc99258859f8c8f17554a383e5859ef83d4ffc3b3",
+      "requests_sha256": "f4b754deca50a1f46c1346f043ebb8b31424dd765c72dc053f68a380896c9b5f",
+      "prompt_hashes": {
+        "1024": "4f223ae7d95b181037f165d05c967536f886f9eadc6af1ccc91463cdacb7edff",
+        "6144": "c56fb5a5b61db67f79cffc9d701d710860bd34ccfd5b787848ea7f5331867657",
+        "32768": "763e8980aa62afbb61da7177013979e4dd9e810a7e1857d2552bc6e15b2d54e3"
+      },
+      "hardware": "index, uuid, name, memory.total [MiB], pci.bus_id, driver_version\n0, GPU-REDACTED, NVIDIA GeForce RTX 4080 SUPER, 32760 MiB, 00000000:17:00.0, 610.43.03\n1, GPU-REDACTED, NVIDIA GeForce RTX 4080 SUPER, 32760 MiB, 00000000:65:00.0, 610.43.03\n",
+      "topology": "\t\u001b[4mGPU0\tGPU1\tCPU Affinity\tNUMA Affinity\tGPU NUMA ID\u001b[0m\nGPU0\t X \tNODE\t0-31\t0\t\tN/A\nGPU1\tNODE\t X \t0-31\t0\t\tN/A\n\nLegend:\n\n  X    = Self\n  SYS  = Connection traversing PCIe as well as the SMP interconnect between NUMA nodes (e.g., QPI/UPI)\n  NODE = Connection traversing PCIe as well as the interconnect between PCIe Host Bridges within a NUMA node\n  PHB  = Connection traversing PCIe as well as a PCIe Host Bridge (typically the CPU)\n  PXB  = Connection traversing multiple PCIe bridges (without traversing the PCIe Host Bridge)\n  PIX  = Connection traversing at most a single PCIe bridge\n  NV#  = Connection traversing a bonded set of # NVLinks\n",
+      "paths": {
+        "0-serial": {
+          "split": 29,
+          "resident_experts": 24576,
+          "pipeline_active": false,
+          "async_requested": false,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 14848 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "80878e2f07c097f2fcac2ffadda33ba6a82cc6b558621e4176d6af3919be792f"
+        },
+        "0-async": {
+          "split": 29,
+          "resident_experts": 24576,
+          "pipeline_active": false,
+          "async_requested": true,
+          "async_startup_confirmed": true,
+          "async_evidence": [
+            "strata serve: adaptive tier asynchronous (up to 96 swaps per round, every 4 windows)"
+          ],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 14848 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "bf99e10033862144e317967ce9b4029235ebd3bcaa18e7f2d79e8fca9d12b258"
+        },
+        "0-pipeline": {
+          "split": 30,
+          "resident_experts": 24065,
+          "pipeline_active": true,
+          "async_requested": false,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.95 GiB of experts in RAM (page-locked), 14849 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "cec59a6dc09069e2f1a2faa4b060fa408b135691c0d742ef5033cb88dfc8569e"
+        },
+        "0-pipeline-async": {
+          "split": 30,
+          "resident_experts": 24065,
+          "pipeline_active": true,
+          "async_requested": true,
+          "async_startup_confirmed": true,
+          "async_evidence": [
+            "strata serve: adaptive tier asynchronous (up to 192 swaps per round, every 4 windows; the RAM copy is page-locked: no bounce)"
+          ],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.95 GiB of experts in RAM (page-locked), 14849 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "cf323282e7c3d249fcfb99cdd72e8194b4466804ab56628cd5842edcaea4eee1"
+        },
+        "1-pipeline-async": {
+          "split": 30,
+          "resident_experts": 24065,
+          "pipeline_active": true,
+          "async_requested": true,
+          "async_startup_confirmed": true,
+          "async_evidence": [
+            "strata serve: adaptive tier asynchronous (up to 192 swaps per round, every 4 windows; the RAM copy is page-locked: no bounce)"
+          ],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.95 GiB of experts in RAM (page-locked), 14849 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "41f05898b860f85274d75316ae2b9ca284d65e98cbff9086d9c33a377d304d72"
+        },
+        "1-pipeline": {
+          "split": 30,
+          "resident_experts": 24065,
+          "pipeline_active": true,
+          "async_requested": false,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.95 GiB of experts in RAM (page-locked), 14849 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "755953a4d1c2e6935189754a31be3b4b27e879902079390c6c634c96ae385dc2"
+        },
+        "1-async": {
+          "split": 29,
+          "resident_experts": 24576,
+          "pipeline_active": false,
+          "async_requested": true,
+          "async_startup_confirmed": true,
+          "async_evidence": [
+            "strata serve: adaptive tier asynchronous (up to 96 swaps per round, every 4 windows)"
+          ],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 14848 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "4a2d1148d46cca1f05223b20bc0bb6120e348cb38c3ee2fe85e679749e31d73f"
+        },
+        "1-serial": {
+          "split": 29,
+          "resident_experts": 24576,
+          "pipeline_active": false,
+          "async_requested": false,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 14848 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "4ccfbdd448474ca31539be25a0980dc7ff9b022f4fb388f01d48b6ec561b9f20"
+        },
+        "2-serial": {
+          "split": 29,
+          "resident_experts": 24576,
+          "pipeline_active": false,
+          "async_requested": false,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 14848 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "d728b808f20d66796effc48b850dfe4ef3a5bfa0d3fa4645fdee024d90842ec6"
+        },
+        "2-async": {
+          "split": 29,
+          "resident_experts": 24576,
+          "pipeline_active": false,
+          "async_requested": true,
+          "async_startup_confirmed": true,
+          "async_evidence": [
+            "strata serve: adaptive tier asynchronous (up to 96 swaps per round, every 4 windows)"
+          ],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.00 GiB of experts in RAM (pageable), 14848 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "da9984402ba50feaf8677bf30f1042397ca09e31c37de03113e129eb7e3bd915"
+        },
+        "2-pipeline": {
+          "split": 30,
+          "resident_experts": 24065,
+          "pipeline_active": true,
+          "async_requested": false,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.95 GiB of experts in RAM (page-locked), 14849 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "29399342954fbe6041f08eb2fec0c6bff4aa601b089ac47f9c9db30c2e7c6e92"
+        },
+        "2-pipeline-async": {
+          "split": 30,
+          "resident_experts": 24065,
+          "pipeline_active": true,
+          "async_requested": true,
+          "async_startup_confirmed": true,
+          "async_evidence": [
+            "strata serve: adaptive tier asynchronous (up to 192 swaps per round, every 4 windows; the RAM copy is page-locked: no bounce)"
+          ],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.95 GiB of experts in RAM (page-locked), 14849 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "0a139e5e3ba305a6bc6dbd10a0489793a51e87213f7d5e67151d54fc4ebe2e61"
+        }
+      }
+    },
+    "fork-1-0": {
+      "request_count": 36,
+      "measured_count": 24,
+      "manifest_sha256": "03c7d8a4361fe6a06a2d6519d73ee3f722aa7f1b8155775efba462b2a5add606",
+      "requests_sha256": "79359e187cb0b0ffd762f09573e3d5f2ed46f2f4b8ec29e0d8face1186445543",
+      "prompt_hashes": {
+        "1024": "4f223ae7d95b181037f165d05c967536f886f9eadc6af1ccc91463cdacb7edff",
+        "6144": "c56fb5a5b61db67f79cffc9d701d710860bd34ccfd5b787848ea7f5331867657",
+        "32768": "763e8980aa62afbb61da7177013979e4dd9e810a7e1857d2552bc6e15b2d54e3"
+      },
+      "hardware": "index, uuid, name, memory.total [MiB], pci.bus_id, driver_version\n0, GPU-REDACTED, NVIDIA GeForce RTX 4080 SUPER, 32760 MiB, 00000000:17:00.0, 610.43.03\n1, GPU-REDACTED, NVIDIA GeForce RTX 4080 SUPER, 32760 MiB, 00000000:65:00.0, 610.43.03\n",
+      "topology": "\t\u001b[4mGPU0\tGPU1\tCPU Affinity\tNUMA Affinity\tGPU NUMA ID\u001b[0m\nGPU0\t X \tNODE\t0-31\t0\t\tN/A\nGPU1\tNODE\t X \t0-31\t0\t\tN/A\n\nLegend:\n\n  X    = Self\n  SYS  = Connection traversing PCIe as well as the SMP interconnect between NUMA nodes (e.g., QPI/UPI)\n  NODE = Connection traversing PCIe as well as the interconnect between PCIe Host Bridges within a NUMA node\n  PHB  = Connection traversing PCIe as well as a PCIe Host Bridge (typically the CPU)\n  PXB  = Connection traversing multiple PCIe bridges (without traversing the PCIe Host Bridge)\n  PIX  = Connection traversing at most a single PCIe bridge\n  NV#  = Connection traversing a bonded set of # NVLinks\n",
+      "paths": {
+        "0-serial": {
+          "split": 22,
+          "resident_experts": 24367,
+          "pipeline_active": false,
+          "async_requested": false,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.43 GiB of experts in RAM (page-locked), 11264 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "9c655e1c7afe92061bc066ef86b3d07beea365759845992b85a380c0c4cf6ad8"
+        },
+        "0-async": {
+          "split": 22,
+          "resident_experts": 24367,
+          "pipeline_active": false,
+          "async_requested": true,
+          "async_startup_confirmed": true,
+          "async_evidence": [
+            "strata serve: adaptive tier asynchronous (up to 192 swaps per round, every 4 windows; the RAM copy is page-locked: no bounce)"
+          ],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.43 GiB of experts in RAM (page-locked), 11264 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "799690be79d4c0b33cc4701363d96e3571c341ff359c65faf72ded151d7038b0"
+        },
+        "0-pipeline": {
+          "split": 30,
+          "resident_experts": 23633,
+          "pipeline_active": true,
+          "async_requested": false,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 1.75 GiB of experts in RAM (page-locked), 14417 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "d2a4ded8ec4e43a0e4797ec8bd610033d167f42fd4ee663025a342eaf53a4c57"
+        },
+        "0-pipeline-async": {
+          "split": 30,
+          "resident_experts": 23633,
+          "pipeline_active": true,
+          "async_requested": true,
+          "async_startup_confirmed": true,
+          "async_evidence": [
+            "strata serve: adaptive tier asynchronous (up to 192 swaps per round, every 4 windows; the RAM copy is page-locked: no bounce)"
+          ],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 1.75 GiB of experts in RAM (page-locked), 14417 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "c384a6fb6e85ab6c0477227e416645287591280e57d2791642c84a44dacb6175"
+        },
+        "1-pipeline-async": {
+          "split": 30,
+          "resident_experts": 23633,
+          "pipeline_active": true,
+          "async_requested": true,
+          "async_startup_confirmed": true,
+          "async_evidence": [
+            "strata serve: adaptive tier asynchronous (up to 192 swaps per round, every 4 windows; the RAM copy is page-locked: no bounce)"
+          ],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 1.75 GiB of experts in RAM (page-locked), 14417 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "b5a91d17177d08f064682989b96869b508ffd0b0ccf9c08ac6b09b67fede1fc7"
+        },
+        "1-pipeline": {
+          "split": 30,
+          "resident_experts": 23633,
+          "pipeline_active": true,
+          "async_requested": false,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 1.75 GiB of experts in RAM (page-locked), 14417 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "dcc4ab4d8a77927b12b91d39be02f427e7501420d0ca8934590865a4d468d1c5"
+        },
+        "1-async": {
+          "split": 22,
+          "resident_experts": 24367,
+          "pipeline_active": false,
+          "async_requested": true,
+          "async_startup_confirmed": true,
+          "async_evidence": [
+            "strata serve: adaptive tier asynchronous (up to 192 swaps per round, every 4 windows; the RAM copy is page-locked: no bounce)"
+          ],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.43 GiB of experts in RAM (page-locked), 11264 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "e6936d801bd163b2230c8961111884543869944569660bd694da0986e823ee9b"
+        },
+        "1-serial": {
+          "split": 22,
+          "resident_experts": 24367,
+          "pipeline_active": false,
+          "async_requested": false,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.43 GiB of experts in RAM (page-locked), 11264 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "d09278e1d1b310e21c3c5a1146a493d6ba87bcdc7c75671273b27c3dfd722774"
+        },
+        "2-serial": {
+          "split": 22,
+          "resident_experts": 24367,
+          "pipeline_active": false,
+          "async_requested": false,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.43 GiB of experts in RAM (page-locked), 11264 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "5f160b17c4d860bf1ea68b94779893887af7581d2479851b630fa8df15827ca8"
+        },
+        "2-async": {
+          "split": 22,
+          "resident_experts": 24367,
+          "pipeline_active": false,
+          "async_requested": true,
+          "async_startup_confirmed": true,
+          "async_evidence": [
+            "strata serve: adaptive tier asynchronous (up to 192 swaps per round, every 4 windows; the RAM copy is page-locked: no bounce)"
+          ],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 0.43 GiB of experts in RAM (page-locked), 11264 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "ff299c43a6e1a2bc7e225d3a9528c1cb33af10034d84c8495462471507917bf0"
+        },
+        "2-pipeline": {
+          "split": 30,
+          "resident_experts": 23633,
+          "pipeline_active": true,
+          "async_requested": false,
+          "async_startup_confirmed": false,
+          "async_evidence": [],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 1.75 GiB of experts in RAM (page-locked), 14417 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "a56e05ee4b669cf50a7475eefe960f268a6d2163c79fc4900996937f67e2c094"
+        },
+        "2-pipeline-async": {
+          "split": 30,
+          "resident_experts": 23633,
+          "pipeline_active": true,
+          "async_requested": true,
+          "async_startup_confirmed": true,
+          "async_evidence": [
+            "strata serve: adaptive tier asynchronous (up to 192 swaps per round, every 4 windows; the RAM copy is page-locked: no bounce)"
+          ],
+          "residence_evidence": [
+            "strata generate: resident RAM mode: 1.75 GiB of experts in RAM (page-locked), 14417 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)"
+          ],
+          "log_sha256": "235e762cf64d3394b86cbd1c2f4071dcb7f93c497a6862ff15fa6611474b6517"
+        }
+      }
+    }
+  },
+  "groups": [
+    {
+      "matrix": "main-0-1",
+      "arm_requested": "serial",
+      "prompt_tokens": 6144,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 2082.5000847371452,
+        "min": 2064.585503545146,
+        "max": 2097.501024170422,
+        "values": [
+          2082.5000847371452,
+          2097.501024170422,
+          2064.585503545146
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 136.54789844250053,
+        "min": 135.97492962235088,
+        "max": 137.05230472723377,
+        "values": [
+          137.05230472723377,
+          136.54789844250053,
+          135.97492962235088
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 6.697021717904136,
+        "min": 6.6888046860694885,
+        "max": 6.7471860949881375,
+        "values": [
+          6.697021717904136,
+          6.6888046860694885,
+          6.7471860949881375
+        ]
+      },
+      "output_hashes": [
+        "b752a5a72a2a00addc549733338e86407f583a0622f862634dbec216fee647a2",
+        "b752a5a72a2a00addc549733338e86407f583a0622f862634dbec216fee647a2",
+        "b752a5a72a2a00addc549733338e86407f583a0622f862634dbec216fee647a2"
+      ],
+      "unique_outputs": 1,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.6711111111111111,
+        "min": 0.6711111111111111,
+        "max": 0.6711111111111111,
+        "values": [
+          0.6711111111111111,
+          0.6711111111111111,
+          0.6711111111111111
+        ]
+      },
+      "splits": [
+        24
+      ],
+      "resident_experts": [
+        24576
+      ],
+      "async_startup_confirmed": [
+        false
+      ]
+    },
+    {
+      "matrix": "main-0-1",
+      "arm_requested": "serial",
+      "prompt_tokens": 32768,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 4060.873444703316,
+        "min": 4055.044055044055,
+        "max": 4074.3043294457016,
+        "values": [
+          4074.3043294457016,
+          4060.873444703316,
+          4055.044055044055
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 127.69990522272658,
+        "min": 127.47416905265779,
+        "max": 127.7795802241134,
+        "values": [
+          127.69990522272658,
+          127.7795802241134,
+          127.47416905265779
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 12.126811670837924,
+        "min": 12.103781711077318,
+        "max": 12.147706293966621,
+        "values": [
+          12.103781711077318,
+          12.126811670837924,
+          12.147706293966621
+        ]
+      },
+      "output_hashes": [
+        "35f460ec4ff8ae7fde5de7ad3dfb208b23ec6bf8dd1c4e15c1f021c850d9f94c",
+        "35f460ec4ff8ae7fde5de7ad3dfb208b23ec6bf8dd1c4e15c1f021c850d9f94c",
+        "35f460ec4ff8ae7fde5de7ad3dfb208b23ec6bf8dd1c4e15c1f021c850d9f94c"
+      ],
+      "unique_outputs": 1,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.6851851851851852,
+        "min": 0.6851851851851852,
+        "max": 0.6851851851851852,
+        "values": [
+          0.6851851851851852,
+          0.6851851851851852,
+          0.6851851851851852
+        ]
+      },
+      "splits": [
+        24
+      ],
+      "resident_experts": [
+        24576
+      ],
+      "async_startup_confirmed": [
+        false
+      ]
+    },
+    {
+      "matrix": "main-0-1",
+      "arm_requested": "async",
+      "prompt_tokens": 6144,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 2100.943783340172,
+        "min": 2087.381939253924,
+        "max": 2105.76824210851,
+        "values": [
+          2105.76824210851,
+          2087.381939253924,
+          2100.943783340172
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 136.34426927993184,
+        "min": 135.48557819528975,
+        "max": 137.67511898679717,
+        "values": [
+          137.67511898679717,
+          135.48557819528975,
+          136.34426927993184
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 6.690265530953184,
+        "min": 6.645159838953987,
+        "max": 6.732649190118536,
+        "values": [
+          6.645159838953987,
+          6.732649190118536,
+          6.690265530953184
+        ]
+      },
+      "output_hashes": [
+        "b752a5a72a2a00addc549733338e86407f583a0622f862634dbec216fee647a2",
+        "b752a5a72a2a00addc549733338e86407f583a0622f862634dbec216fee647a2",
+        "b752a5a72a2a00addc549733338e86407f583a0622f862634dbec216fee647a2"
+      ],
+      "unique_outputs": 1,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.6711111111111111,
+        "min": 0.6711111111111111,
+        "max": 0.6711111111111111,
+        "values": [
+          0.6711111111111111,
+          0.6711111111111111,
+          0.6711111111111111
+        ]
+      },
+      "splits": [
+        24
+      ],
+      "resident_experts": [
+        24576
+      ],
+      "async_startup_confirmed": [
+        false
+      ]
+    },
+    {
+      "matrix": "main-0-1",
+      "arm_requested": "async",
+      "prompt_tokens": 32768,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 4056.4998328773568,
+        "min": 4054.943695087242,
+        "max": 4072.177760103395,
+        "values": [
+          4056.4998328773568,
+          4072.177760103395,
+          4054.943695087242
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 128.03520968266272,
+        "min": 127.29035626382915,
+        "max": 128.04481568548994,
+        "values": [
+          128.04481568548994,
+          127.29035626382915,
+          128.03520968266272
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 12.120063061825931,
+        "min": 12.099496048176661,
+        "max": 12.131059376057237,
+        "values": [
+          12.099496048176661,
+          12.120063061825931,
+          12.131059376057237
+        ]
+      },
+      "output_hashes": [
+        "35f460ec4ff8ae7fde5de7ad3dfb208b23ec6bf8dd1c4e15c1f021c850d9f94c",
+        "35f460ec4ff8ae7fde5de7ad3dfb208b23ec6bf8dd1c4e15c1f021c850d9f94c",
+        "35f460ec4ff8ae7fde5de7ad3dfb208b23ec6bf8dd1c4e15c1f021c850d9f94c"
+      ],
+      "unique_outputs": 1,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.6851851851851852,
+        "min": 0.6851851851851852,
+        "max": 0.6851851851851852,
+        "values": [
+          0.6851851851851852,
+          0.6851851851851852,
+          0.6851851851851852
+        ]
+      },
+      "splits": [
+        24
+      ],
+      "resident_experts": [
+        24576
+      ],
+      "async_startup_confirmed": [
+        false
+      ]
+    },
+    {
+      "matrix": "main-0-1",
+      "arm_requested": "pipeline",
+      "prompt_tokens": 6144,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 2097.7158660247874,
+        "min": 2085.1858136772444,
+        "max": 2114.1736347682463,
+        "values": [
+          2114.1736347682463,
+          2085.1858136772444,
+          2097.7158660247874
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 138.8738201150049,
+        "min": 138.7496273813718,
+        "max": 138.90772945549256,
+        "values": [
+          138.7496273813718,
+          138.8738201150049,
+          138.90772945549256
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 6.625018330058083,
+        "min": 6.606501110130921,
+        "max": 6.637356809107587,
+        "values": [
+          6.606501110130921,
+          6.637356809107587,
+          6.625018330058083
+        ]
+      },
+      "output_hashes": [
+        "4bf78f8826f89069f0f4e8ff355673764e59dbf8f4e95ac9cc6ca70f5005e5a9",
+        "4bf78f8826f89069f0f4e8ff355673764e59dbf8f4e95ac9cc6ca70f5005e5a9",
+        "4bf78f8826f89069f0f4e8ff355673764e59dbf8f4e95ac9cc6ca70f5005e5a9"
+      ],
+      "unique_outputs": 1,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.6298701298701299,
+        "min": 0.6298701298701299,
+        "max": 0.6298701298701299,
+        "values": [
+          0.6298701298701299,
+          0.6298701298701299,
+          0.6298701298701299
+        ]
+      },
+      "splits": [
+        24
+      ],
+      "resident_experts": [
+        24576
+      ],
+      "async_startup_confirmed": [
+        false
+      ]
+    },
+    {
+      "matrix": "main-0-1",
+      "arm_requested": "pipeline",
+      "prompt_tokens": 32768,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 4070.3061921619774,
+        "min": 4070.205075335064,
+        "max": 4079.6304826882133,
+        "values": [
+          4079.6304826882133,
+          4070.205075335064,
+          4070.3061921619774
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 141.74187475776534,
+        "min": 141.6673584018151,
+        "max": 141.7771993464957,
+        "values": [
+          141.7771993464957,
+          141.74187475776534,
+          141.6673584018151
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 11.713185785105452,
+        "min": 11.69525366392918,
+        "max": 11.715414104051888,
+        "values": [
+          11.69525366392918,
+          11.713185785105452,
+          11.715414104051888
+        ]
+      },
+      "output_hashes": [
+        "2cb6a971ab3bfd180e8ef200b85e7a174bc610f6a393ed5d0ed37b18f86de1e5",
+        "2cb6a971ab3bfd180e8ef200b85e7a174bc610f6a393ed5d0ed37b18f86de1e5",
+        "2cb6a971ab3bfd180e8ef200b85e7a174bc610f6a393ed5d0ed37b18f86de1e5"
+      ],
+      "unique_outputs": 1,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.7031963470319634,
+        "min": 0.7031963470319634,
+        "max": 0.7031963470319634,
+        "values": [
+          0.7031963470319634,
+          0.7031963470319634,
+          0.7031963470319634
+        ]
+      },
+      "splits": [
+        24
+      ],
+      "resident_experts": [
+        24576
+      ],
+      "async_startup_confirmed": [
+        false
+      ]
+    },
+    {
+      "matrix": "main-0-1",
+      "arm_requested": "pipeline-async",
+      "prompt_tokens": 6144,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 2096.355943769619,
+        "min": 2082.8530747847312,
+        "max": 2103.3172435041593,
+        "values": [
+          2103.3172435041593,
+          2096.355943769619,
+          2082.8530747847312
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 139.2363755031002,
+        "min": 138.85122308401583,
+        "max": 139.84485960887142,
+        "values": [
+          138.85122308401583,
+          139.2363755031002,
+          139.84485960887142
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 6.619066098006442,
+        "min": 6.618665246060118,
+        "max": 6.621364976046607,
+        "values": [
+          6.619066098006442,
+          6.618665246060118,
+          6.621364976046607
+        ]
+      },
+      "output_hashes": [
+        "4bf78f8826f89069f0f4e8ff355673764e59dbf8f4e95ac9cc6ca70f5005e5a9",
+        "4bf78f8826f89069f0f4e8ff355673764e59dbf8f4e95ac9cc6ca70f5005e5a9",
+        "4bf78f8826f89069f0f4e8ff355673764e59dbf8f4e95ac9cc6ca70f5005e5a9"
+      ],
+      "unique_outputs": 1,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.6298701298701299,
+        "min": 0.6298701298701299,
+        "max": 0.6298701298701299,
+        "values": [
+          0.6298701298701299,
+          0.6298701298701299,
+          0.6298701298701299
+        ]
+      },
+      "splits": [
+        24
+      ],
+      "resident_experts": [
+        24576
+      ],
+      "async_startup_confirmed": [
+        false
+      ]
+    },
+    {
+      "matrix": "main-0-1",
+      "arm_requested": "pipeline-async",
+      "prompt_tokens": 32768,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 4082.9346092503984,
+        "min": 4075.672582992326,
+        "max": 4083.39252557728,
+        "values": [
+          4075.672582992326,
+          4083.39252557728,
+          4082.9346092503984
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 141.84790137138108,
+        "min": 141.65951913233545,
+        "max": 141.8518313293068,
+        "values": [
+          141.8518313293068,
+          141.65951913233545,
+          141.84790137138108
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 11.689536531921476,
+        "min": 11.67628044495359,
+        "max": 11.69967601611279,
+        "values": [
+          11.69967601611279,
+          11.689536531921476,
+          11.67628044495359
+        ]
+      },
+      "output_hashes": [
+        "2cb6a971ab3bfd180e8ef200b85e7a174bc610f6a393ed5d0ed37b18f86de1e5",
+        "2cb6a971ab3bfd180e8ef200b85e7a174bc610f6a393ed5d0ed37b18f86de1e5",
+        "2cb6a971ab3bfd180e8ef200b85e7a174bc610f6a393ed5d0ed37b18f86de1e5"
+      ],
+      "unique_outputs": 1,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.7031963470319634,
+        "min": 0.7031963470319634,
+        "max": 0.7031963470319634,
+        "values": [
+          0.7031963470319634,
+          0.7031963470319634,
+          0.7031963470319634
+        ]
+      },
+      "splits": [
+        24
+      ],
+      "resident_experts": [
+        24576
+      ],
+      "async_startup_confirmed": [
+        false
+      ]
+    },
+    {
+      "matrix": "main-1-0",
+      "arm_requested": "serial",
+      "prompt_tokens": 6144,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 1798.0684811237927,
+        "min": 1790.5750007285867,
+        "max": 1800.017578296663,
+        "values": [
+          1798.0684811237927,
+          1800.017578296663,
+          1790.5750007285867
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 140.97692604218292,
+        "min": 140.42016345784654,
+        "max": 141.01575410377876,
+        "values": [
+          140.42016345784654,
+          140.97692604218292,
+          141.01575410377876
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 7.072313152020797,
+        "min": 7.05539283901453,
+        "max": 7.073720352957025,
+        "values": [
+          7.073720352957025,
+          7.05539283901453,
+          7.072313152020797
+        ]
+      },
+      "output_hashes": [
+        "b752a5a72a2a00addc549733338e86407f583a0622f862634dbec216fee647a2",
+        "b752a5a72a2a00addc549733338e86407f583a0622f862634dbec216fee647a2",
+        "b752a5a72a2a00addc549733338e86407f583a0622f862634dbec216fee647a2"
+      ],
+      "unique_outputs": 1,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.6711111111111111,
+        "min": 0.6711111111111111,
+        "max": 0.6711111111111111,
+        "values": [
+          0.6711111111111111,
+          0.6711111111111111,
+          0.6711111111111111
+        ]
+      },
+      "splits": [
+        24
+      ],
+      "resident_experts": [
+        24576
+      ],
+      "async_startup_confirmed": [
+        false
+      ]
+    },
+    {
+      "matrix": "main-1-0",
+      "arm_requested": "serial",
+      "prompt_tokens": 32768,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 3824.6863145608404,
+        "min": 3822.7676800671975,
+        "max": 3836.9124844851403,
+        "values": [
+          3836.9124844851403,
+          3822.7676800671975,
+          3824.6863145608404
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 133.12532501300052,
+        "min": 133.01810812917304,
+        "max": 133.29862015100235,
+        "values": [
+          133.12532501300052,
+          133.01810812917304,
+          133.29862015100235
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 12.460354431997985,
+        "min": 12.434758086921647,
+        "max": 12.471884828060865,
+        "values": [
+          12.434758086921647,
+          12.471884828060865,
+          12.460354431997985
+        ]
+      },
+      "output_hashes": [
+        "35f460ec4ff8ae7fde5de7ad3dfb208b23ec6bf8dd1c4e15c1f021c850d9f94c",
+        "35f460ec4ff8ae7fde5de7ad3dfb208b23ec6bf8dd1c4e15c1f021c850d9f94c",
+        "35f460ec4ff8ae7fde5de7ad3dfb208b23ec6bf8dd1c4e15c1f021c850d9f94c"
+      ],
+      "unique_outputs": 1,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.6851851851851852,
+        "min": 0.6851851851851852,
+        "max": 0.6851851851851852,
+        "values": [
+          0.6851851851851852,
+          0.6851851851851852,
+          0.6851851851851852
+        ]
+      },
+      "splits": [
+        24
+      ],
+      "resident_experts": [
+        24576
+      ],
+      "async_startup_confirmed": [
+        false
+      ]
+    },
+    {
+      "matrix": "main-1-0",
+      "arm_requested": "async",
+      "prompt_tokens": 6144,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 1797.9106312000702,
+        "min": 1792.4555824605422,
+        "max": 1798.4369054239967,
+        "values": [
+          1797.9106312000702,
+          1792.4555824605422,
+          1798.4369054239967
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 141.42083747652194,
+        "min": 141.23358711243517,
+        "max": 142.13536172339127,
+        "values": [
+          142.13536172339127,
+          141.23358711243517,
+          141.42083747652194
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 7.0472237940412015,
+        "min": 7.025253558997065,
+        "max": 7.0583613170310855,
+        "values": [
+          7.025253558997065,
+          7.0583613170310855,
+          7.0472237940412015
+        ]
+      },
+      "output_hashes": [
+        "b752a5a72a2a00addc549733338e86407f583a0622f862634dbec216fee647a2",
+        "b752a5a72a2a00addc549733338e86407f583a0622f862634dbec216fee647a2",
+        "b752a5a72a2a00addc549733338e86407f583a0622f862634dbec216fee647a2"
+      ],
+      "unique_outputs": 1,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.6711111111111111,
+        "min": 0.6711111111111111,
+        "max": 0.6711111111111111,
+        "values": [
+          0.6711111111111111,
+          0.6711111111111111,
+          0.6711111111111111
+        ]
+      },
+      "splits": [
+        24
+      ],
+      "resident_experts": [
+        24576
+      ],
+      "async_startup_confirmed": [
+        false
+      ]
+    },
+    {
+      "matrix": "main-1-0",
+      "arm_requested": "async",
+      "prompt_tokens": 32768,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 3837.49663305578,
+        "min": 3775.158699985023,
+        "max": 3840.780158469689,
+        "values": [
+          3840.780158469689,
+          3837.49663305578,
+          3775.158699985023
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 133.22578127032864,
+        "min": 133.14263424782212,
+        "max": 133.27086261648185,
+        "values": [
+          133.22578127032864,
+          133.27086261648185,
+          133.14263424782212
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 12.430617559934035,
+        "min": 12.42392707709223,
+        "max": 12.57664112909697,
+        "values": [
+          12.42392707709223,
+          12.430617559934035,
+          12.57664112909697
+        ]
+      },
+      "output_hashes": [
+        "35f460ec4ff8ae7fde5de7ad3dfb208b23ec6bf8dd1c4e15c1f021c850d9f94c",
+        "35f460ec4ff8ae7fde5de7ad3dfb208b23ec6bf8dd1c4e15c1f021c850d9f94c",
+        "35f460ec4ff8ae7fde5de7ad3dfb208b23ec6bf8dd1c4e15c1f021c850d9f94c"
+      ],
+      "unique_outputs": 1,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.6851851851851852,
+        "min": 0.6851851851851852,
+        "max": 0.6851851851851852,
+        "values": [
+          0.6851851851851852,
+          0.6851851851851852,
+          0.6851851851851852
+        ]
+      },
+      "splits": [
+        24
+      ],
+      "resident_experts": [
+        24576
+      ],
+      "async_startup_confirmed": [
+        false
+      ]
+    },
+    {
+      "matrix": "main-1-0",
+      "arm_requested": "pipeline",
+      "prompt_tokens": 6144,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 1796.438700622789,
+        "min": 1787.2414695872242,
+        "max": 1801.7595307917888,
+        "values": [
+          1787.2414695872242,
+          1801.7595307917888,
+          1796.438700622789
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 145.54964891832734,
+        "min": 145.2894438138479,
+        "max": 145.5827575421536,
+        "values": [
+          145.2894438138479,
+          145.54964891832734,
+          145.5827575421536
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 6.946918285917491,
+        "min": 6.937938909046352,
+        "max": 6.9720356510952115,
+        "values": [
+          6.9720356510952115,
+          6.937938909046352,
+          6.946918285917491
+        ]
+      },
+      "output_hashes": [
+        "4bf78f8826f89069f0f4e8ff355673764e59dbf8f4e95ac9cc6ca70f5005e5a9",
+        "4bf78f8826f89069f0f4e8ff355673764e59dbf8f4e95ac9cc6ca70f5005e5a9",
+        "4bf78f8826f89069f0f4e8ff355673764e59dbf8f4e95ac9cc6ca70f5005e5a9"
+      ],
+      "unique_outputs": 1,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.6298701298701299,
+        "min": 0.6298701298701299,
+        "max": 0.6298701298701299,
+        "values": [
+          0.6298701298701299,
+          0.6298701298701299,
+          0.6298701298701299
+        ]
+      },
+      "splits": [
+        24
+      ],
+      "resident_experts": [
+        24576
+      ],
+      "async_startup_confirmed": [
+        false
+      ]
+    },
+    {
+      "matrix": "main-1-0",
+      "arm_requested": "pipeline",
+      "prompt_tokens": 32768,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 3827.321995888619,
+        "min": 3788.251887305056,
+        "max": 3827.500817642386,
+        "values": [
+          3827.321995888619,
+          3827.500817642386,
+          3788.251887305056
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 148.9497876301856,
+        "min": 148.77233764346943,
+        "max": 149.78643730618455,
+        "values": [
+          148.77233764346943,
+          149.78643730618455,
+          148.9497876301856
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 12.051715635927394,
+        "min": 12.029442745959386,
+        "max": 12.135740622878075,
+        "values": [
+          12.051715635927394,
+          12.029442745959386,
+          12.135740622878075
+        ]
+      },
+      "output_hashes": [
+        "2cb6a971ab3bfd180e8ef200b85e7a174bc610f6a393ed5d0ed37b18f86de1e5",
+        "2cb6a971ab3bfd180e8ef200b85e7a174bc610f6a393ed5d0ed37b18f86de1e5",
+        "2cb6a971ab3bfd180e8ef200b85e7a174bc610f6a393ed5d0ed37b18f86de1e5"
+      ],
+      "unique_outputs": 1,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.7031963470319634,
+        "min": 0.7031963470319634,
+        "max": 0.7031963470319634,
+        "values": [
+          0.7031963470319634,
+          0.7031963470319634,
+          0.7031963470319634
+        ]
+      },
+      "splits": [
+        24
+      ],
+      "resident_experts": [
+        24576
+      ],
+      "async_startup_confirmed": [
+        false
+      ]
+    },
+    {
+      "matrix": "main-1-0",
+      "arm_requested": "pipeline-async",
+      "prompt_tokens": 6144,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 1794.7070164164281,
+        "min": 1793.0309928208721,
+        "max": 1799.5957939134764,
+        "values": [
+          1793.0309928208721,
+          1799.5957939134764,
+          1794.7070164164281
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 145.9188326493388,
+        "min": 145.51241971238562,
+        "max": 146.09370541573932,
+        "values": [
+          146.09370541573932,
+          145.9188326493388,
+          145.51241971238562
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 6.9412354461383075,
+        "min": 6.93300710991025,
+        "max": 6.952184412162751,
+        "values": [
+          6.9412354461383075,
+          6.93300710991025,
+          6.952184412162751
+        ]
+      },
+      "output_hashes": [
+        "4bf78f8826f89069f0f4e8ff355673764e59dbf8f4e95ac9cc6ca70f5005e5a9",
+        "4bf78f8826f89069f0f4e8ff355673764e59dbf8f4e95ac9cc6ca70f5005e5a9",
+        "4bf78f8826f89069f0f4e8ff355673764e59dbf8f4e95ac9cc6ca70f5005e5a9"
+      ],
+      "unique_outputs": 1,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.6298701298701299,
+        "min": 0.6298701298701299,
+        "max": 0.6298701298701299,
+        "values": [
+          0.6298701298701299,
+          0.6298701298701299,
+          0.6298701298701299
+        ]
+      },
+      "splits": [
+        24
+      ],
+      "resident_experts": [
+        24576
+      ],
+      "async_startup_confirmed": [
+        false
+      ]
+    },
+    {
+      "matrix": "main-1-0",
+      "arm_requested": "pipeline-async",
+      "prompt_tokens": 32768,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 3814.6238111314187,
+        "min": 3808.5939770098908,
+        "max": 3841.815858276764,
+        "values": [
+          3814.6238111314187,
+          3841.815858276764,
+          3808.5939770098908
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 149.2798413901685,
+        "min": 149.18849616830326,
+        "max": 149.4366937131516,
+        "values": [
+          149.18849616830326,
+          149.4366937131516,
+          149.2798413901685
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 12.044942454900593,
+        "min": 11.97920332918875,
+        "max": 12.083693125052378,
+        "values": [
+          12.044942454900593,
+          11.97920332918875,
+          12.083693125052378
+        ]
+      },
+      "output_hashes": [
+        "2cb6a971ab3bfd180e8ef200b85e7a174bc610f6a393ed5d0ed37b18f86de1e5",
+        "2cb6a971ab3bfd180e8ef200b85e7a174bc610f6a393ed5d0ed37b18f86de1e5",
+        "2cb6a971ab3bfd180e8ef200b85e7a174bc610f6a393ed5d0ed37b18f86de1e5"
+      ],
+      "unique_outputs": 1,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.7031963470319634,
+        "min": 0.7031963470319634,
+        "max": 0.7031963470319634,
+        "values": [
+          0.7031963470319634,
+          0.7031963470319634,
+          0.7031963470319634
+        ]
+      },
+      "splits": [
+        24
+      ],
+      "resident_experts": [
+        24576
+      ],
+      "async_startup_confirmed": [
+        false
+      ]
+    },
+    {
+      "matrix": "fork-0-1",
+      "arm_requested": "serial",
+      "prompt_tokens": 6144,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 2078.4141267210175,
+        "min": 2074.9045962649016,
+        "max": 2079.1174579540457,
+        "values": [
+          2079.1174579540457,
+          2074.9045962649016,
+          2078.4141267210175
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 125.26606806449244,
+        "min": 125.18643487615834,
+        "max": 125.31512347945274,
+        "values": [
+          125.31512347945274,
+          125.26606806449244,
+          125.18643487615834
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 7.056724779075012,
+        "min": 7.051268601091579,
+        "max": 7.058814954943955,
+        "values": [
+          7.051268601091579,
+          7.058814954943955,
+          7.056724779075012
+        ]
+      },
+      "output_hashes": [
+        "b752a5a72a2a00addc549733338e86407f583a0622f862634dbec216fee647a2",
+        "b752a5a72a2a00addc549733338e86407f583a0622f862634dbec216fee647a2",
+        "b752a5a72a2a00addc549733338e86407f583a0622f862634dbec216fee647a2"
+      ],
+      "unique_outputs": 1,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.6711111111111111,
+        "min": 0.6711111111111111,
+        "max": 0.6711111111111111,
+        "values": [
+          0.6711111111111111,
+          0.6711111111111111,
+          0.6711111111111111
+        ]
+      },
+      "splits": [
+        29
+      ],
+      "resident_experts": [
+        24576
+      ],
+      "async_startup_confirmed": [
+        false
+      ]
+    },
+    {
+      "matrix": "fork-0-1",
+      "arm_requested": "serial",
+      "prompt_tokens": 32768,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 4226.220416586058,
+        "min": 4221.9731230592815,
+        "max": 4241.208371623458,
+        "values": [
+          4221.9731230592815,
+          4241.208371623458,
+          4226.220416586058
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 118.63110822771613,
+        "min": 118.39519019539831,
+        "max": 118.72739078007606,
+        "values": [
+          118.72739078007606,
+          118.63110822771613,
+          118.39519019539831
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 12.116725773084909,
+        "min": 12.086828385014087,
+        "max": 12.128076944034547,
+        "values": [
+          12.116725773084909,
+          12.086828385014087,
+          12.128076944034547
+        ]
+      },
+      "output_hashes": [
+        "35f460ec4ff8ae7fde5de7ad3dfb208b23ec6bf8dd1c4e15c1f021c850d9f94c",
+        "35f460ec4ff8ae7fde5de7ad3dfb208b23ec6bf8dd1c4e15c1f021c850d9f94c",
+        "35f460ec4ff8ae7fde5de7ad3dfb208b23ec6bf8dd1c4e15c1f021c850d9f94c"
+      ],
+      "unique_outputs": 1,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.6851851851851852,
+        "min": 0.6851851851851852,
+        "max": 0.6851851851851852,
+        "values": [
+          0.6851851851851852,
+          0.6851851851851852,
+          0.6851851851851852
+        ]
+      },
+      "splits": [
+        29
+      ],
+      "resident_experts": [
+        24576
+      ],
+      "async_startup_confirmed": [
+        false
+      ]
+    },
+    {
+      "matrix": "fork-0-1",
+      "arm_requested": "async",
+      "prompt_tokens": 6144,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 2087.098308308988,
+        "min": 2085.1150478517616,
+        "max": 2088.5882312948297,
+        "values": [
+          2085.1150478517616,
+          2088.5882312948297,
+          2087.098308308988
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 125.28139375550552,
+        "min": 125.14053869091265,
+        "max": 125.35194026196596,
+        "values": [
+          125.14053869091265,
+          125.28139375550552,
+          125.35194026196596
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 7.039184215012938,
+        "min": 7.038822863949463,
+        "max": 7.048205550992861,
+        "values": [
+          7.048205550992861,
+          7.039184215012938,
+          7.038822863949463
+        ]
+      },
+      "output_hashes": [
+        "b752a5a72a2a00addc549733338e86407f583a0622f862634dbec216fee647a2",
+        "b752a5a72a2a00addc549733338e86407f583a0622f862634dbec216fee647a2",
+        "b752a5a72a2a00addc549733338e86407f583a0622f862634dbec216fee647a2"
+      ],
+      "unique_outputs": 1,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.6711111111111111,
+        "min": 0.6711111111111111,
+        "max": 0.6711111111111111,
+        "values": [
+          0.6711111111111111,
+          0.6711111111111111,
+          0.6711111111111111
+        ]
+      },
+      "splits": [
+        29
+      ],
+      "resident_experts": [
+        24576
+      ],
+      "async_startup_confirmed": [
+        true
+      ]
+    },
+    {
+      "matrix": "fork-0-1",
+      "arm_requested": "async",
+      "prompt_tokens": 32768,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 4226.32943391846,
+        "min": 4214.5337620578775,
+        "max": 4242.581179760733,
+        "values": [
+          4226.32943391846,
+          4214.5337620578775,
+          4242.581179760733
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 118.50754559762986,
+        "min": 118.31311380704796,
+        "max": 118.67235305025034,
+        "values": [
+          118.50754559762986,
+          118.31311380704796,
+          118.67235305025034
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 12.092668785015121,
+        "min": 12.08863867702894,
+        "max": 12.149723815033212,
+        "values": [
+          12.092668785015121,
+          12.149723815033212,
+          12.08863867702894
+        ]
+      },
+      "output_hashes": [
+        "35f460ec4ff8ae7fde5de7ad3dfb208b23ec6bf8dd1c4e15c1f021c850d9f94c",
+        "35f460ec4ff8ae7fde5de7ad3dfb208b23ec6bf8dd1c4e15c1f021c850d9f94c",
+        "35f460ec4ff8ae7fde5de7ad3dfb208b23ec6bf8dd1c4e15c1f021c850d9f94c"
+      ],
+      "unique_outputs": 1,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.6851851851851852,
+        "min": 0.6851851851851852,
+        "max": 0.6851851851851852,
+        "values": [
+          0.6851851851851852,
+          0.6851851851851852,
+          0.6851851851851852
+        ]
+      },
+      "splits": [
+        29
+      ],
+      "resident_experts": [
+        24576
+      ],
+      "async_startup_confirmed": [
+        true
+      ]
+    },
+    {
+      "matrix": "fork-0-1",
+      "arm_requested": "pipeline",
+      "prompt_tokens": 6144,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 2082.5000847371452,
+        "min": 2078.6250761215238,
+        "max": 2085.539714867617,
+        "values": [
+          2082.5000847371452,
+          2085.539714867617,
+          2078.6250761215238
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 124.87195746548949,
+        "min": 124.50150763544403,
+        "max": 127.01247798367692,
+        "values": [
+          124.87195746548949,
+          127.01247798367692,
+          124.50150763544403
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 7.059904630994424,
+        "min": 6.985926714958623,
+        "max": 7.077099116984755,
+        "values": [
+          7.059904630994424,
+          6.985926714958623,
+          7.077099116984755
+        ]
+      },
+      "output_hashes": [
+        "390deeb7a74a774b01bb0e6d365f956c7fde049792ede9ef0dfcde24b8c156f7",
+        "390deeb7a74a774b01bb0e6d365f956c7fde049792ede9ef0dfcde24b8c156f7",
+        "73089171593862fcbdedb66cbcf3d8fdacb07d432818f9017a5ad569753acdc3"
+      ],
+      "unique_outputs": 2,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.6093418259023354,
+        "min": 0.5983263598326359,
+        "max": 0.6148936170212767,
+        "values": [
+          0.6093418259023354,
+          0.6148936170212767,
+          0.5983263598326359
+        ]
+      },
+      "splits": [
+        30
+      ],
+      "resident_experts": [
+        24065
+      ],
+      "async_startup_confirmed": [
+        false
+      ]
+    },
+    {
+      "matrix": "fork-0-1",
+      "arm_requested": "pipeline",
+      "prompt_tokens": 32768,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 4132.729634627754,
+        "min": 4110.850447240657,
+        "max": 4143.232854541776,
+        "values": [
+          4110.850447240657,
+          4132.729634627754,
+          4143.232854541776
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 127.31884418361764,
+        "min": 122.9439308440389,
+        "max": 128.2693656679026,
+        "values": [
+          122.9439308440389,
+          128.2693656679026,
+          127.31884418361764
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 11.97629109583795,
+        "min": 11.972700275015086,
+        "max": 12.18628296116367,
+        "values": [
+          12.18628296116367,
+          11.972700275015086,
+          11.97629109583795
+        ]
+      },
+      "output_hashes": [
+        "a1edd5313ff506a828b2013d900bb1a530d1cb3af42d139a81b90ea18ea83954",
+        "418c1465ca53c260c62fed4c0f4ee81899acb96218821d7292407f0768749955",
+        "418c1465ca53c260c62fed4c0f4ee81899acb96218821d7292407f0768749955"
+      ],
+      "unique_outputs": 2,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.65625,
+        "min": 0.632258064516129,
+        "max": 0.6636771300448431,
+        "values": [
+          0.632258064516129,
+          0.6636771300448431,
+          0.65625
+        ]
+      },
+      "splits": [
+        30
+      ],
+      "resident_experts": [
+        24065
+      ],
+      "async_startup_confirmed": [
+        false
+      ]
+    },
+    {
+      "matrix": "fork-0-1",
+      "arm_requested": "pipeline-async",
+      "prompt_tokens": 6144,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 2066.529884632202,
+        "min": 2064.516129032258,
+        "max": 2068.129796687761,
+        "values": [
+          2068.129796687761,
+          2064.516129032258,
+          2066.529884632202
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 131.16433969514537,
+        "min": 130.24013024013024,
+        "max": 131.2383051803245,
+        "values": [
+          131.16433969514537,
+          130.24013024013024,
+          131.2383051803245
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 6.884648624109104,
+        "min": 6.884416884044185,
+        "max": 6.917877882020548,
+        "values": [
+          6.884648624109104,
+          6.917877882020548,
+          6.884416884044185
+        ]
+      },
+      "output_hashes": [
+        "41cc03481e4d74a1c359ddf746f0a4a11391f7fa8026cec297b912dd8100c02c",
+        "41cc03481e4d74a1c359ddf746f0a4a11391f7fa8026cec297b912dd8100c02c",
+        "41cc03481e4d74a1c359ddf746f0a4a11391f7fa8026cec297b912dd8100c02c"
+      ],
+      "unique_outputs": 1,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.6445916114790287,
+        "min": 0.6417582417582418,
+        "max": 0.6445916114790287,
+        "values": [
+          0.6445916114790287,
+          0.6417582417582418,
+          0.6445916114790287
+        ]
+      },
+      "splits": [
+        30
+      ],
+      "resident_experts": [
+        24065
+      ],
+      "async_startup_confirmed": [
+        true
+      ]
+    },
+    {
+      "matrix": "fork-0-1",
+      "arm_requested": "pipeline-async",
+      "prompt_tokens": 32768,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 4125.133757159942,
+        "min": 4117.462272093286,
+        "max": 4150.317277367548,
+        "values": [
+          4125.133757159942,
+          4150.317277367548,
+          4117.462272093286
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 121.66722113967968,
+        "min": 121.55456897984378,
+        "max": 122.02097235462345,
+        "values": [
+          122.02097235462345,
+          121.66722113967968,
+          121.55456897984378
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 12.164649352896959,
+        "min": 12.152254423126578,
+        "max": 12.190915525890887,
+        "values": [
+          12.164649352896959,
+          12.152254423126578,
+          12.190915525890887
+        ]
+      },
+      "output_hashes": [
+        "5f6698bceebf7f580461e1ad2a5aa50ca937e019c08d0d7ac821e2e0e1d2274e",
+        "5f6698bceebf7f580461e1ad2a5aa50ca937e019c08d0d7ac821e2e0e1d2274e",
+        "5f6698bceebf7f580461e1ad2a5aa50ca937e019c08d0d7ac821e2e0e1d2274e"
+      ],
+      "unique_outputs": 1,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.6535796766743649,
+        "min": 0.6535796766743649,
+        "max": 0.6535796766743649,
+        "values": [
+          0.6535796766743649,
+          0.6535796766743649,
+          0.6535796766743649
+        ]
+      },
+      "splits": [
+        30
+      ],
+      "resident_experts": [
+        24065
+      ],
+      "async_startup_confirmed": [
+        true
+      ]
+    },
+    {
+      "matrix": "fork-1-0",
+      "arm_requested": "serial",
+      "prompt_tokens": 6144,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 2094.6406654847947,
+        "min": 2086.6021395822722,
+        "max": 2125.4367454249837,
+        "values": [
+          2094.6406654847947,
+          2125.4367454249837,
+          2086.6021395822722
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 128.16982501814906,
+        "min": 127.69035089906976,
+        "max": 128.6755466197537,
+        "values": [
+          128.6755466197537,
+          127.69035089906976,
+          128.16982501814906
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 6.9205735069699585,
+        "min": 6.90467922296375,
+        "max": 6.942989937029779,
+        "values": [
+          6.9205735069699585,
+          6.90467922296375,
+          6.942989937029779
+        ]
+      },
+      "output_hashes": [
+        "b665044f01ddaa96f8c27244a54ee56a24e6e20b80449feb4bbd1cc7322182c9",
+        "b665044f01ddaa96f8c27244a54ee56a24e6e20b80449feb4bbd1cc7322182c9",
+        "b665044f01ddaa96f8c27244a54ee56a24e6e20b80449feb4bbd1cc7322182c9"
+      ],
+      "unique_outputs": 1,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.6772727272727272,
+        "min": 0.6772727272727272,
+        "max": 0.6772727272727272,
+        "values": [
+          0.6772727272727272,
+          0.6772727272727272,
+          0.6772727272727272
+        ]
+      },
+      "splits": [
+        22
+      ],
+      "resident_experts": [
+        24367
+      ],
+      "async_startup_confirmed": [
+        false
+      ]
+    },
+    {
+      "matrix": "fork-1-0",
+      "arm_requested": "serial",
+      "prompt_tokens": 32768,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 4259.84425984426,
+        "min": 4250.28535851406,
+        "max": 4270.837406321278,
+        "values": [
+          4259.84425984426,
+          4250.28535851406,
+          4270.837406321278
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 123.31109559018327,
+        "min": 122.7229146692234,
+        "max": 123.40322969390215,
+        "values": [
+          123.40322969390215,
+          122.7229146692234,
+          123.31109559018327
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 11.892824021866545,
+        "min": 11.846469465177506,
+        "max": 11.93091603112407,
+        "values": [
+          11.892824021866545,
+          11.93091603112407,
+          11.846469465177506
+        ]
+      },
+      "output_hashes": [
+        "ab4f7e1abab4725f41f3cc6d6732911a75a8012dbff99e15734bea458dcb8553",
+        "ab4f7e1abab4725f41f3cc6d6732911a75a8012dbff99e15734bea458dcb8553",
+        "ab4f7e1abab4725f41f3cc6d6732911a75a8012dbff99e15734bea458dcb8553"
+      ],
+      "unique_outputs": 1,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.6651884700665188,
+        "min": 0.6637168141592921,
+        "max": 0.6651884700665188,
+        "values": [
+          0.6651884700665188,
+          0.6637168141592921,
+          0.6651884700665188
+        ]
+      },
+      "splits": [
+        22
+      ],
+      "resident_experts": [
+        24367
+      ],
+      "async_startup_confirmed": [
+        false
+      ]
+    },
+    {
+      "matrix": "fork-1-0",
+      "arm_requested": "async",
+      "prompt_tokens": 6144,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 2095.9268608855837,
+        "min": 2092.286735910097,
+        "max": 2109.745209807019,
+        "values": [
+          2109.745209807019,
+          2092.286735910097,
+          2095.9268608855837
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 129.20809569474588,
+        "min": 128.8374433819829,
+        "max": 129.68591691995948,
+        "values": [
+          129.68591691995948,
+          128.8374433819829,
+          129.20809569474588
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 6.904453905066475,
+        "min": 6.870248086052015,
+        "max": 6.918630529893562,
+        "values": [
+          6.870248086052015,
+          6.918630529893562,
+          6.904453905066475
+        ]
+      },
+      "output_hashes": [
+        "cc7686613f90c3d614717e40e52fa531e5f920df5c2335b3dac101f05101c9cf",
+        "cc7686613f90c3d614717e40e52fa531e5f920df5c2335b3dac101f05101c9cf",
+        "cc7686613f90c3d614717e40e52fa531e5f920df5c2335b3dac101f05101c9cf"
+      ],
+      "unique_outputs": 1,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.6825396825396826,
+        "min": 0.6825396825396826,
+        "max": 0.6825396825396826,
+        "values": [
+          0.6825396825396826,
+          0.6825396825396826,
+          0.6825396825396826
+        ]
+      },
+      "splits": [
+        22
+      ],
+      "resident_experts": [
+        24367
+      ],
+      "async_startup_confirmed": [
+        true
+      ]
+    },
+    {
+      "matrix": "fork-1-0",
+      "arm_requested": "async",
+      "prompt_tokens": 32768,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 4242.1417844751695,
+        "min": 4237.040485149411,
+        "max": 4249.3483589018715,
+        "values": [
+          4242.1417844751695,
+          4237.040485149411,
+          4249.3483589018715
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 127.34734485760478,
+        "min": 127.30934679364448,
+        "max": 127.49638926241346,
+        "values": [
+          127.49638926241346,
+          127.30934679364448,
+          127.34734485760478
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 11.782592577161267,
+        "min": 11.78199882991612,
+        "max": 11.792943080887198,
+        "values": [
+          11.792943080887198,
+          11.78199882991612,
+          11.782592577161267
+        ]
+      },
+      "output_hashes": [
+        "0f82f96b428905013917ecea0b765f9601b788a4d68fac49c5855e4ae3dfaa53",
+        "0f82f96b428905013917ecea0b765f9601b788a4d68fac49c5855e4ae3dfaa53",
+        "0f82f96b428905013917ecea0b765f9601b788a4d68fac49c5855e4ae3dfaa53"
+      ],
+      "unique_outputs": 1,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.6970387243735763,
+        "min": 0.6970387243735763,
+        "max": 0.6970387243735763,
+        "values": [
+          0.6970387243735763,
+          0.6970387243735763,
+          0.6970387243735763
+        ]
+      },
+      "splits": [
+        22
+      ],
+      "resident_experts": [
+        24367
+      ],
+      "async_startup_confirmed": [
+        true
+      ]
+    },
+    {
+      "matrix": "fork-1-0",
+      "arm_requested": "pipeline",
+      "prompt_tokens": 6144,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 1993.5107073329007,
+        "min": 1990.7332404497292,
+        "max": 2004.2407437612135,
+        "values": [
+          2004.2407437612135,
+          1993.5107073329007,
+          1990.7332404497292
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 123.61178174794784,
+        "min": 118.87348796173758,
+        "max": 124.21757484594109,
+        "values": [
+          123.61178174794784,
+          118.87348796173758,
+          124.21757484594109
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 7.218013784848154,
+        "min": 7.213673032121733,
+        "max": 7.394334998913109,
+        "values": [
+          7.218013784848154,
+          7.394334998913109,
+          7.213673032121733
+        ]
+      },
+      "output_hashes": [
+        "b7884eaeec78bc45f0f3271cc2c22b86e7159e6bd25f4ac2137d6a2016ffd65d",
+        "20d29e29274dd658b513fccfb423027464ebd5455a76259b7cfc7e7b5dd6f772",
+        "b9010d878362b6cf09c1011a048d43305722be65425dc59a58b213241d7feec8"
+      ],
+      "unique_outputs": 3,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.6301075268817204,
+        "min": 0.6297117516629712,
+        "max": 0.6409691629955947,
+        "values": [
+          0.6409691629955947,
+          0.6297117516629712,
+          0.6301075268817204
+        ]
+      },
+      "splits": [
+        30
+      ],
+      "resident_experts": [
+        23633
+      ],
+      "async_startup_confirmed": [
+        false
+      ]
+    },
+    {
+      "matrix": "fork-1-0",
+      "arm_requested": "pipeline",
+      "prompt_tokens": 32768,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 3626.1827034803296,
+        "min": 3610.4408378232465,
+        "max": 3634.5889347353473,
+        "values": [
+          3634.5889347353473,
+          3626.1827034803296,
+          3610.4408378232465
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 118.34866626600713,
+        "min": 117.30742794299591,
+        "max": 126.09595113781893,
+        "values": [
+          117.30742794299591,
+          118.34866626600713,
+          126.09595113781893
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 13.399974764091894,
+        "min": 13.155483855865896,
+        "max": 13.416741958120838,
+        "values": [
+          13.399974764091894,
+          13.416741958120838,
+          13.155483855865896
+        ]
+      },
+      "output_hashes": [
+        "dc7c892797ca73c971086bb4719fd25a36127a2587d12a8a80ae4a5d1d0de2d4",
+        "db8a261eae580a184d3afd9ef7a97560a2a487ee02a0de38fff7eb0af97f6c67",
+        "bf6da443ad742dec51433667c64d78075f38ed6bed044cca970dc6a1f7fece9b"
+      ],
+      "unique_outputs": 3,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.6651270207852193,
+        "min": 0.6535796766743649,
+        "max": 0.7043269230769231,
+        "values": [
+          0.6535796766743649,
+          0.6651270207852193,
+          0.7043269230769231
+        ]
+      },
+      "splits": [
+        30
+      ],
+      "resident_experts": [
+        23633
+      ],
+      "async_startup_confirmed": [
+        false
+      ]
+    },
+    {
+      "matrix": "fork-1-0",
+      "arm_requested": "pipeline-async",
+      "prompt_tokens": 6144,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 1983.2789954485295,
+        "min": 1981.8715525305636,
+        "max": 1983.7272375048433,
+        "values": [
+          1983.7272375048433,
+          1983.2789954485295,
+          1981.8715525305636
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 125.11607448316309,
+        "min": 124.24470382683396,
+        "max": 125.61334641805692,
+        "values": [
+          124.24470382683396,
+          125.11607448316309,
+          125.61334641805692
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 7.193552365060896,
+        "min": 7.180548492120579,
+        "max": 7.228590355021879,
+        "values": [
+          7.228590355021879,
+          7.193552365060896,
+          7.180548492120579
+        ]
+      },
+      "output_hashes": [
+        "5f29d0f284ba0e2eb5f8b88e4436a324212b56db04435e2409f0bbcd31e80613",
+        "ba5b15aabe9d1f608bcaba060eaf7f5ffde43550c2f511732efd4ad2543ae2cd",
+        "c1173cf990fe029c0f318e246b9422e3abfc7362b6e99b347bd9ce5a49c66da6"
+      ],
+      "unique_outputs": 3,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.6466666666666666,
+        "min": 0.6391304347826087,
+        "max": 0.6467991169977925,
+        "values": [
+          0.6391304347826087,
+          0.6467991169977925,
+          0.6466666666666666
+        ]
+      },
+      "splits": [
+        30
+      ],
+      "resident_experts": [
+        23633
+      ],
+      "async_startup_confirmed": [
+        true
+      ]
+    },
+    {
+      "matrix": "fork-1-0",
+      "arm_requested": "pipeline-async",
+      "prompt_tokens": 32768,
+      "prompt_tok_s": {
+        "n": 3,
+        "median": 3615.3803718210406,
+        "min": 3614.7422532569963,
+        "max": 3636.081181548841,
+        "values": [
+          3614.7422532569963,
+          3615.3803718210406,
+          3636.081181548841
+        ]
+      },
+      "decode_tok_s": {
+        "n": 3,
+        "median": 118.6421040435639,
+        "min": 114.42107850805641,
+        "max": 126.59166769687229,
+        "values": [
+          114.42107850805641,
+          118.6421040435639,
+          126.59166769687229
+        ]
+      },
+      "wall_s": {
+        "n": 3,
+        "median": 13.392758556175977,
+        "min": 13.070272053126246,
+        "max": 13.565416325815022,
+        "values": [
+          13.565416325815022,
+          13.392758556175977,
+          13.070272053126246
+        ]
+      },
+      "output_hashes": [
+        "299668b24f07fcb0ef1c04d3551eb496445a5aacd448bf684e18c68ce7fc5ed1",
+        "4171d507c5c2fdee81d27a9690ee7174bcd991f51003251b1bd8c97254544fe5",
+        "b3f20a30f09d08bc5a39b2089abb6e1c5dcf4390c36977f244bec529fbb0b0ab"
+      ],
+      "unique_outputs": 3,
+      "draft_acceptance": {
+        "n": 3,
+        "median": 0.6575342465753424,
+        "min": 0.6143497757847534,
+        "max": 0.7104622871046229,
+        "values": [
+          0.6143497757847534,
+          0.6575342465753424,
+          0.7104622871046229
+        ]
+      },
+      "splits": [
+        30
+      ],
+      "resident_experts": [
+        23633
+      ],
+      "async_startup_confirmed": [
+        true
+      ]
+    }
+  ],
+  "matched_outputs": [
+    {
+      "order": "0-1",
+      "arm": "serial",
+      "prompt_tokens": 6144,
+      "pairs": [
+        {
+          "repetition": 0,
+          "identical": true,
+          "common_prefix_tokens": 512
+        },
+        {
+          "repetition": 1,
+          "identical": true,
+          "common_prefix_tokens": 512
+        },
+        {
+          "repetition": 2,
+          "identical": true,
+          "common_prefix_tokens": 512
+        }
+      ]
+    },
+    {
+      "order": "0-1",
+      "arm": "serial",
+      "prompt_tokens": 32768,
+      "pairs": [
+        {
+          "repetition": 0,
+          "identical": true,
+          "common_prefix_tokens": 512
+        },
+        {
+          "repetition": 1,
+          "identical": true,
+          "common_prefix_tokens": 512
+        },
+        {
+          "repetition": 2,
+          "identical": true,
+          "common_prefix_tokens": 512
+        }
+      ]
+    },
+    {
+      "order": "0-1",
+      "arm": "async",
+      "prompt_tokens": 6144,
+      "pairs": [
+        {
+          "repetition": 0,
+          "identical": true,
+          "common_prefix_tokens": 512
+        },
+        {
+          "repetition": 1,
+          "identical": true,
+          "common_prefix_tokens": 512
+        },
+        {
+          "repetition": 2,
+          "identical": true,
+          "common_prefix_tokens": 512
+        }
+      ]
+    },
+    {
+      "order": "0-1",
+      "arm": "async",
+      "prompt_tokens": 32768,
+      "pairs": [
+        {
+          "repetition": 0,
+          "identical": true,
+          "common_prefix_tokens": 512
+        },
+        {
+          "repetition": 1,
+          "identical": true,
+          "common_prefix_tokens": 512
+        },
+        {
+          "repetition": 2,
+          "identical": true,
+          "common_prefix_tokens": 512
+        }
+      ]
+    },
+    {
+      "order": "0-1",
+      "arm": "pipeline",
+      "prompt_tokens": 6144,
+      "pairs": [
+        {
+          "repetition": 0,
+          "identical": false,
+          "common_prefix_tokens": 23
+        },
+        {
+          "repetition": 1,
+          "identical": false,
+          "common_prefix_tokens": 23
+        },
+        {
+          "repetition": 2,
+          "identical": false,
+          "common_prefix_tokens": 23
+        }
+      ]
+    },
+    {
+      "order": "0-1",
+      "arm": "pipeline",
+      "prompt_tokens": 32768,
+      "pairs": [
+        {
+          "repetition": 0,
+          "identical": false,
+          "common_prefix_tokens": 105
+        },
+        {
+          "repetition": 1,
+          "identical": false,
+          "common_prefix_tokens": 105
+        },
+        {
+          "repetition": 2,
+          "identical": false,
+          "common_prefix_tokens": 105
+        }
+      ]
+    },
+    {
+      "order": "0-1",
+      "arm": "pipeline-async",
+      "prompt_tokens": 6144,
+      "pairs": [
+        {
+          "repetition": 0,
+          "identical": false,
+          "common_prefix_tokens": 29
+        },
+        {
+          "repetition": 1,
+          "identical": false,
+          "common_prefix_tokens": 29
+        },
+        {
+          "repetition": 2,
+          "identical": false,
+          "common_prefix_tokens": 29
+        }
+      ]
+    },
+    {
+      "order": "0-1",
+      "arm": "pipeline-async",
+      "prompt_tokens": 32768,
+      "pairs": [
+        {
+          "repetition": 0,
+          "identical": false,
+          "common_prefix_tokens": 72
+        },
+        {
+          "repetition": 1,
+          "identical": false,
+          "common_prefix_tokens": 72
+        },
+        {
+          "repetition": 2,
+          "identical": false,
+          "common_prefix_tokens": 72
+        }
+      ]
+    },
+    {
+      "order": "1-0",
+      "arm": "serial",
+      "prompt_tokens": 6144,
+      "pairs": [
+        {
+          "repetition": 0,
+          "identical": false,
+          "common_prefix_tokens": 18
+        },
+        {
+          "repetition": 1,
+          "identical": false,
+          "common_prefix_tokens": 18
+        },
+        {
+          "repetition": 2,
+          "identical": false,
+          "common_prefix_tokens": 18
+        }
+      ]
+    },
+    {
+      "order": "1-0",
+      "arm": "serial",
+      "prompt_tokens": 32768,
+      "pairs": [
+        {
+          "repetition": 0,
+          "identical": false,
+          "common_prefix_tokens": 72
+        },
+        {
+          "repetition": 1,
+          "identical": false,
+          "common_prefix_tokens": 72
+        },
+        {
+          "repetition": 2,
+          "identical": false,
+          "common_prefix_tokens": 72
+        }
+      ]
+    },
+    {
+      "order": "1-0",
+      "arm": "async",
+      "prompt_tokens": 6144,
+      "pairs": [
+        {
+          "repetition": 0,
+          "identical": false,
+          "common_prefix_tokens": 18
+        },
+        {
+          "repetition": 1,
+          "identical": false,
+          "common_prefix_tokens": 18
+        },
+        {
+          "repetition": 2,
+          "identical": false,
+          "common_prefix_tokens": 18
+        }
+      ]
+    },
+    {
+      "order": "1-0",
+      "arm": "async",
+      "prompt_tokens": 32768,
+      "pairs": [
+        {
+          "repetition": 0,
+          "identical": false,
+          "common_prefix_tokens": 72
+        },
+        {
+          "repetition": 1,
+          "identical": false,
+          "common_prefix_tokens": 72
+        },
+        {
+          "repetition": 2,
+          "identical": false,
+          "common_prefix_tokens": 72
+        }
+      ]
+    },
+    {
+      "order": "1-0",
+      "arm": "pipeline",
+      "prompt_tokens": 6144,
+      "pairs": [
+        {
+          "repetition": 0,
+          "identical": false,
+          "common_prefix_tokens": 29
+        },
+        {
+          "repetition": 1,
+          "identical": false,
+          "common_prefix_tokens": 23
+        },
+        {
+          "repetition": 2,
+          "identical": false,
+          "common_prefix_tokens": 23
+        }
+      ]
+    },
+    {
+      "order": "1-0",
+      "arm": "pipeline",
+      "prompt_tokens": 32768,
+      "pairs": [
+        {
+          "repetition": 0,
+          "identical": false,
+          "common_prefix_tokens": 72
+        },
+        {
+          "repetition": 1,
+          "identical": false,
+          "common_prefix_tokens": 72
+        },
+        {
+          "repetition": 2,
+          "identical": false,
+          "common_prefix_tokens": 72
+        }
+      ]
+    },
+    {
+      "order": "1-0",
+      "arm": "pipeline-async",
+      "prompt_tokens": 6144,
+      "pairs": [
+        {
+          "repetition": 0,
+          "identical": false,
+          "common_prefix_tokens": 23
+        },
+        {
+          "repetition": 1,
+          "identical": false,
+          "common_prefix_tokens": 23
+        },
+        {
+          "repetition": 2,
+          "identical": false,
+          "common_prefix_tokens": 23
+        }
+      ]
+    },
+    {
+      "order": "1-0",
+      "arm": "pipeline-async",
+      "prompt_tokens": 32768,
+      "pairs": [
+        {
+          "repetition": 0,
+          "identical": false,
+          "common_prefix_tokens": 51
+        },
+        {
+          "repetition": 1,
+          "identical": false,
+          "common_prefix_tokens": 72
+        },
+        {
+          "repetition": 2,
+          "identical": false,
+          "common_prefix_tokens": 72
+        }
+      ]
+    }
+  ]
+}
