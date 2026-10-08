@@ -1087,14 +1087,17 @@ without penalties, so more of its guesses are now rejected. Requests without pen
 speaks Chat Completions). It runs on the same path as `/v1/chat/completions`, so the thinking levels, the thinking
 budget, the conversation cache and the same API key, Host and Origin checks apply.
 
-It is **stateless**: nothing is stored, so the client sends the whole conversation in `input` every time (Codex does,
+By default it is **stateless**: nothing is stored, so the client sends the whole conversation in `input` every time (Codex does,
 with `store: false`). `previous_response_id`, `conversation`, `background` and the retrieve/delete/cancel endpoints
 are refused with an error that says so.
+
+Experimental [Responses persistence and generated summaries](RESPONSES_EXPERIMENTAL.md) are separate, opt-in
+server options. Persistence enables `previous_response_id`, retrieval, deletion and input-item pagination.
 
 | Request | What Strata does |
 | --- | --- |
 | `input` as a string, or as items | `message` items (`user`, `assistant`, `system`, `developer`; text and images), `reasoning`, `function_call`, `function_call_output`, `custom_tool_call(_output)` |
-| `instructions` | The system message (with leading `developer` messages; later ones become user messages, as on the chat path) |
+| `instructions` | The system message. System/developer input messages, including later permission updates, join the leading instruction block in their original order |
 | `tools` | `function` tools, `namespace` tools (the model sees `namespace.name`; calls come back with `namespace` and `name`), `custom` tools (one free-form `input` string). Hosted tools (`web_search`, `file_search`, ...) are left out: the model cannot run them |
 | `tool_choice` | `"none"` hides the tools; anything else lets the model choose (it cannot be forced) |
 | `reasoning.effort` | `none`/`minimal`, `low`, `medium`, `high`/`xhigh`; without it the model's default (high) |
@@ -1104,7 +1107,7 @@ are refused with an error that says so.
 | `temperature`, `top_p`, `reasoning_budget_tokens`, ... | As on the chat path |
 
 The model's thinking comes back as a `reasoning` output item with `reasoning_text` content (streamed as
-`response.reasoning_text.delta`). This model writes no separate summaries, so `summary` is empty. With
+`response.reasoning_text.delta`). By default no separate summary is generated, so `summary` is empty. With
 `"include": ["reasoning.encrypted_content"]` the item also carries `encrypted_content`: an opaque string (base64, not
 encrypted; the client already holds the text). Send the reasoning items back with the rest of the conversation, as
 Codex does: their thinking goes back into the prompt, so it matches what the model wrote and the conversation cache
