@@ -121,7 +121,7 @@ __device__ __forceinline__ int reduce12_head_of_lane(int lane) {
 // The chunk kernel's body; `p` is the query's KV pools (the call's one set, or blockIdx.z's slot's set).
 // (the body is a device function so the batch window's rows kernel below can run it over each query's own pools without
 // the default kernel's signature, or the function-pointer types the pre-sm_75 / HIP selections build, changing)
-template <int KV_MODE, bool LANE_CELL, bool QUERY_SWIZZLE, bool REDUCE12>
+template <int KV_MODE, bool LANE_CELL, bool QUERY_SWIZZLE, bool REDUCE12, bool IDENT = false>
 __device__ __forceinline__ void attn_chunk_body(const float* __restrict__ q, QsaAttnPools p,
                                                 const int32_t* __restrict__ ids, const int32_t* __restrict__ step,
                                                 int n_kv_heads, int page_size, float scale,
@@ -130,7 +130,7 @@ __device__ __forceinline__ void attn_chunk_body(const float* __restrict__ q, Qsa
                                                 long long scratch_stride) {
     // batched form: query blockIdx.z, with its own q row, selection, step and scratch
     q += (size_t) blockIdx.z * (size_t) (n_kv_heads * G) * HD;
-    ids += (size_t) blockIdx.z * (size_t) cap;
+    if constexpr (!IDENT) ids += (size_t) blockIdx.z * (size_t) cap;
     step += (size_t) blockIdx.z * kStepCount;
     part_acc += (size_t) blockIdx.z * (size_t) scratch_stride;
     part_m += (size_t) blockIdx.z * (size_t) scratch_stride;
@@ -160,7 +160,9 @@ __device__ __forceinline__ void attn_chunk_body(const float* __restrict__ q, Qsa
     if (t < CHUNK) {
         long long r = -1;
         if (t < n_here) {
-            const int cell = ids[c0 + t];
+            // IDENT (the DFlash drafter): the cells ARE [0, n_ids), no selection table - the
+            // block's cells are c0 + t by construction and n_here bounds t below n_ids
+            const int cell = IDENT ? c0 + t : ids[c0 + t];
             const long long page = (long long) p.page_table[cell / page_size];
             // a block the KV streaming could not make resident keeps page -1 (ctl[3]); its cells are masked
             // (score -FLT_MAX, weight 0) instead of being read from before the pool.
@@ -286,14 +288,14 @@ __device__ __forceinline__ void attn_chunk_body(const float* __restrict__ q, Qsa
     for (int h = 0; h < G; ++h) part_acc[((size_t) slot * G + h) * HD + t] = acc[h];
 }
 
-template <int KV_MODE, bool LANE_CELL = false, bool QUERY_SWIZZLE = false, bool REDUCE12 = false>
+template <int KV_MODE, bool LANE_CELL = false, bool QUERY_SWIZZLE = false, bool REDUCE12 = false, bool IDENT = false>
 __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __restrict__ q, QsaAttnPools p,
                                                              const int32_t* __restrict__ ids,
                                                              const int32_t* __restrict__ step, int n_kv_heads,
                                                              int page_size, float scale, float* __restrict__ part_acc,
                                                              float* __restrict__ part_m, float* __restrict__ part_l,
                                                              int n_chunks, int cap = 0, long long scratch_stride = 0) {
-    attn_chunk_body<KV_MODE, LANE_CELL, QUERY_SWIZZLE, REDUCE12>(q, p, ids, step, n_kv_heads, page_size, scale,
+    attn_chunk_body<KV_MODE, LANE_CELL, QUERY_SWIZZLE, REDUCE12, IDENT>(q, p, ids, step, n_kv_heads, page_size, scale,
                                                                  part_acc, part_m, part_l, n_chunks, cap,
                                                                  scratch_stride);
 }
@@ -541,7 +543,7 @@ __device__ __forceinline__ float load_v1(const QsaAttnPools& p, long long row, i
     }
 }
 
-template <int KV_MODE, int NC_ = 2, bool DPP_ = false>
+template <int KV_MODE, int NC_ = 2, bool DPP_ = false, bool IDENT = false>
 __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* __restrict__ q, QsaAttnPools p,
                                                              const int32_t* __restrict__ ids,
                                                              const int32_t* __restrict__ step, int n_kv_heads,
@@ -550,7 +552,7 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* 
                                                              int n_chunks, int cap = 0, long long scratch_stride = 0) {
     // batched form: query blockIdx.z, with its own q row, selection, step and scratch
     q += (size_t) blockIdx.z * (size_t) (n_kv_heads * G) * HD;
-    ids += (size_t) blockIdx.z * (size_t) cap;
+    if constexpr (!IDENT) ids += (size_t) blockIdx.z * (size_t) cap;
     step += (size_t) blockIdx.z * kStepCount;
     part_acc += (size_t) blockIdx.z * (size_t) scratch_stride;
     part_m += (size_t) blockIdx.z * (size_t) scratch_stride;
@@ -577,7 +579,8 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* 
     if (t < CHUNK) {
         long long r = -1;
         if (t < n_here) {
-            const int cell = ids[c0 + t];
+            // IDENT (the DFlash drafter): the cells ARE [0, n_ids), no selection table
+            const int cell = IDENT ? c0 + t : ids[c0 + t];
             const long long page = (long long) p.page_table[cell / page_size];
             // a block the KV streaming could not make resident keeps page -1 (ctl[3]); its cells are masked
             // (score -FLT_MAX, weight 0) instead of being read from before the pool.
@@ -1182,6 +1185,70 @@ void qsa_decode_attn_batch_rows(const float* q, const QsaAttnPoolsRows& rows, co
 uint64_t qsa_decode_attn_scratch_floats(int64_t cap, const QsaShapes& s) {
     const int64_t chunks = (cap + CHUNK - 1) / CHUNK;
     return (uint64_t) chunks * (uint64_t) s.n_head * (HD + 2) + 64;
+}
+
+void dflash_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* steps, int64_t active_cells,
+                       int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream) {
+    // The DFlash drafter's slice of the batch attention: the cells are the identity [0,
+    // active_cells), so no selection table, and the grid runs only the chunks in range - the
+    // configured capacity (`cap`, the scratch/id stride the caller allocated) stays out of the
+    // launch.  `qsa_decode_attn_batch` above is the TARGET's path (identity selection tables,
+    // full-capacity grids) and is unchanged.
+    if (n_q <= 0) return;
+    if (s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || active_cells <= 0 ||
+        active_cells > cap || !scratch || !steps || !pools.page_table || n_q > 65535) {
+        std::fprintf(stderr, "dflash_attn_batch: unsupported geometry or missing buffers\n");
+        std::exit(1);
+    }
+    const int kv_mode = pools.k_q4 != nullptr ? 2 : (pools.k_q != nullptr && pools.v_q4 != nullptr ? 3
+                        : (pools.k_q != nullptr ? 1 : 0));
+    const int n_chunks = (int) ((active_cells + CHUNK - 1) / CHUNK);
+    // the scratch LAYOUT follows the active chunks (the merge reads exactly these); the per-query
+    // STRIDE stays the allocated one (cap-derived), which is what keeps the allocation untouched
+    const long long stride = (long long) qsa_decode_attn_scratch_floats(cap, s);
+    float* part_acc = scratch;
+    float* part_m = scratch + (size_t) n_chunks * s.n_head * HD;
+    float* part_l = part_m + (size_t) n_chunks * s.n_head;
+    const float scale = 1.0f / sqrtf((float) HD);
+    const dim3 grid((unsigned) n_chunks, (unsigned) s.n_head_kv, (unsigned) n_q);
+    cudaStream_t st = (cudaStream_t) stream;
+#if defined(STRATA_ATTN_PRE75_BUILT)
+    if (pre75_attn()) {
+        if (kv_mode == 3) attn_chunk_kernel_pre75<3, 2, false, true><<<grid, THREADS, 0, st>>>(
+            q, pools, nullptr, steps, (int) s.n_head_kv, (int) s.page_size, scale, part_acc, part_m, part_l,
+            n_chunks, (int) cap, stride);
+        else if (kv_mode == 2) attn_chunk_kernel_pre75<2, 2, false, true><<<grid, THREADS, 0, st>>>(
+            q, pools, nullptr, steps, (int) s.n_head_kv, (int) s.page_size, scale, part_acc, part_m, part_l,
+            n_chunks, (int) cap, stride);
+        else if (kv_mode == 1) attn_chunk_kernel_pre75<1, 2, false, true><<<grid, THREADS, 0, st>>>(
+            q, pools, nullptr, steps, (int) s.n_head_kv, (int) s.page_size, scale, part_acc, part_m, part_l,
+            n_chunks, (int) cap, stride);
+        else attn_chunk_kernel_pre75<0, 2, false, true><<<grid, THREADS, 0, st>>>(
+            q, pools, nullptr, steps, (int) s.n_head_kv, (int) s.page_size, scale, part_acc, part_m, part_l,
+            n_chunks, (int) cap, stride);
+    } else
+#endif
+    {
+        if (kv_mode == 3) attn_chunk_kernel<3, false, false, false, true><<<grid, THREADS, 0, st>>>(
+            q, pools, nullptr, steps, (int) s.n_head_kv, (int) s.page_size, scale, part_acc, part_m, part_l,
+            n_chunks, (int) cap, stride);
+        else if (kv_mode == 2) attn_chunk_kernel<2, false, false, false, true><<<grid, THREADS, 0, st>>>(
+            q, pools, nullptr, steps, (int) s.n_head_kv, (int) s.page_size, scale, part_acc, part_m, part_l,
+            n_chunks, (int) cap, stride);
+        else if (kv_mode == 1) attn_chunk_kernel<1, false, false, false, true><<<grid, THREADS, 0, st>>>(
+            q, pools, nullptr, steps, (int) s.n_head_kv, (int) s.page_size, scale, part_acc, part_m, part_l,
+            n_chunks, (int) cap, stride);
+        else attn_chunk_kernel<0, false, false, false, true><<<grid, THREADS, 0, st>>>(
+            q, pools, nullptr, steps, (int) s.n_head_kv, (int) s.page_size, scale, part_acc, part_m, part_l,
+            n_chunks, (int) cap, stride);
+    }
+    attn_merge_kernel<<<dim3((unsigned) s.n_head, (unsigned) n_q), HD, 0, st>>>(part_acc, part_m, part_l, n_chunks,
+                                                                                  attn, stride);
+    const cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) {
+        std::fprintf(stderr, "dflash_attn_batch: %s\n", cudaGetErrorString(e));
+        std::exit(1);
+    }
 }
 
 void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* step,
