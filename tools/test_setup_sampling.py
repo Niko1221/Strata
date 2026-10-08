@@ -207,6 +207,31 @@ class StartSavesTheChoice(unittest.TestCase):
 
             self.assertFalse((p.parent / (p.name + ".bak")).exists())   # a start that changes nothing leaves no file
 
+    def test_a_start_saves_the_other_settings_it_named(self):
+        # #179 #493: --host / --api-key / --draft-vocab / --no-browser and --vram-reserve-mib ride the same write as
+        # --thinking / --instruct (save_start_settings, which sycl/setup_intel.py calls before its own run script).
+        with tempfile.TemporaryDirectory() as tmp:
+            p = self.config(Path(tmp))
+            named = {"host": "0.0.0.0", "api_key": "secret", "draft_vocab": "en", "open_browser": False,
+                     "vram_reserve_mib": 2048, "sampling_mode": None, "layer_split": None}
+            _, out = quiet(setup.save_start_settings, p, json.loads(p.read_text(encoding="utf-8")), named)
+            wrote = json.loads(p.read_text(encoding="utf-8"))
+            self.assertEqual({k: wrote[k] for k in ("host", "api_key", "draft_vocab", "open_browser")},
+                             {"host": "0.0.0.0", "api_key": "secret", "draft_vocab": "en", "open_browser": False})
+            self.assertEqual(wrote["args"][-2:], ["--vram-reserve-mib", "2048"])
+            self.assertNotIn("sampling", wrote)                        # no --thinking / --instruct on this start
+            self.assertNotIn("layer_split", wrote)                     # not given: no key, no empty value
+            self.assertIn("2048 MiB of VRAM kept free", out)
+            self.assertIn("api key", out)
+            self.assertIn("no browser", out)
+
+            # the same settings named again: keys that already hold them write nothing and say nothing
+            before = p.read_text(encoding="utf-8")
+            _, out = quiet(setup.save_start_settings, p, json.loads(before), {k: v for k, v in named.items()
+                                                                             if k != "vram_reserve_mib"})
+            self.assertEqual(p.read_text(encoding="utf-8"), before)
+            self.assertEqual(out, "")
+
     def test_the_settings_line_of_a_start_shows_the_numbers(self):
         self.assertIn("sampling thinking: temperature=1.0, top_p=0.95",
                       setup.settings_summary({"args": ["--max-context", "65536"], "sampling": THINKING}, 8080))

@@ -188,17 +188,6 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
     return out
 
 
-def save_sampling_at_start(cfg_path: Path, cfg: dict, keep: dict) -> bool:
-    """#1129: --thinking / --instruct on a start of an installed Intel model.  setup.py's start() writes the named
-    preset into the run config and then starts the server; this wrapper starts the model through its own run script,
-    so the write has to happen here, before that start - the script hands the config to sycl/serve/server_intel.py,
-    which reads the block when the server comes up.  setup's own words say which numbers are now in use and keep the
-    file it replaced as strata-<model>.json.bak.  False when nothing changed: no flag on this start, or the block
-    already holds exactly those numbers."""
-    mode = (keep or {}).get("sampling_mode")
-    return bool(mode) and S.save_sampling_choice(cfg_path, cfg, mode)
-
-
 def install(argv) -> None:
     intel = [] if S.WIN else intel_gpus()
     if not intel:
@@ -207,7 +196,7 @@ def install(argv) -> None:
     if exe is None:
         S.fail(f"Strata's SYCL engine cannot be used: {why}", "docs/INTEL.md: build it, then run this again")
     for name in ("gpus", "amd_gpus", "amd_problem", "hip_vision", "build_engine_hip", "hipblaslt_table", "ram_gb",
-                 "write_run_script", "start", "say", "main", "save_sampling_choice"):
+                 "write_run_script", "start", "say", "main", "save_start_settings"):
         if not callable(getattr(S, name, None)):
             S.fail(f"setup.py has no {name}() any more: sycl/setup_intel.py needs updating for this setup.py")
 
@@ -281,9 +270,9 @@ def install(argv) -> None:
         cfg = json.loads(Path(cfg_path).read_text(encoding="utf-8-sig"))
         if cfg.get("backend") != "sycl":
             return start(cfg_path, *a, **k)
-        # #1129: --thinking / --instruct names the sampling every client that sends none gets; the execv below never
-        # returns, so the run config has to hold that block before the model starts.
-        save_sampling_at_start(Path(cfg_path), cfg, k.get("keep") or {})
+        # #179 #493 #1129: what this start names is saved into the run config before the execv below, which never
+        # returns; setup.py's own start() does the same before it starts the server.
+        S.save_start_settings(Path(cfg_path), cfg, k.get("keep") or {})
         script = ROOT / f"run-{Path(cfg_path).stem[len('strata-'):]}.sh"
         S.say(f"\nstarting {script.name} ...")
         os.execv("/bin/sh", ["/bin/sh", str(script)])

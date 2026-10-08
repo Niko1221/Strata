@@ -4071,14 +4071,13 @@ def settings_summary(cfg: dict, port=None) -> str:
     return " ".join(out) + ("; " if out else "") + "server " + ", ".join(srv)
 
 
-def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_browser=True, yes=False,
-          layer_split=None, keep=None) -> int:
-    """keep: settings given on this start that the model keeps from now on (--host, --api-key, --draft-vocab,
-    --vram-reserve-mib, --thinking / --instruct)."""
-    cfg = upgrade_config(cfg_path, json.loads(cfg_path.read_text(encoding="utf-8-sig")))
-    missing = [p for p in [cfg["exe"], *[a for a in cfg["args"] if a.endswith(".gguf")]] if not Path(p).exists()]
-    if missing:
-        fail(f"{cfg_path.name} refers to missing files: {missing[0]}", "run it again with --setup to repair")
+def save_start_settings(cfg_path: Path, cfg: dict, keep) -> None:
+    """The settings named on a start of an installed model, written into its run config so the model keeps them from
+    now on: --vram-reserve-mib (#493, an engine argument in "args"), --thinking / --instruct (#1129, the "sampling"
+    block) and --host / --api-key / --draft-vocab / --no-browser (#179).  setup's start() does this before it starts
+    the server; sycl/setup_intel.py does it before it execs its own run script, which never returns.  A key that
+    already holds what was asked writes nothing; the "sampling" write keeps the file it replaced as
+    strata-<model>.json.bak."""
     keep = {k: v for k, v in (keep or {}).items() if v is not None}
     reserve = keep.pop("vram_reserve_mib", None)       # #493: an engine argument, kept in the config's args
     if reserve is not None:
@@ -4096,6 +4095,17 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
         ok("saved for this model: " + ", ".join(
             "api key" if k == "api_key" else ("the browser opens" if v else "no browser") if k == "open_browser"
             else f"{k.replace('_', ' ')} {v}" for k, v in keep.items()))
+
+
+def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_browser=True, yes=False,
+          layer_split=None, keep=None) -> int:
+    """keep: settings given on this start that the model keeps from now on (--host, --api-key, --draft-vocab,
+    --vram-reserve-mib, --thinking / --instruct)."""
+    cfg = upgrade_config(cfg_path, json.loads(cfg_path.read_text(encoding="utf-8-sig")))
+    missing = [p for p in [cfg["exe"], *[a for a in cfg["args"] if a.endswith(".gguf")]] if not Path(p).exists()]
+    if missing:
+        fail(f"{cfg_path.name} refers to missing files: {missing[0]}", "run it again with --setup to repair")
+    save_start_settings(cfg_path, cfg, keep)
     cfg_path.touch()                                     # the most recently used model
     if "--mtp" in cfg["args"][:-1]:
         refresh_draft_vocab(Path(cfg["args"][cfg["args"].index("--mtp") + 1]), cfg.get("draft_vocab", "cjk"))

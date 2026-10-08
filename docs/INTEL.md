@@ -84,8 +84,9 @@ mount. A symlink to a folder outside the mount does not work in the container; a
 
 Then `run-<model>.sh` (or `./setup.sh --backend sycl` again) starts the model. The first start of a 30 GB model
 takes about two minutes. `--port N` and `--host 0.0.0.0` work as in upstream's setup.
-`--thinking` / `--instruct` on that start writes the chosen set into the config before the run script starts the
-server, so every later start uses it (#1129).
+What such a start names - `--thinking` / `--instruct`, `--host`, `--api-key`, `--vram-reserve-mib`, `--draft-vocab`,
+`--no-browser` - is written into the config before the run script starts the server, so the model keeps it from then
+on (#179, #493, #1129).
 
 ## How to build it
 
