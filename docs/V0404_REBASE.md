@@ -43,3 +43,37 @@ outputs prevent a claim of equal-quality completion speed.
 After performance screening, perform bounded native layout/state/expert
 checks, controlled token comparisons and lifecycle checks. Keep normal fast
 arithmetic performance separate from deterministic correctness controls.
+
+## Completed qualification (8 October 2026)
+
+- Twelve workload runs completed. Actual residency matched at 11,568 experts
+  in every run; no cache retry or reserve shrink occurred.
+- Median decode gains versus pristine v0.1.40.4: **1.31x essay, 2.07x coding**.
+  Whole-run gains: 1.27x and 1.71x. See [full method and results](PR_WORKLOAD_BENCHMARKS.md).
+- Native tests passed: 9,840 batch layouts, 100 bitwise partial state commits
+  across 16 layouts, and the IQ2_XS/Q2_0 sixteen-row native expert fixture
+  (zero failures).
+- Four prompts x 128 tokens matched solo versus c4 within each build. The
+  complete baseline/candidate dumps also matched: **512 solo plus 512 batch
+  tokens** compared across builds.
+- Both builds passed all eight lifecycle comparisons: concurrent admission
+  during prompt work, continuation from a slot, a yielded prompt resuming,
+  return from a batch to solo, and checkpoint reuse.
+- These token tests control expert placement and CPU arithmetic: optimized
+  IQ kernels disabled, IQ_MT_MIN=1, PCIe fraction zero, adaptation effectively
+  off, no prefill borrowing. Performance runs use normal optimized arithmetic.
+  This is bounded exact-token evidence, not bitwise internal-state equality
+  across whole-model executions or universal normal-mode quality equivalence.
+- Default interleaved MMVQ remains enabled in the tested builds. Newly added
+  upstream opt-in PDL/dense-branch combinations, QFUSE-on, AMD, Intel and
+  multi-GPU hardware are not separately qualified by this run.
+- No Python server code changed, so the historical server-test counts are
+  not recycled as new validation. No c=1 throughput speedup is asserted.
+
+[Compact qualification](evidence/v0404-performance/qualification-summary.json),
+individual native/lifecycle logs, token dumps, benchmark configurations and
+artifact hashes accompany the PR. Runtime builds were produced in the same
+local build checkout; the upstream executable built successfully before the
+shared build wrapper requested candidate-only test targets absent upstream.
+That wrapper's post-build target error did not change the baseline executable.
+The candidate executable and relevant test targets all built successfully.
