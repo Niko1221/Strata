@@ -19,6 +19,7 @@
 #include "strata/platform/direct_file.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -71,6 +72,19 @@ public:
 
     /// Block until every row of the ticket is in `out_raw`. Returns false on an I/O error (message in `err`).
     bool collect(Ticket t, std::string& err);
+
+    /// The prompt path's readers: `k` threads that each own a handle and a completion port and keep their share of
+    /// `max_inflight` reads in flight. One thread reaping every read was the limit (~570K reads/s; 8 such threads
+    /// ~960K on a 9100 PRO). Call after `open`; 0 stops them. False (and no readers) if a handle cannot be opened.
+    bool set_batch_readers(unsigned k, std::string& err);
+    unsigned batch_readers() const;
+
+    /// `issue` + `collect` for a large request, through the batch readers (without them it is exactly that). Pages
+    /// are deduplicated across the request and read in the order of the first row that needs them, so the rows
+    /// arrive roughly front to back: `ready(r)` is called on this thread each time rows [0, r) are all in `out_raw`
+    /// (r increasing, the last call r = n). The same bytes as `issue` + `collect`.
+    bool read_batch(const uint32_t* rows, size_t n, uint8_t* out_raw, std::string& err,
+                    const std::function<void(size_t)>& ready = {});
 
     /// Keep the SSD awake while the table is in use (io_thread mode only; call after `open`): when no read has
     /// gone out for `period_ms`, the worker reads one page of the table, until `window_s` after the last `issue`.

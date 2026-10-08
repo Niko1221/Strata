@@ -1846,6 +1846,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     std::string ple_next_err;
     std::future<bool> ple_next;             // declared after everything it reads: an early return waits for it
     int ple_buf = 0;
+    // STRATA_PLE_TRACE=1: when a chunk's read started, when layer 1 asked for its rows, how long it waited
+    static const bool ple_trace = std::getenv("STRATA_PLE_TRACE") != nullptr;
+    Clock::time_point ple_t0 = t_start;
 
     for (int64_t c0 = 0; c0 < n; c0 += m.T) {
         if (should_stop && should_stop()) { err = "cancelled"; return false; }
@@ -1912,10 +1915,12 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         // ---- the PLE rows of the whole chunk, one batched SSD request on a thread (see ple_gather).  A later chunk's
         // were read ahead during the previous chunk; the first chunk's are read beside layer 0 - they are needed from
         // layer 1 on, and gathering them here first left the GPU idle for the whole read (~0.4 s of a 32K prompt)
-        if (ple_on && !ple_next.valid())
+        if (ple_on && !ple_next.valid()) {
             ple_next = std::async(std::launch::async, [&ple_gather, &ple_next_err, c0, b = ple_buf] {
                 return ple_gather(c0, b, ple_next_err);
             });
+            ple_t0 = Clock::now();
+        }
         bool ple_pending = ple_on;
         // the chunk's rows onto the device just before layer 1 reads them, and the next chunk's gather started
         auto ple_land = [&]() -> bool {
@@ -1926,6 +1931,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 err = ple_next_err;
                 return false;
             }
+            if (ple_trace)
+                std::fprintf(stderr, "strata ple: chunk %lld: read started %.1f ms into the run, layer 1 reached at %.1f, "
+                                     "waited %.1f ms\n", (long long) c0, std::chrono::duration<double, std::milli>(ple_t0 - t_start).count(),
+                             std::chrono::duration<double, std::milli>(tp - t_start).count(), ms_since(tp));
             if (cudaMemcpyAsync(m.ple_emb, m.ple_emb_host[ple_buf], (size_t) T * N * 4, cudaMemcpyHostToDevice, m.cs) !=
                     cudaSuccess ||
                 cudaEventRecord(m.ple_copied[ple_buf], m.cs) != cudaSuccess) {
@@ -1941,6 +1950,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 ple_next = std::async(std::launch::async, [&ple_gather, &ple_next_err, c1 = c0 + m.T, b = ple_buf ^ 1] {
                     return ple_gather(c1, b, ple_next_err);
                 });
+                ple_t0 = Clock::now();
             }
             ple_buf ^= 1;
             stats_.ms_ple += ms_since(tp);
