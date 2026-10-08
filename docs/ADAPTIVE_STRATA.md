@@ -253,7 +253,7 @@ These are functional smoke results. Prompt reuse, changing output length, roundi
 make the three response durations unsuitable for a speed comparison. There is no demonstrated agentic
 completion-time gain or complete adaptive-resource implementation yet.
 
-## Current implementation measurements (2026-10-08)
+## Earlier same-branch measurements (2026-10-08)
 
 Same laptop/model, 65,536 configured context, seven CPU workers, MTP four, IQ3_S, existing projection
 and vision configuration. Isolated live-memory engine: 32 GiB resident cap, 448 MiB startup fitting reserve,
@@ -309,6 +309,144 @@ An isolated normal HTTP server then passed a real image request (red square) and
 continuation. It advertised 65,536 context and vision enabled, with high reasoning defaults; sampled
 native free VRAM stayed at least 342 MiB and available RAM at least 11.56 GiB. This is API acceptance,
 not a completed Hermes project. All test processes were stopped afterward; production was not modified.
+
+## Completed acceptance campaign (2026-10-08)
+
+Decision: retain this as an isolated prototype. Do not promote it to the daily launcher or submit the
+whole branch as a finished adaptive scheduler. The tests demonstrate useful memory-control behavior,
+but not repeatably faster successful agent tasks. The earlier measurements above are retained as history;
+they are not the unchanged-upstream comparison below.
+
+### Method and final controller corrections
+
+The unchanged baseline is v0.1.40.3, commit `d5ea713`. Both native binaries were built with the same
+MSVC/CUDA toolchain, Release settings and CUDA architecture 89. Both used portable ggml plus native
+expert kernels. The latter were compiled with `/arch:AVX512`; the portable ggml AVX-512 cache switches
+do not describe the separate native IQ3_S kernels. Seven pinned pool workers plus the calling thread
+participate across eight physical cores. Generated C++ test programs used ordinary `-O2`, without an
+AVX-512 requirement.
+
+The common model settings were IQ3_S, 65,536 context, high reasoning, MTP four and the configured
+projection/vision assets. The isolated experiment used a 32 GiB resident cap, 448 MiB startup fitting
+reserve, 320 MiB running free-VRAM target and fixed PCIe fraction 0.37. Routing remained uncalibrated;
+no alternate placement passed the routing gate. Tests ran sequentially on a separate service port.
+These are not comparisons against the daily launcher with a different resident budget.
+
+Final server corrections in commit `6f99216`:
+
+- Send an absolute running free-VRAM target to native `MEMORY`; do not compound a fitting reserve with
+  each observed shortfall. A renewed shortfall can require action even when the target is unchanged.
+- Keep RAM relief independent of an inflated GPU reserve, and retain bounded GPU recovery.
+- Do not interpret low free VRAM by itself as another application's GPU compute load. Strata's own
+  prompt workspace can consume headroom without a competing application.
+
+Seven added regression tests cover these cases. The final full Python suite ran 745 tests: 739 passed
+and six skipped. Nine selected native tests passed: conversation cache, conversation memory, live memory,
+conversation snapshot, serving window, file expert source, VMM, expert profile save and platform memory.
+This is not a claim that every native test in the repository ran.
+
+### Completed tasks, including failures
+
+The C++ test requested a `unique_sorted` function, compiled its answer and checked 104 executable cases.
+Sampling was greedy with seed 42 and high reasoning. Wall time includes inference, compilation and tests.
+The 2,048-token campaign used reverse load order (ABBA), two requests per load, four attempts per arm.
+The 4,096-token qualification used only two attempts per arm and was not a balanced timing study.
+
+| Total output limit | Build | Accepted attempts | Median complete task | Median decode tokens/s |
+| --- | --- | ---: | ---: | ---: |
+| 2,048 | Unchanged upstream | 4/4 | 79.93 s | 18.10 |
+| 2,048 | Adaptive prototype | 2/4 | Not reported: two attempts failed | 19.24 |
+| 4,096 | Unchanged upstream | 2/2 | 49.06 s | 19.09 |
+| 4,096 | Adaptive prototype | 2/2 | 65.83 s | 20.04 |
+
+Both failed adaptive attempts exhausted the 2,048-token limit while reasoning and supplied no final
+function. All follow-up answers used fewer than 2,048 tokens, so the later successes do not demonstrate
+that raising the limit fixed the failures. Output length and placement varied. The small follow-up's
+adaptive median was 34.2% slower despite a higher decode rate; it does not isolate a causal scheduler
+regression, but it rules out claiming a demonstrated completion-time gain. Do not discard failed attempts
+or compare only their successful subset. The first harness accidentally returned zero despite row failures;
+its saved per-attempt results are authoritative, and future invocations now return failure if any row fails.
+
+An earlier diagnostic comparison used eight capped 192-token requests per arm. Median request times were
+7.938 s upstream, 8.060 s with the prototype controller off, and 7.786 s with it enabled. Those capped outputs
+were not completed tasks and preceded the final server corrections. A roughly 1.9% median wall difference
+is not a qualified speed claim. Adaptive load took 36.36-38.96 s versus 12.26-12.87 s upstream: about three
+times as long in these two loads. Changed cache placement also prevents a bit-exact comparison claim.
+
+### Real memory pressure and long conversation reuse
+
+A helper actually allocated and touched 2 GiB of host RAM. The same native process reduced resident
+experts from 32 to 30.488 GiB in 19.61 s and recovered in 42.27 s, including the stability dwell. Arithmetic
+requests remained correct before, during and after resizing. Available RAM remained at least 9.676 GiB.
+An elevated free-RAM target let this exercise relief without exhausting the machine.
+
+The 64K service then read an actual 60,270-token prompt containing four distributed lookup keys. All four
+were correct. Cold processing took 663.17 s overall, including 655.41 s of prompt processing. Repeating
+the prompt took 8.02 s overall and 0.581 s of prompt processing, reusing 60,265 tokens and reading five.
+A new-conversation check also passed. This validates long-prefix reuse in this test, not a new improvement
+over upstream caching. The run included the absolute-reserve correction but preceded the capacity-versus-
+compute correction; a 0.7-second focused unit check overlapped the long read, so these are not strict A/B
+performance measurements. Sampled native free VRAM stayed at least 294 MiB.
+
+A separate combined test held both 2 GiB host RAM and a 48 MiB external CUDA allocation. Answers remained
+correct; RAM shrank in 14.08 s and recovered in 41.17 s. Native free VRAM stayed at least 424 MiB, above
+the configured target, so GPU reclamation was not exercised. A first harness incorrectly required eviction
+without an observed deficit and timed out; that attempt is retained as inconclusive rather than an engine
+failure or a successful GPU-pressure demonstration. A separate CUDA observer reported about 7,020 MiB
+free while the native engine reported 424 MiB. It cannot substitute for native feedback.
+
+CUDA documents free memory as an OS estimate and does not guarantee that all reported bytes can be
+allocated. Current-context and concurrent-allocation limits matter; Windows WDDM also virtualizes GPU
+memory. See [CUDA memory information](https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/group__CUDA__MEM.html)
+and [WDDM GPU virtual memory](https://learn.microsoft.com/en-us/windows-hardware/drivers/display/gpu-virtual-memory-in-wddm-2-0).
+The mismatch above is a local observation, not a calibrated conversion between those interfaces.
+
+### Actual Hermes and HTTP acceptance
+
+A visible Hermes CLI session used a disposable project, high reasoning, 64K and one synchronous child.
+It repaired a C++ interval-merging implementation, then independently compiled and passed 506 external
+acceptance cases; the visible test file's hash was unchanged. Agent wall time was 690.16 s, with 14 API
+calls. One child review took 344.24 s and reached its six-turn ceiling, but returned a review; the parent
+completed and retested. This is a bounded success, not evidence of unrestricted autonomy. There was no
+matched upstream Hermes run, so no agentic speedup can be claimed. Consecutive parent turns reused
+roughly 93-98% of their prompts; parent/child transitions preserved snapshots.
+
+The test's YAML `agent.max_tokens: 4096` did not establish an effective total output cap in the installed
+Hermes CLI. Requests used the service's high-reasoning budget of 8,192 and the remaining context budget.
+The explicit native 4,096-token comparison above is separate. Installed Hermes was
+`0.21.5+8915.gc538ec5.dirty`; its existing local source changes were retained, not upgraded during this test.
+Sampled native free VRAM was at least 310 MiB and available RAM at least 8.207 GiB.
+
+After the final corrections, the normal HTTP interface passed a real red-square image request and a
+function-call/tool-result continuation. It advertised 65,536 context and vision. Sampled native free VRAM
+was at least 342 MiB and available RAM at least 10.585 GiB. These samples cannot rule out brief unobserved
+peaks or protect against arbitrary new allocations by other applications.
+
+Early diagnostic attempts with insufficient startup headroom were stopped and excluded before accepted
+comparisons. They must not be represented as meeting the reserve requirement. Accepted runs used native
+admission checks with extra room for lazy buffers; the minimum observed across the accepted pressure and
+agent/API validations was 294 MiB. All test processes were stopped afterwards. Production Strata source,
+settings and launchers were not modified.
+
+### Remaining release gates
+
+1. Live cache changes currently wait for prompt processing to finish, because borrowed cache views remain
+   in use. The approximately eleven-minute cold read demonstrates how long relief may be deferred. Safe,
+   bounded prompt-chunk boundaries need a lifetime/reader-drain design and correctness tests.
+2. Actual external GPU pressure and recovery remain unqualified on this Windows setup. Concurrent small
+   allocations are not enough; verify both a real observed deficit and native cache shrink without crossing
+   the safety floor. An instantaneous reserve cannot be guaranteed against arbitrary third-party allocations.
+3. Preserve or improve complete-task acceptance on a larger matched task set, and account for reasoning
+   length, compilation and foreground workload completion. The current C++ comparison does not pass this gate.
+4. Resolve overlap with PRs #1117 and #1324 and reduce the contribution to a reviewable scope. A possible first
+   contribution is native capacity/acknowledgement and allocation-lifetime hardening, followed separately by
+   policy changes. Recheck upstream before porting; fixes to this prototype are not automatically upstream bugs.
+5. Profile the approximately threefold startup cost. Do not describe the prototype as free adaptation.
+
+This remains expert-cache elasticity and guarded request-boundary routing, not unrestricted VRAM-to-RAM-
+to-SSD relocation. Fixed execution buffers, conversation state, multi-GPU roles, CPU worker counts, storage
+topology and calibrated foreground-aware scheduling still require distinct work. No public PR or comment
+was submitted for this acceptance campaign; original-code attribution and design references are retained.
 
 ## Acceptance gates before an upstream feature PR
 
